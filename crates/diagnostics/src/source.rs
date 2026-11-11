@@ -528,7 +528,6 @@ mod tests {
         let dynamic: &dyn SourceProvider = &map;
         assert_eq!(dynamic.offset_of(id, position), expected, "&dyn SourceProvider");
         assert_eq!(SourceProvider::offset_of(&&map, id, position), expected, "&P");
-        let mut map = map;
         assert_eq!(SourceProvider::offset_of(&&mut map, id, position), expected, "&mut P");
 
         let arc = Arc::new(map);

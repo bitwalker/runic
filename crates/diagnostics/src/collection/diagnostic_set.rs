@@ -1,6 +1,5 @@
-use crate::owned::DiagnosticBundle;
-
 use super::*;
+use crate::owned::DiagnosticBundle;
 
 /// An immutable set of diagnostics.
 #[derive(Debug)]
