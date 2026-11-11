@@ -7,12 +7,7 @@ extern crate std;
 
 pub mod sync;
 
-use alloc::{
-    boxed::Box,
-    collections::BTreeMap,
-    string::{String, ToString},
-    vec::Vec,
-};
+use alloc::{boxed::Box, collections::BTreeMap, string::String, vec::Vec};
 use core::{fmt, mem, ops::Deref, str};
 
 use miden_formatting::prettier::PrettyPrint;
@@ -75,9 +70,29 @@ impl Symbol {
     }
 
     /// Maps a string to its interned representation.
-    pub fn intern(string: impl ToString) -> Self {
-        let string = string.to_string();
-        with_interner(|interner| interner.intern(string))
+    ///
+    /// This allocates only when `string` has not been interned before: a string that is already
+    /// interned is found under the read lock, without copying it.
+    pub fn intern(string: impl AsRef<str>) -> Self {
+        let string = string.as_ref();
+        match Self::lookup(string) {
+            Some(symbol) => symbol,
+            None => with_interner(|interner| interner.intern(string)),
+        }
+    }
+
+    /// Like [Symbol::intern], but takes ownership of `string`, so that interning a new string
+    /// reuses its allocation rather than copying it.
+    pub fn intern_owned(string: String) -> Self {
+        match Self::lookup(&string) {
+            Some(symbol) => symbol,
+            None => with_interner(|interner| interner.intern_owned(string)),
+        }
+    }
+
+    /// Returns the symbol for `string` if it has already been interned.
+    pub fn lookup(string: &str) -> Option<Self> {
+        with_read_only_interner(|interner| interner.lookup(string))
     }
 
     pub fn as_str(self) -> &'static str {
@@ -143,17 +158,20 @@ impl<T: Deref<Target = str>> PartialEq<T> for Symbol {
 }
 impl From<&'static str> for Symbol {
     fn from(s: &'static str) -> Self {
-        with_interner(|interner| interner.insert(s))
+        match Self::lookup(s) {
+            Some(symbol) => symbol,
+            None => with_interner(|interner| interner.insert(s)),
+        }
     }
 }
 impl From<String> for Symbol {
     fn from(s: String) -> Self {
-        Self::intern(s)
+        Self::intern_owned(s)
     }
 }
 impl From<Box<str>> for Symbol {
     fn from(s: Box<str>) -> Self {
-        Self::intern(s)
+        Self::intern_owned(s.into_string())
     }
 }
 impl From<alloc::borrow::Cow<'static, str>> for Symbol {
@@ -161,14 +179,16 @@ impl From<alloc::borrow::Cow<'static, str>> for Symbol {
         use alloc::borrow::Cow;
         match s {
             Cow::Borrowed(s) => s.into(),
-            Cow::Owned(s) => Self::intern(s),
+            Cow::Owned(s) => Self::intern_owned(s),
         }
     }
 }
 #[cfg(feature = "compact_str")]
 impl From<compact_str::CompactString> for Symbol {
     fn from(s: compact_str::CompactString) -> Self {
-        Self::intern(s.into_string())
+        // Not `intern_owned`: converting an inline `CompactString` to a `String` would allocate
+        // even when the string is already interned.
+        Self::intern(s.as_str())
     }
 }
 
@@ -229,18 +249,24 @@ impl Default for Interner {
 }
 
 impl Interner {
-    pub fn intern(&mut self, string: String) -> Symbol {
-        if let Some(&name) = self.names.get(string.as_str()) {
-            return name;
+    pub fn lookup(&self, string: &str) -> Option<Symbol> {
+        self.names.get(string).copied()
+    }
+
+    pub fn intern(&mut self, string: &str) -> Symbol {
+        // Another thread may have interned `string` between the caller's lookup under the read
+        // lock and its acquiring the write lock.
+        match self.lookup(string) {
+            Some(name) => name,
+            None => self.insert(Box::leak(Box::<str>::from(string))),
         }
+    }
 
-        let name = Symbol::new(self.strings.len() as u32);
-
-        let string = string.into_boxed_str();
-        let string: &'static str = Box::leak(string);
-        self.strings.push(string);
-        self.names.insert(string, name);
-        name
+    pub fn intern_owned(&mut self, string: String) -> Symbol {
+        match self.lookup(&string) {
+            Some(name) => name,
+            None => self.insert(Box::leak(string.into_boxed_str())),
+        }
     }
 
     pub fn insert(&mut self, s: &'static str) -> Symbol {

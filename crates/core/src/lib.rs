@@ -156,7 +156,10 @@ impl AsRef<str> for TraceTarget {
         match self._cached.get() {
             Some(cached) => cached.as_str(),
             None => {
-                let cached = interner::Symbol::intern(self);
+                // Format through `Display` explicitly: `Symbol::intern` takes `impl AsRef<str>`,
+                // so passing `self` would call this function again.
+                let cached =
+                    interner::Symbol::intern_owned(alloc::string::ToString::to_string(self));
                 self._cached.set(Some(cached));
                 cached.as_str()
             }
@@ -215,5 +218,21 @@ impl core::fmt::Display for TraceTarget {
                 _cached: _,
             } => write!(f, "{category}:{topic}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TraceTarget;
+
+    #[test]
+    fn a_trace_target_renders_and_caches_its_category_and_topic() {
+        let target = TraceTarget::category("pass").with_topic("canonicalizer");
+        assert_eq!(target.as_ref(), "pass:canonicalizer");
+        // The second call reads the cached symbol.
+        assert_eq!(target.as_ref(), "pass:canonicalizer");
+        assert_eq!(&*target, "pass:canonicalizer");
+
+        assert_eq!(TraceTarget::category("pass").as_ref(), "pass");
     }
 }
