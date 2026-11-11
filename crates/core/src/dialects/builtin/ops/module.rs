@@ -217,32 +217,6 @@ impl OpParser for Module {
     }
 }
 
-impl runic_session::Emit for Module {
-    /// The raw segment of the module name, without the quotes of its Miden Assembly spelling
-    /// (`masm-dep` for `"masm-dep"`). It may hold any spellable character, `/` and `:` included.
-    fn name(&self) -> Option<runic_symbol::Symbol> {
-        Some(SymbolPath::raw_segment(self.name().as_symbol()))
-    }
-
-    fn output_type(&self, _mode: runic_session::OutputMode) -> runic_session::OutputType {
-        runic_session::OutputType::Hir
-    }
-
-    fn write_to<W: runic_session::Writer>(
-        &self,
-        mut writer: W,
-        _mode: runic_session::OutputMode,
-        _session: &runic_session::Session,
-    ) -> anyhow::Result<()> {
-        use crate::Op;
-        let flags = crate::OpPrintingFlags::default();
-        let mut printer = AsmPrinter::new(self.as_operation().context_rc(), &flags);
-        <Self as OpPrinter>::print(self, &mut printer);
-        let document = printer.finish();
-        writer.write_fmt(format_args!("{document}"))
-    }
-}
-
 impl RegionKindInterface for Module {
     #[inline(always)]
     fn kind(&self) -> RegionKind {

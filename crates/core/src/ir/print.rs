@@ -252,8 +252,6 @@ mod type_printer;
 use alloc::{borrow::Cow, format};
 use core::fmt;
 
-use runic_session::Options;
-
 pub use self::{
     asm_printer::AsmPrinter,
     type_printer::{FunctionTypePrinter, TypePrinter},
@@ -268,15 +266,6 @@ pub struct OpPrintingFlags {
     pub print_entry_block_headers: bool,
     /// When `true`, prints trailing location specifiers after all operations, i.e. `loc(..)`
     pub print_source_locations: bool,
-}
-
-impl From<&Options> for OpPrintingFlags {
-    fn from(options: &Options) -> Self {
-        Self {
-            print_entry_block_headers: false,
-            print_source_locations: options.print_hir_source_locations,
-        }
-    }
 }
 
 /// A trait which must be implemented by all attribute types, for printing the attribute in

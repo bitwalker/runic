@@ -26,7 +26,7 @@ mod value;
 pub mod verifier;
 mod visit;
 
-pub use runic_session::diagnostics::{Report, SourceSpan, Span, Spanned};
+pub use runic_diagnostics::{Report, SourceSpan, Span, Spanned};
 pub use runic_symbol as interner;
 
 pub use self::{

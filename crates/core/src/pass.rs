@@ -1,4 +1,6 @@
 mod analysis;
+#[cfg(feature = "std")]
+mod duration;
 mod instrumentation;
 mod manager;
 #[allow(clippy::module_inception)]
@@ -11,6 +13,8 @@ use alloc::{borrow::Cow, string::String};
 
 pub use self::{
     analysis::{Analysis, AnalysisManager, OperationAnalysis, PreservedAnalyses},
+    #[cfg(feature = "std")]
+    duration::HumanDuration,
     instrumentation::{PassInstrumentation, PassInstrumentor, PipelineParentInfo},
     manager::{IRPrintingConfig, Nesting, OpPassManager, PassDisplayMode, PassManager},
     pass::{OperationPass, Pass, PassExecutionState, PostPassStatus},
@@ -71,18 +75,6 @@ pub enum OpFilter {
         dialect: crate::interner::Symbol,
         op: crate::interner::Symbol,
     },
-}
-
-impl From<runic_session::IrFilter> for OpFilter {
-    fn from(value: runic_session::IrFilter) -> Self {
-        use runic_session::IrFilter;
-
-        match value {
-            IrFilter::Any => OpFilter::All,
-            IrFilter::Symbol(pattern) => OpFilter::Symbol(pattern),
-            IrFilter::Op { dialect, op } => OpFilter::Type { dialect, op },
-        }
-    }
 }
 
 impl Print {

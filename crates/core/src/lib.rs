@@ -79,7 +79,7 @@ mod program_point;
 pub mod reserved_names;
 pub mod testing;
 
-pub use runic_session::diagnostics;
+pub use runic_diagnostics as diagnostics;
 
 pub use self::{
     attributes::{

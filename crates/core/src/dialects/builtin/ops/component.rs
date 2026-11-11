@@ -133,31 +133,6 @@ impl Verify<dyn SymbolTable> for Component {
     }
 }
 
-impl runic_session::Emit for Component {
-    /// The raw last segment of the component name, without the quotes of its Miden Assembly
-    /// spelling. It may hold any spellable character, `/` and `:` included.
-    fn name(&self) -> Option<runic_symbol::Symbol> {
-        SymbolPath::segments_of(self.get_name().as_symbol()).last().copied()
-    }
-
-    fn output_type(&self, _mode: runic_session::OutputMode) -> runic_session::OutputType {
-        runic_session::OutputType::Hir
-    }
-
-    fn write_to<W: runic_session::Writer>(
-        &self,
-        mut writer: W,
-        _mode: runic_session::OutputMode,
-        _session: &runic_session::Session,
-    ) -> anyhow::Result<()> {
-        use crate::OpPrinter;
-        let flags = crate::OpPrintingFlags::default();
-        let mut printer = AsmPrinter::new(self.as_operation().context_rc(), &flags);
-        <Self as OpPrinter>::print(self, &mut printer);
-        writer.write_fmt(format_args!("{}", printer.finish()))
-    }
-}
-
 impl RegionKindInterface for Component {
     #[inline(always)]
     fn kind(&self) -> RegionKind {

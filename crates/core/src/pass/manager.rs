@@ -7,7 +7,7 @@ use alloc::{
 };
 
 use compact_str::{CompactString, ToCompactString};
-use runic_session::{Options, diagnostics::Severity};
+use runic_diagnostics::Severity;
 use smallvec::{SmallVec, smallvec};
 
 use super::{
@@ -45,38 +45,6 @@ pub struct IRPrintingConfig {
     pub print_ir_after_modified: bool,
     pub print_ir_filters: SmallVec<[OpFilter; 1]>,
     pub flags: OpPrintingFlags,
-}
-
-impl TryFrom<&Options> for IRPrintingConfig {
-    type Error = Report;
-
-    fn try_from(options: &Options) -> Result<Self, Self::Error> {
-        let pass_filters = options.print_ir_after_pass.clone();
-
-        if options.print_ir_after_all && !pass_filters.is_empty() {
-            return Err(Report::msg(
-                "Flags `print_ir_after_all` and `print_ir_after_pass` are mutually exclusive. \
-                 Please select only one."
-                    .to_string(),
-            ));
-        };
-
-        let print_ir_filters = options
-            .print_ir_filters
-            .iter()
-            .cloned()
-            .map(OpFilter::from)
-            .filter(|filter| !matches!(filter, OpFilter::All))
-            .collect();
-
-        Ok(Self {
-            print_ir_after_all: options.print_ir_after_all,
-            print_ir_after_pass: pass_filters.into(),
-            print_ir_after_modified: options.print_ir_after_modified,
-            print_ir_filters,
-            ..Default::default()
-        })
-    }
 }
 
 /// The main pass manager and pipeline builder

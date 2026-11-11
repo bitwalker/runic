@@ -377,26 +377,10 @@ pub fn derive_rewrite_pass_registration(item: proc_macro::TokenStream) -> proc_m
     let quoted = if params.empty_or_trailing() {
         quote! {
             inventory::submit!(runic_core::pass::RewritePassRegistration::new::<#id>());
-            inventory::submit! {
-                runic_session::CompileFlag::new(<#id as PassInfo>::FLAG)
-                    .long(<#id as PassInfo>::FLAG)
-                    .help(<#id as PassInfo>::SUMMARY)
-                    .help_heading("Rewrites")
-                    .action(runic_session::FlagAction::SetTrue)
-                    .hide(true)
-            }
         }
     } else {
         quote! {
             inventory::submit!(runic_core::pass::RewritePassRegistration::new::<#id<#params>>());
-            inventory::submit! {
-                runic_session::CompileFlag::new(<#id<#params> as PassInfo>::FLAG)
-                    .long(<#id<#params> as PassInfo>::FLAG)
-                    .help(<#id<#params> as PassInfo>::SUMMARY)
-                    .help_heading("Rewrites")
-                    .action(runic_session::FlagAction::SetTrue)
-                    .hide(true)
-            }
         }
     };
 
@@ -412,82 +396,6 @@ pub fn derive_module_rewrite_pass_adapter(
 
     let quoted = quote! {
         inventory::submit!(runic_core::pass::RewritePassRegistration::new::<runic_core::pass::ModuleRewritePassAdapter::<#id>>());
-    };
-
-    proc_macro::TokenStream::from(quoted)
-}
-
-#[proc_macro_derive(ConversionPassRegistration)]
-pub fn derive_conversion_pass_registration(
-    item: proc_macro::TokenStream,
-) -> proc_macro::TokenStream {
-    let derive_input = parse_macro_input!(item as DeriveInput);
-    let id = derive_input.ident.clone();
-    let generics = derive_input.generics;
-    let mut params = syn::punctuated::Punctuated::<_, Token![,]>::new();
-    for gp in generics.params.iter() {
-        match gp {
-            syn::GenericParam::Lifetime(lt) => {
-                if !lt.bounds.empty_or_trailing() {
-                    return syn::Error::new(
-                        gp.span(),
-                        "cannot derive ConversionPassRegistration on a type with lifetime bounds",
-                    )
-                    .into_compile_error()
-                    .into();
-                }
-                params.push(syn::GenericArgument::Lifetime(syn::Lifetime {
-                    apostrophe: lt.span(),
-                    ident: Ident::new("_", lt.span()),
-                }));
-            }
-            syn::GenericParam::Type(ty) => {
-                if !ty.bounds.empty_or_trailing() {
-                    return syn::Error::new(
-                        gp.span(),
-                        "cannot derive ConversionPassRegistration on a generic type with type \
-                         bounds",
-                    )
-                    .into_compile_error()
-                    .into();
-                }
-                let param_ty: syn::Type = syn::parse_quote_spanned! { ty.span() => () };
-                params.push(syn::GenericArgument::Type(param_ty));
-            }
-            syn::GenericParam::Const(_) => {
-                return syn::Error::new(
-                    gp.span(),
-                    "cannot derive ConversionPassRegistration on a generic type with const \
-                     arguments",
-                )
-                .into_compile_error()
-                .into();
-            }
-        }
-    }
-
-    let quoted = if params.empty_or_trailing() {
-        quote! {
-            inventory::submit! {
-                runic_session::CompileFlag::new(<#id as PassInfo>::FLAG)
-                    .long(<#id as PassInfo>::FLAG)
-                    .help(<#id as PassInfo>::SUMMARY)
-                    .help_heading("Conversions")
-                    .action(runic_session::FlagAction::SetTrue)
-                    .hide(true)
-            }
-        }
-    } else {
-        quote! {
-            inventory::submit! {
-                runic_session::CompileFlag::new(<#id<#params> as PassInfo>::FLAG)
-                    .long(<#id<#params> as PassInfo>::FLAG)
-                    .help(<#id<#params> as PassInfo>::SUMMARY)
-                    .help_heading("Conversions")
-                    .action(runic_session::FlagAction::SetTrue)
-                    .hide(true)
-            }
-        }
     };
 
     proc_macro::TokenStream::from(quoted)

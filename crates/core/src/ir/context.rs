@@ -5,7 +5,10 @@ use core::{
 };
 
 use blink_alloc::Blink;
-use runic_session::{Session, SourceManager};
+use runic_diagnostics::{
+    Diagnostic, DiagnosticCollector, DiagnosticSet, PushResult, SourceId, SourceMap,
+    SourceMapError, SourceNamespace,
+};
 use traits::BranchOpInterface;
 
 use super::{traits::BuildableTypeConstraint, *};
@@ -28,7 +31,10 @@ use crate::{
 ///
 /// The [Context] _must_ live as long as any reference to an IR entity may be dereferenced.
 pub struct Context {
-    session: Rc<Session>,
+    /// Copy-on-write so `sources()` is an O(1) snapshot that reports can retain.
+    sources: RefCell<Arc<SourceMap>>,
+    /// Non-fatal diagnostics (warnings, notes) emitted while working on this context.
+    diagnostics: RefCell<DiagnosticCollector>,
     allocator: Rc<Blink>,
     registered_dialects: RefCell<FxHashMap<interner::Symbol, Rc<dyn Dialect>>>,
     constants: RefCell<ConstantPool>,
@@ -40,22 +46,22 @@ pub struct Context {
 
 impl Default for Context {
     fn default() -> Self {
-        use alloc::sync::Arc;
-
-        use runic_session::{InputFile, diagnostics::DefaultSourceManager};
-
-        let options = alloc::boxed::Box::new(runic_session::Options::default())
-            .with_output_types(Default::default(), None);
-        let source_manager = Arc::new(DefaultSourceManager::default());
-        let session =
-            Rc::new(Session::new(InputFile::empty(), options, None, source_manager).unwrap());
-        Self::new(session)
+        Self::new()
     }
 }
 
 impl Context {
-    /// Create a new [Context] for the given [Session]
-    pub fn new(session: Rc<Session>) -> Self {
+    /// Create a context with its own source namespace.
+    pub fn new() -> Self {
+        #[cfg(feature = "std")]
+        let namespace = SourceNamespace::fresh().expect("source namespaces exhausted");
+        #[cfg(not(feature = "std"))]
+        let namespace = SourceNamespace::new(core::num::NonZeroU32::MIN);
+        Self::with_source_namespace(namespace)
+    }
+
+    /// Create a context whose sources live in `namespace`.
+    pub fn with_source_namespace(namespace: SourceNamespace) -> Self {
         use hashbrown::hash_map::Entry;
 
         let mut registered_dialects = FxHashMap::default();
@@ -78,7 +84,8 @@ impl Context {
 
         let allocator = Rc::new(Blink::new());
         Self {
-            session,
+            sources: RefCell::new(Arc::new(SourceMap::new(namespace))),
+            diagnostics: RefCell::new(DiagnosticCollector::new()),
             allocator,
             registered_dialects: RefCell::new(registered_dialects),
             constants: Default::default(),
@@ -89,24 +96,39 @@ impl Context {
         }
     }
 
-    #[inline]
-    pub fn session(&self) -> &Session {
-        &self.session
+    /// A snapshot of every source registered so far.
+    pub fn sources(&self) -> Arc<SourceMap> {
+        self.sources.borrow().clone()
     }
 
-    #[inline]
-    pub fn session_rc(&self) -> Rc<Session> {
-        self.session.clone()
+    /// Register in-memory source text under `name`.
+    pub fn add_source(
+        &self,
+        name: impl Into<alloc::string::String>,
+        text: impl Into<alloc::string::String>,
+    ) -> Result<SourceId, SourceMapError> {
+        Arc::make_mut(&mut self.sources.borrow_mut()).insert(name, text, None)
     }
 
-    #[inline]
-    pub fn source_manager(&self) -> Arc<dyn SourceManager> {
-        self.session.source_manager.clone()
+    /// Read `path` and register it; a path already registered is not re-read.
+    #[cfg(feature = "std")]
+    pub fn load_source_file(
+        &self,
+        path: impl AsRef<std::path::Path>,
+    ) -> std::io::Result<SourceId> {
+        Arc::make_mut(&mut self.sources.borrow_mut()).load_file(path)
     }
 
-    #[inline]
-    pub fn diagnostics(&self) -> &::runic_session::DiagnosticsHandler {
-        &self.session.diagnostics
+    /// Record a non-fatal diagnostic. Errors are returned as `Err(Report)`, not emitted here.
+    pub fn emit(&self, diagnostic: impl Diagnostic + Send + Sync + 'static) -> PushResult {
+        self.diagnostics.borrow_mut().add(diagnostic)
+    }
+
+    /// Drain the diagnostics emitted so far, with this context's sources attached.
+    pub fn take_diagnostics(&self) -> DiagnosticSet {
+        core::mem::take(&mut *self.diagnostics.borrow_mut())
+            .finish()
+            .attach_session_sources(self.sources())
     }
 
     pub fn registered_dialects(

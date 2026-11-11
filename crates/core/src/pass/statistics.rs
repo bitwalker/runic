@@ -309,11 +309,11 @@ numeric_statistic!(usize);
 numeric_statistic!(isize);
 numeric_statistic!(
     #[cfg(feature = "std")]
-    std::time::Duration as runic_session::HumanDuration
+    std::time::Duration as super::HumanDuration
 );
 numeric_statistic!(
     #[cfg(feature = "std")]
-    runic_session::HumanDuration
+    super::HumanDuration
 );
 
 impl StatisticValue for f64 {
