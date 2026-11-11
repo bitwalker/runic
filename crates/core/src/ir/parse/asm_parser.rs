@@ -407,7 +407,7 @@ impl OperationDefinition {
         Self {
             op,
             at,
-            span: SourceSpan::new(at.source_id(), at.start()..end.end()),
+            span: span!(at.source().id(), at.range().start(), end.range().end()),
             result_groups: SmallVec::new_const(),
             symbol_uses: SmallVec::new_const(),
         }

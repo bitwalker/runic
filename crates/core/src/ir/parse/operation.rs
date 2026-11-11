@@ -565,7 +565,7 @@ where
             let start = value_ids[0].loc;
             let end = self.parser.token_stream().current_position();
             return Err(ParserError::MismatchedValueAndTypeLists {
-                span: SourceSpan::new(start.source_id(), start.start()..end),
+                span: span!(start.source().id(), start.range().start(), end),
                 num_values: value_ids.len(),
                 num_types: types.len(),
             });
@@ -669,7 +669,7 @@ where
 
                 // If the next token is a ':', we parse the expected result count.
                 let mut expected_sub_results = 1;
-                let mut end = name_span.end();
+                let mut end = name_span.range().end();
                 if parser.token_stream_mut().next_if_eq(Token::Colon)? {
                     // Check that the next token is an integer.
                     let (count_span, count_str) = parser
@@ -689,11 +689,11 @@ where
                     if count == 0 || count > ValueId::MAX_NAMED_RESULTS {
                         return Err(ParserError::InvalidResultCount { span: count_span });
                     }
-                    end = count_span.end();
+                    end = count_span.range().end();
                     expected_sub_results = count;
                 }
 
-                let span = SourceSpan::new(name_span.source_id(), name_span.start()..end);
+                let span = span!(name_span.source().id(), name_span.range().start(), end);
                 result_ids.push(ResultRecord {
                     loc: span,
                     id: interner::Symbol::intern(name),
@@ -847,7 +847,7 @@ where
             let source_id = self.source_id();
             let at = self.parser.token_stream().current_position();
             Err(ParserError::InvalidEmptySuccessorList {
-                span: SourceSpan::at(source_id, at),
+                span: span!(source_id, at),
             })
         } else {
             Ok(())
@@ -1730,13 +1730,6 @@ where
         self.parser.context_rc()
     }
 
-    fn source_manager<'p>(&'p self) -> &'p dyn SourceManager
-    where
-        'input: 'p,
-    {
-        self.parser.source_manager()
-    }
-
     fn source_id(&self) -> SourceId {
         self.parser.source_id()
     }
@@ -2177,7 +2170,7 @@ where
     let (alias_span, ty) = parser.parse_type()?.into_parts();
 
     // Compute a span covering the whole definition
-    let span = SourceSpan::new(span.source_id(), span.start()..alias_span.end());
+    let span = span!(span.source().id(), span.range().start(), alias_span.range().end());
 
     // Register this alias with the parser state.
     let state = parser.state_mut();

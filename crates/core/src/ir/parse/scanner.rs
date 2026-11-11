@@ -5,7 +5,7 @@ use core::ops::Range;
 
 /// [Scanner] handles the low-level details of reading characters from a raw input stream of bytes.
 /// It decodes those bytes into UTF-8 characters, and associates each character with the
-/// [runic_session::diagnostics::ByteIndex] at which it occurs.
+/// byte offset (`u32`) at which it occurs.
 ///
 /// The [Scanner] is intended to be consumed by a lexer, which handles converting the stream of
 /// characters into a token stream for use by the parser.

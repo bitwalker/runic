@@ -155,14 +155,6 @@ pub trait Parser<'input> {
     }
 
     #[inline]
-    fn source_manager<'p>(&'p self) -> &'p dyn SourceManager
-    where
-        'input: 'p,
-    {
-        &self.context().session().source_manager
-    }
-
-    #[inline]
     fn source_id(&self) -> SourceId {
         self.token_stream().source_id()
     }
@@ -261,7 +253,7 @@ pub trait Parser<'input> {
                         DisplayValues::new(keywords.iter().map(|kw| kw.into_compact_string()))
                     );
                     Err(ParserError::UnexpectedToken {
-                        span: SourceSpan::new(self.source_id(), start..end),
+                        span: span!(self.source_id(), start, end),
                         token: t.to_string(),
                         expected: Some(expected),
                     })
@@ -552,7 +544,7 @@ pub trait Parser<'input> {
                 let start_line = self.parse_decimal_integer::<u32>()?.into_inner();
                 self.parse_colon()?;
                 let start_col = self.parse_decimal_integer::<u32>()?.into_inner();
-                let uri = Uri::new(s);
+                let file = CompactString::from(s);
                 if self
                     .token_stream_mut()
                     .next_if(|tok| matches!(tok, Token::BareIdent("to")))?
@@ -563,7 +555,7 @@ pub trait Parser<'input> {
                     self.parse_colon()?;
                     let end_col = self.parse_decimal_integer::<u32>()?.into_inner();
                     Ok(Location::FileLineColRange {
-                        uri,
+                        file,
                         start_line: LineNumber::new(start_line).unwrap_or_default(),
                         start_column: ColumnNumber::new(start_col).unwrap_or_default(),
                         end_line: LineNumber::new(end_line).unwrap_or_default(),
@@ -571,7 +563,7 @@ pub trait Parser<'input> {
                     })
                 } else {
                     Ok(Location::FileLineCol {
-                        uri,
+                        file,
                         line: LineNumber::new(start_line).unwrap_or_default(),
                         column: ColumnNumber::new(start_col).unwrap_or_default(),
                     })
@@ -638,9 +630,10 @@ pub trait Parser<'input> {
             // The span of the path up to the previous identifier, which starts where the path
             // does unless there is a root, or the span of the first identifier
             let so_far = *span.get_or_insert(component.span);
-            span = Some(SourceSpan::new(
-                so_far.source_id(),
-                root_start.unwrap_or(so_far.start().to_u32())..component.span.end().to_u32(),
+            span = Some(span!(
+                so_far.source().id(),
+                root_start.unwrap_or(so_far.range().start()),
+                component.span.range().end()
             ));
             if self.token_stream_mut().next_if_eq(Token::ColonColon)? {
                 components.push(SymbolNameComponent::Component(component.name));
@@ -731,8 +724,8 @@ pub trait Parser<'input> {
                     _ => None,
                 })?;
             self.parse_rangle()?;
-            let end = self.current_location().end();
-            let span = SourceSpan::new(start.source_id(), start.start()..end);
+            let end = self.current_location().range().end();
+            let span = span!(start.source().id(), start.range().start(), end);
             return Ok(Some(Span::new(
                 span,
                 Type::Ptr(
@@ -762,8 +755,11 @@ pub trait Parser<'input> {
             } else {
                 self.parse_rangle()?;
             }
-            let span =
-                SourceSpan::new(start.source_id(), start.start()..self.current_location().end());
+            let span = span!(
+                start.source().id(),
+                start.range().start(),
+                self.current_location().range().end()
+            );
             return Ok(Some(Span::new(span, Type::from(ArrayType::new(element, length)))));
         }
 
@@ -878,9 +874,9 @@ pub trait Parser<'input> {
                     let start = punctuation_stack.last().map(|(pos, _)| *pos).unwrap_or(end);
                     if punctuation_stack.pop().is_none_or(|(_, open)| open != '<') {
                         return Err(ParserError::UnclosedDelimiter {
-                            span: SourceSpan::at(
-                                start_span.source_id(),
-                                start_span.start().to_u32() + (start as u32),
+                            span: span!(
+                                start_span.source().id(),
+                                start_span.range().start() + (start as u32)
                             ),
                             expected: '>',
                         });
@@ -890,9 +886,9 @@ pub trait Parser<'input> {
                     let start = punctuation_stack.last().map(|(pos, _)| *pos).unwrap_or(end);
                     if punctuation_stack.pop().is_none_or(|(_, open)| open != '(') {
                         return Err(ParserError::UnclosedDelimiter {
-                            span: SourceSpan::at(
-                                start_span.source_id(),
-                                start_span.start().to_u32() + (start as u32),
+                            span: span!(
+                                start_span.source().id(),
+                                start_span.range().start() + (start as u32)
                             ),
                             expected: ')',
                         });
@@ -902,9 +898,9 @@ pub trait Parser<'input> {
                     let start = punctuation_stack.last().map(|(pos, _)| *pos).unwrap_or(end);
                     if punctuation_stack.pop().is_none_or(|(_, open)| open != '[') {
                         return Err(ParserError::UnclosedDelimiter {
-                            span: SourceSpan::at(
-                                start_span.source_id(),
-                                start_span.start().to_u32() + (start as u32),
+                            span: span!(
+                                start_span.source().id(),
+                                start_span.range().start() + (start as u32)
                             ),
                             expected: ']',
                         });
@@ -914,9 +910,9 @@ pub trait Parser<'input> {
                     let start = punctuation_stack.last().map(|(pos, _)| *pos).unwrap_or(end);
                     if punctuation_stack.pop().is_none_or(|(_, open)| open != '{') {
                         return Err(ParserError::UnclosedDelimiter {
-                            span: SourceSpan::at(
-                                start_span.source_id(),
-                                start_span.start().to_u32() + (start as u32),
+                            span: span!(
+                                start_span.source().id(),
+                                start_span.range().start() + (start as u32)
                             ),
                             expected: '}',
                         });
@@ -941,9 +937,9 @@ pub trait Parser<'input> {
                                 Some((_, '"' | '\t' | '\r' | '\n' | '\\')) => continue,
                                 Some((pos, _)) => {
                                     return Err(ParserError::InvalidEscapeSequence {
-                                        span: SourceSpan::at(
-                                            start_span.source_id(),
-                                            start_span.start().to_u32() + (pos as u32),
+                                        span: span!(
+                                            start_span.source().id(),
+                                            start_span.range().start() + (pos as u32)
                                         ),
                                     });
                                 }
@@ -970,7 +966,7 @@ pub trait Parser<'input> {
         // We must now manually advance the tokenizer to consume everything thus far, and
         // return the parsed string
         let body = CompactString::from_utf8(&source.as_bytes()[1..end]).unwrap();
-        let span = SourceSpan::new(start_span.source_id(), start_span.start().to_u32()..end as u32);
+        let span = span!(start_span.source().id(), start_span.range().start(), end as u32);
 
         self.token_stream_mut().reset_to(end + 1);
 
@@ -1009,7 +1005,7 @@ pub trait Parser<'input> {
         self.parse_arrow_type_list(&mut results)?;
 
         let end = self.token_stream().current_span();
-        let span = SourceSpan::new(end.source_id(), start..end.end());
+        let span = span!(end.source().id(), start, end.range().end());
         Ok(Span::new(span, FunctionType::new(cc.unwrap_or_default(), params, results)))
     }
 
@@ -1036,7 +1032,7 @@ pub trait Parser<'input> {
             self.parse_rangle()?;
             let end = self.token_stream().current_span();
 
-            let span = SourceSpan::new(end.source_id(), start..end.end());
+            let span = span!(end.source().id(), start, end.range().end());
             return Ok(Span::new(
                 span,
                 Type::Ptr(Arc::new(PointerType::new_with_address_space(
@@ -1123,7 +1119,7 @@ pub trait Parser<'input> {
             self.parse_rangle()?;
             let end = self.token_stream().current_span();
 
-            let span = SourceSpan::new(end.source_id(), start..end.end());
+            let span = span!(end.source().id(), start, end.range().end());
 
             return Ok(Span::new(span, Type::from(StructType::new_with_repr(repr, fields))));
         }
@@ -1154,7 +1150,7 @@ pub trait Parser<'input> {
         self.parse_type_list(&mut elements)?;
         let end = self.token_stream().current_span();
 
-        let span = SourceSpan::new(end.source_id(), start..end.end());
+        let span = span!(end.source().id(), start, end.range().end());
         Ok(Span::new(span, Type::from(StructType::new(elements))))
     }
 
@@ -1513,7 +1509,7 @@ pub(super) fn parse_extended_attribute<'input, P: Parser<'input>>(
             let attr = attr_parser(parser)?;
             parser.parse_rangle()?;
             let end = parser.token_stream().current_position();
-            let span = SourceSpan::new(name_span.source_id(), name_span.start()..end);
+            let span = span!(name_span.source().id(), name_span.range().start(), end);
             Ok(Span::new(span, attr))
         } else {
             todo!("AttrParser is not yet implemented for '{name}'")

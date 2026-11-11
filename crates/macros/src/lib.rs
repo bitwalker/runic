@@ -5,32 +5,12 @@ extern crate proc_macro;
 mod dialect;
 mod operation;
 mod operations;
-mod spanned;
 #[cfg(test)]
 mod tests;
 
 use heck::ToKebabCase;
 use quote::{ToTokens, format_ident, quote};
-use syn::{Data, DeriveInput, Error, Ident, Token, parse_macro_input, spanned::Spanned};
-
-#[proc_macro_derive(Spanned, attributes(span))]
-pub fn derive_spanned(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    // Parse into syntax tree
-    let derive = parse_macro_input!(input as DeriveInput);
-    // Structure name
-    let name = derive.ident;
-    let result = match derive.data {
-        Data::Struct(data) => spanned::derive_spanned_struct(name, data, derive.generics),
-        Data::Enum(data) => spanned::derive_spanned_enum(name, data, derive.generics),
-        Data::Union(_) => {
-            Err(Error::new(name.span(), "deriving Spanned on unions is not currently supported"))
-        }
-    };
-    match result {
-        Ok(ts) => ts,
-        Err(err) => err.into_compile_error().into(),
-    }
-}
+use syn::{DeriveInput, Ident, Token, parse_macro_input, spanned::Spanned};
 
 #[proc_macro_derive(Dialect, attributes(dialect))]
 pub fn derive_dialect(input: proc_macro::TokenStream) -> proc_macro::TokenStream {

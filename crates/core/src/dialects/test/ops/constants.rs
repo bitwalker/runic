@@ -68,7 +68,11 @@ impl OpParser for Constant {
         let mut imm = imm.try_downcast_attr::<ImmediateAttr>().unwrap();
 
         let (ty_span, ty) = parser.parse_colon_type()?.into_parts();
-        let span = SourceSpan::new(start.source_id(), start.start()..ty_span.end());
+        let span = SourceSpan::session(
+            start.source().id(),
+            crate::diagnostics::TextRange::new(start.range().start(), ty_span.range().end())
+                .expect("valid range"),
+        );
 
         let mut imm_mut = imm.borrow_mut();
         let new_value = match ty {

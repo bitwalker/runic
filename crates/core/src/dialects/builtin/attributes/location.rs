@@ -1,9 +1,9 @@
 use core::fmt;
 
 use crate::{
-    AttrPrinter,
+    AttrPrinter, CompactString,
     derive::DialectAttribute,
-    diagnostics::{ColumnNumber, LineNumber, SourceId, SourceSpan, Uri},
+    diagnostics::{ColumnNumber, LineNumber, SourceId, SourceSpan},
     dialects::builtin::BuiltinDialect,
     print::AsmPrinter,
 };
@@ -36,14 +36,14 @@ pub enum Location {
     /// A reference to the first character of the relevant source code in a file, given as the
     /// line and column where the character can be found.
     FileLineCol {
-        uri: Uri,
+        file: CompactString,
         line: LineNumber,
         column: ColumnNumber,
     },
     /// A reference to a multi-character range comprising the relevant source code in a file, given
     /// as the starting and ending line and column numbers of the selection.
     FileLineColRange {
-        uri: Uri,
+        file: CompactString,
         start_line: LineNumber,
         start_column: ColumnNumber,
         end_line: LineNumber,
@@ -59,118 +59,100 @@ impl AttrPrinter for LocationAttr {
 
 impl Location {
     pub fn from_span(span: SourceSpan, context: &crate::Context) -> Self {
-        use runic_session::path::Path;
+        use crate::diagnostics::SourceProvider;
         if span.is_unknown() {
-            Self::Unknown
-        } else if span.is_synthetic() {
-            Self::Synthetic
-        } else if let Some(index) = Self::is_deferred(span) {
-            Self::Opaque(index)
-        } else if let Ok(file) = context.session().source_manager.get(span.source_id()) {
-            let loc = file.location(span);
-            let uri = context
-                .session()
-                .options
-                .remap_path_prefixes
-                .iter()
-                .filter_map(|remap_prefix| {
-                    Path::new(file.uri().path())
-                        .strip_prefix(remap_prefix.source_prefix())
-                        .ok()
-                        .and_then(|p| match remap_prefix.to.as_deref() {
-                            Some(parent) => {
-                                parent.join(p).to_str().map(alloc::string::ToString::to_string)
-                            }
-                            None => p.to_str().map(alloc::string::ToString::to_string),
-                        })
-                })
-                .max_by_key(|p| p.len())
-                .map(Uri::new)
-                .unwrap_or(loc.uri.clone());
-            if span.is_empty() {
-                Self::FileLineCol {
-                    uri,
-                    line: loc.line,
-                    column: loc.column,
-                }
-            } else {
-                let end = file.location(SourceSpan::at(span.source_id(), span.end()));
-                Self::FileLineColRange {
-                    uri,
-                    start_line: loc.line,
-                    start_column: loc.column,
-                    end_line: end.line,
-                    end_column: end.column,
-                }
-            }
-        } else {
-            Self::Unknown
+            return Self::Unknown;
+        }
+        if span.is_synthetic() {
+            return Self::Synthetic;
+        }
+        if let Some(index) = Self::is_deferred(span) {
+            return Self::Opaque(index);
+        }
+        let sources = context.sources();
+        let id = span.source().id();
+        let (Some(source), Some(start)) =
+            (sources.get(id), sources.line_column(id, span.range().start()))
+        else {
+            return Self::Unknown;
+        };
+        let file = CompactString::from(source.display_name);
+        if span.is_empty() {
+            return Self::FileLineCol {
+                file,
+                line: start.line(),
+                column: start.column(),
+            };
+        }
+        match sources.line_column(id, span.range().end()) {
+            Some(end) => Self::FileLineColRange {
+                file,
+                start_line: start.line(),
+                start_column: start.column(),
+                end_line: end.line(),
+                end_column: end.column(),
+            },
+            None => Self::FileLineCol {
+                file,
+                line: start.line(),
+                column: start.column(),
+            },
         }
     }
 
     pub fn is_deferred(span: SourceSpan) -> Option<usize> {
-        let start = span.start().to_usize();
-        if span.source_id() == SourceId::UNKNOWN && start < u32::MAX as usize {
-            Some(start)
-        } else {
-            None
-        }
+        let start = span.range().start();
+        (span.source().id().is_unknown() && start < u32::MAX).then_some(start as usize)
     }
 
     pub fn deferred(index: u32) -> SourceSpan {
         assert!(index < u32::MAX);
-        SourceSpan::at(SourceId::UNKNOWN, index)
+        SourceSpan::session(
+            SourceId::UNKNOWN,
+            crate::diagnostics::TextRange::new(index, index).expect("valid range"),
+        )
     }
 
-    #[cfg(feature = "std")]
     pub fn try_into_span(&self, context: &crate::Context) -> Option<SourceSpan> {
-        use crate::diagnostics::SourceManagerExt;
+        use crate::diagnostics::{LineColumn, TextRange};
+        let resolve = |file: &str| {
+            let sources = context.sources();
+            if let Some(id) = sources.find_by_name(file) {
+                return Some(id);
+            }
+            #[cfg(feature = "std")]
+            {
+                context.load_source_file(file).ok()
+            }
+            #[cfg(not(feature = "std"))]
+            {
+                None
+            }
+        };
         match self {
             Self::Unknown => Some(SourceSpan::UNKNOWN),
             Self::Synthetic => Some(SourceSpan::SYNTHETIC),
             Self::Opaque(index) => Some(Self::deferred((*index).try_into().unwrap())),
-            Self::FileLineCol { uri, line, column } => {
-                let path = std::path::Path::new(uri.path());
-                let file = context.session().source_manager.load_file(path).ok()?;
-                file.line_column_to_span(*line, *column)
+            Self::FileLineCol { file, line, column } => {
+                let id = resolve(file)?;
+                let at =
+                    context.sources().offset_of(id, LineColumn::new_unchecked(*line, *column))?;
+                Some(SourceSpan::session(id, TextRange::new(at, at).ok()?))
             }
             Self::FileLineColRange {
-                uri,
+                file,
                 start_line,
                 start_column,
                 end_line,
                 end_column,
             } => {
-                let path = std::path::Path::new(uri.path());
-                let file = context.session().source_manager.load_file(path).ok()?;
-                let start = file.line_column_to_span(*start_line, *start_column)?;
-                let end = file.line_column_to_span(*end_line, *end_column)?;
-                Some(SourceSpan::new(file.id(), start.start()..end.end()))
-            }
-        }
-    }
-
-    #[cfg(not(feature = "std"))]
-    pub fn try_into_span(&self, context: &crate::Context) -> Option<SourceSpan> {
-        match self {
-            Self::Unknown => Some(SourceSpan::UNKNOWN),
-            Self::Synthetic => Some(SourceSpan::SYNTHETIC),
-            Self::Opaque(index) => Some(Self::deferred((*index).try_into().unwrap())),
-            Self::FileLineCol { uri, line, column } => {
-                let file = context.session().source_manager.get_by_uri(uri)?;
-                file.line_column_to_span(*line, *column)
-            }
-            Self::FileLineColRange {
-                uri,
-                start_line,
-                start_column,
-                end_line,
-                end_column,
-            } => {
-                let file = context.session().source_manager.get_by_uri(uri)?;
-                let start = file.line_column_to_span(*start_line, *start_column)?;
-                let end = file.line_column_to_span(*end_line, *end_column)?;
-                Some(SourceSpan::new(file.id(), start.start()..end.end()))
+                let id = resolve(file)?;
+                let sources = context.sources();
+                let start =
+                    sources.offset_of(id, LineColumn::new_unchecked(*start_line, *start_column))?;
+                let end =
+                    sources.offset_of(id, LineColumn::new_unchecked(*end_line, *end_column))?;
+                Some(SourceSpan::session(id, TextRange::new(start, end).ok()?))
             }
         }
     }
@@ -182,17 +164,17 @@ impl fmt::Display for Location {
             Self::Unknown => f.write_str("unknown"),
             Self::Synthetic => f.write_str("synthetic"),
             Self::Opaque(id) => write!(f, "{id}"),
-            Self::FileLineCol { uri, line, column } => {
-                write!(f, "{uri}:{line}:{column}")
+            Self::FileLineCol { file, line, column } => {
+                write!(f, "{file}:{line}:{column}")
             }
             Self::FileLineColRange {
-                uri,
+                file,
                 start_line,
                 start_column,
                 end_line,
                 end_column,
             } => {
-                write!(f, "{uri}:{start_line}:{start_column} to {end_line}:{end_column}")
+                write!(f, "{file}:{start_line}:{start_column} to {end_line}:{end_column}")
             }
         }
     }

@@ -9,9 +9,7 @@ use core::{num::IntErrorKind, ops::Range};
 use runic_session::diagnostics::Span;
 
 use super::{ParseResult, ParserError, Scanner, Token};
-use crate::diagnostics::{
-    ByteIndex, ByteOffset, LabeledSpan, Report, Severity, SourceId, SourceSpan, miette::diagnostic,
-};
+use crate::diagnostics::{LabeledSpan, Report, Severity, SourceId, SourceSpan, miette::diagnostic};
 
 /// The value produced by the [Lexer] when iterated
 ///
@@ -232,8 +230,8 @@ impl<'input> Lexer<'input> {
 
     /// Get the current position of the lexer in the source file
     #[inline]
-    pub fn current_position(&self) -> ByteIndex {
-        ByteIndex::new(self.token_end as u32)
+    pub fn current_position(&self) -> u32 {
+        self.token_end as u32
     }
 
     /// Get the span for the current token in `Source`.
@@ -241,7 +239,7 @@ impl<'input> Lexer<'input> {
     fn span(&self) -> SourceSpan {
         assert!(self.token_start <= self.token_end, "invalid range");
         assert!(self.token_end <= u32::MAX as usize, "file too large");
-        SourceSpan::new(self.source_id, (self.token_start as u32)..(self.token_end as u32))
+        span!(self.source_id, self.token_start as u32, self.token_end as u32)
     }
 
     #[inline]
@@ -253,7 +251,8 @@ impl<'input> Lexer<'input> {
     /// Get a string slice of the current token.
     #[inline]
     fn slice(&self) -> &'input str {
-        self.slice_span(self.span())
+        let range = self.span().range();
+        self.slice_span(range.start()..range.end())
     }
 
     #[inline]
@@ -366,7 +365,7 @@ impl<'input> Lexer<'input> {
             'A'..='Z' => self.lex_identifier(),
             '_' => self.lex_identifier(),
             invalid => Err(ParserError::InvalidCharacter {
-                span: SourceSpan::at(self.source_id, self.token_start as u32),
+                span: span!(self.source_id, self.token_start as u32),
                 character: invalid,
             }),
         }
@@ -487,7 +486,7 @@ impl<'input> Lexer<'input> {
             match self.read() {
                 '\0' | '\n' => {
                     break Err(ParserError::UnclosedQuote {
-                        span: SourceSpan::at(self.source_id, self.span().start()),
+                        span: span!(self.source_id, self.span().range().start()),
                     });
                 }
                 '\\' => {
@@ -503,7 +502,9 @@ impl<'input> Lexer<'input> {
                 '"' => {
                     let span = self.span();
                     self.skip();
-                    break Ok(Token::String(self.slice_span(span)));
+                    break Ok(Token::String(
+                        self.slice_span(span.range().start()..span.range().end()),
+                    ));
                 }
                 c if c.is_alphanumeric() || c.is_ascii_graphic() => {
                     self.skip();
@@ -570,11 +571,10 @@ impl<'input> Lexer<'input> {
         }
 
         let span = self.span();
-        let start = span.start();
-        let end = span.end();
-        let digit_start = start.to_u32() + 2;
-        let span = SourceSpan::new(span.source_id(), start..end);
-        Ok(Token::Hex(self.slice_span(digit_start..end.to_u32())))
+        let start = span.range().start();
+        let end = span.range().end();
+        let digit_start = start + 2;
+        Ok(Token::Hex(self.slice_span(digit_start..end)))
     }
 
     fn lex_bin(&mut self) -> Result<Token<'input>, ParserError> {
@@ -591,11 +591,10 @@ impl<'input> Lexer<'input> {
         }
 
         let span = self.span();
-        let start = span.start();
-        let digit_start = start.to_u32() + 2;
-        let end = span.end();
-        let span = SourceSpan::new(span.source_id(), start..end);
-        Ok(Token::Binary(self.slice_span(digit_start..end.to_u32())))
+        let start = span.range().start();
+        let digit_start = start + 2;
+        let end = span.range().end();
+        Ok(Token::Binary(self.slice_span(digit_start..end)))
     }
 }
 
@@ -604,7 +603,7 @@ impl<'input> Lexer<'input> {
 pub struct TokenStream<'input> {
     lexer: Lexer<'input>,
     upcoming: Option<Lexed<'input>>,
-    current_position: ByteIndex,
+    current_position: u32,
 }
 
 impl<'input> TokenStream<'input> {
@@ -636,14 +635,14 @@ impl<'input> TokenStream<'input> {
     /// Get the rest of the source code from the current position of the lexer
     #[inline]
     pub fn remaining_source(&self) -> &str {
-        self.lexer.scanner.slice_from(self.current_position.to_usize())
+        self.lexer.scanner.slice_from(self.current_position as usize)
     }
 
     /// Get the byte position of the underlying lexer.
     ///
     /// This position corresponds to the position the lexer was in after producing the last token.
     #[inline]
-    pub const fn current_position(&self) -> ByteIndex {
+    pub const fn current_position(&self) -> u32 {
         self.current_position
     }
 
@@ -652,7 +651,7 @@ impl<'input> TokenStream<'input> {
     /// This basically wraps [`Self::current_position`] in a [SourceSpan]
     #[inline]
     pub fn current_span(&self) -> SourceSpan {
-        SourceSpan::at(self.lexer.source_id, self.current_position)
+        span!(self.lexer.source_id, self.current_position)
     }
 
     /// Peek at the next token in the stream
@@ -751,7 +750,7 @@ impl<'input> TokenStream<'input> {
             Some(spanned) if spanned == expected => Ok(()),
             Some(spanned) => Err(ParserError::UnexpectedToken {
                 token: spanned.to_string(),
-                span: span!(spanned.span().source_id(), spanned.span().start()),
+                span: span!(spanned.span().source().id(), spanned.span().range().start()),
                 expected: Some(expected.to_string()),
             }),
             None => Err(ParserError::UnexpectedEof {

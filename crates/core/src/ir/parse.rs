@@ -2,11 +2,15 @@
 
 macro_rules! span {
     ($source_id:expr, $at:expr) => {
-        SourceSpan::at($source_id, $at)
+        span!($source_id, $at, $at)
     };
 
     ($source_id:expr, $start:expr, $end:expr) => {
-        SourceSpan::new($source_id, ($start)..($end))
+        SourceSpan::session(
+            $source_id,
+            crate::diagnostics::TextRange::new($start, $end)
+                .expect("lexer produced an inverted range"),
+        )
     };
 }
 
@@ -54,7 +58,6 @@ use runic_session::{
         miette::{self, diagnostic},
     },
 };
-use crate::{AddressSpace, PointerType};
 
 use self::{
     asm_parser::AsmParserState,
@@ -76,8 +79,8 @@ use super::{
     UnsafeIntrusiveEntityRef, ValueId, ValueRef, interner::Symbol, operation::ParseAssemblyFn,
 };
 use crate::{
-    Attribute, AttributeRef, Builder, CallableOpInterface, CompactString, FunctionType, FxHashMap,
-    NamedAttribute, ProgramPoint, SmallVec, ToCompactString,
+    AddressSpace, Attribute, AttributeRef, Builder, CallableOpInterface, CompactString,
+    FunctionType, FxHashMap, NamedAttribute, PointerType, ProgramPoint, SmallVec, ToCompactString,
     adt::{SmallOrdMap, smallmap::SmallMap},
     dialects::builtin::{
         WorldBuilder, WorldRef,

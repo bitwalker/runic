@@ -474,7 +474,10 @@ impl OpParser for Ret {
         parser.parse_colon_type_list(&mut types)?;
 
         let end = parser.token_stream().current_span();
-        let span = SourceSpan::new(end.source_id(), start..end.end());
+        let span = SourceSpan::session(
+            end.source().id(),
+            crate::diagnostics::TextRange::new(start, end.range().end()).expect("valid range"),
+        );
 
         let mut operands = SmallVec::default();
         parser.resolve_operands(span, &args, &types, &mut operands)?;
@@ -521,7 +524,10 @@ impl OpParser for RetImm {
         let imm = parser.parse_integer::<Immediate>()?;
         let ty = parser.parse_colon_type()?;
         let end = parser.token_stream().current_span();
-        let span = SourceSpan::new(end.source_id(), start..end.end());
+        let span = SourceSpan::session(
+            end.source().id(),
+            crate::diagnostics::TextRange::new(start, end.range().end()).expect("valid range"),
+        );
 
         // Re-type the parsed literal to the declared type: integer parsing infers the narrowest
         // representation, which would otherwise survive into the attribute and reprint with the
