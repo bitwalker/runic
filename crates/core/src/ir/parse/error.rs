@@ -1,7 +1,5 @@
 use alloc::{
-    format,
     string::{String, ToString},
-    vec,
     vec::Vec,
 };
 
