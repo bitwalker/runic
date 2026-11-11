@@ -1278,6 +1278,31 @@ fn a_syntax_error_is_one_error_diagnostic_with_sources_attached() {
     assert!(rendered.contains("bad.runic"), "rendered without its source: {rendered}");
 }
 
+/// Resolving `loc("file":l:c)` loads `file` into the context while parsing, so the sources
+/// attached to the outcome must be taken after parsing, or a diagnostic labelled with that span
+/// renders without its source.
+#[cfg(feature = "std")]
+#[test]
+fn an_outcome_renders_sources_loaded_while_parsing() {
+    let context = Rc::new(Context::default());
+    let origin = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
+    assert!(context.sources().find_by_name(origin).is_none());
+    let source = format!(
+        "builtin.module public @lib {{\n    builtin.function public extern(\"C\") @main() \
+         loc(\"{origin}\":1:1);\n}};"
+    );
+    let outcome = parse::parse_any(ParserConfig::new(context.clone()), "origin.runic", source);
+    assert!(context.sources().find_by_name(origin).is_some(), "the location loaded its file");
+
+    let report = outcome.into_result().expect_err("a region-less function fails verification");
+    let rendered = alloc::format!("{}", report.display());
+    assert!(!rendered.contains("missing source"), "rendered without its source: {rendered}");
+    assert!(
+        rendered.contains("[package]"),
+        "rendered without the located snippet: {rendered}"
+    );
+}
+
 #[test]
 fn a_warning_does_not_fail_the_parse() {
     use super::{DefaultParser, Parser, ParserState, Scanner, TokenStream};

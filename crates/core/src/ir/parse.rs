@@ -219,7 +219,8 @@ pub fn parse_file_generic(
 /// points have no callers outside this module's tests, and the one test covering them is
 /// `#[ignore]`d; revive the generic format and this needs fixing first.
 fn parse_source_generic(config: ParserConfig, source_id: SourceId) -> Outcome<WorldRef> {
-    let sources = config.context.sources();
+    let context = config.context.clone();
+    let sources = context.sources();
     let Some(source) = sources.get(source_id).and_then(|source| source.text) else {
         return Outcome::from_report(Report::msg("source is not registered with this context"));
     };
@@ -238,9 +239,21 @@ fn parse_source_generic(config: ParserConfig, source_id: SourceId) -> Outcome<Wo
             Err(())
         }
     };
+    parse_outcome(&context, result, diagnostics)
+}
+
+/// Build the [Outcome] of a parse, attaching the context's sources as they are *now*.
+///
+/// The snapshot taken to read the input is not enough: resolving `loc("file":line:col)` loads
+/// `file` into the context mid-parse, and diagnostics labelled with that span need it to render.
+fn parse_outcome<T>(
+    context: &Context,
+    result: Result<T, ()>,
+    diagnostics: DiagnosticCollector,
+) -> Outcome<T> {
     Outcome {
         result,
-        diagnostics: diagnostics.finish().attach_session_sources(sources.clone()),
+        diagnostics: diagnostics.finish().attach_session_sources(context.sources()),
     }
 }
 
@@ -369,7 +382,8 @@ fn parse_anchored_source(
 ) -> Outcome<OperationRef> {
     use crate::{BuilderExt, dialects::builtin::World};
 
-    let sources = config.context.sources();
+    let context = config.context.clone();
+    let sources = context.sources();
     let Some(source) = sources.get(source_id).and_then(|source| source.text) else {
         return Outcome::from_report(Report::msg("source is not registered with this context"));
     };
@@ -383,10 +397,7 @@ fn parse_anchored_source(
         Err(report) => {
             let mut diagnostics = core::mem::take(&mut parser.state_mut().diagnostics);
             diagnostics.add_report(report);
-            return Outcome {
-                result: Err(()),
-                diagnostics: diagnostics.finish().attach_session_sources(sources.clone()),
-            };
+            return parse_outcome(&context, Err(()), diagnostics);
         }
     };
     let anchor = world.as_operation_ref();
@@ -453,10 +464,7 @@ fn parse_anchored_source(
             Err(())
         }
     };
-    Outcome {
-        result,
-        diagnostics: diagnostics.finish().attach_session_sources(sources.clone()),
-    }
+    parse_outcome(&context, result, diagnostics)
 }
 
 /// This trait is implemented by parsers which can parse operations from IR assembly, and provides
