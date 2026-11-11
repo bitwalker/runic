@@ -236,7 +236,7 @@ impl SymbolPath {
     /// Returns the raw segment the name of a module spells (`my-mod` for
     /// `"my-mod"`), or `name` itself when it has several segments, which no module
     /// name has.
-    pub(crate) fn raw_segment(name: SymbolName) -> SymbolName {
+    pub fn raw_segment(name: SymbolName) -> SymbolName {
         match Self::segments_of(name).as_slice() {
             [segment] => *segment,
             _ => name,
