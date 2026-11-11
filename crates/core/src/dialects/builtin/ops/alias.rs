@@ -172,9 +172,7 @@ impl OpPrinter for FunctionAlias {
 }
 
 impl crate::Verify<dyn CallableSymbol> for FunctionAlias {
-    fn verify(&self, context: &crate::Context) -> Result<(), crate::Report> {
-        use runic_session::diagnostics::Severity;
-
+    fn verify(&self, _context: &crate::Context) -> Result<(), crate::Report> {
         use crate::Spanned;
 
         let span = self.as_operation().span();
@@ -184,15 +182,15 @@ impl crate::Verify<dyn CallableSymbol> for FunctionAlias {
             .expect("function aliases are symbols")
             .resolve_callable()
             .map_err(|err| {
-                context
-                    .diagnostics()
-                    .diagnostic(Severity::Error)
-                    .with_message(format!(
+                crate::diagnostics::report!(
+                    message: (format!(
                         "invalid builtin.function_alias '{}': {err}",
                         self.get_name().as_str()
-                    ))
-                    .with_primary_label(span, "cannot resolve this alias to a callable")
-                    .into_report()
+                    )),
+                    labels: [
+                        primary(span, "cannot resolve this alias to a callable"),
+                    ],
+                )
             })?;
 
         // Private symbols are only accessible from their defining symbol table.
@@ -202,43 +200,43 @@ impl crate::Verify<dyn CallableSymbol> for FunctionAlias {
             && target.as_symbol_operation().nearest_symbol_table()
                 != self.as_operation().nearest_symbol_table()
         {
-            return Err(context
-                .diagnostics()
-                .diagnostic(Severity::Error)
-                .with_message(format!(
+            return Err(crate::diagnostics::report!(
+                message: (format!(
                     "invalid builtin.function_alias '{}': target '{}' is private to another \
                      symbol table",
                     self.get_name().as_str(),
                     target.path()
-                ))
-                .with_primary_label(span, "cannot alias a private symbol in another symbol table")
-                .with_secondary_label(
-                    target.as_symbol_operation().span(),
-                    "the private target is defined here",
-                )
-                .into_report());
+                )),
+                labels: [
+                    primary(span, "cannot alias a private symbol in another symbol table"),
+                    context(
+                        target.as_symbol_operation().span(),
+                        "the private target is defined here"
+                    ),
+                ],
+            ));
         }
 
         // A non-private alias must not expose a private canonical callable.
         let canonical = callee.target().as_symbol_ref();
         let canonical = canonical.borrow();
         if !self.visibility().is_private() && canonical.is_private() {
-            return Err(context
-                .diagnostics()
-                .diagnostic(Severity::Error)
-                .with_message(format!(
+            return Err(crate::diagnostics::report!(
+                message: (format!(
                     "invalid builtin.function_alias '{}': {} alias cannot expose private target \
                      '{}'",
                     self.get_name().as_str(),
                     self.visibility().as_str(),
                     canonical.path()
-                ))
-                .with_primary_label(span, "this alias exposes a private callable")
-                .with_secondary_label(
-                    canonical.as_symbol_operation().span(),
-                    "the private canonical target is defined here",
-                )
-                .into_report());
+                )),
+                labels: [
+                    primary(span, "this alias exposes a private callable"),
+                    context(
+                        canonical.as_symbol_operation().span(),
+                        "the private canonical target is defined here"
+                    ),
+                ],
+            ));
         }
         Ok(())
     }

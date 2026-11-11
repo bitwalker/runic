@@ -7,7 +7,6 @@ use alloc::{
 };
 
 use compact_str::{CompactString, ToCompactString};
-use runic_diagnostics::Severity;
 use smallvec::{SmallVec, smallvec};
 
 use super::{
@@ -98,16 +97,15 @@ impl PassManager {
         if let Some(anchor) = anchor
             && anchor != &op_name
         {
-            return Err(self
-                .context
-                .diagnostics()
-                .diagnostic(Severity::Error)
-                .with_message("failed to construct pass manager")
-                .with_primary_label(
-                    op.borrow().span(),
-                    format!("can't run '{anchor}' pass manager on '{op_name}'"),
-                )
-                .into_report());
+            return Err(crate::diagnostics::report!(
+                message: "failed to construct pass manager",
+                labels: [
+                    primary(
+                        op.borrow().span(),
+                        format!("can't run '{anchor}' pass manager on '{op_name}'")
+                    ),
+                ],
+            ));
         }
 
         // Register all dialects for the current pipeline.
@@ -499,16 +497,13 @@ impl OpPassManager {
             Some(name) => {
                 for pass in self.passes.iter() {
                     if !pass.can_schedule_on(name) {
-                        return Err(self
-                            .context
-                            .diagnostics()
-                            .diagnostic(Severity::Error)
-                            .with_message(format!(
+                        return Err(crate::diagnostics::report!(
+                            message: (format!(
                                 "unable to schedule pass '{}' on pass manager intended for \
                                  '{name}'",
                                 pass.name()
-                            ))
-                            .into_report());
+                            )),
+                        ));
                     }
                 }
 
@@ -919,24 +914,24 @@ impl OpToOpPassAdaptor {
             (op.name(), op.span(), op.context_rc())
         };
         if !op_name.implements::<dyn IsolatedFromAbove>() {
-            return Err(context
-                .diagnostics()
-                .diagnostic(Severity::Error)
-                .with_message("failed to execute pass")
-                .with_primary_label(
-                    span,
-                    "trying to schedule a pass on an operation which does not implement \
-                     `IsolatedFromAbove`",
-                )
-                .into_report());
+            return Err(crate::diagnostics::report!(
+                message: "failed to execute pass",
+                labels: [
+                    primary(
+                        span,
+                        "trying to schedule a pass on an operation which does not implement \
+                         `IsolatedFromAbove`"
+                    ),
+                ],
+            ));
         }
         if !pass.can_schedule_on(&op_name) {
-            return Err(context
-                .diagnostics()
-                .diagnostic(Severity::Error)
-                .with_message("failed to execute pass")
-                .with_primary_label(span, "trying to schedule a pass on an unsupported operation")
-                .into_report());
+            return Err(crate::diagnostics::report!(
+                message: "failed to execute pass",
+                labels: [
+                    primary(span, "trying to schedule a pass on an unsupported operation"),
+                ],
+            ));
         }
 
         // Initialize the pass state with a callback for the pass to dynamically execute a pipeline
@@ -951,19 +946,18 @@ impl OpToOpPassAdaptor {
             move |pipeline: &mut OpPassManager, root: OperationRef| -> Result<(), Report> {
                 let pi = callback_analysis_manager.pass_instrumentor();
                 let op = callback_op.borrow();
-                let context = op.context_rc();
                 let root_op = root.borrow();
                 if !root_op.is_ancestor_of(&op) {
-                    return Err(context
-                        .diagnostics()
-                        .diagnostic(Severity::Error)
-                        .with_message("failed to execute pass")
-                        .with_primary_label(
-                            root_op.span(),
-                            "trying to schedule a dynamic pass pipeline on an operation that \
-                             isn't nested under the current operation the pass is processing",
-                        )
-                        .into_report());
+                    return Err(crate::diagnostics::report!(
+                        message: "failed to execute pass",
+                        labels: [
+                            primary(
+                                root_op.span(),
+                                "trying to schedule a dynamic pass pipeline on an operation that \
+                                 isn't nested under the current operation the pass is processing"
+                            ),
+                        ],
+                    ));
                 }
                 assert!(pipeline.can_schedule_on(&root_op.name()));
                 // Before running, finalize the passes held by the pipeline

@@ -1,7 +1,6 @@
 use alloc::{format, string::ToString};
 use core::fmt;
 
-use runic_session::diagnostics::Severity;
 use crate::PointerType;
 
 use crate::{
@@ -170,7 +169,7 @@ pub fn operation_result_value_range_refinement(
 #[operation_trait]
 pub trait SameTypeOperands {
     #[verifier]
-    fn operands_are_the_same_type(op: &Operation, context: &Context) -> Result<(), Report> {
+    fn operands_are_the_same_type(op: &Operation, _context: &Context) -> Result<(), Report> {
         let mut operands = op.operands().iter();
         // If there are no operands, then it is trivially true that operands agree on type
         let Some(first_operand) = operands.next() else {
@@ -187,19 +186,17 @@ pub trait SameTypeOperands {
             let value = operand.value();
             let value_ty = value.ty();
             if value_ty != &expected_ty {
-                return Err(context
-                    .session()
-                    .diagnostics
-                    .diagnostic(Severity::Error)
-                    .with_message(::alloc::format!("invalid operation {}", op.name()))
-                    .with_primary_label(
-                        op.span,
-                        "this operation expects all operands to be of the same type",
-                    )
-                    .with_secondary_label(set_by, "inferred the expected type from this value")
-                    .with_secondary_label(value.span(), "which differs from this value's type")
-                    .with_help(format!("expected '{expected_ty}', got '{value_ty}'"))
-                    .into_report());
+                return Err(crate::diagnostics::report!(
+                    message: (::alloc::format!("invalid operation {}", op.name())),
+                    labels: [
+                        primary(op.span, "this operation expects all operands to be of the same type"),
+                        context(set_by, "inferred the expected type from this value"),
+                        context(value.span(), "which differs from this value's type"),
+                    ],
+                    notes: [
+                        help(format!("expected '{expected_ty}', got '{value_ty}'")),
+                    ],
+                ));
             }
         }
 
@@ -228,7 +225,7 @@ pub trait SameOperandsAndResultType: SameTypeOperands {
     #[verifier]
     fn operands_and_result_are_the_same_type(
         op: &Operation,
-        context: &Context,
+        _context: &Context,
     ) -> Result<(), Report> {
         let mut operands = op.operands().iter();
         // If there are no operands, then it is trivially true that operands and results agree
@@ -244,18 +241,17 @@ pub trait SameOperandsAndResultType: SameTypeOperands {
 
         let results = op.results();
         if results.is_empty() {
-            return Err(context
-                .session()
-                .diagnostics
-                .diagnostic(Severity::Error)
-                .with_message(format!("invalid operation result {}", op.name()))
-                .with_primary_label(
-                    op.span,
-                    "this operation has operands, so it requires at least one result of the same \
-                     type",
-                )
-                .with_secondary_label(set_by, "inferred the expected type from this value")
-                .into_report());
+            return Err(crate::diagnostics::report!(
+                message: (format!("invalid operation result {}", op.name())),
+                labels: [
+                    primary(
+                        op.span,
+                        "this operation has operands, so it requires at least one result of the \
+                         same type"
+                    ),
+                    context(set_by, "inferred the expected type from this value"),
+                ],
+            ));
         }
 
         for result in results.iter() {
@@ -264,20 +260,21 @@ pub trait SameOperandsAndResultType: SameTypeOperands {
             let result_ty = result.ty();
 
             if result_ty != &expected_ty {
-                return Err(context
-                    .session()
-                    .diagnostics
-                    .diagnostic(Severity::Error)
-                    .with_message(::alloc::format!("invalid operation result {}", op.name()))
-                    .with_primary_label(
-                        op.span,
-                        "this operation expects the operands and the results to be of the same \
-                         type",
-                    )
-                    .with_secondary_label(set_by, "inferred the expected type from this value")
-                    .with_secondary_label(value.span(), "which differs from this value's type")
-                    .with_help(format!("expected '{expected_ty}', got '{result_ty}'"))
-                    .into_report());
+                return Err(crate::diagnostics::report!(
+                    message: (::alloc::format!("invalid operation result {}", op.name())),
+                    labels: [
+                        primary(
+                            op.span,
+                            "this operation expects the operands and the results to be of the \
+                             same type"
+                        ),
+                        context(set_by, "inferred the expected type from this value"),
+                        context(value.span(), "which differs from this value's type"),
+                    ],
+                    notes: [
+                        help(format!("expected '{expected_ty}', got '{result_ty}'")),
+                    ],
+                ));
             }
         }
 
@@ -292,7 +289,7 @@ pub trait Variadic<T: TypeConstraint> {
     #[verifier]
     fn all_operands_match_constraint<T: TypeConstraint>(
         op: &Operation,
-        context: &Context,
+        _context: &Context,
     ) -> Result<(), Report> {
         for operand in op.operands().iter() {
             let operand = operand.borrow();
@@ -303,15 +300,15 @@ pub trait Variadic<T: TypeConstraint> {
                 continue;
             } else {
                 let description = constraint.description();
-                return Err(context
-                    .diagnostics()
-                    .diagnostic(Severity::Error)
-                    .with_message("invalid operand")
-                    .with_primary_label(
-                        value.span(),
-                        format!("expected operand type to be {description}, but got {ty}"),
-                    )
-                    .into_report());
+                return Err(crate::diagnostics::report!(
+                    message: "invalid operand",
+                    labels: [
+                        primary(
+                            value.span(),
+                            format!("expected operand type to be {description}, but got {ty}")
+                        ),
+                    ],
+                ));
             }
         }
 

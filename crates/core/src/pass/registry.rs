@@ -1,7 +1,6 @@
 use alloc::{boxed::Box, collections::BTreeMap, format};
 use core::any::TypeId;
 
-use runic_session::diagnostics::DiagnosticsHandler;
 use runic_symbol::sync::{LazyLock, RwLock};
 
 use super::*;
@@ -116,7 +115,7 @@ inventory::collect!(PassPipelineInfo);
 
 /// A type alias for the closure type for registering a pass with a pass manager
 pub type PassRegistryFunction =
-    fn(&mut OpPassManager, &str, &DiagnosticsHandler) -> Result<(), Report>;
+    fn(&mut OpPassManager, &str) -> Result<(), Report>;
 
 /// A type alias for the closure type used for type-erased pass constructors
 pub type PassAllocatorFunction = fn() -> Box<dyn OperationPass>;
@@ -139,7 +138,6 @@ pub trait RegistryEntry {
         &self,
         pm: &mut OpPassManager,
         options: &str,
-        diagnostics: &DiagnosticsHandler,
     ) -> Result<(), Report>;
 }
 
@@ -161,9 +159,8 @@ impl RegistryEntry for PassRegistryEntry {
         &self,
         pm: &mut OpPassManager,
         options: &str,
-        diagnostics: &DiagnosticsHandler,
     ) -> Result<(), Report> {
-        default_registration_factory(self.builder)(pm, options, diagnostics)
+        default_registration_factory(self.builder)(pm, options)
     }
 
     #[inline(always)]
@@ -211,9 +208,8 @@ impl RegistryEntry for PassPipelineInfo {
         &self,
         pm: &mut OpPassManager,
         options: &str,
-        diagnostics: &DiagnosticsHandler,
     ) -> Result<(), Report> {
-        self.0.add_to_pipeline(pm, options, diagnostics)
+        self.0.add_to_pipeline(pm, options)
     }
 }
 
@@ -264,9 +260,8 @@ impl RegistryEntry for PassInfo {
         &self,
         pm: &mut OpPassManager,
         options: &str,
-        diagnostics: &DiagnosticsHandler,
     ) -> Result<(), Report> {
-        self.0.add_to_pipeline(pm, options, diagnostics)
+        self.0.add_to_pipeline(pm, options)
     }
 }
 
@@ -348,10 +343,7 @@ pub fn register_pass(builder: PassAllocatorFunction) {
 pub fn default_registration<P: Pass + Default>(
     pm: &mut OpPassManager,
     options: &str,
-    diagnostics: &DiagnosticsHandler,
 ) -> Result<(), Report> {
-    use runic_session::diagnostics::Severity;
-
     let mut pass = Box::<P>::default() as Box<dyn OperationPass>;
     let result = pass.initialize_options(options);
     let pm_op_name = pm.name();
@@ -361,16 +353,15 @@ pub fn default_registration<P: Pass + Default>(
         && (pass_op_name.is_some_and(|p| pm_op_name.is_none_or(|p2| p != p2))
             || (pm_op_name.is_some_and(|p| pass_op_name.is_some_and(|p2| p != p2))))
     {
-        return Err(diagnostics
-            .diagnostic(Severity::Error)
-            .with_message(format!(
+        return Err(crate::diagnostics::report!(
+            message: (format!(
                 "registration error for pass '{}': can't add pass restricted to '{}' on a pass \
                  manager intended to run on '{}', did you intend to nest?",
                 pass.name(),
                 crate::formatter::DisplayOptional(pass_op_name.as_ref()),
                 crate::formatter::DisplayOptional(pm_op_name),
-            ))
-            .into_report());
+            )),
+        ));
     }
     pm.add_pass(pass);
     result
@@ -381,13 +372,8 @@ pub fn default_registration<P: Pass + Default>(
 /// _factory_, rather than a registration function itself.
 pub fn default_registration_factory(
     builder: PassAllocatorFunction,
-) -> impl Fn(&mut OpPassManager, &str, &DiagnosticsHandler) -> Result<(), Report> + Send + Sync + 'static
-{
-    use runic_session::diagnostics::Severity;
-    move |pm: &mut OpPassManager,
-          options: &str,
-          diagnostics: &DiagnosticsHandler|
-          -> Result<(), Report> {
+) -> impl Fn(&mut OpPassManager, &str) -> Result<(), Report> + Send + Sync + 'static {
+    move |pm: &mut OpPassManager, options: &str| -> Result<(), Report> {
         let mut pass = builder();
         let result = pass.initialize_options(options);
         let pm_op_name = pm.name();
@@ -397,16 +383,15 @@ pub fn default_registration_factory(
             && (pass_op_name.is_some_and(|p| pm_op_name.is_none_or(|p2| p != p2))
                 || (pm_op_name.is_some_and(|p| pass_op_name.is_some_and(|p2| p != p2))))
         {
-            return Err(diagnostics
-                .diagnostic(Severity::Error)
-                .with_message(format!(
+            return Err(crate::diagnostics::report!(
+                message: (format!(
                     "registration error for pass '{}': can't add pass restricted to '{}' on a \
                      pass manager intended to run on '{}', did you intend to nest?",
                     pass.name(),
                     crate::formatter::DisplayOptional(pass_op_name.as_ref()),
                     crate::formatter::DisplayOptional(pm_op_name),
-                ))
-                .into_report());
+                )),
+            ));
         }
         pm.add_pass(pass);
         result

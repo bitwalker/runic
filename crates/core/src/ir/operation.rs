@@ -453,34 +453,31 @@ impl Operation {
     pub fn verify_operand_cardinality(&self) -> Result<(), Report> {
         let declared = self.name().operand_group_sizes();
         let invalid_count = |group, expected, actual| {
-            self.context()
-                .session()
-                .diagnostics
-                .diagnostic(crate::diagnostics::Severity::Error)
-                .with_message("invalid operand count")
-                .with_primary_label(
-                    self.span(),
-                    alloc::format!(
-                        "operand group {group} of '{}' expects {expected} operands, but has \
-                         {actual}",
-                        self.name()
+            crate::diagnostics::report!(
+                message: "invalid operand count",
+                labels: [
+                    primary(
+                        self.span(),
+                        alloc::format!(
+                            "operand group {group} of '{}' expects {expected} operands, but has \
+                             {actual}",
+                            self.name()
+                        )
                     ),
-                )
-                .into_report()
+                ],
+            )
         };
         for (group, expected) in declared.iter().copied().enumerate() {
             if group >= self.operands.num_groups() {
-                return Err(self
-                    .context()
-                    .session()
-                    .diagnostics
-                    .diagnostic(crate::diagnostics::Severity::Error)
-                    .with_message("missing operand group")
-                    .with_primary_label(
-                        self.span(),
-                        alloc::format!("'{}' requires operand group {group}", self.name()),
-                    )
-                    .into_report());
+                return Err(crate::diagnostics::report!(
+                    message: "missing operand group",
+                    labels: [
+                        primary(
+                            self.span(),
+                            alloc::format!("'{}' requires operand group {group}", self.name())
+                        ),
+                    ],
+                ));
             }
             let actual = self.operands.group(group).len();
             if let Some(expected) = expected

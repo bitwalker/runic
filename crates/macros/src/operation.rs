@@ -595,14 +595,13 @@ impl quote::ToTokens for VerifyOperandTypes<'_> {
                                 let constraint = <#constraint as ::runic_core::traits::TypeConstraint>::get();
                                 if !<#constraint as ::runic_core::traits::TypeConstraint>::matches(&constraint, value_ty) {
                                     let expected = <#constraint as ::runic_core::traits::TypeConstraint>::description(&constraint);
-                                    return Err(self.op.context()
-                                        .session()
-                                        .diagnostics
-                                        .diagnostic(::runic_core::diagnostics::Severity::Error)
-                                        .with_message(::alloc::format!("invalid operand for '{}': expected {expected}, got {value_ty}", self.op.name()))
-                                        .with_primary_label(::runic_core::diagnostics::Spanned::span(&self.op), #label)
-                                        .with_secondary_label(value.span(), ::alloc::format!("this value has type '{value_ty}', but expected '{expected}'"))
-                                        .into_report());
+                                    return Err(::runic_core::diagnostics::report!(
+                                        message: (::alloc::format!("invalid operand for '{}': expected {expected}, got {value_ty}", self.op.name())),
+                                        labels: [
+                                            primary(::runic_core::diagnostics::Spanned::span(&self.op), #label),
+                                            context(value.span(), ::alloc::format!("this value has type '{value_ty}', but expected '{expected}'")),
+                                        ],
+                                    ));
                                 }
                             }
                         });
@@ -622,14 +621,13 @@ impl quote::ToTokens for VerifyOperandTypes<'_> {
                             let constraint = <#constraint as ::runic_core::traits::TypeConstraint>::get();
                             if !<#constraint as ::runic_core::traits::TypeConstraint>::matches(&constraint, value_ty) {
                                 let expected = <#constraint as ::runic_core::traits::TypeConstraint>::description(&constraint);
-                                return Err(self.op.context()
-                                    .session()
-                                    .diagnostics
-                                    .diagnostic(::runic_core::diagnostics::Severity::Error)
-                                    .with_message(::alloc::format!("invalid operand for '{}': expected {expected}, got {value_ty}", self.op.name()))
-                                    .with_primary_label(::runic_core::diagnostics::Spanned::span(&self.op), #label)
-                                    .with_secondary_label(value.span(), ::alloc::format!("this value has type '{value_ty}', but expected '{expected}'"))
-                                    .into_report());
+                                return Err(::runic_core::diagnostics::report!(
+                                    message: (::alloc::format!("invalid operand for '{}': expected {expected}, got {value_ty}", self.op.name())),
+                                    labels: [
+                                        primary(::runic_core::diagnostics::Spanned::span(&self.op), #label),
+                                        context(value.span(), ::alloc::format!("this value has type '{value_ty}', but expected '{expected}'")),
+                                    ],
+                                ));
                             }
                         }
                     });
@@ -794,14 +792,13 @@ impl quote::ToTokens for BuildOp<'_> {
                                     let constraint = <#result_constraint as ::runic_core::traits::TypeConstraint>::get();
                                     if !<#result_constraint as ::runic_core::traits::TypeConstraint>::matches(&constraint, value_ty) {
                                         let expected = <#result_constraint as ::runic_core::traits::TypeConstraint>::description(&constraint);
-                                        return Err(builder.context()
-                                            .session()
-                                            .diagnostics
-                                            .diagnostic(::runic_core::diagnostics::Severity::Error)
-                                            .with_message(::alloc::format!("invalid operation {}", op.name()))
-                                            .with_primary_label(span, #constraint_violation)
-                                            .with_secondary_label(op_result.span(), ::alloc::format!("this value has type '{value_ty}', but expected '{expected}'"))
-                                            .into_report());
+                                        return Err(::runic_core::diagnostics::report!(
+                                            message: (::alloc::format!("invalid operation {}", op.name())),
+                                            labels: [
+                                                primary(span, #constraint_violation),
+                                                context(op_result.span(), ::alloc::format!("this value has type '{value_ty}', but expected '{expected}'")),
+                                            ],
+                                        ));
                                     }
                                 }
                             }
@@ -827,14 +824,13 @@ impl quote::ToTokens for BuildOp<'_> {
                                     let constraint = <#constraint as ::runic_core::traits::TypeConstraint>::get();
                                     if !<#constraint as ::runic_core::traits::TypeConstraint>::matches(&constraint, value_ty) {
                                         let expected = <#constraint as ::runic_core::traits::TypeConstraint>::description(&constraint);
-                                        return Err(builder.context()
-                                            .session()
-                                            .diagnostics
-                                            .diagnostic(::runic_core::diagnostics::Severity::Error)
-                                            .with_message("invalid operation")
-                                            .with_primary_label(span, #constraint_violation)
-                                            .with_secondary_label(value.span(), ::alloc::format!("this value has type '{value_ty}', but expected '{expected}'"))
-                                            .into_report());
+                                        return Err(::runic_core::diagnostics::report!(
+                                            message: "invalid operation",
+                                            labels: [
+                                                primary(span, #constraint_violation),
+                                                context(value.span(), ::alloc::format!("this value has type '{value_ty}', but expected '{expected}'")),
+                                            ],
+                                        ));
                                     }
                                 }
                             }

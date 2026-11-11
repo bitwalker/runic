@@ -15,7 +15,7 @@ use super::BlockRef;
 use crate::{
     AttributeRef, Context, Operation,
     derive::operation_trait,
-    diagnostics::{Report, Severity, Spanned},
+    diagnostics::{Report, Spanned},
 };
 
 /// Marker trait for commutative ops, e.g. `X op Y == Y op X`
@@ -197,23 +197,28 @@ pub trait SelectLikeOpInterface {
 #[operation_trait]
 pub trait UnaryOp {
     #[verifier]
-    fn is_unary_op(op: &Operation, context: &Context) -> Result<(), Report> {
+    fn is_unary_op(op: &Operation, _context: &Context) -> Result<(), Report> {
         if op.num_operands() == 1 {
             Ok(())
         } else {
-            Err(context
-                .diagnostics()
-                .diagnostic(Severity::Error)
-                .with_message(::alloc::format!("invalid operation {}", op.name()))
-                .with_primary_label(
-                    op.span(),
-                    format!("incorrect number of operands, expected 1, got {}", op.num_operands()),
-                )
-                .with_help(
-                    "this operator implements 'UnaryOp', which requires it to have exactly one \
-                     operand",
-                )
-                .into_report())
+            Err(crate::diagnostics::report!(
+                message: (::alloc::format!("invalid operation {}", op.name())),
+                labels: [
+                    primary(
+                        op.span(),
+                        format!(
+                            "incorrect number of operands, expected 1, got {}",
+                            op.num_operands()
+                        )
+                    ),
+                ],
+                notes: [
+                    help(
+                        "this operator implements 'UnaryOp', which requires it to have exactly \
+                         one operand"
+                    ),
+                ],
+            ))
         }
     }
 }
@@ -222,23 +227,28 @@ pub trait UnaryOp {
 #[operation_trait]
 pub trait BinaryOp {
     #[verifier]
-    fn is_binary_op(op: &Operation, context: &Context) -> Result<(), Report> {
+    fn is_binary_op(op: &Operation, _context: &Context) -> Result<(), Report> {
         if op.num_operands() == 2 {
             Ok(())
         } else {
-            Err(context
-                .diagnostics()
-                .diagnostic(Severity::Error)
-                .with_message(::alloc::format!("invalid operation {}", op.name()))
-                .with_primary_label(
-                    op.span(),
-                    format!("incorrect number of operands, expected 2, got {}", op.num_operands()),
-                )
-                .with_help(
-                    "this operator implements 'BinaryOp', which requires it to have exactly two \
-                     operands",
-                )
-                .into_report())
+            Err(crate::diagnostics::report!(
+                message: (::alloc::format!("invalid operation {}", op.name())),
+                labels: [
+                    primary(
+                        op.span(),
+                        format!(
+                            "incorrect number of operands, expected 2, got {}",
+                            op.num_operands()
+                        )
+                    ),
+                ],
+                notes: [
+                    help(
+                        "this operator implements 'BinaryOp', which requires it to have exactly \
+                         two operands"
+                    ),
+                ],
+            ))
         }
     }
 }
@@ -247,21 +257,22 @@ pub trait BinaryOp {
 #[operation_trait]
 pub trait NoRegionArguments {
     #[verifier]
-    fn no_region_arguments(op: &Operation, context: &Context) -> Result<(), Report> {
+    fn no_region_arguments(op: &Operation, _context: &Context) -> Result<(), Report> {
         for region in op.regions().iter() {
             if region.is_empty() {
                 continue;
             }
             if region.entry().has_arguments() {
-                return Err(context
-                    .diagnostics()
-                    .diagnostic(Severity::Error)
-                    .with_message(::alloc::format!("invalid operation {}", op.name()))
-                    .with_primary_label(
-                        op.span(),
-                        "this operation does not permit regions with arguments, but one was found",
-                    )
-                    .into_report());
+                return Err(crate::diagnostics::report!(
+                    message: (::alloc::format!("invalid operation {}", op.name())),
+                    labels: [
+                        primary(
+                            op.span(),
+                            "this operation does not permit regions with arguments, but one was \
+                             found"
+                        ),
+                    ],
+                ));
             }
         }
 
@@ -273,19 +284,19 @@ pub trait NoRegionArguments {
 #[operation_trait]
 pub trait SingleBlock {
     #[verifier]
-    fn has_only_single_block_regions(op: &Operation, context: &Context) -> Result<(), Report> {
+    fn has_only_single_block_regions(op: &Operation, _context: &Context) -> Result<(), Report> {
         for region in op.regions().iter() {
             if region.body().iter().count() > 1 {
-                return Err(context
-                    .diagnostics()
-                    .diagnostic(Severity::Error)
-                    .with_message(::alloc::format!("invalid operation {}", op.name()))
-                    .with_primary_label(
-                        op.span(),
-                        "this operation requires single-block regions, but regions with multiple \
-                         blocks were found",
-                    )
-                    .into_report());
+                return Err(crate::diagnostics::report!(
+                    message: (::alloc::format!("invalid operation {}", op.name())),
+                    labels: [
+                        primary(
+                            op.span(),
+                            "this operation requires single-block regions, but regions with \
+                             multiple blocks were found"
+                        ),
+                    ],
+                ));
             }
         }
 
@@ -299,18 +310,20 @@ pub trait SingleBlock {
 #[operation_trait]
 pub trait SingleRegion {
     #[verifier]
-    fn has_exactly_one_region(op: &Operation, context: &Context) -> Result<(), Report> {
+    fn has_exactly_one_region(op: &Operation, _context: &Context) -> Result<(), Report> {
         let num_regions = op.num_regions();
         if num_regions != 1 {
-            return Err(context
-                .diagnostics()
-                .diagnostic(Severity::Error)
-                .with_message(::alloc::format!("invalid operation {}", op.name()))
-                .with_primary_label(
-                    op.span(),
-                    format!("this operation requires exactly one region, but got {num_regions}"),
-                )
-                .into_report());
+            return Err(crate::diagnostics::report!(
+                message: (::alloc::format!("invalid operation {}", op.name())),
+                labels: [
+                    primary(
+                        op.span(),
+                        format!(
+                            "this operation requires exactly one region, but got {num_regions}"
+                        )
+                    ),
+                ],
+            ));
         }
 
         Ok(())
@@ -330,19 +343,21 @@ pub trait SingleRegion {
 #[operation_trait]
 pub trait TransparentCast {
     #[verifier]
-    fn is_transparent_cast(op: &Operation, context: &Context) -> Result<(), Report> {
+    fn is_transparent_cast(op: &Operation, _context: &Context) -> Result<(), Report> {
         use crate::{Type, Value};
 
         let invalid = |label: alloc::string::String, help: &str| {
-            context
-                .diagnostics()
-                .diagnostic(Severity::Error)
-                .with_message(::alloc::format!("invalid operation {}", op.name()))
-                .with_primary_label(op.span(), label)
-                .with_help(::alloc::format!(
-                    "this operator implements 'TransparentCast', which {help}"
-                ))
-                .into_report()
+            crate::diagnostics::report!(
+                message: (::alloc::format!("invalid operation {}", op.name())),
+                labels: [
+                    primary(op.span(), label),
+                ],
+                notes: [
+                    help(::alloc::format!(
+                        "this operator implements 'TransparentCast', which {help}"
+                    )),
+                ],
+            )
         };
 
         if op.num_operands() != 1 || op.num_results() != 1 {
@@ -416,38 +431,40 @@ pub trait TransparentCast {
 #[operation_trait]
 pub trait Transparent {
     #[verifier]
-    fn has_no_results(op: &Operation, context: &Context) -> Result<(), Report> {
+    fn has_no_results(op: &Operation, _context: &Context) -> Result<(), Report> {
         if op.results().is_empty() {
             Ok(())
         } else {
-            Err(context
-                .diagnostics()
-                .diagnostic(Severity::Error)
-                .with_message(::alloc::format!("invalid operation {}", op.name()))
-                .with_primary_label(op.span(), "expected operation to have no results")
-                .with_help(
-                    "this operator implements 'Transparent', which requires it to have no results",
-                )
-                .into_report())
+            Err(crate::diagnostics::report!(
+                message: (::alloc::format!("invalid operation {}", op.name())),
+                labels: [
+                    primary(op.span(), "expected operation to have no results"),
+                ],
+                notes: [
+                    help(
+                        "this operator implements 'Transparent', which requires it to have no \
+                         results"
+                    ),
+                ],
+            ))
         }
     }
 
     #[verifier]
-    fn has_no_more_than_one_operand(op: &Operation, context: &Context) -> Result<(), Report> {
+    fn has_no_more_than_one_operand(op: &Operation, _context: &Context) -> Result<(), Report> {
         if op.num_operands() > 1 {
-            Err(context
-                .diagnostics()
-                .diagnostic(Severity::Error)
-                .with_message(::alloc::format!("invalid operation {}", op.name()))
-                .with_primary_label(
-                    op.span(),
-                    "expected operation to have no more than one operand",
-                )
-                .with_help(
-                    "this operator implements 'Transparent', which requires it to have an arity < \
-                     2",
-                )
-                .into_report())
+            Err(crate::diagnostics::report!(
+                message: (::alloc::format!("invalid operation {}", op.name())),
+                labels: [
+                    primary(op.span(), "expected operation to have no more than one operand"),
+                ],
+                notes: [
+                    help(
+                        "this operator implements 'Transparent', which requires it to have an \
+                         arity < 2"
+                    ),
+                ],
+            ))
         } else {
             Ok(())
         }

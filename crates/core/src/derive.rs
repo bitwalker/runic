@@ -7,8 +7,6 @@ pub use runic_macros::{
 mod tests {
     use alloc::format;
 
-    use runic_session::diagnostics::Severity;
-
     use crate::{
         BuilderExt, Context, Op, Operation, Report, Spanned, Value, ValueRef,
         derive::operation_trait,
@@ -24,25 +22,25 @@ mod tests {
     #[operation_trait]
     trait ArithmeticOp {
         #[verifier]
-        fn is_binary_op(op: &Operation, ctx: &Context) -> Result<(), Report> {
+        fn is_binary_op(op: &Operation, _ctx: &Context) -> Result<(), Report> {
             if op.num_operands() == 2 {
                 Ok(())
             } else {
-                Err(ctx
-                    .diagnostics()
-                    .diagnostic(Severity::Error)
-                    .with_message("invalid operation")
-                    .with_primary_label(
-                        op.span(),
-                        format!(
-                            "incorrect number of operands, expected 2, got {}",
-                            op.num_operands()
+                Err(crate::diagnostics::report!(
+                    message: "invalid operation",
+                    labels: [
+                        primary(
+                            op.span(),
+                            format!(
+                                "incorrect number of operands, expected 2, got {}",
+                                op.num_operands()
+                            )
                         ),
-                    )
-                    .with_help(
-                        "this operator implements 'ArithmeticOp' which requires ops to be binary",
-                    )
-                    .into_report())
+                    ],
+                    notes: [
+                        help("this operator implements 'ArithmeticOp' which requires ops to be binary"),
+                    ],
+                ))
             }
         }
     }

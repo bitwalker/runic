@@ -339,21 +339,21 @@ impl crate::Verify<dyn RegionExitTerminatorOpInterface> for Operation {
 /// Check the exit structure independently of the operation-specific target resolver.
 fn verify_exit(
     exit: &dyn RegionExitTerminatorOpInterface,
-    context: &Context,
+    _context: &Context,
 ) -> Result<(), Report> {
-    use runic_session::diagnostics::{Severity, Spanned};
+    use crate::diagnostics::Spanned;
 
     let op = exit.as_operation();
     let kind = exit.get_exit_kind();
 
     // Include the rule in the message so it remains visible when a Report is displayed alone.
     let reject = |message: alloc::string::String, label: &'static str| {
-        Err(context
-            .diagnostics()
-            .diagnostic(Severity::Error)
-            .with_message(alloc::format!("invalid {}: {message}", op.name()))
-            .with_primary_label(op.span(), label)
-            .into_report())
+        Err(crate::diagnostics::report!(
+            message: (alloc::format!("invalid {}: {message}", op.name())),
+            labels: [
+                primary(op.span(), label),
+            ],
+        ))
     };
 
     // A Rust supertrait does not register the interface in the operation's dynamic trait table.

@@ -1,6 +1,5 @@
 use alloc::{rc::Rc, vec, vec::Vec};
 
-use runic_session::diagnostics::Severity;
 
 use super::state::PendingSuccessorInfo;
 use crate::{
@@ -313,19 +312,19 @@ where
 
         // Verify things that would require negative trait impls
         if !op.implements::<dyn Terminator>() && op.has_successors() {
-            return Err(self
-                .builder
-                .context()
-                .session()
-                .diagnostics
-                .diagnostic(Severity::Error)
-                .with_message(::alloc::format!("invalid operation {}", op.name()))
-                .with_primary_label(
-                    op.span(),
-                    "this operation has successors, but does not implement the 'Terminator' trait",
-                )
-                .with_help("operations with successors must implement the 'Terminator' trait")
-                .into_report());
+            return Err(crate::diagnostics::report!(
+                message: (::alloc::format!("invalid operation {}", op.name())),
+                labels: [
+                    primary(
+                        op.span(),
+                        "this operation has successors, but does not implement the 'Terminator' \
+                         trait"
+                    ),
+                ],
+                notes: [
+                    help("operations with successors must implement the 'Terminator' trait"),
+                ],
+            ));
         }
 
         Ok(())

@@ -270,20 +270,22 @@ impl crate::Verify<dyn Symbol> for Operation {
     }
 }
 
-fn verify_symbol(symbol: &dyn Symbol, context: &crate::Context) -> Result<(), Report> {
-    use runic_session::diagnostics::{Severity, Spanned};
+fn verify_symbol(symbol: &dyn Symbol, _context: &crate::Context) -> Result<(), Report> {
+    use crate::diagnostics::Spanned;
 
     // Symbols must either have no parent, or be an immediate child of a SymbolTable
     let op = symbol.as_symbol_operation();
     let parent = op.parent_op();
     if !parent.is_none_or(|parent| parent.borrow().implements::<dyn SymbolTable>()) {
-        return Err(context
-            .diagnostics()
-            .diagnostic(Severity::Error)
-            .with_message(::alloc::format!("invalid operation {}", op.name()))
-            .with_primary_label(op.span(), "expected parent of this operation to be a symbol table")
-            .with_help("required due to this operation implementing the 'Symbol' trait")
-            .into_report());
+        return Err(crate::diagnostics::report!(
+            message: (::alloc::format!("invalid operation {}", op.name())),
+            labels: [
+                primary(op.span(), "expected parent of this operation to be a symbol table"),
+            ],
+            notes: [
+                help("required due to this operation implementing the 'Symbol' trait"),
+            ],
+        ));
     }
     Ok(())
 }
