@@ -13,8 +13,6 @@ use alloc::{borrow::Cow, string::String};
 
 pub use self::{
     analysis::{Analysis, AnalysisManager, OperationAnalysis, PreservedAnalyses},
-    #[cfg(feature = "std")]
-    duration::HumanDuration,
     instrumentation::{PassInstrumentation, PassInstrumentor, PipelineParentInfo},
     manager::{IRPrintingConfig, Nesting, OpPassManager, PassDisplayMode, PassManager},
     pass::{OperationPass, Pass, PassExecutionState, PostPassStatus},
@@ -22,6 +20,8 @@ pub use self::{
     specialization::PassTarget,
     statistics::{PassStatistic, Statistic, StatisticValue},
 };
+#[cfg(feature = "std")]
+pub use self::duration::HumanDuration;
 use crate::{EntityRef, Operation, OperationName, OperationRef, SmallVec, TraceTarget};
 
 /// Handles IR printing, based on the [`IRPrintingConfig`] passed in
