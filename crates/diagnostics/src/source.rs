@@ -41,6 +41,11 @@ pub trait SourceProvider {
     fn find_by_name(&self, _display_name: &str) -> Option<SourceId> {
         None
     }
+
+    /// Returns the byte offset of `position`, if the provider supports reverse lookup.
+    fn offset_of(&self, _id: SourceId, _position: LineColumn) -> Option<u32> {
+        None
+    }
 }
 
 /// A cloneable, type-erased source provider suitable for retaining with owned diagnostics.
@@ -337,6 +342,38 @@ impl SourceMap {
         Ok(id)
     }
 
+    /// Returns the byte offset of `position` in source `id`, the inverse of `line_column`.
+    ///
+    /// A column one past the last character of a line addresses the line end.
+    pub fn offset_of(&self, id: SourceId, position: LineColumn) -> Option<u32> {
+        let record = self.record(id)?;
+        let line_start = *record.line_starts.get(position.line_index().to_usize())?;
+        let line_start = usize::try_from(line_start).ok()?;
+        let rest = record.text.get(line_start..)?;
+        let line = rest.split_once('\n').map_or(rest, |(line, _)| line);
+        let column = position.column_index().to_usize();
+        let in_line = match line.char_indices().nth(column) {
+            Some((index, _)) => index,
+            None if line.chars().count() == column => line.len(),
+            None => return None,
+        };
+        u32::try_from(line_start + in_line).ok()
+    }
+
+    /// Reads `path` and registers it under its path as display name.
+    ///
+    /// A path that is already registered returns the existing id without re-reading the file.
+    #[cfg(feature = "std")]
+    pub fn load_file(&mut self, path: impl AsRef<std::path::Path>) -> std::io::Result<SourceId> {
+        let path = path.as_ref();
+        let display_name = path.to_string_lossy().into_owned();
+        if let Some(id) = self.find_by_name(&display_name) {
+            return Ok(id);
+        }
+        let text = std::fs::read_to_string(path)?;
+        self.insert(display_name, text, None).map_err(std::io::Error::other)
+    }
+
     fn record(&self, id: SourceId) -> Option<&SourceRecord> {
         if id.namespace() != self.namespace {
             return None;
@@ -385,6 +422,10 @@ impl SourceProvider for SourceMap {
 
     fn find_by_name(&self, display_name: &str) -> Option<SourceId> {
         SourceMap::find_by_name(self, display_name)
+    }
+
+    fn offset_of(&self, id: SourceId, position: LineColumn) -> Option<u32> {
+        SourceMap::offset_of(self, id, position)
     }
 }
 
@@ -440,6 +481,37 @@ mod tests {
     use alloc::{format, string::ToString};
 
     use super::*;
+
+    #[test]
+    fn offset_of_inverts_line_column() {
+        let namespace = SourceNamespace::new(core::num::NonZeroU32::new(7).unwrap());
+        let mut map = SourceMap::new(namespace);
+        let id = map.insert("a.runic", "ab\ncd\u{e9}\n", None).unwrap();
+        // Every char boundary, including each line end and the end of input.
+        for offset in [0u32, 1, 2, 3, 4, 5, 7, 8] {
+            let position = map.line_column(id, offset).unwrap();
+            assert_eq!(map.offset_of(id, position), Some(offset), "offset {offset}");
+        }
+        assert_eq!(map.offset_of(id, LineColumn::new(9, 1).unwrap()), None);
+        assert_eq!(map.offset_of(id, LineColumn::new(1, 9).unwrap()), None);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn load_file_registers_once_per_path() {
+        let dir = std::env::temp_dir().join(format!("runic-diag-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("m.runic");
+        std::fs::write(&path, "hello\n").unwrap();
+        let namespace = SourceNamespace::new(core::num::NonZeroU32::new(8).unwrap());
+        let mut map = SourceMap::new(namespace);
+        let first = map.load_file(&path).unwrap();
+        let second = map.load_file(&path).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(map.get(first).unwrap().text, Some("hello\n"));
+        assert!(map.load_file(dir.join("missing.runic")).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn ranges_and_spans_preserve_checked_provenance() {
