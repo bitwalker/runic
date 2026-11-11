@@ -1,0 +1,1246 @@
+use runic_core::{
+    AsCallableSymbolRef, Builder, CompactString, Felt, Immediate, Op, OpBuilder, PointerType,
+    Report, SmallVec, SourceSpan, Type, UnsafeIntrusiveEntityRef, ValueRef,
+    dialects::builtin::{
+        attributes::{LocalVariable, Signature},
+        *,
+    },
+};
+
+use crate::*;
+
+macro_rules! op_results {
+    ($op:expr) => {{
+        let op = $op.borrow();
+        op.results().iter().map(|result| result.borrow().as_value_ref()).collect()
+    }};
+}
+
+pub trait HirOpBuilder<'f, B: ?Sized + Builder> {
+    fn assert(&mut self, value: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<crate::ops::Assert, (ValueRef,)>(span);
+        let op = op_builder(value)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    fn assert_with_error(
+        &mut self,
+        value: ValueRef,
+        code: u32,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        let op_builder = self
+            .builder_mut()
+            .create::<crate::ops::Assert, (ValueRef, u32, CompactString)>(span);
+        let op = op_builder(value, code, CompactString::default())?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    fn assert_with_message(
+        &mut self,
+        value: ValueRef,
+        message: impl Into<CompactString>,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        let op_builder = self
+            .builder_mut()
+            .create::<crate::ops::Assert, (ValueRef, u32, CompactString)>(span);
+        let op = op_builder(value, 0u32, message.into())?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    fn assertz(&mut self, value: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<crate::ops::Assertz, (ValueRef,)>(span);
+        let op = op_builder(value)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    fn assertz_with_error(
+        &mut self,
+        value: ValueRef,
+        code: u32,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        let op_builder = self
+            .builder_mut()
+            .create::<crate::ops::Assertz, (ValueRef, u32, CompactString)>(span);
+        let op = op_builder(value, code, CompactString::default())?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    fn assertz_with_message(
+        &mut self,
+        value: ValueRef,
+        message: impl Into<CompactString>,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        let op_builder = self
+            .builder_mut()
+            .create::<crate::ops::Assertz, (ValueRef, u32, CompactString)>(span);
+        let op = op_builder(value, 0u32, message.into())?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    fn assert_eq(
+        &mut self,
+        lhs: ValueRef,
+        rhs: ValueRef,
+        span: SourceSpan,
+    ) -> Result<UnsafeIntrusiveEntityRef<crate::ops::AssertEq>, Report> {
+        let op_builder = self.builder_mut().create::<crate::ops::AssertEq, (_, _)>(span);
+        op_builder(lhs, rhs)
+    }
+
+    fn assert_eq_with_error(
+        &mut self,
+        lhs: ValueRef,
+        rhs: ValueRef,
+        code: u32,
+        span: SourceSpan,
+    ) -> Result<UnsafeIntrusiveEntityRef<crate::ops::AssertEq>, Report> {
+        let op_builder = self
+            .builder_mut()
+            .create::<crate::ops::AssertEq, (ValueRef, ValueRef, u32, CompactString)>(span);
+        op_builder(lhs, rhs, code, CompactString::default())
+    }
+
+    fn assert_eq_with_message(
+        &mut self,
+        lhs: ValueRef,
+        rhs: ValueRef,
+        message: impl Into<CompactString>,
+        span: SourceSpan,
+    ) -> Result<UnsafeIntrusiveEntityRef<crate::ops::AssertEq>, Report> {
+        let op_builder = self
+            .builder_mut()
+            .create::<crate::ops::AssertEq, (ValueRef, ValueRef, u32, CompactString)>(span);
+        op_builder(lhs, rhs, 0u32, message.into())
+    }
+
+    fn assert_eq_imm(
+        &mut self,
+        lhs: ValueRef,
+        rhs: Immediate,
+        span: SourceSpan,
+    ) -> Result<UnsafeIntrusiveEntityRef<crate::ops::AssertEq>, Report> {
+        use runic_dialect_arith::ArithOpBuilder;
+        let rhs = self.builder_mut().imm(rhs, span);
+        self.assert_eq(lhs, rhs, span)
+    }
+
+    fn assert_eq_with_error_imm(
+        &mut self,
+        lhs: ValueRef,
+        rhs: Immediate,
+        code: u32,
+        span: SourceSpan,
+    ) -> Result<UnsafeIntrusiveEntityRef<crate::ops::AssertEq>, Report> {
+        use runic_dialect_arith::ArithOpBuilder;
+        let rhs = self.builder_mut().imm(rhs, span);
+        self.assert_eq_with_error(lhs, rhs, code, span)
+    }
+
+    /// Assert that `value` is in the u32 range and refine its result type to u32.
+    fn assert_u32(&mut self, value: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<crate::ops::AssertU32, (ValueRef,)>(span);
+        let op = op_builder(value)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    fn assert_u32_with_error(
+        &mut self,
+        value: ValueRef,
+        code: u32,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        let op_builder = self
+            .builder_mut()
+            .create::<crate::ops::AssertU32, (ValueRef, u32, CompactString)>(span);
+        let op = op_builder(value, code, CompactString::default())?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    fn assert_u32_with_message(
+        &mut self,
+        value: ValueRef,
+        message: impl Into<CompactString>,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        let op_builder = self
+            .builder_mut()
+            .create::<crate::ops::AssertU32, (ValueRef, u32, CompactString)>(span);
+        let op = op_builder(value, 0u32, message.into())?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// Grow the global heap by `num_pages` pages, in 64kb units.
+    ///
+    /// Returns the previous size (in pages) of the heap, or -1 if the heap could not be grown.
+    fn mem_grow(&mut self, num_pages: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<crate::ops::MemGrow, _>(span);
+        let op = op_builder(num_pages)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// Return the size of the global heap in pages, where each page is 64kb.
+    fn mem_size(&mut self, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<crate::ops::MemSize, _>(span);
+        let op = op_builder()?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// Return the caller procedure hash as a word.
+    fn caller(&mut self, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<crate::ops::Caller, _>(span);
+        let op = op_builder()?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// View a word as four field elements in operand-stack order.
+    fn unpack_word(&mut self, word: ValueRef, span: SourceSpan) -> Result<[ValueRef; 4], Report> {
+        let op_builder = self.builder_mut().create::<crate::ops::UnpackWord, _>(span);
+        let op = op_builder(word)?;
+        let op = op.borrow();
+        Ok([
+            op.result0().as_value_ref(),
+            op.result1().as_value_ref(),
+            op.result2().as_value_ref(),
+            op.result3().as_value_ref(),
+        ])
+    }
+
+    /// Return the current VM clock cycle.
+    fn clk(&mut self, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<crate::ops::Clk, _>(span);
+        let op = op_builder()?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// Pop one field element from the VM advice stack.
+    fn advice_pop(&mut self, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<crate::ops::AdvicePop, _>(span);
+        let op = op_builder()?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// Pop one word from the VM advice stack, overwriting four stack slots.
+    fn advice_load_word(
+        &mut self,
+        old0: ValueRef,
+        old1: ValueRef,
+        old2: ValueRef,
+        old3: ValueRef,
+        span: SourceSpan,
+    ) -> Result<(ValueRef, ValueRef, ValueRef, ValueRef), Report> {
+        let op_builder = self.builder_mut().create::<crate::ops::AdviceLoadWord, _>(span);
+        let op = op_builder(old0, old1, old2, old3)?;
+        let op = op.borrow();
+        Ok((
+            op.result0().as_value_ref(),
+            op.result1().as_value_ref(),
+            op.result2().as_value_ref(),
+            op.result3().as_value_ref(),
+        ))
+    }
+
+    /// Pop two advice words, write them to memory, and update the affected VM stack window.
+    fn advice_pipe<A>(
+        &mut self,
+        stack: A,
+        span: SourceSpan,
+    ) -> Result<SmallVec<[ValueRef; 13]>, Report>
+    where
+        A: IntoIterator<Item = ValueRef>,
+    {
+        let op_builder = self.builder_mut().create::<crate::ops::AdvicePipe, (A,)>(span);
+        let op = op_builder(stack)?;
+        Ok(op_results!(op))
+    }
+
+    /// Emit an event whose ID is already on the operand stack.
+    fn emit_event(&mut self, event_id: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<crate::ops::EmitEvent, _>(span);
+        let op = op_builder(event_id)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// Emit an immediate event.
+    fn emit_event_imm(
+        &mut self,
+        event_id: Felt,
+        span: SourceSpan,
+    ) -> Result<UnsafeIntrusiveEntityRef<crate::ops::EmitEventImm>, Report> {
+        let op_builder = self.builder_mut().create::<crate::ops::EmitEventImm, _>(span);
+        op_builder(Immediate::Felt(event_id))
+    }
+
+    /// Emit a recognized VM system event with explicit stack-read dependencies.
+    fn system_event<A>(
+        &mut self,
+        stack: A,
+        event_id: Felt,
+        span: SourceSpan,
+    ) -> Result<SmallVec<[ValueRef; 16]>, Report>
+    where
+        A: IntoIterator<Item = ValueRef>,
+    {
+        let op_builder = self.builder_mut().create::<crate::ops::SystemEvent, (A, Immediate)>(span);
+        let op = op_builder(stack, Immediate::Felt(event_id))?;
+        Ok(op_results!(op))
+    }
+
+    /// Compute the Poseidon2 hash of a word.
+    fn hash(
+        &mut self,
+        input0: ValueRef,
+        input1: ValueRef,
+        input2: ValueRef,
+        input3: ValueRef,
+        span: SourceSpan,
+    ) -> Result<SmallVec<[ValueRef; 4]>, Report> {
+        let op_builder = self.builder_mut().create::<crate::ops::Hash, _>(span);
+        let op = op_builder(input0, input1, input2, input3)?;
+        Ok(op_results!(op))
+    }
+
+    /// Compute the Poseidon2 merge hash of two words.
+    #[allow(clippy::too_many_arguments)]
+    fn hmerge(
+        &mut self,
+        lhs0: ValueRef,
+        lhs1: ValueRef,
+        lhs2: ValueRef,
+        lhs3: ValueRef,
+        rhs0: ValueRef,
+        rhs1: ValueRef,
+        rhs2: ValueRef,
+        rhs3: ValueRef,
+        span: SourceSpan,
+    ) -> Result<SmallVec<[ValueRef; 4]>, Report> {
+        let op_builder = self.builder_mut().create::<crate::ops::HMerge, _>(span);
+        let op = op_builder(lhs0, lhs1, lhs2, lhs3, rhs0, rhs1, rhs2, rhs3)?;
+        Ok(op_results!(op))
+    }
+
+    /// Apply the Poseidon2 permutation to the top three VM stack words.
+    #[allow(clippy::too_many_arguments)]
+    fn hperm(
+        &mut self,
+        state0: ValueRef,
+        state1: ValueRef,
+        state2: ValueRef,
+        state3: ValueRef,
+        state4: ValueRef,
+        state5: ValueRef,
+        state6: ValueRef,
+        state7: ValueRef,
+        state8: ValueRef,
+        state9: ValueRef,
+        state10: ValueRef,
+        state11: ValueRef,
+        span: SourceSpan,
+    ) -> Result<SmallVec<[ValueRef; 12]>, Report> {
+        let op_builder = self.builder_mut().create::<crate::ops::HPerm, _>(span);
+        let op = op_builder(
+            state0, state1, state2, state3, state4, state5, state6, state7, state8, state9,
+            state10, state11,
+        )?;
+        Ok(op_results!(op))
+    }
+
+    /// Read a Merkle tree node from the advice provider and verify it against a root.
+    fn mtree_get<A>(
+        &mut self,
+        stack: A,
+        span: SourceSpan,
+    ) -> Result<SmallVec<[ValueRef; 8]>, Report>
+    where
+        A: IntoIterator<Item = ValueRef>,
+    {
+        let op_builder = self.builder_mut().create::<crate::ops::MTreeGet, (A,)>(span);
+        let op = op_builder(stack)?;
+        Ok(op_results!(op))
+    }
+
+    /// Update a Merkle tree node, producing the old node value and new root.
+    fn mtree_set<A>(
+        &mut self,
+        stack: A,
+        span: SourceSpan,
+    ) -> Result<SmallVec<[ValueRef; 8]>, Report>
+    where
+        A: IntoIterator<Item = ValueRef>,
+    {
+        let op_builder = self.builder_mut().create::<crate::ops::MTreeSet, (A,)>(span);
+        let op = op_builder(stack)?;
+        Ok(op_results!(op))
+    }
+
+    /// Merge two Merkle tree roots in the advice provider.
+    fn mtree_merge<A>(
+        &mut self,
+        stack: A,
+        span: SourceSpan,
+    ) -> Result<SmallVec<[ValueRef; 4]>, Report>
+    where
+        A: IntoIterator<Item = ValueRef>,
+    {
+        let op_builder = self.builder_mut().create::<crate::ops::MTreeMerge, (A,)>(span);
+        let op = op_builder(stack)?;
+        Ok(op_results!(op))
+    }
+
+    /// Verify a Merkle path for a node/root pair.
+    fn mtree_verify<A>(
+        &mut self,
+        stack: A,
+        span: SourceSpan,
+    ) -> Result<SmallVec<[ValueRef; 10]>, Report>
+    where
+        A: IntoIterator<Item = ValueRef>,
+    {
+        let op_builder = self.builder_mut().create::<crate::ops::MTreeVerify, (A,)>(span);
+        let op = op_builder(stack)?;
+        Ok(op_results!(op))
+    }
+
+    /// Verify a Merkle path with an inline diagnostic message.
+    fn mtree_verify_with_message<A>(
+        &mut self,
+        stack: A,
+        message: impl Into<CompactString>,
+        span: SourceSpan,
+    ) -> Result<SmallVec<[ValueRef; 10]>, Report>
+    where
+        A: IntoIterator<Item = ValueRef>,
+    {
+        let op_builder =
+            self.builder_mut().create::<crate::ops::MTreeVerify, (A, CompactString)>(span);
+        let op = op_builder(stack, message.into())?;
+        Ok(op_results!(op))
+    }
+
+    /// Encrypt two words from memory using the Poseidon2 sponge stream state.
+    fn crypto_stream<A>(
+        &mut self,
+        stack: A,
+        span: SourceSpan,
+    ) -> Result<SmallVec<[ValueRef; 14]>, Report>
+    where
+        A: IntoIterator<Item = ValueRef>,
+    {
+        let op_builder = self.builder_mut().create::<crate::ops::CryptoStream, (A,)>(span);
+        let op = op_builder(stack)?;
+        Ok(op_results!(op))
+    }
+
+    /// Perform one FRI ext2 layer fold by a factor of four.
+    fn fri_ext2fold4<A>(
+        &mut self,
+        stack: A,
+        span: SourceSpan,
+    ) -> Result<SmallVec<[ValueRef; 16]>, Report>
+    where
+        A: IntoIterator<Item = ValueRef>,
+    {
+        let op_builder = self.builder_mut().create::<crate::ops::FriExt2Fold4, (A,)>(span);
+        let op = op_builder(stack)?;
+        Ok(op_results!(op))
+    }
+
+    /// Perform eight Horner evaluation steps over base-field coefficients.
+    fn horner_base<A>(
+        &mut self,
+        stack: A,
+        span: SourceSpan,
+    ) -> Result<SmallVec<[ValueRef; 16]>, Report>
+    where
+        A: IntoIterator<Item = ValueRef>,
+    {
+        let op_builder = self.builder_mut().create::<crate::ops::HornerBase, (A,)>(span);
+        let op = op_builder(stack)?;
+        Ok(op_results!(op))
+    }
+
+    /// Perform four Horner evaluation steps over extension-field coefficients.
+    fn horner_ext<A>(
+        &mut self,
+        stack: A,
+        span: SourceSpan,
+    ) -> Result<SmallVec<[ValueRef; 16]>, Report>
+    where
+        A: IntoIterator<Item = ValueRef>,
+    {
+        let op_builder = self.builder_mut().create::<crate::ops::HornerExt, (A,)>(span);
+        let op = op_builder(stack)?;
+        Ok(op_results!(op))
+    }
+
+    /// Evaluate a memory-encoded arithmetic circuit and assert it evaluates to zero.
+    fn eval_circuit<A>(
+        &mut self,
+        stack: A,
+        span: SourceSpan,
+    ) -> Result<SmallVec<[ValueRef; 3]>, Report>
+    where
+        A: IntoIterator<Item = ValueRef>,
+    {
+        let op_builder = self.builder_mut().create::<crate::ops::EvalCircuit, (A,)>(span);
+        let op = op_builder(stack)?;
+        Ok(op_results!(op))
+    }
+
+    /// Folds a precomputed statement digest into the rolling deferred root.
+    fn log_deferred<A>(
+        &mut self,
+        stack: A,
+        span: SourceSpan,
+    ) -> Result<SmallVec<[ValueRef; 12]>, Report>
+    where
+        A: IntoIterator<Item = ValueRef>,
+    {
+        let op_builder = self.builder_mut().create::<crate::ops::LogDeferred, (A,)>(span);
+        let op = op_builder(stack)?;
+        Ok(op_results!(op))
+    }
+
+    /// Load two VM words from memory and update the affected VM stack window.
+    fn mem_stream<A>(
+        &mut self,
+        stack: A,
+        span: SourceSpan,
+    ) -> Result<SmallVec<[ValueRef; 13]>, Report>
+    where
+        A: IntoIterator<Item = ValueRef>,
+    {
+        let op_builder = self.builder_mut().create::<crate::ops::MemStream, (A,)>(span);
+        let op = op_builder(stack)?;
+        Ok(op_results!(op))
+    }
+
+    /// Create a constant byte array
+    fn bytes(&mut self, bytes: &[u8], span: SourceSpan) -> Result<ValueRef, Report> {
+        let context = self.builder().context_rc();
+        let id = context.create_constant(bytes);
+        let bytes = context.get_constant(id);
+        let op_builder = self.builder_mut().create::<crate::ops::ConstantBytes, _>(span);
+        let op = op_builder(bytes)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /*
+    /// Get a [GlobalValue] which represents the address of a global variable whose symbol is `name`
+    ///
+    /// On it's own, this does nothing, you must use the resulting [GlobalValue] with a builder
+    /// that expects one as an argument, or use `global_value` to obtain a [Value] from it.
+    fn symbol<S: AsRef<str>>(self, name: S, span: SourceSpan) -> GlobalValue {
+        self.symbol_relative(name, 0, span)
+    }
+
+    /// Same semantics as `symbol`, but applies a constant offset to the address of the given
+    /// symbol.
+    ///
+    /// If the offset is zero, this is equivalent to `symbol`
+    fn symbol_relative<S: AsRef<str>>(
+        &mut self,
+        name: S,
+        offset: i32,
+        span: SourceSpan,
+    ) -> GlobalValue {
+        self.data_flow_graph_mut().create_global_value(GlobalValueData::Symbol {
+            name: Ident::new(Symbol::intern(name.as_ref()), span),
+            offset,
+        })
+    }
+
+    /// Get the address of a global variable whose symbol is `name`
+    ///
+    /// The type of the pointer produced is given as `ty`. It is up to the caller
+    /// to ensure that loading memory from that pointer is valid for the provided
+    /// type.
+    fn symbol_addr<S: AsRef<str>>(self, name: S, ty: Type, span: SourceSpan) -> ValueRef {
+        todo!()
+        // self.symbol_relative_addr(name, 0, ty, span)
+    }
+
+    /// Same semantics as `symbol_addr`, but applies a constant offset to the address of the given
+    /// symbol.
+    ///
+    /// If the offset is zero, this is equivalent to `symbol_addr`
+    fn symbol_relative_addr<S: AsRef<str>>(
+        &mut self,
+        name: S,
+        offset: i32,
+        ty: Type,
+        span: SourceSpan,
+    ) -> Value {
+        assert!(ty.is_pointer(), "expected pointer type, got '{}'", &ty);
+        let gv = self.data_flow_graph_mut().create_global_value(GlobalValueData::Symbol {
+            name: Ident::new(Symbol::intern(name.as_ref()), span),
+            offset,
+        });
+        into_first_result!(self.Global(gv, ty, span))
+    }
+
+    /// Loads a value of type `ty` from the global variable whose symbol is `name`.
+    ///
+    /// NOTE: There is no requirement that the memory contents at the given symbol
+    /// contain a valid value of type `ty`. That is left entirely up the caller to
+    /// guarantee at a higher level.
+    fn load_symbol<S: AsRef<str>>(
+        &mut self,
+        name: S,
+        ty: Type,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        self.load_symbol_relative(name, ty, 0, span)
+    }
+
+    /// Same semantics as `load_symbol`, but a constant offset is applied to the address before
+    /// issuing the load.
+    fn load_symbol_relative<S: AsRef<str>>(
+        &mut self,
+        name: S,
+        ty: Type,
+        offset: i32,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        let base = self.data_flow_graph_mut().create_global_value(GlobalValueData::Symbol {
+            name: Ident::new(Symbol::intern(name.as_ref()), span),
+            offset: 0,
+        });
+        self.load_global_relative(base, ty, offset, span)
+    }
+
+    */
+
+    /// Loads a value of type `ty` from the address represented by `addr`
+    ///
+    /// NOTE: There is no requirement that the memory contents at the given symbol
+    /// contain a valid value of type `ty`. That is left entirely up the caller to
+    /// guarantee at a higher level.
+    fn load_global(
+        &mut self,
+        addr: GlobalVariableRef,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        self.load_global_relative(addr, 0, span)
+    }
+
+    /// Loads a value from a global variable.
+    ///
+    /// A constant offset is applied to the address before issuing the load.
+    fn load_global_relative(
+        &mut self,
+        base: GlobalVariableRef,
+        offset: i32,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        // let base = &base.borrow();
+        let gs_builder = GlobalSymbolBuilder::new(self.builder_mut(), span);
+        let global_sym = gs_builder(base, offset)?;
+        let addr = global_sym.borrow().results()[0].borrow().as_value_ref();
+        let ty = base.borrow().get_ty().clone();
+        let typed_addr = self.bitcast(addr, Type::from(PointerType::new(ty)), span)?;
+        self.load(typed_addr, span)
+    }
+
+    /// Stores `value` to the global variable
+    fn store_global(
+        &mut self,
+        global_var: GlobalVariableRef,
+        value: ValueRef,
+        span: SourceSpan,
+    ) -> Result<UnsafeIntrusiveEntityRef<crate::ops::Store>, Report> {
+        let gs_builder = GlobalSymbolBuilder::new(self.builder_mut(), span);
+        let global_sym = gs_builder(global_var, 0)?;
+        let addr = global_sym.borrow().results()[0].borrow().as_value_ref();
+        let ty = global_var.borrow().get_ty().clone();
+        let typed_addr = self.bitcast(addr, Type::from(PointerType::new(ty)), span)?;
+        self.store(typed_addr, value, span)
+    }
+
+    /*
+
+    /// Computes an address relative to the pointer produced by `base`, by applying an offset
+    /// given by multiplying `offset` * the size in bytes of `unit_ty`.
+    ///
+    /// The type of the pointer produced is the same as the type of the pointer given by `base`
+    ///
+    /// This is useful in some scenarios where `load_global_relative` is not, namely when computing
+    /// the effective address of an element of an array stored in a global variable.
+    fn global_addr_offset(
+        &mut self,
+        base: GlobalValue,
+        offset: i32,
+        unit_ty: Type,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        if let GlobalValueData::Load {
+            ty: ref base_ty, ..
+        } = self.data_flow_graph().global_value(base)
+        {
+            // If the base global is a load, the target address cannot be computed until runtime,
+            // so expand this to the appropriate sequence of instructions to do so in that case
+            assert!(base_ty.is_pointer(), "expected global value to have pointer type");
+            let base_ty = base_ty.clone();
+            let base = self.ins().load_global(base, base_ty.clone(), span);
+            let addr = self.ins().ptrtoint(base, Type::U32, span);
+            let unit_size: i32 = unit_ty
+                .size_in_bytes()
+                .try_into()
+                .expect("invalid type: size is larger than 2^32");
+            let computed_offset = unit_size * offset;
+            let offset_addr = if computed_offset >= 0 {
+                self.ins().add_imm_checked(addr, Immediate::U32(offset as u32), span)
+            } else {
+                self.ins().sub_imm_checked(addr, Immediate::U32(offset.unsigned_abs()), span)
+            };
+            let ptr = self.ins().inttoptr(offset_addr, base_ty, span);
+            self.load(ptr, span)
+        } else {
+            // The global address can be computed statically
+            let gv = self.data_flow_graph_mut().create_global_value(GlobalValueData::IAddImm {
+                base,
+                offset,
+                ty: unit_ty.clone(),
+            });
+            let ty = self.data_flow_graph().global_type(gv);
+            into_first_result!(self.Global(gv, ty, span))
+        }
+    }
+
+    */
+
+    /// Loads a value of the type pointed to by the given pointer, on to the stack
+    ///
+    /// NOTE: This function will panic if `ptr` is not a pointer typed value
+    fn load(&mut self, addr: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<crate::ops::Load, _>(span);
+        let op = op_builder(addr)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// Loads a value of the type of the given local variable, on to the stack
+    ///
+    /// NOTE: This function will panic if `local` is not valid within the current function
+    fn load_local(&mut self, local: LocalVariable, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<crate::ops::LoadLocal, _>(span);
+        let op = op_builder(local)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// Allocate a local of `ty` and return its byte-address-space pointer.
+    fn alloca(&mut self, ty: Type, span: SourceSpan) -> Result<ValueRef, Report> {
+        let containing_op = self
+            .builder()
+            .insertion_block()
+            .and_then(|block| block.grandparent())
+            .ok_or_else(|| Report::msg("cannot insert an 'alloca' outside of a function"))?;
+        let mut function = containing_op
+            .try_downcast_op::<Function>()
+            .ok()
+            .or_else(|| containing_op.borrow().nearest_parent_op::<Function>())
+            .ok_or_else(|| Report::msg("cannot insert an 'alloca' outside of a function"))?;
+        let local = function.borrow_mut().alloc_local(ty);
+        let op = self.builder_mut().create::<crate::Alloca, _>(span)(local)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// Get the byte-address-space pointer to a procedure local.
+    fn local_byte_address(
+        &mut self,
+        local: LocalVariable,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        let op = self.builder_mut().create::<crate::LocalByteAddress, _>(span)(local)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// Derive a pointer by selecting array elements or struct fields. Invalid indices and
+    /// overflowing byte offsets return diagnostics.
+    fn getelementptr(
+        &mut self,
+        ptr: ValueRef,
+        indices: &[usize],
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        let indices = indices
+            .iter()
+            .map(|index| {
+                u32::try_from(*index).map_err(|_| {
+                    Report::msg("invalid hir.gep index: expected an index representable as u32")
+                })
+            })
+            .collect::<Result<runic_core::dialects::builtin::attributes::Array<u32>, _>>()?;
+        let op = self.builder_mut().create::<crate::GetElementPtr, _>(span)(ptr, indices)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// Gets the element-address-space pointer to a procedure local.
+    fn local_address(
+        &mut self,
+        local: LocalVariable,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<crate::ops::LocalAddress, _>(span);
+        let op = op_builder(local)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /*
+    /// Loads a value from the given temporary (local variable), of the type associated with that
+    /// local.
+    fn load_local(self, local: LocalId, span: SourceSpan) -> Value {
+        let data = Instruction::LocalVar(LocalVarOp {
+            op: Opcode::Load,
+            local,
+            args: ValueList::default(),
+        });
+        let ty = self.data_flow_graph().local_type(local).clone();
+        into_first_result!(self.build(data, Type::Ptr(Box::new(ty)), span))
+    }
+    */
+
+    /// Stores `value` to the address given by `ptr`
+    ///
+    /// NOTE: This function will panic if the pointer and pointee types do not match
+    fn store(
+        &mut self,
+        ptr: ValueRef,
+        value: ValueRef,
+        span: SourceSpan,
+    ) -> Result<UnsafeIntrusiveEntityRef<crate::ops::Store>, Report> {
+        let op_builder = self.builder_mut().create::<crate::ops::Store, _>(span);
+        op_builder(ptr, value)
+    }
+
+    /// Stores `value` to the given local variable.
+    ///
+    /// NOTE: This function will panic if the local variable and value types do not match
+    fn store_local(
+        &mut self,
+        local: LocalVariable,
+        value: ValueRef,
+        span: SourceSpan,
+    ) -> Result<UnsafeIntrusiveEntityRef<crate::ops::StoreLocal>, Report> {
+        assert_eq!(
+            value.borrow().ty(),
+            &local.ty(),
+            "cannot store a value of a different type in the given local variable"
+        );
+        let op_builder = self.builder_mut().create::<crate::ops::StoreLocal, _>(span);
+        op_builder(local, value)
+    }
+
+    /*
+
+    /// Stores `value` to the given temporary (local variable).
+    ///
+    /// NOTE: This function will panic if the type of `value` does not match the type of the local
+    /// variable.
+    fn store_local(&mut self, local: LocalId, value: Value, span: SourceSpan) -> Inst {
+        let mut vlist = ValueList::default();
+        {
+            let dfg = self.data_flow_graph_mut();
+            let local_ty = dfg.local_type(local);
+            let value_ty = dfg.value_type(value);
+            assert_eq!(local_ty, value_ty, "expected value to be a {}, got {}", local_ty, value_ty);
+            vlist.push(value, &mut dfg.value_lists);
+        }
+        let data = Instruction::LocalVar(LocalVarOp {
+            op: Opcode::Store,
+            local,
+            args: vlist,
+        });
+        self.build(data, Type::Unit, span).0
+    }
+
+    */
+
+    /// Writes `count` copies of `value` to memory starting at address `dst`.
+    ///
+    /// Each copy of `value` will be written to memory starting at the next aligned address from
+    /// the previous copy. This instruction will trap if the input address does not meet the
+    /// minimum alignment requirements of the type.
+    fn memset(
+        &mut self,
+        dst: ValueRef,
+        count: ValueRef,
+        value: ValueRef,
+        span: SourceSpan,
+    ) -> Result<UnsafeIntrusiveEntityRef<crate::ops::MemSet>, Report> {
+        let op_builder = self.builder_mut().create::<crate::ops::MemSet, _>(span);
+        op_builder(dst, count, value)
+    }
+
+    /// Copies `count` values from the memory at address `src`, to the memory at address `dst`.
+    ///
+    /// The unit size for `count` is determined by the `src` pointer type, i.e. a pointer to u8
+    /// will copy `count` bytes, a pointer to u16 will copy `count * 2` bytes, and so on.
+    ///
+    /// The source and destination ranges must not overlap, a copy of a non-zero length between
+    /// overlapping ranges traps. Use [Self::memmove] when the ranges may overlap.
+    ///
+    /// NOTE: The source and destination pointer types must match, a mismatch is rejected by the
+    /// verifier.
+    fn memcpy(
+        &mut self,
+        src: ValueRef,
+        dst: ValueRef,
+        count: ValueRef,
+        span: SourceSpan,
+    ) -> Result<UnsafeIntrusiveEntityRef<crate::ops::MemCpy>, Report> {
+        let op_builder = self.builder_mut().create::<crate::ops::MemCpy, _>(span);
+        op_builder(src, dst, count)
+    }
+
+    /// Copies `count` values from the memory at address `src`, to the memory at address `dst`,
+    /// where the two ranges may overlap.
+    ///
+    /// The unit size for `count` is determined by the `src` pointer type, i.e. a pointer to u8
+    /// will copy `count` bytes, a pointer to u16 will copy `count * 2` bytes, and so on.
+    ///
+    /// The destination receives the values the source range held before the copy. Use
+    /// [Self::memcpy] when the ranges are known to be disjoint.
+    ///
+    /// NOTE: The source and destination pointer types must match, a mismatch is rejected by the
+    /// verifier.
+    fn memmove(
+        &mut self,
+        src: ValueRef,
+        dst: ValueRef,
+        count: ValueRef,
+        span: SourceSpan,
+    ) -> Result<UnsafeIntrusiveEntityRef<crate::ops::MemMove>, Report> {
+        let op_builder = self.builder_mut().create::<crate::ops::MemMove, _>(span);
+        op_builder(src, dst, count)
+    }
+
+    /// Emit a println operation for printing a string to the debug output.
+    ///
+    /// The string is constructed by reading `len` bytes from memory starting at `ptr`.
+    fn println(
+        &mut self,
+        ptr: ValueRef,
+        len: ValueRef,
+        span: SourceSpan,
+    ) -> Result<UnsafeIntrusiveEntityRef<crate::ops::PrintLn>, Report> {
+        let op_builder = self.builder_mut().create::<crate::ops::PrintLn, _>(span);
+        op_builder(ptr, len)
+    }
+
+    /// This is a cast operation that permits performing arithmetic on pointer values
+    /// by casting a pointer to a specified integral type.
+    fn ptrtoint(&mut self, arg: ValueRef, ty: Type, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<crate::ops::PtrToInt, _>(span);
+        let op = op_builder(arg, ty)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// This is the inverse of `ptrtoint`, used to recover a pointer that was
+    /// previously cast to an integer type. It may also be used to cast arbitrary
+    /// integer values to pointers.
+    ///
+    /// In both cases, use of the resulting pointer must not violate the semantics
+    /// of the higher level language being represented in Miden IR.
+    fn inttoptr(&mut self, arg: ValueRef, ty: Type, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<crate::ops::IntToPtr, _>(span);
+        let op = op_builder(arg, ty)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /*
+    /// This is an intrinsic which derives a new pointer from an existing pointer to an aggregate.
+    ///
+    /// In short, this represents the common need to calculate a new pointer from an existing
+    /// pointer, but without losing provenance of the original pointer. It is specifically
+    /// intended for use in obtaining a pointer to an element/field of an array/struct, of the
+    /// correct type, given a well typed pointer to the aggregate.
+    ///
+    /// This function will panic if the pointer is not to an aggregate type
+    ///
+    /// The new pointer is derived by statically navigating the structure of the pointee type, using
+    /// `offsets` to guide the traversal. Initially, the first offset is relative to the original
+    /// pointer, where `0` refers to the base/first field of the object. The second offset is then
+    /// relative to the base of the object selected by the first offset, and so on. Offsets must
+    /// remain in bounds, any attempt to index outside a type's boundaries will result in a
+    /// panic.
+    fn getelementptr(&mut self, ptr: ValueRef, mut indices: &[usize], span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<crate::ops::GetElementPtr>(span);
+        op_builder(arg, ty)
+    } */
+
+    /// Cast `arg` to a value of type `ty`
+    ///
+    /// NOTE: This is only supported for integral types currently, and the types must be of the same
+    /// size in bytes, i.e. i32 -> u32 or vice versa.
+    ///
+    /// The intention of bitcasts is to reinterpret a value with different semantics, with no
+    /// validation that is typically implied by casting from one type to another.
+    fn bitcast(&mut self, arg: ValueRef, ty: Type, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<crate::ops::Bitcast, _>(span);
+        let op = op_builder(arg, ty)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// Cast `arg` to a value of type `ty`
+    ///
+    /// NOTE: This is only valid for numeric to numeric.
+    /// For numeric to pointer, or pointer to numeric casts, use `inttoptr` and `ptrtoint`
+    /// respectively.
+    fn cast(&mut self, arg: ValueRef, ty: Type, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<crate::ops::Cast, _>(span);
+        let op = op_builder(arg, ty)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    fn exec<C, A>(
+        &mut self,
+        callee: C,
+        signature: Signature,
+        args: A,
+        span: SourceSpan,
+    ) -> Result<UnsafeIntrusiveEntityRef<crate::ops::Exec>, Report>
+    where
+        C: AsCallableSymbolRef,
+        A: IntoIterator<Item = ValueRef>,
+    {
+        let op_builder = self.builder_mut().create::<crate::ops::Exec, (C, _, A)>(span);
+        op_builder(callee, signature, args)
+    }
+
+    /// Execute the function whose MAST root is stored in slot `index` of `table`; a same-context
+    /// indirect invocation (the lowering of Wasm `call_indirect`).
+    ///
+    /// `type_tag` is the signature tag the call site expects of the callee; dispatch traps if
+    /// the slot's tag differs. Tag 0 is reserved for null slots and is rejected here.
+    fn exec_indirect<A>(
+        &mut self,
+        table: FunctionTableRef,
+        signature: Signature,
+        type_tag: u32,
+        index: ValueRef,
+        args: A,
+        span: SourceSpan,
+    ) -> Result<UnsafeIntrusiveEntityRef<crate::ops::ExecIndirect>, Report>
+    where
+        A: IntoIterator<Item = ValueRef>,
+    {
+        if type_tag == 0 {
+            return Err(Report::msg(
+                "invalid hir.exec_indirect: signature tag 0 is reserved for null table slots",
+            ));
+        }
+        let op_builder =
+            self.builder_mut().create::<crate::ops::ExecIndirect, (_, _, _, _, A)>(span);
+        op_builder(table, signature, type_tag, index, args)
+    }
+
+    /// Materialize the MAST root digest of `callee` as four felt values (one word).
+    ///
+    /// The callee is referenced, not invoked; see [crate::ops::ProcedureRoot].
+    fn procedure_root<C>(
+        &mut self,
+        callee: C,
+        span: SourceSpan,
+    ) -> Result<UnsafeIntrusiveEntityRef<crate::ops::ProcedureRoot>, Report>
+    where
+        C: AsCallableSymbolRef,
+    {
+        let op_builder = self.builder_mut().create::<crate::ops::ProcedureRoot, (C,)>(span);
+        op_builder(callee)
+    }
+
+    /// Materialize a callable's MAST root as one four-felt word.
+    fn procref<C>(
+        &mut self,
+        callee: C,
+        span: SourceSpan,
+    ) -> Result<UnsafeIntrusiveEntityRef<crate::ops::Procref>, Report>
+    where
+        C: AsCallableSymbolRef,
+    {
+        self.builder_mut().create::<crate::ops::Procref, (C,)>(span)(callee)
+    }
+
+    /// Execute a typed inline MASM body with explicit stack inputs and results.
+    fn inline_asm<A>(
+        &mut self,
+        body: impl Into<runic_core::CompactString>,
+        signature: Signature,
+        args: A,
+        span: SourceSpan,
+    ) -> Result<UnsafeIntrusiveEntityRef<crate::ops::InlineAsm>, Report>
+    where
+        A: IntoIterator<Item = ValueRef>,
+    {
+        self.builder_mut().create::<crate::ops::InlineAsm, (_, _, A)>(span)(
+            body.into(),
+            signature,
+            args,
+        )
+    }
+
+    /// Execute a root read through an SSA element pointer in the caller's context.
+    fn dynexec<A>(
+        &mut self,
+        callee: ValueRef,
+        signature: Signature,
+        args: A,
+        span: SourceSpan,
+    ) -> Result<UnsafeIntrusiveEntityRef<crate::ops::DynExec>, Report>
+    where
+        A: IntoIterator<Item = ValueRef>,
+    {
+        self.builder_mut().create::<crate::ops::DynExec, (_, _, A)>(span)(signature, callee, args)
+    }
+
+    /// Invoke a root read through an SSA element pointer in a fresh context.
+    fn dyncall_local<A>(
+        &mut self,
+        callee: ValueRef,
+        signature: Signature,
+        args: A,
+        span: SourceSpan,
+    ) -> Result<UnsafeIntrusiveEntityRef<crate::ops::DynCallLocal>, Report>
+    where
+        A: IntoIterator<Item = ValueRef>,
+    {
+        self.builder_mut().create::<crate::ops::DynCallLocal, (_, _, A)>(span)(
+            signature, callee, args,
+        )
+    }
+
+    /// Invoke a foreign account procedure via the transaction kernel FPI executor.
+    ///
+    /// `prefix` contains account id suffix, account id prefix, and four procedure-root felts
+    /// in executor order. `inputs` contains at most sixteen procedure input felts. All operands
+    /// must have type `felt`; the backend assigns their storage.
+    fn exec_fpi<A>(
+        &mut self,
+        prefix: [ValueRef; crate::ops::ExecFpi::PREFIX_FELTS],
+        inputs: A,
+        span: SourceSpan,
+    ) -> Result<UnsafeIntrusiveEntityRef<crate::ops::ExecFpi>, Report>
+    where
+        A: IntoIterator<Item = ValueRef>,
+    {
+        let op_builder = self
+            .builder_mut()
+            .create::<crate::ops::ExecFpi, ([ValueRef; crate::ops::ExecFpi::PREFIX_FELTS], A)>(
+                span,
+            );
+        op_builder(prefix, inputs)
+    }
+
+    fn call<C, A>(
+        &mut self,
+        callee: C,
+        signature: Signature,
+        args: A,
+        span: SourceSpan,
+    ) -> Result<UnsafeIntrusiveEntityRef<crate::ops::Call>, Report>
+    where
+        C: AsCallableSymbolRef,
+        A: IntoIterator<Item = ValueRef>,
+    {
+        let op_builder = self.builder_mut().create::<crate::ops::Call, (C, _, A)>(span);
+        op_builder(callee, signature, args)
+    }
+
+    /// Invoke the procedure whose MAST root is `root` in a new context (`dyncall`); the
+    /// cross-context twin of `exec_indirect` for a root that is runtime data rather than a table
+    /// slot. See [crate::ops::Dyncall].
+    ///
+    /// `root` holds the four root felts, element 0 first; `signature` is the component-model
+    /// contract the call site expects of the callee.
+    fn dyncall<A>(
+        &mut self,
+        root: [ValueRef; crate::ops::Dyncall::ROOT_FELTS],
+        signature: Signature,
+        args: A,
+        span: SourceSpan,
+    ) -> Result<UnsafeIntrusiveEntityRef<crate::ops::Dyncall>, Report>
+    where
+        A: IntoIterator<Item = ValueRef>,
+    {
+        let op_builder = self
+            .builder_mut()
+            .create::<crate::ops::Dyncall, (_, [ValueRef; crate::ops::Dyncall::ROOT_FELTS], A)>(
+                span,
+            );
+        op_builder(signature, root, args)
+    }
+
+    fn syscall<C, A>(
+        &mut self,
+        callee: C,
+        signature: Signature,
+        args: A,
+        span: SourceSpan,
+    ) -> Result<UnsafeIntrusiveEntityRef<crate::ops::Syscall>, Report>
+    where
+        C: AsCallableSymbolRef,
+        A: IntoIterator<Item = ValueRef>,
+    {
+        let op_builder = self.builder_mut().create::<crate::ops::Syscall, (C, _, A)>(span);
+        op_builder(callee, signature, args)
+    }
+
+    /*
+    fn inline_asm(
+        self,
+        args: &[Value],
+        results: impl IntoIterator<Item = Type>,
+        span: SourceSpan,
+    ) -> MasmBuilder<Self> {
+        MasmBuilder::new(self, args, results.into_iter().collect(), span)
+    }
+     */
+
+    fn builder(&self) -> &B;
+    fn builder_mut(&mut self) -> &mut B;
+}
+
+impl<'f, B: ?Sized + Builder> HirOpBuilder<'f, B> for FunctionBuilder<'f, B> {
+    fn alloca(&mut self, ty: Type, span: SourceSpan) -> Result<ValueRef, Report> {
+        let local = self.alloc_local(ty);
+        let op = self.builder_mut().create::<crate::Alloca, _>(span)(local)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    #[inline(always)]
+    fn builder(&self) -> &B {
+        FunctionBuilder::builder(self)
+    }
+
+    #[inline(always)]
+    fn builder_mut(&mut self) -> &mut B {
+        FunctionBuilder::builder_mut(self)
+    }
+}
+
+impl<'f> HirOpBuilder<'f, OpBuilder> for &'f mut OpBuilder {
+    #[inline(always)]
+    fn builder(&self) -> &OpBuilder {
+        self
+    }
+
+    #[inline(always)]
+    fn builder_mut(&mut self) -> &mut OpBuilder {
+        self
+    }
+}
+
+impl<B: ?Sized + Builder> HirOpBuilder<'_, B> for B {
+    #[inline(always)]
+    fn builder(&self) -> &B {
+        self
+    }
+
+    #[inline(always)]
+    fn builder_mut(&mut self) -> &mut B {
+        self
+    }
+}

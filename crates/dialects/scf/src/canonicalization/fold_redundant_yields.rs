@@ -1,0 +1,1100 @@
+use alloc::rc::Rc;
+use core::{any::TypeId, ops::Index};
+
+use runic_core::{
+    patterns::{Pattern, PatternBenefit, PatternInfo, PatternKind, RewritePattern},
+    *,
+};
+
+use crate::*;
+
+/// Lift common yield results from their regions to their predecessors.
+pub struct FoldRedundantYields {
+    info: PatternInfo,
+}
+
+impl FoldRedundantYields {
+    pub fn new(context: Rc<Context>) -> Self {
+        Self {
+            info: PatternInfo::new(
+                context,
+                "fold-redundant-yields",
+                PatternKind::Trait(TypeId::of::<dyn RegionBranchOpInterface>()),
+                PatternBenefit::MAX,
+            ),
+        }
+    }
+}
+
+impl Pattern for FoldRedundantYields {
+    fn info(&self) -> &PatternInfo {
+        &self.info
+    }
+}
+
+impl RewritePattern for FoldRedundantYields {
+    fn match_and_rewrite(
+        &self,
+        op_ref: OperationRef,
+        rewriter: &mut dyn Rewriter,
+    ) -> Result<bool, Report> {
+        let op = op_ref.borrow();
+
+        let Some(br_op) = op.as_trait::<dyn RegionBranchOpInterface>() else {
+            return Ok(false);
+        };
+
+        // For each successor gather its terminator and the terminator operands.
+        let mut term_ops: SmallVec<[_; 4]> = SmallVec::new();
+        let mut region_yields: SmallVec<[_; 4]> = SmallVec::new();
+
+        for succ_region in br_op.get_successor_regions(RegionBranchPoint::Parent) {
+            // Only regions of `br_op` itself. The pattern rewrites terminators it can see; a
+            // region reached by an early exit belongs to an ancestor and is not this op's to fold.
+            let Some(region_ref) = succ_region.region_graph_successor() else {
+                return Ok(false);
+            };
+
+            let region = region_ref.borrow();
+            assert!(region.has_one_block());
+            let block = region.entry();
+            let term_op_ref =
+                block.terminator().expect("All region blocks must have a terminator.");
+            let term_op = term_op_ref.borrow();
+            let Some(term_op) = term_op.downcast_ref::<Yield>() else {
+                return Ok(false);
+            };
+
+            // Save the terminator and each of its opands paired with their indices.
+            term_ops.push(term_op_ref);
+            region_yields.push(
+                term_op
+                    .get_successor_operands(RegionBranchPoint::Parent)
+                    .forwarded()
+                    .iter()
+                    .map(|opand_ref| {
+                        let opand = opand_ref.borrow();
+                        (opand.index(), opand.as_value_ref())
+                    })
+                    .collect::<adt::SmallSet<_, 4>>(),
+            );
+        }
+
+        if region_yields.len() < 2 {
+            return Ok(false);
+        }
+
+        // Fold the yield opand sets down via intersection to a final set which will contain the
+        // redundant values.
+        let redundant_yield_vals = region_yields
+            .into_iter()
+            .reduce(|acc, region_yield_vals| acc.intersection(&region_yield_vals))
+            .expect("Have already checked region_yields is non-empty.");
+
+        if redundant_yield_vals.is_empty() {
+            // No redundant values found.
+            return Ok(false);
+        }
+
+        // Save a copy of the redundant result positions.
+        let mut redundant_result_positions =
+            redundant_yield_vals.iter().map(|(pos, _)| *pos).collect::<SmallVec<[_; 4]>>();
+
+        let all_results_are_redundant = redundant_yield_vals.len() == op.num_results();
+
+        // **DELETING THE OP DELETES EVERY EXIT INSIDE IT, AND EFFECTS CANNOT SEE THOSE.**
+        //
+        // The guard above established that each region's DIRECT terminator is an `scf.yield`,
+        // which returns to this op and is therefore safe to drop with it. It establishes nothing
+        // about a terminator one region deeper: an `scf.break` inside a nested `scf.if` inside
+        // this one's branch passes it untouched, because the branch holding that `scf.if` is
+        // itself yield-terminated. And `is_memory_effect_free` will not catch it either — control
+        // flow is not a memory effect, so an `scf.break` that honestly declares it touches no
+        // memory leaves the whole subtree looking free of effects.
+        //
+        // So ask [`Operation::carries_a_nested_exit`] of the operations INSIDE the regions rather
+        // than of this op: the vetted `scf.yield`s must not answer for themselves, and anything
+        // below them is unvetted. This is blunt in the same way the predicate is — a nested
+        // `scf.if` that only yields also declines the fold — and blunt in the safe direction: it
+        // only ever refuses a deletion that used to happen.
+        let carries_a_nested_exit = op.regions().iter().any(|region| {
+            region
+                .body()
+                .iter()
+                .any(|block| block.body().iter().any(|nested| nested.carries_a_nested_exit()))
+        });
+
+        if all_results_are_redundant && op.is_memory_effect_free() && !carries_a_nested_exit {
+            // The entire operation is actually redundant; just remove it.  Make sure the yield
+            // vals are sorted first.
+            let mut sorted_vals = redundant_yield_vals.into_vec();
+            sorted_vals.sort_unstable_by_key(|val| val.0);
+
+            // Wrap each of the values in Some.
+            let some_vals =
+                sorted_vals.into_iter().map(|(_, val)| Some(val)).collect::<SmallVec<[_; 4]>>();
+
+            // Replace the operation.
+            drop(op);
+            rewriter.replace_op_with_values(op_ref, &some_vals);
+        } else {
+            // Replace all uses of the redundant results.
+            for (redundant_opand_pos, redundant_yield_val) in redundant_yield_vals {
+                let result_val_ref =
+                    op.results().index(redundant_opand_pos).borrow().as_value_ref();
+                if result_val_ref.borrow().is_used() {
+                    rewriter.replace_all_uses_of_value_with(result_val_ref, redundant_yield_val);
+                }
+            }
+
+            // Next remove the redundant results.  Iterate for each position in reverse to avoid
+            // invalidating offsets as we go.
+            redundant_result_positions.sort_unstable_by(|a, b| b.cmp(a));
+            {
+                let mut op = op.into_entity_mut().unwrap();
+                for idx in &redundant_result_positions {
+                    op.results_mut().group_mut(0).erase(*idx);
+                }
+            }
+
+            // And remove the redundant terminator operands.
+            for mut term_op in term_ops {
+                let mut new_opands = SmallVec::<[ValueRef; 4]>::default();
+
+                // Make a copy of the old operands, except for the redundant value, except in the
+                // case where they're all redundant where we need no operands.
+                if !all_results_are_redundant {
+                    for old_opand in term_op.borrow().operands().iter() {
+                        if !redundant_result_positions.contains(&old_opand.index()) {
+                            new_opands.push(old_opand.borrow().as_value_ref());
+                        }
+                    }
+                }
+
+                // Update the terminator with the new operands.
+                let _guard = rewriter.modify_op_in_place(term_op);
+                let mut term_op_mut = term_op.borrow_mut();
+                term_op_mut.set_operands(new_opands);
+            }
+        }
+
+        Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{boxed::Box, format, rc::Rc, sync::Arc, vec::Vec};
+
+    use runic_core::{
+        Context, Report, SourceSpan, Type,
+        dialects::{builtin::BuiltinOpBuilder, test::TestOpBuilder},
+        pass::{Pass, PassExecutionState},
+        patterns::{
+            FrozenRewritePatternSet, GreedyRewriteConfig, RewritePattern, RewritePatternSet,
+        },
+        testing::Test,
+    };
+    use runic_dialect_cf::{ControlFlowOpBuilder, SwitchCase};
+    use runic_expect_test::expect_file;
+
+    use super::*;
+
+    struct SingleCanonicalizerPass {
+        rewrites: Rc<FrozenRewritePatternSet>,
+        should_modify: bool,
+    }
+
+    impl SingleCanonicalizerPass {
+        fn new(
+            context: Rc<Context>,
+            pattern: Box<dyn RewritePattern>,
+            should_modify: bool,
+        ) -> Self {
+            let pattern_set = RewritePatternSet::from_iter(context, [pattern]);
+            let rewrites = Rc::new(FrozenRewritePatternSet::new(pattern_set));
+
+            Self {
+                rewrites,
+                should_modify,
+            }
+        }
+    }
+
+    impl Pass for SingleCanonicalizerPass {
+        type Target = Operation;
+
+        fn name(&self) -> &'static str {
+            "test-single-rewriter"
+        }
+
+        fn can_schedule_on(&self, _name: &OperationName) -> bool {
+            true
+        }
+
+        fn run_on_operation(
+            &mut self,
+            op: EntityMut<'_, Self::Target>,
+            state: &mut PassExecutionState,
+        ) -> Result<(), Report> {
+            let op_ref = op.as_operation_ref();
+            drop(op);
+
+            let converged = patterns::apply_patterns_and_fold_greedily(
+                op_ref,
+                self.rewrites.clone(),
+                GreedyRewriteConfig::default(),
+            );
+
+            let changed = match converged {
+                Ok(b) => b,
+                Err(e) => {
+                    panic!("Pass returned error: {e}");
+                }
+            };
+
+            match (changed, self.should_modify) {
+                (true, false) => panic!("Pass modified input unexpectedly."),
+                (false, true) => panic!("Pass did not modify input."),
+                _ => {}
+            }
+
+            state.set_post_pass_status(changed.into());
+
+            Ok(())
+        }
+    }
+
+    fn run_single_canonicalizer(test: &mut Test, should_modify: bool) -> Result<(), Report> {
+        // UNCOMMENT TO DUMP (SHOW DIFF OF) CF INPUT.
+        // let input = format!("{}", &operation.borrow());
+        // expect_file!["non-existentent"].assert_eq(&input);
+
+        // Run the CF->SCF pass first, then the canonicalisation pass.  Need to register the SCF
+        // dialect to make sure the patterns are registered.
+        test.apply_pass::<transforms::LiftControlFlowToSCF>(false)?;
+
+        // Confirm the CF->SCF transformed IR is correct.
+        let function = test.function().as_operation_ref();
+        let input = format!("{}", function.borrow());
+        let before_file_path = format!("expected/{}_before.hir", test.name());
+        expect_file![before_file_path.as_str()].assert_eq(&input);
+
+        let context = test.context_rc();
+        let pattern = Box::new(FoldRedundantYields::new(context.clone()));
+        test.apply_boxed_pass(
+            Box::new(SingleCanonicalizerPass::new(context, pattern, should_modify)),
+            true,
+        )?;
+
+        // Confirm the canonicalised IR is correct.
+        let output = format!("{}", test.function().as_operation_ref().borrow());
+        let after_file_path = format!("expected/{}_after.hir", test.name());
+        expect_file![after_file_path.as_str()].assert_eq(&output);
+
+        Ok(())
+    }
+
+    #[test]
+    fn fold_redundant_yields_subset_if_switch() -> Result<(), Report> {
+        let mut test =
+            Test::new("fold_redundant_yields_subset_if_switch", &[Type::U32], &[Type::U32]);
+
+        let span = SourceSpan::default();
+
+        let mut builder = test.function_builder();
+        let if_then = builder.create_block();
+        let if_else = builder.create_block();
+        let switch_on_one_block = builder.create_block();
+        let switch_on_two_block = builder.create_block();
+        let switch_default_block = builder.create_block();
+        let if_final = builder.create_block();
+
+        let if_sum_lhs = builder.append_block_param(if_final, Type::U32, span);
+        let if_sum_rhs = builder.append_block_param(if_final, Type::U32, span);
+
+        let input = builder.current_block().borrow().arguments()[0].upcast();
+        let redundant_val = builder.u32(11, span)?;
+
+        let zero = builder.u32(0, span)?;
+        let is_zero = builder.eq(input, zero, span)?;
+        builder.cond_br(is_zero, if_then, [], if_else, [], span)?;
+
+        builder.switch_to_block(if_then);
+        let then_non_redundant_val = builder.u32(22, span)?;
+        builder.br(if_final, [redundant_val, then_non_redundant_val], span)?;
+
+        let switch_on_one_case = SwitchCase::create(1, switch_on_one_block, Default::default());
+        let switch_on_two_case = SwitchCase::create(2, switch_on_two_block, Default::default());
+
+        builder.switch_to_block(if_else);
+        builder.switch(
+            input,
+            [switch_on_one_case, switch_on_two_case],
+            switch_default_block,
+            Vec::default(),
+            span,
+        )?;
+
+        builder.switch_to_block(switch_on_one_block);
+        let switch_on_one_non_redundant_val = builder.u32(33, span)?;
+        builder.br(if_final, [redundant_val, switch_on_one_non_redundant_val], span)?;
+
+        builder.switch_to_block(switch_on_two_block);
+        let switch_on_two_non_redundant_val = builder.u32(44, span)?;
+        builder.br(if_final, [redundant_val, switch_on_two_non_redundant_val], span)?;
+
+        builder.switch_to_block(switch_default_block);
+        let switch_default_non_redundant_val = builder.u32(55, span)?;
+        builder.br(if_final, [redundant_val, switch_default_non_redundant_val], span)?;
+
+        // Add all the results together along with the redundant value to give them all users.
+        builder.switch_to_block(if_final);
+        let if_sum0 = builder.add(if_sum_lhs, if_sum_rhs, span)?;
+        let if_sum1 = builder.add(if_sum0, redundant_val, span)?;
+        builder.ret(Some(if_sum1), span)?;
+
+        run_single_canonicalizer(&mut test, true)
+    }
+
+    #[test]
+    fn fold_redundant_yields_all_if_switch() -> Result<(), Report> {
+        let mut test = Test::new("fold_redundant_yields_all_if_switch", &[Type::U32], &[Type::U32]);
+
+        let span = SourceSpan::default();
+
+        let mut builder = test.function_builder();
+
+        let switch_on_one_block = builder.create_block();
+        let if_then_block = builder.create_block();
+        let if_else_block = builder.create_block();
+        let switch_on_two_block = builder.create_block();
+        let switch_default_block = builder.create_block();
+        let switch_final_block = builder.create_block();
+
+        let sum_lhs = builder.append_block_param(switch_final_block, Type::U32, span);
+        let sum_rhs = builder.append_block_param(switch_final_block, Type::U32, span);
+
+        let input = builder.current_block().borrow().arguments()[0].upcast();
+        let redundant_val0 = builder.u32(11, span)?;
+        let redundant_val1 = builder.u32(22, span)?;
+
+        let switch_on_one_case = SwitchCase::create(1, switch_on_one_block, Default::default());
+        let switch_on_two_case = SwitchCase::create(2, switch_on_two_block, Default::default());
+
+        builder.switch(
+            input,
+            [switch_on_one_case, switch_on_two_case],
+            switch_default_block,
+            Vec::default(),
+            span,
+        )?;
+
+        builder.switch_to_block(switch_on_one_block);
+        builder.br(switch_final_block, [redundant_val0, redundant_val1], span)?;
+
+        builder.switch_to_block(switch_on_two_block);
+        let zero = builder.u32(0, span)?;
+        let is_zero = builder.eq(input, zero, span)?;
+        builder.cond_br(is_zero, if_then_block, [], if_else_block, [], span)?;
+
+        builder.switch_to_block(if_then_block);
+        builder.br(switch_final_block, [redundant_val0, redundant_val1], span)?;
+
+        builder.switch_to_block(if_else_block);
+        builder.br(switch_final_block, [redundant_val0, redundant_val1], span)?;
+
+        builder.switch_to_block(switch_default_block);
+        builder.br(switch_final_block, [redundant_val0, redundant_val1], span)?;
+
+        // Add all the results together along with the redundant value to give them all users.
+        builder.switch_to_block(switch_final_block);
+        let sum = builder.add(sum_lhs, sum_rhs, span)?;
+        builder.ret(Some(sum), span)?;
+
+        run_single_canonicalizer(&mut test, true)
+    }
+
+    #[test]
+    fn fold_redundant_yields_all_switch_if() -> Result<(), Report> {
+        let mut test = Test::new("fold_redundant_yields_all_switch_if", &[Type::U32], &[Type::U32]);
+
+        let span = SourceSpan::default();
+
+        let mut builder = test.function_builder();
+
+        let if_then_block = builder.create_block();
+        let switch_on_one_block = builder.create_block();
+        let switch_on_two_block = builder.create_block();
+        let switch_default_block = builder.create_block();
+        let if_else_block = builder.create_block();
+        let if_final_block = builder.create_block();
+
+        let sum_lhs = builder.append_block_param(if_final_block, Type::U32, span);
+        let sum_rhs = builder.append_block_param(if_final_block, Type::U32, span);
+
+        let input = builder.current_block().borrow().arguments()[0].upcast();
+        let redundant_val0 = builder.u32(11, span)?;
+        let redundant_val1 = builder.u32(22, span)?;
+
+        let zero = builder.u32(0, span)?;
+        let is_not_zero = builder.neq(input, zero, span)?;
+        builder.cond_br(is_not_zero, if_then_block, [], if_else_block, [], span)?;
+
+        let switch_on_one_case = SwitchCase::create(1, switch_on_one_block, Default::default());
+        let switch_on_two_case = SwitchCase::create(2, switch_on_two_block, Default::default());
+
+        builder.switch_to_block(if_then_block);
+        builder.switch(
+            input,
+            [switch_on_one_case, switch_on_two_case],
+            switch_default_block,
+            Vec::default(),
+            span,
+        )?;
+
+        builder.switch_to_block(switch_on_one_block);
+        builder.br(if_final_block, [redundant_val0, redundant_val1], span)?;
+
+        builder.switch_to_block(switch_on_two_block);
+        builder.br(if_final_block, [redundant_val0, redundant_val1], span)?;
+
+        builder.switch_to_block(switch_default_block);
+        builder.br(if_final_block, [redundant_val0, redundant_val1], span)?;
+
+        builder.switch_to_block(if_else_block);
+        builder.br(if_final_block, [redundant_val0, redundant_val1], span)?;
+
+        builder.switch_to_block(if_final_block);
+        let sum = builder.add(sum_lhs, sum_rhs, span)?;
+        builder.ret(Some(sum), span)?;
+
+        run_single_canonicalizer(&mut test, true)
+    }
+
+    #[test]
+    fn fold_redundant_yields_many_switch() -> Result<(), Report> {
+        let mut test = Test::new("fold_redundant_yields_many_switch", &[Type::U32], &[Type::U32]);
+
+        let span = SourceSpan::default();
+
+        let mut builder = test.function_builder();
+
+        let switch_on_one_block = builder.create_block();
+        let switch_on_two_block = builder.create_block();
+        let switch_on_three_block = builder.create_block();
+        let switch_on_default_block = builder.create_block();
+        let switch_final_block = builder.create_block();
+        let exit_block = builder.create_block();
+
+        let final_arg0 = builder.append_block_param(switch_final_block, Type::U32, span);
+        let final_arg1 = builder.append_block_param(switch_final_block, Type::U32, span);
+        let final_arg2 = builder.append_block_param(switch_final_block, Type::U32, span);
+        let final_arg3 = builder.append_block_param(switch_final_block, Type::U32, span);
+        let final_arg4 = builder.append_block_param(switch_final_block, Type::U32, span);
+
+        let ret_val = builder.append_block_param(exit_block, Type::U32, span);
+
+        let input = builder.current_block().borrow().arguments()[0].upcast();
+
+        let redundant_val11 = builder.u32(11, span)?;
+        let redundant_val22 = builder.u32(22, span)?;
+        let redundant_val33 = builder.u32(33, span)?;
+
+        let switch_on_one_case = SwitchCase::create(1, switch_on_one_block, Default::default());
+        let switch_on_two_case = SwitchCase::create(2, switch_on_two_block, Default::default());
+        let switch_on_three_case = SwitchCase::create(3, switch_on_three_block, Default::default());
+
+        builder.switch(
+            input,
+            [switch_on_one_case, switch_on_two_case, switch_on_three_case],
+            switch_on_default_block,
+            Vec::default(),
+            span,
+        )?;
+
+        builder.switch_to_block(switch_on_one_block);
+        let switch_on_one_non_redundant_val0 = builder.u32(100, span)?;
+        let switch_on_one_non_redundant_val1 = builder.u32(101, span)?;
+        builder.br(
+            switch_final_block,
+            [
+                redundant_val11,
+                redundant_val22,
+                switch_on_one_non_redundant_val0,
+                redundant_val33,
+                switch_on_one_non_redundant_val1,
+            ],
+            span,
+        )?;
+
+        builder.switch_to_block(switch_on_two_block);
+        let switch_on_two_non_redundant_val0 = builder.u32(200, span)?;
+        let switch_on_two_non_redundant_val1 = builder.u32(201, span)?;
+        builder.br(
+            switch_final_block,
+            [
+                redundant_val11,
+                redundant_val22,
+                switch_on_two_non_redundant_val0,
+                redundant_val33,
+                switch_on_two_non_redundant_val1,
+            ],
+            span,
+        )?;
+
+        builder.switch_to_block(switch_on_three_block);
+        let switch_on_three_non_redundant_val0 = builder.u32(300, span)?;
+        let switch_on_three_non_redundant_val1 = builder.u32(301, span)?;
+        builder.br(
+            switch_final_block,
+            [
+                redundant_val11,
+                redundant_val22,
+                switch_on_three_non_redundant_val0,
+                redundant_val33,
+                switch_on_three_non_redundant_val1,
+            ],
+            span,
+        )?;
+
+        builder.switch_to_block(switch_on_default_block);
+        let switch_on_default_non_redundant_val0 = builder.u32(400, span)?;
+        let switch_on_default_non_redundant_val1 = builder.u32(401, span)?;
+        builder.br(
+            switch_final_block,
+            [
+                redundant_val11,
+                redundant_val22,
+                switch_on_default_non_redundant_val0,
+                redundant_val33,
+                switch_on_default_non_redundant_val1,
+            ],
+            span,
+        )?;
+
+        // Add all the results together.
+        builder.switch_to_block(switch_final_block);
+        let sum0 = builder.add(final_arg0, final_arg1, span)?;
+        let sum1 = builder.add(sum0, final_arg2, span)?;
+        let sum2 = builder.add(sum1, final_arg3, span)?;
+        let sum3 = builder.add(sum2, final_arg4, span)?;
+        builder.br(exit_block, [sum3], span)?;
+
+        builder.switch_to_block(exit_block);
+        builder.ret(Some(ret_val), span)?;
+
+        run_single_canonicalizer(&mut test, true)
+    }
+
+    #[test]
+    fn fold_redundant_yields_different_pos_switch() -> Result<(), Report> {
+        let mut test =
+            Test::new("fold_redundant_yields_different_pos_switch", &[Type::U32], &[Type::U32]);
+
+        let span = SourceSpan::default();
+
+        let mut builder = test.function_builder();
+
+        let switch_on_one_block = builder.create_block();
+        let switch_on_two_block = builder.create_block();
+        let switch_on_default_block = builder.create_block();
+        let switch_final_block = builder.create_block();
+
+        let final_arg0 = builder.append_block_param(switch_final_block, Type::U32, span);
+        let final_arg1 = builder.append_block_param(switch_final_block, Type::U32, span);
+
+        let input = builder.current_block().borrow().arguments()[0].upcast();
+
+        let redundant_val11 = builder.u32(11, span)?;
+        let redundant_val22 = builder.u32(22, span)?;
+
+        let switch_on_one_case = SwitchCase::create(1, switch_on_one_block, Default::default());
+        let switch_on_two_case = SwitchCase::create(2, switch_on_two_block, Default::default());
+
+        builder.switch(
+            input,
+            [switch_on_one_case, switch_on_two_case],
+            switch_on_default_block,
+            Vec::default(),
+            span,
+        )?;
+
+        builder.switch_to_block(switch_on_one_block);
+        builder.br(switch_final_block, [redundant_val11, redundant_val22], span)?;
+
+        // 'yielding' args in reverse order.
+        builder.switch_to_block(switch_on_two_block);
+        builder.br(switch_final_block, [redundant_val22, redundant_val11], span)?;
+
+        builder.switch_to_block(switch_on_default_block);
+        builder.br(switch_final_block, [redundant_val11, redundant_val22], span)?;
+
+        // Add all the results together.
+        builder.switch_to_block(switch_final_block);
+        let sum = builder.add(final_arg0, final_arg1, span)?;
+        builder.ret(Some(sum), span)?;
+
+        run_single_canonicalizer(
+            &mut test, false, // Should not modify input.
+        )
+    }
+
+    #[test]
+    fn fold_redundant_yields_all_but_one_switch() -> Result<(), Report> {
+        let mut test =
+            Test::new("fold_redundant_yields_all_but_one_switch", &[Type::U32], &[Type::U32]);
+
+        let span = SourceSpan::default();
+
+        let mut builder = test.function_builder();
+
+        let switch_on_one_block = builder.create_block();
+        let switch_on_two_block = builder.create_block();
+        let switch_on_three_block = builder.create_block();
+        let switch_on_default_block = builder.create_block();
+        let switch_final_block = builder.create_block();
+        let exit_block = builder.create_block();
+
+        let final_arg0 = builder.append_block_param(switch_final_block, Type::U32, span);
+        let final_arg1 = builder.append_block_param(switch_final_block, Type::U32, span);
+        let final_arg2 = builder.append_block_param(switch_final_block, Type::U32, span);
+
+        let ret_val = builder.append_block_param(exit_block, Type::U32, span);
+
+        let input = builder.current_block().borrow().arguments()[0].upcast();
+
+        let redundant_val11 = builder.u32(11, span)?;
+        let redundant_val22 = builder.u32(22, span)?;
+        let redundant_val33 = builder.u32(33, span)?;
+
+        let switch_on_one_case = SwitchCase::create(1, switch_on_one_block, Default::default());
+        let switch_on_two_case = SwitchCase::create(2, switch_on_two_block, Default::default());
+        let switch_on_three_case = SwitchCase::create(3, switch_on_three_block, Default::default());
+
+        builder.switch(
+            input,
+            [switch_on_one_case, switch_on_two_case, switch_on_three_case],
+            switch_on_default_block,
+            Vec::default(),
+            span,
+        )?;
+
+        builder.switch_to_block(switch_on_one_block);
+        builder.br(
+            switch_final_block,
+            [redundant_val11, redundant_val22, redundant_val33],
+            span,
+        )?;
+
+        builder.switch_to_block(switch_on_two_block);
+        builder.br(
+            switch_final_block,
+            [redundant_val11, redundant_val22, redundant_val33],
+            span,
+        )?;
+
+        builder.switch_to_block(switch_on_three_block);
+        builder.br(
+            switch_final_block,
+            [redundant_val11, redundant_val22, redundant_val33],
+            span,
+        )?;
+
+        builder.switch_to_block(switch_on_default_block);
+        let non_redundant_val44 = builder.u32(44, span)?;
+        builder.br(
+            switch_final_block,
+            [redundant_val11, non_redundant_val44, redundant_val33],
+            span,
+        )?;
+
+        // Add all the results together.
+        builder.switch_to_block(switch_final_block);
+        let sum0 = builder.add(final_arg0, final_arg1, span)?;
+        let sum1 = builder.add(sum0, final_arg2, span)?;
+        builder.br(exit_block, [sum1], span)?;
+
+        builder.switch_to_block(exit_block);
+        builder.ret(Some(ret_val), span)?;
+
+        run_single_canonicalizer(&mut test, true)
+    }
+
+    #[test]
+    fn fold_redundant_yields_effects_if() -> Result<(), Report> {
+        let mut test = Test::new(
+            "fold_redundant_yields_effects_if",
+            &[Type::U32, Type::Ptr(Arc::new(PointerType::new(Type::U32)))],
+            &[Type::U32],
+        );
+
+        let span = SourceSpan::default();
+
+        let mut builder = test.function_builder();
+
+        let if_then = builder.create_block();
+        let if_else = builder.create_block();
+        let if_final = builder.create_block();
+
+        let ret_val = builder.append_block_param(if_final, Type::U32, span);
+
+        let input = builder.current_block().borrow().arguments()[0].upcast();
+        let input_ptr = builder.current_block().borrow().arguments()[1].upcast();
+        let redundant_val = builder.u32(11, span)?;
+
+        let zero = builder.u32(0, span)?;
+        let is_zero = builder.eq(input, zero, span)?;
+        builder.cond_br(is_zero, if_then, [], if_else, [], span)?;
+
+        builder.switch_to_block(if_then);
+        builder.br(if_final, [redundant_val], span)?;
+
+        builder.switch_to_block(if_else);
+        builder.store(input_ptr, redundant_val, span)?;
+        builder.br(if_final, [redundant_val], span)?;
+
+        // Add all the results together along with the redundant value to give them all users.
+        builder.switch_to_block(if_final);
+        builder.ret(Some(ret_val), span)?;
+
+        run_single_canonicalizer(&mut test, true)
+    }
+
+    /// **THE MISCOMPILE THIS PINS.** The guard above (`!term_op.is::<Yield>()`) inspects each
+    /// region's DIRECT terminator only. An `scf.break` one region deeper passes it — the `scf.if`
+    /// holding it is terminated by a perfectly ordinary `scf.yield` — and once `scf.break` declares
+    /// that it touches no memory, the enclosing `scf.if` is memory-effect-free, so the
+    /// whole-op-redundant path deletes the `scf.if` and the loop exit inside it with it.
+    ///
+    /// The shape below is the smallest one that reaches it: a doubly-nested break. The singly
+    /// nested case (`scf.if { scf.break }`) is what the direct-terminator guard already catches.
+    #[track_caller]
+    fn run_one(name: &str, source: &str) -> (bool, usize, usize) {
+        use runic_core::{
+            patterns::{FrozenRewritePatternSet, GreedyRewriteConfig, RewritePatternSet},
+            testing::parse_function_fixpoint,
+        };
+
+        let context = Rc::new(Context::default());
+        let (function, _) = parse_function_fixpoint(&context, name, source)
+            .unwrap_or_else(|err| panic!("'{name}' must parse before the pattern runs: {err}"));
+
+        let count_breaks = || {
+            let mut breaks = 0usize;
+            function.as_operation_ref().borrow().prewalk_all(|op| {
+                if op.is::<Break>() {
+                    breaks += 1;
+                }
+            });
+            breaks
+        };
+        let before = count_breaks();
+
+        let pattern_set = RewritePatternSet::from_iter(
+            context.clone(),
+            [Box::new(FoldRedundantYields::new(context.clone())) as Box<dyn RewritePattern>],
+        );
+        let rewrites = Rc::new(FrozenRewritePatternSet::new(pattern_set));
+        let changed = patterns::apply_patterns_and_fold_greedily(
+            function.as_operation_ref(),
+            rewrites,
+            GreedyRewriteConfig::default(),
+        )
+        .expect("expected the canonicalizer to converge");
+
+        (changed, before, count_breaks())
+    }
+
+    /// The loop below can only leave early through the `scf.break`; deleting the `scf.if` that
+    /// holds it makes the loop unable to exit before its condition says so. The break count is
+    /// the assertion because the exit is the thing at stake, not the yields.
+    #[test]
+    fn fold_redundant_yields_keeps_an_if_carrying_a_nested_early_exit() {
+        let (_, before, after) = run_one(
+            "fold_redundant_yields_nested_early_exit.hir",
+            "\
+builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
+    %z = arith.constant 0 : u32;
+    %r = scf.while %z before {
+    ^before(%i: u32):
+        %c = arith.lt %i, %n;
+        scf.condition %c, %i : (i1, u32);
+    } after {
+    ^after(%j: u32):
+        %g = arith.gt %j, %n;
+        %o = scf.if %g then {
+            %p = scf.if %g then {
+                scf.break 1 %j : (u32);
+            } else {
+                scf.yield %j : (u32);
+            } : (i1) -> (u32);
+            scf.yield %j : (u32);
+        } else {
+            scf.yield %j : (u32);
+        } : (i1) -> (u32);
+        scf.yield %o : (u32);
+    } : (u32) -> (u32);
+    builtin.ret %r : (u32);
+};",
+        );
+        assert_eq!(before, 1, "the input must contain exactly one loop exit");
+        assert_eq!(
+            after, 1,
+            "the fold deleted an `scf.if` carrying an `scf.break`, so the loop can no longer exit \
+             early"
+        );
+    }
+
+    /// The control: the same fold, on an `scf.if` whose regions hold no terminator of their own
+    /// beyond the vetted `scf.yield`, still deletes the whole op. Without this the fix above could
+    /// be "decline everything" and nothing would say so.
+    #[test]
+    fn fold_redundant_yields_still_deletes_an_if_with_no_nested_terminator() {
+        let (changed, before, after) = run_one(
+            "fold_redundant_yields_nested_early_exit_control.hir",
+            "\
+builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
+    %z = arith.constant 0 : u32;
+    %r = scf.while %z before {
+    ^before(%i: u32):
+        %c = arith.lt %i, %n;
+        scf.condition %c, %i : (i1, u32);
+    } after {
+    ^after(%j: u32):
+        %g = arith.gt %j, %n;
+        %o = scf.if %g then {
+            scf.yield %j : (u32);
+        } else {
+            scf.yield %j : (u32);
+        } : (i1) -> (u32);
+        scf.yield %o : (u32);
+    } : (u32) -> (u32);
+    builtin.ret %r : (u32);
+};",
+        );
+        assert!(changed, "an `scf.if` yielding the same value from both branches is redundant");
+        assert_eq!((before, after), (0, 0), "the control shape has no loop exit to lose");
+    }
+
+    /* A `while` test which initially showed that this rewriter probably isn't suited for them. {{{
+
+    #[test]
+    fn fold_redundant_yields_subset_while() -> Result<(), Report> {
+        let context = Rc::new(Context::default());
+        let mut builder = OpBuilder::new(context.clone());
+
+        let span = SourceSpan::default();
+        let function = {
+            let builder = builder.create::<builtin::Function, (_, _)>(span);
+            let name = Ident::new("test".into(), span);
+            let signature = Signature::new([AbiParam::new(Type::U32)], [AbiParam::new(Type::U32)]);
+            builder(name, signature).unwrap()
+        };
+
+        let mut builder = FunctionBuilder::new(function, &mut builder);
+
+        let input = builder.current_block().borrow().arguments()[0].upcast();
+        let redundant_val = builder.u32(11, span)?;
+
+        // Create a while op, pass zero.
+        let zero = builder.u32(0, span)?;
+        let while_op = builder.r#while([zero], &[Type::U32], span)?;
+        let while_before_block = while_op.borrow().before().entry().as_block_ref();
+        let while_after_block = while_op.borrow().after().entry().as_block_ref();
+
+        // Check the passed arg against the function arg.
+        builder.switch_to_block(while_before_block);
+        let while_cond_arg = while_before_block.borrow().arguments()[0].upcast();
+        let finished = builder.eq(while_cond_arg, input, span)?;
+        let next_iter = builder.incr(while_cond_arg, span)?;
+        builder.condition(finished, [next_iter], span)?;
+
+        // Just yield the final results from the while op.
+        builder.switch_to_block(while_after_block);
+        let yield_values = while_after_block
+            .borrow()
+            .arguments()
+            .iter()
+            .map(|a| a.borrow().as_value_ref())
+            .collect::<SmallVec<[_; 4]>>();
+        builder.r#yield(yield_values, span)?;
+
+        // Add all the results together along with the redundant value to give them all users.
+        builder.switch_to_block(builder.entry_block());
+        let summed_while_results =
+            while_op.borrow().results().iter().try_fold(zero, |acc, res| {
+                let res_val_ref = res.borrow().as_value_ref();
+                builder.add(acc, res_val_ref, span)
+            })?;
+        let final_sum = builder.add(summed_while_results, redundant_val, span)?;
+        builder.ret(Some(final_sum), span)?;
+
+        run_single_canonicalizer(
+            context,
+            function.as_operation_ref(),
+            "fold_redundant_yields_subset_while",
+        )
+    }
+    }}} */
+}
+
+#[cfg(test)]
+mod terminal_region_tests {
+    use runic_core::{
+        dialects::builtin::BuiltinOpBuilder, patterns::PatternRewriter, testing::Test,
+    };
+    use runic_dialect_ub::UndefinedBehaviorOpBuilder;
+
+    use super::*;
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum ResultShape {
+        Zero,
+        Unused,
+        One,
+        Two,
+    }
+
+    #[test]
+    fn terminal_regions_preserve_identity_and_result_order() -> Result<(), Report> {
+        for returns in [false, true] {
+            for terminal_first in [false, true] {
+                for terminal_count in [0usize, 1, 2] {
+                    for shape in
+                        [ResultShape::Zero, ResultShape::Unused, ResultShape::One, ResultShape::Two]
+                    {
+                        let outputs = if shape == ResultShape::Two {
+                            &[Type::U32, Type::U64][..]
+                        } else {
+                            &[Type::U32][..]
+                        };
+                        let mut test = Test::new(
+                            "terminal_regions",
+                            &[Type::I1, Type::U32, Type::U64, Type::U32],
+                            outputs,
+                        );
+                        let span = SourceSpan::default();
+                        let mut builder = test.function_builder();
+                        let entry = builder.entry_block();
+                        let args = entry
+                            .borrow()
+                            .arguments()
+                            .iter()
+                            .map(|arg| arg.upcast())
+                            .collect::<SmallVec<[ValueRef; 4]>>();
+                        let condition = args[0];
+                        let values = [args[1], args[2], args[3]];
+                        let types = if shape == ResultShape::Zero {
+                            SmallVec::<[Type; 3]>::new()
+                        } else {
+                            [Type::U32, Type::U64, Type::U32].into_iter().collect()
+                        };
+                        let structured = builder.r#if(condition, &types, span)?;
+                        let regions = [
+                            structured.borrow().then_body().as_region_ref(),
+                            structured.borrow().else_body().as_region_ref(),
+                        ];
+                        let mut terminals = SmallVec::<[OperationRef; 2]>::new();
+                        let mut yields = SmallVec::<[OperationRef; 2]>::new();
+                        for (index, region) in regions.into_iter().enumerate() {
+                            let block = builder.create_block_in_region(region);
+                            builder.switch_to_block(block);
+                            if terminal_count == 2
+                                || (terminal_count == 1 && (index == 0) == terminal_first)
+                            {
+                                let terminal = if returns {
+                                    builder
+                                        .ret(
+                                            if shape == ResultShape::Two {
+                                                alloc::vec![args[3], args[2]]
+                                            } else {
+                                                alloc::vec![args[3]]
+                                            },
+                                            span,
+                                        )?
+                                        .as_operation_ref()
+                                } else {
+                                    builder.unreachable(span).as_operation_ref()
+                                };
+                                terminals.push(terminal);
+                            } else {
+                                let yielded = if types.is_empty() {
+                                    &values[..0]
+                                } else {
+                                    &values[..]
+                                };
+                                yields.push(
+                                    builder
+                                        .r#yield(yielded.iter().copied(), span)?
+                                        .as_operation_ref(),
+                                );
+                            }
+                        }
+                        builder.switch_to_block(entry);
+                        let result = if matches!(shape, ResultShape::One | ResultShape::Two) {
+                            structured.borrow().results()[2].upcast()
+                        } else {
+                            args[1]
+                        };
+                        let returned = if shape == ResultShape::Two {
+                            alloc::vec![result, structured.borrow().results()[1].upcast()]
+                        } else {
+                            alloc::vec![result]
+                        };
+                        let user = builder.ret(returned, span)?.as_operation_ref();
+                        let op = structured.as_operation_ref();
+                        let function = test.function().as_operation_ref();
+                        function.borrow().recursively_verify()?;
+                        let before = alloc::format!("{}", function.borrow());
+                        let mut rewriter = PatternRewriter::new(test.context_rc());
+                        rewriter.set_insertion_point_before(op);
+                        let changed = FoldRedundantYields::new(test.context_rc())
+                            .match_and_rewrite(op, &mut *rewriter)?;
+                        assert_eq!(changed, terminal_count == 0 && shape != ResultShape::Zero);
+                        if !changed {
+                            assert_eq!(before, alloc::format!("{}", function.borrow()));
+                        }
+                        if changed && matches!(shape, ResultShape::One | ResultShape::Two) {
+                            assert_eq!(
+                                user.borrow().operands()[0].borrow().as_value_ref(),
+                                args[3]
+                            );
+                        }
+                        let returned_values = [args[3], args[2]];
+                        for terminal in terminals {
+                            assert!(terminal.parent().is_some());
+                            let operands = terminal
+                                .borrow()
+                                .operands()
+                                .iter()
+                                .map(|o| o.borrow().as_value_ref())
+                                .collect::<SmallVec<[ValueRef; 2]>>();
+                            assert_eq!(
+                                operands.as_slice(),
+                                if returns {
+                                    if shape == ResultShape::Two {
+                                        &returned_values[..]
+                                    } else {
+                                        &args[3..4]
+                                    }
+                                } else {
+                                    &args[0..0]
+                                }
+                            );
+                        }
+                        function.borrow().recursively_verify()?;
+                        test.apply_boxed_pass(
+                            alloc::boxed::Box::new(runic_transform::Canonicalizer::new(
+                                runic_core::patterns::GreedyRewriteConfig::default(),
+                                true,
+                            )),
+                            true,
+                        )?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}

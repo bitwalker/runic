@@ -1,0 +1,37 @@
+[package]
+name = "runic-eval"
+description = "An interpreter for Runic's intermediate representation"
+version.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+categories.workspace = true
+keywords.workspace = true
+license.workspace = true
+readme.workspace = true
+edition.workspace = true
+
+[lib]
+doctest = false
+
+[features]
+default = ["std"]
+std = ["runic-core/std"]
+
+[dependencies]
+log.workspace = true
+runic-dialect-arith.workspace = true
+runic-dialect-cf.workspace = true
+runic-dialect-scf.workspace = true
+runic-dialect-hir.workspace = true
+runic-dialect-ub.workspace = true
+runic-dialect-wasm.workspace = true
+runic-core.workspace = true
+runic-session.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# Use local paths for dev-only dependency to avoid relying on crates.io during packaging
+runic-core = { path = "../core", features = ["logging"] }

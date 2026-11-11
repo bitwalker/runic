@@ -1,0 +1,178 @@
+[workspace]
+resolver = "3"
+# NOTE: Workspace members are listed explicitly rather than with globs. Globs allow
+# stray directories (e.g. leftover build output from another branch) to break every
+# Cargo command, and they let a new package join the release surface without an
+# explicit decision. See `.release/config.toml` for package classification.
+members = [
+    "crates/analysis",
+    #"crates/codegen/masm",
+    "crates/compile",
+    "crates/core",
+    "crates/diagnostics",
+    "crates/diagnostics-macros",
+    "crates/dialects/arith",
+    "crates/dialects/cf",
+    "crates/dialects/hir",
+    "crates/dialects/scf",
+    "crates/dialects/ub",
+    "crates/dialects/wasm",
+    "crates/driver",
+    "crates/eval",
+    "crates/log",
+    "crates/macros",
+    "crates/session",
+    "crates/symbol",
+    "crates/transform",
+    "runic",
+    "tools/expect-test",
+    "tools/runic-opt",
+    #"tests/support",
+    #"tests/integration",
+]
+exclude = [
+    "tests/",
+    "examples",
+]
+
+[workspace.package]
+version = "0.1.0"
+rust-version = "1.99"
+authors = ["Paul Schoenfelder"]
+description = "An MLIR-inspired compiler framework"
+repository = "https://github.com/bitwalker/runic"
+homepage = "https://github.com/bitwalker/runic"
+documentation = "https://github.com/bitwalker/runic"
+categories = ["compilers"]
+keywords = ["compiler"]
+license = "MIT"
+readme = "README.md"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+anyhow = { version = "1.0", default-features = false }
+bitflags = "2.11"
+bitvec = { version = "1.0", default-features = false, features = ["alloc"] }
+blink-alloc = { version = "0.4", default-features = false, features = [
+    "alloc",
+    "nightly",
+] }
+clap = { version = "4.6", default-features = false, features = [
+    "derive",
+    "std",
+    "env",
+    "help",
+    "usage",
+    "suggestions",
+    "error-context",
+] }
+cranelift-entity = "0.135"
+compact_str = { version = "0.9", default-features = false }
+darling = { version = "0.23", features = ["diagnostics"] }
+flate2 = "1.1"
+gimli = { version = "^0.33", default-features = false }
+hashbrown = { version = "0.17", features = ["nightly"] }
+heck = "0.5"
+Inflector = "0.11"
+intrusive-collections = "0.10"
+inventory = "0.3"
+litcheck-filecheck = "0.4"
+log = { version = "0.4", features = ["kv"] }
+miden-formatting = "0.1"
+paste = "1.0"
+parking_lot = "0.12"
+petgraph = { version = "0.8", default-features = false, features = [
+    "graphmap"
+] }
+pretty_assertions = "1.4"
+prettyplease = "0.2"
+proptest = "1.11"
+proc-macro2 = "1.0"
+proc-macro-crate = "3.5"
+quote = "1.0"
+rand = "0.10"
+rustc-hash = { version = "2.1", default-features = false }
+semver = { version = "1.0", default-features = false }
+sha2 = "0.11"
+serde = { version = "1.0", default-features = false, features = [
+    "serde_derive",
+    "alloc",
+    "rc",
+] }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
+smallvec = { version = "1.15", default-features = false, features = [
+    "union",
+    "const_generics",
+    "const_new",
+    "drain_filter",
+] }
+syn = "2.0"
+tempfile = "3.19"
+thiserror = "1.0"
+toml = { version = "^1.1.2", features = ["preserve_order"] }
+toml_edit = { version = "^0.25", features = ["serde"] }
+
+# Workspace crates
+runic-analysis = { version = "0.1.0", path = "crates/analysis" }
+#runic-codegen-masm = { version = "0.1.0", path = "crates/codegen/masm" }
+runic-compile = { version = "0.1.0", path = "crates/compile" }
+runic-core = { version = "0.1.0", path = "crates/core" }
+runic-diagnostics = { version = "0.1.0", path = "crates/diagnostics" }
+runic-diagnostics-macros = { version = "0.1.0", path = "crates/diagnostics-macros" }
+runic-dialect-arith = { version = "0.1.0", path = "crates/dialects/arith" }
+runic-dialect-hir = { version = "0.1.0", path = "crates/dialects/hir" }
+runic-dialect-scf = { version = "0.1.0", path = "crates/dialects/scf" }
+runic-dialect-cf = { version = "0.1.0", path = "crates/dialects/cf" }
+runic-dialect-ub = { version = "0.1.0", path = "crates/dialects/ub" }
+runic-dialect-wasm = { version = "0.1.0", path = "crates/dialects/wasm" }
+runic-driver = { version = "0.1.0", path = "crates/driver" }
+runic-eval = { version = "0.1.0", path = "crates/eval" }
+runic-expect-test = { path = "tools/expect-test" }
+runic-log = { version = "0.1.0", path = "crates/log", features = ["kv"] }
+runic-macros = { version = "0.1.0", path = "crates/macros" }
+runic-session = { version = "0.1.0", path = "crates/session" }
+runic-symbol = { version = "0.1.0", path = "crates/symbol" }
+runic-transform = { version = "0.1.0", path = "crates/transform" }
+
+[profile.dev]
+lto = false
+codegen-units = 1
+
+# Keep only file/line debug information for non-workspace dependencies. Full
+# debug information for the Miden VM stack and the other external crates is the
+# dominant cost of the target directory: it multiplies into every statically
+# linked test executable (measured at ~91% of an 820 MB test binary). Workspace
+# crates are not matched by `"*"` and keep full debug information.
+[profile.dev.package."*"]
+debug = "line-tables-only"
+
+[profile.release]
+opt-level = 2
+debug = true
+codegen-units = 1
+lto = "fat"
+
+# The following crates are always built with optimizations
+[profile.test.package.proptest]
+opt-level = 3
+
+[profile.test.package.rand_chacha]
+opt-level = 3
+
+# Build the workspace with release-like settings only when explicitly requested
+# via the `test-release` profile.
+[profile.test-release]
+inherits = "test"
+opt-level = 2
+debug = true
+codegen-units = 1
+debug-assertions = false
+overflow-checks = false
+incremental = false
+
+[profile.dev.package.dissimilar]
+opt-level = 3
+
+[profile.dev.package.regex-syntax]
+opt-level = 3

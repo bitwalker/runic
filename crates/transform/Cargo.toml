@@ -1,0 +1,29 @@
+[package]
+name = "runic-transform"
+description = "Transformation passes and utilities for Runic IR"
+version.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+license.workspace = true
+readme.workspace = true
+edition.workspace = true
+
+[lib]
+doctest = false
+
+[dependencies]
+log.workspace = true
+runic-core.workspace = true
+runic-analysis.workspace = true
+runic-session.workspace = true
+
+[dev-dependencies]
+# NOTE: Use local paths for dev-only dependency to avoid relying on crates.io during packaging
+litcheck-filecheck.workspace = true
+runic-dialect-arith = { path = "../dialects/arith" }
+runic-dialect-hir = { path = "../dialects/hir" }
+runic-dialect-scf = { path = "../dialects/scf" }
+runic-core = { path = "../core", features = ["logging"] }

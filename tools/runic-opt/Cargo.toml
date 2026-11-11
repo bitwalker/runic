@@ -1,0 +1,44 @@
+[package]
+name = "runic-opt"
+description = "A tool for parsing and rewriting HIR"
+version.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+categories.workspace = true
+keywords.workspace = true
+license.workspace = true
+readme.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "hir-opt"
+path = "src/main.rs"
+
+[dependencies]
+runic-compile.workspace = true
+runic-core.workspace = true
+runic-dialect-arith.workspace = true
+runic-dialect-cf.workspace = true
+runic-dialect-hir.workspace = true
+runic-dialect-scf.workspace = true
+runic-dialect-ub.workspace = true
+runic-dialect-wasm.workspace = true
+runic-session.workspace = true
+runic-log.workspace = true
+log.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+
+[package.metadata.cargo-shear]
+ignored = [
+    "runic-dialect-arith",
+    "runic-dialect-cf",
+    "runic-dialect-hir",
+    "runic-dialect-scf",
+    "runic-dialect-ub",
+    "runic-dialect-wasm",
+]

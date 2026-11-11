@@ -1,0 +1,43 @@
+[package]
+name = "runic-compile"
+description = "The experimental compiler harness for Runic"
+version.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+categories.workspace = true
+keywords.workspace = true
+license.workspace = true
+readme.workspace = true
+edition.workspace = true
+
+[features]
+default = ["std"]
+std = [
+    "runic-core/std",
+    "runic-session/std",
+    "dep:cargo_metadata",
+    "dep:clap",
+    "dep:sha2",
+    "dep:toml_edit",
+]
+
+[dependencies]
+cargo_metadata = { version = "^0.23", optional = true }
+clap = { workspace = true, optional = true }
+log.workspace = true
+runic-analysis.workspace = true
+runic-core.workspace = true
+runic-dialect-scf.workspace = true
+runic-dialect-hir.workspace = true
+runic-session.workspace = true
+runic-transform.workspace = true
+sha2 = { workspace = true, optional = true }
+toml_edit = { workspace = true, optional = true, features = ["parse", "display"] }
+thiserror.workspace = true
+
+[dev-dependencies]
+runic-dialect-arith.workspace = true
+tempfile.workspace = true

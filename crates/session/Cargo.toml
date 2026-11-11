@@ -1,0 +1,45 @@
+[package]
+name = "runic-session"
+description = "Session management for the Runic compiler framework"
+version.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+categories.workspace = true
+keywords.workspace = true
+license.workspace = true
+readme.workspace = true
+edition.workspace = true
+
+[lib]
+doctest = false
+
+[features]
+default = ["std"]
+std = [
+    "dep:termcolor",
+    "dep:parking_lot",
+    "dep:clap",
+    "dep:tempfile",
+    "anyhow/std",
+]
+
+[dependencies]
+anyhow.workspace = true
+clap = { workspace = true, optional = true }
+hashbrown.workspace = true
+inventory.workspace = true
+log.workspace = true
+runic-symbol.workspace = true
+runic-macros.workspace = true
+rustc-hash.workspace = true
+smallvec.workspace = true
+parking_lot = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
+termcolor = { version = "1.4.1", optional = true }
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

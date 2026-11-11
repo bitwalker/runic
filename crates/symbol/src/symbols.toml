@@ -1,0 +1,112 @@
+[fundamental]
+false = { id = 0 }
+true = { id = 1 }
+empty = { value = "" }
+
+[keywords]
+world = {}
+component = {}
+module = {}
+function = {}
+public = {}
+private = {}
+internal = {}
+cc = {}
+fast = {}
+sret = {}
+zext = {}
+sext = {}
+trunc = {}
+ret = {}
+call = {}
+syscall = {}
+br = {}
+cond_br = {}
+switch = {}
+if = {}
+while = {}
+index_switch = {}
+yield = {}
+condition = {}
+load = {}
+loc = {}
+store = {}
+memcpy = {}
+memset = {}
+memory_size = {}
+memory_grow = {}
+asm = {}
+min = {}
+max = {}
+exp = {}
+and = {}
+band = {}
+or = {}
+bor = {}
+xor = {}
+bxor = {}
+eq = {}
+neq = {}
+gt = {}
+gte = {}
+lt = {}
+lte = {}
+inv = {}
+pow2 = {}
+not = {}
+bnot = {}
+popcnt = {}
+is_odd = { value = "is_odd" }
+cast = {}
+ptr_to_int = {}
+int_to_ptr = {}
+neg = {}
+select = {}
+assert = {}
+assertz = {}
+alloca = {}
+unreachable = {}
+poison = {}
+i1 = {}
+i8 = {}
+u8 = {}
+i16 = {}
+u16 = {}
+i32 = {}
+u32 = {}
+i64 = {}
+u64 = {}
+i128 = {}
+u128 = {}
+u256 = {}
+f64 = {}
+byte = {}
+ptr = {}
+struct = {}
+array = {}
+never = {}
+mut = {}
+as = {}
+id = {}
+global_variable = {}
+global_symbol = {}
+segment = {}
+constant = {}
+
+[attributes]
+inline = {}
+extension = {}
+
+[dialects]
+arith = {}
+builtin = {}
+cf = {}
+hir = {}
+scf = {}
+test = {}
+ub = {}
+
+[modules]
+debug = {}
+intrinsics = {}
+mem = {}

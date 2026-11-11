@@ -1,0 +1,28 @@
+[package]
+name = "runic-analysis"
+description = "Runic's data-flow analysis framework and passes"
+version.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+license.workspace = true
+readme.workspace = true
+edition.workspace = true
+
+[lib]
+doctest = false
+
+[dependencies]
+blink-alloc.workspace = true
+bitvec.workspace = true
+log.workspace = true
+runic-core.workspace = true
+
+[dev-dependencies]
+# Use local paths for dev-only dependency to avoid relying on crates.io during packaging
+runic-dialect-hir = { path = "../dialects/hir" }
+runic-dialect-arith = { path = "../dialects/arith" }
+runic-dialect-scf = { path = "../dialects/scf" }
+runic-core = { path = "../core", features = ["logging"] }

@@ -1,0 +1,249 @@
+use core::fmt;
+
+/// Represents size and range information for a contiguous grouping of entities in a vector.
+///
+/// This is used so that individual groups can be grown or shrunk, while maintaining stability
+/// of references to items in other groups.
+#[derive(Default, Copy, Clone)]
+pub struct EntityGroup {
+    /// The index of the first item of the group in the containing vector
+    start: u16,
+    /// The number of items in the group
+    len: u16,
+}
+impl fmt::Debug for EntityGroup {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EntityGroup")
+            .field("range", &self.as_range())
+            .field("len", &self.len())
+            .finish()
+    }
+}
+impl EntityGroup {
+    /// Create a new group of size `len`, starting at index `start`
+    ///
+    /// Panics if `start` or `len` overflows `u16::MAX`
+    pub fn new(start: usize, len: usize) -> Self {
+        let start = u16::try_from(start).expect("too many items");
+        let len = u16::try_from(len).expect("group too large");
+
+        Self { start, len }
+    }
+
+    /// Get the start index in the containing vector
+    #[inline]
+    pub fn start(&self) -> usize {
+        self.start as usize
+    }
+
+    /// Get the end index (exclusive) in the containing vector
+    #[inline]
+    pub fn end(&self) -> usize {
+        self.start() + self.len()
+    }
+
+    /// Returns true if this group is empty
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Get the number of items in this group
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.len as usize
+    }
+
+    /// Get the [core::ops::Range] equivalent of this group
+    pub fn as_range(&self) -> core::ops::Range<usize> {
+        let start = self.start();
+        let len = self.len();
+        start..(start + len)
+    }
+
+    /// Increase the size of this group by `n` items
+    ///
+    /// Panics if the resulting size overflows `u16::MAX`
+    pub fn grow(&mut self, n: usize) {
+        self.len = u16::try_from(self.len() + n).expect("group is too large");
+    }
+
+    /// Decrease the size of this group by `n` items, to no less than zero
+    pub fn shrink(&mut self, n: usize) {
+        self.len = self.len.saturating_sub(u16::try_from(n).unwrap_or(u16::MAX));
+    }
+
+    /// Shift the position of this group by `offset`
+    ///
+    /// Panics if the resulting start index is negative or overflows `u16::MAX`
+    pub fn shift_start(&mut self, offset: isize) {
+        let start = self.start().checked_add_signed(offset).expect("group offset is negative");
+        self.start = u16::try_from(start).expect("group offset is too large");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn entity_group_empty() {
+        let group = EntityGroup::new(0, 0);
+        assert_eq!(group.start(), 0);
+        assert_eq!(group.end(), 0);
+        assert_eq!(group.len(), 0);
+        assert!(group.is_empty());
+        assert_eq!(group.as_range(), 0..0);
+
+        let group = EntityGroup::new(101, 0);
+        assert_eq!(group.start(), 101);
+        assert_eq!(group.end(), 101);
+        assert_eq!(group.len(), 0);
+        assert!(group.is_empty());
+        assert_eq!(group.as_range(), 101..101);
+    }
+
+    #[test]
+    fn entity_group_non_empty() {
+        let group = EntityGroup::new(0, 1);
+        assert_eq!(group.start(), 0);
+        assert_eq!(group.end(), 1);
+        assert_eq!(group.len(), 1);
+        assert!(!group.is_empty());
+        assert_eq!(group.as_range(), 0..1);
+
+        let group = EntityGroup::new(255, 255);
+        assert_eq!(group.start(), 255);
+        assert_eq!(group.end(), 510);
+        assert_eq!(group.len(), 255);
+        assert!(!group.is_empty());
+        assert_eq!(group.as_range(), 255..510);
+    }
+
+    /// Groups past the 255-item mark keep their start and length up to `u16::MAX`
+    #[test]
+    fn entity_group_wide() {
+        let group = EntityGroup::new(256, 300);
+        assert_eq!(group.start(), 256);
+        assert_eq!(group.end(), 556);
+        assert_eq!(group.len(), 300);
+        assert_eq!(group.as_range(), 256..556);
+
+        let mut group = EntityGroup::new(u16::MAX as usize, 0);
+        group.grow(u16::MAX as usize);
+        assert_eq!(group.start(), u16::MAX as usize);
+        assert_eq!(group.len(), u16::MAX as usize);
+        assert_eq!(group.as_range(), 65535..131070);
+
+        group.shift_start(-(u16::MAX as isize));
+        assert_eq!(group.start(), 0);
+        assert_eq!(group.len(), u16::MAX as usize);
+    }
+
+    /// A start index past `u16::MAX` is rejected when the group is created
+    #[test]
+    #[should_panic(expected = "too many items")]
+    fn entity_group_start_overflow() {
+        EntityGroup::new(u16::MAX as usize + 1, 0);
+    }
+
+    /// Growing a group past `u16::MAX` items is rejected
+    #[test]
+    #[should_panic(expected = "group is too large")]
+    fn entity_group_grow_overflow() {
+        let mut group = EntityGroup::new(0, u16::MAX as usize);
+        group.grow(1);
+    }
+
+    /// Shifting a group before index zero is rejected
+    #[test]
+    #[should_panic(expected = "group offset is negative")]
+    fn entity_group_shift_start_negative() {
+        let mut group = EntityGroup::new(1, 0);
+        group.shift_start(-2);
+    }
+
+    #[test]
+    fn entity_group_grow() {
+        let mut group = EntityGroup::new(10, 0);
+        assert_eq!(group.start(), 10);
+        assert_eq!(group.end(), 10);
+        assert_eq!(group.len(), 0);
+        assert!(group.is_empty());
+        assert_eq!(group.as_range(), 10..10);
+
+        group.grow(1);
+
+        assert_eq!(group.start(), 10);
+        assert_eq!(group.end(), 11);
+        assert_eq!(group.len(), 1);
+        assert!(!group.is_empty());
+        assert_eq!(group.as_range(), 10..11);
+
+        group.grow(3);
+
+        assert_eq!(group.start(), 10);
+        assert_eq!(group.end(), 14);
+        assert_eq!(group.len(), 4);
+        assert!(!group.is_empty());
+        assert_eq!(group.as_range(), 10..14);
+    }
+
+    #[test]
+    fn entity_group_shrink() {
+        let mut group = EntityGroup::new(10, 4);
+        assert_eq!(group.start(), 10);
+        assert_eq!(group.end(), 14);
+        assert_eq!(group.len(), 4);
+        assert!(!group.is_empty());
+        assert_eq!(group.as_range(), 10..14);
+
+        group.shrink(3);
+
+        assert_eq!(group.start(), 10);
+        assert_eq!(group.end(), 11);
+        assert_eq!(group.len(), 1);
+        assert!(!group.is_empty());
+        assert_eq!(group.as_range(), 10..11);
+
+        group.shrink(1);
+
+        assert_eq!(group.start(), 10);
+        assert_eq!(group.end(), 10);
+        assert_eq!(group.len(), 0);
+        assert!(group.is_empty());
+        assert_eq!(group.as_range(), 10..10);
+
+        group.shrink(1);
+
+        assert_eq!(group.start(), 10);
+        assert_eq!(group.end(), 10);
+        assert_eq!(group.len(), 0);
+        assert!(group.is_empty());
+        assert_eq!(group.as_range(), 10..10);
+    }
+
+    #[test]
+    fn entity_group_shift_start() {
+        let mut group = EntityGroup::new(10, 0);
+        assert_eq!(group.start(), 10);
+        assert_eq!(group.end(), 10);
+        assert_eq!(group.len(), 0);
+        assert!(group.is_empty());
+        assert_eq!(group.as_range(), 10..10);
+
+        group.shift_start(10);
+        assert_eq!(group.start(), 20);
+        assert_eq!(group.end(), 20);
+        assert_eq!(group.len(), 0);
+        assert!(group.is_empty());
+        assert_eq!(group.as_range(), 20..20);
+
+        group.shift_start(-5);
+        assert_eq!(group.start(), 15);
+        assert_eq!(group.end(), 15);
+        assert_eq!(group.len(), 0);
+        assert!(group.is_empty());
+        assert_eq!(group.as_range(), 15..15);
+    }
+}

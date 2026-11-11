@@ -1,0 +1,260 @@
+use alloc::{collections::VecDeque, sync::Arc};
+use core::fmt;
+
+use crate::{
+    OpPrinter, UnsafeIntrusiveEntityRef,
+    constants::ConstantData,
+    derive::{OpParser, OpPrinter, operation},
+    diagnostics::{Diagnostic, miette},
+    dialects::builtin::{
+        BuiltinDialect,
+        attributes::{BoolAttr, BytesAttr, U32Attr},
+    },
+    traits::*,
+};
+
+pub type SegmentRef = UnsafeIntrusiveEntityRef<Segment>;
+
+/// Declare a data segment in the shared memory of a [super::Component].
+///
+/// This operation type is only permitted in the body of a [super::Module] op, it is an error to use
+/// it anywhere else. At best it will be ignored.
+///
+/// Data segments can have a size that is larger than the initializer data it describes; in such
+/// cases, the remaining memory is either assumed to be arbitrary bytes, or if `zeroed` is set,
+/// it is zeroed so that the padding bytes are all zero.
+///
+/// A data segment can be marked `readonly`, which indicates to the optimizer that it is allowed
+/// to assume that no writes will ever occur in the boundaries of the segment, i.e. a value loaded
+/// from within those bounds does not need to be reloaded after side-effecting operations, and
+/// can in fact be rescheduled around them. Additionally, if a write is detected that would effect
+/// memory in a readonly data segment boundary, an error will be raised.
+///
+/// NOTE: It is not guaranteed that the optimizer will make any assumptions with regard to data
+/// segments. For the moment, even if `readonly` is set, the compiler assumes that segments are
+/// mutable.
+#[derive(OpPrinter, OpParser)]
+#[operation(
+    dialect = BuiltinDialect,
+    traits(
+        SingleBlock,
+        NoRegionArguments,
+        IsolatedFromAbove,
+    ),
+    implements(OpPrinter)
+)]
+pub struct Segment {
+    /// The offset from the start of linear memory where this segment starts
+    #[attr]
+    offset: U32Attr,
+    /// The data to initialize this segment with, determines the size of the segment
+    #[attr]
+    data: BytesAttr,
+    /// Whether or not this segment is intended to be read-only data
+    #[attr]
+    #[default]
+    readonly: BoolAttr,
+}
+
+impl Segment {
+    /// The size, in bytes, of this data segment.
+    ///
+    /// By default this will be the same size as `init`, unless explicitly given.
+    pub fn size_in_bytes(&self) -> usize {
+        self.get_data().len()
+    }
+
+    /// Get the data, as bytes, to initialize this data segment with.
+    pub fn initializer(&self) -> Arc<ConstantData> {
+        self.get_data().clone()
+    }
+}
+
+impl fmt::Debug for Segment {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let data = self.initializer();
+        f.debug_struct("Segment")
+            .field("offset", &self.get_offset())
+            .field("size", &data.len())
+            .field("init", &format_args!("{data}"))
+            .field("readonly", &self.get_readonly())
+            .finish()
+    }
+}
+
+/// This error is raised when attempting to declare a [Segment] that in some way conflicts with
+/// previously declared data segments.
+#[derive(Debug, thiserror::Error, Diagnostic)]
+pub enum DataSegmentError {
+    /// The current segment overlaps with a previously allocated segment
+    #[error(
+        "invalid data segment: segment of {size1} bytes at {offset1:#x} overlaps with segment of \
+         {size2} bytes at {offset2:#x}"
+    )]
+    #[diagnostic()]
+    OverlappingSegments {
+        offset1: u32,
+        size1: u32,
+        offset2: u32,
+        size2: u32,
+    },
+    /// The current segment and a previous definition of that segment do
+    /// not agree on the data or read/write properties of the memory they
+    /// represent.
+    #[error(
+        "invalid data segment: segment at {0:#x} conflicts with a previous segment declaration at \
+         this address"
+    )]
+    #[diagnostic()]
+    Mismatch(u32),
+    /// The current segment and size do not fall in the boundaries of the heap
+    /// which is allocatable to globals and other heap allocations.
+    ///
+    /// For example, Miden reserves some amount of memory for procedure locals
+    /// at a predetermined address, and we do not permit segments to be allocated
+    /// past that point.
+    #[error(
+        "invalid data segment: segment of {size} bytes at {offset:#x} would extend beyond the end \
+         of the usable heap"
+    )]
+    #[diagnostic()]
+    OutOfBounds { offset: u32, size: u32 },
+    /// The initializer for the current segment has a size greater than `u32::MAX` bytes
+    #[error(
+        "invalid data segment: segment at {0:#x} was declared with an initializer larger than \
+         2^32 bytes"
+    )]
+    #[diagnostic()]
+    InitTooLarge(u32),
+    /// The initializer for the current segment has a size greater than the declared segment size
+    #[error(
+        "invalid data segment: segment of {size} bytes at {offset:#x} has an initializer of \
+         {actual} bytes"
+    )]
+    #[diagnostic()]
+    InitOutOfBounds { offset: u32, size: u32, actual: u32 },
+}
+
+/// This structure tracks a set of data segments to be placed in the same address space, and ensures
+/// that the segments are laid out in that space without conflict.
+#[derive(Default, Clone)]
+pub struct DataSegmentLayout {
+    segments: VecDeque<SegmentRef>,
+}
+
+impl DataSegmentLayout {
+    /// Returns true if the table has no segments defined
+    pub fn is_empty(&self) -> bool {
+        self.segments.is_empty()
+    }
+
+    /// Returns the number of segments in the layout
+    pub fn len(&self) -> usize {
+        self.segments.len()
+    }
+
+    /// Returns the offset in linear memory where the last data segment ends, or `None` if that
+    /// offset — or the word alignment applied to it — leaves the 32-bit address space.
+    ///
+    /// A segment ending exactly at 2^32 is legal; it is the *layout* that has nowhere left to
+    /// put anything after it, which is the caller's error to report.
+    pub fn next_available_offset(&self) -> Option<u32> {
+        let Some(last_segment) = self.segments.back() else {
+            return Some(0);
+        };
+        let last_segment = last_segment.borrow();
+        let size = u32::try_from(last_segment.size_in_bytes()).ok()?;
+        let next_offset = (*last_segment.get_offset()).checked_add(size)?;
+        // Ensure the start of the next segment is word-aligned
+        next_offset.checked_next_multiple_of(32)
+    }
+
+    /// Insert a [Segment] into the layout, while preserving the order of the segments.
+    ///
+    /// This will fail if the segment is invalid, or overlaps/conflicts with an existing segment.
+    pub fn insert(&mut self, segment_ref: SegmentRef) -> Result<(), DataSegmentError> {
+        let segment = segment_ref.borrow();
+        let offset = *segment.get_offset();
+        let size = u32::try_from(segment.size_in_bytes())
+            .map_err(|_| DataSegmentError::InitTooLarge(offset))?;
+        // Computed in u64: a segment may end exactly at 2^32, which is the last address of
+        // linear memory plus one, and is legal. Only a segment extending past it is invalid.
+        // The first segment took an early return before this check existed, which is how a
+        // module whose only segment fills the end of memory reached the layout arithmetic.
+        let end = u64::from(offset) + u64::from(size);
+        if end > u64::from(u32::MAX) + 1 {
+            return Err(DataSegmentError::OutOfBounds { offset, size });
+        }
+
+        if self.is_empty() {
+            self.segments.push_back(segment_ref);
+            return Ok(());
+        }
+
+        for (index, current_segment_ref) in self.segments.iter().enumerate() {
+            let current_segment = current_segment_ref.borrow();
+            let current_offset = *current_segment.get_offset();
+            let current_size = current_segment.size_in_bytes() as u32;
+            let segment_end = u64::from(current_offset) + u64::from(current_size);
+
+            // If this segment starts after the segment we're declaring, we do not need to continue
+            // searching for conflicts, and can go a head and perform the insert
+            if u64::from(current_offset) >= end {
+                self.segments.insert(index, segment_ref);
+                return Ok(());
+            }
+
+            // If this segment starts at the same place as the one we're declaring that's a
+            // guaranteed conflict
+            if current_offset == offset {
+                // If the two segments have the same size and offset, then
+                // if they match in all other respects, we're done. If they
+                // don't match, then we raise a mismatch error.
+                if current_size == size
+                    && current_segment.initializer() == segment.initializer()
+                    && current_segment.readonly() == segment.readonly()
+                {
+                    return Ok(());
+                }
+                return Err(DataSegmentError::Mismatch(offset));
+            }
+
+            // This segment starts before the segment we're declaring, make sure that this segment
+            // ends before our segment starts
+            if segment_end > u64::from(offset) {
+                return Err(DataSegmentError::OverlappingSegments {
+                    offset1: offset,
+                    size1: size,
+                    offset2: current_offset,
+                    size2: current_size,
+                });
+            }
+        }
+
+        self.segments.push_back(segment_ref);
+
+        Ok(())
+    }
+
+    /// Traverse the data segments in the table in ascending order by offset
+    pub fn iter(&self) -> impl Iterator<Item = SegmentRef> + '_ {
+        self.segments.iter().copied()
+    }
+
+    /// Remove the first data segment from the table
+    #[inline]
+    pub fn pop_front(&mut self) -> Option<SegmentRef> {
+        self.segments.pop_front()
+    }
+}
+
+impl fmt::Debug for DataSegmentLayout {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let mut builder = f.debug_list();
+        for segment in self.segments.iter() {
+            let segment = segment.borrow();
+            builder.entry(&segment);
+        }
+        builder.finish()
+    }
+}

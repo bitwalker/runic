@@ -1,0 +1,52 @@
+[package]
+name = "runic-core"
+description = "Fundamental Runic intermediate representation types and APIs"
+version.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+license.workspace = true
+readme.workspace = true
+edition.workspace = true
+
+[features]
+default = ["std"]
+std = ["base64/std", "compact_str/std", "rustc-demangle/std"]
+debug_refcell = []
+logging = ["dep:runic-log", "std"]
+
+[dependencies]
+anyhow.workspace = true
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
+bitflags.workspace = true
+blink-alloc.workspace = true
+compact_str.workspace = true
+hashbrown.workspace = true
+intrusive-collections.workspace = true
+inventory.workspace = true
+log.workspace = true
+miden-formatting.workspace = true
+runic-log = { workspace = true, optional = true }
+runic-symbol = { workspace = true, features = ["compact_str"] }
+runic-macros.workspace = true
+runic-session.workspace = true
+paste.workspace = true
+rustc-hash.workspace = true
+rustc-demangle = "0.1.19"
+smallvec.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+litcheck-filecheck.workspace = true
+# NOTE: Use local paths for dev-only dependency to avoid relying on crates.io during packaging
+runic-expect-test = { path = "../../tools/expect-test" }
+runic-log = { path = "../log" }
+pretty_assertions.workspace = true
+
+[package.metadata.cargo-shear]
+ignored-paths = [
+    "src/dialects/builtin/attributes/map.rs",
+    "src/dialects/builtin/attributes/set.rs",
+]

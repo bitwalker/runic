@@ -1,0 +1,30 @@
+[package]
+name = "runic-dialect-cf"
+description = "Unstructured control flow dialect for Runic"
+version.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+license.workspace = true
+readme.workspace = true
+edition.workspace = true
+
+[lib]
+doctest = false
+
+[features]
+default = ["std"]
+std = ["runic-core/std"]
+
+[dependencies]
+log.workspace = true
+runic-dialect-arith.workspace = true
+runic-dialect-ub.workspace = true
+runic-core.workspace = true
+
+[dev-dependencies]
+# Use local paths for dev-only dependency to avoid relying on crates.io during packaging
+runic-expect-test = { path = "../../../tools/expect-test" }
+runic-core = { path = "../../core", features = ["logging"] }

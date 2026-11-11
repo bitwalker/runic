@@ -1,0 +1,19 @@
+[package]
+name = "midenc"
+description = "The compiler frontend/executable for Miden"
+version.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+categories.workspace = true
+keywords.workspace = true
+license.workspace = true
+readme.workspace = true
+edition.workspace = true
+
+[dependencies]
+human-panic = "2.0"
+runic-driver = { workspace = true, features = ["std"] }
+runic-log.workspace = true
