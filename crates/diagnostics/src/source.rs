@@ -104,6 +104,10 @@ impl SourceProvider for SharedSourceProvider {
     fn find_by_name(&self, display_name: &str) -> Option<SourceId> {
         self.inner.find_by_name(display_name)
     }
+
+    fn offset_of(&self, id: SourceId, position: LineColumn) -> Option<u32> {
+        self.inner.offset_of(id, position)
+    }
 }
 
 impl<P> SourceProvider for &P
@@ -120,6 +124,10 @@ where
 
     fn find_by_name(&self, display_name: &str) -> Option<SourceId> {
         (**self).find_by_name(display_name)
+    }
+
+    fn offset_of(&self, id: SourceId, position: LineColumn) -> Option<u32> {
+        (**self).offset_of(id, position)
     }
 }
 
@@ -138,6 +146,10 @@ where
     fn find_by_name(&self, display_name: &str) -> Option<SourceId> {
         (**self).find_by_name(display_name)
     }
+
+    fn offset_of(&self, id: SourceId, position: LineColumn) -> Option<u32> {
+        (**self).offset_of(id, position)
+    }
 }
 
 impl<P> SourceProvider for Box<P>
@@ -155,6 +167,10 @@ where
     fn find_by_name(&self, display_name: &str) -> Option<SourceId> {
         (**self).find_by_name(display_name)
     }
+
+    fn offset_of(&self, id: SourceId, position: LineColumn) -> Option<u32> {
+        (**self).offset_of(id, position)
+    }
 }
 
 impl<P> SourceProvider for Arc<P>
@@ -171,6 +187,10 @@ where
 
     fn find_by_name(&self, display_name: &str) -> Option<SourceId> {
         (**self).find_by_name(display_name)
+    }
+
+    fn offset_of(&self, id: SourceId, position: LineColumn) -> Option<u32> {
+        (**self).offset_of(id, position)
     }
 }
 
@@ -494,6 +514,31 @@ mod tests {
         }
         assert_eq!(map.offset_of(id, LineColumn::new(9, 1).unwrap()), None);
         assert_eq!(map.offset_of(id, LineColumn::new(1, 9).unwrap()), None);
+    }
+
+    #[test]
+    fn offset_of_is_forwarded_by_provider_wrappers() {
+        let namespace = SourceNamespace::new(core::num::NonZeroU32::new(9).unwrap());
+        let mut map = SourceMap::new(namespace);
+        let id = map.insert("a.runic", "ab\ncd\n", None).unwrap();
+        let position = LineColumn::new(2, 1).unwrap();
+        let expected = Some(3);
+        assert_eq!(map.offset_of(id, position), expected);
+
+        let dynamic: &dyn SourceProvider = &map;
+        assert_eq!(dynamic.offset_of(id, position), expected, "&dyn SourceProvider");
+        assert_eq!(SourceProvider::offset_of(&&map, id, position), expected, "&P");
+        let mut map = map;
+        assert_eq!(SourceProvider::offset_of(&&mut map, id, position), expected, "&mut P");
+
+        let arc = Arc::new(map);
+        assert_eq!(SourceProvider::offset_of(&arc, id, position), expected, "Arc<P>");
+        let dynamic: &dyn SourceProvider = &arc;
+        assert_eq!(dynamic.offset_of(id, position), expected, "&dyn over Arc<P>");
+        let shared = SharedSourceProvider::new(arc.clone());
+        assert_eq!(shared.offset_of(id, position), expected, "SharedSourceProvider");
+        let boxed: Box<dyn SourceProvider> = Box::new(arc);
+        assert_eq!(SourceProvider::offset_of(&boxed, id, position), expected, "Box<P>");
     }
 
     #[cfg(feature = "std")]
