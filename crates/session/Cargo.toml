@@ -19,26 +19,25 @@ doctest = false
 [features]
 default = ["std"]
 std = [
-    "dep:termcolor",
     "dep:parking_lot",
     "dep:clap",
     "dep:tempfile",
-    "anyhow/std",
+    "runic-core/std",
+    "thiserror/std",
 ]
 
 [dependencies]
-anyhow.workspace = true
 clap = { workspace = true, optional = true }
 hashbrown.workspace = true
 inventory.workspace = true
 log.workspace = true
+runic-core = { workspace = true, default-features = false }
 runic-symbol.workspace = true
 runic-macros.workspace = true
 rustc-hash.workspace = true
 smallvec.workspace = true
 parking_lot = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
-termcolor = { version = "1.4.1", optional = true }
 thiserror.workspace = true
 
 [dev-dependencies]

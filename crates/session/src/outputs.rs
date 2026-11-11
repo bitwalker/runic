@@ -55,75 +55,29 @@ pub enum OutputMode {
 #[derive(Debug, Copy, Clone, Default, Hash, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "std", derive(clap::ValueEnum))]
 pub enum OutputType {
-    /// The compiler will emit the parse tree of the input, if applicable
-    Ast,
-    /// The compiler will emit WebAssembly text format (WAT), if applicable
-    Wat,
-    /// The compiler will emit Miden IR
-    Hir,
-    /// The compiler will emit Miden Assembly text
-    Masm,
-    /// The compiler will emit a Merkalized Abstract Syntax Tree in text form
-    Mast,
-    /// The compiler will emit a MAST package in binary form
+    /// The compiler will emit the IR in its textual form
     #[default]
-    Masp,
+    Hir,
 }
 impl OutputType {
-    /// Returns true if this output type is an intermediate artifact produced during compilation
-    pub fn is_intermediate(&self) -> bool {
-        !matches!(self, Self::Mast | Self::Masp)
-    }
-
     pub fn extension(&self) -> &'static str {
         match self {
-            Self::Ast => "ast",
-            Self::Wat => "wat",
             Self::Hir => "hir",
-            Self::Masm => "masm",
-            Self::Mast => "mast",
-            Self::Masp => "masp",
         }
     }
 
     pub fn shorthand_display() -> String {
-        format!(
-            "`{}`, `{}`, `{}`, `{}`, `{}`, `{}`",
-            Self::Ast,
-            Self::Wat,
-            Self::Hir,
-            Self::Masm,
-            Self::Mast,
-            Self::Masp,
-        )
+        format!("`{}`", Self::Hir)
     }
 
     pub const fn all() -> &'static [OutputType] {
-        &[
-            OutputType::Ast,
-            OutputType::Wat,
-            OutputType::Hir,
-            OutputType::Masm,
-            OutputType::Mast,
-            OutputType::Masp,
-        ]
-    }
-
-    /// Returns the subset of [OutputType] values considered "intermediate" for convenience
-    /// emission (WAT, HIR, MASM).
-    pub const fn ir() -> &'static [OutputType] {
-        &[OutputType::Wat, OutputType::Hir, OutputType::Masm]
+        &[OutputType::Hir]
     }
 }
 impl fmt::Display for OutputType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Self::Ast => f.write_str("ast"),
-            Self::Wat => f.write_str("wat"),
             Self::Hir => f.write_str("hir"),
-            Self::Masm => f.write_str("masm"),
-            Self::Mast => f.write_str("mast"),
-            Self::Masp => f.write_str("masp"),
         }
     }
 }
@@ -132,12 +86,7 @@ impl FromStr for OutputType {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "ast" => Ok(Self::Ast),
-            "wat" => Ok(Self::Wat),
             "hir" => Ok(Self::Hir),
-            "masm" => Ok(Self::Masm),
-            "mast" => Ok(Self::Mast),
-            "masp" => Ok(Self::Masp),
             _ => Err(()),
         }
     }
@@ -251,7 +200,7 @@ pub struct OutputFiles {
     pub out_dir: PathBuf,
     /// If specified, the specific path at which to write the compiler output.
     ///
-    /// This _only_ applies to the final output, e.g. the `.masp` package.
+    /// This applies to the final output.
     pub out_file: Option<OutputFile>,
     /// The raw output types requested by the user on the command line
     pub outputs: OutputTypes,
@@ -280,7 +229,6 @@ impl OutputFiles {
     /// with an optional `name`, which overrides the file stem of the resulting path, if a
     /// specific path was not provided.
     pub fn output_file(&self, ty: OutputType, name: Option<&str>) -> OutputFile {
-        let requested = self.outputs.contains_key(&ty);
         let default_name = escape_path_component(name.unwrap_or(self.stem.as_str()));
         match self.outputs.get(&ty).and_then(|p| p.to_owned()) {
             Some(OutputFile::Real(path)) => OutputFile::Real({
@@ -306,15 +254,8 @@ impl OutputFiles {
             Some(OutputFile::Stdout) => OutputFile::Stdout,
             None => {
                 // If the user requested an output type without specifying a destination, default to
-                // the session output directory. Only compiler-internal temporaries use `tmp_dir`,
-                // except when the session output directory and `--target-dir` are the same.
-                let out = if ty.is_intermediate() {
-                    if requested {
-                        self.with_directory_and_extension(&self.out_dir, ty.extension())
-                    } else {
-                        self.with_directory_and_extension(&self.tmp_dir, ty.extension())
-                    }
-                } else if let Some(output_file) = self.out_file.as_ref() {
+                // the session output directory. Only compiler-internal temporaries use `tmp_dir`.
+                let out = if let Some(output_file) = self.out_file.as_ref() {
                     return output_file.clone();
                 } else {
                     self.with_directory_and_extension(&self.out_dir, ty.extension())
@@ -341,10 +282,7 @@ impl OutputFiles {
                 unreachable!("OutputFiles::output_file never returns OutputFile::Directory")
             }
             OutputFile::Stdout => {
-                if ty.is_intermediate() {
-                    self.with_directory_and_extension(&self.tmp_dir, ty.extension())
-                } else if let Some(output_file) = self.out_file.as_ref().and_then(|of| of.as_path())
-                {
+                if let Some(output_file) = self.out_file.as_ref().and_then(|of| of.as_path()) {
                     output_file.to_path_buf()
                 } else {
                     self.with_directory_and_extension(&self.out_dir, ty.extension())
@@ -515,22 +453,6 @@ impl OutputTypes {
     pub fn len(&self) -> usize {
         self.0.len()
     }
-
-    pub fn should_link(&self) -> bool {
-        self.0.keys().any(|k| {
-            matches!(k, OutputType::Hir | OutputType::Masm | OutputType::Mast | OutputType::Masp)
-        })
-    }
-
-    pub fn should_codegen(&self) -> bool {
-        self.0
-            .keys()
-            .any(|k| matches!(k, OutputType::Masm | OutputType::Mast | OutputType::Masp))
-    }
-
-    pub fn should_assemble(&self) -> bool {
-        self.0.keys().any(|k| matches!(k, OutputType::Mast | OutputType::Masp))
-    }
 }
 
 /// This type describes an output type with optional path specification
@@ -541,7 +463,7 @@ pub enum OutputTypeSpec {
     },
     /// Emit a set of output types to a common destination (typically a directory).
     ///
-    /// This is primarily intended for shorthand specifications like `--emit=ir[=PATH]`, but can
+    /// This is primarily intended for shorthand specifications for a bundle of output types, but can
     /// represent any two-or-more output types with a shared destination.
     Subset {
         output_types: SmallVec<[OutputType; 3]>,
@@ -579,13 +501,7 @@ impl clap::builder::TypedValueParser for OutputTypeParser {
         use clap::builder::PossibleValue;
         Some(Box::new(
             [
-                PossibleValue::new("ast").help("Abstract Syntax Tree (text)"),
-                PossibleValue::new("wat").help("WebAssembly text format (text)"),
                 PossibleValue::new("hir").help("High-level Intermediate Representation (text)"),
-                PossibleValue::new("masm").help("Miden Assembly (text)"),
-                PossibleValue::new("mast").help("Merkelized Abstract Syntax Tree (text)"),
-                PossibleValue::new("masp").help("Miden Assembly Package Format (binary)"),
-                PossibleValue::new("ir").help("WAT + HIR + MASM (text, optional directory)"),
                 PossibleValue::new("all").help("All of the above"),
             ]
             .into_iter(),
@@ -616,27 +532,11 @@ impl clap::builder::TypedValueParser for OutputTypeParser {
             };
             return Ok(OutputTypeSpec::All { path });
         }
-        if shorthand == "ir" {
-            let path = match path {
-                None => None,
-                Some(OutputFile::Real(path)) => Some(OutputFile::Directory(path)),
-                Some(OutputFile::Stdout) => {
-                    return Err(Error::raw(
-                        ErrorKind::InvalidValue,
-                        format!("invalid output type: `{shorthand}=-` - expected `ir[=PATH]`"),
-                    ));
-                }
-                Some(OutputFile::Directory(_)) => unreachable!("ir path is parsed as real"),
-            };
-            let output_types = SmallVec::from_slice(OutputType::ir());
-            return Ok(OutputTypeSpec::Subset { output_types, path });
-        }
         let output_type = shorthand.parse::<OutputType>().map_err(|_| {
             Error::raw(
                 ErrorKind::InvalidValue,
                 format!(
-                    "invalid output type: `{shorthand}` - expected one of: {display}, `all`, \
-                     `ir[=PATH]`",
+                    "invalid output type: `{shorthand}` - expected one of: {display}, `all`",
                     display = OutputType::shorthand_display(),
                 ),
             )

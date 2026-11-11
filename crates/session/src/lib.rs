@@ -6,23 +6,19 @@
 #![allow(incomplete_features)]
 #![deny(warnings)]
 
-#[cfg_attr(feature = "std", macro_use)]
 extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
+#[cfg(feature = "std")]
+use alloc::format;
 use alloc::{
     borrow::ToOwned,
-    format,
     string::{String, ToString},
 };
 
 mod color;
-pub mod diagnostics;
-#[cfg(feature = "std")]
-mod duration;
 mod emit;
-mod emitter;
 pub mod flags;
 mod inputs;
 mod libs;
@@ -32,7 +28,7 @@ pub mod path;
 #[cfg(feature = "std")]
 mod statistics;
 
-use alloc::{boxed::Box, fmt, sync::Arc};
+use alloc::{boxed::Box, fmt};
 
 /// The version associated with the current compiler toolchain
 pub const RUNIC_BUILD_VERSION: &str = env!("RUNIC_BUILD_VERSION");
@@ -40,21 +36,24 @@ pub const RUNIC_BUILD_VERSION: &str = env!("RUNIC_BUILD_VERSION");
 /// The git revision associated with the current compiler toolchain
 pub const RUNIC_BUILD_REV: &str = env!("RUNIC_BUILD_REV");
 
+pub use runic_core::diagnostics;
+use runic_core::diagnostics::Report;
+#[cfg(feature = "std")]
+pub use runic_core::pass::HumanDuration;
 use runic_symbol::Symbol;
 
 pub use self::{
     color::ColorChoice,
-    diagnostics::{DiagnosticsHandler, Emitter, Report, SourceManager},
     emit::{Emit, Writer},
     flags::{ArgMatches, CompileFlag, CompileFlags, FlagAction},
-    inputs::{FileName, FileType, InputFile, InputType, InvalidInputError},
+    inputs::{FileName, InputFile, InputType},
     libs::LinkLibrary,
     options::*,
     outputs::{OutputFile, OutputFiles, OutputMode, OutputType, OutputTypeSpec, OutputTypes},
     path::{Path, PathBuf},
 };
 #[cfg(feature = "std")]
-pub use self::{duration::HumanDuration, emit::EmitExt, statistics::Statistics};
+pub use self::{emit::EmitExt, statistics::Statistics};
 
 /// This struct provides access to all of the metadata and configuration
 /// needed during a single compilation session.
@@ -64,10 +63,6 @@ pub struct Session {
     pub name: String,
     /// Configuration for the current compiler session
     pub options: Box<Options>,
-    /// The current source manager
-    pub source_manager: Arc<dyn SourceManager>,
-    /// The current diagnostics handler
-    pub diagnostics: Arc<DiagnosticsHandler>,
     /// The inputs being compiled
     pub input: Option<InputFile>,
     /// The outputs to be produced by the compiler during compilation
@@ -75,18 +70,6 @@ pub struct Session {
     /// Statistics gathered from the current compiler session
     #[cfg(feature = "std")]
     pub statistics: Statistics,
-    /// The per-build package-exchange directory, created once for the root build.
-    ///
-    /// Shared by `Arc`, so every clone of this session observes the same lease and no clone
-    /// can mint a second directory. The `Result` memoizes a creation failure, which is
-    /// re-reported identically on every access (fail closed). Dropping the last owner
-    /// deletes the directory; see the `package_lease` module for the lifecycle.
-    #[cfg(feature = "std")]
-    package_cache_lease: package_lease::SharedPackageCacheLease,
-    /// The interfaces of every package linked into this session; see
-    /// [`Session::package_interfaces`]. Computed lazily and cached on first access.
-    #[cfg(feature = "std")]
-    package_interfaces: std::sync::OnceLock<Arc<[midenc_package_interface::PackageInterface]>>,
 }
 
 impl fmt::Debug for Session {
@@ -103,58 +86,12 @@ impl fmt::Debug for Session {
 impl Session {
     /// Open a session compiling `input` under `options`.
     ///
-    /// # A project locator is read for its facts, not loaded as a project
-    ///
-    /// A `.toml` input is a *locator*: it names the project to build rather than being something
-    /// the compiler compiles. Three facts about that project are needed before this session
-    /// exists, because this constructor is downstream of none of them:
-    ///
-    /// - the **package name**, which is the artifact name absent `--name`, and which
-    ///   [`OutputFiles`] is built from below;
-    /// - the **library target's kind**, which is what [`Options::target_type`] defaults to, and
-    ///   which [`add_target_link_libraries`] then consults to decide whether the Miden protocol
-    ///   is linked;
-    /// - the **executable targets' names**, from which [`Options::entrypoint`] is defaulted when
-    ///   the target is rooted at Rust — see `infer_rust_entrypoint`.
-    ///
-    /// All three come from `ProjectManifest`, which parses the manifest's *AST* and reads
-    /// exactly those three things out of it with `miden_project`'s own extractors. What it
-    /// deliberately does not do is build a [`miden_project::Project`]: loading the project is
-    /// `prepare_project`'s, in `runic-compile`, and the package it loads is the one that gets
-    /// assembled. A session that loaded its own would be loading the same manifest twice to
-    /// produce a package nothing compiles.
-    ///
-    /// **Failing to read the manifest is not an error here.** Which project a locator names, and
-    /// whether it names one at all, is decided and reported downstream — where the locator is
-    /// normalized anyway, and where a Cargo workspace root gets the diagnostic that belongs to
-    /// it rather than a "no such file" for the `miden-project.toml` a workspace root does not
-    /// have. So an unreadable manifest falls back to the same name derivation a source-file
-    /// input uses, and leaves `target_type` and `entrypoint` alone.
-    pub fn new(
-        input: InputFile,
-        mut options: Box<Options>,
-        emitter: Option<Arc<dyn Emitter>>,
-        source_manager: Arc<dyn SourceManager + Send + Sync>,
-    ) -> Result<Self, Report> {
-        options.derive_sysroot_from_toolchain();
-
-        let manifest = if matches!(input.file_type(), FileType::Toml) {
-            ProjectManifest::read(&input, source_manager.as_ref())?
-        } else {
-            None
-        };
-
-        if let Some(manifest) = manifest.as_ref() {
-            if options.target_type.is_none() {
-                options.target_type = Some(manifest.library_target_type());
-            }
-            infer_rust_entrypoint(manifest, &mut options)?;
-        }
-
+    /// The session is named by `options.name` if set; otherwise by the stem of the requested
+    /// output file; otherwise by the input.
+    pub fn new(input: InputFile, options: Box<Options>) -> Result<Self, Report> {
         let name = options
             .name
             .clone()
-            .or_else(|| manifest.as_ref().map(|manifest| manifest.name.to_string()))
             .or_else(|| {
                 log::debug!(target: "driver", "no name specified, attempting to derive from output file");
                 options.output_file.as_ref().and_then(|of| of.filestem().map(|stem| stem.to_string()))
@@ -164,7 +101,6 @@ impl Session {
                 match &input {
                     InputFile {
                         file: InputType::Real(path),
-                        ..
                     } => path
                         .file_stem()
                         .and_then(|stem| stem.to_str())
@@ -176,10 +112,9 @@ impl Session {
                             )
                         })
                         .to_string(),
-                        input @ InputFile {
-                            file: InputType::Stdin { name, .. },
-                            ..
-                        } => {
+                    input @ InputFile {
+                        file: InputType::Stdin { name, .. },
+                    } => {
                         let name = name.as_str();
                         if matches!(name, "empty" | "stdin") {
                             log::debug!(target: "driver", "no good input file name to use, using current directory base name");
@@ -197,63 +132,9 @@ impl Session {
             });
         log::debug!(target: "driver", "artifact name set to '{name}'");
 
-        // Where `prepare_temporary_cargo_project` copies a standalone Rust source to, mapped back
-        // to where the source came from, so that debug information names the file the user wrote.
-        // Only for a source-file input: a project is built by `cargo` in place, and is never
-        // copied anywhere.
-        #[cfg(feature = "std")]
-        if !matches!(input.file_type(), FileType::Toml)
-            && let InputType::Real(path) = &input.file
-        {
-            #[cfg(feature = "std")]
-            {
-                let tmp = canonical_temp_dir()?;
-                let project_dir = tmp.join(&name).join("src");
-                let project_remap_target = if path.is_absolute() {
-                    Some(
-                        path.strip_prefix(&options.current_dir)
-                            .ok()
-                            .or(path.as_path().parent())
-                            .unwrap()
-                            .to_path_buf()
-                            .into_boxed_path(),
-                    )
-                } else {
-                    path.parent().map(|p| p.to_path_buf().into_boxed_path())
-                };
-                options.remap_path_prefixes.push(RemapPathPrefix {
-                    from: project_dir.into_boxed_path(),
-                    to: project_remap_target,
-                });
-            }
-        }
-
-        Ok(Self::new_project(name, Some(input), options, emitter, source_manager))
-    }
-
-    /// Open a session named `name`, for a caller that already knows what it is building.
-    ///
-    /// [`Session::new`] derives `name` from its input; this takes it. Both then do the same
-    /// thing, and neither knows anything about the project being built beyond its name.
-    pub fn new_project(
-        name: String,
-        input: Option<InputFile>,
-        mut options: Box<Options>,
-        emitter: Option<Arc<dyn Emitter>>,
-        source_manager: Arc<dyn SourceManager>,
-    ) -> Self {
-        options.derive_sysroot_from_toolchain();
-
         log::debug!(target: "driver", "creating session {name}");
         if log::log_enabled!(target: "driver", log::Level::Debug) {
-            if let Some(input) = input.as_ref() {
-                log::debug!(
-                    target: "driver",
-                    " | input = {} ({})",
-                    input.file_name(),
-                    input.file_type(),
-                );
-            }
+            log::debug!(target: "driver", " | input = {}", input.file_name());
             log::debug!(
                 target: "driver",
                 " | outputs_dir = {}",
@@ -269,25 +150,18 @@ impl Session {
             );
             log::debug!(target: "driver", " | target_dir = {}", options.target_dir.display());
         }
-        let diagnostics = Arc::new(DiagnosticsHandler::new(
-            options.diagnostics,
-            source_manager.clone(),
-            emitter.unwrap_or_else(|| options.default_emitter()),
-        ));
 
-        let profile_target_dir = options.target_dir.join(&options.profile);
-        create_target_dir(&profile_target_dir);
+        create_target_dir(&options.target_dir);
 
         let output_dir = options
             .output_dir
             .as_deref()
             .or_else(|| options.output_file.as_ref().and_then(|of| of.parent()))
             .map(|path| path.to_path_buf())
-            .unwrap_or_else(|| profile_target_dir.clone());
+            .unwrap_or_else(|| options.target_dir.clone());
         create_target_dir(&output_dir);
 
         log::debug!(target: "driver", " | output dir = {}", output_dir.display());
-        log::debug!(target: "driver", " | target = {}", options.target_type.map(|tt| tt.to_string()).unwrap_or("none specified".to_string()));
         if log::log_enabled!(target: "driver", log::Level::Debug) {
             for lib in options.link_libraries.iter() {
                 if let Some(path) = lib.path.as_deref() {
@@ -301,30 +175,20 @@ impl Session {
         let output_files = OutputFiles::new(
             name.clone(),
             options.current_dir.clone(),
-            output_dir.clone(),
+            output_dir,
             options.output_file.clone(),
-            profile_target_dir.clone(),
+            options.target_dir.clone(),
             options.output_types.clone(),
         );
 
-        // Link against implicitly required libraries
-        let requires_protocol = options.target_requires_protocol();
-        add_target_link_libraries(&mut options.link_libraries, requires_protocol);
-
-        Self {
+        Ok(Self {
             name,
             options,
-            source_manager,
-            diagnostics,
-            input,
+            input: Some(input),
             output_files,
             #[cfg(feature = "std")]
             statistics: Default::default(),
-            #[cfg(feature = "std")]
-            package_cache_lease: Default::default(),
-            #[cfg(feature = "std")]
-            package_interfaces: std::sync::OnceLock::new(),
-        }
+        })
     }
 
     #[doc(hidden)]
@@ -363,120 +227,9 @@ impl Session {
         &self.name
     }
 
-    /// Get a new package registry instance for this session
-    pub fn package_registry(&self) -> Result<Box<registry::HybridPackageRegistry>, Report> {
-        #[cfg(feature = "std")]
-        let filesystem_cache = self.filesystem_package_cache_dir()?;
-        #[cfg(feature = "std")]
-        let mut registry = registry::HybridPackageRegistry::new_with_filesystem_cache(
-            &self.options,
-            filesystem_cache,
-        )?;
-        #[cfg(not(feature = "std"))]
-        let registry = registry::HybridPackageRegistry::empty();
-        // The registry publishes into the leased directory and may outlive every clone of
-        // this session; retaining the shared lease keeps the directory alive for as long
-        // as the registry is.
-        #[cfg(feature = "std")]
-        registry.retain_session_package_cache(self.package_cache_lease.clone());
-        Ok(Box::new(registry))
-    }
-
-    /// The interfaces of every package this session can resolve — the toolchain's `lib/`,
-    /// explicit link libraries and their dependencies — in registry order.
-    ///
-    /// Built once and cached: the Wasm frontend resolves every linker stub against this set. It
-    /// is deliberately the *resolvable* set rather than the link closure, so a stub may resolve
-    /// here against a sysroot package that was never linked; the assembler then reports the
-    /// unresolved procedure, rather than the frontend reporting the missing `-l`.
-    ///
-    /// The registry built here has no filesystem cache: computing interfaces must not republish
-    /// every sysroot package into the session's package exchange, which the pipeline's own
-    /// registry already owns.
-    #[cfg(feature = "std")]
-    pub fn package_interfaces(
-        &self,
-    ) -> Result<Arc<[midenc_package_interface::PackageInterface]>, Report> {
-        if let Some(cached) = self.package_interfaces.get() {
-            return Ok(cached.clone());
-        }
-        let registry =
-            registry::HybridPackageRegistry::new_with_filesystem_cache(&self.options, None)?;
-        let interfaces: alloc::vec::Vec<_> = registry
-            .packages()
-            .map(|package| midenc_package_interface::PackageInterface::from_package(package))
-            .collect();
-        let interfaces: Arc<[_]> = interfaces.into();
-        let _ = self.package_interfaces.set(interfaces.clone());
-        Ok(interfaces)
-    }
-
-    /// Where compiled dependency packages of this build are published and looked for.
-    ///
-    /// `Ok(None)` unless this session's input is a project locator: a session compiling a
-    /// standalone source file has no project to exchange packages for. When the calling
-    /// process already exported `MIDENC_PACKAGE_CACHE`, that directory is adopted as-is and
-    /// left in place — the caller owns its location and lifetime (this is how a contract
-    /// `build.rs` keeps the packages readable after the compiler exits). Otherwise the
-    /// directory is a per-build lease with a globally unique name under the session's
-    /// configured target directory (`<target-dir>/packages`), created on first access and
-    /// deleted when the last clone of this session drops; see the `package_lease` module for
-    /// both lifecycles. Anchoring at the target directory honors a caller-supplied
-    /// `--target-dir` — a writable location for a read-only checkout, for example.
-    ///
-    /// Both readers — this session's package registry and the nested `cargo` builds a Rust
-    /// project's dependencies run through — must agree on the answer, which is why there is
-    /// one derivation of it. Only the root compilation session derives the path. Nested
-    /// dependency sessions receive the root value threaded through their build environment,
-    /// rather than deriving paths from their own locators: a dependency with a private
-    /// directory could not see its already-assembled transitive dependencies.
-    ///
-    /// [`Session`] is [`Clone`], and clones share the lease cell, so every clone observes the
-    /// same directory and no clone can mint a second one. Errors when the directory cannot be
-    /// created — fail closed, so the build stops here instead of failing later inside a macro
-    /// expansion with a confusing missing-package diagnostic; the failure is memoized and
-    /// re-reported on every access.
-    ///
-    /// Derived from the input locator rather than from a loaded manifest, which is what
-    /// [`Session::new`] no longer has. That is also a repair: the manifest path was previously
-    /// taken from a package that `fixup_cargo_target` had rebuilt for every executable
-    /// `Cargo.toml` input, and a rebuilt package has no manifest path — so an executable project
-    /// silently got no filesystem cache at all, while a library project of the same shape got one.
-    #[cfg(feature = "std")]
-    pub fn filesystem_package_cache_dir(&self) -> Result<Option<PathBuf>, Report> {
-        if !self.is_project_session() {
-            return Ok(None);
-        }
-        let lease = self
-            .package_cache_lease
-            .get_or_init(|| package_lease::PackageCacheLease::create(&self.options.target_dir));
-        match lease {
-            Ok(lease) => Ok(Some(lease.path().to_path_buf())),
-            Err(message) => Err(Report::msg(message.clone())),
-        }
-    }
-
-    /// Without `std` there is no filesystem package exchange.
-    #[cfg(not(feature = "std"))]
-    pub fn filesystem_package_cache_dir(&self) -> Result<Option<PathBuf>, Report> {
-        Ok(None)
-    }
-
-    /// Whether this session compiles a project — the gate for having a package cache at all.
-    ///
-    /// Mirrors [`Session::filesystem_package_cache_dir`]: a session compiling a standalone
-    /// source file has no project to exchange packages for. The cache itself is anchored at
-    /// the configured target directory.
-    #[cfg(feature = "std")]
-    fn is_project_session(&self) -> bool {
-        self.input
-            .as_ref()
-            .is_some_and(|input| matches!(input.file_type(), FileType::Toml))
-    }
-
-    /// Get the [OutputFile] to write the assembled MAST output to
+    /// Get the [OutputFile] to write the final output to
     pub fn out_file(&self) -> OutputFile {
-        let out_file = self.output_files.output_file(OutputType::Masp, None);
+        let out_file = self.output_files.output_file(OutputType::Hir, None);
 
         if let OutputFile::Real(ref path) = out_file {
             self.check_file_is_writeable(path);
@@ -515,23 +268,7 @@ impl Session {
 
     /// Returns true if the compiler should exit after applying rewrites to the IR
     pub fn rewrite_only(&self) -> bool {
-        let link_or_masm_requested = self.should_link() || self.should_codegen();
-        !self.options.parse_only && !self.options.analyze_only && !link_or_masm_requested
-    }
-
-    /// Returns true if an [OutputType] that requires linking + assembly was requested
-    pub fn should_link(&self) -> bool {
-        self.options.output_types.should_link() && !self.options.no_link
-    }
-
-    /// Returns true if an [OutputType] that requires generating Miden Assembly was requested
-    pub fn should_codegen(&self) -> bool {
-        self.options.output_types.should_codegen() && !self.options.link_only
-    }
-
-    /// Returns true if an [OutputType] that requires assembling MAST was requested
-    pub fn should_assemble(&self) -> bool {
-        self.options.output_types.should_assemble() && !self.options.link_only
+        !self.options.parse_only && !self.options.analyze_only
     }
 
     /// Returns true if the given [OutputType] should be emitted as an output
@@ -558,7 +295,7 @@ impl Session {
 
     /// Print the given emittable IR to stdout, as produced by a pass with name `pass`
     #[cfg(feature = "std")]
-    pub fn print(&self, ir: impl Emit, pass: &str) -> anyhow::Result<()> {
+    pub fn print(&self, ir: impl Emit, pass: &str) -> Result<(), Report> {
         if self.should_print_ir(pass) {
             ir.write_to_stdout(self)?;
         }
@@ -582,7 +319,7 @@ impl Session {
 
     /// Emit an item to stdout/file system depending on the current configuration
     #[cfg(feature = "std")]
-    pub fn emit<E: Emit>(&self, mode: OutputMode, item: &E) -> anyhow::Result<()> {
+    pub fn emit<E: Emit>(&self, mode: OutputMode, item: &E) -> Result<(), Report> {
         let output_type = item.output_type(mode);
         let name = item.name().map(|n| n.as_str());
         match self.output_path_for(output_type, name) {
@@ -620,309 +357,9 @@ impl Session {
     }
 
     #[cfg(not(feature = "std"))]
-    pub fn emit<E: Emit>(&self, _mode: OutputMode, _item: &E) -> anyhow::Result<()> {
+    pub fn emit<E: Emit>(&self, _mode: OutputMode, _item: &E) -> Result<(), Report> {
         Ok(())
     }
-}
-
-/// The file name of a Miden project manifest, the one spelling the compiler produces.
-pub const MIDEN_MANIFEST_FILE_NAME: &str = "miden-project.toml";
-
-/// Whether `path` names a Cargo manifest, by file name alone.
-///
-/// Matched case-insensitively, as [`is_miden_manifest`] is: a case-insensitive filesystem will
-/// hand a `cargo.toml` to a caller that asked for `Cargo.toml`, and a predicate that disagreed
-/// with the filesystem would classify that manifest as something else entirely. Every name the
-/// compiler itself *produces* is the constant — `Cargo.toml`, [`MIDEN_MANIFEST_FILE_NAME`].
-pub fn is_cargo_manifest(path: &Path) -> bool {
-    path.file_name().is_some_and(|name| name.eq_ignore_ascii_case("Cargo.toml"))
-}
-
-/// Whether `path` names a Miden project manifest, by file name alone.
-///
-/// Matched case-insensitively, for the reason given on [`is_cargo_manifest`].
-pub fn is_miden_manifest(path: &Path) -> bool {
-    path.file_name()
-        .is_some_and(|name| name.eq_ignore_ascii_case(MIDEN_MANIFEST_FILE_NAME))
-}
-
-/// The `miden-project.toml` the project locator `path` names.
-///
-/// A `Cargo.toml` locates the `miden-project.toml` beside it, which is where `cargo miden` writes
-/// the Miden manifest for a crate; any other path is taken as given. This is the one mapping from
-/// a Cargo manifest to the Miden manifest beside it: the same-file comparison
-/// [`Options::resolve_input`] makes between an input and `--manifest-path`, the session's
-/// `ProjectManifest::read`, `normalize_locator` in `runic-compile` and the nested cargo build all
-/// go through it, so they cannot disagree about which file a locator names. A `--manifest-path`
-/// given on its own is not mapped: it is the locator, and whoever normalizes it maps it then.
-pub fn project_manifest_path(path: &Path) -> PathBuf {
-    if is_cargo_manifest(path) {
-        path.with_file_name(MIDEN_MANIFEST_FILE_NAME)
-    } else {
-        path.to_path_buf()
-    }
-}
-
-/// Whether the Miden manifest at `path` is a workspace root rather than a package manifest.
-///
-/// Answered from the manifest's AST — the same parse `ProjectManifest::parse` performs — because
-/// that is all the evidence there is: a workspace root declares members and no package of its
-/// own. A manifest that cannot be read or parsed is not a workspace root; its own diagnostic is
-/// the one worth reporting. Preparation asks this on the path where loading the project failed,
-/// so that a workspace root is reported on its own terms.
-#[cfg(feature = "std")]
-pub fn is_workspace_manifest(path: &Path, source_manager: &dyn SourceManager) -> bool {
-    use miden_debug_types::SourceManagerExt;
-
-    source_manager
-        .load_file(path)
-        .ok()
-        .and_then(|source| miden_project::ast::MidenProject::parse(source).ok())
-        .is_some_and(|manifest| manifest.is_workspace())
-}
-
-/// The extension of `target`'s root, which is what everything dispatches on.
-///
-/// Owned rather than borrowed, because the path is reconstructed from the target's `Uri` and so
-/// lives no longer than this call. It is the one derivation of "what kind of file is this target
-/// rooted at?" in the workspace, and it must stay that way: `runic-compile` uses it to select a
-/// frontend and to choose the provider key a seed is installed under, and [`Session::new`] uses it
-/// to decide whether an entrypoint is inferred — so a second copy that grew, say, case folding
-/// would make them disagree, and the disagreement would surface as an internal error on a project
-/// that is perfectly valid.
-#[cfg(feature = "std")]
-pub fn target_root_extension(target: &miden_project::Target) -> Option<String> {
-    target
-        .path
-        .inner()
-        .to_path()
-        .as_deref()
-        .and_then(Path::extension)
-        .and_then(|extension| extension.to_str())
-        .map(ToString::to_string)
-}
-
-/// Whether `target` is rooted at a Rust source file.
-///
-/// Only a Rust root gets a defaulted [`Options::entrypoint`]: the names that default is built from
-/// — `<target>::entrypoint`, and the transaction-script `run` — are the ones the Rust frontend
-/// emits. A target rooted at hand-written Miden Assembly names its own.
-#[cfg(feature = "std")]
-fn is_rust_root(target: &miden_project::Target) -> bool {
-    target_root_extension(target).as_deref() == Some("rs")
-}
-
-/// Whether `target` is rooted at a Rust source file.
-///
-/// Always false without `std`: the extension is read through [`target_root_extension`], which is
-/// std-only because a target root's `Uri` cannot be turned into a path without it.
-#[cfg(not(feature = "std"))]
-fn is_rust_root(_target: &miden_project::Target) -> bool {
-    false
-}
-
-/// What a project's manifest says about the targets it declares.
-///
-/// The facts are read with `miden_project`'s own extractors — the very ones
-/// `miden_project::Package::parse` uses — so that a target's kind, a target's defaulted name and
-/// the package's name mean here exactly what they mean to a loaded project. None of them is
-/// inheritable from a workspace, which is what makes reading the package manifest alone correct:
-/// `[package] name` is a required key of the package's own file, `[lib] kind` defaults to
-/// `library` there, and a `[[bin]]` with no name takes the package's.
-///
-/// # This is the one place the rules live
-///
-/// Two questions are answered from these facts — [what target type a project builds by
-/// default](Self::library_target_type) and [which executable it builds](Self::selected_executable)
-/// — and both have to be answered identically everywhere, because the answers decide different
-/// halves of one build. `Session::new` uses them to set [`Options::target_type`] and
-/// [`Options::entrypoint`]; `prepare_project` in `runic-compile` uses the second to choose the
-/// target it assembles; the Rust frontend's nested `cargo` build uses it to reject a project it
-/// could not build, and used to carry its own copy of both rules over a separately loaded
-/// project. Two implementations of one rule can only ever agree by coincidence.
-///
-/// `read` parses a manifest for them, and [`from_package`](Self::from_package) takes them off a
-/// project that is already loaded. That is the whole difference between the callers: where the
-/// facts come from, never what is done with them.
-pub struct ProjectManifest {
-    /// The `[package] name`.
-    name: String,
-    /// The declared library target, if the manifest declares one.
-    library: Option<miden_project::Target>,
-    /// The declared executable targets, with names defaulted to the package's.
-    executables: alloc::vec::Vec<miden_project::Target>,
-}
-
-impl ProjectManifest {
-    /// Take these facts off an already-loaded `package`.
-    ///
-    /// For a caller that has a [`miden_project::Package`] in hand and must not load a second one
-    /// — either because it just loaded that one, or because it came from a workspace and was
-    /// never a file of its own.
-    pub fn from_package(package: &miden_project::Package) -> Self {
-        Self {
-            name: package.name().to_string(),
-            library: package.library_target().map(|lib| lib.inner().clone()),
-            executables: package
-                .executable_targets()
-                .iter()
-                .map(|bin| bin.inner().clone())
-                .collect(),
-        }
-    }
-
-    /// The target type a project declaring these targets builds when nothing selects one.
-    ///
-    /// The library target's kind if there is a library target, and otherwise an executable —
-    /// which is what a package declaring only `[[bin]]`s is.
-    pub fn library_target_type(&self) -> miden_project::TargetType {
-        match self.library.as_ref() {
-            Some(library) => library.ty,
-            None => miden_project::TargetType::Executable,
-        }
-    }
-
-    /// The executable this build compiles, of the ones the manifest declares.
-    ///
-    /// One rule for everyone who asks — the session deriving the entrypoint, preparation choosing
-    /// what to assemble, and the nested cargo build refusing what it cannot build: `--target`
-    /// names it outright; else `--name` does; else the executable named after the package; else
-    /// the sole executable when there is exactly one. A project declaring several and naming none
-    /// is ambiguous, and says so; a project declaring none has nothing to select.
-    pub fn selected_executable(&self, options: &Options) -> Result<&miden_project::Target, Report> {
-        let requested = options.target.as_deref().or(options.name.as_deref());
-        match requested {
-            Some(name) => self
-                .executables
-                .iter()
-                .find(|target| name == &**target.name.inner())
-                .ok_or_else(|| Report::msg(format!("no executable target name '{name}'"))),
-            None if self.executables.is_empty() => {
-                Err(Report::msg("project does not declare an executable target"))
-            }
-            None => self
-                .executables
-                .iter()
-                .find(|target| self.name.as_str() == &**target.name.inner())
-                .or(match self.executables.as_slice() {
-                    [sole] => Some(sole),
-                    _ => None,
-                })
-                .ok_or_else(|| {
-                    Report::msg(
-                        "ambiguous executable target selection: use --target to select a specific \
-                         executable target",
-                    )
-                }),
-        }
-    }
-
-    /// Read the manifest the project locator `input` names.
-    ///
-    /// `Ok(None)` means the manifest could not be read or is not a package manifest, which is not
-    /// an error here — see [`Session::new`] for why, and for what a session does instead. A
-    /// locator piped in on standard input is the one exception: nothing downstream re-reads it, so
-    /// there is no better place for its diagnostic than this one.
-    fn read(input: &InputFile, source_manager: &dyn SourceManager) -> Result<Option<Self>, Report> {
-        match &input.file {
-            InputType::Real(path) => {
-                let manifest_path = project_manifest_path(path);
-                #[cfg(feature = "std")]
-                {
-                    use miden_debug_types::SourceManagerExt;
-                    let Ok(source) = source_manager.load_file(&manifest_path) else {
-                        return Ok(None);
-                    };
-                    Ok(Self::parse(source).ok())
-                }
-                #[cfg(not(feature = "std"))]
-                {
-                    let _ = manifest_path;
-                    Ok(None)
-                }
-            }
-            InputType::Stdin { name, input } => {
-                let content = core::str::from_utf8(input).map_err(|err| {
-                    Report::msg(format!(
-                        "unable to load source file '{name}' due to invalid utf-8: {err}"
-                    ))
-                })?;
-                let source_file = source_manager.load(
-                    miden_debug_types::SourceLanguage::Other("toml"),
-                    miden_debug_types::Uri::new(name.as_str()),
-                    content.to_string(),
-                );
-                Self::parse(source_file).map(Some)
-            }
-        }
-    }
-
-    fn parse(source: Arc<diagnostics::SourceFile>) -> Result<Self, Report> {
-        let package = match miden_project::ast::MidenProject::parse(source)? {
-            miden_project::ast::MidenProject::Package(package) => package,
-            // A workspace manifest declares members but no package of its own, so it names
-            // nothing to derive an artifact name or a target type from. Which member was meant
-            // has to come from the caller, and saying so is the job of whoever resolves the
-            // locator; there is nothing for a session to do with one.
-            miden_project::ast::MidenProject::Workspace(_) => {
-                return Err(Report::msg(
-                    "expected a package manifest, but found a workspace manifest",
-                ));
-            }
-        };
-        // The spans are dropped: every diagnostic these facts can provoke is raised against the
-        // manifest downstream, by whoever loads it, and none of them is raised here.
-        use miden_debug_types::Span;
-        Ok(Self {
-            name: package.package.name.inner().to_string(),
-            library: package.extract_library_target()?.map(Span::into_inner),
-            executables: package
-                .extract_executable_targets()
-                .into_iter()
-                .map(Span::into_inner)
-                .collect(),
-        })
-    }
-}
-
-/// Default [`Options::entrypoint`] from what `manifest` declares, for a Rust-rooted target.
-///
-/// What the compiler is asked to build decides which name: an executable's entrypoint is the
-/// `entrypoint` of the selected executable target's module, and a transaction script's is the
-/// `run` procedure under the library target's namespace (`<namespace>::run`). Anything else names
-/// no entrypoint.
-///
-/// Nothing is inferred for a target rooted at something other than Rust — see [`is_rust_root`] —
-/// nor for a run that already named an entrypoint. The executable is the one
-/// [`ProjectManifest::selected_executable`] names, which is the executable preparation will
-/// assemble: an ambiguous selection is an error here because it is an error there too, and a
-/// project refused by one has to be refused by the other.
-fn infer_rust_entrypoint(manifest: &ProjectManifest, options: &mut Options) -> Result<(), Report> {
-    if options.entrypoint.is_some() {
-        return Ok(());
-    }
-
-    match options.target_type {
-        Some(miden_project::TargetType::Executable) => {
-            let target = manifest.selected_executable(options)?;
-            if is_rust_root(target) {
-                let masm_module_name = target.name.inner().replace('-', "_");
-                options.entrypoint = Some(format!("{masm_module_name}::entrypoint"));
-            }
-        }
-        Some(miden_project::TargetType::TransactionScript) => {
-            if let Some(library) = manifest.library.as_ref().filter(|target| is_rust_root(target)) {
-                options.entrypoint = Some(format!(
-                    "{}::{}",
-                    library.namespace.inner(),
-                    midenc_frontend_wasm_metadata::TX_SCRIPT_ENTRYPOINT_PROCEDURE
-                ));
-            }
-        }
-        _ => (),
-    }
-
-    Ok(())
 }
 
 /// The system temporary directory, resolved to its canonical form.
@@ -961,10 +398,8 @@ fn create_target_dir(path: &Path) {
 #[cfg(not(feature = "std"))]
 fn create_target_dir(_path: &Path) {}
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests {
-    use alloc::sync::Arc;
-
     use tempfile::TempDir;
 
     use super::*;
@@ -972,7 +407,6 @@ mod tests {
     // `canonical_temp_dir` reads `TMPDIR` from the process environment, which no single test can
     // own; `canonicalize_directory` is the whole filesystem decision it makes, and is what a
     // missing temporary directory exercises.
-    #[cfg(feature = "std")]
     #[test]
     fn canonicalizing_a_directory_distinguishes_a_real_one_from_a_missing_one() {
         let temp = TempDir::new().unwrap();
@@ -991,7 +425,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn the_process_temporary_directory_canonicalizes() {
         let temp_dir = canonical_temp_dir().unwrap();
@@ -1003,157 +436,32 @@ mod tests {
     }
 
     #[test]
-    fn relative_manifest_locator_uses_the_configured_current_directory() {
+    fn a_session_is_named_after_its_input_and_creates_its_target_directory() {
         let temp = TempDir::new().unwrap();
         let options = Options {
             current_dir: temp.path().to_path_buf(),
             target_dir: temp.path().join("target"),
             ..Options::default()
         };
-        let input = InputFile::new(FileType::Toml, InputType::Real("Cargo.toml".into()));
-        let session = Session::new_project(
-            "relative-manifest".into(),
-            Some(input),
-            Box::new(options),
-            None,
-            Arc::new(diagnostics::DefaultSourceManager::default()),
-        );
+        let input = InputFile::new(InputType::Real("some/foo.hir".into()));
+        let session = Session::new(input, Box::new(options)).unwrap();
 
-        let cache_dir = session.filesystem_package_cache_dir().unwrap().unwrap();
-        // The lease is anchored at the configured target directory, honoring `--target-dir`.
-        let expected_parent = temp.path().join("target/packages");
-        assert_eq!(cache_dir.parent(), Some(expected_parent.as_path()));
-        assert!(cache_dir.is_dir(), "the lease directory must exist once derived");
-
-        let clone_dir = session.clone().filesystem_package_cache_dir().unwrap().unwrap();
-        assert_eq!(cache_dir, clone_dir, "clones must share one lease, never mint a second");
-
-        drop(session);
-        assert!(!cache_dir.exists(), "dropping the last session must delete the lease");
+        assert_eq!(session.name(), "foo");
+        assert!(temp.path().join("target").is_dir());
     }
 
     #[test]
-    fn a_registry_keeps_the_leased_cache_alive_after_the_session_drops() {
+    fn an_explicit_name_wins_over_the_input() {
         let temp = TempDir::new().unwrap();
-        // The session's registry loads the implicitly linked core library from the sysroot, so
-        // this test needs one, with a fixture package standing in for the real toolchain library.
-        let sysroot = temp.path().join("sysroot");
-        std::fs::create_dir_all(sysroot.join("lib")).unwrap();
-        crate::registry::tests::fixture_package("miden-core")
-            .write_masp_file(sysroot.join("lib"))
-            .unwrap();
         let options = Options {
+            name: Some("explicit".into()),
             current_dir: temp.path().to_path_buf(),
             target_dir: temp.path().join("target"),
-            ..Options::new(
-                None,
-                None,
-                temp.path().to_path_buf(),
-                temp.path().join("target"),
-                None,
-                Some(sysroot),
-            )
+            ..Options::default()
         };
-        let input = InputFile::new(FileType::Toml, InputType::Real("Cargo.toml".into()));
-        let session = Session::new_project(
-            "registry-outlives".into(),
-            Some(input),
-            Box::new(options),
-            None,
-            Arc::new(diagnostics::DefaultSourceManager::default()),
-        );
+        let input = InputFile::new(InputType::Real("foo.hir".into()));
+        let session = Session::new(input, Box::new(options)).unwrap();
 
-        let registry = session.package_registry().unwrap();
-        let cache_dir = registry.filesystem_cache_dir().unwrap().to_path_buf();
-        assert!(cache_dir.is_dir());
-
-        drop(session);
-        assert!(
-            cache_dir.is_dir(),
-            "the registry publishes into the leased directory, so it must keep the lease alive"
-        );
-
-        drop(registry);
-        assert!(!cache_dir.exists(), "dropping the last owner must delete the lease");
-    }
-}
-
-#[cfg(all(test, feature = "std"))]
-mod package_interface_tests {
-    use tempfile::TempDir;
-
-    use super::*;
-
-    #[test]
-    fn package_interfaces_cover_every_package_in_the_sysroot_and_are_cached() {
-        let dir = TempDir::new().unwrap();
-        let sysroot = dir.path().join("toolchain");
-        std::fs::create_dir_all(sysroot.join("lib")).unwrap();
-        crate::registry::tests::fixture_package("miden-core")
-            .write_masp_file(sysroot.join("lib"))
-            .unwrap();
-        crate::registry::tests::fixture_package("other")
-            .write_masp_file(sysroot.join("lib"))
-            .unwrap();
-        let options = Box::new(crate::Options::new(
-            None,
-            None,
-            dir.path().into(),
-            dir.path().into(),
-            None,
-            Some(sysroot),
-        ));
-        let session = Session::new_project(
-            "t".into(),
-            None,
-            options,
-            None,
-            Arc::new(crate::diagnostics::DefaultSourceManager::default()),
-        );
-        let first = session.package_interfaces().unwrap();
-        let mut names: alloc::vec::Vec<&str> =
-            first.iter().map(|p| AsRef::<str>::as_ref(&p.name)).collect();
-        names.sort();
-        assert_eq!(names, ["miden-core", "other"]);
-        assert!(
-            first.iter().all(|p| p.bindable().count() == 1),
-            "the fixture's `id` is bindable"
-        );
-        let second = session.package_interfaces().unwrap();
-        assert!(Arc::ptr_eq(&first, &second), "cached per session");
-    }
-
-    #[test]
-    fn sysroot_is_derived_from_the_midenup_home_and_toolchain_when_unset() {
-        let dir = TempDir::new().unwrap();
-        let home = dir.path().join("home");
-        std::fs::create_dir_all(home.join("toolchains").join("0.16.0").join("lib")).unwrap();
-        let mut options = Box::new(crate::Options::new(
-            None,
-            None,
-            dir.path().into(),
-            dir.path().into(),
-            None,
-            None,
-        ));
-        options.midenup_home = Some(home.clone());
-        options.toolchain = Some("0.16.0".into());
-        let session = Session::new_project(
-            "t".into(),
-            None,
-            options,
-            None,
-            Arc::new(crate::diagnostics::DefaultSourceManager::default()),
-        );
-        assert_eq!(
-            session.options.sysroot.as_deref(),
-            Some(home.join("toolchains").join("0.16.0").as_path())
-        );
-        assert!(
-            session
-                .options
-                .search_paths
-                .contains(&home.join("toolchains").join("0.16.0").join("lib"))
-        );
+        assert_eq!(session.name(), "explicit");
     }
 }

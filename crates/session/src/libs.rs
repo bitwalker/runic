@@ -2,9 +2,7 @@ use alloc::borrow::Cow;
 #[cfg(feature = "std")]
 use alloc::boxed::Box;
 
-#[cfg(feature = "std")]
-use crate::diagnostics::IntoDiagnostic;
-use crate::{PathBuf, diagnostics::Report};
+use crate::PathBuf;
 
 /// A library requested by the user to be linked against during compilation
 #[derive(Debug, Clone, PartialEq, Eq)]

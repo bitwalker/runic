@@ -1,5 +1,13 @@
-use alloc::{boxed::Box, string::ToString, sync::Arc};
+#[cfg(not(feature = "std"))]
+use alloc::string::ToString;
+use alloc::{boxed::Box, sync::Arc};
 
+use runic_core::{
+    Op, OpPrinter, Symbol as RSymbol, SymbolPath,
+    diagnostics::{IntoDiagnostic, Report},
+    dialects::builtin::{Component, Module},
+    print::{AsmPrinter, OpPrintingFlags},
+};
 use runic_symbol::Symbol;
 
 use crate::{OutputMode, OutputType, Session};
@@ -16,26 +24,26 @@ pub trait Emit {
         writer: W,
         mode: OutputMode,
         _session: &Session,
-    ) -> anyhow::Result<()>;
+    ) -> Result<(), Report>;
 }
 
 #[cfg(feature = "std")]
 pub trait EmitExt: Emit {
     /// Write this item to standard output, inferring the best [OutputMode] based on whether or not
     /// stdout is a tty or not
-    fn write_to_stdout(&self, session: &Session) -> anyhow::Result<()>;
+    fn write_to_stdout(&self, session: &Session) -> Result<(), Report>;
     /// Write this item to the given file path, using `mode` to determine the output type
     fn write_to_file(
         &self,
         path: &std::path::Path,
         mode: OutputMode,
         session: &Session,
-    ) -> anyhow::Result<()>;
+    ) -> Result<(), Report>;
 }
 
 #[cfg(feature = "std")]
 impl<T: ?Sized + Emit> EmitExt for T {
-    default fn write_to_stdout(&self, session: &Session) -> anyhow::Result<()> {
+    default fn write_to_stdout(&self, session: &Session) -> Result<(), Report> {
         use std::io::IsTerminal;
         let stdout = std::io::stdout().lock();
         let mode = if stdout.is_terminal() {
@@ -51,38 +59,36 @@ impl<T: ?Sized + Emit> EmitExt for T {
         path: &std::path::Path,
         mode: OutputMode,
         session: &Session,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), Report> {
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
+            std::fs::create_dir_all(dir).into_diagnostic()?;
         }
-        crate::registry::persist_atomically(path, |temp_path| {
-            let file = std::fs::File::create(temp_path)?;
-            self.write_to(file, mode, session)
-        })
+        let file = std::fs::File::create(path).into_diagnostic()?;
+        self.write_to(file, mode, session)
     }
 }
 
 /// A trait that provides a subset of the [std::io::Write] functionality that is usable in no-std
 /// contexts.
 pub trait Writer {
-    fn write_fmt(&mut self, fmt: core::fmt::Arguments<'_>) -> anyhow::Result<()>;
-    fn write_all(&mut self, buf: &[u8]) -> anyhow::Result<()>;
+    fn write_fmt(&mut self, fmt: core::fmt::Arguments<'_>) -> Result<(), Report>;
+    fn write_all(&mut self, buf: &[u8]) -> Result<(), Report>;
 }
 
 #[cfg(feature = "std")]
 impl<W: ?Sized + std::io::Write> Writer for W {
-    fn write_fmt(&mut self, fmt: core::fmt::Arguments<'_>) -> anyhow::Result<()> {
-        <W as std::io::Write>::write_fmt(self, fmt).map_err(|err| err.into())
+    fn write_fmt(&mut self, fmt: core::fmt::Arguments<'_>) -> Result<(), Report> {
+        <W as std::io::Write>::write_fmt(self, fmt).into_diagnostic()
     }
 
-    fn write_all(&mut self, buf: &[u8]) -> anyhow::Result<()> {
-        <W as std::io::Write>::write_all(self, buf).map_err(|err| err.into())
+    fn write_all(&mut self, buf: &[u8]) -> Result<(), Report> {
+        <W as std::io::Write>::write_all(self, buf).into_diagnostic()
     }
 }
 
 #[cfg(not(feature = "std"))]
 impl Writer for alloc::vec::Vec<u8> {
-    fn write_fmt(&mut self, fmt: core::fmt::Arguments<'_>) -> anyhow::Result<()> {
+    fn write_fmt(&mut self, fmt: core::fmt::Arguments<'_>) -> Result<(), Report> {
         if let Some(s) = fmt.as_str() {
             self.extend(s.as_bytes());
         } else {
@@ -92,7 +98,7 @@ impl Writer for alloc::vec::Vec<u8> {
         Ok(())
     }
 
-    fn write_all(&mut self, buf: &[u8]) -> anyhow::Result<()> {
+    fn write_all(&mut self, buf: &[u8]) -> Result<(), Report> {
         self.extend(buf);
         Ok(())
     }
@@ -100,7 +106,7 @@ impl Writer for alloc::vec::Vec<u8> {
 
 #[cfg(not(feature = "std"))]
 impl Writer for alloc::string::String {
-    fn write_fmt(&mut self, fmt: core::fmt::Arguments<'_>) -> anyhow::Result<()> {
+    fn write_fmt(&mut self, fmt: core::fmt::Arguments<'_>) -> Result<(), Report> {
         if let Some(s) = fmt.as_str() {
             self.push_str(s);
         } else {
@@ -110,8 +116,8 @@ impl Writer for alloc::string::String {
         Ok(())
     }
 
-    fn write_all(&mut self, buf: &[u8]) -> anyhow::Result<()> {
-        let s = core::str::from_utf8(buf)?;
+    fn write_all(&mut self, buf: &[u8]) -> Result<(), Report> {
+        let s = core::str::from_utf8(buf).into_diagnostic()?;
         self.push_str(s);
         Ok(())
     }
@@ -134,7 +140,7 @@ impl<T: Emit> Emit for &T {
         writer: W,
         mode: OutputMode,
         session: &Session,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), Report> {
         (**self).write_to(writer, mode, session)
     }
 }
@@ -156,7 +162,7 @@ impl<T: Emit> Emit for &mut T {
         writer: W,
         mode: OutputMode,
         session: &Session,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), Report> {
         (**self).write_to(writer, mode, session)
     }
 }
@@ -178,7 +184,7 @@ impl<T: Emit> Emit for Box<T> {
         writer: W,
         mode: OutputMode,
         session: &Session,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), Report> {
         (**self).write_to(writer, mode, session)
     }
 }
@@ -200,7 +206,7 @@ impl<T: Emit> Emit for Arc<T> {
         writer: W,
         mode: OutputMode,
         session: &Session,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), Report> {
         (**self).write_to(writer, mode, session)
     }
 }
@@ -219,70 +225,56 @@ impl Emit for alloc::string::String {
         mut writer: W,
         _mode: OutputMode,
         _session: &Session,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), Report> {
         writer.write_fmt(format_args!("{self}\n"))
     }
 }
 
-impl Emit for miden_assembly_syntax::ast::Module {
+impl Emit for Module {
+    /// The raw segment of the module name, without the quotes of its path spelling
+    /// (`masm-dep` for `"masm-dep"`). It may hold any spellable character, `/` and `:` included.
     fn name(&self) -> Option<Symbol> {
-        Some(Symbol::intern(self.path().to_string()))
+        Some(SymbolPath::raw_segment(RSymbol::name(self)))
     }
 
     fn output_type(&self, _mode: OutputMode) -> OutputType {
-        OutputType::Masm
+        OutputType::Hir
     }
 
     fn write_to<W: Writer>(
         &self,
         mut writer: W,
-        mode: OutputMode,
+        _mode: OutputMode,
         _session: &Session,
-    ) -> anyhow::Result<()> {
-        assert_eq!(mode, OutputMode::Text, "masm syntax trees do not support binary mode");
-        writer.write_fmt(format_args!("{self}\n"))
+    ) -> Result<(), Report> {
+        let flags = OpPrintingFlags::default();
+        let mut printer = AsmPrinter::new(self.as_operation().context_rc(), &flags);
+        <Self as OpPrinter>::print(self, &mut printer);
+        let document = printer.finish();
+        writer.write_fmt(format_args!("{document}"))
     }
 }
 
-impl Emit for miden_mast_package::Package {
+impl Emit for Component {
+    /// The raw last segment of the component name, without the quotes of its path spelling.
+    /// It may hold any spellable character, `/` and `:` included.
     fn name(&self) -> Option<Symbol> {
-        Some(Symbol::intern(&self.name))
+        SymbolPath::segments_of(RSymbol::name(self)).last().copied()
     }
 
-    fn output_type(&self, mode: OutputMode) -> OutputType {
-        match mode {
-            OutputMode::Text => OutputType::Mast,
-            OutputMode::Binary => OutputType::Masp,
-        }
+    fn output_type(&self, _mode: OutputMode) -> OutputType {
+        OutputType::Hir
     }
 
     fn write_to<W: Writer>(
         &self,
         mut writer: W,
-        mode: OutputMode,
+        _mode: OutputMode,
         _session: &Session,
-    ) -> anyhow::Result<()> {
-        use miden_core::{mast::MastNodeExt, serde::Serializable};
-        use miden_mast_package::PackageExport;
-        match mode {
-            OutputMode::Text => {
-                writer.write_fmt(format_args!("# package: {}@{}\n", self.name, self.version))?;
-                writer.write_fmt(format_args!("# kind:    {}\n\n", self.kind))?;
-                let forest = self.mast_forest();
-                for export in self.manifest.exports() {
-                    if let PackageExport::Procedure(proc) = export
-                        && let Some(node_id) = self.get_export_node(proc)
-                    {
-                        let node = forest[node_id].to_display(forest);
-                        writer.write_fmt(format_args!("# {}\n\n{node}\n\n", proc.path))?;
-                    }
-                }
-                Ok(())
-            }
-            OutputMode::Binary => {
-                let bytes = self.to_bytes();
-                writer.write_all(bytes.as_slice())
-            }
-        }
+    ) -> Result<(), Report> {
+        let flags = OpPrintingFlags::default();
+        let mut printer = AsmPrinter::new(self.as_operation().context_rc(), &flags);
+        <Self as OpPrinter>::print(self, &mut printer);
+        writer.write_fmt(format_args!("{}", printer.finish()))
     }
 }

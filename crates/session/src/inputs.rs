@@ -93,21 +93,6 @@ impl FileName {
     }
 }
 
-/// An error that occurs when detecting the file type of an input
-#[derive(Debug, thiserror::Error)]
-pub enum InvalidInputError {
-    /// Occurs if an unsupported file type is given as an input
-    #[error("invalid input file '{}': unsupported file type", .0.display())]
-    UnsupportedFileType(PathBuf),
-    /// We attempted to detecth the file type from the raw bytes, but failed
-    #[error("could not detect file type of input")]
-    UnrecognizedFileType,
-    /// Unable to read input file
-    #[cfg(feature = "std")]
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputType {
     Real(PathBuf),
@@ -118,61 +103,37 @@ pub enum InputType {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InputFile {
     pub file: InputType,
-    file_type: FileType,
 }
 impl InputFile {
-    pub fn new(ty: FileType, file: InputType) -> Self {
-        Self {
-            file,
-            file_type: ty,
-        }
+    pub fn new(file: InputType) -> Self {
+        Self { file }
     }
 
-    /// Returns an [InputFile] representing an empty WebAssembly module binary
+    /// Returns an [InputFile] representing an empty input
     pub fn empty() -> Self {
-        Self {
-            file: InputType::Stdin {
-                name: "empty".into(),
-                input: vec![],
-            },
-            file_type: FileType::Wasm,
-        }
-    }
-
-    /// Get an [InputFile] representing the contents of `path`.
-    ///
-    /// This function returns an error if the contents are not a valid supported file type.
-    pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self, InvalidInputError> {
-        let path = path.as_ref();
-        let file_type = FileType::try_from(path)?;
-        Ok(Self {
-            file: InputType::Real(path.to_path_buf()),
-            file_type,
+        Self::new(InputType::Stdin {
+            name: "empty".into(),
+            input: vec![],
         })
     }
 
+    /// Get an [InputFile] representing the contents of `path`.
+    pub fn from_path<P: AsRef<Path>>(path: P) -> Self {
+        Self::new(InputType::Real(path.as_ref().to_path_buf()))
+    }
+
     /// Get an [InputFile] representing the contents received from standard input.
-    ///
-    /// This function returns an error if the contents are not a valid supported file type.
     #[cfg(feature = "std")]
-    pub fn from_stdin(name: FileName) -> Result<Self, InvalidInputError> {
+    pub fn from_stdin(name: FileName) -> std::io::Result<Self> {
         use std::io::Read;
 
         let mut input = Vec::with_capacity(1024);
         std::io::stdin().read_to_end(&mut input)?;
-        Self::from_bytes(input, name)
+        Ok(Self::from_bytes(input, name))
     }
 
-    pub fn from_bytes(bytes: Vec<u8>, name: FileName) -> Result<Self, InvalidInputError> {
-        let file_type = FileType::detect(&bytes)?;
-        Ok(Self {
-            file: InputType::Stdin { name, input: bytes },
-            file_type,
-        })
-    }
-
-    pub fn file_type(&self) -> FileType {
-        self.file_type
+    pub fn from_bytes(bytes: Vec<u8>, name: FileName) -> Self {
+        Self::new(InputType::Stdin { name, input: bytes })
     }
 
     pub fn file_name(&self) -> FileName {
@@ -228,16 +189,9 @@ impl clap::builder::TypedValueParser for InputFileParser {
         use clap::error::{Error, ErrorKind};
 
         let input_file = match value.to_str() {
-            Some("-") => InputFile::from_stdin("stdin".into()).map_err(|err| match err {
-                InvalidInputError::Io(err) => Error::raw(ErrorKind::Io, err),
-                err => Error::raw(ErrorKind::ValueValidation, err),
-            })?,
-            Some(_) | None => {
-                InputFile::from_path(PathBuf::from(value)).map_err(|err| match err {
-                    InvalidInputError::Io(err) => Error::raw(ErrorKind::Io, err),
-                    err => Error::raw(ErrorKind::ValueValidation, err),
-                })?
-            }
+            Some("-") => InputFile::from_stdin("stdin".into())
+                .map_err(|err| Error::raw(ErrorKind::Io, err))?,
+            Some(_) | None => InputFile::from_path(PathBuf::from(value)),
         };
 
         match &input_file.file {
@@ -260,207 +214,5 @@ impl clap::builder::TypedValueParser for InputFileParser {
             }
             InputType::Stdin { .. } => Ok(input_file),
         }
-    }
-}
-
-/// This represents the file types recognized by the compiler
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum FileType {
-    Hir,
-    Masm,
-    Masp,
-    Rust,
-    Toml,
-    Wasm,
-    Wat,
-}
-
-impl fmt::Display for FileType {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Self::Hir => f.write_str("hir"),
-            Self::Masm => f.write_str("masm"),
-            Self::Masp => f.write_str("masp"),
-            Self::Rust => f.write_str("rs"),
-            Self::Toml => f.write_str("toml"),
-            Self::Wasm => f.write_str("wasm"),
-            Self::Wat => f.write_str("wat"),
-        }
-    }
-}
-
-impl FileType {
-    pub fn detect(bytes: &[u8]) -> Result<Self, InvalidInputError> {
-        if bytes.starts_with(b"\0asm") {
-            return Ok(FileType::Wasm);
-        }
-
-        if bytes.starts_with(b"MASP\0") {
-            return Ok(FileType::Masp);
-        }
-
-        fn is_rust_top_level_item(line: &str) -> bool {
-            line.starts_with("//")
-                || line.starts_with("#[")
-                || line.starts_with("#![")
-                || line.starts_with("pub fn")
-                || line.starts_with("fn ")
-        }
-
-        fn is_masm_top_level_item(line: &str) -> bool {
-            line.starts_with("namespace")
-                || line.starts_with("extern package")
-                || line.starts_with("pub proc")
-                || line.starts_with("proc ")
-                || line.starts_with("adv_map")
-                || line.starts_with("const ")
-                || line.starts_with("begin ")
-        }
-
-        fn is_project_toml_item(line: &str) -> bool {
-            line.starts_with("[workspace]") || line.starts_with("[package]")
-        }
-
-        if let Ok(content) = core::str::from_utf8(bytes) {
-            // Skip comment lines and empty lines
-            let first_line = content.lines().find(|line| {
-                if line.trim().is_empty() {
-                    return false;
-                }
-                if line.starts_with('#') && !(line.starts_with("#[") || line.starts_with("#![")) {
-                    return false;
-                }
-                !line.starts_with(';')
-            });
-            if let Some(first_line) = first_line {
-                if first_line.starts_with("builtin.") {
-                    return Ok(FileType::Hir);
-                }
-                if first_line.starts_with("(module") {
-                    return Ok(FileType::Wat);
-                }
-                if is_rust_top_level_item(first_line) {
-                    return Ok(FileType::Rust);
-                }
-                if is_masm_top_level_item(first_line) {
-                    return Ok(FileType::Masm);
-                }
-                if is_project_toml_item(first_line) {
-                    return Ok(FileType::Toml);
-                }
-            }
-
-            // We could not detect from the first line alone, so fall back to attempting to parse
-            // the most common types - a failure is assumed to mean that the input does not match.
-            //
-            // We try in an order such that the faster checks are performed first - in the case of
-            // Rust, we have to actually invoke `rustc` to try and check if the input parses, so
-            // it is the slowest. We can't actually attempt to parse HIR here, but we also control
-            // its output format, so it is unlikely valid HIR reaches here anyway. We don't attempt
-            // to parse WAT here currently - if the input doesn't look like WAT we'd expect, it
-            // will get rejected.
-            let parsed = miden_assembly_syntax_cst::parse_text(content);
-            if !parsed.has_errors() {
-                return Ok(FileType::Masm);
-            }
-
-            if parses_as_rust(content) {
-                return Ok(FileType::Rust);
-            }
-        }
-
-        Err(InvalidInputError::UnrecognizedFileType)
-    }
-}
-
-impl TryFrom<&Path> for FileType {
-    type Error = InvalidInputError;
-
-    fn try_from(path: &Path) -> Result<Self, Self::Error> {
-        match path.extension().and_then(|ext| ext.to_str()) {
-            Some("hir") => Ok(FileType::Hir),
-            Some("masm") => Ok(FileType::Masm),
-            Some("masp") => Ok(FileType::Masp),
-            Some("rs") => Ok(FileType::Rust),
-            Some("toml") => Ok(FileType::Toml),
-            Some("wasm") => Ok(FileType::Wasm),
-            Some("wat") => Ok(FileType::Wat),
-            _ => Err(InvalidInputError::UnsupportedFileType(path.to_path_buf())),
-        }
-    }
-}
-
-#[cfg(feature = "std")]
-fn parses_as_rust(src: &str) -> bool {
-    let mut command = std::process::Command::new("rustc");
-    command.arg("-Zno-analysis").arg("-Zparse-crate-root-only=yes").arg("-");
-    run_rust_parser(command, src)
-}
-
-#[cfg(feature = "std")]
-fn run_rust_parser(mut command: std::process::Command, src: &str) -> bool {
-    use std::{io::Write, process::Stdio};
-
-    command.stderr(Stdio::null()).stdout(Stdio::null()).stdin(Stdio::piped());
-
-    let Ok(mut child) = command.spawn() else {
-        return false;
-    };
-
-    let Some(mut stdin) = child.stdin.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return false;
-    };
-
-    if stdin.write_all(src.as_bytes()).is_err() {
-        drop(stdin);
-        let _ = child.kill();
-        let _ = child.wait();
-        return false;
-    }
-
-    // `wait` closes only stdin still owned by Child. This handle was taken out,
-    // so close it explicitly to let the parser finish reading its source.
-    drop(stdin);
-    child.wait().is_ok_and(|status| status.success())
-}
-
-#[cfg(not(feature = "std"))]
-fn parses_as_rust(_src: &str) -> bool {
-    false
-}
-
-#[cfg(all(test, feature = "std"))]
-mod tests {
-    #[test]
-    fn rust_parser_closes_stdin() {
-        use std::{io::Read, process::Command, string::String, time::Duration};
-
-        const SOURCE: &str = "use core::fmt;\nfn main() {}\n";
-        const CHILD_ENV: &str = "MIDENC_INPUT_PARSER_CHILD";
-        if std::env::var_os(CHILD_ENV).is_some() {
-            // Bound the regression: an open parent pipe must fail, not hang the suite.
-            std::thread::spawn(|| {
-                std::thread::sleep(Duration::from_secs(5));
-                std::process::exit(1);
-            });
-            let mut source = String::new();
-            std::io::stdin().read_to_string(&mut source).unwrap();
-            assert_eq!(source, SOURCE);
-            return;
-        }
-
-        let mut command = Command::new(std::env::current_exe().unwrap());
-        command
-            .arg("--exact")
-            .arg(
-                concat!(module_path!(), "::rust_parser_closes_stdin")
-                    .split_once("::")
-                    .unwrap()
-                    .1,
-            )
-            .env(CHILD_ENV, "1");
-        assert!(super::run_rust_parser(command, SOURCE), "parser did not receive source and EOF");
     }
 }

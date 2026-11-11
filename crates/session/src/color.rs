@@ -27,18 +27,6 @@ pub enum ColorChoice {
     Never,
 }
 
-#[cfg(feature = "std")]
-impl From<ColorChoice> for termcolor::ColorChoice {
-    fn from(choice: ColorChoice) -> Self {
-        match choice {
-            ColorChoice::Always => Self::Always,
-            ColorChoice::AlwaysAnsi => Self::AlwaysAnsi,
-            ColorChoice::Auto => Self::Auto,
-            ColorChoice::Never => Self::Never,
-        }
-    }
-}
-
 #[derive(Debug, thiserror::Error)]
 #[error("invalid color choice: {0}")]
 pub struct ColorChoiceParseError(alloc::borrow::Cow<'static, str>);
