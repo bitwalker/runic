@@ -555,7 +555,7 @@ pub trait Parser<'input> {
                 let start_line = self.parse_decimal_integer::<u32>()?.into_inner();
                 self.parse_colon()?;
                 let start_col = self.parse_decimal_integer::<u32>()?.into_inner();
-                let file = CompactString::from(s);
+                let file = interner::Symbol::intern(s);
                 if self
                     .token_stream_mut()
                     .next_if(|tok| matches!(tok, Token::BareIdent("to")))?

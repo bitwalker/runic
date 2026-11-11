@@ -1,10 +1,11 @@
 use core::fmt;
 
 use crate::{
-    AttrPrinter, CompactString,
+    AttrPrinter,
     derive::DialectAttribute,
     diagnostics::{ColumnNumber, LineNumber, SourceId, SourceSpan},
     dialects::builtin::BuiltinDialect,
+    interner::Symbol,
     print::AsmPrinter,
 };
 
@@ -36,14 +37,14 @@ pub enum Location {
     /// A reference to the first character of the relevant source code in a file, given as the
     /// line and column where the character can be found.
     FileLineCol {
-        file: CompactString,
+        file: Symbol,
         line: LineNumber,
         column: ColumnNumber,
     },
     /// A reference to a multi-character range comprising the relevant source code in a file, given
     /// as the starting and ending line and column numbers of the selection.
     FileLineColRange {
-        file: CompactString,
+        file: Symbol,
         start_line: LineNumber,
         start_column: ColumnNumber,
         end_line: LineNumber,
@@ -76,7 +77,7 @@ impl Location {
         else {
             return Self::Unknown;
         };
-        let file = CompactString::from(source.display_name);
+        let file = Symbol::intern(source.display_name);
         if span.is_empty() {
             return Self::FileLineCol {
                 file,
@@ -134,7 +135,7 @@ impl Location {
             Self::Synthetic => Some(SourceSpan::SYNTHETIC),
             Self::Opaque(index) => Some(Self::deferred((*index).try_into().unwrap())),
             Self::FileLineCol { file, line, column } => {
-                let id = resolve(file)?;
+                let id = resolve(file.as_str())?;
                 let at =
                     context.sources().offset_of(id, LineColumn::new_unchecked(*line, *column))?;
                 Some(SourceSpan::session(id, TextRange::new(at, at).ok()?))
@@ -146,7 +147,7 @@ impl Location {
                 end_line,
                 end_column,
             } => {
-                let id = resolve(file)?;
+                let id = resolve(file.as_str())?;
                 let sources = context.sources();
                 let start =
                     sources.offset_of(id, LineColumn::new_unchecked(*start_line, *start_column))?;
@@ -165,7 +166,7 @@ impl fmt::Display for Location {
             Self::Synthetic => f.write_str("synthetic"),
             Self::Opaque(id) => write!(f, "{id}"),
             Self::FileLineCol { file, line, column } => {
-                write!(f, "\"{}\":{line}:{column}", file.escape_default())
+                write!(f, "\"{}\":{line}:{column}", file.as_str().escape_default())
             }
             Self::FileLineColRange {
                 file,
@@ -177,7 +178,7 @@ impl fmt::Display for Location {
                 write!(
                     f,
                     "\"{}\":{start_line}:{start_column} to {end_line}:{end_column}",
-                    file.escape_default()
+                    file.as_str().escape_default()
                 )
             }
         }
@@ -215,5 +216,26 @@ mod tests {
         let location = Location::from_span(point, &context);
         assert_eq!(location.to_string(), "\"some/file.runic\":2:6");
         assert_eq!(location.try_into_span(&context), Some(point));
+    }
+
+    /// Locations in the same source share one interned file name, not a copy each.
+    #[test]
+    fn locations_in_one_source_share_their_file_name() {
+        let context = Context::default();
+        let id = context.add_source("some/shared/file.runic", "line one\nline two\n").unwrap();
+        let file_of = |start: u32, end: u32| -> Symbol {
+            let span = SourceSpan::session(id, TextRange::new(start, end).unwrap());
+            match Location::from_span(span, &context) {
+                Location::FileLineCol { file, .. } | Location::FileLineColRange { file, .. } => {
+                    file
+                }
+                other => panic!("expected a file location, got {other:?}"),
+            }
+        };
+
+        let first = file_of(0, 4);
+        let second = file_of(9, 9);
+        assert_eq!(first, second);
+        assert!(core::ptr::eq(first.as_str(), second.as_str()));
     }
 }
