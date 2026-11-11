@@ -165,7 +165,7 @@ impl fmt::Display for Location {
             Self::Synthetic => f.write_str("synthetic"),
             Self::Opaque(id) => write!(f, "{id}"),
             Self::FileLineCol { file, line, column } => {
-                write!(f, "{file}:{line}:{column}")
+                write!(f, "\"{}\":{line}:{column}", file.escape_default())
             }
             Self::FileLineColRange {
                 file,
@@ -174,7 +174,11 @@ impl fmt::Display for Location {
                 end_line,
                 end_column,
             } => {
-                write!(f, "{file}:{start_line}:{start_column} to {end_line}:{end_column}")
+                write!(
+                    f,
+                    "\"{}\":{start_line}:{start_column} to {end_line}:{end_column}",
+                    file.escape_default()
+                )
             }
         }
     }
@@ -194,8 +198,8 @@ mod tests {
     use super::*;
     use crate::{Context, diagnostics::TextRange};
 
-    /// A span in a registered source prints as that source's name with 1-based line and column,
-    /// and converts back to the same span.
+    /// A span in a registered source prints as that source's quoted name with 1-based line and
+    /// column, and converts back to the same span.
     #[test]
     fn a_location_names_its_registered_source_and_round_trips_to_its_span() {
         let context = Context::default();
@@ -204,12 +208,12 @@ mod tests {
         let span = SourceSpan::session(id, TextRange::new(start, start + 3).unwrap());
 
         let location = Location::from_span(span, &context);
-        assert_eq!(location.to_string(), "some/file.runic:2:6 to 2:9");
+        assert_eq!(location.to_string(), "\"some/file.runic\":2:6 to 2:9");
         assert_eq!(location.try_into_span(&context), Some(span));
 
         let point = SourceSpan::session(id, TextRange::new(start, start).unwrap());
         let location = Location::from_span(point, &context);
-        assert_eq!(location.to_string(), "some/file.runic:2:6");
+        assert_eq!(location.to_string(), "\"some/file.runic\":2:6");
         assert_eq!(location.try_into_span(&context), Some(point));
     }
 }

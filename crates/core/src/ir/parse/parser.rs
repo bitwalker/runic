@@ -560,8 +560,10 @@ pub trait Parser<'input> {
                     .next_if(|tok| matches!(tok, Token::BareIdent("to")))?
                     .is_some()
                 {
-                    self.parse_colon()?;
-                    let end_line = self.parse_decimal_integer::<u32>()?.into_inner();
+                    // `to` line-number? ':' column-number, where the line defaults to the start's
+                    let end_line = self
+                        .parse_optional_decimal_integer::<u32>()?
+                        .map_or(start_line, Span::into_inner);
                     self.parse_colon()?;
                     let end_col = self.parse_decimal_integer::<u32>()?.into_inner();
                     Ok(Location::FileLineColRange {

@@ -1303,6 +1303,62 @@ fn an_outcome_renders_sources_loaded_while_parsing() {
     );
 }
 
+/// Printed source locations follow the documented `file-line-col-range` grammar, so printing IR
+/// with its locations and parsing the result back yields the same locations.
+#[test]
+fn printed_locations_parse_back() {
+    use crate::{dialects::builtin::attributes::Location, print::OpPrintingFlags};
+
+    let context = Rc::new(Context::default());
+    let location_of = |op: OperationRef| Location::from_span(op.borrow().span, &context);
+    let print_with_locations = |op: OperationRef| {
+        let flags = OpPrintingFlags {
+            print_source_locations: true,
+            ..Default::default()
+        };
+        let mut printer = AsmPrinter::new(context.clone(), &flags);
+        printer.print_operation(op.borrow());
+        printer.finish().to_string()
+    };
+
+    let original = parse::parse_any(
+        ParserConfig::new(context.clone()),
+        "in.runic",
+        "builtin.module public @t {};",
+    )
+    .into_result()
+    .expect("the original source parses");
+    let printed = print_with_locations(original);
+    assert!(
+        printed.contains("loc(\"in.runic\":1:1 to "),
+        "unexpected location syntax: {printed}"
+    );
+
+    let reparsed = parse::parse_any(ParserConfig::new(context.clone()), "printed.runic", printed)
+        .into_result()
+        .expect("printed locations parse back");
+    assert_eq!(location_of(reparsed), location_of(original));
+
+    // The end line of a range is optional, and defaults to the start line.
+    for (text, end_line) in [
+        ("builtin.module public @t {} loc(\"in.runic\":1:1 to 1:5);", 1),
+        ("builtin.module public @t {} loc(\"in.runic\":1:1 to :5);", 1),
+    ] {
+        let op = parse::parse_any(ParserConfig::new(context.clone()), "range.runic", text)
+            .into_result()
+            .unwrap_or_else(|err| panic!("`{text}` must parse: {err}"));
+        let Location::FileLineColRange {
+            end_line: parsed_end_line,
+            end_column,
+            ..
+        } = location_of(op)
+        else {
+            panic!("`{text}` must give a range location");
+        };
+        assert_eq!((parsed_end_line.to_u32(), end_column.to_u32()), (end_line, 5), "`{text}`");
+    }
+}
+
 #[test]
 fn a_warning_does_not_fail_the_parse() {
     use super::{DefaultParser, Parser, ParserState, Scanner, TokenStream};
