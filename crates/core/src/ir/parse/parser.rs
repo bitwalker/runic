@@ -531,7 +531,7 @@ pub trait Parser<'input> {
             | Token::False
             | Token::Lbracket
             | Token::Lbrace => true,
-            Token::Byte | Token::Element => false,
+            Token::Byte => false,
             other => other.is_type_keyword(),
         }) {
             self.parse_attribute(ty).map(Some)

@@ -18,7 +18,6 @@ debug_refcell = []
 logging = ["dep:runic-log", "std"]
 
 [dependencies]
-anyhow.workspace = true
 base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 bitflags.workspace = true
 blink-alloc.workspace = true

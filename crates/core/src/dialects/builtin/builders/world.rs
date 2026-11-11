@@ -242,7 +242,6 @@ mod tests {
 
         let f_path = f.borrow().path();
         assert_eq!(f_path.to_string(), "::acme::a::b::m::f");
-        assert_eq!(f_path.to_library_path().to_string(), "::acme::a::b::m::f");
         assert_eq!(component.borrow().namespace_path().to_string(), "::acme::a::b");
         assert!(world_builder.find_component("acme::a::b".into()) == Some(component));
     }

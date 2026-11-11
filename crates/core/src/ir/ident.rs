@@ -6,14 +6,13 @@ use core::{
     str::FromStr,
 };
 
-use anyhow::anyhow;
-
 use super::{
     AttrPrinter, SourceSpan, Spanned,
     interner::{Symbol, symbols},
 };
 use crate::{
     derive::DialectAttribute,
+    diagnostics::Report,
     dialects::builtin::BuiltinDialect,
     formatter::{self, PrettyPrint},
 };
@@ -39,7 +38,7 @@ impl FunctionIdent {
 }
 
 impl FromStr for FunctionIdent {
-    type Err = anyhow::Error;
+    type Err = Report;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.rsplit_once("::") {
@@ -48,7 +47,7 @@ impl FromStr for FunctionIdent {
                 let function = Ident::with_empty_span(Symbol::intern(id));
                 Ok(Self { module, function })
             }
-            None => Err(anyhow!(
+            None => Err(Report::msg(
                 "invalid function name, expected fully-qualified identifier, e.g. \
                  'std::math::u64::checked_add'"
             )),

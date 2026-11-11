@@ -1016,10 +1016,9 @@ fn a_symbol_path_diagnostic_spans_the_whole_path() {
         let err = test
             .parse_any("span.hir", &source)
             .expect_err("an unspellable name must not parse");
-        let labels = err
-            .labels()
-            .expect("the diagnostic is labelled")
-            .map(|label| (label.offset(), label.offset() + label.len()))
+        let labels = crate::testing::label_ranges(err.as_diagnostic())
+            .into_iter()
+            .map(|range| (range.start, range.end))
             .collect::<alloc::vec::Vec<_>>();
         let path_start = source.find(path).unwrap();
         let start = path_start + path.find(first).unwrap();

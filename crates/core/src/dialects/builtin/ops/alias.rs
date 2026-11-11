@@ -460,7 +460,7 @@ builtin.module public @test {{
                     "{message}"
                 );
                 assert!(message.contains("body"), "{message}");
-                assert_eq!(err.labels().unwrap().count(), 2);
+                assert_eq!(crate::testing::label_ranges(err.as_diagnostic()).len(), 2);
             }
         }
     }
@@ -517,7 +517,7 @@ builtin.module public @test {{
             )
             .expect_err("a private function is inaccessible from the alias's table");
             assert!(err.to_string().contains("private to another symbol table"), "{err}");
-            assert_eq!(err.labels().unwrap().count(), 2);
+            assert_eq!(crate::testing::label_ranges(err.as_diagnostic()).len(), 2);
         }
     }
 
@@ -533,7 +533,7 @@ builtin.module public @test {{
             )
             .expect_err("a public canonical target does not make a private alias accessible");
             assert!(err.to_string().contains("private to another symbol table"), "{err}");
-            assert_eq!(err.labels().unwrap().count(), 2);
+            assert_eq!(crate::testing::label_ranges(err.as_diagnostic()).len(), 2);
         }
     }
 

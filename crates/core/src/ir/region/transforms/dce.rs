@@ -444,7 +444,7 @@ mod tests {
     use alloc::format;
 
     use runic_expect_test::expect_file;
-    use runic_session::diagnostics::SourceSpan;
+    use crate::diagnostics::SourceSpan;
 
     use super::*;
     use crate::{

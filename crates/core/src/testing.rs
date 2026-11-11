@@ -266,3 +266,24 @@ pub fn parse_function_fixpoint(
 
     Ok((function, printed))
 }
+
+/// The byte ranges of every label attached to `diagnostic`, in visiting order.
+#[cfg(test)]
+pub(crate) fn label_ranges(
+    diagnostic: &dyn crate::diagnostics::Diagnostic,
+) -> alloc::vec::Vec<core::ops::Range<usize>> {
+    use crate::diagnostics::{Label, VisitDiagnostic};
+
+    struct Labels(alloc::vec::Vec<core::ops::Range<usize>>);
+
+    impl VisitDiagnostic for Labels {
+        fn label(&mut self, label: Label<'_>) {
+            let range = label.span.range();
+            self.0.push(range.start() as usize..range.end() as usize);
+        }
+    }
+
+    let mut labels = Labels(alloc::vec::Vec::new());
+    diagnostic.visit(&mut labels);
+    labels.0
+}
