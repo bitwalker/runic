@@ -217,6 +217,8 @@ where
     /// issues.
     ///
     /// Verification runs as the last step, if [`ParserConfig::should_verify_after_parse`] is set.
+    ///
+    /// Call this at most once: a second call panics when it pops the already-popped SSA name scope.
     pub fn finalize(&mut self) -> ParseResult {
         let verify = self.parser.state().config.should_verify_after_parse();
         self.finalize_impl(verify)
@@ -228,11 +230,16 @@ where
     /// and symbol uses are resolved in the hierarchy that will actually be returned. The caller
     /// is responsible for verifying that root when [`ParserConfig::should_verify_after_parse`]
     /// is set; see `parse_anchored_source`.
+    ///
+    /// Call this at most once, and not together with [`Self::finalize`]: a second call panics when
+    /// it pops the already-popped SSA name scope.
     pub fn finalize_without_verifying(&mut self, root: WorldRef) -> ParseResult {
         self.top_level = root;
         self.finalize_impl(false)
     }
 
+    /// Shared body of [`Self::finalize`] and [`Self::finalize_without_verifying`]; runs at most
+    /// once per parser, since it pops the SSA name scope.
     fn finalize_impl(&mut self, verify: bool) -> ParseResult {
         // Check for any forward references that are left.  If we find any, error out.
         if !self.forward_ref_placeholders.is_empty() {

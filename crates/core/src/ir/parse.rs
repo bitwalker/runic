@@ -206,7 +206,8 @@ pub fn parse_file_generic(
     }
 }
 
-/// This parses the given source and appends parsed operations to a new [World](crate::dialects::builtin::World).
+/// This parses the given source and appends parsed operations to a new
+/// [World](crate::dialects::builtin::World).
 ///
 /// If parsing is successful, the populated [World](crate::dialects::builtin::World) is returned.
 /// Otherwise, the error that caused parsing to fail is recorded in the outcome's diagnostics.
@@ -379,7 +380,14 @@ fn parse_anchored_source(
     let span = parser.current_location();
     let world = match parser.builder_mut().create::<World, ()>(span)() {
         Ok(world) => world,
-        Err(report) => return Outcome::from_report(report),
+        Err(report) => {
+            let mut diagnostics = core::mem::take(&mut parser.state_mut().diagnostics);
+            diagnostics.add_report(report);
+            return Outcome {
+                result: Err(()),
+                diagnostics: diagnostics.finish().attach_session_sources(sources.clone()),
+            };
+        }
     };
     let anchor = world.as_operation_ref();
     parser.state_mut().asm_state = Some(Box::<AsmParserState>::default());
