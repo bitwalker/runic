@@ -208,12 +208,12 @@ impl SymbolPath {
     ///
     /// A component may be *named* by a multi-segment path; such a name occupies one entry in its
     /// parent's symbol table, but contributes one [SymbolNameComponent::Component] per segment to
-    /// every [SymbolPath] that passes through it. The name of a component or a module is
-    /// the canonical spelling of its raw segments: the segments joined with `::`, each
-    /// quoted, `"..."`, when it is not a bare identifier
-    /// . So `["acme::pkg", "app"]` is named `"acme::pkg"::app`,
-    /// `["a:b@1.0.0"]` is named `"a:b@1.0.0"`, and a bare identifier names itself. A module name is always one segment. Leaf symbol names (functions, globals) are opaque
-    /// and must never be split with this function.
+    /// every [SymbolPath] that passes through it. The name of a component or a module is the
+    /// canonical spelling of its raw segments: the segments joined with `::`, each quoted,
+    /// `"..."`, when it is not a bare identifier. So `["acme::pkg", "app"]` is named
+    /// `"acme::pkg"::app`, `["a:b@1.0.0"]` is named `"a:b@1.0.0"`, and a bare identifier names
+    /// itself. A module name is always one segment. Leaf symbol names (functions, globals) are
+    /// opaque and must never be split with this function.
     ///
     /// A leading `::` is skipped, so `::a::b` has the segments of `a::b`. A name that is not a
     /// valid path is returned whole, as one segment; such a name is rejected by the
@@ -254,8 +254,9 @@ impl SymbolPath {
     }
 
     /// Returns an error when `name` cannot name a symbol-table op of `kind`: it is not the
-    /// canonical spelling of its raw segments, a segment is not a valid path segment at all, or `kind` is named by one segment (see [SymbolTableKind::is_named_by_a_path]) and the
-    /// name has several, or one containing `::`.
+    /// canonical spelling of its raw segments, a segment is not a valid path segment at all, or
+    /// `kind` is named by one segment (see [SymbolTableKind::is_named_by_a_path]) and the name has
+    /// several, or one containing `::`.
     pub(crate) fn validate_table_name(
         kind: SymbolTableKind,
         name: SymbolName,
@@ -311,7 +312,7 @@ impl SymbolPath {
     /// Returns true when `segment` is a valid path segment: it is not empty, and every character
     /// is ASCII graphic and neither `"`, `\` nor `#`.
     ///
-    /// An empty segment is not valid because [spelling::join] drops it.
+    /// An empty segment is not valid because `spelling::join` drops it.
     pub fn is_spellable(segment: &str) -> bool {
         !segment.is_empty()
             && segment.chars().all(|c| c.is_ascii_graphic() && !matches!(c, '"' | '\\' | '#'))
@@ -844,6 +845,23 @@ mod tests {
         }
     }
 
+    /// A name that splits into segments is split structurally, whether or not each segment is
+    /// valid; the table-name validation is what rejects an invalid segment.
+    #[test]
+    fn an_invalid_segment_is_split_off_and_then_rejected() {
+        let name = SymbolName::intern("a b::c");
+        assert_eq!(
+            SymbolPath::segments_of(name).as_slice(),
+            &[SymbolName::intern("a b"), SymbolName::intern("c")]
+        );
+        let err = SymbolPath::validate_table_name(SymbolTableKind::Component, name)
+            .expect_err("`a b` is not a valid path segment");
+        assert_eq!(
+            err.to_string(),
+            "invalid component name: the segment `a b` is not a valid path segment"
+        );
+    }
+
     /// A module id holds raw identifiers; one that is not a valid path is split on
     /// every `::`.
     #[test]
@@ -871,10 +889,10 @@ mod tests {
         );
     }
 
-    /// A quoted segment holding `::` stays one segment through the component name,
-    /// the printed path and the library path.
+    /// A quoted segment holding `::` stays one segment through the component name and the
+    /// printed path.
     #[test]
-    fn a_quoted_library_path_segment_survives_the_component_name() {
+    fn a_quoted_path_segment_survives_the_component_name() {
         let source = "::\"acme::pkg\"::app";
         let path = SymbolPath::from_module_name(source);
         let key = path.to_symbol_name().expect("the segments are spellable");
