@@ -3,7 +3,7 @@ use core::fmt;
 
 use crate::{
     FunctionIdent, Report, SmallVec, SymbolName,
-    diagnostics::{Diagnostic, miette},
+    diagnostics::Diagnostic,
     interner, smallvec,
 };
 

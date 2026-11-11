@@ -1,7 +1,6 @@
 use alloc::{boxed::Box, format, rc::Rc};
 use core::ops::{Deref, DerefMut};
 
-use runic_session::diagnostics::PrintDiagnostic;
 use smallvec::SmallVec;
 
 use crate::{
@@ -1074,7 +1073,7 @@ impl RewriterListener for TracingRewriterListener {
 
     fn notify_match_failure(&self, _span: SourceSpan, _reason: Report) {
         if log::log_enabled!(target: "rewriter", log::Level::Error) {
-            let diag = PrintDiagnostic::new(_reason);
+            let diag = _reason.display();
             log::error!(
                 target: "rewriter",
                 rewrite_event = "match-failure";

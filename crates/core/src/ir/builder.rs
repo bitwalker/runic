@@ -1,10 +1,10 @@
-use alloc::{boxed::Box, format, rc::Rc, vec};
+use alloc::{boxed::Box, format, rc::Rc};
 
 use super::OperationState;
 use crate::{
     BlockArgument, BlockRef, BuildableOp, Context, OperationRef, ProgramPoint, RegionRef,
     SourceSpan, Type, Value,
-    diagnostics::{LabeledSpan, Report, Severity, miette::diagnostic},
+    diagnostics::{Report, report},
 };
 
 /// The [Builder] trait encompasses all of the functionality needed to construct and insert blocks
@@ -168,14 +168,15 @@ pub trait Builder: Listener {
 
         for prop in op.name().properties() {
             if !state.attrs.iter().any(|p| p.name == prop.name) {
-                return Err(Report::from(diagnostic!(
-                    severity = Severity::Error,
-                    labels = vec![LabeledSpan::at(
-                        state.span,
-                        format!("missing required property '{}'", prop.name)
-                    )],
-                    "invalid operation"
-                )));
+                return Err(report! {
+                    message: "invalid operation",
+                    labels: [
+                        primary(
+                            state.span,
+                            format!("missing required property '{}'", prop.name)
+                        ),
+                    ],
+                });
             }
         }
 

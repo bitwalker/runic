@@ -232,8 +232,16 @@ where
         // Check for any forward references that are left.  If we find any, error out.
         if !self.forward_ref_placeholders.is_empty() {
             let mut labels = Vec::with_capacity(self.forward_ref_placeholders.len());
-            for (_, span) in self.forward_ref_placeholders.iter() {
-                labels.push(LabeledSpan::new_with_span(None, *span));
+            for (i, (_, span)) in self.forward_ref_placeholders.iter().enumerate() {
+                labels.push(crate::diagnostics::OwnedLabel {
+                    span: *span,
+                    style: if i == 0 {
+                        crate::diagnostics::LabelStyle::Primary
+                    } else {
+                        crate::diagnostics::LabelStyle::Context
+                    },
+                    message: None,
+                });
             }
             return Err(ParserError::UndeclaredValueUses { labels });
         }
@@ -326,7 +334,15 @@ where
         if !forward_ref_current_scope.is_empty() {
             let mut labels = Vec::default();
             for (block, span) in forward_ref_current_scope {
-                labels.push(LabeledSpan::new_with_span(None, span));
+                labels.push(crate::diagnostics::OwnedLabel {
+                    span,
+                    style: if labels.is_empty() {
+                        crate::diagnostics::LabelStyle::Primary
+                    } else {
+                        crate::diagnostics::LabelStyle::Context
+                    },
+                    message: None,
+                });
                 // Add this block to the top-level region to allow for automatic cleanup.
                 self.top_level.borrow_mut().body_mut().body_mut().push_back(block);
             }

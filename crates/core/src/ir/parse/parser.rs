@@ -4,7 +4,7 @@ use super::*;
 use crate::{
     ArrayType, AttributeRef, AttributeRegistration, CallConv, FunctionType, ImmediateAttr,
     PointerType, StructType, SymbolNameComponent, SymbolPath, SymbolUse,
-    diagnostics::{LabeledSpan, RelatedError, Report, Severity, miette::diagnostic},
+    diagnostics::{Report, report},
     dialects::builtin::{
         self,
         attributes::{
@@ -645,11 +645,10 @@ pub trait Parser<'input> {
         let span = span.expect("a path has at least one identifier");
 
         let path = SymbolPath::new(components).map_err(|err| {
-            ParserError::Report(RelatedError::new(Report::from(diagnostic!(
-                severity = Severity::Error,
-                labels = vec![LabeledSpan::at(span, err.to_string())],
-                "invalid symbol path"
-            ))))
+            ParserError::from(report! {
+                message: "invalid symbol path",
+                labels: [primary(span, err.to_string())],
+            })
         })?;
 
         Ok(Span::new(span, path))
@@ -987,14 +986,15 @@ pub trait Parser<'input> {
             self.parse_rparen()?;
             let cc_span = cc.span();
             Some(CallConv::from_str(cc.as_str()).map_err(|_| {
-                ParserError::Report(RelatedError::new(Report::from(diagnostic!(
-                    severity = Severity::Error,
-                    labels = vec![LabeledSpan::at(
-                        cc_span,
-                        format!("unrecognized calling convention '{}'", cc.as_str())
-                    )],
-                    "invalid calling convention string"
-                ))))
+                ParserError::from(report! {
+                    message: "invalid calling convention string",
+                    labels: [
+                        primary(
+                            cc_span,
+                            format!("unrecognized calling convention '{}'", cc.as_str())
+                        ),
+                    ],
+                })
             })?)
         } else {
             None
@@ -1127,15 +1127,10 @@ pub trait Parser<'input> {
         if self.token_stream_mut().is_next(|tok| matches!(tok, Token::Lparen)) {
             let ty = self.parse_tuple_type()?;
             if self.token_stream_mut().is_next(|tok| matches!(tok, Token::Rstab)) {
-                return Err(ParserError::Report(
-                    Report::from(diagnostic!(
-                        severity = Severity::Error,
-                        labels =
-                            vec![LabeledSpan::at(ty.span(), "expected non-function type here")],
-                        "invalid type"
-                    ))
-                    .into(),
-                ));
+                return Err(ParserError::from(report! {
+                    message: "invalid type",
+                    labels: [primary(ty.span(), "expected non-function type here")],
+                }));
             }
             return Ok(ty);
         }

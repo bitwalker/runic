@@ -7,7 +7,7 @@ use alloc::{
 
 use crate::{
     BlockId, CompactString, Type, ValueId,
-    diagnostics::{Diagnostic, LabeledSpan, RelatedError, Report, SourceSpan, miette},
+    diagnostics::{Diagnostic, OwnedDiagnostic, OwnedLabel, Report, SourceSpan},
     formatter::DisplayValues,
     interner,
 };
@@ -15,68 +15,60 @@ use crate::{
 #[derive(Debug, thiserror::Error, Diagnostic)]
 pub enum ParserError {
     #[error("unexpected end of input: expected one of {}", DisplayValues::new(expected.iter()))]
-    #[diagnostic()]
     UnexpectedEof { expected: Vec<String> },
     #[error("invalid syntax")]
-    #[diagnostic()]
     UnexpectedToken {
-        #[label("unexpected token '{token}'")]
+        #[label(primary, "unexpected token '{token}'")]
         span: SourceSpan,
         token: String,
         #[help]
         expected: Option<String>,
     },
     #[error("invalid syntax")]
-    #[diagnostic()]
     InvalidCharacter {
-        #[label("unexpected character '{character}'")]
+        #[label(primary, "unexpected character '{character}'")]
         span: SourceSpan,
         character: char,
     },
     #[error("invalid syntax")]
-    #[diagnostic()]
     UnclosedQuote {
-        #[label("missing closing quote for string starting here")]
+        #[label(primary, "missing closing quote for string starting here")]
         span: SourceSpan,
     },
     #[error("invalid syntax")]
-    #[diagnostic()]
     UnclosedDelimiter {
-        #[label("missing closing delimiter '{expected}'")]
+        #[label(primary, "missing closing delimiter '{expected}'")]
         span: SourceSpan,
         expected: char,
     },
     #[error("invalid syntax")]
-    #[diagnostic(help("Only '\"', '\\r', '\\n', and '\\t' may be escaped in strings"))]
+    #[diagnostic(help = "Only '\"', '\\r', '\\n', and '\\t' may be escaped in strings")]
     InvalidEscapeSequence {
-        #[label("invalid escape sequence")]
+        #[label(primary, "invalid escape sequence")]
         span: SourceSpan,
     },
     #[error("invalid integer literal")]
-    #[diagnostic()]
     InvalidIntegerLiteral {
-        #[label("{reason}")]
+        #[label(primary, "{reason}")]
         span: SourceSpan,
         reason: String,
     },
     #[error("invalid string")]
-    #[diagnostic()]
     InvalidString {
-        #[label("{reason}")]
+        #[label(primary, "{reason}")]
         span: SourceSpan,
         reason: String,
     },
     #[error("invalid attribute value")]
-    #[diagnostic()]
     InvalidAttributeValue {
-        #[label("{reason}")]
+        #[label(primary, "{reason}")]
         span: SourceSpan,
         reason: String,
     },
     #[error("invalid operand and type list")]
-    #[diagnostic()]
     OperandAndTypeListMismatch {
         #[label(
+            primary,
             "there are {num_operands} operands, but {num_types} types: expected the same number \
              of both"
         )]
@@ -85,40 +77,34 @@ pub enum ParserError {
         num_types: usize,
     },
     #[error("invalid operand list")]
-    #[diagnostic()]
     InvalidOperandCount {
-        #[label("expected {expected} operands in this list, but found {actual}")]
+        #[label(primary, "expected {expected} operands in this list, but found {actual}")]
         span: SourceSpan,
         expected: usize,
         actual: usize,
     },
     #[error("use of undeclared values")]
-    #[diagnostic()]
     UndeclaredValueUses {
-        #[label(collection)]
-        labels: Vec<LabeledSpan>,
+        #[labels]
+        labels: Vec<OwnedLabel>,
     },
     #[error("operation location alias was never defined")]
-    #[diagnostic()]
     UnresolvedLocationAlias {
-        #[label("occurs here")]
+        #[label(primary, "occurs here")]
         span: SourceSpan,
     },
     #[error("invalid location alias value")]
-    #[diagnostic()]
     InvalidLocationAlias {
-        #[label("{reason}")]
+        #[label(primary, "{reason}")]
         span: SourceSpan,
         reason: String,
     },
     #[error("use of undefined blocks")]
-    #[diagnostic()]
     UndefinedBlocks {
-        #[label(collection)]
-        labels: Vec<LabeledSpan>,
+        #[labels]
+        labels: Vec<OwnedLabel>,
     },
     #[error("redefinition of SSA value")]
-    #[diagnostic()]
     ValueRedefinition {
         #[label(primary, "occurs here")]
         span: SourceSpan,
@@ -126,7 +112,6 @@ pub enum ParserError {
         prev_span: SourceSpan,
     },
     #[error("definition of SSA value does not match expected type")]
-    #[diagnostic()]
     ValueDefinitionTypeMismatch {
         #[label(primary, "definition here has type {ty}")]
         span: SourceSpan,
@@ -136,7 +121,6 @@ pub enum ParserError {
         prev_ty: Type,
     },
     #[error("invalid use of result number in argument list")]
-    #[diagnostic()]
     ResultNumberUsedInArgumentList {
         #[label(primary)]
         span: SourceSpan,
@@ -144,7 +128,6 @@ pub enum ParserError {
         value_span: SourceSpan,
     },
     #[error("invalid result index")]
-    #[diagnostic()]
     InvalidResultIndex {
         #[label(primary, "{reason}")]
         span: SourceSpan,
@@ -153,7 +136,6 @@ pub enum ParserError {
         reason: String,
     },
     #[error("use of value expects different type than prior uses")]
-    #[diagnostic()]
     ValueUseTypeMismatch {
         #[label(primary, "use here expects {ty}")]
         span: SourceSpan,
@@ -163,76 +145,66 @@ pub enum ParserError {
         prev_ty: Type,
     },
     #[error("mismatched value and type lists")]
-    #[diagnostic()]
     MismatchedValueAndTypeLists {
-        #[label("there are {num_values} values, but {num_types} types")]
+        #[label(primary, "there are {num_values} values, but {num_types} types")]
         span: SourceSpan,
         num_values: usize,
         num_types: usize,
     },
     #[error("invalid result count")]
-    #[diagnostic()]
     InvalidResultCount { span: SourceSpan },
     #[error("named op with no results")]
-    #[diagnostic()]
     NamedOpWithNoResults { span: SourceSpan },
     #[error("result count mismatch")]
-    #[diagnostic()]
     ResultCountMismatch {
         span: SourceSpan,
         count: usize,
         expected: usize,
     },
     #[error("invalid successor list")]
-    #[diagnostic()]
     InvalidEmptySuccessorList {
-        #[label("expected at least one successor")]
+        #[label(primary, "expected at least one successor")]
         span: SourceSpan,
     },
     #[error("invalid operation name")]
-    #[diagnostic()]
     InvalidOperationName {
-        #[label("{reason}")]
+        #[label(primary, "{reason}")]
         span: SourceSpan,
         reason: String,
     },
     #[error("unknown dialect '{dialect}'")]
-    #[diagnostic(help("only dialects registered in this context can be named here"))]
+    #[diagnostic(help = "only dialects registered in this context can be named here")]
     UnknownDialect {
-        #[label("this dialect is not registered")]
+        #[label(primary, "this dialect is not registered")]
         span: SourceSpan,
         dialect: interner::Symbol,
     },
     #[error("invalid operation")]
-    #[diagnostic()]
     NonTerminatorWithSuccessors {
-        #[label("non-terminator operations cannot have successors")]
+        #[label(primary, "non-terminator operations cannot have successors")]
         span: SourceSpan,
     },
     #[error("generic assembly cannot represent the successor layout of '{name}'")]
-    #[diagnostic(help("use the operation's custom assembly syntax instead"))]
+    #[diagnostic(help = "use the operation's custom assembly syntax instead")]
     UnsupportedGenericSuccessorLayout {
-        #[label("generic successors cannot encode keys or multiple successor groups")]
+        #[label(primary, "generic successors cannot encode keys or multiple successor groups")]
         span: SourceSpan,
         name: String,
     },
     #[error("invalid successor count")]
-    #[diagnostic()]
     InvalidSuccessorCount {
-        #[label("expected {expected} successors, but found {actual}")]
+        #[label(primary, "expected {expected} successors, but found {actual}")]
         span: SourceSpan,
         expected: usize,
         actual: usize,
     },
     #[error("too many operand groups")]
-    #[diagnostic()]
     TooManyOperandGroups {
-        #[label("this successor needs an operand group past the limit of {limit}")]
+        #[label(primary, "this successor needs an operand group past the limit of {limit}")]
         span: SourceSpan,
         limit: usize,
     },
     #[error("invalid operation type")]
-    #[diagnostic()]
     InvalidOperationType {
         #[label(primary)]
         span: SourceSpan,
@@ -241,32 +213,27 @@ pub enum ParserError {
         reason: String,
     },
     #[error("invalid operation")]
-    #[diagnostic()]
     UnknownOperation {
-        #[label("unknown/unregistered operation")]
+        #[label(primary, "unknown/unregistered operation")]
         span: SourceSpan,
     },
     #[error("invalid attribute")]
-    #[diagnostic()]
     UnknownAttribute {
-        #[label("unknown/unregistered attribute")]
+        #[label(primary, "unknown/unregistered attribute")]
         span: SourceSpan,
     },
     #[error("invalid custom operation")]
-    #[diagnostic()]
     InvalidCustomOperation {
-        #[label("{reason}")]
+        #[label(primary, "{reason}")]
         span: SourceSpan,
         reason: String,
     },
     #[error("invalid block name in region with named arguments")]
-    #[diagnostic()]
     BlockNameInRegionWithNamedArgs {
-        #[label]
+        #[label(primary)]
         span: SourceSpan,
     },
     #[error("region entry argument is already in use")]
-    #[diagnostic()]
     RegionArgumentAlreadyDefined {
         #[label(primary, "attempted to redefine {arg} here")]
         span: SourceSpan,
@@ -275,99 +242,88 @@ pub enum ParserError {
         arg: ValueId,
     },
     #[error("entry block arguments were already defined")]
-    #[diagnostic()]
     EntryBlockArgumentsAlreadyDefined {
-        #[label]
+        #[label(primary)]
         span: SourceSpan,
     },
     #[error("redefinition of block {name}")]
-    #[diagnostic()]
     BlockAlreadyDefined {
-        #[label]
+        #[label(primary)]
         span: SourceSpan,
         name: BlockId,
     },
     /// A symbol table defines two symbols with one name, or with one path (see
     /// [crate::SymbolConflict])
     #[error("{conflict}")]
-    #[diagnostic()]
     SymbolConflict {
-        #[label]
+        #[label(primary)]
         span: SourceSpan,
         conflict: crate::SymbolConflict,
     },
     #[error("too many arguments specified in argument list")]
-    #[diagnostic()]
     TooManyBlockArguments {
-        #[label]
+        #[label(primary)]
         span: SourceSpan,
     },
     #[error("block argument type mismatch")]
-    #[diagnostic()]
     BlockArgumentTypeMismatch {
-        #[label("expected {expected}, got {ty}")]
+        #[label(primary, "expected {expected}, got {ty}")]
         span: SourceSpan,
         arg: ValueId,
         ty: Type,
         expected: Type,
     },
     #[error("attribute '{name}' occurs more than once in the attribute list")]
-    #[diagnostic()]
     DuplicateAttribute {
-        #[label]
+        #[label(primary)]
         span: SourceSpan,
         name: interner::Symbol,
     },
     #[error("invalid attribute alias definition")]
-    #[diagnostic()]
     AttributeAliasAlreadyDefined {
-        #[label("alias '{id}' is already defined")]
+        #[label(primary, "alias '{id}' is already defined")]
         span: SourceSpan,
         id: interner::Symbol,
     },
     #[error("invalid attribute alias name '{id}'")]
-    #[diagnostic()]
     InvalidAttributeAliasName {
-        #[label("{reason}")]
+        #[label(primary, "{reason}")]
         span: SourceSpan,
         id: interner::Symbol,
         reason: String,
     },
     #[error("invalid type alias definition")]
-    #[diagnostic()]
     TypeAliasAlreadyDefined {
-        #[label("alias '{id}' is already defined")]
+        #[label(primary, "alias '{id}' is already defined")]
         span: SourceSpan,
         id: interner::Symbol,
     },
     #[error("invalid type alias name '{id}'")]
-    #[diagnostic()]
     InvalidTypeAliasName {
-        #[label("{reason}")]
+        #[label(primary, "{reason}")]
         span: SourceSpan,
         id: interner::Symbol,
         reason: String,
     },
     #[error("invalid file metadata")]
     UnknownFileMetadata {
-        #[label("'{key}' is not a recognized metadata key")]
+        #[label(primary, "'{key}' is not a recognized metadata key")]
         span: SourceSpan,
         key: CompactString,
     },
     /// The name of a component, module or interface cannot name it, e.g. Miden Assembly cannot
     /// spell one of its segments.
     #[error("{reason}")]
-    #[diagnostic()]
     InvalidSymbolTableName {
         /// The span of the name
-        #[label("this name is invalid")]
+        #[label(primary, "this name is invalid")]
         span: SourceSpan,
         /// Why the name is invalid
         reason: String,
     },
-    #[error(transparent)]
+    #[error("{0}")]
     #[diagnostic(transparent)]
-    Report(#[from] RelatedError),
+    Report(#[diagnostic_source] OwnedDiagnostic),
 }
 
 impl ParserError {
@@ -383,6 +339,6 @@ impl ParserError {
 impl From<Report> for ParserError {
     #[inline]
     fn from(value: Report) -> Self {
-        Self::Report(RelatedError::new(value))
+        Self::Report(value.into())
     }
 }

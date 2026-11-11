@@ -5,10 +5,10 @@ mod symbol;
 mod symbol_use;
 mod table;
 
-use alloc::{collections::VecDeque, format, vec};
+use alloc::collections::VecDeque;
 use core::ptr::{DynMetadata, Pointee};
 
-use runic_session::diagnostics::{Diagnostic, miette};
+use crate::diagnostics::Diagnostic;
 use smallvec::SmallVec;
 
 pub(crate) use self::quoting::push_quoted;
@@ -27,7 +27,7 @@ use crate::{Operation, OperationRef, UnsafeIntrusiveEntityRef};
 pub enum InvalidSymbolRefError {
     #[error("invalid symbol reference: no symbol table available")]
     NoSymbolTable {
-        #[label("cannot resolve this symbol")]
+        #[label(primary, "cannot resolve this symbol")]
         symbol: crate::SourceSpan,
         #[label(
             "because this operation has no parent symbol table with which to resolve the reference"
@@ -36,14 +36,14 @@ pub enum InvalidSymbolRefError {
     },
     #[error("invalid symbol reference: undefined symbol")]
     UnknownSymbol {
-        #[label("failed to resolve this symbol")]
+        #[label(primary, "failed to resolve this symbol")]
         symbol: crate::SourceSpan,
         #[label("in the nearest symbol table from this operation")]
         user: crate::SourceSpan,
     },
     #[error("invalid symbol reference: undefined component '{component}' of symbol")]
     UnknownSymbolComponent {
-        #[label("failed to resolve this symbol")]
+        #[label(primary, "failed to resolve this symbol")]
         symbol: crate::SourceSpan,
         #[label("from the root symbol table of this operation")]
         user: crate::SourceSpan,
@@ -51,12 +51,13 @@ pub enum InvalidSymbolRefError {
     },
     #[error("invalid symbol reference: expected callable")]
     NotCallable {
-        #[label("expected this symbol to be callable")]
+        #[label(primary, "expected this symbol to be callable")]
         symbol: crate::SourceSpan,
     },
     #[error("invalid symbol reference: symbol is not the correct type")]
     InvalidType {
         #[label(
+            primary,
             "expected this symbol to be a '{expected}', but symbol referenced a '{got}' operation"
         )]
         symbol: crate::SourceSpan,

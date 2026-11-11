@@ -9,7 +9,7 @@ use core::{num::IntErrorKind, ops::Range};
 use runic_session::diagnostics::Span;
 
 use super::{ParseResult, ParserError, Scanner, Token};
-use crate::diagnostics::{LabeledSpan, Report, Severity, SourceId, SourceSpan, miette::diagnostic};
+use crate::diagnostics::{SourceId, SourceSpan};
 
 /// The value produced by the [Lexer] when iterated
 ///
