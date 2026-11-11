@@ -249,7 +249,7 @@ impl AnnotateRenderer {
         })
         .term_width(self.config.width)
         .short_message(self.config.short)
-        .anonymized_line_numbers(self.config.anonymize_line_numbers);
+        .anonymized_snippet_line_numbers(self.config.anonymize_line_numbers);
 
         let output = renderer.render(&groups);
         Ok(sanitize_rendered_output(
