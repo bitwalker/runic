@@ -1,6 +1,7 @@
 mod name;
 mod path;
 mod quoting;
+mod spelling;
 mod symbol;
 mod symbol_use;
 mod table;
@@ -8,7 +9,6 @@ mod table;
 use alloc::collections::VecDeque;
 use core::ptr::{DynMetadata, Pointee};
 
-use crate::diagnostics::Diagnostic;
 use smallvec::SmallVec;
 
 pub(crate) use self::quoting::push_quoted;
@@ -21,7 +21,7 @@ pub use self::{
     table::*,
 };
 use super::{Region, RegionRef, WalkResult};
-use crate::{Operation, OperationRef, UnsafeIntrusiveEntityRef};
+use crate::{Operation, OperationRef, UnsafeIntrusiveEntityRef, diagnostics::Diagnostic};
 
 #[derive(Debug, thiserror::Error, Diagnostic)]
 pub enum InvalidSymbolRefError {

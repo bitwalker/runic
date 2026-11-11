@@ -42,7 +42,7 @@ impl WorldBuilder {
     /// Define a new world-level component `name`.
     ///
     /// Returns an error when the name contains invalid characters; when the world declares a tree
-    /// of modules or interfaces reaching the path the name spells (a module, or a function or
+    /// of modules reaching the path the name spells (a module, or a function or
     /// global named by the raw last segment), which the component would shadow; when the name of
     /// another component nests with this one (one is a segment-prefix of the other), since
     /// resolution prefers the longest registered name; or when a world-level symbol has the name or
@@ -403,7 +403,7 @@ mod tests {
         }
     }
 
-    /// A stub module tree declared from a Miden Assembly path with a quoted root (`"masm-dep"`)
+    /// A stub module tree declared from a path with a quoted root (`"masm-dep"`)
     /// and a component named from the raw namespace `masm-dep` meet under one name, in either
     /// order.
     #[test]
@@ -440,7 +440,7 @@ mod tests {
         assert_eq!(err.to_string(), expected);
     }
 
-    /// The component builder rejects a raw segment Miden Assembly cannot spell.
+    /// The component builder rejects a raw segment the spelling rules reject.
     #[test]
     fn the_component_builder_rejects_an_unspellable_segment() {
         use alloc::string::{String, ToString};
@@ -453,13 +453,13 @@ mod tests {
         assert_eq!(
             err,
             Err(String::from(
-                r"invalid component name: the segment `a\b` cannot be spelled in Miden Assembly"
+                r"invalid component name: the segment `a\b` is not a valid path segment"
             ))
         );
     }
 
-    /// The component and interface verifiers reject a name set after construction that is not
-    /// the Miden Assembly spelling of its segments, or has a segment Miden Assembly cannot spell.
+    /// The component and module verifiers reject a name set after construction that is not
+    /// the canonical spelling of its segments, or has a segment the spelling rules reject.
     #[test]
     fn the_symbol_table_verifiers_reject_a_misspelled_name() {
         use alloc::string::{String, ToString};
@@ -471,71 +471,55 @@ mod tests {
         let mut component = world_builder
             .define_component(Ident::from("ok"))
             .expect("failed to define component");
-        let mut interface = ComponentBuilder::new(component)
-            .define_interface(Ident::from("api"))
-            .expect("failed to define interface");
+        let mut module = ComponentBuilder::new(component)
+            .define_module(Ident::from("api"))
+            .expect("failed to define module");
         let verify =
             |op: &dyn Verify<dyn SymbolTable>| op.verify(&context).map_err(|err| err.to_string());
         assert_eq!(verify(&*component.borrow()), Ok(()));
-        assert_eq!(verify(&*interface.borrow()), Ok(()));
+        assert_eq!(verify(&*module.borrow()), Ok(()));
 
         for (name, expected) in [
             (
                 "masm-dep",
-                "component `masm-dep` is not the Miden Assembly spelling of its segments; name \
+                "component `masm-dep` is not the canonical spelling of its segments; name \
                  components through `SymbolPath::to_symbol_name`",
             ),
             (
                 r#"app::"a#b""#,
-                "invalid component name: the segment `a#b` cannot be spelled in Miden Assembly",
+                "invalid component name: the segment `a#b` is not a valid path segment",
             ),
         ] {
             component.borrow_mut().set_name(SymbolName::intern(name));
             assert_eq!(verify(&*component.borrow()), Err(String::from(expected)), "`{name}`");
         }
         for (name, expected) in [
-            (
-                "my-api",
-                "interface `my-api` is not the Miden Assembly spelling of its segments",
-            ),
-            (
-                r#""a#b""#,
-                "invalid interface name: the segment `a#b` cannot be spelled in Miden Assembly",
-            ),
+            ("my-api", "module `my-api` is not the canonical spelling of its segments"),
+            (r#""a#b""#, "invalid module name: the segment `a#b` is not a valid path segment"),
         ] {
-            interface.borrow_mut().set_name(SymbolName::intern(name));
-            assert_eq!(verify(&*interface.borrow()), Err(String::from(expected)), "`{name}`");
+            module.borrow_mut().set_name(SymbolName::intern(name));
+            assert_eq!(verify(&*module.borrow()), Err(String::from(expected)), "`{name}`");
         }
     }
 
-    /// A module or interface builder reads its name as one raw segment, and rejects a segment
-    /// Miden Assembly cannot spell, a quoted one included.
+    /// A module builder reads its name as one raw segment, and rejects a segment
+    /// the spelling rules reject, a quoted one included.
     #[test]
-    fn a_module_name_miden_assembly_cannot_spell_is_rejected() {
+    fn an_invalid_module_name_is_rejected() {
         use alloc::string::ToString;
 
-        use crate::dialects::builtin::ComponentBuilder;
-
         let (_world, mut world_builder) = empty_world();
-        let component = world_builder
-            .define_component(Ident::from("app"))
-            .expect("failed to define component");
         for raw in [r#""app""#, r"a\b", "ü", ""] {
             let module = world_builder
                 .declare_module(Ident::from(raw))
                 .map(|_| ())
                 .map_err(|err| err.to_string());
-            let interface = ComponentBuilder::new(component)
-                .define_interface(Ident::from(raw))
-                .map(|_| ())
-                .map_err(|err| err.to_string());
             let expected = |kind: &str| {
                 Err(alloc::format!(
-                    "invalid {kind} name: the segment `{raw}` cannot be spelled in Miden Assembly"
+                    "invalid {kind} name: the segment `{raw}` is not a valid path segment"
                 ))
             };
             assert_eq!(module, expected("module"), "`{raw}`");
-            assert_eq!(interface, expected("interface"), "`{raw}`");
         }
         assert!(world_builder.find_module(r#""app""#.into()).is_none());
     }

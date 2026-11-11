@@ -12,22 +12,10 @@ use crate::{
 };
 
 pub trait BuiltinOpBuilder<'f, B: ?Sized + Builder> {
-    /// Create an [Interface] named by the raw segment `name`, spelled as
-    /// [Interface::canonical_name] does.
-    ///
-    /// Returns an error when Miden Assembly cannot spell `name`, or it contains `::`, or the
-    /// interface cannot be defined where it is inserted.
-    fn create_interface(&mut self, name: Ident) -> Result<InterfaceRef, Report> {
-        let name = Ident::new(Interface::canonical_name(name.name)?, name.span);
-        ensure_definable::<Interface, _>(self.builder(), name.name)?;
-        let op_builder = self.builder_mut().create::<Interface, (_,)>(name.span());
-        op_builder(name)
-    }
-
     /// Create a [Module] named by the raw segment `name`, spelled as [Module::canonical_name]
     /// does.
     ///
-    /// Returns an error when Miden Assembly cannot spell `name`, or it contains `::`, or the
+    /// Returns an error when the spelling rules reject `name`, or it contains `::`, or the
     /// module cannot be defined where it is inserted.
     fn create_module(&mut self, name: Ident) -> Result<ModuleRef, Report> {
         let name = Ident::new(Module::canonical_name(name.name)?, name.span);
@@ -76,20 +64,6 @@ pub trait BuiltinOpBuilder<'f, B: ?Sized + Builder> {
         ensure_definable::<GlobalVariable, _>(self.builder(), name.name)?;
         let op_builder = self.builder_mut().create::<GlobalVariable, (_, _, _)>(name.span());
         op_builder(name, visibility, ty)
-    }
-
-    /// Create a [FunctionTable] with `num_slots` slots and no initialized entries.
-    ///
-    /// Returns an error when the table cannot be defined where it is inserted.
-    fn create_function_table(
-        &mut self,
-        name: Ident,
-        visibility: Visibility,
-        num_slots: u32,
-    ) -> Result<FunctionTableRef, Report> {
-        ensure_definable::<FunctionTable, _>(self.builder(), name.name)?;
-        let op_builder = self.builder_mut().create::<FunctionTable, (_, _, _)>(name.span());
-        op_builder(name, visibility, num_slots)
     }
 
     fn create_data_segment(

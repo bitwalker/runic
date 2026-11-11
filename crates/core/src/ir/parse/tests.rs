@@ -455,10 +455,10 @@ builtin.module public @outer {
     Ok(())
 }
 
-/// The `reserved_memory` module attribute and the function-table ops are inputs to the linker's
-/// memory layout, so they must survive a print/parse round-trip of the textual HIR.
+/// The `reserved_memory` module attribute is an input to the linker's memory layout, so it must
+/// survive a print/parse round-trip of the textual HIR.
 #[test]
-fn module_reserved_memory_and_function_table_roundtrip() -> TestResult {
+fn module_reserved_memory_roundtrip() -> TestResult {
     use crate::{Op, dialects::builtin::attributes::U64Attr};
 
     let mut test = ParserTest::default();
@@ -468,13 +468,9 @@ fn module_reserved_memory_and_function_table_roundtrip() -> TestResult {
         builtin.function internal extern(\"C\") @callee(%a: i32, %b: i32) -> i32 {
             builtin.ret %a : (i32);
         };
-
-        builtin.function_table private @tbl : 3 {
-            builtin.function_table_entry 1 @callee tag 4;
-        };
     };";
 
-    let parsed = test.parse_any("function_table_roundtrip.hir", source)?;
+    let parsed = test.parse_any("reserved_memory_roundtrip.hir", source)?;
 
     // Attach the linker-facing memory reservation, then round-trip through print/parse and
     // verify nothing is lost
@@ -491,7 +487,7 @@ fn module_reserved_memory_and_function_table_roundtrip() -> TestResult {
     let printed = printer.finish().to_string();
     std::println!("{printed}");
 
-    let reparsed = test.parse_any("function_table_roundtrip2.hir", &printed)?;
+    let reparsed = test.parse_any("reserved_memory_roundtrip2.hir", &printed)?;
     let reparsed = reparsed.borrow();
     let module = reparsed.downcast_ref::<Module>().unwrap();
 
@@ -500,26 +496,6 @@ fn module_reserved_memory_and_function_table_roundtrip() -> TestResult {
         .get_typed_attribute::<U64Attr>(Module::RESERVED_MEMORY_ATTR)
         .expect("reserved_memory attribute lost in print/parse round-trip");
     assert_eq!(**reserved.borrow(), 0x110000);
-
-    let table = module
-        .symbol_manager()
-        .lookup_op("tbl")
-        .expect("'tbl' was not registered in symbol table after parsing");
-    let table = table.borrow();
-    let table = table
-        .downcast_ref::<crate::dialects::builtin::FunctionTable>()
-        .expect("expected 'tbl' to be a function table");
-    assert_eq!(*table.get_num_slots(), 3);
-    let entries = table.entries();
-    let entries = entries.entry();
-    let mut entries = entries.body().iter();
-    let entry = entries.next().expect("expected one table entry");
-    let entry = entry
-        .downcast_ref::<crate::dialects::builtin::FunctionTableEntry>()
-        .expect("expected a function table entry");
-    assert_eq!(*entry.get_index(), 1);
-    assert_eq!(*entry.get_type_tag(), 4, "signature tag lost in print/parse round-trip");
-    assert!(entries.next().is_none());
 
     Ok(())
 }
@@ -934,7 +910,7 @@ builtin.world {
 
 /// A component prints its name as a symbol path, one raw segment per segment of the name (see
 /// `SymbolPath::to_symbol_name`), quoting a segment that is not a bare HIR identifier, and that
-/// text parses back to the same name: the Miden Assembly spelling of the segments.
+/// text parses back to the same name: the canonical spelling of the segments.
 #[test]
 fn component_name_roundtrips_through_the_printer() -> TestResult {
     use crate::{
@@ -950,7 +926,7 @@ fn component_name_roundtrips_through_the_printer() -> TestResult {
             "\"hir_ns:test@1.0.0\"",
             "builtin.component private @\"hir_ns:test@1.0.0\" {",
         ),
-        ("$kernel", "$kernel", "builtin.component private @\"$kernel\" {"),
+        ("$kernel", "\"$kernel\"", "builtin.component private @\"$kernel\" {"),
         ("1st", "\"1st\"", "builtin.component private @\"1st\" {"),
         ("a-b", "\"a-b\"", "builtin.component private @\"a-b\" {"),
     ] {
@@ -975,15 +951,13 @@ fn component_name_roundtrips_through_the_printer() -> TestResult {
 /// text parses back to a component with the same segments.
 #[test]
 fn component_name_with_a_quoted_segment_roundtrips_through_the_printer() -> TestResult {
-    use runic_session::miden_assembly_syntax::Path;
-
     use crate::{
         Op, SymbolPath,
         dialects::builtin::{Component, WorldBuilder},
     };
 
     let test = ParserTest::default();
-    let path = SymbolPath::from_library_path(Path::new("::\"acme::pkg\"::app"));
+    let path = SymbolPath::from_module_name("::\"acme::pkg\"::app");
     let world = test.context_rc().builder().create::<World, ()>(SourceSpan::UNKNOWN)()?;
     let component = WorldBuilder::new(world).define_component(path.to_symbol_name()?.into())?;
 
@@ -1005,69 +979,7 @@ fn component_name_with_a_quoted_segment_roundtrips_through_the_printer() -> Test
     Ok(())
 }
 
-/// A component with an interface whose name needs quoting.
-const INTERFACE_SOURCE: &str = "\
-builtin.world {
-    builtin.component private @app {
-        builtin.interface @\"my-api\" {
-            builtin.function public extern(\"C\") @f() {
-                builtin.ret;
-            };
-        };
-    };
-};";
-
-/// An interface is named by the Miden Assembly spelling of its raw segment, prints that raw
-/// segment, and the printed text parses back to the same name.
-#[test]
-fn interface_name_roundtrips_through_the_printer() -> TestResult {
-    use crate::dialects::builtin::Interface;
-
-    let test = ParserTest::default();
-    let source = "\
-builtin.interface @\"my-api\" {
-    builtin.function public extern(\"C\") @f() {
-        builtin.ret;
-    };
-};";
-    let interface = test.parse::<Interface>("interface_roundtrip.hir", source)?;
-    assert_eq!(Symbol::name(&*interface.borrow()).as_str(), "\"my-api\"");
-
-    let flags = Default::default();
-    let mut printer = AsmPrinter::new(test.context_rc(), &flags);
-    printer.print_operation(interface.as_operation_ref().borrow());
-    let printed = printer.finish().to_string();
-    assert!(
-        printed.starts_with("builtin.interface @\"my-api\" {"),
-        "unexpected printed form:\n{printed}"
-    );
-
-    let reparsed = test.parse::<Interface>("interface_roundtrip2.hir", &printed)?;
-    assert_eq!(Symbol::name(&*reparsed.borrow()).as_str(), "\"my-api\"");
-    Ok(())
-}
-
-/// A path through an interface whose name needs quoting resolves to the function inside it.
-#[test]
-fn a_path_through_a_quoted_interface_resolves() -> TestResult {
-    use crate::{SymbolNameComponent, SymbolPath, dialects::builtin::Function};
-
-    let test = ParserTest::default();
-    let world = test.parse_any("interface_resolution.hir", INTERFACE_SOURCE)?;
-    let path = SymbolPath::from_iter([
-        SymbolNameComponent::Root,
-        SymbolNameComponent::Component("app".into()),
-        SymbolNameComponent::Component("my-api".into()),
-        SymbolNameComponent::Leaf("f".into()),
-    ]);
-    let world = world.try_downcast_op::<World>().expect("expected a world");
-    let resolved = world.borrow().resolve(&path).expect("`::app::\"my-api\"::f` should resolve");
-    assert!(resolved.borrow().as_symbol_operation().is::<Function>());
-    assert_eq!(resolved.borrow().path(), path);
-    Ok(())
-}
-
-/// A symbol-table op whose raw segment Miden Assembly cannot spell does not parse, a raw segment
+/// A symbol-table op whose raw segment the spelling rules reject does not parse, a raw segment
 /// wrapped in quotes included: it is not read as the segment it quotes.
 #[test]
 fn an_unspellable_symbol_table_name_is_reported() {
@@ -1079,7 +991,6 @@ fn an_unspellable_symbol_table_name_is_reported() {
         ("builtin.module public @\"a\\\\b\" {};", "module", "a\\b"),
         ("builtin.module public @\"\\\"m\\\"\" {};", "module", "\"m\""),
         ("builtin.module public @\"a#b\" {};", "module", "a#b"),
-        ("builtin.interface @\"a\\\\b\" {};", "interface", "a\\b"),
     ] {
         let err = test
             .parse_any("unspellable.hir", source)
@@ -1087,9 +998,7 @@ fn an_unspellable_symbol_table_name_is_reported() {
             .to_string();
         assert_eq!(
             err,
-            format!(
-                "invalid {kind} name: the segment `{segment}` cannot be spelled in Miden Assembly"
-            ),
+            format!("invalid {kind} name: the segment `{segment}` is not a valid path segment"),
             "{source}"
         );
     }
@@ -1213,35 +1122,6 @@ builtin.world {{
     );
     test.parse_any("shadow_ctrl.hir", &source("@other"))?;
     Ok(())
-}
-
-/// A component whose path is the path of a function in a world-level interface is rejected,
-/// whichever of the two is defined first.
-#[test]
-fn a_component_at_the_path_of_an_interface_function_is_reported() {
-    let interface = "\
-    builtin.interface @api {
-        builtin.function public extern(\"C\") @f() {
-            builtin.ret;
-        };
-    };";
-    let component = "\
-    builtin.component private @api::@f {
-    };";
-    let test = ParserTest::default();
-    for (first, second) in [(interface, component), (component, interface)] {
-        let source = format!("builtin.world {{\n{first}\n{second}\n}};");
-        let err = test
-            .parse_any("iface_shadow.hir", &source)
-            .expect_err("the component shadows the interface function `f`")
-            .to_string();
-        assert_eq!(
-            err,
-            "component `api::f` and `builtin.function` `::api::f` have the same path; a component \
-             must not share its path with another symbol",
-            "{source}"
-        );
-    }
 }
 
 /// A module and a function whose raw names are equal have the same path, so they cannot both be

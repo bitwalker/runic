@@ -37,7 +37,7 @@ pub trait Symbol: Usable<Use = SymbolUse> + 'static {
     /// Get the fully-qualified (absolute) path of this symbol
     ///
     /// Each named ancestor symbol table contributes one `Component` per raw segment of its name,
-    /// the Miden Assembly spelling of those segments (see [SymbolPath::segments_of]), so a
+    /// the canonical spelling of those segments (see [SymbolPath::segments_of]), so a
     /// function `f` in module `m` of a component named `acme::a::b` has the path
     /// `::acme::a::b::m::f`.
     ///
@@ -87,7 +87,7 @@ pub trait Symbol: Usable<Use = SymbolUse> + 'static {
     /// Set the name of this symbol
     ///
     /// `name` is stored as given, in the form [Symbol::name] returns: for a symbol-table op, the
-    /// Miden Assembly spelling of its raw segments (see [SymbolPath::segments_of]), which callers
+    /// canonical spelling of its raw segments (see [SymbolPath::segments_of]), which callers
     /// get from the op's `canonical_name`. It is not spelled here; the symbol-table verifiers
     /// reject a name that is not spelled.
     fn set_name(&mut self, name: SymbolName);

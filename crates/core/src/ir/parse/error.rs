@@ -78,7 +78,10 @@ pub enum ParserError {
     },
     #[error("invalid operand list")]
     InvalidOperandCount {
-        #[label(primary, "expected {expected} operands in this list, but found {actual}")]
+        #[label(
+            primary,
+            "expected {expected} operands in this list, but found {actual}"
+        )]
         span: SourceSpan,
         expected: usize,
         actual: usize,
@@ -187,7 +190,10 @@ pub enum ParserError {
     #[error("generic assembly cannot represent the successor layout of '{name}'")]
     #[diagnostic(help = "use the operation's custom assembly syntax instead")]
     UnsupportedGenericSuccessorLayout {
-        #[label(primary, "generic successors cannot encode keys or multiple successor groups")]
+        #[label(
+            primary,
+            "generic successors cannot encode keys or multiple successor groups"
+        )]
         span: SourceSpan,
         name: String,
     },
@@ -200,7 +206,10 @@ pub enum ParserError {
     },
     #[error("too many operand groups")]
     TooManyOperandGroups {
-        #[label(primary, "this successor needs an operand group past the limit of {limit}")]
+        #[label(
+            primary,
+            "this successor needs an operand group past the limit of {limit}"
+        )]
         span: SourceSpan,
         limit: usize,
     },
@@ -311,8 +320,8 @@ pub enum ParserError {
         span: SourceSpan,
         key: CompactString,
     },
-    /// The name of a component, module or interface cannot name it, e.g. Miden Assembly cannot
-    /// spell one of its segments.
+    /// The name of a component or module cannot name it, e.g. one of its segments is not
+    /// valid.
     #[error("{reason}")]
     InvalidSymbolTableName {
         /// The span of the name

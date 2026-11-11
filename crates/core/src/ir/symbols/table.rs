@@ -229,13 +229,13 @@ impl core::error::Error for SymbolConflict {}
 pub struct SymbolMap {
     /// A low-level mapping of symbols to operations found in this table
     symbols: FxHashMap<SymbolName, SymbolRef>,
-    /// The names in `symbols` registered to symbol-table ops, which are named by the Miden
-    /// Assembly spelling of their raw segments, while any other symbol is named by its raw name
+    /// The names in `symbols` registered to symbol-table ops, which are named by the
+    /// canonical spelling of their raw segments, while any other symbol is named by its raw name
     tables: FxHashSet<SymbolName>,
     /// Used to unique symbol names when conflicts are detected
     uniquing_count: usize,
     /// The largest number of segments of the name of any symbol table registered in this map, each
-    /// name read as the Miden Assembly spelling of its segments (see [SymbolPath::segments_of]).
+    /// name read as the canonical spelling of its segments (see [SymbolPath::segments_of]).
     ///
     /// This is only an upper bound (it never decreases on removal) that keeps the common case of
     /// single-segment names at one lookup per path component in [SymbolMap::lookup_prefix].
@@ -383,7 +383,7 @@ impl SymbolMap {
     /// namespace, but rather a symbol defined in the global namespace. This means that only
     /// children of that symbol are possibly resolvable (as we have no way to reach other symbols
     /// defined in the global namespace). In short, we only attempt to resolve absolute paths whose
-    /// leading components are the raw segments of the root symbol's name, the Miden Assembly
+    /// leading components are the raw segments of the root symbol's name, the canonical
     /// spelling of those segments (see [SymbolPath::segments_of]), the last one possibly as the
     /// leaf. If they are, then the symbol is resolved normally from there, otherwise `None` is
     /// returned.
@@ -473,13 +473,13 @@ impl SymbolMap {
     /// A leading `Leaf` names the symbol whose path relative to this map it is (see
     /// [SymbolMap::get_leaf]).
     ///
-    /// Otherwise, the lookup matches the **longest run of leading `Component`s whose Miden
-    /// Assembly spelling is the registered name of a symbol table**, since a symbol-table op may
+    /// Otherwise, the lookup matches the **longest run of leading `Component`s whose
+    /// canonical spelling is the registered name of a symbol table**, since a symbol-table op may
     /// be named by a multi-segment path (see [SymbolPath::segments_of]). For example, a component
     /// named `acme::a::b` coexists with a module tree rooted at `acme` in the same table; the
     /// path `acme::a::b::m::f` resolves through the component, because the longest registered
     /// name wins. The run may end in the `Leaf` holding the raw last segment of the symbol table
-    /// the path names. A component Miden Assembly cannot spell names no symbol table, so it ends
+    /// the path names. A component the spelling rules reject names no symbol table, so it ends
     /// the run.
     fn lookup_prefix<'a>(
         &self,
@@ -524,8 +524,8 @@ impl SymbolMap {
     /// `name`.
     ///
     /// Leaf names are opaque, even when they contain `::`, so a plain symbol is looked up as is.
-    /// A symbol table is named by the Miden Assembly spelling of its raw segment instead, which
-    /// is `name` itself when it is a bare identifier; a leaf Miden Assembly cannot spell names no
+    /// A symbol table is named by the canonical spelling of its raw segment instead, which
+    /// is `name` itself when it is a bare identifier; a leaf the spelling rules reject names no
     /// symbol table. Each lookup only accepts its kind of symbol: a plain symbol whose opaque
     /// name happens to be a spelling (`"my-mod"`, `a::b`) must not capture the path of a symbol
     /// table, nor the other way around.
@@ -644,7 +644,7 @@ fn is_symbol_table(symbol: &SymbolRef) -> bool {
 /// Returns a variation of `name`, the name of a symbol (a symbol table when `is_table`), that
 /// `is_unique` accepts (see [generate_symbol_name]).
 ///
-/// The name of a symbol-table op is the Miden Assembly spelling of its raw segments (see
+/// The name of a symbol-table op is the canonical spelling of its raw segments (see
 /// [SymbolPath::segments_of]), so the suffix goes on its raw last segment and the result is
 /// spelled again: `"masm-dep"` becomes `"masm-dep_1"`, not `"masm-dep"_1`.
 fn generate_unique_name<F>(

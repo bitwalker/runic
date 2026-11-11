@@ -1,6 +1,3 @@
-mod interface;
-
-pub use self::interface::{ComponentExport, ComponentInterface, ModuleExport, ModuleInterface};
 use crate::{
     Context, Ident, IdentAttr, Op, OpParser, OpPrinter, Operation, RegionKind, RegionKindInterface,
     Report, Symbol, SymbolManager, SymbolManagerMut, SymbolMap, SymbolNameComponent, SymbolPath,
@@ -23,13 +20,11 @@ pub type ComponentRef = UnsafeIntrusiveEntityRef<Component>;
 ///
 /// Components can contain the following entities:
 ///
-/// * [super::Interface], used to export groups of related functionality from the component.
-///   Interfaces always have `Public` visibility.
 /// * [super::Function] used to export standalone component-level functions, e.g. a program
 ///   entrypoint, or component initializer. These functions always have `Public` visibility, and
 ///   must be representable using the Canonical ABI.
-/// * [super::Module], used to implement the functionality exported backing an [super::Interface] or
-///   a component-level [super::Function]. Modules may not have `Public` visibility. All modules
+/// * [super::Module], used to implement the functionality exported by a component-level
+///   [super::Function]. Modules may not have `Public` visibility. All modules
 ///   within a [Component] are within the same shared-everything boundary, so conflicting data
 ///   segment declarations are not allowed. Additionally, global variables within the same
 ///   shared-everything boundary are allocated in the same linear memory address space.
@@ -105,7 +100,7 @@ impl OpParser for Component {
         state
             .add_attribute("visibility", context.create_attribute::<VisibilityAttr, _>(visibility));
 
-        // The name is the Miden Assembly spelling of the whole (possibly multi-segment) path of raw
+        // The name is the canonical spelling of the whole (possibly multi-segment) path of raw
         // segments (see `SymbolPath::to_symbol_name`)
         let (span, path) = parser.parse_symbol_path()?.into_parts();
         let name = path
@@ -217,11 +212,11 @@ impl Component {
     /// declared.
     pub const SYNTHETIC_WRAPPER_ATTR: &'static str = "synthetic_wrapper";
 
-    /// Returns the name a component given `name` gets: `name` itself when it already is the Miden
-    /// Assembly spelling of its segments (`acme::a::b`, `"acme::pkg"::app`), otherwise the
+    /// Returns the name a component given `name` gets: `name` itself when it already is the
+    /// canonical spelling of its segments (`acme::a::b`, `"acme::pkg"::app`), otherwise the
     /// spelling of `name` read as one raw segment (`masm-dep` is named `"masm-dep"`).
     ///
-    /// Returns an error when Miden Assembly cannot spell a segment (see
+    /// Returns an error when the spelling rules reject a segment (see
     /// [SymbolPath::is_spellable]).
     pub fn canonical_name(name: interner::Symbol) -> Result<interner::Symbol, Report> {
         SymbolPath::table_name(SymbolTableKind::Component, name)

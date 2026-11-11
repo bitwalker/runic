@@ -24,7 +24,6 @@ pub type WorldRef = UnsafeIntrusiveEntityRef<World>;
 /// Currently, worlds are presumed to contain one of the following:
 ///
 /// * [super::Component]s
-/// * [super::Interface]s
 /// * [super::Module]s
 ///
 /// The codegen backend currently does not support lowering from [World] directly when the world
@@ -102,13 +101,13 @@ impl SymbolTable for World {
 }
 
 impl World {
-    /// Returns an error when the world declares a tree of modules or interfaces with a symbol at
+    /// Returns an error when the world declares a tree of modules with a symbol at
     /// the path the component name `component` spells (a module, or a function or global named by
     /// the raw last segment), which the component would shadow, or another component whose name
     /// nests with `component` (one is a segment-prefix of the other): resolution prefers the
     /// longest registered name, so either would make paths ambiguous.
     ///
-    /// The name is the Miden Assembly spelling of the component's namespace path (see
+    /// The name is the canonical spelling of the component's namespace path (see
     /// [SymbolPath::to_symbol_name]).
     pub fn reject_component_shadowing(&self, component: SymbolName) -> Result<(), Report> {
         self.reject_nested_components(component)?;
@@ -116,7 +115,7 @@ impl World {
         let Some((last, tables)) = segments.split_last() else {
             return Ok(());
         };
-        // Walk the symbol tables (modules, interfaces) named by the leading segments; a component
+        // Walk the symbol tables (modules) named by the leading segments; a component
         // is not walked into, since components do not nest
         let mut table = self.op.as_operation_ref();
         for segment in tables {
@@ -190,7 +189,7 @@ impl World {
             return Ok(());
         }
         drop(body);
-        // No component has a segment Miden Assembly cannot spell
+        // No component has a segment the spelling rules reject
         if !segments.iter().all(|segment| SymbolPath::is_spellable(segment.as_str())) {
             return Ok(());
         }
@@ -208,7 +207,7 @@ impl World {
     }
 
     /// Returns the name of the world-level component named by the module path `path`, given as
-    /// its Miden Assembly spelling (see [SymbolPath::to_symbol_name]), or by a segment-prefix of
+    /// its canonical spelling (see [SymbolPath::to_symbol_name]), or by a segment-prefix of
     /// it, i.e. the component that would shadow a module tree reaching `path`.
     pub(crate) fn component_shadowing(&self, path: SymbolName) -> Option<SymbolName> {
         let body = self.body();
@@ -230,7 +229,7 @@ impl World {
     /// segment-prefix of `component`, or extends it.
     ///
     /// Raw segments are compared, not their text: `"a::b"` (one segment) and `a::b` (two) are
-    /// different paths, in Miden Assembly as here.
+    /// different paths, as here.
     fn reject_nested_components(&self, component: SymbolName) -> Result<(), Report> {
         let body = self.body();
         if body.is_empty() {
@@ -258,7 +257,7 @@ impl World {
 
 /// The builders reject a component that shadows a symbol, or a symbol a component shadows, when
 /// the second one of the two is defined through `WorldBuilder::define_component`,
-/// `WorldBuilder::declare_module_tree` or the module, interface, function and global builders.
+/// `WorldBuilder::declare_module_tree` or the module, function and global builders.
 /// Parsed input, and ops built or renamed otherwise, are not checked, so the rule is checked here
 /// as well.
 impl Verify<dyn SymbolTable> for World {

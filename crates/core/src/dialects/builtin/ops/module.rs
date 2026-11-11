@@ -36,8 +36,6 @@ pub type ModuleRef = UnsafeIntrusiveEntityRef<Module>;
 ///   module, e.g. a secondary export name.
 /// * [super::GlobalVariable], either a declaration of an externally-defined global, or a
 ///   definition, same as [super::Function].
-/// * [super::FunctionTable], describing a function-reference table in the component's shared
-///   memory, along with its statically-initialized entries.
 ///
 /// Multiple modules can be grouped together into a [super::Component] or [super::World]. Doing so
 /// allows interprocedural analysis to reason across call boundaries for functions defined in
@@ -142,11 +140,11 @@ impl Module {
         unsafe { ModuleRef::from_raw(self) }
     }
 
-    /// Returns the name a module given the raw segment `name` gets: its Miden Assembly spelling
+    /// Returns the name a module given the raw segment `name` gets: its canonical spelling
     /// (see [SymbolPath::segments_of]), e.g. `"masm-dep"` for `masm-dep` and `m` for `m`.
     ///
     /// `name` is always read as one raw segment, never as a spelled name: `"masm-dep"` is not
-    /// the segment `masm-dep`. Returns an error when Miden Assembly cannot spell the segment (see
+    /// the segment `masm-dep`. Returns an error when the spelling rules reject the segment (see
     /// [SymbolPath::is_spellable]) or it contains `::`.
     pub fn canonical_name(name: SymbolName) -> Result<SymbolName, Report> {
         SymbolPath::table_name(SymbolTableKind::Module, name)

@@ -1,9 +1,7 @@
 use super::BuiltinOpBuilder;
 use crate::{
     Builder, Ident, Op, OpBuilder, Report, SymbolName, SymbolPath, SymbolTable, Visibility,
-    dialects::builtin::{
-        ComponentRef, FunctionRef, InterfaceRef, Module, ModuleRef, attributes::Signature,
-    },
+    dialects::builtin::{ComponentRef, FunctionRef, Module, ModuleRef, attributes::Signature},
 };
 
 pub struct ComponentBuilder {
@@ -26,12 +24,6 @@ impl ComponentBuilder {
         }
 
         Self { component, builder }
-    }
-
-    /// Define a new interface named by the raw segment `name` in this component, see
-    /// [BuiltinOpBuilder::create_interface].
-    pub fn define_interface(&mut self, name: Ident) -> Result<InterfaceRef, Report> {
-        self.builder.create_interface(name)
     }
 
     /// Define a new module named by the raw segment `name` in this component, see

@@ -1,10 +1,9 @@
 use alloc::{borrow::Cow, format};
 use core::fmt;
 
+use super::spelling;
 use crate::{
-    FunctionIdent, Report, SmallVec, SymbolName,
-    diagnostics::Diagnostic,
-    interner, smallvec,
+    FunctionIdent, Report, SmallVec, SymbolName, diagnostics::Diagnostic, interner, smallvec,
 };
 
 #[derive(Debug, thiserror::Error, Diagnostic)]
@@ -124,7 +123,7 @@ impl SymbolPath {
         Ok(Self { path })
     }
 
-    /// Converts a [FunctionIdent] representing a fully-qualified Miden Assembly procedure path,
+    /// Converts a [FunctionIdent] representing a fully-qualified procedure path,
     /// to it's equivalent [SymbolPath] representation.
     ///
     /// # Example
@@ -158,7 +157,7 @@ impl SymbolPath {
     /// The id is read as a path: each component holds the raw identifier, without the quotes its
     /// spelling may carry, and a quoted segment containing `::` stays one component
     /// (`"acme::pkg"::app` has the components `acme::pkg` and `app`). An id that is not a valid
-    /// Miden Assembly path is split on every `::` after a leading one instead, and a segment
+    /// path is split on every `::` after a leading one instead, and a segment
     /// wrapped in one pair of quotes loses them: [FunctionIdent]s are also parsed from arbitrary
     /// source names (`<T as Trait>::f`, `core::ptr::drop_in_place<T>`), which are matched against
     /// known paths.
@@ -182,15 +181,16 @@ impl SymbolPath {
     /// ```
     pub fn from_module_name(id: &str) -> Self {
         let root = core::iter::once(SymbolNameComponent::Root);
-        match Path::validate(id) {
-            Ok(path) => Self::from_iter(
-                root.chain(
-                    normal_components(path)
-                        .map(|segment| SymbolNameComponent::Component(SymbolName::intern(segment))),
-                ),
-            ),
+        match spelling::split(id) {
+            Some((_, segments)) => {
+                Self::from_iter(
+                    root.chain(segments.into_iter().map(|segment| {
+                        SymbolNameComponent::Component(SymbolName::intern(segment))
+                    })),
+                )
+            }
             // The path is absolute either way, so a leading `::` adds no empty segment
-            Err(_) => Self::from_iter(root.chain(
+            None => Self::from_iter(root.chain(
                 id.strip_prefix("::").unwrap_or(id).split("::").map(|segment| {
                     let segment = segment
                         .strip_prefix('"')
@@ -203,21 +203,20 @@ impl SymbolPath {
     }
 
     /// Returns the segments of the name of a symbol-table op, the inverse of
-    /// [SymbolPath::to_symbol_name] for segments Miden Assembly can spell (see
+    /// [SymbolPath::to_symbol_name] for segments the spelling rules accept (see
     /// [SymbolPath::is_spellable]).
     ///
     /// A component may be *named* by a multi-segment path; such a name occupies one entry in its
     /// parent's symbol table, but contributes one [SymbolNameComponent::Component] per segment to
-    /// every [SymbolPath] that passes through it. The name of a component, module or interface is
-    /// the Miden Assembly spelling of its raw segments: the segments joined with `::`, each
-    /// quoted, `"..."`, when it is not a bare Miden Assembly identifier
-    /// (`PathBuf::push_component`). So `["acme::pkg", "app"]` is named `"acme::pkg"::app`,
-    /// `["a:b@1.0.0"]` is named `"a:b@1.0.0"`, and a bare identifier names itself. Module and
-    /// interface names are always one segment. Leaf symbol names (functions, globals) are opaque
+    /// every [SymbolPath] that passes through it. The name of a component or a module is
+    /// the canonical spelling of its raw segments: the segments joined with `::`, each
+    /// quoted, `"..."`, when it is not a bare identifier
+    /// . So `["acme::pkg", "app"]` is named `"acme::pkg"::app`,
+    /// `["a:b@1.0.0"]` is named `"a:b@1.0.0"`, and a bare identifier names itself. A module name is always one segment. Leaf symbol names (functions, globals) are opaque
     /// and must never be split with this function.
     ///
     /// A leading `::` is skipped, so `::a::b` has the segments of `a::b`. A name that is not a
-    /// valid Miden Assembly path is returned whole, as one segment; such a name is rejected by the
+    /// valid path is returned whole, as one segment; such a name is rejected by the
     /// symbol-table verifiers.
     pub fn segments_of(name: SymbolName) -> SmallVec<[SymbolName; 3]> {
         let s = name.as_str();
@@ -225,23 +224,17 @@ impl SymbolPath {
         if !s.contains("::") && !s.contains('"') {
             return smallvec![name];
         }
-        let mut segments = SmallVec::new();
-        for component in Path::new(s).components() {
-            match component {
-                Ok(PathComponent::Root) => (),
-                Ok(component) => segments.push(SymbolName::intern(component.as_str())),
-                Err(_) => return smallvec![name],
+        match spelling::split(s) {
+            Some((_, segments)) if !segments.is_empty() => {
+                segments.into_iter().map(SymbolName::intern).collect()
             }
+            // A lone `::` is the root, which names nothing
+            _ => smallvec![name],
         }
-        // A lone `::` is the root, which names nothing
-        if segments.is_empty() {
-            return smallvec![name];
-        }
-        segments
     }
 
-    /// Returns the raw segment the name of a module or an interface spells (`my-mod` for
-    /// `"my-mod"`), or `name` itself when it has several segments, which no module or interface
+    /// Returns the raw segment the name of a module spells (`my-mod` for
+    /// `"my-mod"`), or `name` itself when it has several segments, which no module
     /// name has.
     pub(crate) fn raw_segment(name: SymbolName) -> SymbolName {
         match Self::segments_of(name).as_slice() {
@@ -250,7 +243,7 @@ impl SymbolPath {
         }
     }
 
-    /// Returns the Miden Assembly spelling of the raw `segments`.
+    /// Returns the canonical spelling of the raw `segments`.
     pub(crate) fn spell(segments: &[SymbolName]) -> SymbolName {
         let components = segments
             .iter()
@@ -260,9 +253,8 @@ impl SymbolPath {
         Self::join_components(&components)
     }
 
-    /// Returns an error when `name` cannot name a symbol-table op of `kind`: it is not the Miden
-    /// Assembly spelling of its raw segments, a segment cannot be spelled in Miden Assembly at
-    /// all, or `kind` is named by one segment (see [SymbolTableKind::is_named_by_a_path]) and the
+    /// Returns an error when `name` cannot name a symbol-table op of `kind`: it is not the
+    /// canonical spelling of its raw segments, a segment is not a valid path segment at all, or `kind` is named by one segment (see [SymbolTableKind::is_named_by_a_path]) and the
     /// name has several, or one containing `::`.
     pub(crate) fn validate_table_name(
         kind: SymbolTableKind,
@@ -279,7 +271,7 @@ impl SymbolPath {
                 ""
             };
             return Err(Report::msg(format!(
-                "{kind} `{name}` is not the Miden Assembly spelling of its segments{advice}"
+                "{kind} `{name}` is not the canonical spelling of its segments{advice}"
             )));
         }
         match segments.as_slice() {
@@ -292,8 +284,8 @@ impl SymbolPath {
     /// Returns the name a symbol-table op of `kind` given `name` gets, or an error when it cannot
     /// name one (see [SymbolPath::validate_table_name]).
     ///
-    /// For a module or an interface, `name` is one raw segment, which must not contain `::`. For
-    /// a component, a name that already is the Miden Assembly spelling of its segments is taken
+    /// For a module, `name` is one raw segment, which must not contain `::`. For
+    /// a component, a name that already is the canonical spelling of its segments is taken
     /// as is (`acme::a::b`, `"acme::pkg"::app`); any other name is one raw segment, which is
     /// spelled (`masm-dep` is named `"masm-dep"`).
     pub(crate) fn table_name(
@@ -316,38 +308,35 @@ impl SymbolPath {
         Ok(Self::join_components(&[SymbolNameComponent::Component(name)]))
     }
 
-    /// Returns true when Miden Assembly can spell the raw segment `segment`: it is not empty, and
-    /// every character is ASCII graphic and neither `"`, `\` nor `#`.
+    /// Returns true when `segment` is a valid path segment: it is not empty, and every character
+    /// is ASCII graphic and neither `"`, `\` nor `#`.
     ///
-    /// The characters are the Miden Assembly lexer's rule for quoted identifiers (`lex_quoted`
-    /// reads quoted text made of anything else as a string) narrowed by `Ident::validate`, which
-    /// rejects `#`. The segment must not be empty because `PathBuf::push_component` drops an
-    /// empty one.
+    /// An empty segment is not valid because [spelling::join] drops it.
     pub fn is_spellable(segment: &str) -> bool {
         !segment.is_empty()
             && segment.chars().all(|c| c.is_ascii_graphic() && !matches!(c, '"' | '\\' | '#'))
     }
 
-    /// Returns the Miden Assembly spelling of the raw segment `segment`, i.e. the name of a
-    /// symbol table named by it, or `None` when Miden Assembly cannot spell it (see
+    /// Returns the canonical spelling of the raw segment `segment`, i.e. the name of a
+    /// symbol table named by it, or `None` when the spelling rules reject it (see
     /// [SymbolPath::is_spellable]).
     pub(crate) fn spell_segment(segment: SymbolName) -> Option<SymbolName> {
         Self::is_spellable(segment.as_str())
             .then(|| Self::join_components(&[SymbolNameComponent::Component(segment)]))
     }
 
-    /// Returns an error when Miden Assembly cannot spell `segment`, a raw segment of the name of a
+    /// Returns an error when the spelling rules reject `segment`, a raw segment of the name of a
     /// symbol-table op of `kind` (see [SymbolPath::is_spellable]).
     pub(crate) fn validate_segment(kind: SymbolTableKind, segment: &str) -> Result<(), Report> {
         if Self::is_spellable(segment) {
             return Ok(());
         }
         Err(Report::msg(format!(
-            "invalid {kind} name: the segment `{segment}` cannot be spelled in Miden Assembly"
+            "invalid {kind} name: the segment `{segment}` is not a valid path segment"
         )))
     }
 
-    /// Returns an error when `segment`, the one raw segment naming a module or an interface,
+    /// Returns an error when `segment`, the one raw segment naming a module,
     /// contains `::`: only components are named by `::`-joined paths.
     fn validate_single_segment(kind: SymbolTableKind, segment: &str) -> Result<(), Report> {
         if !segment.contains("::") {
@@ -359,7 +348,7 @@ impl SymbolPath {
         )))
     }
 
-    /// Returns the absolute path of the component named `name`, the Miden Assembly spelling of its
+    /// Returns the absolute path of the component named `name`, the canonical spelling of its
     /// segments (see [SymbolPath::segments_of]): the root followed by one
     /// [SymbolNameComponent::Component] per raw segment of the name.
     pub fn from_symbol_name(name: SymbolName) -> SymbolPath {
@@ -382,15 +371,15 @@ impl SymbolPath {
         inner.len() > outer.len() && inner.starts_with(&outer)
     }
 
-    /// Returns the Miden Assembly spelling of all non-root components of this path (leaf
+    /// Returns the canonical spelling of all non-root components of this path (leaf
     /// included), relative.
     ///
     /// This is the name of a component named by this path, and the inverse of
     /// [SymbolPath::segments_of]: the raw segments joined with `::`, each quoted when it is not a
-    /// bare Miden Assembly identifier, e.g. `"acme::pkg"::app`.
+    /// bare identifier, e.g. `"acme::pkg"::app`.
     ///
-    /// Returns an error when the path has no segment (it is empty or only the root), or Miden
-    /// Assembly cannot spell a segment (see [SymbolPath::is_spellable]); in particular, a raw
+    /// Returns an error when the path has no segment (it is empty or only the root), or a
+    /// segment is not valid (see [SymbolPath::is_spellable]); in particular, a raw
     /// segment wrapped in quotes is not read as the segment it quotes.
     pub fn to_symbol_name(&self) -> Result<SymbolName, Report> {
         let mut segments = self.path.iter().filter(|component| !component.is_root()).peekable();
@@ -406,7 +395,7 @@ impl SymbolPath {
         Ok(Self::join_components(&self.path))
     }
 
-    /// Returns the Miden Assembly spelling of the non-root `components`, relative (see
+    /// Returns the canonical spelling of the non-root `components`, relative (see
     /// [SymbolPath::to_symbol_name]).
     pub(crate) fn join_components(components: &[SymbolNameComponent]) -> SymbolName {
         let components =
@@ -414,16 +403,14 @@ impl SymbolPath {
         // The common case of one bare identifier names itself, without building the path
         if let [single] = components {
             let name = single.as_symbol_name();
-            if !Ident::requires_quoting(name.as_str()) {
+            if !spelling::requires_quoting(name.as_str()) {
                 return name;
             }
         }
-        let mut path = LibraryPath::default();
-        for component in components {
-            push_segment(&mut path, component.as_symbol_name().as_str());
-        }
-        // `push_component` roots a leading `$kernel`/`$exec`; a name is relative
-        SymbolName::intern(path.to_relative().as_str())
+        SymbolName::intern(spelling::join(
+            false,
+            components.iter().map(|component| component.as_symbol_name().as_str()),
+        ))
     }
 
     /// Returns the leaf component of the symbol path
@@ -459,34 +446,6 @@ impl SymbolPath {
         } else {
             None
         }
-    }
-
-    /// Derive a Miden Assembly `LibraryPath` from this symbol path
-    pub fn to_library_path(&self) -> LibraryPath {
-        let mut path = LibraryPath::default();
-        for component in self.path.iter() {
-            match component {
-                SymbolNameComponent::Root => path.push_component("::"),
-                component => push_segment(&mut path, component.as_symbol_name().as_str()),
-            }
-        }
-        path
-    }
-
-    /// Derive a symbol path from the Miden Assembly path `path`, the inverse of
-    /// [SymbolPath::to_library_path]: one [SymbolNameComponent::Component] per segment of the
-    /// path, holding the raw identifier (without quotes), rooted when the path is absolute.
-    ///
-    /// A quoted segment stays one component. Segments that fail to parse are skipped; a valid
-    /// path has none.
-    pub fn from_library_path(path: &Path) -> SymbolPath {
-        path.components()
-            .filter_map(|component| component.ok())
-            .map(|component| match component {
-                PathComponent::Root => SymbolNameComponent::Root,
-                component => SymbolNameComponent::Component(SymbolName::intern(component.as_str())),
-            })
-            .collect()
     }
 
     /// Returns true if this symbol name is fully-qualified
@@ -559,45 +518,18 @@ impl SymbolPath {
     }
 }
 
-/// Prints the path in its Miden Assembly spelling ([SymbolPath::to_library_path]): the segments
-/// joined with `::`, each quoted when it is not a bare Miden Assembly identifier, with a leading
-/// `::` when the path is absolute, e.g. `::"acme::pkg"::app`. A relative path stays relative,
-/// also when it starts with `$kernel` or `$exec`.
+/// Prints the path in its canonical spelling: the segments joined with `::`, each quoted when it
+/// is not a bare identifier, with a leading `::` when the path is absolute, e.g.
+/// `::"acme::pkg"::app`.
 impl fmt::Display for SymbolPath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let path = self.to_library_path();
-        if self.is_absolute() {
-            fmt::Display::fmt(&path, f)
-        } else {
-            // `push_component` roots a leading `$kernel`/`$exec`
-            fmt::Display::fmt(path.to_relative(), f)
-        }
+        let segments = self
+            .path
+            .iter()
+            .filter(|component| !component.is_root())
+            .map(|component| component.as_symbol_name().as_str());
+        f.write_str(&spelling::join(self.is_absolute(), segments))
     }
-}
-
-/// Appends the raw identifier `segment` to `path`, quoted when it is not a bare Miden Assembly
-/// identifier.
-///
-/// `segment` need not be spellable (see [SymbolPath::is_spellable]): the names of symbol tables
-/// are validated before they get here, but opaque leaf names and the components of a reference
-/// are not, and only a spellable segment round-trips. Three cases follow
-/// `PathBuf::push_component`: a leading `$kernel` or `$exec` makes the path absolute, a segment
-/// wrapped in `"` is taken as already quoted and loses the quotes it does not need (`"app"` is
-/// pushed as `app`), and an empty segment (`""` too) is dropped.
-fn push_segment(path: &mut LibraryPath, segment: &str) {
-    match segment {
-        // `push_component` reads a lone `::` as the root, not as a segment
-        "::" => path.push_component("\"::\""),
-        segment => path.push_component(segment),
-    }
-}
-
-/// The raw identifiers of the non-root components of the valid Miden Assembly path `path`.
-fn normal_components(path: &Path) -> impl Iterator<Item = &str> {
-    path.components().filter_map(|component| match component.ok()? {
-        PathComponent::Root => None,
-        component => Some(component.as_str()),
-    })
 }
 
 impl fmt::Debug for SymbolPath {
@@ -636,7 +568,7 @@ impl core::hash::Hash for SymbolPath {
     }
 }
 
-/// The symbol-table ops named by the Miden Assembly spelling of their raw segments (see
+/// The symbol-table ops named by the canonical spelling of their raw segments (see
 /// [SymbolPath::segments_of]).
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(crate) enum SymbolTableKind {
@@ -644,8 +576,6 @@ pub(crate) enum SymbolTableKind {
     Component,
     /// A `builtin.module`, named by one segment
     Module,
-    /// A `builtin.interface`, named by one segment
-    Interface,
 }
 
 impl SymbolTableKind {
@@ -662,7 +592,6 @@ impl fmt::Display for SymbolTableKind {
         f.write_str(match self {
             Self::Component => "component",
             Self::Module => "module",
-            Self::Interface => "interface",
         })
     }
 }
@@ -750,17 +679,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn from_library_path_inverts_to_library_path() {
-        let path = SymbolPath::from_library_path(Path::new("::acme::a::b"));
-        assert_eq!(path, SymbolPath::from_module_name("acme::a::b"));
-        assert_eq!(path.to_library_path().to_string(), "::acme::a::b");
-
-        let relative = SymbolPath::from_library_path(Path::new("acme::a"));
-        assert!(!relative.is_absolute());
-        assert_eq!(relative.to_string(), "acme::a");
-    }
-
-    #[test]
     fn nests_in_requires_a_strict_segment_prefix() {
         let nests = |inner: &str, outer: &str| {
             SymbolPath::nests_in(SymbolName::intern(inner), SymbolName::intern(outer))
@@ -775,7 +693,7 @@ mod tests {
         assert!(!nests("\"acme::pkg\"::app", "acme"));
         assert!(!nests("\"a::b\"", "a"));
         assert!(nests("\"masm-dep\"::math", "\"masm-dep\""));
-        // A name that is not a valid Miden Assembly path is one segment
+        // A name that is not a valid path is one segment
         assert!(!nests(r#""a::b"#, r#""a"#));
     }
 
@@ -804,7 +722,6 @@ mod tests {
             (&["a:", "b::c"][..], r#""a:"::"b::c""#),
             (&["a", ":b"][..], r#"a::":b""#),
             (&["a:", "b"][..], r#""a:"::b"#),
-            (&["$kernel", "x"][..], "$kernel::x"),
         ] {
             let (joined, split) = round_trip(segments);
             assert_eq!(joined.as_str(), name, "the name of {segments:?}");
@@ -823,7 +740,7 @@ mod tests {
         assert_ne!(round_trip(&["a::b"]).0, round_trip(&["a", "b"]).0);
     }
 
-    /// A component given a raw segment gets its Miden Assembly spelling, and one given a spelled
+    /// A component given a raw segment gets its canonical spelling, and one given a spelled
     /// name keeps it; a quoted bare identifier is neither.
     #[test]
     fn a_component_name_is_spelled_once() {
@@ -838,14 +755,14 @@ mod tests {
         assert_eq!(
             name(r#""app""#),
             Err(String::from(
-                r#"invalid component name: the segment `"app"` cannot be spelled in Miden Assembly"#
+                r#"invalid component name: the segment `"app"` is not a valid path segment"#
             ))
         );
     }
 
     /// A segment is spellable when it is made of ASCII graphic characters other than `"`, `\`, `#`
     #[test]
-    fn spellable_segments_mirror_the_miden_assembly_identifier_rules() {
+    fn spellable_segments_are_ascii_graphic_without_quote_backslash_or_hash() {
         for segment in ["app", "masm-dep", "a:b@1.0.0", "::", "$kernel", "1st"] {
             assert!(SymbolPath::is_spellable(segment), "`{segment}`");
         }
@@ -877,7 +794,7 @@ mod tests {
         assert_eq!(
             name(r#""x-y""#),
             Err(String::from(
-                r#"invalid component name: the segment `"x-y"` cannot be spelled in Miden Assembly"#
+                r#"invalid component name: the segment `"x-y"` is not a valid path segment"#
             ))
         );
     }
@@ -900,8 +817,6 @@ mod tests {
         };
         assert_eq!(display(&["acme:first/api", "read"]), r#""acme:first/api"::read"#);
         assert_ne!(display(&["a:", "b"]), display(&["a", ":b"]));
-        // A relative path stays relative, whatever its first segment
-        assert_eq!(display(&["$kernel", "x"]), "$kernel::x");
     }
 
     #[test]
@@ -917,10 +832,10 @@ mod tests {
         );
     }
 
-    /// A name that is not a valid Miden Assembly path is one segment.
+    /// A name that is not a valid path is one segment.
     #[test]
     fn a_name_that_is_not_a_path_is_one_segment() {
-        for name in [r#""a::b"#, r#""a"b::c"#, "a b::c"] {
+        for name in [r#""a::b"#, r#""a"b::c"#, "a::", "a::::b"] {
             assert_eq!(
                 SymbolPath::segments_of(SymbolName::intern(name)).as_slice(),
                 &[SymbolName::intern(name)],
@@ -929,7 +844,7 @@ mod tests {
         }
     }
 
-    /// A Miden Assembly module id holds raw identifiers; one that is not a valid path is split on
+    /// A module id holds raw identifiers; one that is not a valid path is split on
     /// every `::`.
     #[test]
     fn from_module_name_strips_quotes() {
@@ -948,16 +863,20 @@ mod tests {
         assert_eq!(components(r#""masm-dep"::::f"#), ["masm-dep", "", "f"]);
         assert_eq!(
             SymbolPath::from_module_name(r#""masm-dep"::math"#),
-            SymbolPath::from_library_path(Path::new(r#"::"masm-dep"::math"#))
+            SymbolPath::from_iter([
+                SymbolNameComponent::Root,
+                SymbolNameComponent::Component("masm-dep".into()),
+                SymbolNameComponent::Component("math".into()),
+            ])
         );
     }
 
-    /// A quoted Miden Assembly segment holding `::` stays one segment through the component name,
+    /// A quoted segment holding `::` stays one segment through the component name,
     /// the printed path and the library path.
     #[test]
     fn a_quoted_library_path_segment_survives_the_component_name() {
         let source = "::\"acme::pkg\"::app";
-        let path = SymbolPath::from_library_path(Path::new(source));
+        let path = SymbolPath::from_module_name(source);
         let key = path.to_symbol_name().expect("the segments are spellable");
         assert_eq!(key.as_str(), r#""acme::pkg"::app"#);
 
@@ -970,6 +889,5 @@ mod tests {
         let rebuilt = SymbolPath::from_symbol_name(key);
         assert_eq!(rebuilt, path);
         assert_eq!(rebuilt.to_string(), source);
-        assert_eq!(rebuilt.to_library_path().to_string(), source);
     }
 }
