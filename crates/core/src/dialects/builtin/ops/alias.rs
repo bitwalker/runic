@@ -249,7 +249,6 @@ mod tests {
     use super::*;
     use crate::{
         CallableOpInterface, Context, Ident, SymbolTable, Type,
-        diagnostics::Uri,
         dialects::builtin::{Module, ModuleBuilder, ModuleRef, attributes::Signature},
         parse::{ParserConfig, parse},
         testing::Test,
@@ -314,8 +313,7 @@ builtin.module public @test {
 };
 "#;
         let module =
-            parse::<Module>(ParserConfig::new(test.context_rc()), Uri::new("alias.hir"), source)
-                .unwrap();
+            parse::<Module>(ParserConfig::new(test.context_rc()), "alias.hir", source).unwrap();
         let mb = ModuleBuilder::new(module);
         assert!(mb.resolve_function("bar").unwrap() == mb.get_function("foo").unwrap());
 
@@ -328,7 +326,7 @@ builtin.module public @test {
         let reparse_test = Test::default();
         let reparsed = parse::<Module>(
             ParserConfig::new(reparse_test.context_rc()),
-            Uri::new("alias.reparsed.hir"),
+            "alias.reparsed.hir",
             &printed,
         )
         .unwrap();
@@ -411,7 +409,8 @@ builtin.module public @test {
     /// Parses and verifies a HIR module from source.
     fn verify_alias_source(source: &str) -> Result<(), crate::Report> {
         let test = Test::default();
-        parse::<Module>(ParserConfig::new(test.context_rc()), Uri::new("alias.hir"), source)
+        parse::<Module>(ParserConfig::new(test.context_rc()), "alias.hir", source)
+            .into_result()
             .map(|_| ())
     }
 
@@ -570,13 +569,11 @@ builtin.module public @test {{
         ] {
             let test = Test::default();
             let source = format!("builtin.module public @test {{ {aliases} }};");
-            let err = parse::<Module>(
-                ParserConfig::new(test.context_rc()),
-                Uri::new("alias_cycle.hir"),
-                &source,
-            )
-            .err()
-            .expect("alias cycles must fail verification");
+            let err =
+                parse::<Module>(ParserConfig::new(test.context_rc()), "alias_cycle.hir", &source)
+                    .into_result()
+                    .err()
+                    .expect("alias cycles must fail verification");
             let message = format!("{err}");
             assert!(
                 message.contains("cannot reference itself") || message.contains("cycle"),

@@ -1,9 +1,10 @@
 #![allow(unused)]
 
 macro_rules! span {
-    ($source_id:expr, $at:expr) => {
-        span!($source_id, $at, $at)
-    };
+    ($source_id:expr, $at:expr) => {{
+        let at = $at;
+        span!($source_id, at, at)
+    }};
 
     ($source_id:expr, $start:expr, $end:expr) => {
         SourceSpan::session(
@@ -50,15 +51,6 @@ use core::{
     ops::{Deref, DerefMut},
 };
 
-use runic_session::{
-    SourceManager,
-    diagnostics::{
-        ColumnNumber, Diagnostic, FileLineCol, LabeledSpan, LineNumber, RelatedError, Report,
-        Severity, SourceFile, SourceId, SourceManagerExt, SourceSpan, Span, Uri, WrapErr,
-        miette::{self, diagnostic},
-    },
-};
-
 use self::{
     asm_parser::AsmParserState,
     lexer::{Lexed, Lexer, TokenStream},
@@ -82,6 +74,10 @@ use crate::{
     AddressSpace, Attribute, AttributeRef, Builder, CallableOpInterface, CompactString,
     FunctionType, FxHashMap, NamedAttribute, PointerType, ProgramPoint, SmallVec, ToCompactString,
     adt::{SmallOrdMap, smallmap::SmallMap},
+    diagnostics::{
+        ColumnNumber, DiagnosticCollector, LineNumber, Outcome, Report, SourceId, SourceProvider,
+        SourceSpan, Span,
+    },
     dialects::builtin::{
         WorldBuilder, WorldRef,
         attributes::{Location, LocationAttr},
@@ -150,6 +146,8 @@ pub struct ParserState<'input> {
     /// implementing `OpAsmOpInterface`, and popped when done. At the top-level we start with
     /// "builtin" as the default, so that the top-level builtin operations parse as-is.
     pub default_dialect_stack: SmallVec<[interner::Symbol; 1]>,
+    /// Non-fatal diagnostics (warnings, notes, hints) recorded during parsing
+    pub diagnostics: DiagnosticCollector,
 }
 
 impl<'input> ParserState<'input> {
@@ -160,6 +158,7 @@ impl<'input> ParserState<'input> {
             symbols: Default::default(),
             asm_state: None,
             default_dialect_stack: smallvec![interner::Symbol::intern("builtin")],
+            diagnostics: DiagnosticCollector::new(),
         }
     }
 
@@ -183,33 +182,34 @@ pub struct SymbolState {
     pub type_alias_definitions: FxHashMap<interner::Symbol, Span<Type>>,
 }
 
-/// Parse IR assembly in the generic format from `source` with the provided `uri` and `config`
+/// Parse IR assembly in the generic format from `source`, registered with the context under `name`
 pub fn parse_generic(
     config: ParserConfig,
-    uri: Uri,
+    name: impl Into<String>,
     source: impl Into<String>,
-) -> Result<WorldRef, Report> {
-    use runic_session::diagnostics::SourceLanguage;
-    let source_manager = &config.context.session().source_manager;
-    let source_file = source_manager.load(SourceLanguage::Other("hir"), uri, source.into());
-    parse_source_generic(config, source_file)
+) -> Outcome<WorldRef> {
+    match config.context.add_source(name, source) {
+        Ok(id) => parse_source_generic(config, id),
+        Err(err) => Outcome::from_report(Report::from_error(err)),
+    }
 }
 
-/// Parse IR assembly in the generic format from `path` with the provided `config`
+/// Parse IR assembly in the generic format from the file at `path`
 #[cfg(feature = "std")]
 pub fn parse_file_generic(
     config: ParserConfig,
     path: impl AsRef<std::path::Path>,
-) -> Result<WorldRef, Report> {
-    let source_manager = &config.context.session().source_manager;
-    let source_file = source_manager.load_file(path.as_ref()).map_err(Report::msg)?;
-    parse_source_generic(config, source_file)
+) -> Outcome<WorldRef> {
+    match config.context.load_source_file(path) {
+        Ok(id) => parse_source_generic(config, id),
+        Err(err) => Outcome::from_report(Report::from_error(err)),
+    }
 }
 
-/// This parses the given source file and appends parsed operations to a new [World](crate::dialects::builtin::World).
+/// This parses the given source and appends parsed operations to a new [World](crate::dialects::builtin::World).
 ///
-/// If parsing is successful, the populated [World](crate::dialects::builtin::World) is returned. Otherwise, the error that caused
-/// parsing to fail is returned.
+/// If parsing is successful, the populated [World](crate::dialects::builtin::World) is returned.
+/// Otherwise, the error that caused parsing to fail is recorded in the outcome's diagnostics.
 ///
 /// **This wraps unconditionally, unlike [`parse_anchored_source`]**, which returns a parsed
 /// `builtin.world` as the root rather than nesting it in the world it created to parse into. A
@@ -217,95 +217,111 @@ pub fn parse_file_generic(
 /// which is invalid IR — see [`parse_anchored_source`] for why. Left as it is because these entry
 /// points have no callers outside this module's tests, and the one test covering them is
 /// `#[ignore]`d; revive the generic format and this needs fixing first.
-fn parse_source_generic(
-    config: ParserConfig,
-    source_file: Arc<SourceFile>,
-) -> Result<WorldRef, Report> {
-    let source = source_file.as_str();
+fn parse_source_generic(config: ParserConfig, source_id: SourceId) -> Outcome<WorldRef> {
+    let sources = config.context.sources();
+    let Some(source) = sources.get(source_id).and_then(|source| source.text) else {
+        return Outcome::from_report(Report::msg("source is not registered with this context"));
+    };
     let scanner = Scanner::new(source);
-    let token_stream = TokenStream::new(source_file.id(), scanner);
+    let token_stream = TokenStream::new(source_id, scanner);
     let mut parser = DefaultParser::new(ParserState::new(config, token_stream));
     parser.state_mut().asm_state = Some(Default::default());
 
     let span = parser.current_location();
-    let mut operation_parser = operation::TopLevelOperationParser::new(parser);
-    operation_parser
-        .parse(span)
-        .map_err(|err| Report::from(err).with_source_code(source_file.clone()))
+    let operation_parser = operation::TopLevelOperationParser::new(parser);
+    let (result, mut diagnostics) = operation_parser.parse(span);
+    let result = match result.map_err(Report::from) {
+        Ok(world) => Ok(world),
+        Err(report) => {
+            diagnostics.add_report(report);
+            Err(())
+        }
+    };
+    Outcome {
+        result,
+        diagnostics: diagnostics.finish().attach_session_sources(sources.clone()),
+    }
 }
 
-/// Parse an operation of type `T` from `source` with the provided `uri` and `config`
+/// Parse an operation of type `T` from `source`, registered with the context under `name`
 pub fn parse<T: OpParser + OpRegistration>(
     config: ParserConfig,
-    uri: Uri,
+    name: impl Into<String>,
     source: impl Into<String>,
-) -> Result<UnsafeIntrusiveEntityRef<T>, Report> {
-    use runic_session::diagnostics::SourceLanguage;
-    let source_manager = &config.context.session().source_manager;
-    let source_file = source_manager.load(SourceLanguage::Other("hir"), uri, source.into());
-    parse_source(config, source_file)
+) -> Outcome<UnsafeIntrusiveEntityRef<T>> {
+    let anchor = config.context.get_registered_name::<T>();
+    parse_anchored(anchor, config, name, source).map(downcast_anchored::<T>)
 }
 
-/// Parse an operation of type `T` from `path` with the provided `config`
+/// Parse an operation of type `T` from the file at `path`
 #[cfg(feature = "std")]
 pub fn parse_file<T: OpParser + OpRegistration>(
     config: ParserConfig,
     path: impl AsRef<std::path::Path>,
-) -> Result<UnsafeIntrusiveEntityRef<T>, Report> {
-    let source_manager = &config.context.session().source_manager;
-    let source_file = source_manager.load_file(path.as_ref()).map_err(Report::msg)?;
-    parse_source(config, source_file)
+) -> Outcome<UnsafeIntrusiveEntityRef<T>> {
+    let anchor = config.context.get_registered_name::<T>();
+    parse_file_anchored(anchor, config, path).map(downcast_anchored::<T>)
 }
 
-/// Parse any operation from `source` with the provided `uri` and `config`
+fn downcast_anchored<T: OpRegistration>(op: OperationRef) -> UnsafeIntrusiveEntityRef<T> {
+    match op.try_downcast_op::<T>() {
+        Ok(op) => op,
+        Err(_) => unreachable!("anchored parser returned the wrong operation type"),
+    }
+}
+
+/// Parse any operation from `source`, registered with the context under `name`.
 pub fn parse_any(
     config: ParserConfig,
-    uri: Uri,
+    name: impl Into<String>,
     source: impl Into<String>,
-) -> Result<OperationRef, Report> {
-    use runic_session::diagnostics::SourceLanguage;
-    let source_manager = &config.context.session().source_manager;
-    let source_file = source_manager.load(SourceLanguage::Other("hir"), uri, source.into());
-    parse_anchored_source(None, config, source_file)
+) -> Outcome<OperationRef> {
+    match config.context.add_source(name, source) {
+        Ok(id) => parse_anchored_source(None, config, id),
+        Err(err) => Outcome::from_report(Report::from_error(err)),
+    }
 }
 
-/// Parse IR assembly anchored at an operation `name`, from `source` with the provided `uri` and `config`
+/// Parse IR assembly anchored at an operation `anchor`, from `source` registered with the
+/// context under `name`.
 pub fn parse_anchored(
-    name: OperationName,
+    anchor: OperationName,
     config: ParserConfig,
-    uri: Uri,
+    name: impl Into<String>,
     source: impl Into<String>,
-) -> Result<OperationRef, Report> {
-    use runic_session::diagnostics::SourceLanguage;
-    let source_manager = &config.context.session().source_manager;
-    let source_file = source_manager.load(SourceLanguage::Other("hir"), uri, source.into());
-    parse_anchored_source(Some(name), config, source_file)
+) -> Outcome<OperationRef> {
+    match config.context.add_source(name, source) {
+        Ok(id) => parse_anchored_source(Some(anchor), config, id),
+        Err(err) => Outcome::from_report(Report::from_error(err)),
+    }
 }
 
-/// Parse any operation from `path` with the provided `config`
+/// Parse any operation from the file at `path`.
 #[cfg(feature = "std")]
 pub fn parse_file_any(
     config: ParserConfig,
     path: impl AsRef<std::path::Path>,
-) -> Result<OperationRef, Report> {
-    let source_manager = &config.context.session().source_manager;
-    let source_file = source_manager.load_file(path.as_ref()).map_err(Report::msg)?;
-    parse_anchored_source(None, config, source_file)
+) -> Outcome<OperationRef> {
+    match config.context.load_source_file(path) {
+        Ok(id) => parse_anchored_source(None, config, id),
+        Err(err) => Outcome::from_report(Report::from_error(err)),
+    }
 }
 
-/// Parse IR assembly anchored at an operation `name`, from `path` with the provided `config`
+/// Parse IR assembly anchored at an operation `anchor`, from the file at `path`.
 #[cfg(feature = "std")]
 pub fn parse_file_anchored(
     anchor: OperationName,
     config: ParserConfig,
     path: impl AsRef<std::path::Path>,
-) -> Result<OperationRef, Report> {
-    let source_manager = &config.context.session().source_manager;
-    let source_file = source_manager.load_file(path.as_ref()).map_err(Report::msg)?;
-    parse_anchored_source(Some(anchor), config, source_file)
+) -> Outcome<OperationRef> {
+    match config.context.load_source_file(path) {
+        Ok(id) => parse_anchored_source(Some(anchor), config, id),
+        Err(err) => Outcome::from_report(Report::from_error(err)),
+    }
 }
 
-/// Parse the single top-level operation in `source_file`, and return it.
+/// Parse the single top-level operation in the source `source_id`, and return it.
 ///
 /// Symbol resolution is rooted at a [World](crate::dialects::builtin::World), so parsing needs one
 /// to anchor the operation it is reading — `OperationParser` takes a
@@ -336,8 +352,8 @@ pub fn parse_file_anchored(
 /// [`operation::OperationParser::finalize_without_verifying`]. Finalization then resolves deferred
 /// locations and links symbol uses using that root, so its location walk still reaches the parsed
 /// IR after detachment. This function then verifies the root if the parser configuration requests
-/// it. Verification failures are reported as [`ParserError::Report`] carrying the source, exactly
-/// as when `finalize` verified.
+/// it. Verification failures are reported as [`ParserError::Report`], exactly as when `finalize`
+/// verified.
 ///
 /// **Note that [`parse_source_generic`] does none of this.** The generic-format entry points —
 /// [`parse_generic`] and [`parse_file_generic`] — go through `TopLevelOperationParser` instead,
@@ -348,83 +364,90 @@ pub fn parse_file_anchored(
 fn parse_anchored_source(
     anchor_name: Option<OperationName>,
     config: ParserConfig,
-    source_file: Arc<SourceFile>,
-) -> Result<OperationRef, Report> {
+    source_id: SourceId,
+) -> Outcome<OperationRef> {
     use crate::{BuilderExt, dialects::builtin::World};
 
-    let source = source_file.as_str();
+    let sources = config.context.sources();
+    let Some(source) = sources.get(source_id).and_then(|source| source.text) else {
+        return Outcome::from_report(Report::msg("source is not registered with this context"));
+    };
     let scanner = Scanner::new(source);
-    let token_stream = TokenStream::new(source_file.id(), scanner);
+    let token_stream = TokenStream::new(source_id, scanner);
     let should_verify = config.should_verify_after_parse();
     let mut parser = DefaultParser::new(ParserState::new(config, token_stream));
     let span = parser.current_location();
-    let world = parser.builder_mut().create::<World, ()>(span)()?;
+    let world = match parser.builder_mut().create::<World, ()>(span)() {
+        Ok(world) => world,
+        Err(report) => return Outcome::from_report(report),
+    };
     let anchor = world.as_operation_ref();
     parser.state_mut().asm_state = Some(Box::<AsmParserState>::default());
     let mut operation_parser = operation::OperationParser::new(parser, world);
-    let op = operation_parser
-        .parse_operation()
-        .map_err(|err| Report::from(err).with_source_code(source_file.clone()))?;
-    // See the note above: a parsed world is the root, not something to be rooted.
-    //
-    // The mutable borrow held across `remove` is safe *because* the operation is a `World`, and
-    // that is not incidental. `remove` reaches `EntityListItem::on_removed`
-    // (`ir/operation.rs:234`), which re-borrows the operation immutably to unregister it from
-    // its parent's symbol table — but only inside `if this.name().implements::<dyn Symbol>()`.
-    // A `World` implements `SymbolTable` and not `Symbol`, so that branch is skipped and no
-    // second borrow is taken. If `World` ever gains `Symbol`, this line becomes a runtime
-    // aliasing panic with no compile error to warn you, and it would need to drop the borrow
-    // first.
-    let root = if op.borrow().is::<World>() {
-        let mut parsed_world = op;
-        parsed_world.borrow_mut().remove();
-        op
-    } else {
-        // The parsed operation is still rooted at the anchor, and the anchor is what a verifier
-        // resolving an absolute path will see, so it is the anchor that must be verified.
-        anchor
-    };
 
-    // Symbol uses must be linked after normalizing the root. Absolute paths inside an explicit
-    // world cannot resolve while that world is still nested under the temporary anchor.
-    operation_parser
-        .finalize_without_verifying(root.try_downcast_op::<World>().expect("root is a world"))
-        .map_err(|err| Report::from(err).with_source_code(source_file.clone()))?;
+    let result = (|| -> Result<OperationRef, Report> {
+        let op = operation_parser.parse_operation().map_err(Report::from)?;
+        // See the note above: a parsed world is the root, not something to be rooted.
+        //
+        // The mutable borrow held across `remove` is safe *because* the operation is a `World`, and
+        // that is not incidental. `remove` reaches `EntityListItem::on_removed`
+        // (`ir/operation.rs:234`), which re-borrows the operation immutably to unregister it from
+        // its parent's symbol table — but only inside `if this.name().implements::<dyn Symbol>()`.
+        // A `World` implements `SymbolTable` and not `Symbol`, so that branch is skipped and no
+        // second borrow is taken. If `World` ever gains `Symbol`, this line becomes a runtime
+        // aliasing panic with no compile error to warn you, and it would need to drop the borrow
+        // first.
+        let root = if op.borrow().is::<World>() {
+            let mut parsed_world = op;
+            parsed_world.borrow_mut().remove();
+            op
+        } else {
+            // The parsed operation is still rooted at the anchor, and the anchor is what a verifier
+            // resolving an absolute path will see, so it is the anchor that must be verified.
+            anchor
+        };
 
-    // Verification is the parser's, so its failures must look like the parser's: the same
-    // `ParserError::Report` wrapper, carrying the same source code, that `finalize` produced when
-    // it ran this pass itself.
-    if should_verify {
-        root.borrow().recursively_verify().map_err(|err| {
-            Report::from(ParserError::from(err)).with_source_code(source_file.clone())
-        })?;
-    }
+        // Symbol uses must be linked after normalizing the root. Absolute paths inside an explicit
+        // world cannot resolve while that world is still nested under the temporary anchor.
+        operation_parser
+            .finalize_without_verifying(root.try_downcast_op::<World>().expect("root is a world"))
+            .map_err(Report::from)?;
 
-    match anchor_name {
-        None => Ok(op),
-        Some(anchor) => {
-            let operation = op.borrow();
-            if operation.name() != anchor {
-                return Err(Report::msg(format!(
-                    "expected operation '{anchor}', got '{}'",
-                    operation.name()
-                )));
-            }
-
-            Ok(op)
+        // Verification is the parser's, so its failures must look like the parser's: the same
+        // `ParserError::Report` wrapper that `finalize` produced when it ran this pass itself.
+        if should_verify {
+            root.borrow()
+                .recursively_verify()
+                .map_err(|err| Report::from(ParserError::from(err)))?;
         }
-    }
-}
 
-fn parse_source<T: OpParser + OpRegistration>(
-    config: ParserConfig,
-    source_file: Arc<SourceFile>,
-) -> Result<UnsafeIntrusiveEntityRef<T>, Report> {
-    let name = config.context.get_registered_name::<T>();
-    let op = parse_anchored_source(Some(name), config, source_file)?;
-    match op.try_downcast_op::<T>() {
+        match anchor_name {
+            None => Ok(op),
+            Some(anchor) => {
+                let operation = op.borrow();
+                if operation.name() != anchor {
+                    return Err(Report::msg(format!(
+                        "expected operation '{anchor}', got '{}'",
+                        operation.name()
+                    )));
+                }
+
+                Ok(op)
+            }
+        }
+    })();
+
+    let mut diagnostics = operation_parser.take_diagnostics();
+    let result = match result {
         Ok(op) => Ok(op),
-        Err(_) => unreachable!("anchored parser returned the wrong operation type"),
+        Err(report) => {
+            diagnostics.add_report(report);
+            Err(())
+        }
+    };
+    Outcome {
+        result,
+        diagnostics: diagnostics.finish().attach_session_sources(sources.clone()),
     }
 }
 

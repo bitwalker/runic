@@ -2,7 +2,7 @@ use alloc::rc::Rc;
 
 use crate::{
     Context, Region, SymbolTable,
-    diagnostics::{Report, Uri},
+    diagnostics::Report,
     dialects::builtin::{Function, Module},
     parse::{self, ParserConfig},
 };
@@ -29,7 +29,7 @@ fn find_common_ancestor_returns_innermost_common_region() -> TestResult {
     };
 };"#;
     let config = ParserConfig::new(context.clone());
-    let module_op = parse::parse_any(config, Uri::new("find_common_ancestor.hir"), source)?;
+    let module_op = parse::parse_any(config, "find_common_ancestor.hir", source).into_result()?;
 
     let (func_a_op, func_b_op) = {
         let module_op = module_op.borrow();

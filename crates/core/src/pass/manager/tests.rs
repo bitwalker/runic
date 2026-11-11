@@ -4,7 +4,6 @@ use core::cell::RefCell;
 use super::*;
 use crate::{
     RegionKindInterface, Symbol,
-    diagnostics::Uri,
     dialects::{
         builtin::{Function, Module, World},
         test::TestDialect,
@@ -28,7 +27,7 @@ const TREE: &str = r#"builtin.world {
 
 fn tree() -> (Rc<Context>, OperationRef) {
     let context = Rc::new(Context::default());
-    let world = parse_any(ParserConfig::new(context.clone()), Uri::new("scheduling.hir"), TREE)
+    let world = parse_any(ParserConfig::new(context.clone()), "scheduling.hir", TREE)
         .expect("valid namespace tree");
     (context, world)
 }

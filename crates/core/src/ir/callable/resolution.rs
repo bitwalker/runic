@@ -198,7 +198,6 @@ mod tests {
     use super::*;
     use crate::{
         AsCallableSymbolRef, Op, SymbolNameComponent, SymbolTable, Type, Visibility,
-        diagnostics::Uri,
         dialects::builtin::{
             Module, ModuleBuilder, ModuleRef,
             attributes::{SymbolRef as SymbolRefValue, SymbolRefAttr},
@@ -209,12 +208,9 @@ mod tests {
 
     fn module(source: &str) -> (Test, ModuleRef) {
         let test = Test::default();
-        let module = parse::<Module>(
-            ParserConfig::new(test.context_rc()),
-            Uri::new("resolution.hir"),
-            source,
-        )
-        .unwrap();
+        let module =
+            parse::<Module>(ParserConfig::new(test.context_rc()), "resolution.hir", source)
+                .unwrap();
         (test, module)
     }
 
@@ -261,7 +257,7 @@ builtin.module public @test {
         // parse unverified and let tests verify explicitly.
         let module = parse::<Module>(
             ParserConfig::new(test.context_rc()).verify_after_parse(false),
-            Uri::new("resolution.hir"),
+            "resolution.hir",
             &source,
         )
         .unwrap();

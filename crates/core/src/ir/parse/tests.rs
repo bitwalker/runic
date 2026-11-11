@@ -8,7 +8,7 @@ use crate::{
     BuilderExt, CallConv, Context, FunctionType, Immediate, OpParser, OpRegistration, OperationRef,
     Symbol, SymbolTable, Type, UnsafeIntrusiveEntityRef, ValueRef, Visibility,
     attributes::IntegerLikeAttr,
-    diagnostics::{Report, SourceSpan, Uri},
+    diagnostics::{Report, SourceProvider, SourceSpan},
     dialects::{
         builtin::{
             BuiltinOpBuilder, Function, Module, Ret, RetImm, UnrealizedConversionCast, World,
@@ -778,7 +778,7 @@ impl ParserTest {
     #[allow(unused)]
     pub fn parse_generic(&self, name: &str, source: &str) -> TestResult<WorldRef> {
         let config = ParserConfig::new(self.test.context_rc());
-        parse::parse_generic(config, Uri::new(name), source)
+        parse::parse_generic(config, name, source).into_result()
     }
 
     pub fn parse<T: OpParser + OpRegistration>(
@@ -787,17 +787,17 @@ impl ParserTest {
         source: &str,
     ) -> TestResult<UnsafeIntrusiveEntityRef<T>> {
         let config = ParserConfig::new(self.test.context_rc());
-        parse::parse::<T>(config, Uri::new(name), source)
+        parse::parse::<T>(config, name, source).into_result()
     }
 
     pub fn parse_any(&self, name: &str, source: &str) -> TestResult<OperationRef> {
         let config = ParserConfig::new(self.test.context_rc());
-        parse::parse_any(config, Uri::new(name), source)
+        parse::parse_any(config, name, source).into_result()
     }
 
     pub fn parse_any_unverified(&self, name: &str, source: &str) -> TestResult<OperationRef> {
         let config = ParserConfig::new(self.test.context_rc()).verify_after_parse(false);
-        parse::parse_any(config, Uri::new(name), source)
+        parse::parse_any(config, name, source).into_result()
     }
 }
 
@@ -1358,18 +1358,13 @@ fn array_types_parse_print_and_report_invalid_lengths() {
             "builtin.function private extern(\"C\") @array(%x: {source}) {{ builtin.ret; }};"
         );
         let parsed =
-            parse::parse_any(ParserConfig::new(context.clone()), Uri::new("array.hir"), &text)
-                .unwrap();
+            parse::parse_any(ParserConfig::new(context.clone()), "array.hir", &text).unwrap();
         let function = parsed.try_downcast_op::<Function>().unwrap();
         assert_eq!(function.borrow().signature().params()[0].ty, expected);
         let printed = format!("{}", function.borrow().as_operation());
         let fresh = Rc::new(Context::default());
-        parse::parse_any(
-            ParserConfig::new(fresh.clone()),
-            Uri::new("array-roundtrip.hir"),
-            &printed,
-        )
-        .unwrap();
+        parse::parse_any(ParserConfig::new(fresh.clone()), "array-roundtrip.hir", &printed)
+            .unwrap();
     }
     for source in ["[u32; -1]", "[u32; 18446744073709551616]", "[u32 4]", "[u32; 4>"] {
         let context = Rc::new(Context::default());
@@ -1377,12 +1372,54 @@ fn array_types_parse_print_and_report_invalid_lengths() {
             "builtin.function private extern(\"C\") @array(%x: {source}) {{ builtin.ret; }};"
         );
         assert!(
-            parse::parse_any(
-                ParserConfig::new(context.clone()),
-                Uri::new("invalid-array.hir"),
-                &text
-            )
-            .is_err()
+            parse::parse_any(ParserConfig::new(context.clone()), "invalid-array.hir", &text)
+                .is_err()
         );
     }
+}
+
+#[test]
+fn a_clean_parse_is_ok_with_no_diagnostics() {
+    let context = Rc::new(Context::default());
+    let outcome =
+        parse::parse_any(ParserConfig::new(context), "clean.runic", "builtin.module public @t {};");
+    assert!(outcome.is_ok());
+    assert!(outcome.diagnostics.is_empty());
+}
+
+#[test]
+fn a_syntax_error_is_one_error_diagnostic_with_sources_attached() {
+    let context = Rc::new(Context::default());
+    let outcome =
+        parse::parse_any(ParserConfig::new(context), "bad.runic", "builtin.module public @m {");
+    assert!(outcome.result.is_err());
+    assert_eq!(outcome.diagnostics.len(), 1);
+    let report = outcome.into_result().unwrap_err();
+    let rendered = alloc::format!("{}", report.display());
+    assert!(rendered.contains("bad.runic"), "rendered without its source: {rendered}");
+}
+
+#[test]
+fn a_warning_does_not_fail_the_parse() {
+    use super::{DefaultParser, Parser, ParserState, Scanner, TokenStream};
+    use crate::diagnostics::{Outcome, OwnedDiagnostic, Severity, diagnostic};
+
+    let context = Rc::new(Context::default());
+    let id = context.add_source("warn.runic", "").unwrap();
+    let sources = context.sources();
+    let scanner = Scanner::new(sources.get(id).unwrap().text.unwrap());
+    let token_stream = TokenStream::new(id, scanner);
+    let mut parser =
+        DefaultParser::new(ParserState::new(ParserConfig::new(context.clone()), token_stream));
+
+    parser.emit(OwnedDiagnostic::new(diagnostic!(severity: Warning, message: "caveat")));
+
+    let diagnostics = core::mem::take(&mut parser.state_mut().diagnostics).finish();
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics.iter().next().unwrap().metadata().severity, Severity::Warning);
+    let outcome: Outcome<()> = Outcome {
+        result: Ok(()),
+        diagnostics,
+    };
+    assert!(outcome.is_ok(), "a warning must not turn success into failure");
 }

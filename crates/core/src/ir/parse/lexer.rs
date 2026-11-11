@@ -6,10 +6,8 @@ use alloc::{
 };
 use core::{num::IntErrorKind, ops::Range};
 
-use runic_session::diagnostics::Span;
-
 use super::{ParseResult, ParserError, Scanner, Token};
-use crate::diagnostics::{SourceId, SourceSpan};
+use crate::diagnostics::{SourceId, SourceSpan, Span};
 
 /// The value produced by the [Lexer] when iterated
 ///
