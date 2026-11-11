@@ -465,3 +465,50 @@ mod tests {
         assert_eq!(session.name(), "explicit");
     }
 }
+
+/// The diagnostic derives resolve their runtime through `runic_core::diagnostics` for a crate,
+/// like this one, that depends on `runic-core` but not on `runic-diagnostics`.
+#[cfg(test)]
+mod diagnostic_derive_tests {
+    use runic_core::diagnostics::{
+        Diagnostic, LabelStyle, NoteKind, Report, SourceId, SourceNamespace, SourceSpan, Spanned,
+        TextRange, prepare_ref,
+    };
+
+    #[derive(Debug, Spanned)]
+    struct Named {
+        #[span]
+        span: SourceSpan,
+    }
+
+    #[derive(Debug, Diagnostic)]
+    #[diagnostic(message = "unknown name", help = "declare it before use")]
+    struct UnknownName {
+        #[label(primary, "not found")]
+        name: Named,
+    }
+
+    #[test]
+    fn derived_diagnostics_resolve_through_runic_core() {
+        let span = SourceSpan::session(
+            SourceId::new(SourceNamespace::new_unchecked(1), 0),
+            TextRange::new(2, 5).unwrap(),
+        );
+        let name = Named { span };
+        assert_eq!(name.span(), span);
+
+        let report = Report::from(UnknownName { name });
+        let snapshot = prepare_ref(report.as_diagnostic()).unwrap();
+        assert_eq!(snapshot.message, "unknown name");
+        assert_eq!(snapshot.labels.len(), 1);
+        assert_eq!(snapshot.labels[0].span, span);
+        assert_eq!(snapshot.labels[0].style, LabelStyle::Primary);
+        assert_eq!(snapshot.labels[0].message.as_deref(), Some("not found"));
+        assert!(
+            snapshot
+                .notes
+                .iter()
+                .any(|note| note.kind == NoteKind::Help && note.message == "declare it before use")
+        );
+    }
+}

@@ -78,10 +78,22 @@ pub(crate) fn resolve_runtime_path(explicit: Option<Path>) -> syn::Result<TokenS
             let name = Ident::new(&name, Span::call_site());
             Ok(quote!(::#name))
         }
-        Err(error) => Err(syn::Error::new(
-            Span::call_site(),
-            format!("cannot locate `runic-diagnostics`: {error}"),
-        )),
+        // `runic-core` re-exports the whole runtime as `runic_core::diagnostics`.
+        Err(diagnostics_error) => match crate_name("runic-core") {
+            Ok(FoundCrate::Itself) => Ok(quote!(crate::diagnostics)),
+            Ok(FoundCrate::Name(name)) => {
+                let name = Ident::new(&name, Span::call_site());
+                Ok(quote!(::#name::diagnostics))
+            }
+            Err(core_error) => Err(syn::Error::new(
+                Span::call_site(),
+                format!(
+                    "cannot locate the diagnostics runtime: depend on `runic-diagnostics` or \
+                     `runic-core`, or name the runtime with `crate = ..` ({diagnostics_error}; \
+                     {core_error})"
+                ),
+            )),
+        },
     }
 }
 

@@ -30,6 +30,9 @@ wrappers, and forwarding wrappers. Generated implementations visit semantic
 data; source lookup, snapshot preparation, rendering, collection, and failure
 policy remain runtime responsibilities.
 
+A crate that depends on `runic-core` but not on `runic-diagnostics` gets the
+runtime through its re-export, `runic_core::diagnostics`.
+
 Dependency renames are resolved automatically. Unusual build layouts can use
 `#[diagnostic(crate = path::to::runtime, ...)]` to select the runtime path
 explicitly. This is useful when deriving inside an example target that belongs
@@ -39,7 +42,7 @@ to the runtime package itself.
 
 This crate runs on the compiler host and depends on `syn`, `quote`,
 `proc-macro2`, and `proc-macro-crate`. Generated code refers to the consumer's
-`runic-diagnostics` crate.
+`runic-diagnostics` crate, or to the one `runic-core` re-exports.
 
 See the [runtime crate README](../diagnostics/README.md) for the data model and
 the [workspace README](../../README.md) for end-to-end usage.
