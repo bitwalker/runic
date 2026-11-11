@@ -38,7 +38,10 @@ mod tests {
                         ),
                     ],
                     notes: [
-                        help("this operator implements 'ArithmeticOp' which requires ops to be binary"),
+                        help(
+                            "this operator implements 'ArithmeticOp' which requires ops to be \
+                             binary"
+                        ),
                     ],
                 ))
             }

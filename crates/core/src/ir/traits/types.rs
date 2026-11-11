@@ -189,7 +189,10 @@ pub trait SameTypeOperands {
                 return Err(crate::diagnostics::report!(
                     message: (::alloc::format!("invalid operation {}", op.name())),
                     labels: [
-                        primary(op.span, "this operation expects all operands to be of the same type"),
+                        primary(
+                            op.span,
+                            "this operation expects all operands to be of the same type"
+                        ),
                         context(set_by, "inferred the expected type from this value"),
                         context(value.span(), "which differs from this value's type"),
                     ],
