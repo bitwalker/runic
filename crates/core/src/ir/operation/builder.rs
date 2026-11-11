@@ -1,6 +1,5 @@
 use alloc::{rc::Rc, vec, vec::Vec};
 
-
 use super::state::PendingSuccessorInfo;
 use crate::{
     AsCallableSymbolRef, AsSymbolRef, AttributeRef, AttributeRegistration, BlockRef, Builder,

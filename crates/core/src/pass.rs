@@ -11,6 +11,8 @@ pub mod statistics;
 
 use alloc::{borrow::Cow, string::String};
 
+#[cfg(feature = "std")]
+pub use self::duration::HumanDuration;
 pub use self::{
     analysis::{Analysis, AnalysisManager, OperationAnalysis, PreservedAnalyses},
     instrumentation::{PassInstrumentation, PassInstrumentor, PipelineParentInfo},
@@ -20,8 +22,6 @@ pub use self::{
     specialization::PassTarget,
     statistics::{PassStatistic, Statistic, StatisticValue},
 };
-#[cfg(feature = "std")]
-pub use self::duration::HumanDuration;
 use crate::{EntityRef, Operation, OperationName, OperationRef, SmallVec, TraceTarget};
 
 /// Handles IR printing, based on the [`IRPrintingConfig`] passed in

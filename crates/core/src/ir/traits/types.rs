@@ -1,11 +1,9 @@
 use alloc::{format, string::ToString};
 use core::fmt;
 
-use crate::PointerType;
-
 use crate::{
-    CompactString, ConstantIntRange, Context, IntegerValueRange, Op, Operation, Report, Type,
-    ValueRef, derive::operation_trait, ir::value::Value,
+    CompactString, ConstantIntRange, Context, IntegerValueRange, Op, Operation, PointerType,
+    Report, Type, ValueRef, derive::operation_trait, ir::value::Value,
 };
 
 /// OpInterface to compute the return type(s) of an operation.

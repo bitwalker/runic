@@ -49,7 +49,7 @@ impl FromStr for FunctionIdent {
             }
             None => Err(Report::msg(
                 "invalid function name, expected fully-qualified identifier, e.g. \
-                 'std::math::u64::checked_add'"
+                 'std::math::u64::checked_add'",
             )),
         }
     }

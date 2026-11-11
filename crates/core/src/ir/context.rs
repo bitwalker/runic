@@ -112,10 +112,7 @@ impl Context {
 
     /// Read `path` and register it; a path already registered is not re-read.
     #[cfg(feature = "std")]
-    pub fn load_source_file(
-        &self,
-        path: impl AsRef<std::path::Path>,
-    ) -> std::io::Result<SourceId> {
+    pub fn load_source_file(&self, path: impl AsRef<std::path::Path>) -> std::io::Result<SourceId> {
         Arc::make_mut(&mut self.sources.borrow_mut()).load_file(path)
     }
 

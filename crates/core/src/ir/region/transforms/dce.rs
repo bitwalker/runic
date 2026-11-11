@@ -444,12 +444,12 @@ mod tests {
     use alloc::format;
 
     use runic_expect_test::expect_file;
-    use crate::diagnostics::SourceSpan;
 
     use super::*;
     use crate::{
         Builder, BuilderExt, Op, Type,
         derive::{EffectOpInterface, operation},
+        diagnostics::SourceSpan,
         dialects::{
             builtin::BuiltinOpBuilder,
             test::{TestDialect, TestOpBuilder},

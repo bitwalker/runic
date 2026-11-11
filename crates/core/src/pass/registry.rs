@@ -114,8 +114,7 @@ inventory::collect!(PassInfo);
 inventory::collect!(PassPipelineInfo);
 
 /// A type alias for the closure type for registering a pass with a pass manager
-pub type PassRegistryFunction =
-    fn(&mut OpPassManager, &str) -> Result<(), Report>;
+pub type PassRegistryFunction = fn(&mut OpPassManager, &str) -> Result<(), Report>;
 
 /// A type alias for the closure type used for type-erased pass constructors
 pub type PassAllocatorFunction = fn() -> Box<dyn OperationPass>;
@@ -134,11 +133,7 @@ pub trait RegistryEntry {
     /// Note: `options` is an opaque string that will be parsed by the builder.
     ///
     /// Returns `Err` if an error occurred parsing the given options.
-    fn add_to_pipeline(
-        &self,
-        pm: &mut OpPassManager,
-        options: &str,
-    ) -> Result<(), Report>;
+    fn add_to_pipeline(&self, pm: &mut OpPassManager, options: &str) -> Result<(), Report>;
 }
 
 /// Information about a pass or pass pipeline in the pass registry
@@ -155,11 +150,7 @@ struct PassRegistryEntry {
 }
 impl RegistryEntry for PassRegistryEntry {
     #[inline]
-    fn add_to_pipeline(
-        &self,
-        pm: &mut OpPassManager,
-        options: &str,
-    ) -> Result<(), Report> {
+    fn add_to_pipeline(&self, pm: &mut OpPassManager, options: &str) -> Result<(), Report> {
         default_registration_factory(self.builder)(pm, options)
     }
 
@@ -204,11 +195,7 @@ impl RegistryEntry for PassPipelineInfo {
         self.0.description()
     }
 
-    fn add_to_pipeline(
-        &self,
-        pm: &mut OpPassManager,
-        options: &str,
-    ) -> Result<(), Report> {
+    fn add_to_pipeline(&self, pm: &mut OpPassManager, options: &str) -> Result<(), Report> {
         self.0.add_to_pipeline(pm, options)
     }
 }
@@ -256,11 +243,7 @@ impl RegistryEntry for PassInfo {
         self.0.description()
     }
 
-    fn add_to_pipeline(
-        &self,
-        pm: &mut OpPassManager,
-        options: &str,
-    ) -> Result<(), Report> {
+    fn add_to_pipeline(&self, pm: &mut OpPassManager, options: &str) -> Result<(), Report> {
         self.0.add_to_pipeline(pm, options)
     }
 }
