@@ -481,3 +481,42 @@ fn independent_sets_reuse_set_scoped_ids() {
     assert_eq!(first.finish().iter().next().unwrap().id.get(), 0);
     assert_eq!(second.finish().iter().next().unwrap().id.get(), 0);
 }
+
+#[derive(Debug)]
+struct LocatedError(crate::SourceSpan);
+
+impl Diagnostic for LocatedError {
+    fn message(&self, out: &mut dyn Write) -> fmt::Result {
+        out.write_str("located error")
+    }
+
+    fn visit(&self, visitor: &mut dyn crate::VisitDiagnostic) {
+        visitor.label(crate::Label {
+            span: self.0,
+            style: crate::LabelStyle::Primary,
+            message: Some(format_args!("failed here")),
+        });
+    }
+}
+
+#[test]
+fn a_bundled_report_keeps_the_session_sources() {
+    use crate::{SourceMap, SourceNamespace, SourceSpan, TextRange};
+
+    let mut sources = SourceMap::new(SourceNamespace::new_unchecked(1));
+    let id = sources.insert("bundled.masm", "begin broken end", None).unwrap();
+    let span = SourceSpan::session(id, TextRange::new(6, 12).unwrap());
+
+    let mut collector = DiagnosticCollector::new();
+    collector.add(simple(Severity::Warning));
+    collector.add_report(Report::new(LocatedError(span)));
+    let set = collector.finish().attach_session_sources(Arc::new(sources));
+    assert_eq!(set.len(), 2);
+
+    let report = set.into_report(&DefaultFailurePolicy);
+    assert!(report.session_sources().is_some());
+    let rendered = alloc::format!("{}", report.display());
+    assert!(!rendered.contains("missing source"), "rendered without its source: {rendered}");
+    assert!(rendered.contains("bundled.masm"), "rendered without its source: {rendered}");
+    assert!(rendered.contains("broken"), "rendered without its snippet: {rendered}");
+}

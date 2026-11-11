@@ -102,7 +102,7 @@ impl DiagnosticSet {
         }
 
         let related = entries.into_iter().map(|entry| entry.diagnostic).collect();
-        Report::new(DiagnosticBundle::new(primary, related))
+        DiagnosticBundle::new(primary, related).into_report()
     }
 }
 

@@ -794,6 +794,17 @@ impl DiagnosticBundle {
     pub fn new(primary: OwnedDiagnostic, related: Vec<OwnedDiagnostic>) -> Self {
         Self { primary, related }
     }
+
+    /// Converts this bundle into a [Report] that retains the primary's session sources.
+    ///
+    /// The bundled diagnostics are rendered with the outer report's session sources, so those of
+    /// the primary are moved onto it.
+    pub fn into_report(mut self) -> Report {
+        let session_sources = self.primary.session_sources.take();
+        let mut report = Report::new(self);
+        report.inner.session_sources = session_sources;
+        report
+    }
 }
 
 impl Diagnostic for DiagnosticBundle {
