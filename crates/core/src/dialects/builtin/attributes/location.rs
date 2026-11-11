@@ -186,3 +186,30 @@ impl crate::formatter::PrettyPrint for Location {
         display(self)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use alloc::string::ToString;
+
+    use super::*;
+    use crate::{Context, diagnostics::TextRange};
+
+    /// A span in a registered source prints as that source's name with 1-based line and column,
+    /// and converts back to the same span.
+    #[test]
+    fn a_location_names_its_registered_source_and_round_trips_to_its_span() {
+        let context = Context::default();
+        let id = context.add_source("some/file.runic", "line one\nline two\n").unwrap();
+        let start = "line one\nline ".len() as u32;
+        let span = SourceSpan::session(id, TextRange::new(start, start + 3).unwrap());
+
+        let location = Location::from_span(span, &context);
+        assert_eq!(location.to_string(), "some/file.runic:2:6 to 2:9");
+        assert_eq!(location.try_into_span(&context), Some(span));
+
+        let point = SourceSpan::session(id, TextRange::new(start, start).unwrap());
+        let location = Location::from_span(point, &context);
+        assert_eq!(location.to_string(), "some/file.runic:2:6");
+        assert_eq!(location.try_into_span(&context), Some(point));
+    }
+}
