@@ -307,6 +307,14 @@ impl quote::ToTokens for Attribute {
                 {
                     let name = context.get_registered_attribute_name::<#attr_struct_name #ty_generics>();
                     let value = <#value_type_name #ty_generics>::from(value);
+                    // `Attr::as_attr_ref` relies on this layout to find the entity header
+                    const {
+                        assert!(
+                            ::core::mem::offset_of!(Self, _attr) == 0
+                                && ::core::mem::align_of::<Self>()
+                                    == ::core::mem::align_of::<::runic_core::attributes::Attr>()
+                        )
+                    }
                     unsafe {
                         let offset = ::core::mem::offset_of!(#attr_struct_name #ty_generics, _attr);
                         let _attr = ::runic_core::attributes::Attr::uninit::<Self>(context, name, ty, offset);

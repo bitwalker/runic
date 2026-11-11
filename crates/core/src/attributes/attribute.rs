@@ -176,7 +176,12 @@ impl dyn Attribute {
 /// Similar to [crate::Operation], [Attr] is an IR entity that must be allocated via the arena
 /// managed by [Context]. See the documentation for [crate::Operation] for more details on what
 /// this means.
-#[repr(C)]
+///
+/// [Attr] is aligned to 16 so that every [Attribute] that embeds it as its first field has the
+/// same alignment as [Attr] itself (the derive asserts this). The entity header offset depends on
+/// the alignment of the value, so [Attr::as_attr_ref] can only rebuild a handle to the containing
+/// attribute's allocation if the two alignments agree.
+#[repr(C, align(16))]
 #[derive(Clone)]
 pub struct Attr {
     context: NonNull<Context>,
@@ -460,7 +465,7 @@ mod tests {
     use core::hash::Hasher;
 
     use crate::{
-        Immediate, ImmediateAttr, Type, attributes::IntegerLikeAttr,
+        Attribute, Immediate, ImmediateAttr, Type, attributes::IntegerLikeAttr,
         dialects::builtin::attributes::U32Attr, testing::Test,
     };
 
@@ -528,5 +533,25 @@ mod tests {
         let roundtrip = roundtrip.borrow();
         assert_eq!(roundtrip.ty().clone(), Type::I32);
         assert_eq!(roundtrip.as_immediate(), Immediate::I32(1));
+    }
+
+    /// `ImmediateAttr` holds a `u128`, so its value has alignment 16. The handle rebuilt through
+    /// `Attr::as_attr_ref` must find the same entity header (and thus the same borrow flag) as the
+    /// handle returned on allocation.
+    #[test]
+    fn attr_ref_of_a_16_aligned_attribute_shares_the_borrow_flag() {
+        let test = Test::default();
+
+        let mut immediate =
+            test.context_rc().create_attribute::<ImmediateAttr, _>(Immediate::I32(1));
+        let attr_ref = immediate.borrow().as_attr().as_attr_ref();
+        let guard = immediate.borrow_mut();
+        assert!(
+            attr_ref.try_borrow().is_none(),
+            "a shared borrow through as_attr_ref() succeeded while the attribute was mutably \
+             borrowed"
+        );
+        drop(guard);
+        assert!(attr_ref.try_borrow().is_some());
     }
 }
