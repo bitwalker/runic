@@ -2,7 +2,7 @@ use alloc::{format, string::ToString};
 use core::fmt;
 
 use runic_session::diagnostics::Severity;
-use runic_type::PointerType;
+use crate::PointerType;
 
 use crate::{
     CompactString, ConstantIntRange, Context, IntegerValueRange, Op, Operation, Report, Type,

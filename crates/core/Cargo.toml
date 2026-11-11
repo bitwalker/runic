@@ -13,7 +13,7 @@ edition.workspace = true
 
 [features]
 default = ["std"]
-std = ["base64/std", "compact_str/std", "rustc-demangle/std"]
+std = ["base64/std", "compact_str/std", "rustc-demangle/std", "runic-diagnostics/std"]
 debug_refcell = []
 logging = ["dep:runic-log", "std"]
 
@@ -31,7 +31,9 @@ miden-formatting.workspace = true
 runic-log = { workspace = true, optional = true }
 runic-symbol = { workspace = true, features = ["compact_str"] }
 runic-macros.workspace = true
-runic-session.workspace = true
+runic-diagnostics = { workspace = true, features = ["derive"] }
+# TEMPORARY (stage 1 only): replaced by the builtin-dialect type system in stage 2.
+midenc-hir-type = { version = "0.18", default-features = false }
 paste.workspace = true
 rustc-hash.workspace = true
 rustc-demangle = "0.1.19"

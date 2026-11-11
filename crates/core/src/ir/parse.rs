@@ -54,7 +54,7 @@ use runic_session::{
         miette::{self, diagnostic},
     },
 };
-use runic_type::{AddressSpace, PointerType};
+use crate::{AddressSpace, PointerType};
 
 use self::{
     asm_parser::AsmParserState,
