@@ -19,7 +19,6 @@ doctest = false
 [features]
 default = ["std"]
 std = [
-    "dep:parking_lot",
     "dep:clap",
     "dep:tempfile",
     "runic-core/std",
@@ -28,15 +27,11 @@ std = [
 
 [dependencies]
 clap = { workspace = true, optional = true }
-hashbrown.workspace = true
 inventory.workspace = true
 log.workspace = true
 runic-core = { workspace = true, default-features = false }
 runic-symbol.workspace = true
-runic-macros.workspace = true
-rustc-hash.workspace = true
 smallvec.workspace = true
-parking_lot = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
 thiserror.workspace = true
 

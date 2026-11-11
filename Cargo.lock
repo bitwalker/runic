@@ -1454,14 +1454,10 @@ name = "runic-session"
 version = "0.1.0"
 dependencies = [
  "clap",
- "hashbrown 0.17.1",
  "inventory",
  "log",
- "parking_lot",
  "runic-core",
- "runic-macros",
  "runic-symbol",
- "rustc-hash",
  "smallvec",
  "tempfile",
  "thiserror",
