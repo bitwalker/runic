@@ -36,7 +36,7 @@ pub use self::{
     },
     builder::{Builder, BuilderExt, InsertionGuard, Listener, ListenerType, OpBuilder},
     callable::*,
-    context::Context,
+    context::{Context, DiagnosticScope},
     dialect::{
         Dialect, DialectAttributeRegistrationInfo, DialectInfo, DialectOpRegistrationInfo,
         DialectRegistration, DialectRegistrationHook, DialectRegistrationHookInfo,

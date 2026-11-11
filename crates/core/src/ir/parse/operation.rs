@@ -173,11 +173,6 @@ impl<'input, P> OperationParser<P>
 where
     P: Parser<'input>,
 {
-    /// Take the non-fatal diagnostics recorded so far.
-    pub(super) fn take_diagnostics(&mut self) -> DiagnosticCollector {
-        core::mem::take(&mut self.parser.state_mut().diagnostics)
-    }
-
     pub fn new(mut parser: P, top_level: WorldRef) -> Self {
         // Ensure the world's body region is populated
         {
@@ -217,9 +212,7 @@ where
     /// issues.
     ///
     /// Verification runs as the last step, if [`ParserConfig::should_verify_after_parse`] is set.
-    ///
-    /// Call this at most once: a second call panics when it pops the already-popped SSA name scope.
-    pub fn finalize(&mut self) -> ParseResult {
+    pub fn finalize(self) -> ParseResult {
         let verify = self.parser.state().config.should_verify_after_parse();
         self.finalize_impl(verify)
     }
@@ -230,17 +223,12 @@ where
     /// and symbol uses are resolved in the hierarchy that will actually be returned. The caller
     /// is responsible for verifying that root when [`ParserConfig::should_verify_after_parse`]
     /// is set; see `parse_anchored_source`.
-    ///
-    /// Call this at most once, and not together with [`Self::finalize`]: a second call panics when
-    /// it pops the already-popped SSA name scope.
-    pub fn finalize_without_verifying(&mut self, root: WorldRef) -> ParseResult {
+    pub fn finalize_without_verifying(mut self, root: WorldRef) -> ParseResult {
         self.top_level = root;
         self.finalize_impl(false)
     }
 
-    /// Shared body of [`Self::finalize`] and [`Self::finalize_without_verifying`]; runs at most
-    /// once per parser, since it pops the SSA name scope.
-    fn finalize_impl(&mut self, verify: bool) -> ParseResult {
+    fn finalize_impl(mut self, verify: bool) -> ParseResult {
         // Check for any forward references that are left.  If we find any, error out.
         if !self.forward_ref_placeholders.is_empty() {
             let mut labels = Vec::with_capacity(self.forward_ref_placeholders.len());
@@ -2078,32 +2066,15 @@ where
     }
 
     /// Parse a set of operations into a fresh [World](crate::dialects::builtin::World)
-    ///
-    /// Returns the parse result together with the non-fatal diagnostics recorded while parsing,
-    /// which would otherwise be dropped along with the parser.
-    pub fn parse(self, loc: SourceSpan) -> (ParseResult<WorldRef>, DiagnosticCollector) {
+    pub fn parse(self, loc: SourceSpan) -> ParseResult<WorldRef> {
         use crate::{BuilderExt, dialects::builtin::World};
 
         let Self { mut parser } = self;
 
         // Create a top-level operation to contain the parsed state.
-        let mut top_level_op = match parser.builder_mut().create::<World, ()>(loc)() {
-            Ok(top_level_op) => top_level_op,
-            Err(report) => {
-                let diagnostics = core::mem::take(&mut parser.state_mut().diagnostics);
-                return (Err(report.into()), diagnostics);
-            }
-        };
+        let mut top_level_op = parser.builder_mut().create::<World, ()>(loc)()?;
 
         let mut op_parser = OperationParser::new(parser, top_level_op);
-        let result = Self::parse_into(&mut op_parser, top_level_op);
-        (result, op_parser.take_diagnostics())
-    }
-
-    fn parse_into(
-        op_parser: &mut OperationParser<P>,
-        top_level_op: WorldRef,
-    ) -> ParseResult<WorldRef> {
         loop {
             let Some((start, next_token, end)) = op_parser.token_stream_mut().peek()? else {
                 // If we got to the end of the file, then we're done.
@@ -2114,15 +2085,15 @@ where
             match next_token {
                 // Parse an attribute alias
                 Token::HashIdent(_) => {
-                    parse_attribute_alias_def(op_parser)?;
+                    parse_attribute_alias_def(&mut op_parser)?;
                 }
                 // Parse a type alias
                 Token::BangIdent(_) => {
-                    parse_type_alias_def(op_parser)?;
+                    parse_type_alias_def(&mut op_parser)?;
                 }
                 // Parse a file-level metadata dictionary.
                 Token::FileMetadataStart => {
-                    parse_file_metadata_dictionary(op_parser)?;
+                    parse_file_metadata_dictionary(&mut op_parser)?;
                 }
                 // Parse a top-level operation
                 _ => {

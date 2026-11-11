@@ -65,18 +65,18 @@ pub use self::{
     token::Token,
 };
 use super::{
-    AsCallableSymbolRef, BlockArgumentRef, BlockId, BlockRef, Context, GenericOperationBuilder,
-    Ident, OpBuilder, OpRegistration, OpResultRef, Operation, OperationName, OperationRef,
-    OperationState, RawEntityRef, RegionRef, SuccessorInfo, SymbolRef, Type,
-    UnsafeIntrusiveEntityRef, ValueId, ValueRef, interner::Symbol, operation::ParseAssemblyFn,
+    AsCallableSymbolRef, BlockArgumentRef, BlockId, BlockRef, Context, DiagnosticScope,
+    GenericOperationBuilder, Ident, OpBuilder, OpRegistration, OpResultRef, Operation,
+    OperationName, OperationRef, OperationState, RawEntityRef, RegionRef, SuccessorInfo, SymbolRef,
+    Type, UnsafeIntrusiveEntityRef, ValueId, ValueRef, interner::Symbol,
+    operation::ParseAssemblyFn,
 };
 use crate::{
     AddressSpace, Attribute, AttributeRef, Builder, CallableOpInterface, CompactString,
     FunctionType, FxHashMap, NamedAttribute, PointerType, ProgramPoint, SmallVec, ToCompactString,
     adt::{SmallOrdMap, smallmap::SmallMap},
     diagnostics::{
-        ColumnNumber, DiagnosticCollector, LineNumber, Outcome, Report, SourceId, SourceProvider,
-        SourceSpan, Span,
+        ColumnNumber, LineNumber, Outcome, Report, SourceId, SourceProvider, SourceSpan, Span,
     },
     dialects::builtin::{
         WorldBuilder, WorldRef,
@@ -146,8 +146,6 @@ pub struct ParserState<'input> {
     /// implementing `OpAsmOpInterface`, and popped when done. At the top-level we start with
     /// "builtin" as the default, so that the top-level builtin operations parse as-is.
     pub default_dialect_stack: SmallVec<[interner::Symbol; 1]>,
-    /// Non-fatal diagnostics (warnings, notes, hints) recorded during parsing
-    pub diagnostics: DiagnosticCollector,
 }
 
 impl<'input> ParserState<'input> {
@@ -158,7 +156,6 @@ impl<'input> ParserState<'input> {
             symbols: Default::default(),
             asm_state: None,
             default_dialect_stack: smallvec![interner::Symbol::intern("builtin")],
-            diagnostics: DiagnosticCollector::new(),
         }
     }
 
@@ -220,9 +217,13 @@ pub fn parse_file_generic(
 /// `#[ignore]`d; revive the generic format and this needs fixing first.
 fn parse_source_generic(config: ParserConfig, source_id: SourceId) -> Outcome<WorldRef> {
     let context = config.context.clone();
+    let scope = context.diagnostic_scope();
     let sources = context.sources();
     let Some(source) = sources.get(source_id).and_then(|source| source.text) else {
-        return Outcome::from_report(Report::msg("source is not registered with this context"));
+        return parse_outcome(
+            scope,
+            Err(Report::msg("source is not registered with this context")),
+        );
     };
     let scanner = Scanner::new(source);
     let token_stream = TokenStream::new(source_id, scanner);
@@ -231,26 +232,21 @@ fn parse_source_generic(config: ParserConfig, source_id: SourceId) -> Outcome<Wo
 
     let span = parser.current_location();
     let operation_parser = operation::TopLevelOperationParser::new(parser);
-    let (result, mut diagnostics) = operation_parser.parse(span);
-    let result = match result.map_err(Report::from) {
-        Ok(world) => Ok(world),
-        Err(report) => {
-            diagnostics.add_report(report);
-            Err(())
-        }
-    };
-    parse_outcome(&context, result, diagnostics)
+    let result = operation_parser.parse(span).map_err(Report::from);
+    parse_outcome(scope, result)
 }
 
-/// Build the [Outcome] of a parse, attaching the context's sources as they are *now*.
+/// End the parse's diagnostic `scope` and build the [Outcome] of the parse from what it collected
+/// and `result`, attaching the context's sources as they are *now*.
 ///
 /// The snapshot taken to read the input is not enough: resolving `loc("file":line:col)` loads
 /// `file` into the context mid-parse, and diagnostics labelled with that span need it to render.
-fn parse_outcome<T>(
-    context: &Context,
-    result: Result<T, ()>,
-    diagnostics: DiagnosticCollector,
-) -> Outcome<T> {
+fn parse_outcome<T>(scope: DiagnosticScope<'_>, result: Result<T, Report>) -> Outcome<T> {
+    let context = scope.context();
+    let mut diagnostics = scope.finish();
+    let result = result.map_err(|report| {
+        diagnostics.add_report(report);
+    });
     Outcome {
         result,
         diagnostics: diagnostics.finish().attach_session_sources(context.sources()),
@@ -383,9 +379,13 @@ fn parse_anchored_source(
     use crate::{BuilderExt, dialects::builtin::World};
 
     let context = config.context.clone();
+    let scope = context.diagnostic_scope();
     let sources = context.sources();
     let Some(source) = sources.get(source_id).and_then(|source| source.text) else {
-        return Outcome::from_report(Report::msg("source is not registered with this context"));
+        return parse_outcome(
+            scope,
+            Err(Report::msg("source is not registered with this context")),
+        );
     };
     let scanner = Scanner::new(source);
     let token_stream = TokenStream::new(source_id, scanner);
@@ -394,11 +394,7 @@ fn parse_anchored_source(
     let span = parser.current_location();
     let world = match parser.builder_mut().create::<World, ()>(span)() {
         Ok(world) => world,
-        Err(report) => {
-            let mut diagnostics = core::mem::take(&mut parser.state_mut().diagnostics);
-            diagnostics.add_report(report);
-            return parse_outcome(&context, Err(()), diagnostics);
-        }
+        Err(report) => return parse_outcome(scope, Err(report)),
     };
     let anchor = world.as_operation_ref();
     parser.state_mut().asm_state = Some(Box::<AsmParserState>::default());
@@ -456,15 +452,7 @@ fn parse_anchored_source(
         }
     })();
 
-    let mut diagnostics = operation_parser.take_diagnostics();
-    let result = match result {
-        Ok(op) => Ok(op),
-        Err(report) => {
-            diagnostics.add_report(report);
-            Err(())
-        }
-    };
-    parse_outcome(&context, result, diagnostics)
+    parse_outcome(scope, result)
 }
 
 /// This trait is implemented by parsers which can parse operations from IR assembly, and provides

@@ -1,4 +1,9 @@
-use alloc::{format, rc::Rc, string::ToString};
+use alloc::{
+    format,
+    rc::Rc,
+    string::{String, ToString},
+    vec::Vec,
+};
 use core::ops::{Deref, DerefMut};
 
 use litcheck_filecheck::{filecheck, litcheck};
@@ -1359,27 +1364,78 @@ fn printed_locations_parse_back() {
     }
 }
 
+fn diagnostic_messages(diagnostics: &crate::diagnostics::DiagnosticSet) -> Vec<String> {
+    diagnostics.iter().map(|entry| entry.diagnostic.to_string()).collect()
+}
+
+/// Diagnostics emitted through the parser and through its context during a parse are collected
+/// together, in order, by the parse's scope, and are not left pending on the context.
 #[test]
-fn a_warning_does_not_fail_the_parse() {
+fn diagnostics_emitted_during_a_parse_belong_to_its_scope() {
     use super::{DefaultParser, Parser, ParserState, Scanner, TokenStream};
-    use crate::diagnostics::{Outcome, OwnedDiagnostic, Severity, diagnostic};
+    use crate::diagnostics::{OwnedDiagnostic, Severity, diagnostic};
 
     let context = Rc::new(Context::default());
     let id = context.add_source("warn.runic", "").unwrap();
     let sources = context.sources();
+    let scope = context.diagnostic_scope();
     let scanner = Scanner::new(sources.get(id).unwrap().text.unwrap());
     let token_stream = TokenStream::new(id, scanner);
     let mut parser =
         DefaultParser::new(ParserState::new(ParserConfig::new(context.clone()), token_stream));
 
-    parser.emit(OwnedDiagnostic::new(diagnostic!(severity: Warning, message: "caveat")));
+    let _ =
+        parser.emit(OwnedDiagnostic::new(diagnostic!(severity: Warning, message: "from parser")));
+    let _ = context.emit(diagnostic!(severity: Warning, message: "from context"));
+    drop(parser);
 
-    let diagnostics = core::mem::take(&mut parser.state_mut().diagnostics).finish();
-    assert_eq!(diagnostics.len(), 1);
-    assert_eq!(diagnostics.iter().next().unwrap().metadata().severity, Severity::Warning);
-    let outcome: Outcome<()> = Outcome {
-        result: Ok(()),
-        diagnostics,
-    };
-    assert!(outcome.is_ok(), "a warning must not turn success into failure");
+    let diagnostics = scope.finish().finish();
+    assert_eq!(diagnostic_messages(&diagnostics), ["from parser", "from context"]);
+    assert!(diagnostics.iter().all(|entry| entry.metadata().severity == Severity::Warning));
+    assert!(
+        context.take_diagnostics().is_empty(),
+        "the scope's diagnostics leaked to the context"
+    );
+}
+
+/// A diagnostic pending on the context before a parse is not attributed to that parse.
+#[test]
+fn diagnostics_pending_before_a_parse_stay_on_the_context() {
+    use crate::diagnostics::diagnostic;
+
+    let context = Rc::new(Context::default());
+    let _ = context.emit(diagnostic!(severity: Warning, message: "pending"));
+
+    let outcome = parse::parse_any(
+        ParserConfig::new(context.clone()),
+        "clean.runic",
+        "builtin.module public @t {};",
+    );
+    assert!(outcome.is_ok());
+    assert!(
+        outcome.diagnostics.is_empty(),
+        "the pending warning was attributed to the parse"
+    );
+
+    assert_eq!(diagnostic_messages(&context.take_diagnostics()), ["pending"]);
+}
+
+/// A failed parse reports exactly its own error, and leaves earlier diagnostics pending.
+#[test]
+fn a_failed_parse_leaves_pending_diagnostics_on_the_context() {
+    use crate::diagnostics::{Severity, diagnostic};
+
+    let context = Rc::new(Context::default());
+    let _ = context.emit(diagnostic!(severity: Warning, message: "pending"));
+
+    let outcome = parse::parse_any(
+        ParserConfig::new(context.clone()),
+        "bad.runic",
+        "builtin.module public @m {",
+    );
+    assert!(outcome.result.is_err());
+    assert_eq!(outcome.diagnostics.len(), 1);
+    assert_eq!(outcome.diagnostics.iter().next().unwrap().metadata().severity, Severity::Error);
+
+    assert_eq!(diagnostic_messages(&context.take_diagnostics()), ["pending"]);
 }

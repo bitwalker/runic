@@ -154,14 +154,15 @@ pub trait Parser<'input> {
         self.state().context_rc()
     }
 
-    /// Record a non-fatal diagnostic (warning, note, hint) without failing the parse.
+    /// Record a non-fatal diagnostic (warning, note, hint) on the context without failing the
+    /// parse.
     ///
     /// Syntax errors are still returned as `Err(ParserError)`.
     fn emit(
         &mut self,
         diagnostic: crate::diagnostics::OwnedDiagnostic,
     ) -> crate::diagnostics::PushResult {
-        self.state_mut().diagnostics.add_owned(diagnostic)
+        self.context().emit_owned(diagnostic)
     }
 
     #[inline]

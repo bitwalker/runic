@@ -6,8 +6,8 @@ use core::{
 
 use blink_alloc::Blink;
 use runic_diagnostics::{
-    Diagnostic, DiagnosticCollector, DiagnosticSet, PushResult, SourceId, SourceMap,
-    SourceMapError, SourceNamespace,
+    Diagnostic, DiagnosticCollector, DiagnosticSet, OwnedDiagnostic, PushResult, SourceId,
+    SourceMap, SourceMapError, SourceNamespace,
 };
 use traits::BranchOpInterface;
 
@@ -47,6 +47,47 @@ pub struct Context {
 impl Default for Context {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Collects the diagnostics emitted on a [Context] while it is alive, apart from those already
+/// pending. Created by [`Context::diagnostic_scope`].
+///
+/// [`Self::finish`] restores the diagnostics that were pending and returns the scope's own.
+/// Dropping the scope without finishing it restores the pending diagnostics and appends the
+/// scope's to them, so nothing emitted in the scope is lost on an early return or unwind.
+#[must_use = "a scope collects nothing once dropped"]
+pub struct DiagnosticScope<'a> {
+    context: &'a Context,
+    /// The collector that was active when the scope started; `None` once restored.
+    outer: Option<DiagnosticCollector>,
+}
+
+impl<'a> DiagnosticScope<'a> {
+    /// The context this scope collects from.
+    pub fn context(&self) -> &'a Context {
+        self.context
+    }
+
+    /// End the scope, returning the diagnostics emitted while it was active.
+    pub fn finish(mut self) -> DiagnosticCollector {
+        let outer = self.outer.take().expect("a diagnostic scope is restored only once");
+        core::mem::replace(&mut *self.context.diagnostics.borrow_mut(), outer)
+    }
+}
+
+impl Drop for DiagnosticScope<'_> {
+    fn drop(&mut self) {
+        let Some(outer) = self.outer.take() else {
+            return;
+        };
+        // Only a panic inside the collector itself can leave it borrowed here; restoring it then
+        // would panic during unwind, so the scope's diagnostics are abandoned instead.
+        let Ok(mut diagnostics) = self.context.diagnostics.try_borrow_mut() else {
+            return;
+        };
+        let scoped = core::mem::replace(&mut *diagnostics, outer);
+        let _ = diagnostics.merge(scoped.finish());
     }
 }
 
@@ -121,11 +162,28 @@ impl Context {
         self.diagnostics.borrow_mut().add(diagnostic)
     }
 
+    /// Record a non-fatal [OwnedDiagnostic]. Errors are returned as `Err(Report)`, not emitted here.
+    pub fn emit_owned(&self, diagnostic: OwnedDiagnostic) -> PushResult {
+        self.diagnostics.borrow_mut().add_owned(diagnostic)
+    }
+
     /// Drain the diagnostics emitted so far, with this context's sources attached.
     pub fn take_diagnostics(&self) -> DiagnosticSet {
         core::mem::take(&mut *self.diagnostics.borrow_mut())
             .finish()
             .attach_session_sources(self.sources())
+    }
+
+    /// Start collecting the diagnostics emitted on this context separately from those already
+    /// pending, until the returned scope is finished or dropped.
+    ///
+    /// Scopes nest, and must end in the reverse of the order they were started.
+    pub fn diagnostic_scope(&self) -> DiagnosticScope<'_> {
+        let outer = core::mem::take(&mut *self.diagnostics.borrow_mut());
+        DiagnosticScope {
+            context: self,
+            outer: Some(outer),
+        }
     }
 
     pub fn registered_dialects(
@@ -521,9 +579,17 @@ impl<T: AttributeRegistration + Marker> UniquedAttribute for T {
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec;
+    use alloc::{
+        string::{String, ToString},
+        vec,
+        vec::Vec,
+    };
 
-    use crate::{Type, testing::Test};
+    use crate::{
+        Context, Type,
+        diagnostics::{DiagnosticSet, diagnostic},
+        testing::Test,
+    };
 
     /// A block holds more than 255 arguments, each keeping its position in the argument list.
     #[test]
@@ -537,5 +603,50 @@ mod tests {
 
         assert_eq!(args.len(), NUM_PARAMS);
         assert_eq!(args[NUM_PARAMS - 1].borrow().index(), NUM_PARAMS - 1);
+    }
+
+    fn messages(diagnostics: &DiagnosticSet) -> Vec<String> {
+        diagnostics.iter().map(|entry| entry.diagnostic.to_string()).collect()
+    }
+
+    /// Each scope collects only what was emitted while it was the innermost one.
+    #[test]
+    fn nested_diagnostic_scopes_collect_their_own_diagnostics() {
+        let context = Context::default();
+        let _ = context.emit(diagnostic!(severity: Warning, message: "pending"));
+
+        let outer = context.diagnostic_scope();
+        let _ = context.emit(diagnostic!(severity: Warning, message: "outer"));
+        let inner = context.diagnostic_scope();
+        let _ = context.emit(diagnostic!(severity: Warning, message: "inner"));
+        let inner = inner.finish().finish();
+        let _ = context.emit(diagnostic!(severity: Warning, message: "outer again"));
+        let outer = outer.finish().finish();
+
+        assert_eq!(messages(&inner), ["inner"]);
+        assert_eq!(messages(&outer), ["outer", "outer again"]);
+        assert_eq!(messages(&context.take_diagnostics()), ["pending"]);
+    }
+
+    /// A scope dropped without being finished hands its diagnostics to the enclosing collector,
+    /// after the ones that were already there.
+    #[test]
+    fn a_dropped_diagnostic_scope_merges_into_the_enclosing_collector() {
+        let context = Context::default();
+        let _ = context.emit(diagnostic!(severity: Warning, message: "pending"));
+
+        let outer = context.diagnostic_scope();
+        let _ = context.emit(diagnostic!(severity: Warning, message: "outer"));
+        {
+            let _inner = context.diagnostic_scope();
+            let _ = context.emit(diagnostic!(severity: Warning, message: "inner"));
+        }
+        assert_eq!(messages(&outer.finish().finish()), ["outer", "inner"]);
+
+        {
+            let _scope = context.diagnostic_scope();
+            let _ = context.emit(diagnostic!(severity: Warning, message: "dropped"));
+        }
+        assert_eq!(messages(&context.take_diagnostics()), ["pending", "dropped"]);
     }
 }
