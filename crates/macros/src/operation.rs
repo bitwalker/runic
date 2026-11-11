@@ -928,6 +928,14 @@ impl quote::ToTokens for OpCreateFn<'_> {
                         {
                             let mut __uninit = __op.borrow_mut();
                             let __ptr = (*__uninit).as_mut_ptr();
+                            // `as_operation_ref` relies on this layout to find the entity header
+                            const {
+                                assert!(
+                                    ::core::mem::offset_of!(Self, op) == 0
+                                        && ::core::mem::align_of::<Self>()
+                                            == ::core::mem::align_of::<::runic_core::Operation>()
+                                )
+                            }
                             let __offset = core::mem::offset_of!(Self, op);
                             let __op_ptr = core::ptr::addr_of_mut!((*__ptr).op);
                             __op_ptr.write(::runic_core::Operation::uninit::<Self>(__context, __operation_name, __offset));
@@ -969,6 +977,14 @@ impl quote::ToTokens for OpCreateFn<'_> {
                     {
                         let mut __uninit = __op.borrow_mut();
                         let __ptr = (*__uninit).as_mut_ptr();
+                        // `as_operation_ref` relies on this layout to find the entity header
+                        const {
+                            assert!(
+                                ::core::mem::offset_of!(Self, op) == 0
+                                    && ::core::mem::align_of::<Self>()
+                                        == ::core::mem::align_of::<::runic_core::Operation>()
+                            )
+                        }
                         let __offset = core::mem::offset_of!(Self, op);
                         let __op_ptr = core::ptr::addr_of_mut!((*__ptr).op);
                         __op_ptr.write(::runic_core::Operation::uninit::<Self>(context.clone(), __operation_name, __offset));
