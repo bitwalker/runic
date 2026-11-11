@@ -94,8 +94,12 @@ impl OpDefinition {
             ty: make_type("::runic_core::Operation"),
         });
 
+        // The `op` field must be at offset 0: `UnsafeIntrusiveEntityRef::as_operation_ref` casts a
+        // pointer to the op into a pointer to its `Operation`.
+        let mut attrs = core::mem::take(&mut op.attrs);
+        attrs.push(syn::parse_quote!(#[repr(C)]));
         let op = syn::ItemStruct {
-            attrs: core::mem::take(&mut op.attrs),
+            attrs,
             vis: op.vis.clone(),
             struct_token: syn::token::Struct(span),
             ident: name.clone(),
