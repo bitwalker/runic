@@ -1867,3 +1867,28 @@ fn a_built_constant_equals_the_same_constant_parsed_from_text() -> TestResult {
     }
     Ok(())
 }
+
+/// A word spelled like an integer type too wide to name one is an identifier, keeping its
+/// spelling, rather than a type token with a clamped width.
+#[test]
+fn an_over_wide_integer_type_spelling_is_an_identifier() {
+    use super::{DefaultParser, Parser, ParserState, Scanner, TokenStream};
+
+    let context = Rc::new(Context::default());
+    let message = type_error_text(&context, "i99999999999");
+    assert!(message.contains("unexpected token 'bare identifier'"), "{message}");
+    assert!(message.contains("help: type"), "{message}");
+
+    let id = context.add_source("key.runic", "i99999999999").unwrap();
+    let sources = context.sources();
+    let scanner = Scanner::new(sources.get(id).unwrap().text.unwrap());
+    let token_stream = TokenStream::new(id, scanner);
+    let mut parser =
+        DefaultParser::new(ParserState::new(ParserConfig::new(context.clone()), token_stream));
+    let key = parser.parse_optional_keyword_or_string().unwrap().unwrap().into_inner();
+    assert_eq!(key.as_str(), "i99999999999");
+
+    // A width that fits is still an integer type, and one beyond the limit is a type error.
+    let message = type_error_text(&context, "i16777216");
+    assert!(message.contains("an integer type is 1 to 16777215 bits wide"), "{message}");
+}

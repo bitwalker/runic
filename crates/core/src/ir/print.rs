@@ -10,7 +10,13 @@
 //! operation         := op-results? (generic-operation | custom-operation) trailing-location? ';'
 //! custom-operation  := custom-op-name custom-operation-format
 //! generic-operation := generic-op-name '(' value-uses? ')' successors? properties?
-//!                        regions? attributes? ':' function-type
+//!                        regions? attributes? ':' generic-op-signature
+//! generic-op-signature := generic-op-types '->' generic-op-types
+//! generic-op-types     := type-list-parens | type
+//!
+//! A generic operation's signature lists its operand types and its result types. It is not
+//! itself a type: a lone operand or result type may be written bare (`i32 -> ()`), and `(i32)`
+//! alone is not a type at all, since tuples are not a type form.
 //!
 //! # Locations
 //!

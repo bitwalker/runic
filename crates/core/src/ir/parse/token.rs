@@ -43,7 +43,7 @@ pub enum Token<'input> {
 
     // Type Keywords
     /// `iN`: an integer type of `N` bits, written as `i` followed by a decimal width without a
-    /// leading zero. A width too large for a `u32` is `u32::MAX`, which is not a valid width.
+    /// leading zero. A width too large for a `u32` is not lexed as a type, but as an identifier.
     IntType(u32),
     Isize,
     F32,
@@ -295,7 +295,8 @@ impl<'input> Token<'input> {
     }
 
     /// The width of the integer type `s` names, if `s` is `i` followed by a decimal width with no
-    /// leading zero; `u32::MAX` if that width does not fit in a `u32`.
+    /// leading zero, and that width fits in a `u32`. Any other word, such as `i99999999999`, is an
+    /// identifier that keeps its spelling.
     fn int_type_width(s: &str) -> Option<u32> {
         let digits = s.strip_prefix('i')?;
         let mut chars = digits.chars();
@@ -304,7 +305,7 @@ impl<'input> Token<'input> {
         {
             return None;
         }
-        Some(digits.parse::<u32>().unwrap_or(u32::MAX))
+        digits.parse::<u32>().ok()
     }
 
     /// Parses a [Token] from a string corresponding to that token.
