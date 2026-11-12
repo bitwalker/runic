@@ -72,8 +72,9 @@ impl TypeTables<'_> {
         }
 
         let dialect = super::dialect::dialect_init::<T>();
-        self.registered_dialects.borrow_mut().insert(dialect_name, Rc::clone(&dialect));
-        dialect
+        // Initialising the dialect may have registered it already, through code that uses it;
+        // that instance is the one other code holds, so it is the one kept.
+        Rc::clone(self.registered_dialects.borrow_mut().entry(dialect_name).or_insert(dialect))
     }
 }
 

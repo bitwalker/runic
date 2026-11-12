@@ -1011,6 +1011,9 @@ mod tests {
             const { core::cell::RefCell::new(alloc::rc::Weak::new()) };
         /// The type `ReentrantDialect::init` interned.
         static REENTRANT_INNER: Cell<Option<Type>> = const { Cell::new(None) };
+        /// The dialect that `ReentrantDialect::init` found registered once it had interned.
+        static REENTRANT_DIALECT: core::cell::RefCell<Option<Rc<dyn crate::Dialect>>> =
+            const { core::cell::RefCell::new(None) };
     }
 
     /// A dialect, not submitted to `inventory`, whose initialisation interns one of its own types
@@ -1035,6 +1038,8 @@ mod tests {
             if let Some(context) = context {
                 let inner = context.intern_type(ReentrantType(1));
                 REENTRANT_INNER.with(|slot| slot.set(Some(inner)));
+                let dialect = context.get_or_register_dialect::<ReentrantDialect>();
+                REENTRANT_DIALECT.with(|slot| *slot.borrow_mut() = Some(dialect));
             }
             Self { info }
         }
@@ -1055,6 +1060,13 @@ mod tests {
         assert_eq!(ty, inner, "the value interned during registration is not interned twice");
         assert_eq!(ty.downcast_ref::<ReentrantType>(), Some(&ReentrantType(1)));
         assert_eq!(ty, context.intern_type(ReentrantType(1)));
+        // The dialect registered while its own registration was under way is the one kept.
+        let inner = REENTRANT_DIALECT.with(|slot| slot.take()).expect("init found its dialect");
+        let registered = context.get_or_register_dialect::<ReentrantDialect>();
+        assert!(
+            core::ptr::addr_eq(Rc::as_ptr(&inner), Rc::as_ptr(&registered)),
+            "the dialect has two instances"
+        );
     }
 
     #[derive(Debug, PartialEq, Eq, Hash, crate::derive::DialectType)]
