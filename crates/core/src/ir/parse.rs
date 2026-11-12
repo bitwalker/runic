@@ -179,6 +179,76 @@ pub struct SymbolState {
     pub attribute_alias_definitions: FxHashMap<interner::Symbol, Span<AttributeRef>>,
     /// A map from type alias identifier to Type
     pub type_alias_definitions: FxHashMap<interner::Symbol, Span<Type>>,
+    /// The aliases of the `rec` block being parsed, if one is.
+    pub(crate) rec_scope: Option<RecScope>,
+}
+
+/// The aliases of a `rec` block while it is parsed.
+///
+/// An alias that is not defined outside the block names a member of the block, whether or not it
+/// has been declared yet. While the block is parsed it stands for a recursion variable whose index
+/// is the alias's position in order of first mention; the variables are renumbered to the order of
+/// declaration, which is the order of the members, when the block ends.
+#[derive(Default)]
+pub(crate) struct RecScope {
+    /// The aliases of the block, in order of first mention.
+    aliases: Vec<RecScopeAlias>,
+    /// The position of each alias in `aliases`.
+    positions: FxHashMap<interner::Symbol, u32>,
+    /// The positions of the declared aliases, in order of declaration.
+    declared: Vec<u32>,
+}
+
+/// An alias of a `rec` block.
+pub(crate) struct RecScopeAlias {
+    pub id: interner::Symbol,
+    /// Where the alias was first mentioned.
+    pub first_use: SourceSpan,
+    /// The span and body of its declaration, once seen.
+    pub declaration: Option<Span<Type>>,
+}
+
+impl RecScope {
+    /// The index of the recursion variable that `id` stands for, which is mentioned at `span`.
+    pub fn mention(&mut self, id: interner::Symbol, span: SourceSpan) -> u32 {
+        if let Some(position) = self.positions.get(&id) {
+            return *position;
+        }
+        let position = u32::try_from(self.aliases.len()).expect("fewer than 2^32 aliases");
+        self.aliases.push(RecScopeAlias {
+            id,
+            first_use: span,
+            declaration: None,
+        });
+        self.positions.insert(id, position);
+        position
+    }
+
+    /// Whether `id` has been declared in the block.
+    pub fn is_declared(&self, id: interner::Symbol) -> bool {
+        self.positions
+            .get(&id)
+            .is_some_and(|position| self.aliases[*position as usize].declaration.is_some())
+    }
+
+    /// Records the declaration of `id` at `span` as `body`; `id` must not be declared yet.
+    pub fn declare(&mut self, id: interner::Symbol, span: SourceSpan, body: Type) {
+        let position = self.mention(id, span);
+        let alias = &mut self.aliases[position as usize];
+        debug_assert!(alias.declaration.is_none(), "`!{id}` is declared twice");
+        alias.declaration = Some(Span::new(span, body));
+        self.declared.push(position);
+    }
+
+    /// The aliases in order of first mention.
+    pub fn aliases(&self) -> &[RecScopeAlias] {
+        &self.aliases
+    }
+
+    /// The positions of the declared aliases, in order of declaration.
+    pub fn declared(&self) -> &[u32] {
+        &self.declared
+    }
 }
 
 /// Parse IR assembly in the generic format from `source`, registered with the context under `name`

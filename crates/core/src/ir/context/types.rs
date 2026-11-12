@@ -303,7 +303,6 @@ impl Context {
     /// `ty` with every recursion variable `rec.i` it contains, however deeply, replaced by
     /// `subst(i)`. A type that is not open is returned unchanged; the open types around the
     /// variables are rebuilt with [Self::map_subtypes].
-    #[cfg(test)]
     pub(crate) fn substitute_rec_vars(&self, ty: Type, subst: &mut dyn FnMut(u32) -> Type) -> Type {
         self.substitute_rec_vars_with(ty, subst, &mut FxHashMap::default())
     }

@@ -523,13 +523,16 @@ fn parse_alias_or_dialect_type<'input, P: Parser<'input>>(
     parser.token_stream_mut().next()?;
     let Some((dialect, name)) = id.split_once('.') else {
         let alias = Symbol::intern(id);
-        return parser
-            .state()
-            .symbols
-            .type_alias_definitions
-            .get(&alias)
-            .map(|ty| *ty.inner())
-            .ok_or(ParserError::UndefinedTypeAlias { span, id: alias });
+        let symbols = &mut parser.state_mut().symbols;
+        if let Some(ty) = symbols.type_alias_definitions.get(&alias) {
+            return Ok(*ty.inner());
+        }
+        // Inside a `rec` block, an alias that is not defined names a member of the block.
+        let Some(scope) = symbols.rec_scope.as_mut() else {
+            return Err(ParserError::UndefinedTypeAlias { span, id: alias });
+        };
+        let index = scope.mention(alias, span);
+        return Ok(parser.context().rec_var(index));
     };
 
     if dialect

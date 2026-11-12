@@ -2099,7 +2099,7 @@ where
 
 /// Parses the type declarations that come next at the top level, if any.
 ///
-///   type-declarations ::= (type-alias-def)*
+///   type-declarations ::= (type-alias-def | rec-group-def)*
 ///
 pub(super) fn parse_type_declarations<'input, P>(parser: &mut OperationParser<P>) -> ParseResult
 where
@@ -2111,8 +2111,8 @@ where
 
 /// Parses a type declaration if one comes next at the top level, and returns whether it did.
 ///
-/// The keyword `type` is recognised only where it is followed by a `!`-identifier, so it remains
-/// usable as an operation or attribute name. A `!`-identifier at the top level is the removed
+/// The keyword `type` is recognised only where it is followed by a `!`-identifier, and `rec` only
+/// where it is followed by `{`, so both remain usable as operation and attribute names. A `!`-identifier at the top level is the removed
 /// `!alias = type` form, and is an error.
 fn parse_optional_type_declaration<'input, P>(parser: &mut OperationParser<P>) -> ParseResult<bool>
 where
@@ -2126,6 +2126,12 @@ where
             if matches!(parser.token_stream().peek_second(), Some(Token::BangIdent(_))) =>
         {
             parse_type_alias_def(parser)?;
+            Ok(true)
+        }
+        Token::BareIdent("rec")
+            if matches!(parser.token_stream().peek_second(), Some(Token::Lbrace)) =>
+        {
+            parse_rec_group_def(parser)?;
             Ok(true)
         }
         Token::BangIdent(_) => Err(ParserError::BareTypeAliasDefinition {
@@ -2200,6 +2206,146 @@ where
     let span = span!(parser.source_id(), start, parser.token_stream().previous_end());
     define_type_alias(parser, id, span, ty);
     Ok(())
+}
+
+/// Parse the declaration of a recursion group.
+///
+///   rec-group-def ::= 'rec' '{' type-alias-def+ '}'
+///
+/// Inside the block, an alias that is not defined before the block names a member of the block,
+/// whether or not it has been declared yet; the members are in the order of their declarations.
+/// After the block, each alias names its member.
+fn parse_rec_group_def<'input, P>(parser: &mut OperationParser<P>) -> ParseResult
+where
+    P: Parser<'input>,
+{
+    let rec_span = parser
+        .token_stream_mut()
+        .expect_if("'rec'", |tok| tok == Token::BareIdent("rec"))?
+        .span();
+    parser.parse_lbrace()?;
+    parser.state_mut().symbols.rec_scope = Some(Default::default());
+    let declarations = parse_rec_group_body(parser);
+    let scope = parser.state_mut().symbols.rec_scope.take().expect("the scope of the block");
+    declarations?;
+
+    // Every alias of the block is declared in it.
+    if let Some(alias) = scope.aliases().iter().find(|alias| alias.declaration.is_none()) {
+        return Err(ParserError::UndefinedTypeAlias {
+            span: alias.first_use,
+            id: alias.id,
+        });
+    }
+    let declared = scope.declared();
+    if declared.is_empty() {
+        return Err(ParserError::InvalidRecGroup {
+            span: rec_span,
+            reason: "a `rec` block declares at least one type".to_string(),
+        });
+    }
+
+    // Renumber the variables from the order of first mention to the order of declaration.
+    let mut renumbered = alloc::vec![0u32; declared.len()];
+    for (member, position) in declared.iter().enumerate() {
+        renumbered[*position as usize] = member as u32;
+    }
+    let context = parser.context_rc();
+    let in_order = renumbered
+        .iter()
+        .enumerate()
+        .all(|(position, member)| position as u32 == *member);
+    let declarations = declared
+        .iter()
+        .map(|position| {
+            let alias = &scope.aliases()[*position as usize];
+            let declaration = alias.declaration.expect("every alias is declared");
+            (alias.id, declaration.span(), declaration.into_inner())
+        })
+        .collect::<Vec<_>>();
+    let bodies = declarations
+        .iter()
+        .map(|(_, _, body)| {
+            if in_order {
+                *body
+            } else {
+                context.substitute_rec_vars(*body, &mut |index| {
+                    context.rec_var(renumbered[index as usize])
+                })
+            }
+        })
+        .collect::<SmallVec<[Type; 4]>>();
+
+    let members = context.rec_group(&bodies).map_err(|err| {
+        use crate::types::RecGroupError;
+        let span = match err {
+            RecGroupError::Empty => rec_span,
+            RecGroupError::BareVariable { member }
+            | RecGroupError::ScalarMember { member }
+            | RecGroupError::VariableOutOfRange { member, .. } => declarations[member].1,
+        };
+        ParserError::InvalidType {
+            span,
+            reason: err.to_string(),
+        }
+    })?;
+    for ((id, span, _), member) in declarations.into_iter().zip(members) {
+        define_type_alias(parser, id, span, member);
+    }
+    Ok(())
+}
+
+/// Parse the declarations of a `rec` block, through its closing `}`, into the parser's scope.
+fn parse_rec_group_body<'input, P>(parser: &mut OperationParser<P>) -> ParseResult
+where
+    P: Parser<'input>,
+{
+    let unexpected_eof = || ParserError::UnexpectedEof {
+        expected: alloc::vec!["'type'".to_string(), "'}'".to_string()],
+    };
+    loop {
+        let Some((start, token, end)) = parser.token_stream_mut().peek()? else {
+            return Err(unexpected_eof());
+        };
+        match token {
+            Token::Eof => return Err(unexpected_eof()),
+            Token::Rbrace => {
+                parser.parse_rbrace()?;
+                return Ok(());
+            }
+            Token::BareIdent("rec") => {
+                return Err(ParserError::InvalidRecGroup {
+                    span: span!(parser.source_id(), start, end),
+                    reason: "`rec` blocks do not nest".to_string(),
+                });
+            }
+            Token::BareIdent("type") => {
+                let (span, id) = parse_type_alias_def_head(parser)?;
+                let symbols = &mut parser.state_mut().symbols;
+                let scope = symbols.rec_scope.as_ref().expect("the scope of the block");
+                if symbols.type_alias_definitions.contains_key(&id) || scope.is_declared(id) {
+                    return Err(ParserError::TypeAliasAlreadyDefined { span, id });
+                }
+                symbols.rec_scope.as_mut().expect("the scope of the block").mention(id, span);
+                let body = parser.parse_type()?.into_inner();
+                parser.parse_semicolon()?;
+                let span = span!(parser.source_id(), start, parser.token_stream().previous_end());
+                parser
+                    .state_mut()
+                    .symbols
+                    .rec_scope
+                    .as_mut()
+                    .expect("the scope of the block")
+                    .declare(id, span, body);
+            }
+            token => {
+                return Err(ParserError::UnexpectedToken {
+                    span: span!(parser.source_id(), start, end),
+                    token: token.to_string(),
+                    expected: Some("a type declaration, 'type !name = ..;', or '}'".to_string()),
+                });
+            }
+        }
+    }
 }
 
 /// Parse the start of a type alias declaration, `'type' '!' alias-name '='`, and return the alias

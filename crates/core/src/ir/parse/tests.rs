@@ -2496,3 +2496,217 @@ builtin.function public extern(\"C\") @f(%0: i32) {
         "{printed}"
     );
 }
+
+/// The types of the arguments of a function `f` whose argument types are `arguments`, parsed after
+/// the declarations `declarations`.
+fn declared_types(test: &ParserTest, declarations: &str, arguments: &[&str]) -> Vec<Type> {
+    let arguments = arguments
+        .iter()
+        .enumerate()
+        .map(|(i, ty)| format!("%{i}: {ty}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let source = format!(
+        "{declarations}\nbuiltin.function public extern(\"C\") @f({arguments}) {{\n    \
+         builtin.ret;\n}};"
+    );
+    argument_types(test, &source)
+}
+
+/// The type of field `index` of the struct `ty`.
+fn field(ty: Type, index: usize) -> Type {
+    ty.as_struct().unwrap_or_else(|| panic!("`{ty}` is a struct")).fields()[index].ty
+}
+
+const LIST_AND_NODE: &str = "\
+rec {
+  type !list = struct list<i32, ptr<!node>>;
+  type !node = struct node<ptr<!list>, ptr<!node>>;
+}";
+
+#[test]
+fn a_rec_block_defines_members_that_refer_to_each_other() {
+    let test = ParserTest::default();
+    let [list, node] = declared_types(&test, LIST_AND_NODE, &["!list", "!node"])[..] else {
+        unreachable!()
+    };
+    assert_eq!(list.rec_group(), node.rec_group());
+    assert!(list.rec_group().is_some());
+    assert_eq!((list.rec_index(), node.rec_index()), (Some(0), Some(1)));
+    assert_eq!(field(list, 0), test.context().i32());
+    assert_eq!(field(list, 1).pointee(), Some(node));
+    assert_eq!(field(node, 0).pointee(), Some(list));
+    assert_eq!(field(node, 1).pointee(), Some(node));
+    assert!(!list.is_open() && !node.is_open());
+}
+
+#[test]
+fn the_members_of_a_rec_block_are_in_declaration_order() {
+    let test = ParserTest::default();
+    let types = declared_types(
+        &test,
+        "rec {\n  type !b = struct b<ptr<!a>>;\n  type !a = struct a<ptr<!b>>;\n}",
+        &["!a", "!b"],
+    );
+    let [a, b] = types[..] else { unreachable!() };
+    assert_eq!((b.rec_index(), a.rec_index()), (Some(0), Some(1)));
+    assert_eq!(field(b, 0).pointee(), Some(a));
+    assert_eq!(field(a, 0).pointee(), Some(b));
+
+    // `z` is mentioned before `y` is declared, so the variables are renumbered.
+    let types = declared_types(
+        &test,
+        "rec {
+  type !x = struct x<ptr<!z>, ptr<!y>>;
+  type !y = struct y<ptr<!x>>;
+  type !z = struct z<ptr<!y>>;
+}",
+        &["!x", "!y", "!z"],
+    );
+    let [x, y, z] = types[..] else { unreachable!() };
+    assert_eq!([x, y, z].map(|ty| ty.rec_index()), [Some(0), Some(1), Some(2)]);
+    assert_eq!(field(x, 0).pointee(), Some(z));
+    assert_eq!(field(x, 1).pointee(), Some(y));
+    assert_eq!(field(y, 0).pointee(), Some(x));
+    assert_eq!(field(z, 0).pointee(), Some(y));
+}
+
+#[test]
+fn a_rec_block_of_one_member() {
+    let test = ParserTest::default();
+    let context = test.context();
+
+    let [list] = declared_types(&test, "rec { type !l = struct l<i32, ptr<!l>>; }", &["!l"])[..]
+    else {
+        unreachable!()
+    };
+    assert_eq!(list.rec_index(), Some(0));
+    assert_eq!(field(list, 1).pointee(), Some(list));
+
+    // A closed body is the plain type itself.
+    let [closed] = declared_types(&test, "rec { type !c = struct c<i32>; }", &["!c"])[..] else {
+        unreachable!()
+    };
+    assert_eq!(closed.rec_group(), None);
+    assert_eq!(
+        closed,
+        context.struct_type(crate::StructType::named(
+            crate::interner::Symbol::intern("c"),
+            [context.i32().into()]
+        ))
+    );
+}
+
+#[test]
+fn an_alias_defined_before_a_rec_block_is_not_a_member() {
+    let test = ParserTest::default();
+    let types = declared_types(
+        &test,
+        "type !o = struct o<i32>;\nrec { type !l = struct l<ptr<!o>, ptr<!l>>; }",
+        &["!o", "!l"],
+    );
+    let [outer, list] = types[..] else {
+        unreachable!()
+    };
+    assert_eq!(outer.rec_group(), None);
+    assert_eq!(field(list, 0).pointee(), Some(outer));
+    assert_eq!(field(list, 1).pointee(), Some(list));
+}
+
+#[test]
+fn a_rec_block_parsed_twice_under_other_names_gives_the_same_members() {
+    let test = ParserTest::default();
+    let declarations = format!(
+        "{LIST_AND_NODE}
+rec {{
+  type !l2 = struct list<i32, ptr<!n2>>;
+  type !n2 = struct node<ptr<!l2>, ptr<!n2>>;
+}}"
+    );
+    let types = declared_types(&test, &declarations, &["!list", "!node", "!l2", "!n2"]);
+    assert_eq!(types[0], types[2]);
+    assert_eq!(types[1], types[3]);
+}
+
+#[test]
+fn the_alias_spellings_the_printer_chooses_parse() {
+    let test = ParserTest::default();
+    let types = declared_types(
+        &test,
+        "rec {
+  type !list_0 = struct<ptr<!t0>>;
+  type !t0 = struct<ptr<!a$b>>;
+  type !a$b = struct a$b<ptr<!list_0>>;
+}",
+        &["!list_0", "!t0", "!a$b"],
+    );
+    assert_eq!(
+        types.iter().map(|ty| ty.rec_index()).collect::<Vec<_>>(),
+        [Some(0), Some(1), Some(2)]
+    );
+    assert_eq!(field(types[2], 0).pointee(), Some(types[0]));
+}
+
+#[test]
+fn invalid_rec_blocks_are_reported() {
+    let world = "\nbuiltin.world {};";
+    for (declarations, expected) in [
+        ("rec { type !a = struct<ptr<!b>>; }", "use of undefined type alias '!b'"),
+        (
+            "rec { type !a = struct<ptr<!a>>; type !a = struct<i32>; }",
+            "alias 'a' is already defined",
+        ),
+        (
+            "type !a = i32;\nrec { type !a = struct<ptr<!a>>; }",
+            "alias 'a' is already defined",
+        ),
+        ("rec { }", "a `rec` block declares at least one type"),
+        ("rec { rec { type !a = struct<ptr<!a>>; } }", "`rec` blocks do not nest"),
+        (
+            "rec { type !a = !a; }",
+            "member 0 of a recursion group is a bare recursion variable",
+        ),
+        (
+            "rec { type !a = struct<ptr<!b>>; type !b = i32; }",
+            "member 1 of a recursion group is a scalar type",
+        ),
+        ("rec { type !a = struct<ptr<!a>> }", "invalid syntax"),
+        ("rec { builtin.world {}; }", "a type declaration, 'type !name = ..;', or '}'"),
+    ] {
+        let message = parse_error_text(&format!("{declarations}{world}"));
+        assert!(message.contains(expected), "{declarations}: {message}");
+    }
+
+    let message = parse_error_text("rec { type !a = struct<ptr<!a>>;");
+    assert!(message.contains("unexpected end of input"), "{message}");
+}
+
+#[test]
+fn an_undefined_alias_outside_a_rec_block_is_still_undefined() {
+    let message = parse_error_text(
+        "builtin.function public extern(\"C\") @f(%0: !nope) {\n    builtin.ret;\n};",
+    );
+    assert!(message.contains("use of undefined type alias '!nope'"), "{message}");
+
+    let context = Rc::new(Context::default());
+    let message = type_error_text(&context, "!nope");
+    assert!(message.contains("use of undefined type alias '!nope'"), "{message}");
+    let message = type_error_text(&context, "struct<ptr<!nope>>");
+    assert!(message.contains("use of undefined type alias '!nope'"), "{message}");
+}
+
+/// The bodies in a `rec` block are types like any other, and their nesting is limited the same way.
+#[cfg(feature = "std")]
+#[test]
+fn type_nesting_is_limited_in_a_rec_block() {
+    on_a_1_mb_stack(|| {
+        let body = nested_type_text("struct<", "ptr<!a>", ">", 63);
+        let test = ParserTest::default();
+        declared_types(&test, &format!("rec {{ type !a = {body}; }}"), &["!a"]);
+
+        let body = nested_type_text("struct<", "ptr<!a>", ">", 64);
+        let message =
+            parse_error_text(&format!("rec {{ type !a = {body}; }}\nbuiltin.world {{}};"));
+        assert!(message.contains("type nesting is too deep (limit 64)"), "{message}");
+    });
+}

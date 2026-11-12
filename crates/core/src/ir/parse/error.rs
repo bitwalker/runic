@@ -342,6 +342,12 @@ pub enum ParserError {
         #[label(primary, "a type alias is declared with `type !name = ..;`")]
         span: SourceSpan,
     },
+    #[error("invalid recursion group")]
+    InvalidRecGroup {
+        #[label(primary, "{reason}")]
+        span: SourceSpan,
+        reason: String,
+    },
     #[error("invalid type alias name '{id}'")]
     InvalidTypeAliasName {
         #[label(primary, "{reason}")]
