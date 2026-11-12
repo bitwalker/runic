@@ -2710,3 +2710,352 @@ fn type_nesting_is_limited_in_a_rec_block() {
         assert!(message.contains("type nesting is too deep (limit 64)"), "{message}");
     });
 }
+
+/// A function `f`, built in a test of its own with the test dialect registered, with an argument of
+/// each type `params` returns and, in its body, a cast of its first argument to each type `casts`
+/// returns. The casts' types are written inside an attribute, `#builtin.type<..>`.
+fn function_over(
+    params: impl FnOnce(&Context) -> Vec<Type>,
+    casts: impl FnOnce(&Context, &[Type]) -> Vec<Type>,
+) -> Test {
+    let mut test = Test::named("f");
+    test.context_rc().get_or_register_dialect::<TestDialect>();
+    let params = params(test.context());
+    let casts = casts(test.context(), &params);
+    test.with_function("f", &params, &[]);
+    {
+        let mut f = test.function_builder();
+        let arg = f.entry_block().borrow().arguments()[0] as ValueRef;
+        for ty in casts {
+            f.builder_mut()
+                .unrealized_conversion_cast(arg, ty, SourceSpan::UNKNOWN)
+                .unwrap();
+        }
+        f.builder_mut().ret([], SourceSpan::UNKNOWN).unwrap();
+    }
+    test
+}
+
+/// `function` printed as the root of a print, with the declarations of its recursion groups.
+fn print_root(function: UnsafeIntrusiveEntityRef<Function>) -> String {
+    let flags = Default::default();
+    let function = function.as_operation_ref();
+    let mut printer = AsmPrinter::new(function.borrow().context_rc(), &flags);
+    printer.print_operation(function.borrow());
+    printer.finish().to_string()
+}
+
+/// The argument types of `function`, then the result types of the operations in its entry block.
+fn types_of(function: UnsafeIntrusiveEntityRef<Function>) -> Vec<Type> {
+    let function = function.borrow();
+    let entry = function.entry_block();
+    let entry = entry.borrow();
+    let mut types = entry
+        .arguments()
+        .iter()
+        .map(|arg| (*arg as ValueRef).borrow().ty())
+        .collect::<Vec<_>>();
+    for op in entry.body() {
+        types.extend(op.results().all().iter().map(|result| (*result as ValueRef).borrow().ty()));
+    }
+    types
+}
+
+/// Prints the function of `test`, parses the text in a fresh context and prints that again, and
+/// checks that the two texts are equal; then parses the text in the context of `test`, and checks
+/// that it gives the very types `test` was built with. Returns the text.
+fn assert_round_trips(test: &Test) -> String {
+    let printed = print_root(test.function());
+
+    let fresh = ParserTest::default();
+    fresh.context().get_or_register_dialect::<TestDialect>();
+    let reparsed = fresh
+        .parse::<Function>("round_trip.hir", &printed)
+        .unwrap_or_else(|err| panic!("{printed}\n{err:?}"));
+    assert_eq!(print_root(reparsed), printed);
+
+    let config = ParserConfig::new(test.context_rc());
+    let parsed = parse::parse::<Function>(config, "round_trip.hir", printed.as_str())
+        .into_result()
+        .unwrap_or_else(|err| panic!("{printed}\n{err:?}"));
+    assert_eq!(types_of(parsed), types_of(test.function()));
+    printed
+}
+
+/// `struct <name><ptr<rec.0>, held>` as a group of one, or unnamed if `name` is `None`.
+fn self_recursive(context: &Context, name: Option<&str>, held: Type) -> Type {
+    let fields = [context.ptr_type(context.rec_var(0)).into(), held.into()];
+    let body = match name {
+        Some(name) => context
+            .struct_type(crate::StructType::named(crate::interner::Symbol::intern(name), fields)),
+        None => context.struct_type(crate::StructType::new(fields)),
+    };
+    context.rec_group(&[body]).unwrap()[0]
+}
+
+/// The `list`/`node` pair of the design.
+fn list_and_node(context: &Context) -> [Type; 2] {
+    let (list, node) = (context.rec_var(0), context.rec_var(1));
+    let named = |name: &str, fields: [Type; 2]| {
+        context.struct_type(crate::StructType::named(
+            crate::interner::Symbol::intern(name),
+            fields.map(Into::into),
+        ))
+    };
+    let members = context
+        .rec_group(&[
+            named("list", [context.i32(), context.ptr_type(node)]),
+            named("node", [context.ptr_type(list), context.ptr_type(node)]),
+        ])
+        .unwrap();
+    [members[0], members[1]]
+}
+
+#[test]
+fn a_self_recursive_struct_round_trips() {
+    let test = function_over(
+        |cx| [self_recursive(cx, Some("list"), cx.i32())].into(),
+        |cx, params| [cx.ptr_type(params[0])].into(),
+    );
+    let printed = assert_round_trips(&test);
+    assert!(printed.starts_with("rec {\n  type !list = struct list<ptr<!list>, i32>;\n}\n\n"));
+}
+
+#[test]
+fn a_mutually_recursive_pair_round_trips() {
+    let test = function_over(|cx| list_and_node(cx).into(), |_, params| [params[1]].into());
+    assert!(assert_round_trips(&test).starts_with(
+        "rec {\n  type !list = struct list<i32, ptr<!node>>;\n  type !node = struct \
+         node<ptr<!list>, ptr<!node>>;\n}\n\n"
+    ));
+}
+
+#[test]
+fn an_enum_member_round_trips() {
+    use crate::{EnumType, EnumVariant, interner::Symbol};
+
+    let test = function_over(
+        |cx| {
+            let tree = EnumType::new(
+                Some(Symbol::intern("tree")),
+                cx.i8(),
+                [
+                    EnumVariant::new(Symbol::intern("leaf")).with_payload(cx.i32()),
+                    EnumVariant::new(Symbol::intern("node"))
+                        .with_payload(cx.ptr_type(cx.rec_var(0))),
+                ],
+            )
+            .unwrap();
+            let values = EnumType::new(
+                None,
+                cx.i8(),
+                [
+                    EnumVariant::new(Symbol::intern("a")).with_payload(cx.ptr_type(cx.rec_var(0))),
+                    EnumVariant::new(Symbol::intern("b")).with_value(5),
+                    EnumVariant::new(Symbol::intern("c")),
+                ],
+            )
+            .unwrap();
+            [cx.enum_type(tree), cx.enum_type(values)]
+                .map(|body| cx.rec_group(&[body]).unwrap()[0])
+                .into()
+        },
+        |_, _| Vec::new(),
+    );
+    let printed = assert_round_trips(&test);
+    assert!(
+        printed.contains("type !tree = enum tree<i8; leaf: i32, node: ptr<!tree>>;"),
+        "{printed}"
+    );
+    assert!(printed.contains("type !t0 = enum<i8; a: ptr<!t0>, b = 5, c = 6>;"), "{printed}");
+}
+
+#[test]
+fn a_function_type_member_round_trips() {
+    let test = function_over(
+        |cx| {
+            let body = cx.function_type([cx.ptr_type(cx.rec_var(0))], [cx.i32()]);
+            [cx.rec_group(&[body]).unwrap()[0]].into()
+        },
+        |_, _| Vec::new(),
+    );
+    let printed = assert_round_trips(&test);
+    assert!(
+        printed.starts_with("rec {\n  type !t0 = (ptr<!t0>) -> i32;\n}\n\n"),
+        "{printed}"
+    );
+}
+
+#[test]
+fn a_dialect_type_member_round_trips() {
+    use crate::dialects::test::TestVectorType;
+
+    let test = function_over(
+        |cx| {
+            let body = cx.intern_type(TestVectorType::new(cx.ptr_type(cx.rec_var(0)), 4));
+            [cx.rec_group(&[body]).unwrap()[0]].into()
+        },
+        |_, _| Vec::new(),
+    );
+    let printed = assert_round_trips(&test);
+    assert!(
+        printed.starts_with("rec {\n  type !t0 = !test.vector<ptr<!t0> x 4>;\n}\n\n"),
+        "{printed}"
+    );
+}
+
+#[test]
+fn a_group_referring_to_another_round_trips() {
+    let test = function_over(
+        |cx| {
+            let a = self_recursive(cx, Some("a"), cx.i32());
+            [self_recursive(cx, Some("b"), cx.ptr_type(a))].into()
+        },
+        |_, _| Vec::new(),
+    );
+    let printed = assert_round_trips(&test);
+    assert!(
+        printed.starts_with(
+            "rec {\n  type !a = struct a<ptr<!a>, i32>;\n}\nrec {\n  type !b = struct b<ptr<!b>, \
+             ptr<!a>>;\n}\n\n"
+        ),
+        "{printed}"
+    );
+}
+
+#[test]
+fn groups_whose_structs_share_a_name_round_trip() {
+    let test = function_over(
+        |cx| {
+            [
+                self_recursive(cx, Some("list"), cx.i32()),
+                self_recursive(cx, Some("list"), cx.i64()),
+            ]
+            .into()
+        },
+        |_, _| Vec::new(),
+    );
+    let printed = assert_round_trips(&test);
+    assert!(printed.contains("type !list = struct list<ptr<!list>, i32>;"), "{printed}");
+    assert!(printed.contains("type !list_0 = struct list<ptr<!list_0>, i64>;"), "{printed}");
+}
+
+#[test]
+fn unnamed_and_unusually_named_members_round_trip() {
+    let test = function_over(
+        |cx| {
+            let (first, second) = (cx.rec_var(0), cx.rec_var(1));
+            let pair = cx
+                .rec_group(&[
+                    cx.struct_type(crate::StructType::new([cx.ptr_type(second).into()])),
+                    cx.struct_type(crate::StructType::new([cx.ptr_type(first).into()])),
+                ])
+                .unwrap();
+            [
+                pair[0],
+                pair[1],
+                self_recursive(cx, Some("my type"), cx.i32()),
+                self_recursive(cx, Some("a$b"), cx.i32()),
+                self_recursive(cx, None, cx.i8()),
+            ]
+            .into()
+        },
+        |_, _| Vec::new(),
+    );
+    let printed = assert_round_trips(&test);
+    for declaration in [
+        "type !t0 = struct<ptr<!t1>>;",
+        "type !t1 = struct<ptr<!t0>>;",
+        "type !t2 = struct \"my type\"<ptr<!t2>, i32>;",
+        "type !a$b = struct \"a$b\"<ptr<!a$b>, i32>;",
+        "type !t3 = struct<ptr<!t3>, i8>;",
+    ] {
+        assert!(printed.contains(declaration), "{declaration}\n{printed}");
+    }
+}
+
+#[test]
+fn a_member_used_only_inside_an_attribute_round_trips() {
+    let test = function_over(
+        |cx| [cx.i32()].into(),
+        |cx, _| [cx.ptr_type(self_recursive(cx, Some("list"), cx.i32()))].into(),
+    );
+    let printed = assert_round_trips(&test);
+    assert!(printed.starts_with("rec {\n  type !list = struct list<ptr<!list>, i32>;\n}\n\n"));
+    assert!(printed.contains("#builtin.type<ptr<!list>>"), "{printed}");
+}
+
+/// A group of 2,000 members, member `i` being `struct<ptr<member (i + 1) % 2000>>`, prints and
+/// parses on a 1 MB stack.
+#[cfg(feature = "std")]
+#[test]
+fn a_group_of_2000_members_round_trips() {
+    on_a_1_mb_stack(|| {
+        const N: u32 = 2000;
+        let test = function_over(
+            |cx| {
+                let bodies = (0..N)
+                    .map(|i| {
+                        let next = cx.ptr_type(cx.rec_var((i + 1) % N));
+                        cx.struct_type(crate::StructType::new([next.into()]))
+                    })
+                    .collect::<Vec<_>>();
+                [cx.rec_group(&bodies).unwrap()[0]].into()
+            },
+            |_, _| Vec::new(),
+        );
+        let printed = print_root(test.function());
+        assert!(printed.contains("type !t1999 = struct<ptr<!t0>>;"));
+
+        let fresh = ParserTest::default();
+        let reparsed = fresh.parse::<Function>("large.hir", &printed).unwrap();
+        assert_eq!(print_root(reparsed), printed);
+
+        let config = ParserConfig::new(test.context_rc());
+        let parsed = parse::parse::<Function>(config, "large.hir", printed.as_str())
+            .into_result()
+            .unwrap();
+        assert_eq!(types_of(parsed), types_of(test.function()));
+    });
+}
+
+#[test]
+fn hand_written_aliases_print_with_the_printers_names() {
+    let test = ParserTest::default();
+    let source = "\
+rec {
+  type !n = struct node<ptr<!l>, ptr<!n>>;
+  type !l = struct list<i32, ptr<!n>>;
+}
+
+rec {
+  type !anon = struct<ptr<!anon>, ptr<!l>>;
+}
+
+builtin.function public extern(\"C\") @f(%0: !l, %1: !anon) {
+    builtin.ret;
+};";
+    let function = test.parse::<Function>("hand_written.hir", source).unwrap();
+    let printed = print_root(function);
+    let (declarations, operation) = printed.split_once("\n\n").unwrap();
+    assert_eq!(
+        declarations,
+        "\
+rec {
+  type !node = struct node<ptr<!list>, ptr<!node>>;
+  type !list = struct list<i32, ptr<!node>>;
+}
+rec {
+  type !t0 = struct<ptr<!t0>, ptr<!list>>;
+}"
+    );
+    assert!(operation.contains(": !list, %") && operation.contains(": !t0)"), "{operation}");
+
+    let test = ParserTest::default();
+    let reparsed = test.parse::<Function>("fixed_point.hir", &printed).unwrap();
+    let reprinted = print_root(reparsed);
+    let test = ParserTest::default();
+    let reparsed = test.parse::<Function>("fixed_point.hir", &reprinted).unwrap();
+    assert_eq!(print_root(reparsed), reprinted);
+    assert_eq!(reprinted.split_once("\n\n").unwrap().0, declarations);
+}
