@@ -1829,3 +1829,41 @@ fn integer_literals_in_attribute_position_accept_a_sign() {
     assert!(parse("-0x1", context.i8()).is_err());
     assert_eq!(parse("-1", context.i1()).unwrap(), Immediate::I1(true));
 }
+
+/// The test dialect's builders make a constant in the representation its parser does, so equal
+/// constants are equal however they were made.
+#[test]
+fn a_built_constant_equals_the_same_constant_parsed_from_text() -> TestResult {
+    use crate::{AttributeRef, dialects::test::TestOpBuilder};
+
+    let constant_value = |value: ValueRef| -> AttributeRef {
+        let op = value.borrow().get_defining_op().unwrap();
+        op.borrow().get_attribute("value").unwrap()
+    };
+    let immediate_and_type = |attr: AttributeRef| {
+        let attr = attr.borrow();
+        let attr = attr.as_attr().as_trait::<dyn IntegerLikeAttr>().unwrap();
+        (attr.as_immediate(), attr.ty())
+    };
+    for (value, text) in [(7u32, "7"), (u32::MAX, "-1"), (u32::MAX, "4294967295")] {
+        let mut test = ParserTest::default();
+        test.context().get_or_register_dialect::<TestDialect>();
+        let parsed =
+            test.parse::<Function>("constant.hir", &function_with_integer_literal(32, text))?;
+        let parsed = {
+            let function = parsed.borrow();
+            let body = function.body();
+            let op = body.entry().front().unwrap();
+            op.borrow().get_attribute("value").unwrap()
+        };
+        let i32 = test.context().i32();
+        test.with_function("built", &[], &[i32]);
+        let built = {
+            let mut builder = test.function_builder();
+            builder.u32(value, SourceSpan::UNKNOWN)?
+        };
+        let built = constant_value(built);
+        assert_eq!(immediate_and_type(built), immediate_and_type(parsed), "{text}");
+    }
+    Ok(())
+}

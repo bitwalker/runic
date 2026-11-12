@@ -319,7 +319,7 @@ mod tests {
             };
             let constant_builder = rewriter.create::<Constant, _>(span);
             let constant: UnsafeIntrusiveEntityRef<Constant> =
-                constant_builder(Immediate::U32(2)).unwrap();
+                constant_builder(Immediate::I32(2)).unwrap();
             let shift = constant.borrow().result().as_value_ref();
             let mul_builder = rewriter.create::<Mul, _>(span);
             let mul = mul_builder(lhs, shift, Overflow::Wrapping).unwrap();

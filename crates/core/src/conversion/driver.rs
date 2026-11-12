@@ -803,7 +803,7 @@ mod tests {
             let Some(_rhs) = values.get(1).copied() else {
                 return Ok(false);
             };
-            let constant = rewriter.create_op::<Constant, _>(span, (Immediate::U32(2),))?;
+            let constant = rewriter.create_op::<Constant, _>(span, (Immediate::I32(2),))?;
             let rhs = constant.borrow().result().as_value_ref();
             let mul = rewriter.create_op::<Mul, _>(span, (lhs, rhs, Overflow::Checked))?;
             let result = mul.borrow().result().as_value_ref();
@@ -883,7 +883,7 @@ mod tests {
             rewriter: &mut ConversionPatternRewriter,
         ) -> Result<bool, Report> {
             let span = op.borrow().span();
-            let _ = rewriter.create_op::<Constant, _>(span, (Immediate::U32(1),))?;
+            let _ = rewriter.create_op::<Constant, _>(span, (Immediate::I32(1),))?;
             Ok(false)
         }
     }

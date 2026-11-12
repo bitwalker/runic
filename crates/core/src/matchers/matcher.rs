@@ -785,7 +785,7 @@ mod tests {
             OpFoldResult::Attribute(attr) => attr.borrow().as_immediate().unwrap(),
             OpFoldResult::Value(v) => panic!("expected immediate, got {v}"),
         };
-        assert_eq!(lhs, Immediate::U32(1));
+        assert_eq!(lhs, Immediate::I32(1));
         assert_eq!(rhs_fr, OpFoldResult::Value(rhs));
     }
 
@@ -823,7 +823,7 @@ mod tests {
         let sum_op = sum.borrow().get_defining_op().unwrap();
 
         // `lhs` should produce a matching constant value of the correct type and value
-        assert_eq!(constant_of::<Immediate>().matches(&lhs_op.borrow()), Some(Immediate::U32(1)));
+        assert_eq!(constant_of::<Immediate>().matches(&lhs_op.borrow()), Some(Immediate::I32(1)));
         assert!(constant_of::<Immediate>().matches(&sum_op.borrow()).is_none());
     }
 
@@ -849,7 +849,7 @@ mod tests {
             foldable_operand_of_trait::<dyn crate::attributes::IntegerLikeAttr>().matches(&operand);
 
         let matched = matched.expect("expected the shift operand to match as an integer immediate");
-        assert_eq!(matched.borrow().as_immediate(), Immediate::U32(1));
+        assert_eq!(matched.borrow().as_immediate(), Immediate::I32(1));
     }
 
     fn setup(name: &'static str, test: &mut Test) -> (ValueRef, ValueRef, ValueRef) {
