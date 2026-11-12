@@ -3972,3 +3972,37 @@ fn as_bool_reads_a_one_bit_integer_attribute() {
     let narrow = context.int_attr(Int::from(1i8), context.i8()).as_attribute_ref();
     assert_eq!(narrow.borrow().as_bool(), None);
 }
+
+/// An attribute read where a type is expected has that type whatever its form: written with a
+/// body, bare, or without a value (whose more specific message is kept).
+#[test]
+fn an_attribute_with_a_body_is_held_to_the_expected_type() {
+    let context = Rc::new(Context::default());
+    for (text, ty, attr_ty) in [
+        ("#builtin.i32<5>", context.i8(), "i32"),
+        ("#builtin.int<5 : i32>", context.i8(), "i32"),
+        ("#builtin.int<5 : i32>", context.opaque_ptr_type(), "i32"),
+        ("#builtin.i64<0>", context.isize(), "i64"),
+        ("#builtin.bool<true>", context.i32(), "i1"),
+        ("true", context.i32(), "i1"),
+        ("true", context.opaque_ptr_type(), "i1"),
+    ] {
+        let err = parse_attribute_text(&context, text, ty).unwrap_err();
+        let crate::parse::ParserError::InvalidAttributeValue { reason, .. } = err else {
+            panic!("{text} : {ty}: {err:?}");
+        };
+        assert_eq!(reason, format!("expected a value of type {ty}, got one of type {attr_ty}"));
+    }
+    // and the forms that keep working
+    for (text, ty) in [
+        ("#builtin.i32<5>", context.i32()),
+        ("#builtin.int<5 : isize>", context.isize()),
+        ("true", context.i1()),
+        ("#builtin.bool<true>", context.i1()),
+        ("#builtin.bool<true>", context.unknown_type()),
+        ("#builtin.string", context.i32()),
+        ("\"str\"", context.i32()),
+    ] {
+        assert!(parse_attribute_text(&context, text, ty).is_ok(), "{text} read as {ty}");
+    }
+}

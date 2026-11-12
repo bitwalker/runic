@@ -345,79 +345,22 @@ pub trait Parser<'input> {
         Ok(buf)
     }
 
-    /// Parse an arbitrary attribute whose value type is `A`
+    /// Parse an arbitrary attribute value expected to have type `ty`.
     ///
-    /// If `name` is provided, it will be used for maintaining symbol references if the attribute
-    /// is a symbol reference.
+    /// When `ty` is known, the attribute read has type `ty` whatever its form, or this is an
+    /// error: an attribute with a type of its own is not retyped, and one without a type (such
+    /// as a string) is accepted. An unknown `ty` accepts an attribute of any type.
     fn parse_attribute(&mut self, ty: Type) -> ParseResult<Span<AttributeRef>> {
-        if self.token_stream_mut().is_next(|tok| matches!(tok, Token::HashIdent(_))) {
-            return self.parse_extended_attribute(ty);
-        }
-
-        // A type in attribute position is a `TypeAttr`
-        if let Some(parsed) = self.parse_optional_type()? {
-            let (span, parsed) = parsed.into_parts();
-            return Ok(Span::new(span, self.context_rc().create_attribute::<TypeAttr, _>(parsed)));
-        }
-
-        if self.token_stream_mut().is_next(|tok| {
-            matches!(tok, Token::Minus | Token::Int(_) | Token::Hex(_) | Token::Binary(_))
-        }) {
-            let literal = self.parse_integer_literal()?;
-            return integer_literal_attr(&self.context_rc(), literal, ty);
-        }
-
-        let Some(spanned) = self.token_stream_mut().next()? else {
-            return Err(ParserError::UnexpectedEof {
-                expected: vec!["attribute value".to_string()],
+        let attr = parse_attribute_value(self, ty)?;
+        // The expected type, when known, is the type of the attribute read, whatever its form.
+        let attr_ty = attr.inner().borrow().ty();
+        if !ty.is_unknown() && !attr_ty.is_unknown() && attr_ty != ty {
+            return Err(ParserError::InvalidAttributeValue {
+                span: attr.span(),
+                reason: format!("expected a value of type {ty}, got one of type {attr_ty}"),
             });
-        };
-
-        let (span, next) = spanned.into_parts();
-
-        match next {
-            Token::True | Token::False => Ok(Span::new(
-                span,
-                self.context_rc().create_attribute::<BoolAttr, _>(next == Token::True),
-            )),
-            Token::String(s) => {
-                Ok(Span::new(span, self.context_rc().create_attribute::<StringAttr, _>(s)))
-            }
-            Token::AtIdent(_) => {
-                // Parse symbol reference attribute
-                self.parse_symbol_ref().map(|spanned| spanned.map(|sym| sym.as_attribute_ref()))
-            }
-            Token::Lbrace => Err(ParserError::InvalidAttributeValue {
-                span,
-                reason: "a dictionary is not supported as an attribute value".to_string(),
-            }),
-            Token::Loc => {
-                self.token_stream_mut().expect(Token::Lparen)?;
-                let loc = self.parse_location_instance()?;
-                self.token_stream_mut().expect(Token::Rparen)?;
-                Ok(Span::new(span, self.context_rc().create_attribute::<LocationAttr, _>(loc)))
-            }
-            other => Err(ParserError::UnexpectedToken {
-                span,
-                token: other.to_string(),
-                expected: Some(format!(
-                    "expected one of: {}",
-                    DisplayValues::new(
-                        [
-                            Token::String(""),
-                            Token::Int(""),
-                            Token::Hex(""),
-                            Token::Binary(""),
-                            Token::Bang,
-                            Token::At,
-                            Token::Lbracket,
-                            Token::Lbrace,
-                        ]
-                        .into_iter()
-                    )
-                )),
-            }),
         }
+        Ok(attr)
     }
 
     fn parse_extended_attribute(&mut self, ty: Type) -> ParseResult<Span<AttributeRef>>;
@@ -1200,6 +1143,83 @@ impl IntegerLiteral {
             span,
             reason: format!("value is out of range for {ty}"),
         })
+    }
+}
+
+/// Reads an attribute value of any form; [Parser::parse_attribute] holds it to the expected type.
+fn parse_attribute_value<'input, P: ?Sized + Parser<'input>>(
+    parser: &mut P,
+    ty: Type,
+) -> ParseResult<Span<AttributeRef>> {
+    if parser.token_stream_mut().is_next(|tok| matches!(tok, Token::HashIdent(_))) {
+        return parser.parse_extended_attribute(ty);
+    }
+
+    // A type in attribute position is a `TypeAttr`
+    if let Some(parsed) = parser.parse_optional_type()? {
+        let (span, parsed) = parsed.into_parts();
+        return Ok(Span::new(span, parser.context_rc().create_attribute::<TypeAttr, _>(parsed)));
+    }
+
+    if parser.token_stream_mut().is_next(|tok| {
+        matches!(tok, Token::Minus | Token::Int(_) | Token::Hex(_) | Token::Binary(_))
+    }) {
+        let literal = parser.parse_integer_literal()?;
+        return integer_literal_attr(&parser.context_rc(), literal, ty);
+    }
+
+    let Some(spanned) = parser.token_stream_mut().next()? else {
+        return Err(ParserError::UnexpectedEof {
+            expected: vec!["attribute value".to_string()],
+        });
+    };
+
+    let (span, next) = spanned.into_parts();
+
+    match next {
+        Token::True | Token::False => Ok(Span::new(
+            span,
+            parser.context_rc().create_attribute::<BoolAttr, _>(next == Token::True),
+        )),
+        Token::String(s) => {
+            Ok(Span::new(span, parser.context_rc().create_attribute::<StringAttr, _>(s)))
+        }
+        Token::AtIdent(_) => {
+            // Parse symbol reference attribute
+            parser
+                .parse_symbol_ref()
+                .map(|spanned| spanned.map(|sym| sym.as_attribute_ref()))
+        }
+        Token::Lbrace => Err(ParserError::InvalidAttributeValue {
+            span,
+            reason: "a dictionary is not supported as an attribute value".to_string(),
+        }),
+        Token::Loc => {
+            parser.token_stream_mut().expect(Token::Lparen)?;
+            let loc = parser.parse_location_instance()?;
+            parser.token_stream_mut().expect(Token::Rparen)?;
+            Ok(Span::new(span, parser.context_rc().create_attribute::<LocationAttr, _>(loc)))
+        }
+        other => Err(ParserError::UnexpectedToken {
+            span,
+            token: other.to_string(),
+            expected: Some(format!(
+                "expected one of: {}",
+                DisplayValues::new(
+                    [
+                        Token::String(""),
+                        Token::Int(""),
+                        Token::Hex(""),
+                        Token::Binary(""),
+                        Token::Bang,
+                        Token::At,
+                        Token::Lbracket,
+                        Token::Lbrace,
+                    ]
+                    .into_iter()
+                )
+            )),
+        }),
     }
 }
 
