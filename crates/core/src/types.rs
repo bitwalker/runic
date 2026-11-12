@@ -295,7 +295,10 @@ mod tests {
     inventory::submit!(DialectTypeRegistrationInfo::new::<MislabelledTraits>());
 
     #[test]
-    #[should_panic(expected = "was built for another type")]
+    #[should_panic(
+        expected = "trait table of type `runic_core::types::tests::MislabelledTraits` was built \
+                    for another type, `runic_core::types::tests::WideType`"
+    )]
     fn a_trait_table_entry_built_for_another_type_is_rejected() {
         let context = Context::default();
         context.intern_type(MislabelledTraits(1));

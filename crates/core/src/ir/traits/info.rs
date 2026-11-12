@@ -8,12 +8,11 @@ use core::{
 pub struct TraitInfo {
     /// The [TypeId] of the trait type, used as a unique key for [TraitImpl]s
     type_id: TypeId,
-    /// The name of the trait type, for diagnostics
-    type_name: &'static str,
     /// The [TypeId] of the concrete type whose vtable `metadata` is
     concrete_type_id: TypeId,
-    /// The name of the concrete type, for diagnostics
-    concrete_type_name: &'static str,
+    /// The names of the trait type and of the concrete type, for diagnostics. A function rather
+    /// than the names themselves, so that they cost one pointer instead of two `&str`s.
+    type_names: fn() -> (&'static str, &'static str),
     /// Type-erased dyn metadata containing the trait vtable pointer for the concrete type
     ///
     /// This is transmuted to the correct trait type when reifying a `&dyn Trait` reference,
@@ -31,9 +30,8 @@ impl TraitInfo {
         let (_, metadata) = ptr.to_raw_parts();
         Self {
             type_id,
-            type_name: core::any::type_name::<Trait>(),
             concrete_type_id: TypeId::of::<T>(),
-            concrete_type_name: core::any::type_name::<T>(),
+            type_names: type_names::<T, Trait>,
             metadata: unsafe {
                 core::mem::transmute::<DynMetadata<Trait>, DynMetadata<dyn Any>>(metadata)
             },
@@ -47,8 +45,8 @@ impl TraitInfo {
 
     /// The name of the trait type.
     #[inline(always)]
-    pub const fn type_name(&self) -> &'static str {
-        self.type_name
+    pub fn type_name(&self) -> &'static str {
+        (self.type_names)().0
     }
 
     /// The [TypeId] of the concrete type this info was built for, whose vtable it holds.
@@ -59,8 +57,8 @@ impl TraitInfo {
 
     /// The name of the concrete type this info was built for.
     #[inline(always)]
-    pub const fn concrete_type_name(&self) -> &'static str {
-        self.concrete_type_name
+    pub fn concrete_type_name(&self) -> &'static str {
+        (self.type_names)().1
     }
 
     /// Obtain the dyn metadata for `Trait` from this info.
@@ -83,6 +81,11 @@ impl TraitInfo {
         unsafe { core::mem::transmute(self.metadata) }
     }
 }
+/// The names of `Trait` and of `T`.
+fn type_names<T: ?Sized, Trait: ?Sized>() -> (&'static str, &'static str) {
+    (core::any::type_name::<Trait>(), core::any::type_name::<T>())
+}
+
 impl Eq for TraitInfo {}
 impl PartialEq for TraitInfo {
     fn eq(&self, other: &Self) -> bool {
@@ -107,5 +110,40 @@ impl PartialOrd<TypeId> for TraitInfo {
 impl Ord for TraitInfo {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         self.type_id.cmp(&other.type_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::{
+        any::{Any, TypeId},
+        mem::size_of,
+        ptr::DynMetadata,
+    };
+
+    use super::TraitInfo;
+
+    /// A trait table holds one entry per interface of every op, attribute and type, so an entry
+    /// stores only what the lookup and the vtable check need: the two `TypeId`s and the vtable.
+    /// The names for diagnostics cost one function pointer.
+    #[test]
+    fn trait_info_holds_two_type_ids_a_vtable_and_one_function_pointer() {
+        assert_eq!(
+            size_of::<TraitInfo>(),
+            2 * size_of::<TypeId>() + size_of::<DynMetadata<dyn Any>>() + size_of::<fn()>()
+        );
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(size_of::<TraitInfo>(), 48);
+    }
+
+    trait Named {}
+    struct Concrete;
+    impl Named for Concrete {}
+
+    #[test]
+    fn trait_info_names_its_trait_and_concrete_type() {
+        let info = TraitInfo::new::<Concrete, dyn Named>();
+        assert!(info.type_name().ends_with("Named"));
+        assert!(info.concrete_type_name().ends_with("Concrete"));
     }
 }
