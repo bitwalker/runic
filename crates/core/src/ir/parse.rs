@@ -255,6 +255,46 @@ fn parse_outcome<T>(scope: DiagnosticScope<'_>, result: Result<T, Report>) -> Ou
     }
 }
 
+/// Parse one type from `source`, registered with `context` under `name`.
+///
+/// The whole of `source` must be the type: anything after it is an error.
+pub fn parse_type(
+    context: &Rc<Context>,
+    name: impl Into<String>,
+    source: impl Into<String>,
+) -> Outcome<Type> {
+    match context.add_source(name, source) {
+        Ok(id) => parse_type_source(context, id),
+        Err(err) => Outcome::from_report(Report::from_error(err)),
+    }
+}
+
+/// Parse the single type that is the whole of the source `source_id`.
+fn parse_type_source(context: &Rc<Context>, source_id: SourceId) -> Outcome<Type> {
+    let scope = context.diagnostic_scope();
+    let sources = context.sources();
+    let Some(source) = sources.get(source_id).and_then(|source| source.text) else {
+        return parse_outcome(
+            scope,
+            Err(Report::msg("source is not registered with this context")),
+        );
+    };
+    let scanner = Scanner::new(source);
+    let token_stream = TokenStream::new(source_id, scanner);
+    let config = ParserConfig::new(context.clone());
+    let mut parser = DefaultParser::new(ParserState::new(config, token_stream));
+    let result = parser.parse_type().and_then(|ty| match parser.token_stream_mut().next()? {
+        None => Ok(ty.into_inner()),
+        Some(token) if matches!(token.inner(), Token::Eof) => Ok(ty.into_inner()),
+        Some(token) => Err(ParserError::UnexpectedToken {
+            span: token.span(),
+            token: token.to_string(),
+            expected: Some("end of input".into()),
+        }),
+    });
+    parse_outcome(scope, result.map_err(Report::from))
+}
+
 /// Parse an operation of type `T` from `source`, registered with the context under `name`
 pub fn parse<T: OpParser + OpRegistration>(
     config: ParserConfig,

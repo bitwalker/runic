@@ -1451,27 +1451,10 @@ fn a_failed_parse_leaves_pending_diagnostics_on_the_context() {
 #[ty(dialect = TestDialect, name = "unit")]
 struct UnitTestType;
 
-/// Parses `text` as exactly one type, in a parser over `text` alone.
+/// Parses `text` as exactly one type, with the test dialect registered.
 fn parse_type_text(context: &Rc<Context>, text: &str) -> Result<Type, Report> {
-    use super::{DefaultParser, Parser, ParserError, ParserState, Scanner, Token, TokenStream};
-
     context.get_or_register_dialect::<TestDialect>();
-    let id = context.add_source("type.runic", text).unwrap();
-    let sources = context.sources();
-    let scanner = Scanner::new(sources.get(id).unwrap().text.unwrap());
-    let token_stream = TokenStream::new(id, scanner);
-    let mut parser =
-        DefaultParser::new(ParserState::new(ParserConfig::new(context.clone()), token_stream));
-    let result = parser.parse_type().and_then(|ty| match parser.token_stream_mut().next()? {
-        None => Ok(ty.into_inner()),
-        Some(token) if matches!(token.inner(), Token::Eof) => Ok(ty.into_inner()),
-        Some(token) => Err(ParserError::UnexpectedToken {
-            span: token.span(),
-            token: token.to_string(),
-            expected: Some("end of input".into()),
-        }),
-    });
-    result.map_err(|err| Report::from(err).attach_session_sources(context.sources()))
+    parse::parse_type(context, "type.runic", text).into_result()
 }
 
 /// A dialect, not submitted to `inventory`, whose type's parser returns a type of another kind.
@@ -1519,6 +1502,33 @@ fn a_dialect_type_parser_must_return_its_own_type() {
         "{message}"
     );
     assert_eq!(parse_type_text(&context, "!liar.liar").unwrap(), liar);
+}
+
+/// `parse::parse_type` parses exactly one type, and reports errors with the source attached.
+#[test]
+fn a_type_parses_from_text_on_its_own() {
+    let context = Rc::new(Context::default());
+    let outcome = parse::parse_type(&context, "ptr.runic", "ptr<i32>");
+    assert!(outcome.diagnostics.is_empty());
+    assert_eq!(outcome.into_result().unwrap(), context.ptr_type(context.i32()));
+
+    for (text, expected) in [
+        ("i32 i32", "unexpected token"),
+        ("i32 i32", "help: end of input"),
+        ("ptr<i32", "unexpected token 'end of input'"),
+        ("%0", "help: type"),
+    ] {
+        let err = parse::parse_type(&context, "bad.runic", text).into_result().expect_err(text);
+        let message = format!("{}", err.display());
+        assert!(message.contains(expected), "`{text}`: {message}");
+    }
+    let err = parse::parse_type(&context, "rendered.runic", "i32 i32")
+        .into_result()
+        .unwrap_err();
+    assert!(
+        format!("{}", err.display()).contains("rendered.runic"),
+        "the source is attached"
+    );
 }
 
 /// The rendered text of a type parse error, on one line.
