@@ -99,8 +99,12 @@ pub fn default_operand_range_requirement(
 }
 
 /// Return true if values of `ty` are unconstrained by type alone.
+///
+/// That is every type whose value range is not tracked: everything but integers of at most 128
+/// bits (so pointers, function types, floats, aggregates, `isize` and dialect types), along with
+/// the unknown and never types.
 pub fn is_unconstrained_value_type(ty: Type) -> bool {
-    ty.is_unknown() || ty.is_never()
+    ty.is_unknown() || ty.is_never() || ConstantIntRange::max_for_type(ty).is_untracked()
 }
 
 /// OpInterface for operations with operand-specific value-range requirements.
@@ -707,5 +711,30 @@ mod tests {
         assert!(int32.matches(context.int_type(32)));
         assert!(!int32.matches(context.i1()));
         assert!(!int32.matches(context.isize_type()));
+    }
+
+    #[test]
+    fn only_types_with_a_tracked_value_range_imply_a_range_constraint() {
+        use super::ValueRangeConstraint;
+        use crate::{StructField, StructType};
+
+        let context = Context::default();
+        for ty in [context.i1(), context.i32(), context.i128()] {
+            assert_eq!(ValueRangeConstraint::from_type(ty), Some(ValueRangeConstraint::Type(ty)));
+        }
+        for ty in [
+            context.unknown_type(),
+            context.never_type(),
+            context.opaque_ptr_type(),
+            context.ptr_type(context.i32()),
+            context.function_type([context.i32()], [context.i32()]),
+            context.isize_type(),
+            context.int_type(256),
+            context.f64_type(),
+            context.array_type(context.i8(), 4),
+            context.struct_type(StructType::new([StructField::new(context.i32())])),
+        ] {
+            assert_eq!(ValueRangeConstraint::from_type(ty), None, "{ty} is unconstrained");
+        }
     }
 }
