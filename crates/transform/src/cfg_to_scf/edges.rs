@@ -234,11 +234,8 @@ impl<'multiplexer, 'context: 'multiplexer> EdgeMultiplexer<'multiplexer, 'contex
         // passed using `get_switch_value`.
         let discriminator = if block_arg_mapping.len() > 1 {
             let val = transform_ctx.get_switch_value(0);
-            let discriminator_arg = transform_ctx.append_block_argument(
-                multiplexer_block,
-                val.borrow().ty().clone(),
-                span,
-            );
+            let discriminator_arg =
+                transform_ctx.append_block_argument(multiplexer_block, val.borrow().ty(), span);
             log::trace!(target: "cfg-to-scf", "discriminator required by multiplexer, {discriminator_arg} was added");
             Some(discriminator_arg)
         } else {
@@ -247,7 +244,7 @@ impl<'multiplexer, 'context: 'multiplexer> EdgeMultiplexer<'multiplexer, 'contex
 
         if !extra_args.is_empty() {
             for ty in extra_args {
-                transform_ctx.append_block_argument(multiplexer_block, ty.clone(), span);
+                transform_ctx.append_block_argument(multiplexer_block, *ty, span);
             }
         }
 

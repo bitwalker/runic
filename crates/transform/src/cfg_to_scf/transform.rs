@@ -87,7 +87,7 @@ impl<'a> TransformationContext<'a> {
         let other = other.borrow();
         for arg in other.arguments() {
             let arg = arg.borrow();
-            self.context.append_block_argument(block, arg.ty().clone(), arg.span());
+            self.context.append_block_argument(block, arg.ty(), arg.span());
         }
     }
 
@@ -100,15 +100,14 @@ impl<'a> TransformationContext<'a> {
         self.interface
     }
 
-    pub fn get_undef_value(&mut self, ty: &Type) -> ValueRef {
+    pub fn get_undef_value(&mut self, ty: Type) -> ValueRef {
         use runic_core::hashbrown::hash_map::Entry;
 
-        match self.typed_undef_cache.entry(ty.clone()) {
+        match self.typed_undef_cache.entry(ty) {
             Entry::Vacant(entry) => {
                 let mut constant_builder = OpBuilder::new(self.context.clone());
                 constant_builder.set_insertion_point_to_start(self.entry);
-                let value =
-                    self.interface.get_undef_value(self.span, &mut constant_builder, ty.clone());
+                let value = self.interface.get_undef_value(self.span, &mut constant_builder, ty);
                 entry.insert(value);
                 value
             }
@@ -253,9 +252,8 @@ impl<'a> TransformationContext<'a> {
             Entry::Vacant(entry) => {
                 let mut return_like_op = return_like_op_ref.borrow_mut();
                 let operands = return_like_op.operands().as_value_range();
-                let args = SmallVec::<[Type; 2]>::from_iter(
-                    operands.iter().map(|o| o.borrow().ty().clone()),
-                );
+                let args =
+                    SmallVec::<[Type; 2]>::from_iter(operands.iter().map(|o| o.borrow().ty()));
 
                 let mut builder = OpBuilder::new(self.context.clone());
                 let exit_block = builder.create_block(self.region, None, &args);
@@ -765,7 +763,7 @@ impl<'a> TransformationContext<'a> {
                 let cont = continuation.borrow();
                 cont.arguments()
                     .iter()
-                    .map(|arg| arg.borrow().ty().clone())
+                    .map(|arg| arg.borrow().ty())
                     .collect::<SmallVec<[_; 2]>>()
             };
             let mut terminator = region_entry.borrow().terminator().unwrap();
@@ -911,11 +909,8 @@ impl<'a> TransformationContext<'a> {
         // outside the loop with the newly created exit block.
         for mut arg in loop_header_successor_operands.iter().copied() {
             let argument = arg.borrow();
-            let exit_arg = self.context.append_block_argument(
-                exit_block,
-                argument.ty().clone(),
-                argument.span(),
-            );
+            let exit_arg =
+                self.context.append_block_argument(exit_block, argument.ty(), argument.span());
             drop(argument);
 
             let operand = self.context.make_operand(arg, latch_terminator, 0);
@@ -999,17 +994,14 @@ impl<'a> TransformationContext<'a> {
                     if block_argument.is_none() {
                         let (value_ty, span, value_block) = {
                             let val = value.borrow();
-                            (val.ty().clone(), val.span(), val.parent_block().unwrap())
+                            (val.ty(), val.span(), val.parent_block().unwrap())
                         };
-                        block_argument = Some(ctx.context.append_block_argument(
-                            exit_block,
-                            value_ty.clone(),
-                            span,
-                        ));
+                        block_argument =
+                            Some(ctx.context.append_block_argument(exit_block, value_ty, span));
                         log::trace!(target: "cfg-to-scf", "introducing block argument to prevent escape of {value}");
                         log::trace!(target: "cfg-to-scf", "  created block argument {} in user's block", block_argument.unwrap());
                         let _loop_header_arg =
-                            ctx.context.append_block_argument(loop_header, value_ty.clone(), span);
+                            ctx.context.append_block_argument(loop_header, value_ty, span);
                         log::trace!(target: "cfg-to-scf", "  created block argument {_loop_header_arg} in loop header");
 
                         // `value` might be defined in a block that does not dominate `latch` but
@@ -1025,14 +1017,13 @@ impl<'a> TransformationContext<'a> {
                             })
                         {
                             log::trace!(target: "cfg-to-scf", "  {argument} is defined in {value_block}, and at least one predecessor of the latch {latch} is not dominated by {loop_block_ref}");
-                            argument =
-                                ctx.context.append_block_argument(latch, value_ty.clone(), span);
+                            argument = ctx.context.append_block_argument(latch, value_ty, span);
                             log::trace!(target: "cfg-to-scf", "  creating block argument {argument} in latch");
                             for pred in latch.borrow().predecessors() {
                                 let mut succ_operand = value;
                                 log::trace!(target: "cfg-to-scf", "  initializing predecessor operand for {argument} with {succ_operand}");
                                 if !loop_block_dominates(pred.predecessor(), ctx.dominance_info) {
-                                    succ_operand = ctx.get_undef_value(&value_ty);
+                                    succ_operand = ctx.get_undef_value(value_ty);
                                     log::trace!(target: "cfg-to-scf", "  predecessor {} is not dominated by {loop_block_ref}, successor operand changed to {succ_operand}", pred.predecessor());
                                 }
 
@@ -1230,7 +1221,7 @@ impl<'a> TransformationContext<'a> {
         successors.extend(back_edges.iter().map(|edge| edge.get_successor()));
         successors.extend(exit_edges.iter().map(|edge| edge.get_successor()));
 
-        let extra_args = [Type::I1];
+        let extra_args = [self.context.i1()];
         let context = self.context.clone();
         let mut multiplexer = EdgeMultiplexer::create(self, span, &successors, &extra_args);
 

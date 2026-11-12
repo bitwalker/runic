@@ -329,7 +329,7 @@ pub fn transform_cfg_to_scf(
         let mut preheader = context.create_block();
         for argument in entry.borrow().arguments() {
             let argument = argument.borrow();
-            context.append_block_argument(preheader, argument.ty().clone(), argument.span());
+            context.append_block_argument(preheader, argument.ty(), argument.span());
         }
         preheader.borrow_mut().insert_before(entry);
         let arguments = preheader.borrow().arguments().as_value_range().into_owned();

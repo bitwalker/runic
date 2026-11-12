@@ -168,7 +168,7 @@ fn replace_with_constant(
         builder.insertion_block().unwrap(),
         dialect,
         constant_value,
-        value.borrow().ty().clone(),
+        value.borrow().ty(),
     );
     if let Some(constant) = constant {
         value.borrow_mut().replace_all_uses_with(constant);

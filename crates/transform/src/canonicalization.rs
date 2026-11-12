@@ -6,7 +6,6 @@ use runic_core::{
     pass::{OperationPass, Pass, PassExecutionState, PostPassStatus},
     patterns::{self, FrozenRewritePatternSet, GreedyRewriteConfig, RewritePatternSet},
 };
-use runic_session::diagnostics::Severity;
 
 /// This pass performs various types of canonicalizations over a set of operations by iteratively
 /// applying the canonicalization patterns of all loaded dialects until either a fixpoint is reached
@@ -236,22 +235,21 @@ impl Pass for Canonicalizer {
         if self.require_convergence && converged.is_err() {
             log::debug!(target: Self::NAME, "canonicalization could not converge");
             let span = op.borrow().span();
-            return Err(state
-                .context()
-                .diagnostics()
-                .diagnostic(Severity::Error)
-                .with_message("canonicalization failed")
-                .with_primary_label(
-                    span,
-                    format!(
-                        "canonicalization did not converge{}",
-                        self.config
-                            .max_iterations()
-                            .map(|max| format!(" after {max} iterations"))
-                            .unwrap_or_default()
+            return Err(runic_core::diagnostics::report!(
+                message: "canonicalization failed",
+                labels: [
+                    primary(
+                        span,
+                        format!(
+                            "canonicalization did not converge{}",
+                            self.config
+                                .max_iterations()
+                                .map(|max| format!(" after {max} iterations"))
+                                .unwrap_or_default()
+                        )
                     ),
-                )
-                .into_report());
+                ],
+            ));
         }
 
         let op = op.borrow();
