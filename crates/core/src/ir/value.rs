@@ -603,7 +603,7 @@ mod tests {
     use alloc::rc::Rc;
 
     use crate::{
-        BuilderExt, Context, Immediate, SourceSpan,
+        BuilderExt, Context, Immediate, ImmediateAttr, SourceSpan,
         dialects::test::Constant,
         testing::{Test, label_messages},
     };
@@ -639,6 +639,38 @@ mod tests {
         let err = function.borrow().verify().expect_err("an argument of another context's type");
         let message = label_messages(err.as_diagnostic()).join("\n");
         assert!(message.contains("block argument 0 of 'builtin.function'"), "{message}");
+        assert!(message.contains("which belongs to another context"), "{message}");
+    }
+
+    /// The verifier rejects an attribute whose type another context interned. The type is stored
+    /// without the check that debug builds make when an attribute's type is set.
+    #[test]
+    fn the_verifier_rejects_attributes_typed_by_another_context() {
+        let other = Rc::new(Context::default());
+        let foreign = other.i32();
+
+        let mut test = Test::new("f", |cx| ([cx.i32()], []));
+        let constant = {
+            let mut builder = test.function_builder();
+            let create = builder.builder_mut().create::<Constant, _>(SourceSpan::UNKNOWN);
+            create(Immediate::I32(1)).unwrap()
+        };
+        let mut op = constant.as_operation_ref();
+
+        let mut attr = test
+            .context_rc()
+            .create_attribute::<ImmediateAttr, _>(Immediate::I32(7))
+            .as_attribute_ref();
+        op.borrow_mut().set_attribute("note", attr);
+        assert!(op.borrow().verify().is_ok());
+
+        attr.borrow_mut().as_attr_mut().set_type_unchecked(foreign);
+        let err = op.borrow().verify().expect_err("an attribute of another context's type");
+        let message = label_messages(err.as_diagnostic()).join("\n");
+        assert!(
+            message.contains("attribute 'note' of 'test.constant' has type `i32`"),
+            "{message}"
+        );
         assert!(message.contains("which belongs to another context"), "{message}");
     }
 }

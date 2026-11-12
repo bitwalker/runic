@@ -384,6 +384,13 @@ impl Attr {
         self.context().debug_assert_owns_type(ty, "the type of an attribute");
         self.ty = ty;
     }
+
+    /// Set the [Type] associated with this attribute without checking that this attribute's
+    /// context owns it, so that a test can build the invalid state the verifier must reject.
+    #[cfg(test)]
+    pub(crate) fn set_type_unchecked(&mut self, ty: Type) {
+        self.ty = ty;
+    }
 }
 
 /// Traits/Casts
