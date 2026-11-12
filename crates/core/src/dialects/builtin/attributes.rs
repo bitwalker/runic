@@ -28,8 +28,7 @@ pub use self::{
     location::{Location, LocationAttr},
     overflow::{Overflow, OverflowAttr},
     signature::{
-        AbiParam, ArgumentExtension, ArgumentPurpose, SextAttr, Signature, SignatureAttr, SretAttr,
-        ZextAttr,
+        AbiParam, ArgumentExtension, SextAttr, Signature, SignatureAttr, SretAttr, ZextAttr,
     },
     string::StringAttr,
     symbol_ref::{SymbolRef, SymbolRefAttr},

@@ -37,28 +37,6 @@ impl AttrPrinter for SretAttr {
     fn print(&self, _printer: &mut crate::print::AsmPrinter<'_>) {}
 }
 
-/// Represents whether an argument or return value has a special purpose in
-/// the calling convention of a function.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Default, Hash)]
-#[repr(u8)]
-pub enum ArgumentPurpose {
-    /// No special purpose, the argument is passed/returned by value
-    #[default]
-    Default,
-    /// Used for platforms where the calling convention expects return values of
-    /// a certain size to be written to a pointer passed in by the caller.
-    StructReturn,
-}
-
-impl fmt::Display for ArgumentPurpose {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Self::Default => f.write_str("default"),
-            Self::StructReturn => f.write_str("sret"),
-        }
-    }
-}
-
 /// A marker attribute for argument parameters or results which should be zero-extended to the
 /// target architecture's native machine word size, _if and only if_ the parameter type is smaller
 /// than the native machine word size.
@@ -180,15 +158,6 @@ impl AbiParam {
             attrs.insert(context.alloc_map_item(attr));
         }
         Self::new_with_attribute_dict(ty, attrs)
-    }
-
-    /// The parameter for a value of type `ty`, with the default extension for that type.
-    ///
-    /// Integer types are signless, so there is no signedness to choose an extension from: no
-    /// extension is applied.
-    pub fn from_type_with_default_extension(ty: Type, context: &Rc<Context>) -> Self {
-        context.debug_assert_ir_type(ty, "the type of a parameter");
-        Self::new(ty)
     }
 
     pub fn zext(ty: Type, context: &Rc<Context>) -> Self {
@@ -354,30 +323,28 @@ impl fmt::Display for Signature {
 impl Signature {
     /// Create a new signature for a function with the given calling convention and types.
     ///
-    /// The input types are mapped to [AbiParam] with
-    /// [AbiParam::from_type_with_default_extension].
+    /// Each type becomes an [AbiParam] without attributes: integer types are signless, so no
+    /// extension is chosen for them. `results` are the declared results: `[never]` for a function
+    /// that never returns.
     pub fn with_convention<P, R>(context: &Rc<Context>, cc: CallConv, params: P, results: R) -> Self
     where
         P: IntoIterator<Item = Type>,
         R: IntoIterator<Item = Type>,
     {
+        let param = |ty: Type| {
+            context.debug_assert_ir_type(ty, "the type of a parameter");
+            AbiParam::new(ty)
+        };
         Self {
-            params: params
-                .into_iter()
-                .map(|p| AbiParam::from_type_with_default_extension(p, context))
-                .collect(),
-            results: results
-                .into_iter()
-                .map(|p| AbiParam::from_type_with_default_extension(p, context))
-                .collect(),
+            params: params.into_iter().map(param).collect(),
+            results: results.into_iter().map(param).collect(),
             cc,
         }
     }
 
     /// Create a new signature for a function with the default calling convention and given types.
     ///
-    /// The input types are mapped to [AbiParam] with
-    /// [AbiParam::from_type_with_default_extension].
+    /// See [Self::with_convention].
     pub fn new<P, R>(context: &Rc<Context>, params: P, results: R) -> Self
     where
         P: IntoIterator<Item = Type>,
@@ -413,24 +380,40 @@ impl Signature {
         self.params.get_mut(index)
     }
 
-    /// Returns a slice containing the results of this function
+    /// The values a call produces: empty for a function that never returns.
     pub fn results(&self) -> &[AbiParam] {
-        match self.results.as_slice() {
-            [AbiParam { ty, .. }] if ty.is_never() => &[],
-            results => results,
+        if self.never_returns() {
+            &[]
+        } else {
+            self.results.as_slice()
         }
     }
 
-    /// Returns the result at `index`, if present
+    /// The results as declared: `[never]` for a function that never returns.
     #[inline]
-    pub fn result(&self, index: usize) -> Option<&AbiParam> {
-        self.results.get(index)
+    pub fn declared_results(&self) -> &[AbiParam] {
+        self.results.as_slice()
     }
 
-    /// Returns the result at `index`, mutably, if present
+    /// True if the single declared result is `never`.
+    pub fn never_returns(&self) -> bool {
+        matches!(self.results.as_slice(), [AbiParam { ty, .. }] if ty.is_never())
+    }
+
+    /// Returns the result at `index` of [Self::results], if present
+    #[inline]
+    pub fn result(&self, index: usize) -> Option<&AbiParam> {
+        self.results().get(index)
+    }
+
+    /// Returns the result at `index` of [Self::results], mutably, if present
     #[inline]
     pub fn result_mut(&mut self, index: usize) -> Option<&mut AbiParam> {
-        self.results.get_mut(index)
+        if self.never_returns() {
+            None
+        } else {
+            self.results.get_mut(index)
+        }
     }
 }
 
@@ -491,6 +474,42 @@ mod tests {
     fn an_open_parameter_type_panics() {
         let context = crate::Context::default();
         let _ = AbiParam::new(context.ptr_type(context.rec_var(0)));
+    }
+
+    /// A function that never returns declares the single result `never`, and produces no values.
+    #[test]
+    fn a_never_returning_signature_has_three_views() {
+        let context = Rc::new(crate::Context::default());
+        let mut signature = Signature::new(&context, [context.i32()], [context.never_type()]);
+        assert!(signature.never_returns());
+        assert!(signature.results().is_empty());
+        assert_eq!(signature.declared_results().len(), 1);
+        assert!(signature.declared_results()[0].ty.is_never());
+        assert!(signature.result(0).is_none());
+        assert!(signature.result_mut(0).is_none());
+    }
+
+    /// An ordinary signature declares the results it produces.
+    #[test]
+    fn an_ordinary_signature_declares_what_it_produces() {
+        let context = Rc::new(crate::Context::default());
+        let mut signature =
+            Signature::new(&context, [context.i32()], [context.i64(), context.i8()]);
+        assert!(!signature.never_returns());
+        assert_eq!(signature.results(), signature.declared_results());
+        assert_eq!(signature.results().len(), 2);
+        assert_eq!(signature.result(1).map(|r| r.ty), Some(context.i8()));
+        assert_eq!(signature.result_mut(0).map(|r| r.ty), Some(context.i64()));
+        assert!(signature.result(2).is_none());
+
+        // `never` among other results is not a never-returning function
+        let mixed = Signature::new(&context, [], [context.never_type(), context.i32()]);
+        assert!(!mixed.never_returns());
+        assert_eq!(mixed.results().len(), 2);
+
+        let none = Signature::new(&context, [], []);
+        assert!(!none.never_returns());
+        assert!(none.results().is_empty() && none.declared_results().is_empty());
     }
 
     /// A signature's `Display` output must render its results, not a second copy of its params.
