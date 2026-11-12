@@ -5,7 +5,7 @@ use core::{
 };
 
 use crate::{
-    AttrPrinter, CallConv, Context, NamedAttribute, OpPrintingFlags, Type,
+    AttrPrinter, AttributeRef, CallConv, Context, NamedAttribute, OpPrintingFlags, Type,
     attributes::{AttrParser, AttributeDict, Marker},
     derive::DialectAttribute,
     diagnostics::{SourceSpan, TextRange, report},
@@ -124,39 +124,60 @@ impl AbiParam {
         Self { ty, attrs }
     }
 
+    /// A parameter of type `ty` holding `attributes`. A key given more than once keeps its last
+    /// value, as [Self::set_attribute] does.
+    ///
+    /// Panics, in debug builds, if `ty` is open or belongs to another context than an attribute.
+    #[track_caller]
     pub fn new_with_attrs(ty: Type, attributes: impl IntoIterator<Item = NamedAttribute>) -> Self {
-        let mut attrs = AttributeDict::new();
+        let mut param = Self::new(ty);
         for attr in attributes {
-            let context = attr.value.borrow().context_rc();
-            context.debug_assert_ir_type(ty, "the type of a parameter");
-            attrs.insert(context.alloc_map_item(attr));
+            attr.value
+                .borrow()
+                .context_rc()
+                .debug_assert_ir_type(ty, "the type of a parameter");
+            param.set_attribute(attr.name, attr.value);
         }
-        Self::new_with_attribute_dict(ty, attrs)
+        param
+    }
+
+    /// Sets the attribute `name` to `value`, replacing any value it already has.
+    pub fn set_attribute(&mut self, name: impl Into<interner::Symbol>, value: AttributeRef) {
+        let name = name.into();
+        let attr = value.borrow().context_rc().alloc_map_item(NamedAttribute::new(name, value));
+        if self.attrs.find(&name).is_null() {
+            self.attrs.insert(attr);
+        } else {
+            let mut existing = self.attrs.find_mut(&name);
+            existing.replace_with(attr).expect("attribute cursor unexpectedly became null");
+        }
     }
 
     pub fn zext(ty: Type, context: &Rc<Context>) -> Self {
-        let zext = context.create_attribute::<ZextAttr, _>(());
-        Self::new_with_attrs(ty, [NamedAttribute::new(interner::symbols::Extend, zext)])
+        let mut param = Self::new(ty);
+        context.debug_assert_ir_type(ty, "the type of a parameter");
+        param.set_attribute(interner::symbols::Extend, context.create_attribute::<ZextAttr, _>(()));
+        param
     }
 
     pub fn sext(ty: Type, context: &Rc<Context>) -> Self {
-        let sext = context.create_attribute::<SextAttr, _>(());
-        Self::new_with_attrs(ty, [NamedAttribute::new(interner::symbols::Extend, sext)])
+        let mut param = Self::new(ty);
+        context.debug_assert_ir_type(ty, "the type of a parameter");
+        param.set_attribute(interner::symbols::Extend, context.create_attribute::<SextAttr, _>(()));
+        param
     }
 
     pub fn sret(ty: Type, context: &Rc<Context>) -> Self {
         assert!(ty.is_pointer(), "sret parameters must be pointers");
-        let sret = context.create_attribute::<SretAttr, _>(());
-        Self::new_with_attrs(ty, [NamedAttribute::new(interner::symbols::Sret, sret)])
+        let mut param = Self::new(ty);
+        context.debug_assert_ir_type(ty, "the type of a parameter");
+        param.mark_sret(context);
+        param
     }
 
+    /// Marks the parameter `sret`; a parameter already so marked is left as it is, in effect.
     pub fn mark_sret(&mut self, context: &Rc<Context>) {
-        let sret = context.create_attribute::<SretAttr, _>(());
-        let attr = context.alloc_map_item(NamedAttribute {
-            name: interner::symbols::Sret,
-            value: sret,
-        });
-        self.attrs.insert(attr);
+        self.set_attribute(interner::symbols::Sret, context.create_attribute::<SretAttr, _>(()));
     }
 
     pub fn is_sret_param(&self) -> bool {
@@ -370,7 +391,7 @@ impl AttrPrinter for SignatureAttr {
 
 impl AttrParser for SignatureAttr {
     /// Reads `'extern' '(' string ')' '(' (param (',' param)*)? ')' ('->' result-list)?`.
-    fn parse(parser: &mut dyn Parser<'_>) -> ParseResult<crate::AttributeRef> {
+    fn parse(parser: &mut dyn Parser<'_>) -> ParseResult<AttributeRef> {
         parser.parse_custom_keyword("extern")?;
         parser.parse_lparen()?;
         let cc = CallConv::new(parser.parse_string()?.as_str());

@@ -4675,6 +4675,93 @@ fn a_repeated_key_in_a_parameter_dictionary_is_an_error() {
     assert_eq!((range.start() as usize, range.end() as usize), second(&text));
 }
 
+/// The signature of `function`, cloned.
+fn signature_of(function: UnsafeIntrusiveEntityRef<Function>) -> Signature {
+    function.borrow().get_signature().clone()
+}
+
+/// The display of `err` on one line.
+fn one_line(err: &Report) -> String {
+    format!("{}", err.display()).split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// A public function `f` built in code with `signature` and no body: a declaration.
+fn declared_function(
+    context: &Rc<Context>,
+    signature: Signature,
+) -> UnsafeIntrusiveEntityRef<Function> {
+    let mut builder = crate::OpBuilder::new(context.clone());
+    builder
+        .create_function(crate::Ident::with_empty_span("f".into()), Visibility::Public, signature)
+        .unwrap()
+}
+
+/// Marking a parameter `sret` twice leaves one `sret` entry, and the function prints text that
+/// parses back to the same signature.
+#[test]
+fn marking_a_parameter_sret_twice_keeps_one_entry() {
+    let test = ParserTest::default();
+    let context = test.context_rc();
+    let mut param = AbiParam::sret(context.ptr_type(context.i32()), &context);
+    param.mark_sret(&context);
+    assert_eq!(param.attrs.iter().count(), 1, "{param}");
+
+    let signature = Signature {
+        params: alloc::vec![param],
+        results: alloc::vec![],
+        cc: CallConv::default(),
+    };
+    let printed = print_root(declared_function(&context, signature.clone()));
+    let parsed = test
+        .parse::<Function>("sret.hir", &printed)
+        .unwrap_or_else(|err| panic!("{printed}\n{}", one_line(&err)));
+    assert_eq!(signature_of(parsed), signature);
+}
+
+/// A key given twice to `AbiParam::new_with_attrs` keeps one entry, the last, as
+/// `Operation::set_attribute` does.
+#[test]
+fn a_parameter_built_with_a_repeated_key_keeps_the_last() {
+    use crate::{
+        NamedAttribute,
+        dialects::builtin::attributes::{ArgumentExtension, SextAttr, ZextAttr},
+    };
+
+    let context = Rc::new(Context::default());
+    let zext = context.create_attribute::<ZextAttr, _>(()).as_attribute_ref();
+    let sext = context.create_attribute::<SextAttr, _>(()).as_attribute_ref();
+    let key = crate::interner::symbols::Extend;
+    let param = AbiParam::new_with_attrs(
+        context.i8(),
+        [NamedAttribute::new(key, zext), NamedAttribute::new(key, sext)],
+    );
+    assert_eq!(param.attrs.iter().count(), 1, "{param}");
+    assert_eq!(param.extension(), ArgumentExtension::Sext);
+}
+
+/// The text the printer writes for a parameter marked `sret` twice parses back to an equal
+/// parameter.
+#[test]
+fn a_parameter_marked_sret_twice_prints_text_that_parses_back() {
+    use crate::dialects::builtin::attributes::SignatureAttr;
+
+    let context = Rc::new(Context::default());
+    let mut param = AbiParam::sret(context.ptr_type(context.i32()), &context);
+    param.mark_sret(&context);
+    assert_eq!(format!("{param}"), "ptr<i32> { sret = #builtin.sret }");
+    let signature = Signature {
+        params: alloc::vec![param],
+        results: alloc::vec![],
+        cc: CallConv::default(),
+    };
+    let attr = context.create_attribute::<SignatureAttr, _>(signature.clone());
+    let printed = print_attribute_text(&context, &attr.as_attribute_ref());
+    let parsed = parse_attribute_text(&context, &printed, context.unknown_type())
+        .unwrap_or_else(|err| panic!("{printed}: {err:?}"));
+    let parsed = parsed.borrow();
+    assert_eq!(**parsed.downcast_ref::<SignatureAttr>().unwrap(), signature);
+}
+
 /// An operation of the test dialect with a region of its own, which is not a callable.
 #[crate::derive::operation(dialect = TestDialect)]
 pub struct RegionHolder {
