@@ -310,7 +310,10 @@ fn literal_bits(literal: IntegerLiteral, width: u32, span: SourceSpan) -> ParseR
     };
     bits.ok_or_else(|| ParserError::InvalidIntegerLiteral {
         span,
-        reason: format!("value is out of range for a {width}-bit discriminant"),
+        reason: format!(
+            "value is out of range for a discriminant of {width} bit{}",
+            if width == 1 { "" } else { "s" }
+        ),
     })
 }
 

@@ -197,7 +197,9 @@
 //!
 //! The type of an enum is its discriminant, an integer type of at most 128 bits or `isize`. A
 //! variant without `= value` has the previous variant's value plus one, or 0 if it is the
-//! first; the printer writes a value only where it differs from that, as a signed decimal.
+//! first. The printer leaves values out only while the variants count up from 0; from the first
+//! variant whose value is not its position, it writes every value, as a signed decimal:
+//! `enum<i8; a, b = 5, c = 6>`.
 //!
 //! function-type := type-list-parens '->' function-results
 //! function-results := type-list-parens | type

@@ -51,8 +51,9 @@ impl EnumVariant {
 
     /// The raw bits of this variant's discriminant value.
     ///
-    /// The value is resolved once the variant is part of an [EnumType]. A variant that is not
-    /// yet in one returns its explicit value, or 0 if it has none.
+    /// The value is resolved once the variant is part of an [EnumType]; only then is the result
+    /// meaningful. Before that it is the explicit value, or 0 for a variant without one, whatever
+    /// value the enum will give it.
     pub fn value(&self) -> u128 {
         self.value.unwrap_or(0)
     }
@@ -84,6 +85,10 @@ pub enum InvalidEnumType {
 /// the previous variant's value plus one, or 0 for the first. Values are resolved when the enum
 /// is constructed, so `enum<i8; a, b>` and `enum<i8; a = 0, b = 1>` are one type. The enum's name
 /// is part of its identity.
+///
+/// `replace_subtypes` replaces the discriminant and payload types and keeps the variants as they
+/// are, with their resolved values; it does not run the checks of [Self::new], so the caller must
+/// replace the discriminant only with a valid one of the same width.
 #[derive(Debug, PartialEq, Eq, Hash, DialectType)]
 #[ty(dialect = BuiltinDialect, name = "enum")]
 pub struct EnumType {
@@ -333,8 +338,35 @@ mod tests {
             EnumType::new(None, context.i8(), [a, a, b.with_value(256)]).unwrap_err(),
             InvalidEnumType::ValueOutOfRange { variant: sym("b") }
         );
-        // The first variant's value, and the second's, when they are the same.
-        assert!(!format!("{}", InvalidEnumType::InvalidDiscriminantType).is_empty());
+        assert_eq!(
+            format!(
+                "{}",
+                InvalidEnumType::DuplicateValue {
+                    variant: sym("b"),
+                    other: sym("a")
+                }
+            ),
+            "variants `a` and `b` have the same value"
+        );
+    }
+
+    #[test]
+    fn a_payload_may_be_open_but_a_discriminant_may_not() {
+        let context = Context::default();
+        let var = context.rec_var(0);
+        for payload in [context.ptr_type(var), var] {
+            let ty = EnumType::new(
+                None,
+                context.i8(),
+                [EnumVariant::new(sym("a")).with_payload(payload)],
+            )
+            .unwrap();
+            assert!(context.enum_type(ty).is_open(), "{payload}");
+        }
+        assert_eq!(
+            EnumType::new(None, var, variants(&["a"])).unwrap_err(),
+            InvalidEnumType::InvalidDiscriminantType
+        );
     }
 
     #[test]
