@@ -383,6 +383,11 @@ macro_rules! value_impl {
                      type `{}`: a type may only be used with the context that interned it",
                     self.ty
                 );
+                debug_assert!(
+                    !ty.is_open(),
+                    "the type of a value is `{ty}`, an open type: a recursion variable is only \
+                     meaningful inside the definition of a recursion group"
+                );
                 self.ty = ty;
             }
 
@@ -757,5 +762,23 @@ mod tests {
         let open = test.context().rec_var(0);
         test.context()
             .make_result(SourceSpan::UNKNOWN, open, constant.as_operation_ref(), 1);
+    }
+
+    /// Debug builds refuse to retype a value that is already in IR with an open type.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "an open type")]
+    fn a_value_cannot_be_retyped_as_open() {
+        use crate::Value;
+
+        let mut test = Test::new("f", |cx| ([cx.i32()], []));
+        let constant = {
+            let mut builder = test.function_builder();
+            let create = builder.builder_mut().create::<Constant, _>(SourceSpan::UNKNOWN);
+            create(Immediate::I32(1)).unwrap()
+        };
+        let open = test.context().ptr_type(test.context().rec_var(0));
+        let mut result = constant.as_operation_ref().borrow().results()[0];
+        result.borrow_mut().set_type(open);
     }
 }
