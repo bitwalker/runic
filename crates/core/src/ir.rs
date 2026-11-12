@@ -21,7 +21,6 @@ mod region;
 mod successor;
 pub(crate) mod symbols;
 pub mod traits;
-mod types;
 mod usable;
 mod value;
 pub mod verifier;

@@ -970,17 +970,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "midenc-hir-type"
-version = "0.18.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32c334d50aea107c689b0faf184c7ea8667ba3cb8e398d2e1b930dd3515783ec"
-dependencies = [
- "miden-formatting",
- "smallvec",
- "thiserror",
-]
-
-[[package]]
 name = "miette"
 version = "7.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1327,7 +1316,6 @@ dependencies = [
  "litcheck-filecheck",
  "log",
  "miden-formatting",
- "midenc-hir-type",
  "paste",
  "pretty_assertions",
  "runic-diagnostics",
