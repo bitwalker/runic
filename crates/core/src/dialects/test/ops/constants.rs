@@ -34,6 +34,10 @@ impl InferTypeOpInterface for Constant {
 /// A constant's result has the type of its value, as [InferTypeOpInterface] gives it. The generated
 /// setters do not maintain this: `set_value` gives the attribute the type inferred from the new
 /// value and leaves the result as it was.
+///
+/// The check hangs on [InferTypeOpInterface] because [ConstantLike] cannot carry it: the
+/// `#[operation_trait]` macro gives every such trait a blanket `Verify` impl that an operation
+/// cannot specialize.
 impl Verify<dyn InferTypeOpInterface> for Constant {
     fn verify(&self, _context: &Context) -> Result<(), Report> {
         let attr_ty = self.value().ty();

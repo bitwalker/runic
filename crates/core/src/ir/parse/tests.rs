@@ -3937,6 +3937,17 @@ fn the_verifier_rejects_an_inconsistent_int_attribute() {
         ),
         "{err}"
     );
+
+    // a type that no integer constant has
+    let bad = context
+        .create_attribute_with_type::<crate::dialects::builtin::attributes::IntAttr, _>(
+            Int::from(1i32),
+            context.ptr_type(context.i32()),
+        )
+        .as_attribute_ref();
+    constant.borrow_mut().as_operation_mut().set_attribute("extra", bad);
+    let err = message(constant.borrow().as_operation().verify().unwrap_err());
+    assert!(err.contains("but no integer constant has that type"), "{err}");
 }
 
 /// A well-formed `isize` constant verifies: its attribute holds a 64-bit value.

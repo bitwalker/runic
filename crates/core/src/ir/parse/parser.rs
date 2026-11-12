@@ -349,7 +349,9 @@ pub trait Parser<'input> {
     ///
     /// When `ty` is known, the attribute read has type `ty` whatever its form, or this is an
     /// error: an attribute with a type of its own is not retyped, and one without a type (such
-    /// as a string) is accepted. An unknown `ty` accepts an attribute of any type.
+    /// as a string) is accepted. Of those, only one written without a `<..>` body is given the
+    /// type `ty`; one with a body, or a bare string, keeps the unknown type. An unknown `ty`
+    /// accepts an attribute of any type.
     fn parse_attribute(&mut self, ty: Type) -> ParseResult<Span<AttributeRef>> {
         let attr = parse_attribute_value(self, ty)?;
         // The expected type, when known, is the type of the attribute read, whatever its form.
