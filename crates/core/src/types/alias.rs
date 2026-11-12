@@ -24,6 +24,9 @@ pub struct TypeAliases {
     taken: FxHashSet<String>,
     /// The named groups, in the order they were first named.
     groups: Vec<RecGroup>,
+    /// For each base a suffix is added to (`None` for `t`), the smallest suffix that may still be
+    /// free: every smaller one is taken.
+    next_suffix: FxHashMap<Option<Symbol>, u64>,
 }
 
 impl TypeAliases {
@@ -58,26 +61,31 @@ impl TypeAliases {
     }
 
     /// An alias for `member` that no other member has.
-    fn fresh_alias(&self, member: Type) -> Symbol {
+    ///
+    /// A suffixed alias is the one with the smallest free suffix. Suffixes are tried from the
+    /// base's [Self::next_suffix], not from 0, so that naming `n` members costs `O(n)` and not
+    /// `O(n²)`; the result is the same, because names are never released.
+    fn fresh_alias(&mut self, member: Type) -> Symbol {
         let suggested = member
             .name()
             .alias_name_fn()
             .and_then(|alias_name| alias_name(member))
             .filter(|name| is_alias_identifier(name.as_str()));
-        let is_free = |alias: &str| !self.taken.contains(alias);
-        match suggested {
-            Some(name) if is_free(name.as_str()) => name,
-            Some(name) => (0u64..)
-                .map(|k| format!("{name}_{k}"))
-                .find(|alias| is_free(alias))
-                .map(|alias| Symbol::intern(&alias))
-                .expect("some suffix is free"),
-            None => (0u64..)
-                .map(|k| format!("t{k}"))
-                .find(|alias| is_free(alias))
-                .map(|alias| Symbol::intern(&alias))
-                .expect("some suffix is free"),
+        if let Some(name) = suggested
+            && !self.taken.contains(name.as_str())
+        {
+            return name;
         }
+        let next = self.next_suffix.entry(suggested).or_insert(0);
+        let (suffix, alias) = (*next..)
+            .map(|k| match suggested {
+                Some(name) => (k, format!("{name}_{k}")),
+                None => (k, format!("t{k}")),
+            })
+            .find(|(_, alias)| !self.taken.contains(alias.as_str()))
+            .expect("some suffix is free");
+        *next = suffix + 1;
+        Symbol::intern(&alias)
     }
 }
 
@@ -213,6 +221,25 @@ mod tests {
         let aliases = RefCell::new(TypeAliases::new());
         assert_eq!(show(unnamed, &aliases), "!t0");
         assert_eq!(show(named, &aliases), "!t0_0");
+    }
+
+    #[test]
+    fn numbered_aliases_skip_names_taken_in_between() {
+        let context = Context::default();
+        let names = [None, Some("t1"), None, Some("t3"), None];
+        let bodies = names.map(|name| {
+            let fields = [context.ptr_type(context.rec_var(0)).into()];
+            match name {
+                Some(name) => context.struct_type(StructType::named(sym(name), fields)),
+                None => context.struct_type(StructType::new(fields)),
+            }
+        });
+        let members = context.rec_group(&bodies).unwrap();
+        let aliases = RefCell::new(TypeAliases::new());
+        let shown = members.iter().map(|member| show(*member, &aliases)).collect::<Vec<_>>();
+        assert_eq!(shown, ["!t0", "!t1", "!t2", "!t3", "!t4"]);
+        assert_eq!(show(singleton(&context, None, context.i32()), &aliases), "!t5");
+        assert_eq!(show(singleton(&context, Some("t2"), context.i32()), &aliases), "!t2_0");
     }
 
     #[test]
