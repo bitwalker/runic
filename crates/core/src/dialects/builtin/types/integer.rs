@@ -6,7 +6,7 @@ use crate::{derive::DialectType, dialects::builtin::BuiltinDialect, types::TypeP
 ///
 /// Whether its values are signed is up to the operations that use it.
 #[derive(Debug, PartialEq, Eq, Hash, DialectType)]
-#[ty(dialect = BuiltinDialect, name = "int", implements(TypePrinter))]
+#[ty(dialect = BuiltinDialect, name = "int")]
 pub struct IntegerType {
     width: u32,
 }
@@ -34,7 +34,7 @@ impl TypePrinter for IntegerType {
 
 /// A signless, pointer-width integer, `isize`. Its width is chosen by the target.
 #[derive(Debug, PartialEq, Eq, Hash, DialectType)]
-#[ty(dialect = BuiltinDialect, name = "isize", implements(TypePrinter))]
+#[ty(dialect = BuiltinDialect, name = "isize")]
 pub struct IsizeType;
 
 impl TypePrinter for IsizeType {

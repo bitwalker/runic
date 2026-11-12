@@ -7,7 +7,10 @@ use core::{
 
 use super::{
     Type, TypeRegistration, TypeStorage,
-    registration::{DefaultTypeFn, MaybeDefaultType, MaybeTypeParser, ParseTypeFn},
+    registration::{
+        DefaultTypeFn, MaybeDefaultType, MaybeTypeParser, MaybeTypePrinter, ParseTypeFn,
+        PrintTypeFn,
+    },
 };
 use crate::{interner::Symbol, traits::TraitInfo};
 
@@ -31,6 +34,8 @@ struct TypeInfo {
     value_offset: usize,
     /// Formats a type whose name this is.
     debug: fn(Type, &mut fmt::Formatter<'_>) -> fmt::Result,
+    /// Prints the syntax of this type, if it implements `TypePrinter`.
+    print: Option<PrintTypeFn>,
     /// Parses the syntax of this type, if it implements `TypeParser`.
     parse: Option<ParseTypeFn>,
     /// Interns the default value of this type, if it implements `Default`.
@@ -65,6 +70,7 @@ impl TypeName {
             traits: traits.into_boxed_slice(),
             value_offset: TypeStorage::<T>::VALUE_OFFSET,
             debug: debug_value::<T>,
+            print: <T as MaybeTypePrinter>::print_fn(),
             parse: <T as MaybeTypeParser>::parse_fn(),
             default: <T as MaybeDefaultType>::default_fn(),
         }))
@@ -122,6 +128,13 @@ impl TypeName {
     #[inline]
     pub(crate) fn value_offset(&self) -> usize {
         self.0.value_offset
+    }
+
+    /// The printer of this type's syntax, if it implements
+    /// [TypePrinter](crate::types::TypePrinter).
+    #[inline]
+    pub fn print_fn(&self) -> Option<PrintTypeFn> {
+        self.0.print
     }
 
     /// The parser of this type's syntax, if it implements

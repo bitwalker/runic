@@ -43,6 +43,22 @@ impl quote::ToTokens for DialectType {
             return;
         }
 
+        if let Some(printer) = self
+            .implements
+            .iter()
+            .find(|path| path.segments.last().is_some_and(|segment| segment.ident == "TypePrinter"))
+        {
+            tokens.extend(
+                syn::Error::new(
+                    printer.span(),
+                    "`TypePrinter` must not be listed in `implements(..)`: a type that implements \
+                     it is printed with it automatically",
+                )
+                .into_compile_error(),
+            );
+            return;
+        }
+
         let ident = &self.ident;
         let dialect = &self.dialect;
         let name = self.type_name();
@@ -158,6 +174,18 @@ mod tests {
         assert!(error(quote! { #[ty(name = "x")] struct XType; }).contains("dialect"));
         assert!(error(quote! { #[ty(dialect = D, nmae = "x")] struct XType; }).contains("nmae"));
         assert!(!error(quote! { #[ty(dialect = D)] union XType { a: u8 } }).is_empty());
+    }
+
+    #[test]
+    fn listing_the_printer_is_rejected() {
+        let file = derive(quote! {
+            #[ty(dialect = D, implements(Describe, crate::types::TypePrinter))]
+            struct XType;
+        })
+        .unwrap();
+        let output = file.into_token_stream().to_string();
+        assert!(output.contains("compile_error") && output.contains("TypePrinter"));
+        assert!(!output.contains("TypeRegistration"));
     }
 
     #[test]

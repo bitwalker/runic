@@ -19,6 +19,9 @@ pub trait TypeRegistration: TypeImpl + Sized {
 
 /// Prints a type's own syntax.
 ///
+/// A type that implements this trait is printed with it; it need not be declared in the
+/// `implements(..)` of `#[derive(DialectType)]`.
+///
 /// A builtin type prints its whole text; any other type prints the text between the `<` and `>`
 /// that follow its `!dialect.name`.
 pub trait TypePrinter {
@@ -28,6 +31,35 @@ pub trait TypePrinter {
 /// Parses what a type's [TypePrinter] prints, and interns the type it describes.
 pub trait TypeParser: TypeRegistration {
     fn parse(parser: &mut dyn parse::Parser<'_>) -> parse::ParseResult<Type>;
+}
+
+/// Prints the syntax of one registered type: what its [TypePrinter] prints.
+pub type PrintTypeFn = fn(Type, &mut fmt::Formatter<'_>) -> fmt::Result;
+
+/// The printer of `T`, if `T` implements [TypePrinter].
+pub(super) trait MaybeTypePrinter {
+    fn print_fn() -> Option<PrintTypeFn>;
+}
+
+impl<T> MaybeTypePrinter for T {
+    #[inline(always)]
+    default fn print_fn() -> Option<PrintTypeFn> {
+        None
+    }
+}
+
+impl<T: TypeRegistration + TypePrinter> MaybeTypePrinter for T {
+    #[inline(always)]
+    fn print_fn() -> Option<PrintTypeFn> {
+        Some(print_value::<T>)
+    }
+}
+
+fn print_value<T: TypeRegistration + TypePrinter>(
+    ty: Type,
+    f: &mut fmt::Formatter<'_>,
+) -> fmt::Result {
+    ty.downcast_ref::<T>().expect("a type is printed by its own name").print(f)
 }
 
 /// Parses the syntax of one registered type.

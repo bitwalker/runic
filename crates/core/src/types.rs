@@ -15,8 +15,8 @@ pub(crate) use self::uniquer::TypeUniquer;
 pub use self::{
     name::TypeName,
     registration::{
-        DefaultTypeFn, DialectTypeRegistrationInfo, ParseTypeFn, TypeParser, TypePrinter,
-        TypeRegistration,
+        DefaultTypeFn, DialectTypeRegistrationInfo, ParseTypeFn, PrintTypeFn, TypeParser,
+        TypePrinter, TypeRegistration,
     },
 };
 use crate::{
@@ -216,17 +216,17 @@ impl fmt::Debug for Type {
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = self.name();
-        let printer = self.as_trait::<dyn TypePrinter>();
+        let print = name.print_fn();
         if name.dialect().as_str() == <BuiltinDialect as DialectRegistration>::NAMESPACE {
-            let Some(printer) = printer else {
+            let Some(print) = print else {
                 panic!("builtin type `{name}` does not implement `TypePrinter`");
             };
-            return printer.print(f);
+            return print(*self, f);
         }
         write!(f, "!{}.{}", name.dialect(), name.name())?;
-        if let Some(printer) = printer {
+        if let Some(print) = print {
             f.write_str("<")?;
-            printer.print(f)?;
+            print(*self, f)?;
             f.write_str(">")?;
         }
         Ok(())
@@ -688,7 +688,7 @@ mod tests {
     }
 
     #[derive(Debug, PartialEq, Eq, Hash, crate::derive::DialectType)]
-    #[ty(dialect = TestDialect, name = "pair", implements(TypePrinter))]
+    #[ty(dialect = TestDialect, name = "pair")]
     struct PairType {
         first: Type,
         second: Type,
@@ -714,7 +714,8 @@ mod tests {
             second: marker,
         });
         assert_eq!(pair.name().name().as_str(), "pair");
-        assert!(pair.name().implements::<dyn TypePrinter>());
+        assert!(pair.name().print_fn().is_some());
+        assert!(marker.name().print_fn().is_none());
         assert!(marker.name().default_fn().is_some(), "MarkerType is Default");
         assert!(pair.name().default_fn().is_none());
     }
@@ -748,6 +749,25 @@ mod tests {
         let marker = context.intern_type(MarkerType);
         let default = marker.name().default_fn().expect("MarkerType is Default");
         assert_eq!(default(&context), marker);
+    }
+
+    /// Implements `TypePrinter` without declaring it in `#[ty(..)]`.
+    #[derive(Debug, PartialEq, Eq, Hash, crate::derive::DialectType)]
+    #[ty(dialect = TestDialect)]
+    struct UndeclaredPrinterType(u8);
+    impl TypePrinter for UndeclaredPrinterType {
+        fn print(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "{}", self.0)
+        }
+    }
+
+    #[test]
+    fn a_printer_is_found_without_being_declared() {
+        let context = Context::default();
+        let ty = context.intern_type(UndeclaredPrinterType(7));
+        assert!(ty.name().print_fn().is_some());
+        assert_eq!(alloc::format!("{ty}"), "!test.undeclared_printer<7>");
+        assert!(context.intern_type(MarkerType).name().print_fn().is_none());
     }
 
     #[test]

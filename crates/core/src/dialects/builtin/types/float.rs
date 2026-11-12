@@ -4,7 +4,7 @@ use crate::{derive::DialectType, dialects::builtin::BuiltinDialect, types::TypeP
 
 /// An IEEE 754 binary floating-point type, `f32` or `f64`.
 #[derive(Debug, PartialEq, Eq, Hash, DialectType)]
-#[ty(dialect = BuiltinDialect, name = "float", implements(TypePrinter))]
+#[ty(dialect = BuiltinDialect, name = "float")]
 pub enum FloatType {
     F32,
     F64,
