@@ -1,10 +1,32 @@
 use core::clone::CloneToUninit;
 
-use crate::any::AsAny;
+use crate::{Context, Type, any::AsAny};
 
 pub trait AttributeValue: AsAny + CloneToUninit {}
 
 impl<T: AsAny + CloneToUninit> AttributeValue for T {}
+
+/// Checks, in debug builds, that the types an attribute value holds may enter IR with `context`.
+///
+/// Every attribute's constructor calls it on the new value. It does nothing, except for the
+/// values that are types (`TypeAttr`) or arrays of types (`TypeArrayAttr`), whose types must have
+/// been interned by `context` and must not be open.
+#[doc(hidden)]
+pub trait DebugAssertIrValue {
+    fn debug_assert_ir_value(&self, context: &Context);
+}
+
+impl<T: ?Sized> DebugAssertIrValue for T {
+    #[inline(always)]
+    default fn debug_assert_ir_value(&self, _context: &Context) {}
+}
+
+impl DebugAssertIrValue for Type {
+    #[track_caller]
+    fn debug_assert_ir_value(&self, context: &Context) {
+        context.debug_assert_ir_type(*self, "the value of a type attribute");
+    }
+}
 
 impl dyn AttributeValue {
     /// Returns true if this attribute is an instance of type `T`

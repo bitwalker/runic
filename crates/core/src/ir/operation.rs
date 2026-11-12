@@ -516,12 +516,15 @@ impl Operation {
     }
 
     /// Check that the types of this operation's results, of the arguments of the blocks in its
-    /// regions, and of its properties and attributes were all interned by its context and are
-    /// not open.
+    /// regions, and of its properties and attributes (the type each attribute has, as given by
+    /// [Attribute::ty](crate::Attribute::ty)) were all interned by its context and are not open.
+    ///
+    /// Types held inside attribute values, such as the value of a type attribute or the
+    /// parameters of a signature, are not checked here.
     ///
     /// A type may only be used with the context that interned it, and an open type (one holding a
     /// recursion variable) may not be used in IR at all. Debug builds check both where a type is
-    /// stored; this check is what catches them in every build.
+    /// stored; this check is what catches the types it covers in every build.
     pub fn verify_type_ownership(&self) -> Result<(), Report> {
         let context = self.context();
         let check = |role: &dyn fmt::Display, ty: Type| {

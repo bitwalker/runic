@@ -308,6 +308,7 @@ impl quote::ToTokens for Attribute {
                 {
                     let name = context.get_registered_attribute_name::<#attr_struct_name #ty_generics>();
                     let value = <#value_type_name #ty_generics>::from(value);
+                    <#value_type_name #ty_generics as ::runic_core::attributes::DebugAssertIrValue>::debug_assert_ir_value(&value, context);
                     // `Attr::as_attr_ref` relies on this layout to find the entity header
                     const {
                         assert!(

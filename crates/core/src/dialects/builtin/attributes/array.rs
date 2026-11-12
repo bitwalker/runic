@@ -230,6 +230,15 @@ impl<T> core::ops::IndexMut<usize> for Array<T> {
     }
 }
 
+impl crate::attributes::DebugAssertIrValue for Array<crate::Type> {
+    #[track_caller]
+    fn debug_assert_ir_value(&self, context: &crate::Context) {
+        for ty in self.iter() {
+            context.debug_assert_ir_type(*ty, "an element of a type array attribute");
+        }
+    }
+}
+
 impl<T: Clone + InferAttributeValueType> InferAttributeValueType for Array<T> {
     fn infer_type(context: &crate::Context) -> crate::Type {
         <T as InferAttributeValueType>::infer_type(context)
@@ -353,5 +362,29 @@ impl crate::print::AttrPrinter for AdviceEffectArrayAttr {
             }
             *printer += const_text("}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::rc::Rc;
+
+    use super::*;
+    use crate::Context;
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "an element of a type array attribute is `ptr<rec.0>`, an open type")]
+    fn an_open_type_in_a_type_array_attribute_panics() {
+        let context = Rc::new(Context::default());
+        let open = context.ptr_type(context.rec_var(0));
+        let _ = context.create_attribute::<TypeArrayAttr, _>([context.i32(), open]);
+    }
+
+    #[test]
+    fn closed_types_make_a_type_array_attribute() {
+        let context = Rc::new(Context::default());
+        let attr = context.create_attribute::<TypeArrayAttr, _>([context.i32(), context.i64()]);
+        assert_eq!(attr.borrow().len(), 2);
     }
 }

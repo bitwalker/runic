@@ -159,11 +159,16 @@ impl Clone for AbiParam {
 }
 
 impl AbiParam {
+    /// Panics, in debug builds, if `ty` is open: a parameter's type enters IR.
+    #[track_caller]
     pub fn new(ty: Type) -> Self {
         Self::new_with_attribute_dict(ty, AttributeDict::new())
     }
 
+    /// Panics, in debug builds, if `ty` is open: a parameter's type enters IR.
+    #[track_caller]
     pub fn new_with_attribute_dict(ty: Type, attrs: AttributeDict) -> Self {
+        crate::types::debug_assert_closed(ty, "the type of a parameter");
         Self { ty, attrs }
     }
 
@@ -478,6 +483,14 @@ mod tests {
     use alloc::format;
 
     use super::*;
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "the type of a parameter is `ptr<rec.0>`, an open type")]
+    fn an_open_parameter_type_panics() {
+        let context = crate::Context::default();
+        let _ = AbiParam::new(context.ptr_type(context.rec_var(0)));
+    }
 
     /// A signature's `Display` output must render its results, not a second copy of its params.
     #[test]

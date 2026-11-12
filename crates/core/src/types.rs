@@ -606,6 +606,18 @@ impl fmt::Write for TypeFormatter<'_, '_> {
     }
 }
 
+/// Panics, in debug builds, if `ty` is open. `role` describes where `ty` enters IR, for the panic
+/// message. Where a context is at hand, `Context::debug_assert_ir_type` checks ownership too.
+#[inline]
+#[track_caller]
+pub(crate) fn debug_assert_closed(ty: Type, role: &str) {
+    debug_assert!(
+        !ty.is_open(),
+        "{role} is `{ty}`, an open type: a recursion variable is only meaningful inside the \
+         definition of a recursion group"
+    );
+}
+
 /// Returns true if `text` is a bare identifier: an ASCII letter or `_`, then ASCII letters,
 /// digits and `_`.
 pub(crate) fn is_bare_identifier(text: &str) -> bool {
