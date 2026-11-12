@@ -4017,3 +4017,182 @@ fn an_attribute_with_a_body_is_held_to_the_expected_type() {
         assert!(parse_attribute_text(&context, text, ty).is_ok(), "{text} read as {ty}");
     }
 }
+
+/// The strings a quoted position must carry through print, parse, print: a quote, a backslash,
+/// a newline, a non-ASCII character, an astral character, and the escapes themselves written out.
+const ROUND_TRIP_STRINGS: &[&str] = &["a\"b", "a\\b", "a\nb", "\u{e9}", "\u{1f600}", "\\\"\\\\n"];
+
+/// A calling-convention name survives print, parse, print.
+#[test]
+fn a_calling_convention_name_round_trips() -> TestResult {
+    for &name in ROUND_TRIP_STRINGS {
+        let test = ParserTest::default();
+        let context = test.context_rc();
+        let signature = Signature::with_convention(
+            &context,
+            CallConv::new(name),
+            [context.i32()],
+            [context.i32()],
+        );
+        let mut source = String::from("builtin.function public extern(");
+        source.push_str(&format!("\"{}\"", name.escape_default()));
+        source.push_str(") @f(%a: i32) -> i32 {\n    ret %a : (i32);\n};");
+
+        let first = test.parse::<Function>("cc_first.hir", &source)?;
+        assert_eq!(first.borrow().get_signature().calling_convention().as_str(), name, "{name:?}");
+        assert_eq!(&*first.borrow().get_signature(), &signature, "{name:?}");
+        let printed = format!("{}", first.as_operation_ref().borrow());
+
+        let second = test.parse::<Function>("cc_second.hir", &printed)?;
+        assert_eq!(&*second.borrow().get_signature(), &signature, "{name:?}");
+        // value ids count up across a context, so compare the text without them
+        let without_ids = |text: &str| {
+            let mut out = String::new();
+            let mut chars = text.chars().peekable();
+            while let Some(c) = chars.next() {
+                out.push(c);
+                if c == '%' {
+                    while chars.next_if(char::is_ascii_digit).is_some() {}
+                }
+            }
+            out
+        };
+        let printed_again = format!("{}", second.as_operation_ref().borrow());
+        assert_eq!(without_ids(&printed_again), without_ids(&printed), "{name:?}");
+        let third = test.parse::<Function>("cc_third.hir", &printed_again)?;
+        assert_eq!(&*third.borrow().get_signature(), &signature, "{name:?}");
+    }
+    Ok(())
+}
+
+/// A calling-convention name in `#builtin.signature<..>` survives too.
+#[test]
+fn a_signature_attribute_calling_convention_round_trips() -> TestResult {
+    use crate::dialects::builtin::attributes::SignatureAttr;
+
+    let context = Rc::new(Context::default());
+    let unknown = context.unknown_type();
+    for &name in ROUND_TRIP_STRINGS {
+        let text =
+            format!("#builtin.signature<extern(\"{}\") (i32) -> i32>", name.escape_default());
+        let first = parse_attribute_text(&context, &text, unknown)?;
+        let printed = print_attribute_text(&context, &first);
+        let second = parse_attribute_text(&context, &printed, unknown)?;
+        for attr in [&first, &second] {
+            let attr = attr.borrow();
+            let signature = attr.downcast_ref::<SignatureAttr>().unwrap();
+            assert_eq!(signature.calling_convention().as_str(), name, "{printed}");
+        }
+        assert_eq!(print_attribute_text(&context, &second), printed, "{name:?}");
+        assert!(printed.contains(&format!("\"{}\"", name.escape_default())), "{printed}");
+    }
+    Ok(())
+}
+
+/// A bare string attribute is unescaped like `#builtin.string<..>`.
+#[test]
+fn a_bare_string_attribute_is_unescaped() -> TestResult {
+    use crate::dialects::builtin::attributes::StringAttr;
+
+    let context = Rc::new(Context::default());
+    let unknown = context.unknown_type();
+    let bare = parse_attribute_text(&context, "\"a\\\"b\\n\"", unknown)?;
+    let full = parse_attribute_text(&context, "#builtin.string<\"a\\\"b\\n\">", unknown)?;
+    assert_eq!(bare.borrow().downcast_ref::<StringAttr>().unwrap().as_str(), "a\"b\n");
+    assert_eq!(&*bare.borrow(), &*full.borrow());
+
+    for &value in ROUND_TRIP_STRINGS {
+        let attr = context.create_attribute::<StringAttr, _>(crate::CompactString::from(value));
+        let printed = print_attribute_text(&context, &attr.as_attribute_ref());
+        let bare = format!("\"{}\"", value.escape_default());
+        let parsed = parse_attribute_text(&context, &bare, unknown)?;
+        assert_eq!(parsed.borrow().downcast_ref::<StringAttr>().unwrap().as_str(), value);
+        assert_eq!(print_attribute_text(&context, &parsed), printed, "{value:?}");
+    }
+    Ok(())
+}
+
+/// A string field of a debug-info attribute is stable under print and parse.
+#[test]
+fn a_debug_info_string_field_round_trips() -> TestResult {
+    use crate::dialects::debuginfo::attributes::{Variable, VariableAttr};
+
+    let context = Rc::new(Context::default());
+    let unknown = context.unknown_type();
+    for &value in ROUND_TRIP_STRINGS {
+        let variable = Variable::new(value.into(), value.into(), 3, None);
+        let attr = context.create_attribute::<VariableAttr, _>(variable.clone());
+        let first = print_attribute_text(&context, &attr.as_attribute_ref());
+        let parsed = parse_attribute_text(&context, &first, unknown)?;
+        assert_eq!(
+            **parsed.borrow().downcast_ref::<VariableAttr>().unwrap(),
+            variable,
+            "{value:?}"
+        );
+        let second = print_attribute_text(&context, &parsed);
+        let reparsed = parse_attribute_text(&context, &second, unknown)?;
+        let third = print_attribute_text(&context, &reparsed);
+        assert_eq!(first, second, "{value:?}");
+        assert_eq!(second, third, "{value:?}");
+    }
+    Ok(())
+}
+
+/// A file name in a location survives print and parse.
+#[test]
+fn a_location_file_name_round_trips() -> TestResult {
+    use crate::dialects::builtin::attributes::LocationAttr;
+
+    let context = Rc::new(Context::default());
+    let unknown = context.unknown_type();
+    for &file in ROUND_TRIP_STRINGS {
+        let location = crate::Location::FileLineCol {
+            file: file.into(),
+            line: crate::parse::LineNumber::new(1).unwrap(),
+            column: crate::parse::ColumnNumber::new(2).unwrap(),
+        };
+        let text = format!("loc({location})");
+        let parsed = parse_attribute_text(&context, &text, unknown)?;
+        let parsed = parsed.borrow();
+        let crate::Location::FileLineCol {
+            file: parsed_file, ..
+        } = **parsed.downcast_ref::<LocationAttr>().unwrap()
+        else {
+            panic!("{text}");
+        };
+        assert_eq!(parsed_file.as_str(), file, "{text}");
+    }
+    Ok(())
+}
+
+/// An invalid escape in a quoted string is an `InvalidString` error, wherever the string is read.
+#[test]
+fn an_invalid_escape_in_a_string_is_an_error() {
+    use super::{DefaultParser, Parser, ParserState, Scanner, TokenStream};
+
+    let context = Rc::new(Context::default());
+    let unknown = context.unknown_type();
+    let err = parse_attribute_text(&context, "\"\\q\"", unknown).unwrap_err();
+    assert!(matches!(err, crate::parse::ParserError::InvalidString { .. }), "{err:?}");
+
+    let id = context.add_source("string.runic", "\"\\q\"").unwrap();
+    let sources = context.sources();
+    let scanner = Scanner::new(sources.get(id).unwrap().text.unwrap());
+    let token_stream = TokenStream::new(id, scanner);
+    let mut parser =
+        DefaultParser::new(ParserState::new(ParserConfig::new(context.clone()), token_stream));
+    let err = parser.parse_string().unwrap_err();
+    assert!(matches!(err, crate::parse::ParserError::InvalidString { .. }), "{err:?}");
+
+    let id = context.add_source("string2.runic", "\"\\q\"").unwrap();
+    let sources = context.sources();
+    let scanner = Scanner::new(sources.get(id).unwrap().text.unwrap());
+    let token_stream = TokenStream::new(id, scanner);
+    let mut parser =
+        DefaultParser::new(ParserState::new(ParserConfig::new(context.clone()), token_stream));
+    let err = parser.parse_optional_string().unwrap_err();
+    assert!(matches!(err, crate::parse::ParserError::InvalidString { .. }), "{err:?}");
+
+    let err = parse_attribute_text(&context, "loc(\"\\q\":1:1)", unknown).unwrap_err();
+    assert!(matches!(err, crate::parse::ParserError::InvalidString { .. }), "{err:?}");
+}

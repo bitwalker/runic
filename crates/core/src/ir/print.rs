@@ -115,7 +115,8 @@
 //! int-attribute := '#builtin.int' '<' integer-literal ':' type '>'
 //! boolean-attribute := 'true' | 'false'
 //! string-attribute := string
-//!     (read as written, escapes included: only `#builtin.string<..>` is unescaped today)
+//!     (every quoted string is written with the escapes of `str::escape_default` and read back by
+//!     undoing them; an invalid escape is a parse error)
 //! symbol-ref-attribute := symbol-ref-id ('::' symbol-ref-id)*
 //! location-attribute := 'loc' '(' location ')'
 //!

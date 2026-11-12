@@ -301,19 +301,35 @@ pub trait Parser<'input> {
     }
 
     /// Parse a quoted string token
+    ///
+    /// The text is unescaped: the printer writes a string as `str::escape_default` does, and this
+    /// undoes it. An invalid escape is a [ParserError::InvalidString].
     fn parse_string(&mut self) -> ParseResult<Span<CompactString>> {
-        self.token_stream_mut().expect_map("string", |tok| match tok {
-            Token::String(s) => Some(CompactString::from(s)),
-            _ => None,
-        })
+        let (span, quoted) = self
+            .token_stream_mut()
+            .expect_map("string", |tok| match tok {
+                Token::String(s) => Some(CompactString::from(s)),
+                _ => None,
+            })?
+            .into_parts();
+        unescape_string(span, &quoted).map(|string| Span::new(span, string))
     }
 
     /// Parse a quoted string token, if present.
+    ///
+    /// The text is unescaped, as in [Parser::parse_string].
     fn parse_optional_string(&mut self) -> ParseResult<Option<Span<CompactString>>> {
-        self.token_stream_mut().next_if_map(|tok| match tok {
-            Token::String(s) => Some(CompactString::from(s)),
-            _ => None,
-        })
+        let Some((span, quoted)) = self
+            .token_stream_mut()
+            .next_if_map(|tok| match tok {
+                Token::String(s) => Some(CompactString::from(s)),
+                _ => None,
+            })?
+            .map(Span::into_parts)
+        else {
+            return Ok(None);
+        };
+        unescape_string(span, &quoted).map(|string| Some(Span::new(span, string)))
     }
 
     /// Parses a Base64-encoded string of bytes.
@@ -393,19 +409,19 @@ pub trait Parser<'input> {
 
     /// Parse a raw location instance
     fn parse_location_instance(&mut self) -> ParseResult<Location> {
-        match self
+        let (span, token) = self
             .token_stream_mut()
             .expect_if("location instance", |tok| {
                 matches!(tok, Token::String(_) | Token::BareIdent("unknown" | "synthetic"))
             })?
-            .into_inner()
-        {
+            .into_parts();
+        match token {
             Token::String(s) => {
                 self.parse_colon()?;
                 let start_line = self.parse_decimal_integer::<u32>()?.into_inner();
                 self.parse_colon()?;
                 let start_col = self.parse_decimal_integer::<u32>()?.into_inner();
-                let file = interner::Symbol::intern(s);
+                let file = interner::Symbol::intern(unescape_string(span, s)?);
                 if self
                     .token_stream_mut()
                     .next_if(|tok| matches!(tok, Token::BareIdent("to")))?
@@ -1149,6 +1165,17 @@ impl IntegerLiteral {
 }
 
 /// Reads an attribute value of any form; [Parser::parse_attribute] holds it to the expected type.
+/// Undoes the escapes the printer writes in a quoted string, for the string token at `span`.
+fn unescape_string(span: SourceSpan, quoted: &str) -> ParseResult<CompactString> {
+    unescape(quoted)
+        .map(CompactString::from)
+        .ok_or_else(|| ParserError::InvalidString {
+            span,
+            reason: "invalid escape sequence: a string is escaped as by `str::escape_default`"
+                .into(),
+        })
+}
+
 fn parse_attribute_value<'input, P: ?Sized + Parser<'input>>(
     parser: &mut P,
     ty: Type,
@@ -1184,7 +1211,8 @@ fn parse_attribute_value<'input, P: ?Sized + Parser<'input>>(
             parser.context_rc().create_attribute::<BoolAttr, _>(next == Token::True),
         )),
         Token::String(s) => {
-            Ok(Span::new(span, parser.context_rc().create_attribute::<StringAttr, _>(s)))
+            let value = unescape_string(span, s)?;
+            Ok(Span::new(span, parser.context_rc().create_attribute::<StringAttr, _>(value)))
         }
         Token::AtIdent(_) => {
             // Parse symbol reference attribute
