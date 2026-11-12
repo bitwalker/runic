@@ -1830,6 +1830,79 @@ fn integer_literals_in_attribute_position_accept_a_sign() {
     assert_eq!(parse("-1", context.i1()).unwrap(), Immediate::I1(true));
 }
 
+/// The builtin integer attributes read the same literals the typed literal readers do, so what
+/// they print reads back, and `255` and `-1` are one `i8`.
+#[test]
+fn builtin_integer_attributes_accept_a_sign_and_round_trip() -> TestResult {
+    use super::{DefaultParser, Parser, ParserState, Scanner, TokenStream};
+
+    let context = Rc::new(Context::default());
+    let parse = |text: &str| {
+        let id = context.add_source("attr.runic", text).unwrap();
+        let sources = context.sources();
+        let scanner = Scanner::new(sources.get(id).unwrap().text.unwrap());
+        let token_stream = TokenStream::new(id, scanner);
+        let mut parser =
+            DefaultParser::new(ParserState::new(ParserConfig::new(context.clone()), token_stream));
+        parser.parse_attribute(context.unknown_type()).map(|attr| attr.into_inner())
+    };
+    let value_of = |attr: &crate::AttributeRef| {
+        let attr = attr.borrow();
+        attr.as_attr().as_trait::<dyn IntegerLikeAttr>().unwrap().as_immediate()
+    };
+    let printed = |attr: &crate::AttributeRef| {
+        let flags = Default::default();
+        let mut printer = AsmPrinter::new(context.clone(), &flags);
+        printer.print_attribute_value(&*attr.borrow());
+        printer.finish().to_string()
+    };
+
+    let u128_max = "340282366920938463463374607431768211455";
+    for (text, expected, spelled) in [
+        ("#builtin.i8<-1>", Immediate::I8(-1), "#builtin.i8<-1>"),
+        ("#builtin.i8<255>", Immediate::I8(-1), "#builtin.i8<-1>"),
+        ("#builtin.i8<-128>", Immediate::I8(-128), "#builtin.i8<-128>"),
+        ("#builtin.i16<-1>", Immediate::I16(-1), "#builtin.i16<-1>"),
+        ("#builtin.i32<-1>", Immediate::I32(-1), "#builtin.i32<-1>"),
+        ("#builtin.i32<4294967295>", Immediate::I32(-1), "#builtin.i32<-1>"),
+        ("#builtin.i64<-1>", Immediate::I64(-1), "#builtin.i64<-1>"),
+        ("#builtin.i128<-1>", Immediate::I128(-1), "#builtin.i128<-1>"),
+        (&format!("#builtin.i128<{u128_max}>"), Immediate::I128(-1), "#builtin.i128<-1>"),
+    ] {
+        let attr = parse(text)?;
+        assert_eq!(value_of(&attr), expected, "{text}");
+        assert_eq!(printed(&attr), spelled, "{text}");
+        let reparsed = parse(&printed(&attr))?;
+        assert_eq!(value_of(&reparsed), expected, "{text}");
+        assert_eq!(printed(&reparsed), spelled, "{text}");
+    }
+    assert_eq!(value_of(&parse("#builtin.u8<255>")?), Immediate::U8(255));
+    assert!(parse("#builtin.u8<-1>").is_err());
+
+    for text in ["#builtin.i8<256>", "#builtin.i8<-129>", "#builtin.i8<-0x1>"] {
+        let err = parse(text).err().unwrap_or_else(|| panic!("{text} should not parse"));
+        assert!(
+            matches!(err, crate::parse::ParserError::InvalidIntegerLiteral { .. }),
+            "{text}: {err:?}"
+        );
+    }
+
+    // An operation carrying such an attribute round-trips through print and parse
+    let test = ParserTest::default();
+    let module = test.parse_any(
+        "signed_attr.hir",
+        "builtin.module public @m attributes { a = #builtin.i8<255>, b = #builtin.i128<-1> } {};",
+    )?;
+    let printed = format!("{}", module.borrow());
+    assert!(
+        printed.contains("#builtin.i8<-1>") && printed.contains("#builtin.i128<-1>"),
+        "{printed}"
+    );
+    let reparsed = test.parse_any("signed_attr2.hir", &printed)?;
+    assert_eq!(format!("{}", reparsed.borrow()), printed);
+    Ok(())
+}
+
 /// The test dialect's builders make a constant in the representation its parser does, so equal
 /// constants are equal however they were made.
 #[test]
