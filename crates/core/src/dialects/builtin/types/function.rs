@@ -1,10 +1,10 @@
 use alloc::boxed::Box;
-use core::fmt;
+use core::fmt::{self, Write};
 
 use crate::{
     derive::DialectType,
     dialects::builtin::BuiltinDialect,
-    types::{Type, TypePrinter},
+    types::{Type, TypeFormatter, TypePrinter},
 };
 
 /// The type of a function: parameter types and result types, `(T, U) -> V`.
@@ -38,27 +38,17 @@ impl FunctionType {
     }
 }
 
-fn print_list(f: &mut fmt::Formatter<'_>, types: &[Type]) -> fmt::Result {
-    for (i, ty) in types.iter().enumerate() {
-        if i > 0 {
-            f.write_str(", ")?;
-        }
-        write!(f, "{ty}")?;
-    }
-    Ok(())
-}
-
 impl TypePrinter for FunctionType {
-    fn print(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("(")?;
-        print_list(f, &self.params)?;
-        f.write_str(") -> ")?;
+    fn print(&self, printer: &mut TypeFormatter<'_, '_>) -> fmt::Result {
+        printer.write_str("(")?;
+        printer.types(self.params.iter().copied())?;
+        printer.write_str(") -> ")?;
         match &*self.results {
-            [result] if !result.is_function() => write!(f, "{result}"),
+            [result] if !result.is_function() => printer.ty(*result),
             results => {
-                f.write_str("(")?;
-                print_list(f, results)?;
-                f.write_str(")")
+                printer.write_str("(")?;
+                printer.types(results.iter().copied())?;
+                printer.write_str(")")
             }
         }
     }

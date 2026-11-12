@@ -1,7 +1,7 @@
 use alloc::boxed::Box;
 use core::{any::TypeId, fmt};
 
-use super::{Type, TypeImpl, TypeName};
+use super::{Type, TypeFormatter, TypeImpl, TypeName};
 use crate::{Context, DialectRegistration, interner::Symbol, parse, traits::TraitInfo};
 
 /// A type that a dialect registers, so that its values can be interned in a
@@ -24,8 +24,12 @@ pub trait TypeRegistration: TypeImpl + Sized {
 ///
 /// A builtin type prints its whole text; any other type prints the text between the `<` and `>`
 /// that follow its `!dialect.name`.
+///
+/// The printer writes text with `write!(printer, ..)`, and writes a type it contains with
+/// [TypeFormatter::ty] (or a list of them with [TypeFormatter::types]), never with `{}`: how a
+/// contained type is written is the printer's decision, not the containing type's.
 pub trait TypePrinter {
-    fn print(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result;
+    fn print(&self, printer: &mut TypeFormatter<'_, '_>) -> fmt::Result;
 }
 
 /// Parses what a type's [TypePrinter] prints, and interns the type it describes.
@@ -34,7 +38,7 @@ pub trait TypeParser: TypeRegistration {
 }
 
 /// Prints the syntax of one registered type: what its [TypePrinter] prints.
-pub type PrintTypeFn = fn(Type, &mut fmt::Formatter<'_>) -> fmt::Result;
+pub type PrintTypeFn = fn(Type, &mut TypeFormatter<'_, '_>) -> fmt::Result;
 
 /// The printer of `T`, if `T` implements [TypePrinter].
 pub(super) trait MaybeTypePrinter {
@@ -57,9 +61,11 @@ impl<T: TypeRegistration + TypePrinter> MaybeTypePrinter for T {
 
 fn print_value<T: TypeRegistration + TypePrinter>(
     ty: Type,
-    f: &mut fmt::Formatter<'_>,
+    printer: &mut TypeFormatter<'_, '_>,
 ) -> fmt::Result {
-    ty.downcast_ref::<T>().expect("a type is printed by its own name").print(f)
+    ty.downcast_ref::<T>()
+        .expect("a type is printed by its own name")
+        .print(printer)
 }
 
 /// Parses the syntax of one registered type.

@@ -1,7 +1,7 @@
-use core::fmt;
+use core::fmt::{self, Write};
 
 use crate::{
-    TypeParser, TypePrinter,
+    TypeFormatter, TypeParser, TypePrinter,
     derive::DialectType,
     dialects::test::TestDialect,
     parse::{ParseResult, Parser, ParserError, ParserExt, Token},
@@ -34,8 +34,9 @@ impl TestVectorType {
 }
 
 impl TypePrinter for TestVectorType {
-    fn print(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} x {}", self.element, self.lanes)
+    fn print(&self, printer: &mut TypeFormatter<'_, '_>) -> fmt::Result {
+        printer.ty(self.element)?;
+        write!(printer, " x {}", self.lanes)
     }
 }
 

@@ -1,6 +1,10 @@
-use core::fmt;
+use core::fmt::{self, Write};
 
-use crate::{derive::DialectType, dialects::builtin::BuiltinDialect, types::TypePrinter};
+use crate::{
+    derive::DialectType,
+    dialects::builtin::BuiltinDialect,
+    types::{TypeFormatter, TypePrinter},
+};
 
 /// An IEEE 754 binary floating-point type, `f32` or `f64`.
 #[derive(Debug, PartialEq, Eq, Hash, DialectType)]
@@ -21,7 +25,7 @@ impl FloatType {
 }
 
 impl TypePrinter for FloatType {
-    fn print(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "f{}", self.bits())
+    fn print(&self, printer: &mut TypeFormatter<'_, '_>) -> fmt::Result {
+        write!(printer, "f{}", self.bits())
     }
 }

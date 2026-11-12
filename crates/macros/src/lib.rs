@@ -48,6 +48,22 @@ pub fn derive_dialect_attribute(input: proc_macro::TokenStream) -> proc_macro::T
     }
 }
 
+/// Registers a struct or enum as a type of a dialect: `#[ty(dialect = D, name = "..",
+/// implements(Trait, ..))]`, where `name` defaults to the snake-cased Rust name without a
+/// trailing `Type`.
+///
+/// A type is printed with its `TypePrinter`, and parsed with its `TypeParser`, if it implements
+/// them; neither is listed in `implements(..)`. A printer writes text with `write!(printer, ..)`
+/// and any type it contains with `printer.ty(..)`:
+///
+/// ```ignore
+/// impl TypePrinter for VectorType {
+///     fn print(&self, printer: &mut TypeFormatter<'_, '_>) -> fmt::Result {
+///         printer.ty(self.element)?;
+///         write!(printer, " x {}", self.lanes)
+///     }
+/// }
+/// ```
 #[proc_macro_derive(DialectType, attributes(ty))]
 pub fn derive_dialect_type(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let derive = parse_macro_input!(input as DeriveInput);

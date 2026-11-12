@@ -1,9 +1,9 @@
-use core::fmt;
+use core::fmt::{self, Write};
 
 use crate::{
     derive::DialectType,
     dialects::builtin::BuiltinDialect,
-    types::{Type, TypePrinter},
+    types::{Type, TypeFormatter, TypePrinter},
 };
 
 /// A pointer, optionally to a known pointee type, in an address space.
@@ -38,13 +38,19 @@ impl PointerType {
 }
 
 impl TypePrinter for PointerType {
-    fn print(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("ptr")?;
+    fn print(&self, printer: &mut TypeFormatter<'_, '_>) -> fmt::Result {
+        printer.write_str("ptr")?;
         match (self.pointee, self.addrspace) {
             (None, 0) => Ok(()),
-            (None, space) => write!(f, "<{space}>"),
-            (Some(pointee), 0) => write!(f, "<{pointee}>"),
-            (Some(pointee), space) => write!(f, "<{pointee}, {space}>"),
+            (None, space) => write!(printer, "<{space}>"),
+            (Some(pointee), space) => {
+                printer.write_str("<")?;
+                printer.ty(pointee)?;
+                if space != 0 {
+                    write!(printer, ", {space}")?;
+                }
+                printer.write_str(">")
+            }
         }
     }
 }

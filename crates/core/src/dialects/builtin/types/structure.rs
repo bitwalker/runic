@@ -1,11 +1,14 @@
 use alloc::boxed::Box;
-use core::{fmt, num::NonZeroU16};
+use core::{
+    fmt::{self, Write},
+    num::NonZeroU16,
+};
 
 use crate::{
     derive::DialectType,
     dialects::builtin::BuiltinDialect,
     interner::Symbol,
-    types::{Type, TypePrinter},
+    types::{Type, TypeFormatter, TypePrinter},
 };
 
 /// How a struct's fields are laid out.
@@ -112,47 +115,47 @@ impl StructType {
 }
 
 /// Writes `name` bare if it is a bare identifier, otherwise as a quoted, escaped string.
-fn print_name(f: &mut fmt::Formatter<'_>, name: Symbol) -> fmt::Result {
+fn print_name(printer: &mut TypeFormatter<'_, '_>, name: Symbol) -> fmt::Result {
     let text = name.as_str();
     let mut chars = text.chars();
     let bare = chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
     if bare {
-        f.write_str(text)
+        printer.write_str(text)
     } else {
-        write!(f, "\"{}\"", text.escape_default())
+        write!(printer, "\"{}\"", text.escape_default())
     }
 }
 
 impl TypePrinter for StructType {
-    fn print(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("struct")?;
+    fn print(&self, printer: &mut TypeFormatter<'_, '_>) -> fmt::Result {
+        printer.write_str("struct")?;
         if let Some(name) = self.name {
-            f.write_str(" ")?;
-            print_name(f, name)?;
+            printer.write_str(" ")?;
+            print_name(printer, name)?;
         }
-        f.write_str("<")?;
+        printer.write_str("<")?;
         match self.repr {
             StructRepr::Default => (),
-            StructRepr::Align(n) => write!(f, "align({n});")?,
-            StructRepr::Packed(n) => write!(f, "packed({n});")?,
-            StructRepr::Transparent => f.write_str("transparent;")?,
+            StructRepr::Align(n) => write!(printer, "align({n});")?,
+            StructRepr::Packed(n) => write!(printer, "packed({n});")?,
+            StructRepr::Transparent => printer.write_str("transparent;")?,
         }
         for (i, field) in self.fields.iter().enumerate() {
             if i > 0 {
-                f.write_str(", ")?;
+                printer.write_str(", ")?;
             } else if self.repr != StructRepr::Default {
-                f.write_str(" ")?;
+                printer.write_str(" ")?;
             }
             if let Some(name) = field.name {
-                print_name(f, name)?;
-                f.write_str(": ")?;
+                print_name(printer, name)?;
+                printer.write_str(": ")?;
             }
-            write!(f, "{}", field.ty)?;
+            printer.ty(field.ty)?;
             if let Some(align) = field.align {
-                write!(f, " align({align})")?;
+                write!(printer, " align({align})")?;
             }
         }
-        f.write_str(">")
+        printer.write_str(">")
     }
 }

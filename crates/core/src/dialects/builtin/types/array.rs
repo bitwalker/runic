@@ -1,9 +1,9 @@
-use core::fmt;
+use core::fmt::{self, Write};
 
 use crate::{
     derive::DialectType,
     dialects::builtin::BuiltinDialect,
-    types::{Type, TypePrinter},
+    types::{Type, TypeFormatter, TypePrinter},
 };
 
 /// A fixed-length sequence of elements of one type, `array<T; N>`.
@@ -34,7 +34,9 @@ impl ArrayType {
 }
 
 impl TypePrinter for ArrayType {
-    fn print(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "array<{}; {}>", self.element, self.len)
+    fn print(&self, printer: &mut TypeFormatter<'_, '_>) -> fmt::Result {
+        printer.write_str("array<")?;
+        printer.ty(self.element)?;
+        write!(printer, "; {}>", self.len)
     }
 }

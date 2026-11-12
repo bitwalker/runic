@@ -1,6 +1,10 @@
-use core::fmt;
+use core::fmt::{self, Write};
 
-use crate::{derive::DialectType, dialects::builtin::BuiltinDialect, types::TypePrinter};
+use crate::{
+    derive::DialectType,
+    dialects::builtin::BuiltinDialect,
+    types::{TypeFormatter, TypePrinter},
+};
 
 /// A signless integer of a fixed width in bits, `iN`.
 ///
@@ -27,8 +31,8 @@ impl IntegerType {
 }
 
 impl TypePrinter for IntegerType {
-    fn print(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "i{}", self.width)
+    fn print(&self, printer: &mut TypeFormatter<'_, '_>) -> fmt::Result {
+        write!(printer, "i{}", self.width)
     }
 }
 
@@ -38,7 +42,7 @@ impl TypePrinter for IntegerType {
 pub struct IsizeType;
 
 impl TypePrinter for IsizeType {
-    fn print(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("isize")
+    fn print(&self, printer: &mut TypeFormatter<'_, '_>) -> fmt::Result {
+        printer.write_str("isize")
     }
 }

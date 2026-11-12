@@ -6,7 +6,7 @@ mod uniquer;
 
 use core::{
     any::{Any, TypeId},
-    fmt,
+    fmt::{self, Write},
     hash::{Hash, Hasher},
     ptr::{DynMetadata, NonNull, Pointee},
 };
@@ -267,23 +267,73 @@ impl fmt::Debug for Type {
     }
 }
 
-/// A builtin type prints its own syntax. Any other type prints `!dialect.name`, followed by its
-/// own syntax in angle brackets if it has a [TypePrinter].
+/// Prints a type with [TypeFormatter::ty].
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let name = self.name();
+        TypeFormatter::new(f).ty(*self)
+    }
+}
+
+/// Writes types as text: what a [TypePrinter] prints its type's syntax to.
+///
+/// It is written to as a [fmt::Write], and writes each type it is handed with [Self::ty], which
+/// is the one place that decides how a type is written, at the top level or inside another type.
+pub struct TypeFormatter<'a, 'f> {
+    f: &'a mut fmt::Formatter<'f>,
+}
+
+impl<'a, 'f> TypeFormatter<'a, 'f> {
+    /// A printer writing to `f`.
+    pub fn new(f: &'a mut fmt::Formatter<'f>) -> Self {
+        Self { f }
+    }
+
+    /// Writes `ty`.
+    ///
+    /// A builtin type is written as its own syntax. Any other type is written as `!dialect.name`,
+    /// followed by its own syntax in angle brackets if it has a [TypePrinter].
+    pub fn ty(&mut self, ty: Type) -> fmt::Result {
+        let name = ty.name();
         let print = name.print_fn();
         if name.dialect().as_str() == <BuiltinDialect as DialectRegistration>::NAMESPACE {
             let print = print.expect("registration requires builtin types to have a printer");
-            return print(*self, f);
+            return print(ty, self);
         }
-        write!(f, "!{}.{}", name.dialect(), name.name())?;
+        write!(self, "!{}.{}", name.dialect(), name.name())?;
         if let Some(print) = print {
-            f.write_str("<")?;
-            print(*self, f)?;
-            f.write_str(">")?;
+            self.write_str("<")?;
+            print(ty, self)?;
+            self.write_str(">")?;
         }
         Ok(())
+    }
+
+    /// Writes `types` with [Self::ty], separated by `, `.
+    pub fn types(&mut self, types: impl IntoIterator<Item = Type>) -> fmt::Result {
+        for (i, ty) in types.into_iter().enumerate() {
+            if i > 0 {
+                self.write_str(", ")?;
+            }
+            self.ty(ty)?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Write for TypeFormatter<'_, '_> {
+    #[inline]
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.f.write_str(s)
+    }
+
+    #[inline]
+    fn write_char(&mut self, c: char) -> fmt::Result {
+        self.f.write_char(c)
+    }
+
+    #[inline]
+    fn write_fmt(&mut self, args: fmt::Arguments<'_>) -> fmt::Result {
+        self.f.write_fmt(args)
     }
 }
 
@@ -863,8 +913,8 @@ mod tests {
         second: Type,
     }
     impl TypePrinter for PairType {
-        fn print(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(f, "{}, {}", self.first, self.second)
+        fn print(&self, printer: &mut TypeFormatter<'_, '_>) -> fmt::Result {
+            printer.types([self.first, self.second])
         }
     }
 
@@ -925,8 +975,8 @@ mod tests {
     #[ty(dialect = TestDialect)]
     struct UndeclaredPrinterType(u8);
     impl TypePrinter for UndeclaredPrinterType {
-        fn print(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(f, "{}", self.0)
+        fn print(&self, printer: &mut TypeFormatter<'_, '_>) -> fmt::Result {
+            write!(printer, "{}", self.0)
         }
     }
 

@@ -100,5 +100,5 @@ pub use crate::{
         ArrayType, FloatType, FunctionType, IntegerType, IsizeType, NeverType, PointerType,
         StructField, StructRepr, StructType, UnknownType,
     },
-    types::{Type, TypeImpl, TypeName, TypeParser, TypePrinter, TypeRegistration},
+    types::{Type, TypeFormatter, TypeImpl, TypeName, TypeParser, TypePrinter, TypeRegistration},
 };

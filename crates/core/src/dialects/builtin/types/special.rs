@@ -1,6 +1,10 @@
-use core::fmt;
+use core::fmt::{self, Write};
 
-use crate::{derive::DialectType, dialects::builtin::BuiltinDialect, types::TypePrinter};
+use crate::{
+    derive::DialectType,
+    dialects::builtin::BuiltinDialect,
+    types::{TypeFormatter, TypePrinter},
+};
 
 /// The type that is not known yet, `?`: for example a result type before inference, or the
 /// absence of an expected type.
@@ -9,8 +13,8 @@ use crate::{derive::DialectType, dialects::builtin::BuiltinDialect, types::TypeP
 pub struct UnknownType;
 
 impl TypePrinter for UnknownType {
-    fn print(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("?")
+    fn print(&self, printer: &mut TypeFormatter<'_, '_>) -> fmt::Result {
+        printer.write_str("?")
     }
 }
 
@@ -20,7 +24,7 @@ impl TypePrinter for UnknownType {
 pub struct NeverType;
 
 impl TypePrinter for NeverType {
-    fn print(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("never")
+    fn print(&self, printer: &mut TypeFormatter<'_, '_>) -> fmt::Result {
+        printer.write_str("never")
     }
 }
