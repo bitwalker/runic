@@ -5,8 +5,11 @@ use core::ptr::{DynMetadata, Pointee};
 
 pub use self::info::DialectInfo;
 use crate::{
-    AttributeRef, Builder, OperationName, OperationRef, SourceSpan, Type, any::AsAny,
-    attributes::AttributeName, interner,
+    AttributeRef, Builder, OperationName, OperationRef, SourceSpan, Type,
+    any::AsAny,
+    attributes::AttributeName,
+    interner,
+    types::{DialectTypeRegistrationInfo, TypeName, TypeRegistration},
 };
 
 pub type DialectRegistrationHook = fn(&mut DialectInfo);
@@ -31,6 +34,11 @@ pub trait Dialect {
     /// Get the set of registered attributes associated with this dialect
     fn registered_attrs(&self) -> &[AttributeName] {
         self.info().attributes()
+    }
+
+    /// Get the set of registered types associated with this dialect, sorted by name
+    fn registered_types(&self) -> &[TypeName] {
+        self.info().registered_types()
     }
 
     /// A hook to materialize a single constant operation from a given attribute value.
@@ -70,6 +78,17 @@ impl dyn Dialect {
     {
         let name = <T as crate::AttributeRegistration>::name();
         self.registered_attrs().iter().find(|attr| attr.name() == name).cloned()
+    }
+
+    /// Get the [TypeName] of the type `T`, if registered with this dialect.
+    ///
+    /// Returns `None` if the name of `T` is registered by a different Rust type.
+    pub fn registered_type_name<T: TypeRegistration>(&self) -> Option<TypeName> {
+        let name = <T as TypeRegistration>::name();
+        let types = self.registered_types();
+        let index = types.binary_search_by_key(&name, |ty| ty.name()).ok()?;
+        let registered = &types[index];
+        registered.is::<T>().then(|| registered.clone())
     }
 
     /// Get the [OperationName] of the operation type `T`.
@@ -295,6 +314,12 @@ pub(super) fn dialect_init<T: DialectRegistration>() -> Rc<dyn Dialect> {
         if attr.0.dialect_type == dialect_type && attr.0.dialect == dialect_name {
             let name = (attr.0.get_name)();
             info.get_or_register_attribute_with(name, attr.0.init);
+        }
+    }
+
+    for ty in inventory::iter::<DialectTypeRegistrationInfo>() {
+        if ty.belongs_to(dialect_type, dialect_name) {
+            info.get_or_register_type_with(ty.name(), ty.init());
         }
     }
 

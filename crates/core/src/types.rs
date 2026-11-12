@@ -1,0 +1,424 @@
+//! Uniqued, immutable types owned by a [Context](crate::Context).
+
+mod name;
+mod registration;
+mod uniquer;
+
+use core::{
+    any::{Any, TypeId},
+    fmt,
+    hash::{Hash, Hasher},
+    ptr::{DynMetadata, NonNull, Pointee},
+};
+
+pub(crate) use self::uniquer::TypeUniquer;
+pub use self::{
+    name::TypeName,
+    registration::{DialectTypeRegistrationInfo, TypeRegistration},
+};
+
+/// The value a type is uniqued by: two types are the same type exactly when they have the same
+/// Rust type and compare equal.
+pub trait TypeImpl: Any + Eq + Hash + fmt::Debug + 'static {}
+
+/// What every interned type starts with.
+#[repr(C)]
+pub struct TypeHeader {
+    name: TypeName,
+    /// The hash this type is stored under in the context's uniquer.
+    hash: u64,
+}
+
+/// An interned type: its header followed by its value.
+///
+/// `repr(C)` with the header first is what lets a [Type] point at the header whatever `T` is:
+/// a pointer to the storage is a pointer to its header. The value follows the header at
+/// [TypeStorage::VALUE_OFFSET], which depends on `T`'s alignment and is recorded in `T`'s
+/// [TypeName].
+#[repr(C)]
+pub(crate) struct TypeStorage<T> {
+    header: TypeHeader,
+    value: T,
+}
+
+impl<T: TypeImpl> TypeStorage<T> {
+    /// The offset of the value from the start of the storage, which depends on `T`'s alignment.
+    pub(crate) const VALUE_OFFSET: usize = core::mem::offset_of!(Self, value);
+
+    /// Creates the storage of a type whose value is `value`.
+    ///
+    /// Panics if `name` is not the registration record of `T`: [Type::downcast_ref] and
+    /// [Type::as_trait] trust the name to describe the storage behind the header.
+    pub(crate) fn new(name: TypeName, hash: u64, value: T) -> Self {
+        assert!(
+            name.is::<T>(),
+            "type name `{name}` does not describe `{}`",
+            core::any::type_name::<T>()
+        );
+        Self {
+            header: TypeHeader { name, hash },
+            value,
+        }
+    }
+}
+
+/// A handle to a type interned in a [Context](crate::Context).
+///
+/// Handles are cheap to copy, and two handles are equal exactly when they denote the same type.
+/// A handle must not be used after its context is dropped.
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct Type(NonNull<TypeHeader>);
+
+impl Type {
+    /// Creates the handle of the type stored at `storage`.
+    ///
+    /// # Safety
+    ///
+    /// `storage` must point at an initialized `TypeStorage<T>` that lives, unmoved and unmodified,
+    /// for as long as the handle (or any copy of it) is used, and the pointer must carry
+    /// provenance over the whole storage.
+    pub(crate) unsafe fn from_storage<T: TypeImpl>(storage: NonNull<TypeStorage<T>>) -> Self {
+        Self(storage.cast())
+    }
+
+    #[inline]
+    fn header(&self) -> &TypeHeader {
+        // SAFETY: a handle is only created by `from_storage`, whose contract keeps the storage it
+        // points at alive and unmodified while the handle is used; the storage is `repr(C)` with
+        // the header first, so the pointer is a valid, aligned pointer to an initialized header.
+        unsafe { self.0.as_ref() }
+    }
+
+    #[inline]
+    pub(crate) fn stored_hash(&self) -> u64 {
+        self.header().hash
+    }
+
+    /// The registration record of this type: its dialect, name and interfaces.
+    #[inline]
+    pub fn name(&self) -> &TypeName {
+        &self.header().name
+    }
+
+    /// The address identifying this type.
+    #[inline]
+    pub fn as_ptr(&self) -> *const () {
+        self.0.as_ptr().cast()
+    }
+
+    /// Returns true if this type is a `T`.
+    #[inline]
+    pub fn is<T: TypeImpl>(&self) -> bool {
+        self.name().is::<T>()
+    }
+
+    /// Returns the value of this type if it is a `T`.
+    pub fn downcast_ref<T: TypeImpl>(&self) -> Option<&T> {
+        if !self.is::<T>() {
+            return None;
+        }
+        // SAFETY: `TypeStorage::new` only accepts the name registered for its own `T`, so a
+        // header whose name records `T`'s `TypeId` is the first field of a live
+        // `TypeStorage<T>`, and the handle's pointer has provenance over all of it. The storage
+        // is never mutated, so a shared reference to its value is valid while the handle is.
+        Some(unsafe { &self.0.cast::<TypeStorage<T>>().as_ref().value })
+    }
+
+    /// Returns this type as the interface `Trait`, if its registration declares it.
+    pub fn as_trait<Trait>(&self) -> Option<&Trait>
+    where
+        Trait: ?Sized + Pointee<Metadata = DynMetadata<Trait>> + 'static,
+    {
+        let name = self.name();
+        let metadata = name.trait_metadata::<Trait>()?;
+        // SAFETY: the storage behind this header is a `TypeStorage<T>` for the `T` that `name`
+        // was registered for (see `TypeStorage::new`); `name.value_offset()` is
+        // `TypeStorage::<T>::VALUE_OFFSET`, so adding it stays inside the storage and yields a
+        // properly aligned pointer to the initialized, never-mutated `T`. `metadata` is the
+        // vtable of `Trait` for that same `T`, taken from `T`'s own trait table.
+        unsafe {
+            let value = self.0.as_ptr().cast::<u8>().add(name.value_offset());
+            Some(&*core::ptr::from_raw_parts::<Trait>(value.cast::<()>(), metadata))
+        }
+    }
+}
+
+impl Eq for Type {}
+impl PartialEq for Type {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        core::ptr::addr_eq(self.0.as_ptr(), other.0.as_ptr())
+    }
+}
+impl Hash for Type {
+    #[inline]
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.as_ptr().addr().hash(state);
+    }
+}
+impl fmt::Debug for Type {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.name().debug_value(*self, f)
+    }
+}
+
+/// The hash a type with value `value` is stored under in the uniquer.
+pub(crate) fn hash_of<T: TypeImpl>(value: &T) -> u64 {
+    let mut hasher = crate::FxHasher::default();
+    TypeId::of::<T>().hash(&mut hasher);
+    value.hash(&mut hasher);
+    hasher.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{boxed::Box, rc::Rc};
+    use core::{any::Any, cell::Cell};
+
+    use super::*;
+    use crate::{Context, dialects::test::TestDialect, interner::Symbol, traits::TraitInfo};
+
+    /// An interface a type may implement, to exercise `Type::as_trait`.
+    trait Describe {
+        fn describe(&self) -> u128;
+    }
+
+    /// 16-aligned on purpose: more aligned than the header, which is 8-aligned.
+    #[derive(Debug, PartialEq, Eq, Hash)]
+    struct WideType {
+        tag: u8,
+        wide: u128,
+    }
+    impl TypeImpl for WideType {}
+    impl TypeRegistration for WideType {
+        type Dialect = TestDialect;
+
+        fn name() -> Symbol {
+            Symbol::intern("wide")
+        }
+
+        fn traits() -> Box<[TraitInfo]> {
+            Box::from([TraitInfo::new::<Self, dyn Any>(), TraitInfo::new::<Self, dyn Describe>()])
+        }
+    }
+    impl Describe for WideType {
+        fn describe(&self) -> u128 {
+            self.wide + self.tag as u128
+        }
+    }
+    inventory::submit!(DialectTypeRegistrationInfo::new::<WideType>());
+
+    #[derive(Debug, PartialEq, Eq, Hash)]
+    struct OtherType {
+        tag: u8,
+        wide: u128,
+    }
+    impl TypeImpl for OtherType {}
+    impl TypeRegistration for OtherType {
+        type Dialect = TestDialect;
+
+        fn name() -> Symbol {
+            Symbol::intern("other")
+        }
+
+        fn traits() -> Box<[TraitInfo]> {
+            Box::from([TraitInfo::new::<Self, dyn Any>()])
+        }
+    }
+    inventory::submit!(DialectTypeRegistrationInfo::new::<OtherType>());
+
+    #[test]
+    fn equal_values_intern_to_one_handle() {
+        let context = Context::default();
+        let a = context.intern_type(WideType { tag: 1, wide: 7 });
+        let b = context.intern_type(WideType { tag: 1, wide: 7 });
+        let c = context.intern_type(WideType { tag: 2, wide: 7 });
+        assert_eq!(a, b);
+        assert_eq!(a.as_ptr(), b.as_ptr());
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn rust_types_with_equal_fields_are_distinct_types() {
+        let context = Context::default();
+        let wide = context.intern_type(WideType { tag: 1, wide: 7 });
+        let other = context.intern_type(OtherType { tag: 1, wide: 7 });
+        assert_ne!(wide, other);
+        assert!(wide.is::<WideType>() && !wide.is::<OtherType>());
+        assert_eq!(wide.downcast_ref::<OtherType>(), None);
+        assert_eq!(wide.name().name().as_str(), "wide");
+        assert_eq!(wide.name().dialect().as_str(), "test");
+    }
+
+    #[test]
+    fn a_handle_reads_back_its_value_and_its_interfaces() {
+        let context = Context::default();
+        let ty = context.intern_type(WideType {
+            tag: 3,
+            wide: u128::MAX - 3,
+        });
+        assert_eq!(
+            ty.downcast_ref::<WideType>(),
+            Some(&WideType {
+                tag: 3,
+                wide: u128::MAX - 3
+            })
+        );
+        let described = ty.as_trait::<dyn Describe>().expect("WideType implements Describe");
+        assert_eq!(described.describe(), u128::MAX);
+        assert!(ty.name().implements::<dyn Describe>());
+        let other = context.intern_type(OtherType { tag: 3, wide: 0 });
+        assert!(other.as_trait::<dyn Describe>().is_none());
+    }
+
+    #[test]
+    fn each_context_has_its_own_types() {
+        let first = Context::default();
+        let second = Context::default();
+        let a = first.intern_type(WideType { tag: 1, wide: 1 });
+        let b = second.intern_type(WideType { tag: 1, wide: 1 });
+        assert_ne!(a, b);
+        assert_eq!(a.downcast_ref::<WideType>(), b.downcast_ref::<WideType>());
+    }
+
+    #[derive(Debug)]
+    struct Counted(Rc<Cell<usize>>);
+    impl PartialEq for Counted {
+        fn eq(&self, _: &Self) -> bool {
+            true
+        }
+    }
+    impl Eq for Counted {}
+    impl core::hash::Hash for Counted {
+        fn hash<H: core::hash::Hasher>(&self, _: &mut H) {}
+    }
+    impl Drop for Counted {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+    impl TypeImpl for Counted {}
+    impl TypeRegistration for Counted {
+        type Dialect = TestDialect;
+
+        fn name() -> Symbol {
+            Symbol::intern("counted")
+        }
+
+        fn traits() -> Box<[TraitInfo]> {
+            Box::from([TraitInfo::new::<Self, dyn Any>()])
+        }
+    }
+    inventory::submit!(DialectTypeRegistrationInfo::new::<Counted>());
+
+    #[test]
+    fn type_values_are_dropped_with_the_context_exactly_once() {
+        let drops = Rc::new(Cell::new(0));
+        {
+            let context = Context::default();
+            context.intern_type(Counted(drops.clone()));
+            // A second, equal value is rejected by the uniquer and dropped immediately.
+            context.intern_type(Counted(drops.clone()));
+            assert_eq!(drops.get(), 1);
+        }
+        assert_eq!(drops.get(), 2);
+    }
+
+    /// Aligned beyond the header, so the value is preceded by padding.
+    #[derive(Debug, PartialEq, Eq, Hash)]
+    #[repr(C, align(32))]
+    struct OverAligned {
+        value: u64,
+    }
+    impl TypeImpl for OverAligned {}
+    impl TypeRegistration for OverAligned {
+        type Dialect = TestDialect;
+
+        fn name() -> Symbol {
+            Symbol::intern("over_aligned")
+        }
+
+        fn traits() -> Box<[TraitInfo]> {
+            Box::from([TraitInfo::new::<Self, dyn Any>(), TraitInfo::new::<Self, dyn Describe>()])
+        }
+    }
+    impl Describe for OverAligned {
+        fn describe(&self) -> u128 {
+            self.value as u128
+        }
+    }
+    inventory::submit!(DialectTypeRegistrationInfo::new::<OverAligned>());
+
+    #[test]
+    fn a_value_aligned_past_the_header_is_found_at_its_recorded_offset() {
+        let offset = TypeStorage::<OverAligned>::VALUE_OFFSET;
+        assert_eq!(offset, 32);
+        assert!(offset > core::mem::size_of::<TypeHeader>());
+
+        let context = Context::default();
+        let ty = context.intern_type(OverAligned { value: 0xfeed_beef });
+        assert_eq!(ty.name().value_offset(), offset);
+        let value = ty.downcast_ref::<OverAligned>().expect("an OverAligned type");
+        assert_eq!(value.value, 0xfeed_beef);
+        assert!((value as *const OverAligned).is_aligned());
+        let described = ty.as_trait::<dyn Describe>().expect("OverAligned implements Describe");
+        assert_eq!(described.describe(), 0xfeed_beef);
+        assert_eq!(
+            (described as *const dyn Describe).cast::<()>(),
+            (value as *const OverAligned).cast::<()>()
+        );
+    }
+
+    /// Two Rust types that claim the same name in the same dialect.
+    #[derive(Debug, PartialEq, Eq, Hash)]
+    struct ClashSmall(u8);
+    impl TypeImpl for ClashSmall {}
+    impl TypeRegistration for ClashSmall {
+        type Dialect = TestDialect;
+
+        fn name() -> Symbol {
+            Symbol::intern("clash")
+        }
+
+        fn traits() -> Box<[TraitInfo]> {
+            Box::from([TraitInfo::new::<Self, dyn Any>()])
+        }
+    }
+    inventory::submit!(DialectTypeRegistrationInfo::new::<ClashSmall>());
+
+    #[derive(Debug, PartialEq, Eq, Hash)]
+    struct ClashWide(u128);
+    impl TypeImpl for ClashWide {}
+    impl TypeRegistration for ClashWide {
+        type Dialect = TestDialect;
+
+        fn name() -> Symbol {
+            Symbol::intern("clash")
+        }
+
+        fn traits() -> Box<[TraitInfo]> {
+            Box::from([TraitInfo::new::<Self, dyn Any>()])
+        }
+    }
+    inventory::submit!(DialectTypeRegistrationInfo::new::<ClashWide>());
+
+    #[test]
+    fn a_name_claimed_by_another_rust_type_is_not_handed_out() {
+        let context = Context::default();
+        let dialect = context.get_or_register_dialect::<TestDialect>();
+        let small = dialect.registered_type_name::<ClashSmall>();
+        let wide = dialect.registered_type_name::<ClashWide>();
+        assert!(small.is_some() != wide.is_some(), "exactly one type owns the name");
+        assert!(small.is_none_or(|name| name.is::<ClashSmall>()));
+        assert!(wide.is_none_or(|name| name.is::<ClashWide>()));
+    }
+
+    #[test]
+    #[should_panic(expected = "is not registered")]
+    fn interning_a_type_whose_name_another_rust_type_owns_panics() {
+        let context = Context::default();
+        context.intern_type(ClashSmall(1));
+        context.intern_type(ClashWide(1));
+    }
+}

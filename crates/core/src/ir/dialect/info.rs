@@ -8,7 +8,7 @@ use core::{
 use super::{Dialect, DialectRegistration};
 use crate::{
     AttributeRegistration, FxHashMap, OpRegistration, OperationName, attributes::AttributeName,
-    interner, traits::TraitInfo,
+    interner, traits::TraitInfo, types::TypeName,
 };
 
 pub struct DialectInfo {
@@ -20,6 +20,8 @@ pub struct DialectInfo {
     registered_ops: Vec<OperationName>,
     /// The set of attributes registered to this dialect
     registered_attrs: Vec<AttributeName>,
+    /// The set of types registered to this dialect, sorted by name
+    registered_types: Vec<TypeName>,
     /// The set of dialect interfaces (traits) implemented by this dialect
     registered_interfaces: Vec<TraitInfo>,
     /// The set of trait implementations for operations of this dialect which for one reason or
@@ -43,6 +45,7 @@ impl DialectInfo {
             type_id,
             registered_ops: Default::default(),
             registered_attrs: Default::default(),
+            registered_types: Default::default(),
             registered_interfaces: Default::default(),
             late_bound_operation_traits: Default::default(),
             late_bound_attribute_traits: Default::default(),
@@ -63,6 +66,11 @@ impl DialectInfo {
 
     pub fn attributes(&self) -> &[AttributeName] {
         &self.registered_attrs
+    }
+
+    /// The types registered to this dialect, sorted by name
+    pub fn registered_types(&self) -> &[TypeName] {
+        &self.registered_types
     }
 
     pub fn register_operation<T>(&mut self) -> OperationName
@@ -142,6 +150,26 @@ impl DialectInfo {
                 let name = init(self.name, extra_traits);
                 self.registered_attrs.insert(index, name.clone());
                 name
+            }
+        }
+    }
+
+    /// Returns the type registered under `name`, registering it with `init` if there is none.
+    ///
+    /// A name already registered keeps its registration, even when `init` is for a different Rust
+    /// type.
+    pub fn get_or_register_type_with(
+        &mut self,
+        name: interner::Symbol,
+        init: fn(interner::Symbol) -> TypeName,
+    ) -> TypeName {
+        match self.registered_types.binary_search_by_key(&name, |ty| ty.name()) {
+            Ok(index) => self.registered_types[index].clone(),
+            Err(index) => {
+                let ty = init(self.name);
+                debug_assert_eq!(ty.name(), name);
+                self.registered_types.insert(index, ty.clone());
+                ty
             }
         }
     }

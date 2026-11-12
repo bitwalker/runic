@@ -78,6 +78,7 @@ pub mod patterns;
 mod program_point;
 pub mod reserved_names;
 pub mod testing;
+pub mod types;
 
 pub use runic_diagnostics as diagnostics;
 

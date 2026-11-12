@@ -16,6 +16,7 @@ use crate::{
     AttributeRef, AttributeRegistration, FxHashMap,
     attributes::{AttributeName, DerivableTypeAttribute, Marker},
     constants::{ConstantData, ConstantId, ConstantPool},
+    types::{TypeName, TypeRegistration, TypeStorage, TypeUniquer},
 };
 
 /// Represents the shared state of the IR, used during a compilation session.
@@ -35,6 +36,10 @@ pub struct Context {
     sources: RefCell<Arc<SourceMap>>,
     /// Non-fatal diagnostics (warnings, notes) emitted while working on this context.
     diagnostics: RefCell<DiagnosticCollector>,
+    /// The types interned in this context. Their storage lives in `allocator`; the uniquer holds
+    /// only `Copy` handles to it and does not read them when dropped, so the two may be dropped in
+    /// either order.
+    types: RefCell<TypeUniquer>,
     allocator: Rc<Blink>,
     registered_dialects: RefCell<FxHashMap<interner::Symbol, Rc<dyn Dialect>>>,
     constants: RefCell<ConstantPool>,
@@ -127,6 +132,7 @@ impl Context {
         Self {
             sources: RefCell::new(Arc::new(SourceMap::new(namespace))),
             diagnostics: RefCell::new(DiagnosticCollector::new()),
+            types: Default::default(),
             allocator,
             registered_dialects: RefCell::new(registered_dialects),
             constants: Default::default(),
@@ -223,6 +229,35 @@ impl Context {
     {
         self.get_registered_dialect(T::dialect_name())
             .expect_registered_attribute_name::<T>()
+    }
+
+    /// Returns the type denoted by `value`, interning it on first use.
+    pub fn intern_type<T: TypeRegistration>(&self, value: T) -> crate::types::Type {
+        self.types.borrow_mut().get_or_insert_with(value, |value, hash| {
+            let name = self.get_registered_type_name::<T>();
+            let storage = self.allocator.put(TypeStorage::new(name, hash, value));
+            // SAFETY: `storage` is an initialized `TypeStorage<T>` in the arena, which keeps it at
+            // this address until the context's last `Rc<Blink>` is dropped and is never reset.
+            // The `&mut` from `put` is converted to a pointer here and never used again, so
+            // nothing can mutate the storage, and the pointer covers the whole storage.
+            unsafe { crate::types::Type::from_storage(core::ptr::NonNull::from(storage)) }
+        })
+    }
+
+    /// The registration record of `T`, registering `T`'s dialect first if necessary.
+    ///
+    /// Panics if `T` is not registered with its dialect, or if another Rust type is registered
+    /// under `T`'s name.
+    pub fn get_registered_type_name<T: TypeRegistration>(&self) -> TypeName {
+        self.get_or_register_dialect::<T::Dialect>()
+            .registered_type_name::<T>()
+            .unwrap_or_else(|| {
+                panic!(
+                    "type `{}` is not registered with dialect '{}'",
+                    core::any::type_name::<T>(),
+                    <T::Dialect as DialectRegistration>::NAMESPACE
+                )
+            })
     }
 
     pub fn get_or_register_dialect<T>(&self) -> Rc<dyn Dialect>
