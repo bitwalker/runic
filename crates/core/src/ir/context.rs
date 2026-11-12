@@ -233,7 +233,7 @@ impl Context {
 
     /// Returns the type denoted by `value`, interning it on first use.
     pub fn intern_type<T: TypeRegistration>(&self, value: T) -> crate::types::Type {
-        self.types.borrow_mut().get_or_insert_with(value, |value, hash| {
+        let (ty, rejected) = self.types.borrow_mut().get_or_insert_with(value, |value, hash| {
             let name = self.get_registered_type_name::<T>();
             let storage = self.allocator.put(TypeStorage::new(name, hash, value));
             // SAFETY: `storage` is an initialized `TypeStorage<T>` in the arena, which keeps it at
@@ -241,7 +241,10 @@ impl Context {
             // The `&mut` from `put` is converted to a pointer here and never used again, so
             // nothing can mutate the storage, and the pointer covers the whole storage.
             unsafe { crate::types::Type::from_storage(core::ptr::NonNull::from(storage)) }
-        })
+        });
+        // Dropped only now that the uniquer is released, as its `Drop` may intern types.
+        drop(rejected);
+        ty
     }
 
     /// The registration record of `T`, registering `T`'s dialect first if necessary.

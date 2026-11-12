@@ -403,6 +403,50 @@ mod tests {
         assert_eq!(drops.get(), 2);
     }
 
+    /// Interns a type into its context when dropped, while that context is alive.
+    #[derive(Debug)]
+    struct InternsOnDrop(alloc::rc::Weak<Context>);
+    impl PartialEq for InternsOnDrop {
+        fn eq(&self, _: &Self) -> bool {
+            true
+        }
+    }
+    impl Eq for InternsOnDrop {}
+    impl core::hash::Hash for InternsOnDrop {
+        fn hash<H: core::hash::Hasher>(&self, _: &mut H) {}
+    }
+    impl Drop for InternsOnDrop {
+        fn drop(&mut self) {
+            if let Some(context) = self.0.upgrade() {
+                context.intern_type(WideType { tag: 9, wide: 9 });
+            }
+        }
+    }
+    impl TypeImpl for InternsOnDrop {}
+    impl TypeRegistration for InternsOnDrop {
+        type Dialect = TestDialect;
+
+        fn name() -> Symbol {
+            Symbol::intern("interns_on_drop")
+        }
+
+        fn traits() -> Box<[TraitInfo]> {
+            Box::from([TraitInfo::new::<Self, dyn Any>()])
+        }
+    }
+    inventory::submit!(DialectTypeRegistrationInfo::new::<InternsOnDrop>());
+
+    #[test]
+    fn a_rejected_duplicate_is_dropped_after_the_uniquer_is_released() {
+        let context = Rc::new(Context::default());
+        let first = context.intern_type(InternsOnDrop(Rc::downgrade(&context)));
+        // The duplicate is rejected, and its `Drop` interns another type into the same context.
+        let second = context.intern_type(InternsOnDrop(Rc::downgrade(&context)));
+        assert_eq!(first, second);
+        let wide = context.intern_type(WideType { tag: 9, wide: 9 });
+        assert_eq!(wide.downcast_ref::<WideType>(), Some(&WideType { tag: 9, wide: 9 }));
+    }
+
     /// Aligned beyond the header, so the value is preceded by padding.
     #[derive(Debug, PartialEq, Eq, Hash)]
     #[repr(C, align(32))]
