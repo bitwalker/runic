@@ -3288,3 +3288,17 @@ fn int_text_round_trips_through_literals() {
     assert_eq!(lit(false, 1).to_int_of_width(0), None);
     assert_eq!(lit(false, 1).to_int_of_width(129), None);
 }
+
+#[test]
+fn integer_literals_at_127_and_128_bits() {
+    assert_eq!(lit(true, 1 << 127).to_int_of_width(128).map(|x| x.unsigned()), Some(1 << 127));
+    assert_eq!(lit(true, (1 << 127) + 1).to_int_of_width(128), None);
+
+    assert_eq!(
+        lit(false, (1 << 127) - 1).to_int_of_width(127).map(|x| x.unsigned()),
+        Some((1 << 127) - 1)
+    );
+    assert_eq!(lit(true, 1 << 126).to_int_of_width(127).map(|x| x.signed()), Some(-(1 << 126)));
+    assert_eq!(lit(false, 1 << 127).to_int_of_width(127), None);
+    assert_eq!(lit(true, (1 << 126) + 1).to_int_of_width(127), None);
+}

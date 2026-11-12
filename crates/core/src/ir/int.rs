@@ -300,6 +300,15 @@ mod tests {
     }
 
     #[test]
+    fn edges_at_127_bits() {
+        assert_eq!(Int::from_signed(127, 1 << 126), None);
+        let min = Int::from_signed(127, -(1 << 126)).unwrap();
+        assert_eq!(min.signed(), -(1 << 126));
+        assert_eq!(Int::from_unsigned(127, 1 << 127), None);
+        assert_eq!(Int::from_bits(127, 1 << 126).signed(), -(1 << 126));
+    }
+
+    #[test]
     fn resizing() {
         for w1 in 1..=9u32 {
             for w2 in w1..=9u32 {
@@ -398,6 +407,7 @@ mod tests {
         assert_eq!(format!("{:X}", Int::from(255u16)), "FF");
         assert_eq!(format!("{:b}", Int::from_bits(3, 5)), "101");
         assert_eq!(format!("{:?}", Int::from(-1i8)), "-1i8");
+        assert_eq!(format!("{:?}", Int::from(true)), "1i1");
     }
 
     #[test]
