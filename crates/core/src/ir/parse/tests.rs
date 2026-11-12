@@ -2680,6 +2680,34 @@ fn invalid_rec_blocks_are_reported() {
 
     let message = parse_error_text("rec { type !a = struct<ptr<!a>>;");
     assert!(message.contains("unexpected end of input"), "{message}");
+
+    // The primary label of each error: the first occurrence of `labelled` in the source, without
+    // its first `skip` bytes (an alias's span leaves out the `!`).
+    for (declarations, labelled, skip) in [
+        ("rec { type !a = struct<ptr<!b>>; type !c = struct<ptr<!b>>; }", "!b", 1),
+        ("rec { type !a = struct<ptr<!b>>; type !b = i32; }", "type !b = i32;", 0),
+        ("rec { }", "rec", 0),
+    ] {
+        let source = format!("{declarations}{world}");
+        let (message, labels) = parse_error_labels(&source);
+        let (start, end) = range_of(&source, labelled);
+        assert_eq!(labels.first(), Some(&(start + skip, end)), "{source}: {message}");
+    }
+}
+
+#[test]
+fn an_alias_mentioned_twice_before_its_declaration() {
+    let test = ParserTest::default();
+    let types = declared_types(
+        &test,
+        "rec { type !a = struct<ptr<!c>>; type !b = struct<ptr<!c>>; type !c = struct<ptr<!a>>; }",
+        &["!a", "!b", "!c"],
+    );
+    let [a, b, c] = types[..] else { unreachable!() };
+    assert_eq!([a, b, c].map(|ty| ty.rec_index()), [Some(0), Some(1), Some(2)]);
+    assert_eq!(field(a, 0).pointee(), Some(c));
+    assert_eq!(field(b, 0).pointee(), Some(c));
+    assert_eq!(field(c, 0).pointee(), Some(a));
 }
 
 /// The message of the error that parsing `source` gives, on one line, and the ranges of its labels.

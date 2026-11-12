@@ -329,6 +329,6 @@ mod tests {
             text.starts_with("rec {\n  type !list = struct list<i32, ptr<!list>>;\n}\n\n"),
             "unexpected emitted text:\n{text}"
         );
-        assert!(text.contains("ptr<!list>"), "unexpected emitted text:\n{text}");
+        assert_eq!(text.matches("rec {").count(), 1, "unexpected emitted text:\n{text}");
     }
 }
