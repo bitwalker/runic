@@ -463,6 +463,102 @@ impl CallableOpInterface for Function {
 
 impl CallableSymbol for Function {}
 
+/// A function verifies its signature, and its body against it: the entry block of a definition
+/// has one argument per parameter, of the parameter's type, and every `builtin.ret` and
+/// `builtin.ret_imm` in the body, outside nested callables, returns exactly the results of the
+/// signature (none may appear in a function that never returns).
+impl crate::Verify<dyn CallableSymbol> for Function {
+    fn verify(&self, _context: &crate::Context) -> Result<(), crate::Report> {
+        use crate::{Spanned, ValueRef, WalkResult, diagnostics::report};
+
+        let span = self.as_operation().span();
+        let invalid = |label: String| {
+            report!(
+                message: "invalid operation builtin.function",
+                labels: [primary(span, label)],
+            )
+        };
+
+        let signature = self.get_signature();
+        signature.validate().map_err(|err| invalid(format!("{err}")))?;
+        if self.is_declaration() {
+            return Ok(());
+        }
+
+        let entry = self.entry_block();
+        let entry = entry.borrow();
+        let arguments = entry.arguments();
+        if arguments.len() != signature.params().len() {
+            return Err(invalid(format!(
+                "expected one entry block argument per parameter: the signature has {} \
+                 parameters, the entry block has {} arguments",
+                signature.params().len(),
+                arguments.len()
+            )));
+        }
+        for (index, (argument, param)) in arguments.iter().zip(signature.params()).enumerate() {
+            let ty = (*argument as ValueRef).borrow().ty();
+            if ty != param.ty {
+                return Err(invalid(format!(
+                    "argument {index} of the entry block has type `{ty}`, but parameter {index} \
+                     has type `{}`",
+                    param.ty
+                )));
+            }
+        }
+
+        let expected = signature.results().iter().map(|result| result.ty).collect::<Vec<_>>();
+        let never_returns = signature.never_returns();
+        let check_return = |op: &Operation, returned: &[Type]| -> Result<(), crate::Report> {
+            let reason = if never_returns {
+                String::from("this returns from a function that never returns")
+            } else if returned != expected.as_slice() {
+                format!(
+                    "this returns {}, but the function returns {}",
+                    type_list(returned),
+                    type_list(&expected)
+                )
+            } else {
+                return Ok(());
+            };
+            Err(report!(
+                message: "invalid operation builtin.function",
+                labels: [
+                    primary(op.span(), reason),
+                    context(span, "in this function"),
+                ],
+            ))
+        };
+
+        self.body()
+            .prewalk(|op: &Operation| {
+                if op.implements::<dyn CallableOpInterface>() {
+                    return WalkResult::Skip;
+                }
+                let checked = if let Some(ret) = op.downcast_ref::<Ret>() {
+                    let returned =
+                        ret.values().iter().map(|value| value.borrow().ty()).collect::<Vec<_>>();
+                    check_return(op, &returned)
+                } else if let Some(ret_imm) = op.downcast_ref::<RetImm>() {
+                    check_return(op, &[crate::Attribute::ty(&*ret_imm.value())])
+                } else {
+                    Ok(())
+                };
+                match checked {
+                    Ok(()) => WalkResult::Continue(()),
+                    Err(err) => WalkResult::Break(err),
+                }
+            })
+            .into_result()
+    }
+}
+
+/// `types` as a parenthesised list, `(i32, i64)`.
+fn type_list(types: &[Type]) -> String {
+    let types = types.iter().map(|ty| format!("{ty}")).collect::<Vec<_>>();
+    format!("({})", types.join(", "))
+}
+
 /// Returns from the enclosing function with the provided operands as its results.
 #[operation(
     dialect = BuiltinDialect,

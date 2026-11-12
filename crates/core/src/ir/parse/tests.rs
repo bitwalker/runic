@@ -4674,3 +4674,262 @@ fn a_repeated_key_in_a_parameter_dictionary_is_an_error() {
     let range = span.range();
     assert_eq!((range.start() as usize, range.end() as usize), second(&text));
 }
+
+/// An operation of the test dialect with a region of its own, which is not a callable.
+#[crate::derive::operation(dialect = TestDialect)]
+pub struct RegionHolder {
+    #[region]
+    body: crate::RegionRef,
+}
+
+/// Parses `source`, which verifies, and checks that it fails verification with `reason`, the
+/// first label starting where `labelled` does.
+#[track_caller]
+fn assert_verification_error(source: &str, labelled: &str, reason: &str) {
+    let test = ParserTest::default();
+    test.context().get_or_register_dialect::<TestDialect>();
+    test.parse_any_unverified("verify.hir", source)
+        .unwrap_or_else(|err| panic!("{source} is well-formed as text: {err:?}"));
+    let (message, labels) = parse_error_labels(source);
+    assert!(message.contains("invalid operation builtin.function"), "{message}");
+    assert!(message.contains(reason), "{message}");
+    let start = source.find(labelled).unwrap_or_else(|| panic!("`{labelled}` in `{source}`"));
+    assert_eq!(labels.first().map(|label| label.0), Some(start), "{message}");
+}
+
+/// The message of the error that verifying `function` alone gives, then the messages of its
+/// labels (a function built in code has no spans, so its labels are not rendered), on one line.
+fn verify_error_text(function: UnsafeIntrusiveEntityRef<Function>) -> String {
+    use crate::Op;
+
+    let function = function.borrow();
+    let err = function.as_operation().verify().expect_err("the function does not verify");
+    let labels = crate::testing::label_messages(err.as_diagnostic()).join(" | ");
+    let text = format!("{} {labels}", err.display());
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// `never` is the single result of a function that never returns, and nothing else.
+#[test]
+fn never_as_a_parameter_or_among_results_does_not_verify() {
+    let declaration = "builtin.function public extern(\"C\") @f";
+    for (source, reason) in [
+        (format!("{declaration}(i32, never);"), "parameter 1 has type `never`"),
+        (
+            format!("{declaration}() -> (never, i32);"),
+            "result 0 has type `never`, which is only valid as the single result of a function \
+             that never returns",
+        ),
+        (
+            format!("{declaration}(%0: i32) -> (i32, never) {{\n    builtin.ret %0 : (i32);\n}};"),
+            "result 1 has type `never`, which is only valid as the single result of a function \
+             that never returns",
+        ),
+    ] {
+        assert_verification_error(&source, "builtin.function", reason);
+    }
+}
+
+/// `InvalidSignature` says which parameter or result is the problem.
+#[test]
+fn a_signature_validates_where_never_appears() {
+    use crate::dialects::builtin::attributes::InvalidSignature;
+
+    let context = Rc::new(Context::default());
+    let never = context.never_type();
+    let i32 = context.i32();
+    assert_eq!(Signature::new(&context, [i32], [never]).validate(), Ok(()));
+    assert_eq!(Signature::new(&context, [i32], [i32, i32]).validate(), Ok(()));
+    assert_eq!(
+        Signature::new(&context, [i32, never], []).validate(),
+        Err(InvalidSignature::NeverParameter { index: 1 })
+    );
+    assert_eq!(
+        Signature::new(&context, [], [i32, never]).validate(),
+        Err(InvalidSignature::NeverAmongResults { index: 1 })
+    );
+    let err = Signature::new(&context, [never], []).validate().unwrap_err();
+    assert_eq!(err.to_string(), "parameter 0 has type `never`");
+}
+
+/// A test function `f` built in code with the signature `signature` gives, whose entry block
+/// ends in a `builtin.ret` of nothing.
+fn built_function(signature: impl FnOnce(&Context) -> (Vec<Type>, Vec<Type>)) -> Test {
+    let mut test = Test::new("f", signature);
+    test.function_builder().builder_mut().ret([], SourceSpan::UNKNOWN).unwrap();
+    test
+}
+
+/// The entry block of a definition has one argument per parameter, of the parameter's type. The
+/// parser cannot produce a function that breaks this, so these are built in code.
+#[test]
+fn an_entry_block_that_disagrees_with_the_parameters_does_not_verify() {
+    let test = built_function(|cx| (alloc::vec![cx.i32()], alloc::vec![]));
+    let mut function = test.function();
+    let i64 = test.context().i64();
+    function.borrow_mut().get_signature_mut().params.push(AbiParam::new(i64));
+    let message = verify_error_text(function);
+    assert!(message.contains("invalid operation builtin.function"), "{message}");
+    assert!(
+        message.contains(
+            "expected one entry block argument per parameter: the signature has 2 parameters, the \
+             entry block has 1 arguments"
+        ),
+        "{message}"
+    );
+
+    let test = built_function(|cx| (alloc::vec![cx.i32(), cx.i32()], alloc::vec![]));
+    let mut function = test.function();
+    let i64 = test.context().i64();
+    function.borrow_mut().get_signature_mut().params[1] = AbiParam::new(i64);
+    let message = verify_error_text(function);
+    assert!(
+        message.contains(
+            "argument 1 of the entry block has type `i32`, but parameter 1 has type `i64`"
+        ),
+        "{message}"
+    );
+}
+
+/// Every `builtin.ret` returns exactly the results of the signature.
+#[test]
+fn a_return_that_disagrees_with_the_results_does_not_verify() {
+    let function = "builtin.function public extern(\"C\") @f";
+    for (source, labelled, reason) in [
+        (
+            format!("{function}(%0: i64) -> i32 {{\n    builtin.ret %0 : (i64);\n}};"),
+            "builtin.ret",
+            "this returns (i64), but the function returns (i32)",
+        ),
+        (
+            format!("{function}(%0: i32) -> i32 {{\n    builtin.ret;\n}};"),
+            "builtin.ret",
+            "this returns (), but the function returns (i32)",
+        ),
+        (
+            format!("{function}(%0: i32) {{\n    builtin.ret %0 : (i32);\n}};"),
+            "builtin.ret",
+            "this returns (i32), but the function returns ()",
+        ),
+        (
+            format!("{function}(%0: i32) -> ptr<i32> {{\n    builtin.ret_imm 5 : i32;\n}};"),
+            "builtin.ret_imm",
+            "this returns (i32), but the function returns (ptr<i32>)",
+        ),
+        (
+            format!("{function}(%0: i32) -> (i32, i32) {{\n    builtin.ret_imm 5 : i32;\n}};"),
+            "builtin.ret_imm",
+            "this returns (i32), but the function returns (i32, i32)",
+        ),
+        (
+            format!("{function}(%0: i32) -> never {{\n    builtin.ret;\n}};"),
+            "builtin.ret",
+            "this returns from a function that never returns",
+        ),
+        (
+            format!("{function}(%0: i32) -> never {{\n    builtin.ret %0 : (i32);\n}};"),
+            "builtin.ret",
+            "this returns from a function that never returns",
+        ),
+        (
+            format!("{function}(%0: i32) -> never {{\n    builtin.ret_imm 5 : i32;\n}};"),
+            "builtin.ret_imm",
+            "this returns from a function that never returns",
+        ),
+    ] {
+        assert_verification_error(&source, labelled, reason);
+    }
+}
+
+/// A `builtin.ret` in a region of an operation in the body is checked like one in the body.
+#[test]
+fn a_return_in_a_nested_region_is_checked() {
+    use crate::Builder;
+
+    let mut test = Test::named("f");
+    test.context_rc().get_or_register_dialect::<TestDialect>();
+    let (i64, i32) = (test.context().i64(), test.context().i32());
+    test.with_function("f", &[i64], &[i32]);
+    {
+        let mut f = test.function_builder();
+        let entry = f.entry_block();
+        let arg = entry.borrow().arguments()[0] as ValueRef;
+        let builder = f.builder_mut();
+        let holder = builder.create::<RegionHolder, ()>(SourceSpan::UNKNOWN)().unwrap();
+        let body = holder.borrow().body().as_region_ref();
+        let block = builder.create_block(body, None, &[]);
+        builder.set_insertion_point_to_end(block);
+        builder.ret([arg], SourceSpan::UNKNOWN).unwrap();
+        builder.set_insertion_point_to_end(entry);
+        builder.ret_imm(Int::from(0i32), SourceSpan::UNKNOWN).unwrap();
+    }
+    let message = verify_error_text(test.function());
+    assert!(
+        message.contains("this returns (i64), but the function returns (i32)"),
+        "{message}"
+    );
+}
+
+/// The walk does not enter a function nested in the body: its returns are its own.
+#[test]
+fn a_return_in_a_nested_function_is_not_checked_against_the_outer_one() {
+    use crate::{Builder, Ident, Op};
+
+    let mut test = Test::named("f");
+    let (i64, i32) = (test.context().i64(), test.context().i32());
+    test.with_function("f", &[], &[i32]);
+    let context = test.context_rc();
+    {
+        let mut f = test.function_builder();
+        let entry = f.entry_block();
+        let builder = f.builder_mut();
+        let signature = Signature::new(&context, [], [i64]);
+        let mut nested = builder.create::<Function, (_, _, _)>(SourceSpan::UNKNOWN)(
+            Ident::with_empty_span("g".into()),
+            Visibility::Public,
+            signature,
+        )
+        .unwrap();
+        let block = nested.borrow_mut().create_entry_block();
+        builder.set_insertion_point_to_end(block);
+        builder.ret_imm(Int::from(0i64), SourceSpan::UNKNOWN).unwrap();
+        builder.set_insertion_point_to_end(entry);
+        builder.ret_imm(Int::from(0i32), SourceSpan::UNKNOWN).unwrap();
+    }
+    test.function()
+        .borrow()
+        .as_operation()
+        .verify()
+        .expect("the outer function verifies");
+}
+
+/// Functions whose bodies agree with their signatures verify.
+#[test]
+fn functions_that_agree_with_their_signatures_verify() {
+    use crate::Op;
+
+    let test = ParserTest::default();
+    test.context().get_or_register_dialect::<TestDialect>();
+    let function = "builtin.function public extern(\"C\") @f";
+    for source in [
+        format!("{function}(%0: i32) {{\n    builtin.ret;\n}};"),
+        format!("{function}(%0: i32) -> i32 {{\n    builtin.ret %0 : (i32);\n}};"),
+        format!("{function}(%0: i32) -> i32 {{\n    builtin.ret_imm 5 : i32;\n}};"),
+        format!(
+            "{function}(%0: i32, %1: i64) -> (i64, i32) {{\n    builtin.ret %1, %0 : (i64, \
+             i32);\n}};"
+        ),
+        format!("{function}(i32, i8 {{ extend = #builtin.zext }}) -> i32;"),
+        format!("{function}(i32) -> never;"),
+        format!("{function}(%0: i32) -> never {{\n    test.ret : ();\n}};"),
+    ] {
+        let parsed = test
+            .parse::<Function>("valid.hir", &source)
+            .unwrap_or_else(|err| panic!("{source}\n{err:?}"));
+        parsed
+            .borrow()
+            .as_operation()
+            .verify()
+            .unwrap_or_else(|err| panic!("{source}\n{err:?}"));
+    }
+}

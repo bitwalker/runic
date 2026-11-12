@@ -197,6 +197,32 @@ impl fmt::Display for AbiParam {
     }
 }
 
+/// Why a [Signature] is invalid: where `never` appears other than as the single result of a
+/// function that never returns.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum InvalidSignature {
+    /// The parameter at `index` has type `never`.
+    NeverParameter { index: usize },
+    /// The result at `index` has type `never`, and is not the only result.
+    NeverAmongResults { index: usize },
+}
+
+impl fmt::Display for InvalidSignature {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NeverParameter { index } => write!(f, "parameter {index} has type `never`"),
+            Self::NeverAmongResults { index } => write!(
+                f,
+                "result {index} has type `never`, which is only valid as the single result of a \
+                 function that never returns"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for InvalidSignature {}
+
 /// A [Signature] represents the type, ABI, and linkage of a function.
 ///
 /// A function signature provides us with all of the necessary detail to correctly
@@ -303,6 +329,20 @@ impl Signature {
     /// True if the single declared result is `never`.
     pub fn never_returns(&self) -> bool {
         matches!(self.results.as_slice(), [AbiParam { ty, .. }] if ty.is_never())
+    }
+
+    /// `Err` if `never` appears as a parameter, or as a result that is not the only one: a function
+    /// that never returns declares the single result `never`, and `never` means nothing elsewhere.
+    pub fn validate(&self) -> Result<(), InvalidSignature> {
+        if let Some(index) = self.params.iter().position(|param| param.ty.is_never()) {
+            return Err(InvalidSignature::NeverParameter { index });
+        }
+        if !self.never_returns()
+            && let Some(index) = self.results.iter().position(|result| result.ty.is_never())
+        {
+            return Err(InvalidSignature::NeverAmongResults { index });
+        }
+        Ok(())
     }
 
     /// Returns the result at `index` of [Self::results], if present
