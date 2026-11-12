@@ -1,7 +1,8 @@
 mod builders;
 mod ops;
+mod types;
 
-pub use self::{builders::TestOpBuilder, ops::*};
+pub use self::{builders::TestOpBuilder, ops::*, types::TestVectorType};
 use crate::{
     AttributeRef, Builder, BuilderExt, Dialect, DialectInfo, OperationRef, SourceSpan, Type,
     attributes::IntegerLikeAttr, derive::DialectRegistration,
