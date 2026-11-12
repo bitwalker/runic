@@ -8,7 +8,7 @@ use crate::{
     attributes::Marker,
     formatter::Document,
     interner,
-    types::{TypeAliases, TypeFormatter},
+    types::{TypeAliases, TypeFormatter, collect_rec_groups},
 };
 
 /// [AsmPrinter] provides utilities for pretty-printing an operation in either the generic
@@ -351,6 +351,45 @@ impl<'a> AsmPrinter<'a> {
                 definition: false,
             }
         ))
+    }
+
+    /// The declarations of the recursion groups whose members this print has written so far, and
+    /// of every group they refer to, as `rec { type !alias = definition; .. }` blocks separated
+    /// by newlines; an empty document if there are none.
+    ///
+    /// Each group comes after every group its members refer to, so that the text parses in one
+    /// pass; a group that is only referred to is named here, before any declaration is written,
+    /// so that no name already printed changes. Members are declared in index order.
+    pub fn rec_group_declarations(&self) -> Document {
+        use crate::formatter::*;
+
+        let queued = self.aliases.borrow().groups().to_vec();
+        let order = collect_rec_groups(queued.iter().flat_map(|group| group.members().to_vec()));
+        {
+            let mut aliases = self.aliases.borrow_mut();
+            for group in &order {
+                aliases.alias_of(group.members()[0]);
+            }
+        }
+
+        let mut declarations = Document::Empty;
+        for (i, group) in order.iter().enumerate() {
+            if i > 0 {
+                declarations += nl();
+            }
+            let mut members = Document::Empty;
+            for member in group.members() {
+                let alias = self.aliases.borrow_mut().alias_of(*member);
+                let definition = Aliased {
+                    ty: *member,
+                    aliases: &self.aliases,
+                    definition: true,
+                };
+                members += nl() + text(alloc::format!("type !{alias} = {definition};"));
+            }
+            declarations += const_text("rec {") + indent(2, members) + nl() + const_text("}");
+        }
+        declarations
     }
 
     /// Print a function type (i.e. `(arg0, arg1) -> (result0, result1)`)
