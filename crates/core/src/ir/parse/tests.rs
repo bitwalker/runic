@@ -3626,3 +3626,46 @@ fn a_segment_offset_in_the_upper_half_round_trips() -> TestResult {
     }
     Ok(())
 }
+
+/// A property given an attribute of another kind is a diagnostic, not a panic: in the generic
+/// form, in an operation's custom form, and through [crate::Operation::set_property].
+#[test]
+fn a_property_given_an_attribute_of_another_kind_is_a_diagnostic() {
+    use crate::{
+        Op,
+        dialects::{builtin::attributes::I32Attr, test::Constant},
+    };
+
+    let generic = "builtin.function public extern(\"C\") @f() {\n    %0 = \"test.constant\"() { \
+                   value = #builtin.i32<5> } : () -> i32;\n    builtin.ret;\n};";
+    let custom = "builtin.function public extern(\"C\") @f(%0: i32) -> i64 {\n    %1 = \
+                  builtin.unrealized_conversion_cast %0 <{ ty = #builtin.i32<5> }>;\n    \
+                  builtin.ret %1 : (i64);\n};";
+    for (source, property) in [(generic, "value"), (custom, "ty")] {
+        let test = ParserTest::default();
+        test.context().get_or_register_dialect::<TestDialect>();
+        let err = test.parse::<Function>("g.hir", source).map(|_| ()).unwrap_err().to_string();
+        assert!(
+            err.contains("could not convert attribute of type 'builtin.i32' to '")
+                && err.contains(&format!("for property '{property}'")),
+            "{err}"
+        );
+    }
+
+    let mut test = Test::new("f", |cx| ([cx.i32()], [cx.i32()]));
+    let context = test.context_rc();
+    let mut constant = {
+        let mut builder = test.function_builder();
+        let create = builder.builder_mut().create::<Constant, _>(SourceSpan::UNKNOWN);
+        create(Int::from(1i32)).unwrap()
+    };
+    let attr = context.create_attribute::<I32Attr, _>(5i32).as_attribute_ref();
+    let err = constant
+        .borrow_mut()
+        .as_operation_mut()
+        .set_property("value", attr)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("could not convert attribute of type 'builtin.i32'"), "{err}");
+    assert_eq!(constant.borrow().value().as_int(), Int::from(1i32));
+}

@@ -113,12 +113,10 @@ unsafe impl<T: AttributeRegistration> TryFromAttribute for T {
             }
             Ok(())
         } else {
-            use crate::any::AsAny;
             let attr = attr.borrow();
-            let value = attr.as_trait::<dyn AsAny>().unwrap();
             Err(crate::diagnostics::Report::msg(format!(
                 "could not convert attribute of type '{}' to '{}' for property '{}'",
-                value.type_name(),
+                attr.name(),
                 info.type_name,
                 info.name,
             )))
