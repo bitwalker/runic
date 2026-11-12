@@ -1,6 +1,6 @@
 pub use runic_macros::{
-    Dialect, DialectAttribute, DialectRegistration, EffectOpInterface, OpParser, OpPrinter,
-    operation, operation_trait,
+    Dialect, DialectAttribute, DialectRegistration, DialectType, EffectOpInterface, OpParser,
+    OpPrinter, operation, operation_trait,
 };
 
 #[cfg(test)]

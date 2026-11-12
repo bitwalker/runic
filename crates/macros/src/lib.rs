@@ -48,6 +48,15 @@ pub fn derive_dialect_attribute(input: proc_macro::TokenStream) -> proc_macro::T
     }
 }
 
+#[proc_macro_derive(DialectType, attributes(ty))]
+pub fn derive_dialect_type(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let derive = parse_macro_input!(input as DeriveInput);
+    match dialect::derive_type(&derive) {
+        Ok(ts) => proc_macro::TokenStream::from(ts.into_token_stream()),
+        Err(err) => err.write_errors().into(),
+    }
+}
+
 #[proc_macro_derive(EffectOpInterface, attributes(effects))]
 pub fn derive_effect_op_interface(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     // Parse into syntax tree

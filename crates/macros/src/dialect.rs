@@ -1,11 +1,16 @@
 mod attribute;
+mod ty;
 
 use darling::FromDeriveInput;
 
-use self::attribute::Attribute;
+use self::{attribute::Attribute, ty::DialectType};
 
 pub fn derive_attribute(input: &syn::DeriveInput) -> darling::Result<Attribute> {
     Attribute::from_derive_input(input)
+}
+
+pub fn derive_type(input: &syn::DeriveInput) -> darling::Result<DialectType> {
+    DialectType::from_derive_input(input)
 }
 
 pub fn derive_dialect_registration(

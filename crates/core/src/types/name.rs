@@ -5,7 +5,10 @@ use core::{
     ptr::{DynMetadata, Pointee},
 };
 
-use super::{Type, TypeRegistration, TypeStorage};
+use super::{
+    Type, TypeRegistration, TypeStorage,
+    registration::{DefaultTypeFn, MaybeDefaultType, MaybeTypeParser, ParseTypeFn},
+};
 use crate::{interner::Symbol, traits::TraitInfo};
 
 /// The registration record of a type: its dialect, its name within the dialect, and the Rust type
@@ -26,6 +29,10 @@ struct TypeInfo {
     value_offset: usize,
     /// Formats a type whose name this is.
     debug: fn(Type, &mut fmt::Formatter<'_>) -> fmt::Result,
+    /// Parses the syntax of this type, if it implements `TypeParser`.
+    parse: Option<ParseTypeFn>,
+    /// Interns the default value of this type, if it implements `Default`.
+    default: Option<DefaultTypeFn>,
 }
 
 fn debug_value<T: TypeRegistration>(ty: Type, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -45,6 +52,8 @@ impl TypeName {
             traits: traits.into_boxed_slice(),
             value_offset: TypeStorage::<T>::VALUE_OFFSET,
             debug: debug_value::<T>,
+            parse: <T as MaybeTypeParser>::parse_fn(),
+            default: <T as MaybeDefaultType>::default_fn(),
         }))
     }
 
@@ -88,6 +97,19 @@ impl TypeName {
     #[inline]
     pub(crate) fn value_offset(&self) -> usize {
         self.0.value_offset
+    }
+
+    /// The parser of this type's syntax, if it implements
+    /// [TypeParser](crate::types::TypeParser).
+    #[inline]
+    pub fn parse_fn(&self) -> Option<ParseTypeFn> {
+        self.0.parse
+    }
+
+    /// A function interning this type's default value, if it implements [Default].
+    #[inline]
+    pub fn default_fn(&self) -> Option<DefaultTypeFn> {
+        self.0.default
     }
 
     #[inline]

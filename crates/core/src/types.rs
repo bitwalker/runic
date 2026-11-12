@@ -14,8 +14,12 @@ use core::{
 pub(crate) use self::uniquer::TypeUniquer;
 pub use self::{
     name::TypeName,
-    registration::{DialectTypeRegistrationInfo, TypeRegistration},
+    registration::{
+        DefaultTypeFn, DialectTypeRegistrationInfo, ParseTypeFn, TypeParser, TypePrinter,
+        TypeRegistration,
+    },
 };
+use crate::{DialectRegistration, dialects::builtin::BuiltinDialect};
 
 /// The value a type is uniqued by: two types are the same type exactly when they have the same
 /// Rust type and compare equal.
@@ -160,6 +164,28 @@ impl Hash for Type {
 impl fmt::Debug for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.name().debug_value(*self, f)
+    }
+}
+
+/// A builtin type prints its own syntax. Any other type prints `!dialect.name`, followed by its
+/// own syntax in angle brackets if it has a [TypePrinter].
+impl fmt::Display for Type {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = self.name();
+        let printer = self.as_trait::<dyn TypePrinter>();
+        if name.dialect().as_str() == <BuiltinDialect as DialectRegistration>::NAMESPACE {
+            let Some(printer) = printer else {
+                panic!("builtin type `{name}` does not implement `TypePrinter`");
+            };
+            return printer.print(f);
+        }
+        write!(f, "!{}.{}", name.dialect(), name.name())?;
+        if let Some(printer) = printer {
+            f.write_str("<")?;
+            printer.print(f)?;
+            f.write_str(">")?;
+        }
+        Ok(())
     }
 }
 
@@ -420,5 +446,88 @@ mod tests {
         let context = Context::default();
         context.intern_type(ClashSmall(1));
         context.intern_type(ClashWide(1));
+    }
+
+    #[derive(Debug, PartialEq, Eq, Hash, crate::derive::DialectType)]
+    #[ty(dialect = TestDialect, name = "pair", implements(TypePrinter))]
+    struct PairType {
+        first: Type,
+        second: Type,
+    }
+    impl TypePrinter for PairType {
+        fn print(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "{}, {}", self.first, self.second)
+        }
+    }
+
+    #[derive(Debug, Default, PartialEq, Eq, Hash, crate::derive::DialectType)]
+    #[ty(dialect = TestDialect)]
+    struct MarkerType;
+
+    #[test]
+    fn derived_types_register_under_their_dialect_and_name() {
+        let context = Context::default();
+        let marker = context.intern_type(MarkerType);
+        assert_eq!(marker.name().dialect().as_str(), "test");
+        assert_eq!(marker.name().name().as_str(), "marker");
+        let pair = context.intern_type(PairType {
+            first: marker,
+            second: marker,
+        });
+        assert_eq!(pair.name().name().as_str(), "pair");
+        assert!(pair.name().implements::<dyn TypePrinter>());
+        assert!(marker.name().default_fn().is_some(), "MarkerType is Default");
+        assert!(pair.name().default_fn().is_none());
+    }
+
+    /// A unit-like enum with a parser, to check that a parser is picked up.
+    #[derive(Debug, PartialEq, Eq, Hash, crate::derive::DialectType)]
+    #[ty(dialect = TestDialect)]
+    enum ParsedType {
+        Only,
+    }
+    impl TypeParser for ParsedType {
+        fn parse(parser: &mut dyn crate::parse::Parser<'_>) -> crate::parse::ParseResult<Type> {
+            Ok(parser.context().intern_type(ParsedType::Only))
+        }
+    }
+
+    #[test]
+    fn a_parser_is_recorded_exactly_for_types_that_have_one() {
+        let context = Context::default();
+        let parsed = context.intern_type(ParsedType::Only);
+        assert_eq!(parsed.name().name().as_str(), "parsed");
+        assert!(parsed.name().parse_fn().is_some());
+        assert!(parsed.name().default_fn().is_none());
+        let marker = context.intern_type(MarkerType);
+        assert!(marker.name().parse_fn().is_none());
+    }
+
+    #[test]
+    fn the_default_fn_interns_the_default_value() {
+        let context = Context::default();
+        let marker = context.intern_type(MarkerType);
+        let default = marker.name().default_fn().expect("MarkerType is Default");
+        assert_eq!(default(&context), marker);
+    }
+
+    #[test]
+    fn dialect_types_display_with_their_dialect_prefix() {
+        let context = Context::default();
+        let marker = context.intern_type(MarkerType);
+        assert_eq!(alloc::format!("{marker}"), "!test.marker");
+        let pair = context.intern_type(PairType {
+            first: marker,
+            second: marker,
+        });
+        assert_eq!(alloc::format!("{pair}"), "!test.pair<!test.marker, !test.marker>");
+        let nested = context.intern_type(PairType {
+            first: pair,
+            second: marker,
+        });
+        assert_eq!(
+            alloc::format!("{nested}"),
+            "!test.pair<!test.pair<!test.marker, !test.marker>, !test.marker>"
+        );
     }
 }
