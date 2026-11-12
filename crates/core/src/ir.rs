@@ -1,6 +1,7 @@
 mod block;
 mod builder;
 mod callable;
+pub mod callconv;
 pub mod cfg;
 mod context;
 mod dialect;
