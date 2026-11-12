@@ -424,6 +424,7 @@ pub(super) fn bare_builtin_spelling(name: &str) -> Option<&'static str> {
         "function" => "`(..) -> ..`",
         "unknown" => "`?`",
         "never" => "`never`",
+        "rec_var" => "the alias of a member of a `rec` block, inside the block",
         _ => return None,
     })
 }

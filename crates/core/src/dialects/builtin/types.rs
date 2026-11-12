@@ -5,6 +5,7 @@ mod float;
 mod function;
 mod integer;
 mod pointer;
+mod rec_var;
 mod special;
 mod structure;
 
@@ -14,6 +15,7 @@ pub use self::{
     function::FunctionType,
     integer::{IntegerType, IsizeType},
     pointer::PointerType,
+    rec_var::RecVarType,
     special::{NeverType, UnknownType},
     structure::{StructField, StructRepr, StructType},
 };
