@@ -107,13 +107,11 @@ impl AttrPrinter for SextAttr {
     fn print(&self, _printer: &mut crate::print::AsmPrinter<'_>) {}
 }
 
-/// Represents how to extend a small integer value to native machine integer width.
+/// Represents how to extend an integer argument or result narrower than the target's registers
+/// or stack slots to their full width.
 ///
-/// For Miden, native integrals are unsigned 64-bit field elements, but it is typically
-/// going to be the case that we are targeting the subset of Miden Assembly where integrals
-/// are unsigned 32-bit integers with a standard twos-complement binary representation.
-///
-/// It is for the latter scenario that argument extension is really relevant.
+/// Integer types are signless, so the extension is a property of the parameter, chosen by
+/// whoever builds the signature, not of the type.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default, Hash)]
 #[repr(u8)]
 pub enum ArgumentExtension {

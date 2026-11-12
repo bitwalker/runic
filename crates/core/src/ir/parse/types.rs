@@ -9,10 +9,10 @@
 //! address-space := decimal-literal
 //! array-type    := 'array' '<' type ';' decimal-literal '>'
 //! struct-type   := 'struct' struct-name? '<' (struct-repr ';')? (struct-field (',' struct-field)*)? '>'
-//! struct-name   := bare-identifier | string
+//! struct-name   := bare-id | string
 //! struct-repr   := 'align' '(' N ')' | 'packed' ('(' N ')')? | 'transparent'
 //! struct-field  := (field-name ':')? type ('align' '(' N ')')?
-//! field-name    := bare-identifier | string
+//! field-name    := bare-id | string
 //! function-type := '(' (type (',' type)*)? ')' '->' (type | '(' (type (',' type)*)? ')')
 //! type-alias    := '!' alias-name
 //! dialect-type  := '!' dialect-namespace '.' type-name ('<' type-body '>')?

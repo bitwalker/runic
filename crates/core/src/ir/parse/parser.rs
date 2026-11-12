@@ -613,8 +613,13 @@ pub trait Parser<'input> {
 
     /// Parse a type, if the next token can start one.
     ///
-    /// Implementations call `types::parse_optional_type` in this module's parent, which
-    /// implements the type grammar for every parser.
+    /// Type parsing looks ahead one token only: if that token can start a type, the parse
+    /// commits, and a malformed type is an error rather than `None`.
+    ///
+    /// This is a required method so that every parser reads the one type grammar, which is
+    /// private to this crate. The parsers defined here implement it with that grammar; a `Parser`
+    /// implemented elsewhere, which wraps one of them, must forward this method to the wrapped
+    /// parser rather than parse types itself.
     fn parse_optional_type(&mut self) -> ParseResult<Option<Span<Type>>>;
 
     /// Parse a type list.

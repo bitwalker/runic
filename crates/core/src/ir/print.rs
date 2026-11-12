@@ -42,6 +42,7 @@
 //! # Identifiers
 //!
 //! bare-id    := [A-Za-z_][A-Za-z0-9_$.]*
+//! string     := '"' [^"]* '"'        (in which '\' escapes the character after it)
 //! alias-name := bare-id
 //! value-id   := '%' suffix-id
 //! caret-id   := '^' suffix-id
@@ -85,44 +86,40 @@
 //!
 //! properties := '<' dictionary-attribute '>'
 //! attributes := dictionary-attribute
+//! dictionary-attribute := '{' (attribute-entry (',' attribute-entry)*)? '}'
 //! attribute-entry := attribute-name '=' attribute-value
 //! attribute-name  := bare-id | string
-//! attribute-value := attribute-alias | dialect-attribute | builtin-attribute
-//! attribute-values := attribute-value (',' attribute-value)*
+//! attribute-value := dialect-attribute | builtin-attribute
+//!
+//! A dictionary holds attributes, but is not itself an attribute value: `{ a = {} }` is an error.
 //!
 //! # Attribute Aliases
 //!
-//! attribute-alias := '#' alias-name
 //! attribute-alias-def := '#' alias-name '=' attribute-value ';'
 //!
 //! # Builtin Attributes
 //!
-//! builtin-attribute := dictionary-attribute
-//!                    | list-attribute
-//!                    | typed-array-attribute
+//! builtin-attribute := type-attribute
 //!                    | integer-attribute
+//!                    | boolean-attribute
 //!                    | string-attribute
-//!                    | opaque-attribute
 //!                    | symbol-ref-attribute
-//!                    | type-attribute
-//!                    | unit-attribute
-//!
-//! dictionary-attribute := '{' (attribute-entry (',' attribute-entry)*)? '}'
-//! list-attribute       := '[' attribute-values? ']'
-//! array-attribute      := 'array' '<' type (':' attribute-values)? '>'
-//!
-//! integer-attribute := boolean-attribute
-//!                    | (integer-literal (':' integer-type)?)
-//! boolean-attribute := 'true' | 'false'
-//!
-//! string-attribute := string (':' type)?
-//!
-//! opaque-attribute := dialect-namespace '<' string '>'
-//!
-//! symbol-ref-attribute := symbol-ref-id ('::' symbol-ref-id)*
+//!                    | location-attribute
 //!
 //! type-attribute := type
-//! unit-attribute := 'unit'
+//! integer-attribute := '-'? decimal-literal | hex-literal | binary-literal
+//! boolean-attribute := 'true' | 'false'
+//! string-attribute := string
+//! symbol-ref-attribute := symbol-ref-id ('::' symbol-ref-id)*
+//! location-attribute := 'loc' '(' location ')'
+//!
+//! No attribute is followed by a `: type` suffix. An integer literal is an attribute only where
+//! the syntax that reads it expects an integer type, such as an operation's own format: an entry
+//! of a dictionary has no expected type, so `{ a = 1 }` is an error. Any other builtin attribute
+//! is written as a dialect attribute, `#builtin.name<..>`.
+//!
+//! In attribute position a type is a type attribute, so `array<`, `ptr`, `struct` and `(` start a
+//! type. `[` starts no attribute value (it is kept for list attributes), and neither does `unit`.
 //!
 //! # Dialect Attributes
 //!
@@ -173,12 +170,12 @@
 //! array-type := 'array' '<' type ';' decimal-literal '>'
 //!
 //! struct-type  := 'struct' struct-name? '<' (struct-repr ';')? (struct-field (',' struct-field)*)? '>'
-//! struct-name  := bare-identifier | string-literal
+//! struct-name  := bare-id | string
 //! struct-repr  := 'align' '(' nonzero-decimal-literal ')'
 //!               | 'packed' ('(' nonzero-decimal-literal ')')?
 //!               | 'transparent'
 //! struct-field := (field-name ':')? type ('align' '(' nonzero-decimal-literal ')')?
-//! field-name   := bare-identifier | string-literal
+//! field-name   := bare-id | string
 //!
 //! function-type := type-list-parens '->' function-results
 //! function-results := type-list-parens | type

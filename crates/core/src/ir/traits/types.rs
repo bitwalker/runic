@@ -21,18 +21,18 @@ pub trait InferTypeOpInterface: Op {
 
 /// A value-range constraint implied by an operation operand.
 ///
-/// This describes semantic constraints beyond the raw Miden field element representation. For
-/// example, a `u32`-typed operand implies that a raw field element must have been checked to fit
-/// in the `u32` range before it reaches that operand.
+/// This describes a constraint that an operand's type implies but its storage need not enforce:
+/// for example, an `i8` operand held in a wider register or stack slot must have been checked to
+/// fit in 8 bits before it reaches the operand.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValueRangeConstraint {
-    /// The value must be a valid member of this HIR type's value range.
+    /// The value must be a valid member of this type's value range.
     Type(Type),
 }
 
 impl ValueRangeConstraint {
-    /// Return the implicit value-range constraint for `ty`, if values of that type must be more
-    /// constrained than an arbitrary field element.
+    /// Return the implicit value-range constraint for `ty`, if values of that type have a range
+    /// that is tracked; see [is_unconstrained_value_type].
     pub fn from_type(ty: Type) -> Option<Self> {
         if is_unconstrained_value_type(ty) {
             None
