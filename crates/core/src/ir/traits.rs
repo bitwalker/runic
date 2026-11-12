@@ -5,6 +5,7 @@ mod types;
 
 use alloc::format;
 
+pub(crate) use self::info::assert_trait_table_built_for;
 pub use self::{
     canonicalization::Canonicalizable,
     foldable::{FoldResult, Foldable, OpFoldResult},

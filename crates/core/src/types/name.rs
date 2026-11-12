@@ -115,15 +115,7 @@ impl TypeName {
         );
         let mut traits = Vec::from(T::traits());
         // `Type::as_trait` pairs a `T` with the vtable in the table, so it must be `T`'s.
-        for ti in traits.iter() {
-            assert!(
-                *ti.concrete_type_id() == TypeId::of::<T>(),
-                "the `{}` entry in the trait table of type `{}` was built for another type, `{}`",
-                ti.type_name(),
-                rust_type_name,
-                ti.concrete_type_name()
-            );
-        }
+        crate::traits::assert_trait_table_built_for::<T>(&traits, "type");
         traits.sort_by_key(|ti| *ti.type_id());
         Self(Rc::new(TypeInfo {
             dialect,

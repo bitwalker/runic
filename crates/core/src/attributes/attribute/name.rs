@@ -76,6 +76,8 @@ impl AttributeName {
         let type_id = TypeId::of::<T>();
         let mut traits = Vec::from(<T as AttributeRegistration>::traits());
         traits.append(&mut extra_traits);
+        // A cast to a trait pairs the attribute with the vtable in the table, so it must be `T`'s.
+        crate::traits::assert_trait_table_built_for::<T>(&traits, "attribute");
         traits.sort_by_key(|ti| *ti.type_id());
         let parse_assembly = <T as MaybeAttrParser>::parse_assembly();
         Self(Rc::new(AttributeInfo {
@@ -270,5 +272,25 @@ impl core::hash::Hash for AttributeInfo {
         self.dialect.hash(state);
         self.name.hash(state);
         self.type_id.hash(state);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+
+    use super::*;
+    use crate::dialects::builtin::attributes::{BoolAttr, I32Attr};
+
+    /// A late-bound trait, like one in the attribute's own table, must have been built for the
+    /// attribute it is registered with: its vtable is used with that attribute's values.
+    #[test]
+    #[should_panic(expected = "in the trait table of attribute \
+                               `runic_core::dialects::builtin::attributes::boolean::BoolAttr` \
+                               was built for another type, \
+                               `runic_core::dialects::builtin::attributes::integer::I32Attr`")]
+    fn a_trait_table_entry_built_for_another_attribute_is_rejected() {
+        let extra = vec![TraitInfo::new::<I32Attr, dyn core::fmt::Debug>()];
+        let _ = AttributeName::new::<BoolAttr>(interner::Symbol::intern("builtin"), extra);
     }
 }

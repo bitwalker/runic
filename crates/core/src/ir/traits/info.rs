@@ -19,6 +19,22 @@ pub struct TraitInfo {
     /// which is safe as `DynMetadata` is always the same size for all types.
     metadata: DynMetadata<dyn Any>,
 }
+/// Panics unless every entry of `traits`, the trait table of the `kind` (`type`, `attribute`,
+/// `operation`) implemented by `T`, was built for `T`: a lookup pairs a `T` with the vtable it
+/// finds in the table.
+#[track_caller]
+pub(crate) fn assert_trait_table_built_for<T: 'static>(traits: &[TraitInfo], kind: &str) {
+    for ti in traits {
+        assert!(
+            *ti.concrete_type_id() == TypeId::of::<T>(),
+            "the `{}` entry in the trait table of {kind} `{}` was built for another type, `{}`",
+            ti.type_name(),
+            core::any::type_name::<T>(),
+            ti.concrete_type_name()
+        );
+    }
+}
+
 impl TraitInfo {
     pub fn new<T, Trait>() -> Self
     where

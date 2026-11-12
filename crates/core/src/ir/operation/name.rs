@@ -244,6 +244,8 @@ impl OperationName {
         let attrs = <T as OpRegistration>::attrs();
         let mut traits = Vec::from(<T as OpRegistration>::traits());
         traits.append(&mut extra_traits);
+        // A cast to a trait pairs the operation with the vtable in the table, so it must be `T`'s.
+        crate::traits::assert_trait_table_built_for::<T>(&traits, "operation");
         traits.sort_by_key(|ti| *ti.type_id());
         let get_canonicalization_patterns = <T as Canonicalizable>::get_canonicalization_patterns;
         let alloc_default = <T as OpRegistration>::alloc_uninit;
@@ -459,5 +461,24 @@ impl core::hash::Hash for OperationInfo {
         self.dialect.hash(state);
         self.name.hash(state);
         self.type_id.hash(state);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+
+    use super::*;
+    use crate::dialects::test::{Add, Constant};
+
+    /// A late-bound trait, like one in the operation's own table, must have been built for the
+    /// operation it is registered with: its vtable is used with that operation.
+    #[test]
+    #[should_panic(expected = "in the trait table of operation \
+                               `runic_core::dialects::test::ops::constants::Constant` was built \
+                               for another type, `runic_core::dialects::test::ops::binary::Add`")]
+    fn a_trait_table_entry_built_for_another_operation_is_rejected() {
+        let extra = vec![TraitInfo::new::<Add, dyn core::any::Any>()];
+        let _ = OperationName::new::<Constant>(interner::Symbol::intern("test"), extra);
     }
 }
