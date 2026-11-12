@@ -149,6 +149,35 @@ mod tests {
     }
 
     #[test]
+    fn each_structural_accessor_answers_for_its_own_kind_only() {
+        let context = Context::default();
+        let i32 = context.i32();
+        let ptr = context.ptr_type(i32);
+        let array = context.array_type(i32, 2);
+        let structure = context.struct_type(StructType::new([i32.into()]));
+        let function = context.function_type([i32], []);
+        let float = context.f64_type();
+        assert_eq!(i32.as_integer().map(IntegerType::width), Some(32));
+        assert_eq!(float.as_float().map(FloatType::bits), Some(64));
+        assert_eq!(ptr.as_pointer().and_then(PointerType::pointee), Some(i32));
+        assert_eq!(array.as_array().map(ArrayType::len), Some(2));
+        assert_eq!(structure.as_struct().map(StructType::len), Some(1));
+        assert_eq!(function.as_function().map(|f| f.params().len()), Some(1));
+        for ty in [i32, ptr, array, structure, function, float, context.isize_type()] {
+            let kinds = [
+                ty.as_integer().is_some(),
+                ty.as_float().is_some(),
+                ty.as_pointer().is_some(),
+                ty.as_array().is_some(),
+                ty.as_struct().is_some(),
+                ty.as_function().is_some(),
+            ];
+            let expected = usize::from(ty != context.isize_type());
+            assert_eq!(kinds.iter().filter(|kind| **kind).count(), expected, "{ty}");
+        }
+    }
+
+    #[test]
     #[should_panic(expected = "1 to 16777215")]
     fn int_type_rejects_zero_width() {
         Context::default().int_type(0);

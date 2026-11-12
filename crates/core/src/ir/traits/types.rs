@@ -2,8 +2,8 @@ use alloc::{format, string::ToString};
 use core::fmt;
 
 use crate::{
-    ArrayType, CompactString, ConstantIntRange, Context, IntegerValueRange, Op, Operation, Report,
-    Type, ValueRef, derive::operation_trait, ir::value::Value,
+    CompactString, ConstantIntRange, Context, IntegerValueRange, Op, Operation, Report, Type,
+    ValueRef, derive::operation_trait, ir::value::Value,
 };
 
 /// OpInterface to compute the return type(s) of an operation.
@@ -559,7 +559,7 @@ impl<T: TypeConstraint> TypeConstraint for AnyArrayOf<T> {
     }
 
     fn matches(&self, ty: crate::Type) -> bool {
-        ty.downcast_ref::<ArrayType>()
+        ty.as_array()
             .is_some_and(|array| <T as TypeConstraint>::get().matches(array.element()))
     }
 }
@@ -599,7 +599,7 @@ impl<const N: usize, T: TypeConstraint> TypeConstraint for ArrayOf<N, T> {
     }
 
     fn matches(&self, ty: crate::Type) -> bool {
-        ty.downcast_ref::<ArrayType>().is_some_and(|array| {
+        ty.as_array().is_some_and(|array| {
             array.len() == N as u64 && <T as TypeConstraint>::get().matches(array.element())
         })
     }

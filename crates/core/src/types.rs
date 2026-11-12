@@ -33,10 +33,11 @@ use crate::{
 /// The value a type is uniqued by: two types are the same type exactly when they have the same
 /// Rust type and compare equal.
 ///
-/// A type's value never changes after it is interned: it must not use interior mutability at all,
-/// even in parts that `Eq` and `Hash` ignore. The uniquer finds a type by the hash and equality of
-/// its value, and other code relies on an interned type staying exactly as it was created (a
-/// late-filled child type could, for example, form a cycle that printing never leaves).
+/// A type's value is immutable once its handle is published: it must not use interior
+/// mutability at all, even in parts that `Eq` and `Hash` ignore. The uniquer finds a type by the
+/// hash and equality of its value, and other code relies on a type it can reach staying exactly as
+/// it was when its handle was first handed out (a child type filled in later could, for example,
+/// form a cycle that printing never leaves).
 ///
 /// A type's `Eq` and `Hash` must not intern types or otherwise use the context: `Eq` runs while
 /// the context's uniquer is borrowed. They must not panic either: a panic while the uniquer is
@@ -118,9 +119,10 @@ impl Type {
     ///
     /// # Safety
     ///
-    /// `storage` must point at an initialized `TypeStorage<T>` that lives, unmoved and unmodified,
-    /// for as long as the handle (or any copy of it) is used, and the pointer must carry
-    /// provenance over the whole storage.
+    /// `storage` must point at an initialized `TypeStorage<T>` that lives, unmoved, for as long as
+    /// the handle (or any copy of it) is used, and that is immutable once the handle is
+    /// published, that is from the moment the handle is first handed to code other than the one
+    /// creating it; the pointer must carry provenance over the whole storage.
     pub(crate) unsafe fn from_storage<T: TypeImpl>(storage: NonNull<TypeStorage<T>>) -> Self {
         Self(storage.cast())
     }
@@ -128,7 +130,8 @@ impl Type {
     #[inline]
     fn header(&self) -> &TypeHeader {
         // SAFETY: a handle is only created by `from_storage`, whose contract keeps the storage it
-        // points at alive and unmodified while the handle is used; the storage is `repr(C)` with
+        // points at alive while the handle is used and immutable once it is published; the
+        // storage is `repr(C)` with
         // the header first, so the pointer is a valid, aligned pointer to an initialized header.
         unsafe { self.0.as_ref() }
     }
@@ -170,18 +173,58 @@ impl Type {
         // SAFETY: `TypeStorage::new` only accepts the name registered for its own `T`, so a
         // header whose name records `T`'s `TypeId` is the first field of a live
         // `TypeStorage<T>`, and the handle's pointer has provenance over all of it. The storage
-        // is never mutated, so a shared reference to its value is valid while the handle is.
+        // is immutable once the handle is published, so a shared reference to its value is
+        // valid while the handle is.
         Some(unsafe { &self.0.cast::<TypeStorage<T>>().as_ref().value })
+    }
+
+    /// This type as an integer type `iN`, if it is one; `None` for `isize`.
+    ///
+    /// The structural queries on builtin types go through these accessors, rather than through
+    /// [Self::downcast_ref], so that what counts as each kind of type is decided in one place.
+    #[inline]
+    pub fn as_integer(&self) -> Option<&IntegerType> {
+        self.downcast_ref::<IntegerType>()
+    }
+
+    /// This type as a floating-point type, if it is one.
+    #[inline]
+    pub fn as_float(&self) -> Option<&FloatType> {
+        self.downcast_ref::<FloatType>()
+    }
+
+    /// This type as a pointer type, if it is one.
+    #[inline]
+    pub fn as_pointer(&self) -> Option<&PointerType> {
+        self.downcast_ref::<PointerType>()
+    }
+
+    /// This type as an array type, if it is one.
+    #[inline]
+    pub fn as_array(&self) -> Option<&ArrayType> {
+        self.downcast_ref::<ArrayType>()
+    }
+
+    /// This type as a struct type, if it is one.
+    #[inline]
+    pub fn as_struct(&self) -> Option<&StructType> {
+        self.downcast_ref::<StructType>()
+    }
+
+    /// This type as a function type, if it is one.
+    #[inline]
+    pub fn as_function(&self) -> Option<&FunctionType> {
+        self.downcast_ref::<FunctionType>()
     }
 
     /// Returns true if this type is an integer: an `iN` or `isize`.
     pub fn is_integer(&self) -> bool {
-        self.is::<IntegerType>() || self.is_isize()
+        self.as_integer().is_some() || self.is_isize()
     }
 
     /// The width in bits of this type if it is an `iN`; `None` for `isize` and non-integers.
     pub fn integer_width(&self) -> Option<u32> {
-        self.downcast_ref::<IntegerType>().map(IntegerType::width)
+        self.as_integer().map(IntegerType::width)
     }
 
     /// Returns true if this type is the pointer-width integer `isize`.
@@ -191,7 +234,7 @@ impl Type {
 
     /// Returns true if this type is a floating-point type.
     pub fn is_float(&self) -> bool {
-        self.is::<FloatType>()
+        self.as_float().is_some()
     }
 
     /// Returns true if this type is the unknown type `?`.
@@ -206,27 +249,27 @@ impl Type {
 
     /// Returns true if this type is a pointer.
     pub fn is_pointer(&self) -> bool {
-        self.is::<PointerType>()
+        self.as_pointer().is_some()
     }
 
     /// The type this pointer points to; `None` for an opaque pointer and for non-pointers.
     pub fn pointee(&self) -> Option<Type> {
-        self.downcast_ref::<PointerType>().and_then(PointerType::pointee)
+        self.as_pointer().and_then(PointerType::pointee)
     }
 
     /// Returns true if this type is an array.
     pub fn is_array(&self) -> bool {
-        self.is::<ArrayType>()
+        self.as_array().is_some()
     }
 
     /// Returns true if this type is a struct.
     pub fn is_struct(&self) -> bool {
-        self.is::<StructType>()
+        self.as_struct().is_some()
     }
 
     /// Returns true if this type is a function type.
     pub fn is_function(&self) -> bool {
-        self.is::<FunctionType>()
+        self.as_function().is_some()
     }
 
     /// Returns this type as the interface `Trait`, if its registration declares it.
@@ -239,7 +282,7 @@ impl Type {
         // SAFETY: the storage behind this header is a `TypeStorage<T>` for the `T` that `name`
         // was registered for (see `TypeStorage::new`); `name.value_offset()` is
         // `TypeStorage::<T>::VALUE_OFFSET`, so adding it stays inside the storage and yields a
-        // properly aligned pointer to the initialized, never-mutated `T`. `metadata` is the
+        // properly aligned pointer to the initialized, published, immutable `T`. `metadata` is the
         // vtable of `Trait` for that same `T`, taken from `T`'s own trait table.
         unsafe {
             let value = self.0.as_ptr().cast::<u8>().add(name.value_offset());

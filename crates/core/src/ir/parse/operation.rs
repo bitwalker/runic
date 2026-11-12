@@ -1068,7 +1068,7 @@ where
         let mut params = SmallVec::<[Type; 4]>::default();
         let mut results = SmallVec::<[Type; 4]>::default();
         let ty_span = if let Some(provided_fn_ty) = parsed_fn_type {
-            let Some(fn_ty) = provided_fn_ty.downcast_ref::<FunctionType>() else {
+            let Some(fn_ty) = provided_fn_ty.as_function() else {
                 return Err(ParserError::InvalidOperationType {
                     span: result.span,
                     ty_span: result.span,

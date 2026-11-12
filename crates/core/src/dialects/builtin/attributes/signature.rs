@@ -2,7 +2,7 @@ use alloc::{format, rc::Rc, vec::Vec};
 use core::fmt;
 
 use crate::{
-    AttrPrinter, CallConv, Context, FunctionType, NamedAttribute, OpPrintingFlags, Type,
+    AttrPrinter, CallConv, Context, NamedAttribute, OpPrintingFlags, Type,
     attributes::{AttrParser, AttributeDict},
     derive::DialectAttribute,
     dialects::builtin::BuiltinDialect,
@@ -452,7 +452,7 @@ impl AttrParser for SignatureAttr {
         let cc_string = parser.parse_string()?;
         parser.parse_rparen()?;
         let (ty_span, ty) = parser.parse_type()?.into_parts();
-        let Some(fn_ty) = ty.downcast_ref::<FunctionType>() else {
+        let Some(fn_ty) = ty.as_function() else {
             return Err(ParserError::InvalidAttributeValue {
                 span: ty_span,
                 reason: format!("expected a function type, got '{ty}'"),
