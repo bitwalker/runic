@@ -57,8 +57,7 @@ pub fn derive_dialect_attribute(input: proc_macro::TokenStream) -> proc_macro::T
 /// implements both or neither, and one with no printer implements `Default`; registering a type
 /// that does not panics. The derive also implements `TypeImpl`'s sub-type walk field by field, as
 /// `#[derive(TypeComponent)]` does, so every field's type must be a `TypeComponent`. A printer
-/// writes text with `write!(printer, ..)` and any type it
-/// contains with `printer.ty(..)`:
+/// writes text with `write!(printer, ..)` and any type it contains with `printer.ty(..)`:
 ///
 /// ```ignore
 /// impl TypePrinter for VectorType {

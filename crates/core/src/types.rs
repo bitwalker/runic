@@ -1438,6 +1438,27 @@ mod tests {
         );
     }
 
+    isolated_dialect!(UninhabitedDialect, "uninhabited");
+
+    /// A dialect type with no values; its dialect is never registered.
+    #[derive(Debug, PartialEq, Eq, Hash, crate::derive::DialectType)]
+    #[ty(dialect = UninhabitedDialect)]
+    enum UninhabitedType {}
+
+    #[derive(Debug, PartialEq, Eq, crate::derive::TypeComponent)]
+    enum UninhabitedComponent {}
+
+    /// The derived walks of an enum without variants compile; there is no value to call them on.
+    #[test]
+    fn enums_without_variants_derive_their_walks() {
+        let _: fn(&UninhabitedType, &mut dyn FnMut(Type)) = UninhabitedType::visit_subtypes;
+        let _: fn(&UninhabitedType, &mut dyn FnMut(Type) -> Type) -> UninhabitedType =
+            UninhabitedType::replace_subtypes;
+        let _: fn(&UninhabitedComponent, &mut dyn FnMut(Type)) = TypeComponent::visit_types;
+        let _: fn(&UninhabitedComponent, &mut dyn FnMut(Type) -> Type) -> UninhabitedComponent =
+            TypeComponent::map_types;
+    }
+
     #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "a mapped sub-type is `i64`, a type of another context")]

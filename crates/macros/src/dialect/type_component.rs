@@ -75,16 +75,23 @@ impl Fieldwise {
         }
         let no_fields = variants.iter().all(|variant| variant.fields.is_empty());
         let (unused_visit, unused_map) = unused(no_fields, visit, map);
+        // A reference to an empty enum is not treated as uninhabited, so an enum without variants
+        // matches on the value itself, which has no arms to bind anything by move.
+        let scrutinee = if variants.is_empty() {
+            quote!(*self)
+        } else {
+            quote!(self)
+        };
         Self {
             visit: quote! {
                 #unused_visit
-                match self {
+                match #scrutinee {
                     #(#visit_arms,)*
                 }
             },
             map: quote! {
                 #unused_map
-                match self {
+                match #scrutinee {
                     #(#map_arms,)*
                 }
             },
@@ -277,7 +284,7 @@ mod tests {
         }
         assert_eq!(output.matches("=>").count(), 6, "three arms in each method: {output}");
         let output = derive(quote! { enum Empty {} }).unwrap();
-        assert!(output.contains("match self { }"), "{output}");
+        assert!(output.contains("match * self { }"), "{output}");
     }
 
     #[test]
