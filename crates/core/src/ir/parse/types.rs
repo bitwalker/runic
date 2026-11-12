@@ -456,15 +456,16 @@ fn parse_alias_or_dialect_type<'input, P: Parser<'input>>(
     let Some(registered) = parser.context().find_registered_dialect(dialect) else {
         return Err(ParserError::UnknownDialect { span, dialect });
     };
-    let Some(type_name) =
-        registered.registered_types().iter().find(|ty| ty.name() == name).cloned()
-    else {
+    // The registered types are sorted by name.
+    let types = registered.registered_types();
+    let Ok(index) = types.binary_search_by_key(&Symbol::intern(name), |ty| ty.name()) else {
         return Err(ParserError::UnknownType {
             span,
             dialect,
             name: name.into(),
         });
     };
+    let type_name = types[index].clone();
 
     if parser.parse_optional_langle()? {
         let Some(parse) = type_name.parse_fn() else {

@@ -24,6 +24,8 @@ pub struct TypeName(Rc<TypeInfo>);
 struct TypeInfo {
     dialect: Symbol,
     name: Symbol,
+    /// Whether `dialect` is the builtin dialect, whose types print bare.
+    is_builtin: bool,
     /// The [TypeId] of the Rust type whose values are this type's storage.
     type_id: TypeId,
     /// The name of that Rust type, for diagnostics.
@@ -48,15 +50,19 @@ fn debug_value<T: TypeRegistration>(ty: Type, f: &mut fmt::Formatter<'_>) -> fmt
     write!(f, "{}.{}({value:?})", name.dialect(), name.name())
 }
 
+/// Returns true if `dialect` is the builtin dialect.
+fn is_builtin_dialect(dialect: Symbol) -> bool {
+    dialect.as_str()
+        == <crate::dialects::builtin::BuiltinDialect as crate::DialectRegistration>::NAMESPACE
+}
+
 /// Builtin types print bare, with no `!dialect.name` to fall back on, so one without a
 /// [TypePrinter](super::TypePrinter) cannot be displayed.
 ///
 /// Panics if `dialect` is the builtin dialect and `has_printer` is false.
 fn require_printer_for_builtin(dialect: Symbol, rust_type_name: &str, has_printer: bool) {
     assert!(
-        has_printer
-            || dialect.as_str()
-                != <crate::dialects::builtin::BuiltinDialect as crate::DialectRegistration>::NAMESPACE,
+        has_printer || !is_builtin_dialect(dialect),
         "builtin type `{rust_type_name}` must implement `TypePrinter`: builtin types print bare"
     );
 }
@@ -76,9 +82,7 @@ fn require_round_trip(
     has_parser: bool,
     has_default: bool,
 ) {
-    if dialect.as_str()
-        == <crate::dialects::builtin::BuiltinDialect as crate::DialectRegistration>::NAMESPACE
-    {
+    if is_builtin_dialect(dialect) {
         return;
     }
     assert!(
@@ -120,6 +124,7 @@ impl TypeName {
         Self(Rc::new(TypeInfo {
             dialect,
             name: T::name(),
+            is_builtin: is_builtin_dialect(dialect),
             type_id: TypeId::of::<T>(),
             rust_type_name,
             traits: traits.into_boxed_slice(),
@@ -141,6 +146,12 @@ impl TypeName {
     #[inline]
     pub fn name(&self) -> Symbol {
         self.0.name
+    }
+
+    /// Returns true if this type belongs to the builtin dialect, and so prints bare.
+    #[inline]
+    pub(crate) fn is_builtin(&self) -> bool {
+        self.0.is_builtin
     }
 
     /// Returns true if `T` is the Rust type that implements this type.

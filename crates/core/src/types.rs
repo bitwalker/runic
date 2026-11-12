@@ -19,15 +19,9 @@ pub use self::{
         TypePrinter, TypeRegistration,
     },
 };
-use crate::{
-    DialectRegistration,
-    dialects::builtin::{
-        BuiltinDialect,
-        types::{
-            ArrayType, FloatType, FunctionType, IntegerType, IsizeType, NeverType, PointerType,
-            StructType, UnknownType,
-        },
-    },
+use crate::dialects::builtin::types::{
+    ArrayType, FloatType, FunctionType, IntegerType, IsizeType, NeverType, PointerType, StructType,
+    UnknownType,
 };
 
 /// The value a type is uniqued by: two types are the same type exactly when they have the same
@@ -49,7 +43,7 @@ pub trait TypeImpl: Any + Eq + Hash + fmt::Debug + 'static {}
 /// Every field is present in every build profile, so the layout of a type's storage does not
 /// depend on the profile.
 #[repr(C)]
-pub struct TypeHeader {
+pub(crate) struct TypeHeader {
     name: TypeName,
     /// The hash this type is stored under in the context's uniquer.
     hash: u64,
@@ -342,7 +336,7 @@ impl<'a, 'f> TypeFormatter<'a, 'f> {
     pub fn ty(&mut self, ty: Type) -> fmt::Result {
         let name = ty.name();
         let print = name.print_fn();
-        if name.dialect().as_str() == <BuiltinDialect as DialectRegistration>::NAMESPACE {
+        if name.is_builtin() {
             let print = print.expect("registration requires builtin types to have a printer");
             return print(ty, self);
         }
@@ -1108,6 +1102,8 @@ mod tests {
         assert!(marker.name().print_fn().is_none());
         assert!(marker.name().default_fn().is_some(), "MarkerType is Default");
         assert!(pair.name().default_fn().is_none());
+        assert!(!marker.name().is_builtin() && !pair.name().is_builtin());
+        assert!(context.i32().name().is_builtin());
     }
 
     /// A unit-like enum with a parser, to check that a parser is picked up.

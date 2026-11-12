@@ -158,7 +158,7 @@ impl DialectInfo {
     ///
     /// Panics if `name` is already registered for a different Rust type than the one `init`
     /// registers.
-    pub fn get_or_register_type_with(
+    pub(crate) fn get_or_register_type_with(
         &mut self,
         name: interner::Symbol,
         init: fn(interner::Symbol) -> TypeName,
