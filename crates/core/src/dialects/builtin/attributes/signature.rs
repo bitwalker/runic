@@ -232,7 +232,11 @@ pub enum InvalidSignature {
 impl fmt::Display for InvalidSignature {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NeverParameter { index } => write!(f, "parameter {index} has type `never`"),
+            Self::NeverParameter { index } => write!(
+                f,
+                "parameter {index} has type `never`, which is only valid as the single result of \
+                 a function that never returns"
+            ),
             Self::NeverAmongResults { index } => write!(
                 f,
                 "result {index} has type `never`, which is only valid as the single result of a \

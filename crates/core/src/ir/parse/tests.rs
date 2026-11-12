@@ -5019,7 +5019,11 @@ fn never_as_a_parameter_or_among_results_does_not_verify() {
     let declaration = "builtin.function public extern(\"C\") @f";
     let invalid = "property 'signature' of 'builtin.function' is an invalid signature";
     for (source, reason) in [
-        (format!("{declaration}(i32, never);"), "parameter 1 has type `never`"),
+        (
+            format!("{declaration}(i32, never);"),
+            "parameter 1 has type `never`, which is only valid as the single result of a function \
+             that never returns",
+        ),
         (
             format!("{declaration}() -> (never, i32);"),
             "result 0 has type `never`, which is only valid as the single result of a function \
@@ -5066,7 +5070,10 @@ fn a_signature_type_of_another_context_does_not_verify() {
         cc: CallConv::default(),
     };
     let message = verify_error_text(declared_function(&context, signature));
-    assert!(message.contains("result 0 has type `ptr<i64>`, which belongs to another context"));
+    assert!(
+        message.contains("result 0 has type `ptr<i64>`, which belongs to another context"),
+        "{message}"
+    );
 }
 
 /// An open type in a declaration's signature does not verify. `AbiParam::new` panics on it in
@@ -5127,7 +5134,11 @@ fn a_signature_validates_where_never_appears() {
         Err(InvalidSignature::NeverAmongResults { index: 1 })
     );
     let err = Signature::new(&context, [never], []).validate().unwrap_err();
-    assert_eq!(err.to_string(), "parameter 0 has type `never`");
+    assert_eq!(
+        err.to_string(),
+        "parameter 0 has type `never`, which is only valid as the single result of a function \
+         that never returns"
+    );
 }
 
 /// A test function `f` built in code with the signature `signature` gives, whose entry block
