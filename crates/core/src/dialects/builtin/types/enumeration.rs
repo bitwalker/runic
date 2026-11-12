@@ -82,6 +82,8 @@ pub enum InvalidEnumType {
 /// A tagged union, `enum name<discriminant; variant, ...>`.
 ///
 /// The discriminant is an `iN` of at most 128 bits, or `isize`, whose values are 64 bits wide.
+/// An `isize` discriminant's values are checked against 64 bits here; a target whose `isize` is
+/// narrower must check them again once a data layout is known.
 /// A variant's value is the raw bits of the discriminant: it is the one given explicitly, or else
 /// the previous variant's value plus one, or 0 for the first. Values are resolved when the enum
 /// is constructed, so `enum<i8; a, b>` and `enum<i8; a = 0, b = 1>` are one type. The enum's name
@@ -99,8 +101,9 @@ pub struct EnumType {
 }
 
 impl EnumType {
-    /// The width in bits of values of the discriminant type `ty`, if it is a valid one.
-    pub(crate) fn discriminant_width(ty: Type) -> Option<u32> {
+    /// The width in bits of values of the discriminant type `ty`, if it is a valid one: `N` for
+    /// `iN` with `N <= 128`, and 64 for `isize`.
+    pub fn discriminant_width(ty: Type) -> Option<u32> {
         match ty.integer_width() {
             Some(width @ 1..=128) => Some(width),
             Some(_) => None,

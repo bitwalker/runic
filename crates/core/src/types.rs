@@ -53,6 +53,12 @@ use crate::dialects::builtin::types::{
 /// filled in, and while a group is being built these receive the handles of members whose values
 /// are not final yet.
 ///
+/// Type storage can be cyclic: a recursion-group member holds, directly or not, the handles of
+/// the members it refers to, itself included. Any method of a type, an interface method among
+/// them, that walks the types the value holds beyond the ones it holds directly must therefore
+/// stop at group members ([Type::rec_group]) or track the types it has visited; otherwise it may
+/// never return.
+///
 /// A type also exposes the types its value holds directly, through [Self::visit_subtypes] and
 /// [Self::replace_subtypes]. `#[derive(DialectType)]` implements both field by field, so every
 /// field of a derived type must be a [TypeComponent]; a field that is not does not compile:

@@ -86,8 +86,11 @@ impl RecGroup {
         self.data().id
     }
 
-    /// The open definitions the group was created from.
-    pub(crate) fn bodies(&self) -> &[Type] {
+    /// The group's open definitions, in order: the bodies it was created from, written over
+    /// recursion variables. They are the group's identity, and what code that rewrites a group
+    /// maps and passes to [Context::rec_group](crate::Context::rec_group) again; being open, they
+    /// may not be used in IR.
+    pub fn bodies(&self) -> &[Type] {
         &self.data().bodies
     }
 
