@@ -4769,16 +4769,22 @@ pub struct RegionHolder {
     body: crate::RegionRef,
 }
 
-/// Parses `source`, which verifies, and checks that it fails verification with `reason`, the
-/// first label starting where `labelled` does.
+/// Parses `source`, which verifies, and checks that it fails verification of `builtin.function`
+/// with `reason`, the first label starting where `labelled` does.
 #[track_caller]
 fn assert_verification_error(source: &str, labelled: &str, reason: &str) {
+    assert_verification_error_headed(source, "invalid operation builtin.function", labelled, reason)
+}
+
+/// As [assert_verification_error], with the message headed `heading`.
+#[track_caller]
+fn assert_verification_error_headed(source: &str, heading: &str, labelled: &str, reason: &str) {
     let test = ParserTest::default();
     test.context().get_or_register_dialect::<TestDialect>();
     test.parse_any_unverified("verify.hir", source)
         .unwrap_or_else(|err| panic!("{source} is well-formed as text: {err:?}"));
     let (message, labels) = parse_error_labels(source);
-    assert!(message.contains("invalid operation builtin.function"), "{message}");
+    assert!(message.contains(heading), "{message}");
     assert!(message.contains(reason), "{message}");
     let start = source.find(labelled).unwrap_or_else(|| panic!("`{labelled}` in `{source}`"));
     assert_eq!(labels.first().map(|label| label.0), Some(start), "{message}");
@@ -4796,10 +4802,13 @@ fn verify_error_text(function: UnsafeIntrusiveEntityRef<Function>) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// `never` is the single result of a function that never returns, and nothing else.
+/// `never` is the single result of a function that never returns, and nothing else. The
+/// signature is checked by `Operation::verify_signature_attributes`, which runs before the
+/// function's own verifier: the message is the generic one, naming the property.
 #[test]
 fn never_as_a_parameter_or_among_results_does_not_verify() {
     let declaration = "builtin.function public extern(\"C\") @f";
+    let invalid = "property 'signature' of 'builtin.function' is an invalid signature";
     for (source, reason) in [
         (format!("{declaration}(i32, never);"), "parameter 1 has type `never`"),
         (
@@ -4813,8 +4822,81 @@ fn never_as_a_parameter_or_among_results_does_not_verify() {
              that never returns",
         ),
     ] {
-        assert_verification_error(&source, "builtin.function", reason);
+        let reason = format!("{invalid}: {reason}");
+        assert_verification_error_headed(&source, "invalid operation", "builtin.function", &reason);
+        let (message, _) = parse_error_labels(&source);
+        assert!(!message.contains("invalid operation builtin.function"), "{message}");
     }
+}
+
+/// A signature type that belongs to another context does not verify, in a declaration, where no
+/// entry block or return stands in for it.
+#[test]
+fn a_signature_type_of_another_context_does_not_verify() {
+    let test = ParserTest::default();
+    let other = Rc::new(Context::default());
+    let foreign = other.ptr_type(other.i64());
+    let context = test.context_rc();
+    let signature = Signature {
+        params: alloc::vec![AbiParam::new(foreign)],
+        results: alloc::vec![AbiParam::new(foreign)],
+        cc: CallConv::default(),
+    };
+    let message = verify_error_text(declared_function(&context, signature));
+    assert!(
+        message.contains(
+            "property 'signature' of 'builtin.function' is an invalid signature: parameter 0 has \
+             type `ptr<i64>`, which belongs to another context"
+        ),
+        "{message}"
+    );
+
+    let signature = Signature {
+        params: alloc::vec![],
+        results: alloc::vec![AbiParam::new(foreign)],
+        cc: CallConv::default(),
+    };
+    let message = verify_error_text(declared_function(&context, signature));
+    assert!(message.contains("result 0 has type `ptr<i64>`, which belongs to another context"));
+}
+
+/// An open type in a declaration's signature does not verify. `AbiParam::new` panics on it in
+/// debug builds, so it is built as a literal, which no build checks.
+#[test]
+fn an_open_signature_type_does_not_verify() {
+    let test = ParserTest::default();
+    let context = test.context_rc();
+    let open = AbiParam {
+        ty: context.ptr_type(context.rec_var(0)),
+        attrs: Default::default(),
+    };
+    let signature = Signature {
+        params: alloc::vec![AbiParam::new(context.i32()), open],
+        results: alloc::vec![],
+        cc: CallConv::default(),
+    };
+    let message = verify_error_text(declared_function(&context, signature));
+    assert!(
+        message.contains(
+            "property 'signature' of 'builtin.function' is an invalid signature: parameter 1 has \
+             type `ptr<rec.0>`, which is open"
+        ),
+        "{message}"
+    );
+}
+
+/// A signature held as a discardable attribute is checked like the signature of a function.
+#[test]
+fn an_invalid_signature_in_a_discardable_attribute_does_not_verify() {
+    let source = "builtin.function public extern(\"C\") @f(i32) attributes { sig = \
+                  #builtin.signature<extern(\"C\") (never) -> (never, i32)> };";
+    assert_verification_error_headed(
+        source,
+        "invalid operation",
+        "builtin.function",
+        "attribute 'sig' of 'builtin.function' is an invalid signature: parameter 0 has type \
+         `never`",
+    );
 }
 
 /// `InvalidSignature` says which parameter or result is the problem.

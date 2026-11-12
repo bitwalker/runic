@@ -510,10 +510,13 @@ impl Operation {
     /// The first check, run for every operation, is that every type the operation holds was
     /// interned by its context; see [Self::verify_type_ownership]. The second is that every
     /// integer constant among its properties and attributes is valid; see
-    /// [Self::verify_int_attributes].
+    /// [Self::verify_int_attributes]. The third is that every signature among its properties and
+    /// attributes is valid; see [Self::verify_signature_attributes]. The operation's own verifiers
+    /// run after these.
     pub fn verify(&self) -> Result<(), Report> {
         self.verify_type_ownership()?;
         self.verify_int_attributes()?;
+        self.verify_signature_attributes()?;
         let dyn_op: &dyn Op = self.as_ref();
         dyn_op.verify(self.context())
     }
@@ -522,8 +525,9 @@ impl Operation {
     /// regions, and of its properties and attributes (the type each attribute has, as given by
     /// [Attribute::ty](crate::Attribute::ty)) were all interned by its context and are not open.
     ///
-    /// Types held inside attribute values, such as the value of a type attribute or the
-    /// parameters of a signature, are not checked here.
+    /// Types held inside attribute values, such as the value of a type attribute, are not checked
+    /// here; the parameter and result types of a signature are checked by
+    /// [Self::verify_signature_attributes].
     ///
     /// A type may only be used with the context that interned it, and an open type (one holding a
     /// recursion variable) may not be used in IR at all. Debug builds check both where a type is
@@ -613,6 +617,71 @@ impl Operation {
                     ),
                 ],
             ))
+        };
+        for prop in self.properties() {
+            check(&format_args!("property '{}'", prop.name), &prop.value)?;
+        }
+        for attr in self.attributes() {
+            let attr = attr.as_named_attribute();
+            check(&format_args!("attribute '{}'", attr.name), &attr.value)?;
+        }
+        Ok(())
+    }
+
+    /// Check that every signature ([SignatureAttr]) among this operation's properties and
+    /// attributes is valid: [Signature::validate] accepts it, and the type of each of its
+    /// parameters and declared results was interned by the operation's context and is not open.
+    ///
+    /// Nothing checks a signature when it is built or read: a parameter has no context to check
+    /// its type against, and the parser reads `never` anywhere. This check is what catches an
+    /// invalid signature in every build, whichever operation holds it.
+    ///
+    /// Only the properties and attributes of the operation itself are visited: a signature nested
+    /// inside a list or map attribute value, or in a parameter's own attributes, is not checked.
+    ///
+    /// [SignatureAttr]: crate::dialects::builtin::attributes::SignatureAttr
+    /// [Signature::validate]: crate::dialects::builtin::attributes::Signature::validate
+    pub fn verify_signature_attributes(&self) -> Result<(), Report> {
+        use crate::dialects::builtin::attributes::SignatureAttr;
+
+        let context = self.context();
+        let invalid = |role: &dyn fmt::Display, problem: &dyn fmt::Display| {
+            crate::diagnostics::report!(
+                message: "invalid operation",
+                labels: [
+                    primary(
+                        self.span(),
+                        alloc::format!("{role} of '{}' is an invalid signature: {problem}", self.name())
+                    ),
+                ],
+            )
+        };
+        let check = |role: &dyn fmt::Display, attr: &AttributeRef| {
+            let attr = attr.borrow();
+            let Some(signature) = attr.downcast_ref::<SignatureAttr>() else {
+                return Ok(());
+            };
+            signature.validate().map_err(|err| invalid(role, &err))?;
+            let params = signature.params().iter().enumerate().map(|(i, p)| ("parameter", i, p));
+            let results =
+                signature.declared_results().iter().enumerate().map(|(i, r)| ("result", i, r));
+            for (kind, index, param) in params.chain(results) {
+                let ty = param.ty;
+                let problem = if !context.owns_type(ty) {
+                    "which belongs to another context: a type may only be used with the context \
+                     that interned it"
+                } else if ty.is_open() {
+                    "which is open: a recursion variable is only meaningful inside the definition \
+                     of a recursion group"
+                } else {
+                    continue;
+                };
+                return Err(invalid(
+                    role,
+                    &format_args!("{kind} {index} has type `{ty}`, {problem}"),
+                ));
+            }
+            Ok(())
         };
         for prop in self.properties() {
             check(&format_args!("property '{}'", prop.name), &prop.value)?;

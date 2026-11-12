@@ -463,10 +463,13 @@ impl CallableOpInterface for Function {
 
 impl CallableSymbol for Function {}
 
-/// A function verifies its signature, and its body against it: the entry block of a definition
-/// has one argument per parameter, of the parameter's type, and every `builtin.ret` and
-/// `builtin.ret_imm` in the body, outside nested callables, returns exactly the results of the
-/// signature (none may appear in a function that never returns).
+/// A function verifies its body against its signature: the entry block of a definition has one
+/// argument per parameter, of the parameter's type, and every `builtin.ret` and `builtin.ret_imm`
+/// in the body, outside nested callables, returns exactly the results of the signature (none may
+/// appear in a function that never returns).
+///
+/// The signature itself is checked before this runs, by
+/// [Operation::verify_signature_attributes], as for every operation that holds one.
 impl crate::Verify<dyn CallableSymbol> for Function {
     fn verify(&self, _context: &crate::Context) -> Result<(), crate::Report> {
         use crate::{Spanned, ValueRef, WalkResult, diagnostics::report};
@@ -480,7 +483,6 @@ impl crate::Verify<dyn CallableSymbol> for Function {
         };
 
         let signature = self.get_signature();
-        signature.validate().map_err(|err| invalid(format!("{err}")))?;
         if self.is_declaration() {
             return Ok(());
         }
