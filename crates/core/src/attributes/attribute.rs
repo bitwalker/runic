@@ -22,7 +22,7 @@ pub use self::{
 };
 use crate::{
     Context, Dialect, Entity, EntityList, EntityListCursor, EntityListCursorMut, EntityListItem,
-    Immediate, Type, UnsafeIntrusiveEntityRef,
+    Int, Type, UnsafeIntrusiveEntityRef,
 };
 
 pub type AttributeRef = UnsafeIntrusiveEntityRef<dyn Attribute>;
@@ -124,25 +124,26 @@ impl dyn Attribute {
     /// A convenience function for downcasting a `bool` attribute value to the concrete boolean
     /// value.
     ///
-    /// Returns `None` if this value is not a `bool` or `Immediate` that can be cast to `bool`.
+    /// Returns `None` if this value is not a `bool`.
     pub fn as_bool(&self) -> Option<bool> {
         self.value().as_any().downcast_ref::<bool>().copied()
     }
 
-    /// A convenience function for downcasting a `u32` attribute value to the concrete value.
+    /// The value of an integer attribute as a `u32`, reading its bits as unsigned.
     ///
-    /// Returns `None` if this value is not a `u32` or `Immediate` that can be cast to `u32`.
+    /// Returns `None` if this is not an integer attribute, or its unsigned value does not fit.
     pub fn as_u32(&self) -> Option<u32> {
-        self.as_immediate().and_then(|imm| imm.as_u32())
+        self.as_int()?.try_unsigned()
     }
 
-    /// A convenience function for downcasting an `Immediate` attribute value to the concrete value.
+    /// The value of an integer attribute (one that implements
+    /// [IntegerLikeAttr](super::IntegerLikeAttr)).
     ///
-    /// Returns `None` if this value is not an `Immediate`.
-    pub fn as_immediate(&self) -> Option<Immediate> {
+    /// Returns `None` if this is not an integer attribute.
+    pub fn as_int(&self) -> Option<Int> {
         use super::IntegerLikeAttr;
 
-        Some(self.as_attr().as_trait::<dyn IntegerLikeAttr>()?.as_immediate())
+        Some(self.as_attr().as_trait::<dyn IntegerLikeAttr>()?.as_int())
     }
 
     /// Get a deep clone of this attribute value in the same context
@@ -474,19 +475,23 @@ mod tests {
     use core::hash::Hasher;
 
     use crate::{
-        Attribute, Immediate, ImmediateAttr, attributes::IntegerLikeAttr,
-        dialects::builtin::attributes::U32Attr, testing::Test,
+        Attribute, Int,
+        attributes::IntegerLikeAttr,
+        dialects::builtin::attributes::{I32Attr, IntAttr},
+        testing::Test,
     };
 
     #[test]
     fn attribute_dyn_hash() {
         let test = Test::default();
 
-        let zero = test.context_rc().create_attribute::<U32Attr, _>(0u32).as_attribute_ref();
-        let zero_two = test.context_rc().create_attribute::<U32Attr, _>(0u32).as_attribute_ref();
-        let zero_three =
-            test.context_rc().create_attribute::<ImmediateAttr, _>(0u32).as_attribute_ref();
-        let one = test.context_rc().create_attribute::<U32Attr, _>(1u32).as_attribute_ref();
+        let zero = test.context_rc().create_attribute::<I32Attr, _>(0i32).as_attribute_ref();
+        let zero_two = test.context_rc().create_attribute::<I32Attr, _>(0i32).as_attribute_ref();
+        let zero_three = test
+            .context_rc()
+            .create_attribute::<IntAttr, _>(Int::from(0i32))
+            .as_attribute_ref();
+        let one = test.context_rc().create_attribute::<I32Attr, _>(1i32).as_attribute_ref();
 
         let mut hasher = crate::FxHasher::default();
         zero.borrow().dyn_hash(&mut hasher);
@@ -513,11 +518,13 @@ mod tests {
     fn attribute_dyn_eq() {
         let test = Test::default();
 
-        let zero = test.context_rc().create_attribute::<U32Attr, _>(0u32).as_attribute_ref();
-        let zero_two = test.context_rc().create_attribute::<U32Attr, _>(0u32).as_attribute_ref();
-        let zero_three =
-            test.context_rc().create_attribute::<ImmediateAttr, _>(0u32).as_attribute_ref();
-        let one = test.context_rc().create_attribute::<U32Attr, _>(1u32).as_attribute_ref();
+        let zero = test.context_rc().create_attribute::<I32Attr, _>(0i32).as_attribute_ref();
+        let zero_two = test.context_rc().create_attribute::<I32Attr, _>(0i32).as_attribute_ref();
+        let zero_three = test
+            .context_rc()
+            .create_attribute::<IntAttr, _>(Int::from(0i32))
+            .as_attribute_ref();
+        let one = test.context_rc().create_attribute::<I32Attr, _>(1i32).as_attribute_ref();
 
         let zero = zero.borrow();
         let zero_two = zero_two.borrow();
@@ -529,32 +536,33 @@ mod tests {
     }
 
     #[test]
-    fn immediate_attribute_ref_roundtrips_with_type() {
+    fn int_attribute_ref_roundtrips_with_type() {
         let test = Test::default();
 
-        let immediate = test.context_rc().create_attribute::<ImmediateAttr, _>(Immediate::I32(1));
-        assert_eq!(immediate.borrow().ty(), test.context().i32());
+        let constant = test.context_rc().create_attribute::<IntAttr, _>(Int::from(1i32));
+        assert_eq!(constant.borrow().ty(), test.context().i32());
 
-        let erased = immediate.as_attribute_ref();
+        let erased = constant.as_attribute_ref();
         assert_eq!(erased.borrow().ty(), test.context().i32());
 
-        let roundtrip = erased.try_downcast_attr::<ImmediateAttr>().unwrap();
+        let roundtrip = erased.try_downcast_attr::<IntAttr>().unwrap();
         let roundtrip = roundtrip.borrow();
         assert_eq!(roundtrip.ty(), test.context().i32());
-        assert_eq!(roundtrip.as_immediate(), Immediate::I32(1));
+        assert_eq!(roundtrip.as_int(), Int::from(1i32));
     }
 
-    /// `ImmediateAttr` holds a `u128`, so its value has alignment 16. The handle rebuilt through
+    const _: () = assert!(core::mem::align_of::<crate::Int>() == 16);
+
+    /// `IntAttr` holds a `u128`, so its value has alignment 16. The handle rebuilt through
     /// `Attr::as_attr_ref` must find the same entity header (and thus the same borrow flag) as the
     /// handle returned on allocation.
     #[test]
     fn attr_ref_of_a_16_aligned_attribute_shares_the_borrow_flag() {
         let test = Test::default();
 
-        let mut immediate =
-            test.context_rc().create_attribute::<ImmediateAttr, _>(Immediate::I32(1));
-        let attr_ref = immediate.borrow().as_attr().as_attr_ref();
-        let guard = immediate.borrow_mut();
+        let mut constant = test.context_rc().create_attribute::<IntAttr, _>(Int::from(1i32));
+        let attr_ref = constant.borrow().as_attr().as_attr_ref();
+        let guard = constant.borrow_mut();
         assert!(
             attr_ref.try_borrow().is_none(),
             "a shared borrow through as_attr_ref() succeeded while the attribute was mutably \

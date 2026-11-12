@@ -608,8 +608,8 @@ mod tests {
     use alloc::rc::Rc;
 
     use crate::{
-        BuilderExt, Context, Immediate, ImmediateAttr, SourceSpan,
-        dialects::test::Constant,
+        BuilderExt, Context, Int, SourceSpan,
+        dialects::{builtin::attributes::IntAttr, test::Constant},
         testing::{Test, label_messages},
     };
 
@@ -624,7 +624,7 @@ mod tests {
         let constant = {
             let mut builder = test.function_builder();
             let create = builder.builder_mut().create::<Constant, _>(SourceSpan::UNKNOWN);
-            create(Immediate::I32(1)).unwrap()
+            create(Int::from(1i32)).unwrap()
         };
         let op = constant.as_operation_ref();
         assert!(op.borrow().verify().is_ok());
@@ -658,13 +658,13 @@ mod tests {
         let constant = {
             let mut builder = test.function_builder();
             let create = builder.builder_mut().create::<Constant, _>(SourceSpan::UNKNOWN);
-            create(Immediate::I32(1)).unwrap()
+            create(Int::from(1i32)).unwrap()
         };
         let mut op = constant.as_operation_ref();
 
         let mut attr = test
             .context_rc()
-            .create_attribute::<ImmediateAttr, _>(Immediate::I32(7))
+            .create_attribute::<IntAttr, _>(Int::from(7i32))
             .as_attribute_ref();
         op.borrow_mut().set_attribute("note", attr);
         assert!(op.borrow().verify().is_ok());
@@ -687,7 +687,7 @@ mod tests {
         let constant = {
             let mut builder = test.function_builder();
             let create = builder.builder_mut().create::<Constant, _>(SourceSpan::UNKNOWN);
-            create(Immediate::I32(1)).unwrap()
+            create(Int::from(1i32)).unwrap()
         };
         let op = constant.as_operation_ref();
         let open = test.context().rec_var(0);
@@ -721,12 +721,12 @@ mod tests {
         let constant = {
             let mut builder = test.function_builder();
             let create = builder.builder_mut().create::<Constant, _>(SourceSpan::UNKNOWN);
-            create(Immediate::I32(1)).unwrap()
+            create(Int::from(1i32)).unwrap()
         };
         let mut op = constant.as_operation_ref();
         let mut attr = test
             .context_rc()
-            .create_attribute::<ImmediateAttr, _>(Immediate::I32(7))
+            .create_attribute::<IntAttr, _>(Int::from(7i32))
             .as_attribute_ref();
         op.borrow_mut().set_attribute("note", attr);
         attr.borrow_mut().as_attr_mut().set_type_unchecked(test.context().rec_var(0));
@@ -757,7 +757,7 @@ mod tests {
         let constant = {
             let mut builder = test.function_builder();
             let create = builder.builder_mut().create::<Constant, _>(SourceSpan::UNKNOWN);
-            create(Immediate::I32(1)).unwrap()
+            create(Int::from(1i32)).unwrap()
         };
         let open = test.context().rec_var(0);
         test.context()
@@ -775,7 +775,7 @@ mod tests {
         let constant = {
             let mut builder = test.function_builder();
             let create = builder.builder_mut().create::<Constant, _>(SourceSpan::UNKNOWN);
-            create(Immediate::I32(1)).unwrap()
+            create(Int::from(1i32)).unwrap()
         };
         let open = test.context().ptr_type(test.context().rec_var(0));
         let mut result = constant.as_operation_ref().borrow().results()[0];

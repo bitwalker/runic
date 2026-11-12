@@ -1,5 +1,5 @@
 use crate::{
-    Builder, BuilderExt, Immediate, OpBuilder, Report, UnsafeIntrusiveEntityRef, ValueRef,
+    Builder, BuilderExt, Int, OpBuilder, Report, UnsafeIntrusiveEntityRef, ValueRef,
     dialects::{builtin::FunctionBuilder, test::*},
 };
 
@@ -7,7 +7,7 @@ pub trait TestOpBuilder<'f, B: ?Sized + Builder> {
     /// An `i32` constant holding the bits of `value`, as the parser stores the same literal.
     fn u32(&mut self, value: u32, span: SourceSpan) -> Result<ValueRef, Report> {
         let op_builder = self.builder_mut().create::<Constant, _>(span);
-        let constant = op_builder(Immediate::I32(value as i32))?;
+        let constant = op_builder(Int::from(value as i32))?;
         Ok(constant.borrow().result().as_value_ref())
     }
 

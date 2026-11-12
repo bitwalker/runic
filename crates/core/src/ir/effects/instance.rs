@@ -375,16 +375,16 @@ impl<'a> core::convert::TryFrom<&'a EffectValue> for EntityRef<'a, OpResult> {
 mod tests {
     use super::EffectValue;
     use crate::{
-        Attribute, AttributeRef, EntityRef, Immediate, ImmediateAttr, attributes::IntegerLikeAttr,
-        testing::Test,
+        Attribute, AttributeRef, EntityRef, Int, attributes::IntegerLikeAttr,
+        dialects::builtin::attributes::IntAttr, testing::Test,
     };
 
     #[test]
     fn effect_value_from_typed_attribute_borrow_preserves_type() {
         let test = Test::default();
-        let immediate = test.context_rc().create_attribute::<ImmediateAttr, _>(Immediate::I32(7));
-        let expected = immediate.as_attribute_ref();
-        let borrowed = immediate.borrow();
+        let constant = test.context_rc().create_attribute::<IntAttr, _>(Int::from(7i32));
+        let expected = constant.as_attribute_ref();
+        let borrowed = constant.borrow();
 
         let effect = EffectValue::from(borrowed);
         let EffectValue::Attribute(attr) = effect else {
@@ -393,26 +393,26 @@ mod tests {
 
         assert!(AttributeRef::ptr_eq(&attr, &expected));
         assert_eq!(attr.borrow().ty(), test.context().i32());
-        let attr = attr.try_downcast_attr::<ImmediateAttr>().unwrap();
-        assert_eq!(attr.borrow().as_immediate(), Immediate::I32(7));
+        let attr = attr.try_downcast_attr::<IntAttr>().unwrap();
+        assert_eq!(attr.borrow().as_int(), Int::from(7i32));
     }
 
     #[test]
     fn effect_value_from_dyn_attribute_borrow_preserves_type() {
         let test = Test::default();
-        let immediate = test.context_rc().create_attribute::<ImmediateAttr, _>(Immediate::I32(9));
-        let expected = immediate.as_attribute_ref();
-        let immediate = immediate.borrow();
-        let immediate = EntityRef::map(immediate, |attr| attr as &dyn Attribute);
+        let constant = test.context_rc().create_attribute::<IntAttr, _>(Int::from(9i32));
+        let expected = constant.as_attribute_ref();
+        let constant = constant.borrow();
+        let constant = EntityRef::map(constant, |attr| attr as &dyn Attribute);
 
-        let effect = EffectValue::from(immediate);
+        let effect = EffectValue::from(constant);
         let EffectValue::Attribute(attr) = effect else {
             panic!("expected attribute effect value");
         };
 
         assert!(AttributeRef::ptr_eq(&attr, &expected));
         assert_eq!(attr.borrow().ty(), test.context().i32());
-        let attr = attr.try_downcast_attr::<ImmediateAttr>().unwrap();
-        assert_eq!(attr.borrow().as_immediate(), Immediate::I32(9));
+        let attr = attr.try_downcast_attr::<IntAttr>().unwrap();
+        assert_eq!(attr.borrow().as_int(), Int::from(9i32));
     }
 }

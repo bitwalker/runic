@@ -1,14 +1,10 @@
 use super::*;
 use crate::{
-    AttributeRef, AttributeRegistration, Immediate, ImmediateAttr, Int, SymbolNameComponent,
-    SymbolPath, SymbolUse,
+    AttributeRef, AttributeRegistration, Int, SymbolNameComponent, SymbolPath, SymbolUse,
     diagnostics::{Report, report},
     dialects::builtin::{
         self,
-        attributes::{
-            BoolAttr, I8Attr, I16Attr, I32Attr, I64Attr, I128Attr, StringAttr, SymbolRefAttr,
-            TypeAttr,
-        },
+        attributes::{BoolAttr, StringAttr, SymbolRefAttr, TypeAttr},
     },
 };
 
@@ -1216,51 +1212,6 @@ impl IntegerLiteral {
     }
 }
 
-impl IntegerLiteral {
-    /// The value this literal, found at `span`, stands for as a value of the integer type `ty`.
-    ///
-    /// Integer types are signless: an `N`-bit literal may be anything in `[-2^(N-1), 2^N - 1]`,
-    /// and stands for its `N`-bit pattern, held in the signed representation of the width (so
-    /// `255` and `-1` are the same `i8`). An `i1` literal is `-1`, `0` or `1`.
-    ///
-    /// Fails, with an error at `span`, when `ty` is not an integer type of 1, 8, 16, 32, 64 or 128
-    /// bits, or the literal is out of range for it.
-    pub fn to_immediate(self, ty: Type, span: SourceSpan) -> ParseResult<Immediate> {
-        let Some(width @ (1 | 8 | 16 | 32 | 64 | 128)) = ty.integer_width() else {
-            return Err(ParserError::InvalidIntegerLiteral {
-                span,
-                reason: format!("integer literals of type {ty} are not supported"),
-            });
-        };
-        let unsigned_max = if width == 128 {
-            u128::MAX
-        } else {
-            (1u128 << width) - 1
-        };
-        let negative_max = 1u128 << (width - 1);
-        let bits = match (self.negative, self.magnitude) {
-            (false, magnitude) if magnitude <= unsigned_max => magnitude,
-            (true, magnitude) if magnitude <= negative_max => {
-                magnitude.wrapping_neg() & unsigned_max
-            }
-            _ => {
-                return Err(ParserError::InvalidIntegerLiteral {
-                    span,
-                    reason: format!("value is out of range for {ty}"),
-                });
-            }
-        };
-        Ok(match width {
-            1 => Immediate::I1(bits == 1),
-            8 => Immediate::I8(bits as u8 as i8),
-            16 => Immediate::I16(bits as u16 as i16),
-            32 => Immediate::I32(bits as u32 as i32),
-            64 => Immediate::I64(bits as u64 as i64),
-            _ => Immediate::I128(bits as i128),
-        })
-    }
-}
-
 /// Creates the attribute for an integer literal of the integer type `ty`.
 fn integer_literal_attr(
     context: &Rc<Context>,
@@ -1274,27 +1225,8 @@ fn integer_literal_attr(
             reason: format!("expected value of type {ty}, got an integer literal"),
         });
     }
-    let attr = match literal.to_immediate(ty, span)? {
-        Immediate::I1(value) => {
-            context.create_attribute_with_type::<BoolAttr, _>(value, ty).as_attribute_ref()
-        }
-        Immediate::I8(value) => {
-            context.create_attribute_with_type::<I8Attr, _>(value, ty).as_attribute_ref()
-        }
-        Immediate::I16(value) => {
-            context.create_attribute_with_type::<I16Attr, _>(value, ty).as_attribute_ref()
-        }
-        Immediate::I32(value) => {
-            context.create_attribute_with_type::<I32Attr, _>(value, ty).as_attribute_ref()
-        }
-        Immediate::I64(value) => {
-            context.create_attribute_with_type::<I64Attr, _>(value, ty).as_attribute_ref()
-        }
-        Immediate::I128(value) => {
-            context.create_attribute_with_type::<I128Attr, _>(value, ty).as_attribute_ref()
-        }
-        _ => unreachable!("an integer literal is held in signed storage"),
-    };
+    let value = literal.to_int(ty, span)?;
+    let attr = context.int_attr(value, ty).as_attribute_ref();
     Ok(Span::new(span, attr))
 }
 

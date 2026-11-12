@@ -1877,15 +1877,23 @@ impl crate::traits::Foldable for Operation {
 
 #[cfg(test)]
 mod tests {
-    use crate::{AsCallableSymbolRef, AsSymbolRef, AttributeRef, ImmediateAttr, Op, testing::Test};
+    use crate::{
+        AsCallableSymbolRef, AsSymbolRef, AttributeRef, Int, Op,
+        dialects::builtin::attributes::IntAttr, testing::Test,
+    };
 
     #[test]
     fn set_attribute_replaces_existing_attribute() {
         let test = Test::new("set_attribute_replaces_existing_attribute", |_| ([], []));
         let mut function = test.function();
-        let first = test.context_rc().create_attribute::<ImmediateAttr, _>(0u32).as_attribute_ref();
-        let replacement =
-            test.context_rc().create_attribute::<ImmediateAttr, _>(1u32).as_attribute_ref();
+        let first = test
+            .context_rc()
+            .create_attribute::<IntAttr, _>(Int::from(0u32))
+            .as_attribute_ref();
+        let replacement = test
+            .context_rc()
+            .create_attribute::<IntAttr, _>(Int::from(1u32))
+            .as_attribute_ref();
 
         let mut function = function.borrow_mut();
         let operation = function.as_operation_mut();

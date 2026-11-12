@@ -1,14 +1,14 @@
 use crate::{
     derive::{EffectOpInterface, operation},
-    dialects::test::TestDialect,
+    dialects::{builtin::attributes::IntAttr, test::TestDialect},
     effects::*,
     traits::*,
     *,
 };
 
-/// An operation for expressing constant immediate values.
+/// An integer constant, `test.constant -1 : i8`, whose result has the type of its value.
 ///
-/// This is used to materialize folded constants for the HIR dialect.
+/// The test dialect materializes folded constants as this operation.
 #[derive(EffectOpInterface)]
 #[operation(
     dialect = TestDialect,
@@ -17,7 +17,7 @@ use crate::{
 )]
 pub struct Constant {
     #[attr(hidden)]
-    value: ImmediateAttr,
+    value: IntAttr,
     #[result]
     result: AnyInteger,
 }
@@ -51,7 +51,7 @@ impl Foldable for Constant {
 impl OpPrinter for Constant {
     fn print(&self, printer: &mut print::AsmPrinter<'_>) {
         printer.print_space();
-        printer.print_decimal_integer(*self.get_value());
+        printer.print_int(*self.get_value());
         printer.print_space();
         printer.print_colon_type(self.result().ty());
     }
@@ -71,17 +71,17 @@ impl OpParser for Constant {
                 .expect("valid range"),
         );
 
-        if ty.integer_width().is_none() {
+        if !ty.is_integer() {
             return Err(ParserError::InvalidOperationType {
                 span,
                 ty_span,
                 reason: format!("expected integer type, got '{ty}'"),
             });
         }
-        let value = literal.to_immediate(ty, literal_span)?;
-        let imm = parser.context_rc().create_attribute_with_type::<ImmediateAttr, _>(value, ty);
+        let value = literal.to_int(ty, literal_span)?;
+        let attr = parser.context_rc().int_attr(value, ty);
 
-        state.add_attribute("value", imm);
+        state.add_attribute("value", attr);
         state.results.push(ty);
 
         Ok(())

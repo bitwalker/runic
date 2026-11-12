@@ -1,5 +1,5 @@
 use crate::{
-    AttrPrinter, Immediate,
+    AttrPrinter,
     attributes::{AttrParser, IntegerLikeAttr},
     derive::DialectAttribute,
     dialects::builtin::BuiltinDialect,
@@ -7,66 +7,49 @@ use crate::{
     print::AsmPrinter,
 };
 
+/// Defines the attribute `$name Attr` of the signless integer type of `$width` bits, held in the
+/// signed Rust integer `$t` of that width. It reads the literals an integer constant of that type
+/// does, and prints its value as a signed decimal.
 macro_rules! define_integer_attr {
-    ($name:ident, $t:ident) => {
-        __define_integer_attr!($name, $t, $t, |parser| {
-            Ok(parser.parse_decimal_integer::<$t>()?.into_inner())
-        });
-    };
-}
-
-/// Defines an integer attribute of the signless integer type of `$width` bits, held in the signed
-/// storage `$t`. It reads the literals an integer constant of that type does.
-macro_rules! define_signless_integer_attr {
     ($name:ident, $t:ident, $width:literal) => {
-        paste::paste! {
-            __define_integer_attr!($name, $t, $t, |parser| {
-                let (span, literal) = parser.parse_integer_literal()?.into_parts();
-                let ty = parser.context().[<i $width>]();
-                Ok(literal.to_immediate(ty, span)?.[<as_ $t>]().expect("held in signed storage"))
-            });
-        }
-    };
-}
-
-macro_rules! __define_integer_attr {
-    ($name:ident, $t:ty, $t_id:ident, |$parser:ident| $parse:expr) => {
         #[derive(DialectAttribute)]
-        #[attribute(dialect = BuiltinDialect, remote = $t_id, implements(IntegerLikeAttr, AttrPrinter))]
+        #[attribute(dialect = BuiltinDialect, remote = $t, implements(IntegerLikeAttr, AttrPrinter))]
         #[repr(transparent)]
         pub struct $name;
 
         paste::paste! {
             impl IntegerLikeAttr for [<$name Attr>] {
                 #[inline]
-                fn as_immediate(&self) -> Immediate {
-                    Immediate::from(self.value)
+                fn as_int(&self) -> crate::Int {
+                    crate::Int::from(self.value)
                 }
 
-                fn set_from_immediate_lossy(&mut self, value: Immediate) {
-                    if let Some(value) = value.[<as_ $t_id>]() {
-                        self.value = value;
-                    } else {
-                        self.value = value.as_u128().unwrap() as $t;
-                    }
+                fn set_int(&mut self, value: crate::Int) {
+                    assert_eq!(
+                        value.width(),
+                        $width,
+                        "cannot set a {}-bit value on an i{} attribute",
+                        value.width(),
+                        $width,
+                    );
+                    self.value = value.signed() as $t;
                 }
             }
 
             impl AttrPrinter for [<$name Attr>] {
                 fn print(&self, printer: &mut AsmPrinter<'_>) {
-                    printer.print_decimal_integer(self.as_immediate());
+                    printer.print_int(self.as_int());
                 }
             }
 
             impl AttrParser for [<$name Attr>] {
                 fn parse(
-                    $parser: &mut dyn crate::parse::Parser<'_>,
+                    parser: &mut dyn crate::parse::Parser<'_>,
                 ) -> crate::parse::ParseResult<crate::AttributeRef> {
-                    let value = {
-                        let parsed: crate::parse::ParseResult<$t> = $parse;
-                        parsed?
-                    };
-                    Ok($parser
+                    let (span, literal) = parser.parse_integer_literal()?.into_parts();
+                    let ty = parser.context().[<i $width>]();
+                    let value = literal.to_int(ty, span)?.signed() as $t;
+                    Ok(parser
                         .context_rc()
                         .create_attribute::<[<$name Attr>], _>(value)
                         .as_attribute_ref())
@@ -76,13 +59,144 @@ macro_rules! __define_integer_attr {
     };
 }
 
-define_signless_integer_attr!(I8, i8, 8);
-define_integer_attr!(U8, u8);
-define_signless_integer_attr!(I16, i16, 16);
-define_integer_attr!(U16, u16);
-define_signless_integer_attr!(I32, i32, 32);
-define_integer_attr!(U32, u32);
-define_signless_integer_attr!(I64, i64, 64);
-define_integer_attr!(U64, u64);
-define_signless_integer_attr!(I128, i128, 128);
-define_integer_attr!(U128, u128);
+define_integer_attr!(I8, i8, 8);
+define_integer_attr!(I16, i16, 16);
+define_integer_attr!(I32, i32, 32);
+define_integer_attr!(I64, i64, 64);
+define_integer_attr!(I128, i128, 128);
+
+/// An integer constant of any width up to 128 bits: `#builtin.int<-1 : i7>`.
+///
+/// Its type is the integer type of its value's width, or `isize` for a 64-bit value. Every
+/// integer constant is an `IntAttr`; [crate::Context::int_attr] creates one of a given type.
+#[derive(DialectAttribute)]
+#[attribute(
+    dialect = BuiltinDialect,
+    remote = "crate::Int",
+    default = "default_int",
+    implements(IntegerLikeAttr, AttrPrinter),
+)]
+#[allow(unused)]
+struct Int;
+
+/// The value of a body-less `#builtin.int`: a 32-bit zero.
+fn default_int(_context: &crate::Context) -> crate::Int {
+    crate::Int::zero(32)
+}
+
+impl IntegerLikeAttr for IntAttr {
+    #[inline]
+    fn as_int(&self) -> crate::Int {
+        self.value
+    }
+
+    fn set_int(&mut self, value: crate::Int) {
+        let ty = crate::Attribute::ty(self);
+        let width = if ty.is_isize() {
+            64
+        } else {
+            ty.integer_width().unwrap_or(self.value.width())
+        };
+        assert_eq!(
+            value.width(),
+            width,
+            "cannot set a {}-bit value on an attribute of type {ty}",
+            value.width(),
+        );
+        self.value = value;
+    }
+}
+
+impl AttrPrinter for IntAttr {
+    fn print(&self, printer: &mut AsmPrinter<'_>) {
+        use crate::formatter::const_text;
+
+        printer.print_int(self.value);
+        *printer += const_text(" : ");
+        printer.print_type(crate::Attribute::ty(self));
+    }
+}
+
+impl AttrParser for IntAttr {
+    fn parse(
+        parser: &mut dyn crate::parse::Parser<'_>,
+    ) -> crate::parse::ParseResult<crate::AttributeRef> {
+        let (span, literal) = parser.parse_integer_literal()?.into_parts();
+        let ty = parser.parse_colon_type()?.into_inner();
+        let value = literal.to_int(ty, span)?;
+        Ok(parser.context_rc().int_attr(value, ty).as_attribute_ref())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::rc::Rc;
+
+    use super::*;
+    use crate::{Attribute, Context, Int, dialects::builtin::attributes::BoolAttr};
+
+    #[test]
+    fn set_int_on_a_per_width_attribute() {
+        let context = Rc::new(Context::default());
+        let mut attr = context.create_attribute::<I32Attr, _>(0i32);
+        attr.borrow_mut().set_int(Int::from(-1i32));
+        assert_eq!(**attr.borrow(), -1);
+        assert_eq!(attr.borrow().as_int(), Int::from(-1i32));
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot set a 64-bit value on an i32 attribute")]
+    fn set_int_of_another_width_on_a_per_width_attribute_panics() {
+        let context = Rc::new(Context::default());
+        let mut attr = context.create_attribute::<I32Attr, _>(0i32);
+        attr.borrow_mut().set_int(Int::from(1i64));
+    }
+
+    #[test]
+    fn set_int_on_an_int_attribute() {
+        let context = Rc::new(Context::default());
+        let i7 = context.int_type(7);
+        let mut attr = context.int_attr(Int::zero(7), i7);
+        attr.borrow_mut().set_int(Int::from_bits(7, 5));
+        assert_eq!(attr.borrow().as_int(), Int::from_bits(7, 5));
+        assert_eq!(attr.borrow().ty(), i7);
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot set a 8-bit value on an attribute of type i7")]
+    fn set_int_of_another_width_on_an_int_attribute_panics() {
+        let context = Rc::new(Context::default());
+        let mut attr = context.int_attr(Int::zero(7), context.int_type(7));
+        attr.borrow_mut().set_int(Int::from(1i8));
+    }
+
+    #[test]
+    fn set_int_on_a_bool_attribute() {
+        let context = Rc::new(Context::default());
+        let mut attr = context.create_attribute::<BoolAttr, _>(false);
+        attr.borrow_mut().set_int(Int::from(true));
+        assert!(**attr.borrow());
+    }
+
+    #[test]
+    #[should_panic(expected = "an integer constant of type i64 cannot hold the 32-bit value 1")]
+    fn int_attr_of_a_mismatched_width_panics() {
+        let context = Rc::new(Context::default());
+        context.int_attr(Int::from(1i32), context.i64());
+    }
+
+    #[test]
+    fn int_attr_of_isize_holds_a_64_bit_value() {
+        let context = Rc::new(Context::default());
+        let attr = context.int_attr(Int::from(1i64), context.isize());
+        assert_eq!(attr.borrow().ty(), context.isize());
+        assert_eq!(attr.borrow().as_int(), Int::from(1i64));
+    }
+
+    #[test]
+    fn int_attr_infers_its_type_from_the_width() {
+        let context = Rc::new(Context::default());
+        let attr = context.create_attribute::<IntAttr, _>(Int::from_bits(7, 1));
+        assert_eq!(attr.borrow().ty(), context.int_type(7));
+    }
+}

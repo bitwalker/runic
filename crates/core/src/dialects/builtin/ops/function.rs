@@ -2,14 +2,14 @@ use alloc::format;
 
 use crate::{
     AsValueRange, BlockRef, CallConv, CallableOpInterface, CallableSymbol, EntityRef, IdentAttr,
-    ImmediateAttr, Op, OpParser, OpPrinter, Operation, RegionKind, RegionKindInterface, RegionRef,
-    SmallVec, Symbol, SymbolUse, SymbolUseList, Type, UnsafeIntrusiveEntityRef, Usable, Visibility,
+    Op, OpParser, OpPrinter, Operation, RegionKind, RegionKindInterface, RegionRef, SmallVec,
+    Symbol, SymbolUse, SymbolUseList, Type, UnsafeIntrusiveEntityRef, Usable, Visibility,
     derive::operation,
     dialects::builtin::{
         BuiltinDialect,
         attributes::{
-            AdviceEffectArrayAttr, AdviceResourceKind, LocalVariable, MemoryEffectArrayAttr,
-            Signature, SignatureAttr, TypeArrayAttr, VisibilityAttr,
+            AdviceEffectArrayAttr, AdviceResourceKind, IntAttr, LocalVariable,
+            MemoryEffectArrayAttr, Signature, SignatureAttr, TypeArrayAttr, VisibilityAttr,
         },
     },
     effects::{
@@ -461,7 +461,7 @@ impl OpParser for Ret {
     }
 }
 
-/// Returns from the enclosing function with the provided immediate value as its result.
+/// Returns from the enclosing function with the provided integer constant as its result.
 #[operation(
     dialect = BuiltinDialect,
     traits(Terminator, ReturnLike),
@@ -469,18 +469,18 @@ impl OpParser for Ret {
 )]
 pub struct RetImm {
     #[attr(hidden)]
-    value: ImmediateAttr,
+    value: IntAttr,
 }
 
 impl OpPrinter for RetImm {
     fn print(&self, printer: &mut AsmPrinter<'_>) {
         use crate::{attributes::IntegerLikeAttr, formatter::const_text};
 
-        // Print the immediate as `<value> : <type>`, mirroring the grammar accepted by the
+        // Print the constant as `<value> : <type>`, mirroring the grammar accepted by the
         // `OpParser` implementation below, so the output can be re-parsed.
         let value = self.value();
         printer.print_space();
-        printer.print_decimal_integer(value.as_ref().as_immediate());
+        printer.print_int(value.as_int());
         *printer += const_text(" : ");
         printer.print_type(crate::Attribute::ty(&*value));
     }
@@ -510,11 +510,8 @@ impl OpParser for RetImm {
                 reason: format!("expected an integer type, got {ty}"),
             });
         }
-        let imm = literal.to_immediate(*ty, literal_span)?;
-
-        let attr = parser
-            .context_rc()
-            .create_attribute_with_type::<ImmediateAttr, _>(imm, ty.into_inner());
+        let value = literal.to_int(*ty, literal_span)?;
+        let attr = parser.context_rc().int_attr(value, ty.into_inner());
         state.add_attribute("value", attr);
 
         Ok(())

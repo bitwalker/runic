@@ -294,6 +294,27 @@ impl Context {
         <T as AttributeRegistration>::create(self, value, ty)
     }
 
+    /// Creates the integer constant `value` of type `ty`.
+    ///
+    /// Panics unless `ty` is the integer type of `value`'s width, or `isize` and `value` is 64
+    /// bits wide.
+    pub fn int_attr(
+        self: &Rc<Context>,
+        value: Int,
+        ty: Type,
+    ) -> UnsafeIntrusiveEntityRef<crate::dialects::builtin::attributes::IntAttr> {
+        let matches =
+            ty.integer_width() == Some(value.width()) || (ty.is_isize() && value.width() == 64);
+        assert!(
+            matches,
+            "an integer constant of type {ty} cannot hold the {}-bit value {value}",
+            value.width()
+        );
+        self.create_attribute_with_type::<crate::dialects::builtin::attributes::IntAttr, _>(
+            value, ty,
+        )
+    }
+
     pub fn create_constant(&self, data: impl Into<ConstantData>) -> ConstantId {
         let mut constants = self.constants.borrow_mut();
         constants.insert(data.into())

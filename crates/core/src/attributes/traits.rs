@@ -1,5 +1,5 @@
 use super::{Attribute, AttributeRef, AttributeRegistration};
-use crate::{Immediate, parse};
+use crate::{Int, parse};
 
 /// When implemented on an attribute type, this function will be invoked to parse the contents
 /// of the attribute data, if present.
@@ -19,15 +19,17 @@ pub trait Marker {}
 
 impl<T> Marker for T where T: AttributeRegistration<Value = ()> {}
 
-/// Implemented by any attribute that represents an immediate integer value
+/// Implemented by every attribute whose value is an integer of a fixed width: [crate::IntAttr],
+/// [crate::dialects::builtin::attributes::BoolAttr] and the per-width attributes `I8Attr` ...
+/// `I128Attr`. It reads and writes the value as an [Int], whatever the attribute stores.
 pub trait IntegerLikeAttr: Attribute {
-    /// Get the value of this attribute as an [Immediate]
-    fn as_immediate(&self) -> Immediate;
-    /// Set the value of this attribute to `value`, truncating on overflow.
-    fn set_from_immediate_lossy(&mut self, value: Immediate);
+    /// The value of this attribute.
+    fn as_int(&self) -> Int;
+    /// Replaces the value. Panics if `value` does not have this attribute's width.
+    fn set_int(&mut self, value: Int);
 }
 
-/// Implemented by any attribute that represents an immediate boolean value
+/// Implemented by any attribute that represents a boolean value
 pub trait BoolLikeAttr: Attribute {
     /// Get the boolean value of this attribute
     fn as_bool(&self) -> bool;

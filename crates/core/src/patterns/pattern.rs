@@ -288,9 +288,9 @@ mod tests {
                 let matched =
                     matchers::foldable_operand_of_trait::<dyn IntegerLikeAttr>().matches(&shift);
                 matched.and_then(|imm| {
-                    let imm = imm.borrow().as_immediate();
-                    log::trace!("`shift` operand is an immediate: {imm}");
-                    let imm = imm.as_u64();
+                    let imm = imm.borrow().as_int();
+                    log::trace!("`shift` operand is the constant {imm}");
+                    let imm = imm.try_unsigned::<u64>();
                     if imm.is_none() {
                         log::trace!("`shift` operand is not a valid u64 value");
                     }
@@ -319,7 +319,7 @@ mod tests {
             };
             let constant_builder = rewriter.create::<Constant, _>(span);
             let constant: UnsafeIntrusiveEntityRef<Constant> =
-                constant_builder(Immediate::I32(2)).unwrap();
+                constant_builder(Int::from(2i32)).unwrap();
             let shift = constant.borrow().result().as_value_ref();
             let mul_builder = rewriter.create::<Mul, _>(span);
             let mul = mul_builder(lhs, shift, Overflow::Wrapping).unwrap();

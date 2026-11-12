@@ -10,7 +10,7 @@ use litcheck_filecheck::{filecheck, litcheck};
 use pretty_assertions::assert_eq;
 
 use crate::{
-    BuilderExt, CallConv, Context, FunctionType, Immediate, OpParser, OpRegistration, OperationRef,
+    BuilderExt, CallConv, Context, FunctionType, Int, OpParser, OpRegistration, OperationRef,
     Symbol, SymbolTable, Type, UnsafeIntrusiveEntityRef, ValueRef, Visibility,
     attributes::IntegerLikeAttr,
     diagnostics::{Report, SourceProvider, SourceSpan},
@@ -469,7 +469,7 @@ builtin.module public @outer {
 /// survive a print/parse round-trip of the textual HIR.
 #[test]
 fn module_reserved_memory_roundtrip() -> TestResult {
-    use crate::{Op, dialects::builtin::attributes::U64Attr};
+    use crate::{Op, dialects::builtin::attributes::I64Attr};
 
     let mut test = ParserTest::default();
 
@@ -485,7 +485,7 @@ fn module_reserved_memory_roundtrip() -> TestResult {
     // Attach the linker-facing memory reservation, then round-trip through print/parse and
     // verify nothing is lost
     {
-        let attr = test.context_rc().create_attribute::<U64Attr, _>(0x110000u64);
+        let attr = test.context_rc().create_attribute::<I64Attr, _>(0x110000i64);
         let mut op = parsed;
         let mut op = op.borrow_mut();
         op.set_attribute(Module::RESERVED_MEMORY_ATTR, attr);
@@ -503,7 +503,7 @@ fn module_reserved_memory_roundtrip() -> TestResult {
 
     let reserved = module
         .as_operation()
-        .get_typed_attribute::<U64Attr>(Module::RESERVED_MEMORY_ATTR)
+        .get_typed_attribute::<I64Attr>(Module::RESERVED_MEMORY_ATTR)
         .expect("reserved_memory attribute lost in print/parse round-trip");
     assert_eq!(**reserved.borrow(), 0x110000);
 
@@ -575,11 +575,8 @@ builtin.function public extern(\"C\") @retconst() -> i32 {
         .unwrap()
         .try_downcast_op::<RetImm>()
         .expect("expected the function terminator to be builtin.ret_imm");
-    let imm = ret_imm.borrow().value().as_ref().as_immediate();
-    assert!(
-        matches!(imm, Immediate::I32(42)),
-        "expected the literal to be coerced to the declared type, got {imm:?}"
-    );
+    let imm = ret_imm.borrow().value().as_int();
+    assert_eq!(imm, Int::from(42i32), "expected the literal to be coerced to the declared type");
 
     // A literal that cannot be represented in the declared type must be rejected.
     let result = test.parse::<Function>(
@@ -589,7 +586,7 @@ builtin.function public extern(\"C\") @retconst() -> i8 {
     builtin.ret_imm 300 : i8;
 };",
     );
-    assert!(result.is_err(), "expected an out-of-range immediate to be rejected");
+    assert!(result.is_err(), "expected an out-of-range literal to be rejected");
 
     Ok(())
 }
@@ -1885,19 +1882,6 @@ fn integer_literals_out_of_range(width: u32) -> Vec<String> {
     alloc::vec![above, format!("-{}", half + 1)]
 }
 
-/// The immediate holding the `N`-bit pattern `bits`, as the parser stores an `N`-bit literal.
-fn immediate_of_width(width: u32, bits: u128) -> Immediate {
-    match width {
-        1 => Immediate::I1(bits & 1 == 1),
-        8 => Immediate::I8(bits as u8 as i8),
-        16 => Immediate::I16(bits as u16 as i16),
-        32 => Immediate::I32(bits as u32 as i32),
-        64 => Immediate::I64(bits as u64 as i64),
-        128 => Immediate::I128(bits as i128),
-        _ => unreachable!(),
-    }
-}
-
 /// A function returning `literal : iN` with `builtin.ret_imm`, after `test.constant literal : iN`.
 fn function_with_integer_literal(width: u32, literal: &str) -> String {
     format!(
@@ -1907,26 +1891,26 @@ fn function_with_integer_literal(width: u32, literal: &str) -> String {
 }
 
 /// The values of the `test.constant` and the `builtin.ret_imm` in a parsed function.
-fn integer_literal_values(function: &crate::UnsafeIntrusiveEntityRef<Function>) -> [Immediate; 2] {
+fn integer_literal_values(function: &crate::UnsafeIntrusiveEntityRef<Function>) -> [Int; 2] {
     let function = function.borrow();
     let body = function.body();
     let entry = body.entry();
     let constant = entry.front().unwrap();
     let constant = constant.borrow();
     let constant = constant
-        .get_typed_attribute::<crate::ImmediateAttr>("value")
-        .expect("test.constant has an immediate value");
+        .get_typed_attribute::<crate::dialects::builtin::attributes::IntAttr>("value")
+        .expect("test.constant has an integer value");
     let ret = entry.terminator().unwrap().try_downcast_op::<RetImm>().unwrap();
-    let ret = ret.borrow().value().as_ref().as_immediate();
-    let constant = constant.borrow().as_immediate();
+    let ret = ret.borrow().value().as_int();
+    let constant = constant.borrow().as_int();
     [constant, ret]
 }
 
 #[test]
-fn integer_literals_of_every_width_round_trip_in_signed_storage() -> TestResult {
+fn integer_literals_of_every_width_round_trip() -> TestResult {
     for width in [8, 16, 32, 64, 128] {
         for (literal, bits) in integer_literals_in_range(width) {
-            let expected = immediate_of_width(width, bits);
+            let expected = Int::from_bits(width, bits);
             let test = ParserTest::default();
             test.context().get_or_register_dialect::<TestDialect>();
             let source = function_with_integer_literal(width, &literal);
@@ -1983,13 +1967,13 @@ fn a_boolean_literal_is_minus_one_zero_or_one() -> TestResult {
     for (literal, bit) in [("0", false), ("1", true), ("-1", true)] {
         let parsed =
             test.parse::<Function>("i1.hir", &function_with_integer_literal(1, literal))?;
-        assert_eq!(integer_literal_values(&parsed), [Immediate::I1(bit); 2], "{literal} : i1");
+        assert_eq!(integer_literal_values(&parsed), [Int::from(bit); 2], "{literal} : i1");
         let printed = format!("{}", parsed.as_operation_ref().borrow());
         // A set bit prints as `1`, however it was written.
         let expected = format!("builtin.ret_imm {} : i1", u8::from(bit));
         assert!(printed.contains(&expected), "{printed}");
         let reparsed = test.parse::<Function>("i1-printed.hir", &printed)?;
-        assert_eq!(integer_literal_values(&reparsed), [Immediate::I1(bit); 2], "{printed}");
+        assert_eq!(integer_literal_values(&reparsed), [Int::from(bit); 2], "{printed}");
     }
     for literal in ["2", "-2"] {
         let source = function_with_integer_literal(1, literal);
@@ -2031,16 +2015,16 @@ fn integer_literals_in_attribute_position_accept_a_sign() {
         parser.parse_attribute(ty).map(|attr| {
             let attr = attr.into_inner();
             let attr = attr.borrow();
-            attr.as_attr().as_trait::<dyn IntegerLikeAttr>().unwrap().as_immediate()
+            attr.as_attr().as_trait::<dyn IntegerLikeAttr>().unwrap().as_int()
         })
     };
-    assert_eq!(parse("-1", context.i8()).unwrap(), Immediate::I8(-1));
-    assert_eq!(parse("255", context.i8()).unwrap(), Immediate::I8(-1));
-    assert_eq!(parse("-128", context.i8()).unwrap(), Immediate::I8(-128));
+    assert_eq!(parse("-1", context.i8()).unwrap(), Int::from(-1i8));
+    assert_eq!(parse("255", context.i8()).unwrap(), Int::from(-1i8));
+    assert_eq!(parse("-128", context.i8()).unwrap(), Int::from(-128i8));
     assert!(parse("-129", context.i8()).is_err());
     assert!(parse("256", context.i8()).is_err());
     assert!(parse("-0x1", context.i8()).is_err());
-    assert_eq!(parse("-1", context.i1()).unwrap(), Immediate::I1(true));
+    assert_eq!(parse("-1", context.i1()).unwrap(), Int::from(true));
 }
 
 /// The builtin integer attributes read the same literals the typed literal readers do, so what
@@ -2061,7 +2045,7 @@ fn builtin_integer_attributes_accept_a_sign_and_round_trip() -> TestResult {
     };
     let value_of = |attr: &crate::AttributeRef| {
         let attr = attr.borrow();
-        attr.as_attr().as_trait::<dyn IntegerLikeAttr>().unwrap().as_immediate()
+        attr.as_attr().as_trait::<dyn IntegerLikeAttr>().unwrap().as_int()
     };
     let printed = |attr: &crate::AttributeRef| {
         let flags = Default::default();
@@ -2072,15 +2056,15 @@ fn builtin_integer_attributes_accept_a_sign_and_round_trip() -> TestResult {
 
     let u128_max = "340282366920938463463374607431768211455";
     for (text, expected, spelled) in [
-        ("#builtin.i8<-1>", Immediate::I8(-1), "#builtin.i8<-1>"),
-        ("#builtin.i8<255>", Immediate::I8(-1), "#builtin.i8<-1>"),
-        ("#builtin.i8<-128>", Immediate::I8(-128), "#builtin.i8<-128>"),
-        ("#builtin.i16<-1>", Immediate::I16(-1), "#builtin.i16<-1>"),
-        ("#builtin.i32<-1>", Immediate::I32(-1), "#builtin.i32<-1>"),
-        ("#builtin.i32<4294967295>", Immediate::I32(-1), "#builtin.i32<-1>"),
-        ("#builtin.i64<-1>", Immediate::I64(-1), "#builtin.i64<-1>"),
-        ("#builtin.i128<-1>", Immediate::I128(-1), "#builtin.i128<-1>"),
-        (&format!("#builtin.i128<{u128_max}>"), Immediate::I128(-1), "#builtin.i128<-1>"),
+        ("#builtin.i8<-1>", Int::from(-1i8), "#builtin.i8<-1>"),
+        ("#builtin.i8<255>", Int::from(-1i8), "#builtin.i8<-1>"),
+        ("#builtin.i8<-128>", Int::from(-128i8), "#builtin.i8<-128>"),
+        ("#builtin.i16<-1>", Int::from(-1i16), "#builtin.i16<-1>"),
+        ("#builtin.i32<-1>", Int::from(-1i32), "#builtin.i32<-1>"),
+        ("#builtin.i32<4294967295>", Int::from(-1i32), "#builtin.i32<-1>"),
+        ("#builtin.i64<-1>", Int::from(-1i64), "#builtin.i64<-1>"),
+        ("#builtin.i128<-1>", Int::from(-1i128), "#builtin.i128<-1>"),
+        (&format!("#builtin.i128<{u128_max}>"), Int::from(-1i128), "#builtin.i128<-1>"),
     ] {
         let attr = parse(text)?;
         assert_eq!(value_of(&attr), expected, "{text}");
@@ -2089,8 +2073,14 @@ fn builtin_integer_attributes_accept_a_sign_and_round_trip() -> TestResult {
         assert_eq!(value_of(&reparsed), expected, "{text}");
         assert_eq!(printed(&reparsed), spelled, "{text}");
     }
-    assert_eq!(value_of(&parse("#builtin.u8<255>")?), Immediate::U8(255));
-    assert!(parse("#builtin.u8<-1>").is_err());
+    // The unsigned kinds are gone
+    for text in ["#builtin.u8<255>", "#builtin.u8<-1>"] {
+        let err = parse(text).err().unwrap_or_else(|| panic!("{text} should not parse"));
+        assert!(
+            matches!(err, crate::parse::ParserError::UnknownAttribute { .. }),
+            "{text}: {err:?}"
+        );
+    }
 
     for text in ["#builtin.i8<256>", "#builtin.i8<-129>", "#builtin.i8<-0x1>"] {
         let err = parse(text).err().unwrap_or_else(|| panic!("{text} should not parse"));
@@ -2126,10 +2116,10 @@ fn a_built_constant_equals_the_same_constant_parsed_from_text() -> TestResult {
         let op = value.borrow().get_defining_op().unwrap();
         op.borrow().get_attribute("value").unwrap()
     };
-    let immediate_and_type = |attr: AttributeRef| {
+    let int_and_type = |attr: AttributeRef| {
         let attr = attr.borrow();
         let attr = attr.as_attr().as_trait::<dyn IntegerLikeAttr>().unwrap();
-        (attr.as_immediate(), attr.ty())
+        (attr.as_int(), attr.ty())
     };
     for (value, text) in [(7u32, "7"), (u32::MAX, "-1"), (u32::MAX, "4294967295")] {
         let mut test = ParserTest::default();
@@ -2149,7 +2139,7 @@ fn a_built_constant_equals_the_same_constant_parsed_from_text() -> TestResult {
             builder.u32(value, SourceSpan::UNKNOWN)?
         };
         let built = constant_value(built);
-        assert_eq!(immediate_and_type(built), immediate_and_type(parsed), "{text}");
+        assert_eq!(int_and_type(built), int_and_type(parsed), "{text}");
     }
     Ok(())
 }
@@ -3301,4 +3291,206 @@ fn integer_literals_at_127_and_128_bits() {
     assert_eq!(lit(true, 1 << 126).to_int_of_width(127).map(|x| x.signed()), Some(-(1 << 126)));
     assert_eq!(lit(false, 1 << 127).to_int_of_width(127), None);
     assert_eq!(lit(true, (1 << 126) + 1).to_int_of_width(127), None);
+}
+
+/// Parses `text` as an attribute value expected to have type `ty`.
+fn parse_attribute_text(
+    context: &Rc<Context>,
+    text: &str,
+    ty: Type,
+) -> ParseResult<crate::AttributeRef> {
+    use super::{DefaultParser, Parser, ParserState, Scanner, TokenStream};
+
+    let id = context.add_source("attr.runic", text).unwrap();
+    let sources = context.sources();
+    let scanner = Scanner::new(sources.get(id).unwrap().text.unwrap());
+    let token_stream = TokenStream::new(id, scanner);
+    let mut parser =
+        DefaultParser::new(ParserState::new(ParserConfig::new(context.clone()), token_stream));
+    parser.parse_attribute(ty).map(|attr| attr.into_inner())
+}
+
+fn print_attribute_text(context: &Rc<Context>, attr: &crate::AttributeRef) -> String {
+    let flags = Default::default();
+    let mut printer = AsmPrinter::root(context.clone(), &flags);
+    printer.print_attribute_value(&*attr.borrow());
+    printer.finish().to_string()
+}
+
+/// The value and type of an integer attribute.
+fn int_and_type_of(attr: &crate::AttributeRef) -> (Int, Type) {
+    let attr = attr.borrow();
+    let attr = attr.as_attr().as_trait::<dyn IntegerLikeAttr>().unwrap();
+    (attr.as_int(), attr.ty())
+}
+
+#[test]
+fn int_attributes_round_trip_through_text() -> TestResult {
+    use crate::dialects::builtin::attributes::IntAttr;
+
+    let context = Rc::new(Context::default());
+    let unknown = context.unknown_type();
+    for (text, value, ty, printed) in [
+        (
+            "#builtin.int<-1 : i7>",
+            Int::from_bits(7, 0x7f),
+            context.int_type(7),
+            "#builtin.int<-1 : i7>",
+        ),
+        ("#builtin.int<255 : i8>", Int::from(-1i8), context.i8(), "#builtin.int<-1 : i8>"),
+        ("#builtin.int<1 : i1>", Int::from(true), context.i1(), "#builtin.int<1 : i1>"),
+        (
+            "#builtin.int<5 : isize>",
+            Int::from(5i64),
+            context.isize(),
+            "#builtin.int<5 : isize>",
+        ),
+        (
+            "#builtin.int<0x10 : i64>",
+            Int::from(16i64),
+            context.i64(),
+            "#builtin.int<16 : i64>",
+        ),
+    ] {
+        let attr = parse_attribute_text(&context, text, unknown)?;
+        assert!(attr.borrow().is::<IntAttr>(), "{text}");
+        assert_eq!(int_and_type_of(&attr), (value, ty), "{text}");
+        assert_eq!(print_attribute_text(&context, &attr), printed, "{text}");
+        let reparsed = parse_attribute_text(&context, printed, unknown)?;
+        assert_eq!(int_and_type_of(&reparsed), (value, ty), "{printed}");
+        assert_eq!(&*reparsed.borrow(), &*attr.borrow(), "{printed}");
+    }
+
+    for text in [
+        "#builtin.int<128 : i7>",
+        "#builtin.int<1 : i256>",
+        "#builtin.int<1 : ptr>",
+        "#builtin.int<1>",
+    ] {
+        assert!(
+            parse_attribute_text(&context, text, unknown).is_err(),
+            "{text} should not parse"
+        );
+    }
+    Ok(())
+}
+
+/// A body-less `#builtin.int` is the attribute's default value, a 32-bit zero.
+#[test]
+fn a_body_less_int_attribute_is_a_32_bit_zero() -> TestResult {
+    let context = Rc::new(Context::default());
+    let attr = parse_attribute_text(&context, "#builtin.int", context.unknown_type())?;
+    assert_eq!(int_and_type_of(&attr), (Int::zero(32), context.i32()));
+    assert_eq!(print_attribute_text(&context, &attr), "#builtin.int<0 : i32>");
+    Ok(())
+}
+
+/// An integer literal read where an integer type is expected is an `IntAttr` of that type.
+#[test]
+fn an_integer_literal_with_an_expected_type_is_an_int_attribute() -> TestResult {
+    use crate::dialects::builtin::attributes::IntAttr;
+
+    let context = Rc::new(Context::default());
+    for (ty, value) in [
+        (context.i1(), Int::from(true)),
+        (context.i8(), Int::from(1i8)),
+        (context.int_type(7), Int::from_bits(7, 1)),
+        (context.i128(), Int::from(1i128)),
+        (context.isize(), Int::from(1i64)),
+    ] {
+        let attr = parse_attribute_text(&context, "1", ty)?;
+        assert!(attr.borrow().is::<IntAttr>(), "{ty}");
+        assert_eq!(int_and_type_of(&attr), (value, ty), "{ty}");
+    }
+
+    let err = parse_attribute_text(&context, "1", context.int_type(256)).unwrap_err();
+    let crate::parse::ParserError::InvalidIntegerLiteral { reason, .. } = err else {
+        panic!("unexpected error {err:?}");
+    };
+    assert_eq!(reason, "integer literals wider than 128 bits are not supported");
+
+    // `true` and `false` are still a `BoolAttr`
+    let attr = parse_attribute_text(&context, "true", context.i1())?;
+    assert!(attr.borrow().is::<crate::dialects::builtin::attributes::BoolAttr>());
+    Ok(())
+}
+
+/// `test.constant` holds an `IntAttr` of any integer type, and its result has that type.
+#[test]
+fn test_constants_of_any_integer_type_round_trip() -> TestResult {
+    for (literal, ty, value, printed) in [
+        ("-1", "i7", Int::from_bits(7, 0x7f), "-1"),
+        ("1", "i1", Int::from(true), "1"),
+        ("255", "i8", Int::from(-1i8), "-1"),
+        ("5", "i128", Int::from(5i128), "5"),
+        ("-1", "isize", Int::from(-1i64), "-1"),
+    ] {
+        let test = ParserTest::default();
+        test.context().get_or_register_dialect::<TestDialect>();
+        let ty_text = ty;
+        let ty = parse_type_text(&test.context_rc(), ty_text)?;
+        let source = format!(
+            "builtin.function public extern(\"C\") @f() -> {ty} {{\n    %0 = test.constant \
+             {literal} : {ty};\n    builtin.ret %0 : ({ty});\n}};"
+        );
+        let check = |function: &UnsafeIntrusiveEntityRef<Function>| {
+            let function = function.borrow();
+            let body = function.body();
+            let op = body.entry().front().unwrap();
+            let op = op.borrow();
+            let attr = op.get_attribute("value").unwrap();
+            assert_eq!(int_and_type_of(&attr), (value, ty), "{literal} : {ty}");
+            assert_eq!(crate::Value::ty(&*op.results()[0].borrow()), ty, "{literal} : {ty}");
+        };
+        let parsed = test.parse::<Function>("constant.hir", &source)?;
+        check(&parsed);
+        let text = format!("{}", parsed.as_operation_ref().borrow());
+        assert!(text.contains(&format!("test.constant {printed} : {ty}")), "{text}");
+        let fresh = ParserTest::default();
+        fresh.context().get_or_register_dialect::<TestDialect>();
+        let reparsed = fresh.parse::<Function>("constant-printed.hir", &text)?;
+        let fresh_ty = parse_type_text(&fresh.context_rc(), ty_text)?;
+        {
+            let function = reparsed.borrow();
+            let body = function.body();
+            let op = body.entry().front().unwrap();
+            let attr = op.borrow().get_attribute("value").unwrap();
+            assert_eq!(int_and_type_of(&attr), (value, fresh_ty), "{text}");
+        }
+        assert_eq!(format!("{}", reparsed.as_operation_ref().borrow()), text);
+    }
+    Ok(())
+}
+
+/// A segment's offset is a `u32` held in an `I32Attr`: an offset in the upper half of the address
+/// space builds, prints, and its printed attribute parses back to the same `u32`.
+///
+/// The whole operation does not round-trip through text yet: `#builtin.bytes<..>` has no parser.
+#[test]
+fn a_segment_offset_in_the_upper_half_round_trips() -> TestResult {
+    use crate::dialects::builtin::ModuleBuilder;
+
+    let test = ParserTest::default();
+    let module = test.parse_any("segment.hir", "builtin.module public @m {};")?;
+    let module = module.try_downcast_op::<Module>().unwrap();
+    let mut builder = ModuleBuilder::new(module);
+    let segment = builder.define_data_segment(
+        0x8000_0000,
+        [1u8, 2, 3, 4].as_slice(),
+        true,
+        SourceSpan::UNKNOWN,
+    )?;
+    assert_eq!(segment.borrow().offset_in_bytes(), 0x8000_0000);
+
+    let printed = format!("{}", module.as_operation_ref().borrow());
+    let offset = "#builtin.i32<-2147483648>";
+    assert!(printed.contains(&format!("offset = {offset}")), "{printed}");
+
+    let context = test.context_rc();
+    for text in [offset, "#builtin.i32<2147483648>"] {
+        let attr = parse_attribute_text(&context, text, context.unknown_type())?;
+        assert_eq!(attr.borrow().as_u32(), Some(0x8000_0000), "{text}");
+        assert_eq!(print_attribute_text(&context, &attr), offset, "{text}");
+    }
+    Ok(())
 }

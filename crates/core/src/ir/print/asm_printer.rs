@@ -3,7 +3,7 @@ use core::{cell::RefCell, ops::AddAssign};
 
 use super::*;
 use crate::{
-    AsValueRange, Attribute, Block, Context, EntityList, FunctionType, Immediate, Int, Location,
+    AsValueRange, Attribute, Block, Context, EntityList, FunctionType, Int, Location,
     NamedAttribute, OpSuccessorRange, SuccessorOperands, SymbolPath, Type, ValueRef,
     attributes::Marker,
     formatter::Document,
@@ -742,31 +742,18 @@ impl<'a> AsmPrinter<'a> {
         self.document += display(value);
     }
 
-    /// Print a literal integer value in decimal format
-    pub fn print_decimal_integer(&mut self, value: impl Into<Immediate>) {
+    /// Print a Rust integer in decimal, as it is (signed if its type is signed)
+    pub fn print_decimal_integer<I: PrimitiveInteger>(&mut self, value: I) {
         use crate::formatter::*;
 
-        let value = value.into();
-        if value.is_signed() {
-            self.document += display(
-                value.as_i128().unwrap_or_else(|| panic!("expected integer value, got {value}")),
-            );
-        } else {
-            self.document += display(
-                value.as_u128().unwrap_or_else(|| panic!("expected integer value, got {value}")),
-            );
-        }
+        self.document += display(value);
     }
 
-    /// Print a literal integer value in hexadecimal format with leading `0x`
-    pub fn print_hex_integer(&mut self, value: impl Into<Immediate>) {
+    /// Print an integer value as `0x` followed by its unsigned value in lowercase hexadecimal
+    pub fn print_hex_integer(&mut self, value: Int) {
         use crate::formatter::*;
 
-        let value = value.into();
-        let raw = value
-            .bitcast_u128()
-            .unwrap_or_else(|| panic!("expected integer value, got {value}"));
-        self.document += text(format!("{raw:0x}"));
+        self.document += text(format!("{value:#x}"));
     }
 
     /// Print a boolean value
@@ -861,4 +848,39 @@ mod int_tests {
             assert_eq!(format!("{}", printer.finish()), expected);
         }
     }
+
+    #[test]
+    fn print_hex_integer_writes_the_prefix() {
+        let flags = OpPrintingFlags::default();
+        let mut printer = AsmPrinter::fragment(Rc::new(Context::default()), &flags);
+        printer.print_hex_integer(Int::from(255u8));
+        assert_eq!(format!("{}", printer.finish()), "0xff");
+    }
+
+    #[test]
+    fn print_decimal_integer_writes_rust_integers_as_they_are() {
+        let flags = OpPrintingFlags::default();
+        let mut printer = AsmPrinter::fragment(Rc::new(Context::default()), &flags);
+        printer.print_decimal_integer(-1i8);
+        printer.print_decimal_integer(u32::MAX);
+        assert_eq!(format!("{}", printer.finish()), "-14294967295");
+    }
 }
+
+/// The Rust integer types, which [AsmPrinter::print_decimal_integer] writes as they are.
+pub trait PrimitiveInteger: sealed::Sealed + Copy + core::fmt::Display {}
+
+mod sealed {
+    pub trait Sealed {}
+}
+
+macro_rules! primitive_integer {
+    ($($t:ty),*) => {
+        $(
+            impl sealed::Sealed for $t {}
+            impl PrimitiveInteger for $t {}
+        )*
+    };
+}
+
+primitive_integer!(i8, u8, i16, u16, i32, u32, i64, u64, i128, u128, isize, usize);

@@ -263,7 +263,7 @@ mod tests;
 use alloc::format;
 use core::fmt;
 
-pub use self::asm_printer::AsmPrinter;
+pub use self::asm_printer::{AsmPrinter, PrimitiveInteger};
 use super::{OpOperandRange, OpResultRange, Operation, Region, RegionList, ValueRange};
 use crate::{EntityWithId, Location, Value, formatter::Document};
 

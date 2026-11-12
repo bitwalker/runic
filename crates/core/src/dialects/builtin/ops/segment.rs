@@ -8,7 +8,7 @@ use crate::{
     diagnostics::Diagnostic,
     dialects::builtin::{
         BuiltinDialect,
-        attributes::{BoolAttr, BytesAttr, U32Attr},
+        attributes::{BoolAttr, BytesAttr, I32Attr},
     },
     traits::*,
 };
@@ -44,9 +44,10 @@ pub type SegmentRef = UnsafeIntrusiveEntityRef<Segment>;
     implements(OpPrinter)
 )]
 pub struct Segment {
-    /// The offset from the start of linear memory where this segment starts
+    /// The offset from the start of linear memory where this segment starts, held as the bits
+    /// of the `u32` (see [Segment::offset_in_bytes])
     #[attr]
-    offset: U32Attr,
+    offset: I32Attr,
     /// The data to initialize this segment with, determines the size of the segment
     #[attr]
     data: BytesAttr,
@@ -57,6 +58,11 @@ pub struct Segment {
 }
 
 impl Segment {
+    /// The offset, in bytes, from the start of linear memory where this segment starts.
+    pub fn offset_in_bytes(&self) -> u32 {
+        *self.get_offset() as u32
+    }
+
     /// The size, in bytes, of this data segment.
     ///
     /// By default this will be the same size as `init`, unless explicitly given.
@@ -74,7 +80,7 @@ impl fmt::Debug for Segment {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let data = self.initializer();
         f.debug_struct("Segment")
-            .field("offset", &self.get_offset())
+            .field("offset", &self.offset_in_bytes())
             .field("size", &data.len())
             .field("init", &format_args!("{data}"))
             .field("readonly", &self.get_readonly())
@@ -159,7 +165,7 @@ impl DataSegmentLayout {
         };
         let last_segment = last_segment.borrow();
         let size = u32::try_from(last_segment.size_in_bytes()).ok()?;
-        let next_offset = (*last_segment.get_offset()).checked_add(size)?;
+        let next_offset = last_segment.offset_in_bytes().checked_add(size)?;
         // Ensure the start of the next segment is word-aligned
         next_offset.checked_next_multiple_of(32)
     }
@@ -169,7 +175,7 @@ impl DataSegmentLayout {
     /// This will fail if the segment is invalid, or overlaps/conflicts with an existing segment.
     pub fn insert(&mut self, segment_ref: SegmentRef) -> Result<(), DataSegmentError> {
         let segment = segment_ref.borrow();
-        let offset = *segment.get_offset();
+        let offset = segment.offset_in_bytes();
         let size = u32::try_from(segment.size_in_bytes())
             .map_err(|_| DataSegmentError::InitTooLarge(offset))?;
         // Computed in u64: a segment may end exactly at 2^32, which is the last address of
@@ -188,7 +194,7 @@ impl DataSegmentLayout {
 
         for (index, current_segment_ref) in self.segments.iter().enumerate() {
             let current_segment = current_segment_ref.borrow();
-            let current_offset = *current_segment.get_offset();
+            let current_offset = current_segment.offset_in_bytes();
             let current_size = current_segment.size_in_bytes() as u32;
             let segment_end = u64::from(current_offset) + u64::from(current_size);
 

@@ -153,3 +153,16 @@ value_infers_as!(u64, i64);
 value_infers_as!(i128, i128);
 value_infers_as!(u128, i128);
 value_infers_as!(f64, f64);
+
+impl InferAttributeValueType for crate::Int {
+    /// The width is a property of the value, not of its Rust type.
+    #[inline]
+    fn infer_type(context: &Context) -> Type {
+        context.unknown_type()
+    }
+
+    #[inline]
+    fn infer_type_from_value(&self, context: &Context) -> Type {
+        context.int_type(self.width())
+    }
+}

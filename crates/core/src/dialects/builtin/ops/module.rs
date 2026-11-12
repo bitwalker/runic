@@ -83,7 +83,7 @@ pub struct Module {
 }
 
 impl Module {
-    /// Name of the optional operation attribute (a `U64Attr`) recording the amount of linear
+    /// Name of the optional operation attribute (an `I64Attr`) recording the amount of linear
     /// memory, in bytes, that this module claims for its own layout.
     ///
     /// The producer of the module guarantees that everything it placed in linear memory — its

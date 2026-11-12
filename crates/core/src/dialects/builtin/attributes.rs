@@ -37,4 +37,4 @@ pub use self::{
     unit::UnitAttr,
     visibility::{Visibility, VisibilityAttr},
 };
-pub use crate::ir::{IdentAttr, ImmediateAttr};
+pub use crate::ir::IdentAttr;

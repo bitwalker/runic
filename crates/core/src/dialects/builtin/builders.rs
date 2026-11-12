@@ -6,7 +6,7 @@ mod world;
 pub use self::{component::*, function::*, module::*, world::*};
 use super::{attributes::Signature, ops::*};
 use crate::{
-    AsCallableSymbolRef, Builder, BuilderExt, Ident, Immediate, OpBuilder, OpRegistration, Report,
+    AsCallableSymbolRef, Builder, BuilderExt, Ident, Int, OpBuilder, OpRegistration, Report,
     SourceSpan, Spanned, SymbolName, SymbolTable, Type, UnsafeIntrusiveEntityRef, ValueRef,
     Visibility, constants::ConstantData,
 };
@@ -76,7 +76,8 @@ pub trait BuiltinOpBuilder<'f, B: ?Sized + Builder> {
         let id = self.builder().context().create_constant(data);
         let data = self.builder().context().get_constant(id);
         let op_builder = self.builder_mut().create::<Segment, (_, _, _)>(span);
-        op_builder(offset, data, readonly)
+        // The offset is held in an `I32Attr`, as the bits of the `u32`
+        op_builder(offset as i32, data, readonly)
     }
 
     fn unrealized_conversion_cast(
@@ -104,7 +105,7 @@ pub trait BuiltinOpBuilder<'f, B: ?Sized + Builder> {
 
     fn ret_imm(
         &mut self,
-        arg: Immediate,
+        arg: Int,
         span: SourceSpan,
     ) -> Result<UnsafeIntrusiveEntityRef<RetImm>, Report> {
         let op_builder = self.builder_mut().create::<RetImm, _>(span);

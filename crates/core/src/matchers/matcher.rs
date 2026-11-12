@@ -586,7 +586,7 @@ pub const fn constant() -> impl Matcher<Operation, Matched = AttributeRef> {
 
 /// Like [constant], but only matches if the constant value has the concrete type `T`.
 ///
-/// Typically, constant values will be [crate::Immediate], but any attribute value can be matched.
+/// Typically, constant values will be [crate::Int], but any attribute value can be matched.
 pub const fn constant_of<T: AttributeValue + Clone>() -> impl Matcher<Operation, Matched = T> {
     TypedConstantOpBinder::<T>::new()
 }
@@ -753,7 +753,7 @@ mod tests {
 
         // Ensure if the first matcher fails, then the whole match fails
         assert!(
-            match_both(match_op::<Add>(), constant_of::<Immediate>())
+            match_both(match_op::<Add>(), constant_of::<Int>())
                 .matches(&lhs_op.borrow())
                 .is_none()
         );
@@ -765,7 +765,7 @@ mod tests {
         );
         // Ensure that if both matchers would succeed, then the whole match succeeds
         assert!(
-            match_both(constant_like(), constant_of::<Immediate>())
+            match_both(constant_like(), constant_of::<Int>())
                 .matches(&lhs_op.borrow())
                 .is_some()
         );
@@ -782,10 +782,10 @@ mod tests {
             .matches(&sum_op.borrow())
             .expect("expected to bind both operands of 'add'");
         let lhs = match lhs_fr {
-            OpFoldResult::Attribute(attr) => attr.borrow().as_immediate().unwrap(),
-            OpFoldResult::Value(v) => panic!("expected immediate, got {v}"),
+            OpFoldResult::Attribute(attr) => attr.borrow().as_int().unwrap(),
+            OpFoldResult::Value(v) => panic!("expected a constant, got {v}"),
         };
-        assert_eq!(lhs, Immediate::I32(1));
+        assert_eq!(lhs, Int::from(1i32));
         assert_eq!(rhs_fr, OpFoldResult::Value(rhs));
     }
 
@@ -823,8 +823,8 @@ mod tests {
         let sum_op = sum.borrow().get_defining_op().unwrap();
 
         // `lhs` should produce a matching constant value of the correct type and value
-        assert_eq!(constant_of::<Immediate>().matches(&lhs_op.borrow()), Some(Immediate::I32(1)));
-        assert!(constant_of::<Immediate>().matches(&sum_op.borrow()).is_none());
+        assert_eq!(constant_of::<Int>().matches(&lhs_op.borrow()), Some(Int::from(1i32)));
+        assert!(constant_of::<Int>().matches(&sum_op.borrow()).is_none());
     }
 
     #[test]
@@ -849,7 +849,7 @@ mod tests {
             foldable_operand_of_trait::<dyn crate::attributes::IntegerLikeAttr>().matches(&operand);
 
         let matched = matched.expect("expected the shift operand to match as an integer immediate");
-        assert_eq!(matched.borrow().as_immediate(), Immediate::I32(1));
+        assert_eq!(matched.borrow().as_int(), Int::from(1i32));
     }
 
     fn setup(name: &'static str, test: &mut Test) -> (ValueRef, ValueRef, ValueRef) {

@@ -1,5 +1,5 @@
 use crate::{
-    AttrPrinter, Immediate,
+    AttrPrinter, Int,
     attributes::{BoolLikeAttr, IntegerLikeAttr},
     derive::DialectAttribute,
     dialects::builtin::BuiltinDialect,
@@ -29,13 +29,13 @@ impl BoolLikeAttr for BoolAttr {
 
 impl IntegerLikeAttr for BoolAttr {
     #[inline]
-    fn as_immediate(&self) -> Immediate {
-        Immediate::I1(self.value)
+    fn as_int(&self) -> Int {
+        Int::from(self.value)
     }
 
-    fn set_from_immediate_lossy(&mut self, value: Immediate) {
-        // Treat non-zero values as truthy
-        self.value = value.as_bool().unwrap_or(true);
+    fn set_int(&mut self, value: Int) {
+        assert_eq!(value.width(), 1, "cannot set a {}-bit value on an i1 attribute", value.width());
+        self.value = !value.is_zero();
     }
 }
 

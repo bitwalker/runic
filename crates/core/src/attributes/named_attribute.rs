@@ -162,14 +162,14 @@ impl EntityParent<OpAttribute> for Operation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{dialects::builtin::attributes::ImmediateAttr, testing::Test};
+    use crate::{Int, dialects::builtin::attributes::IntAttr, testing::Test};
 
     #[test]
     fn named_attribute_equality() {
         let test = Test::default();
 
-        let zero = test.context_rc().create_attribute::<ImmediateAttr, _>(0u32);
-        let one = test.context_rc().create_attribute::<ImmediateAttr, _>(1u32);
+        let zero = test.context_rc().create_attribute::<IntAttr, _>(Int::from(0u32));
+        let one = test.context_rc().create_attribute::<IntAttr, _>(Int::from(1u32));
         let a = NamedAttribute::new("a", zero);
         let a2 = NamedAttribute::new("a", zero);
         let a3 = NamedAttribute::new("a", one);
