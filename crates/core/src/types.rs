@@ -38,7 +38,38 @@ use crate::dialects::builtin::types::{
 /// A type's `Eq` and `Hash` must not intern types or otherwise use the context: `Eq` runs while
 /// the context's uniquer is borrowed. They must not panic either: a panic while the uniquer is
 /// probing, combined with a `Drop` that interns, aborts.
-pub trait TypeImpl: Any + Eq + Hash + fmt::Debug + 'static {}
+///
+/// A type also exposes the types its value holds directly, through [Self::visit_subtypes] and
+/// [Self::replace_subtypes]. `#[derive(DialectType)]` implements both field by field, so every
+/// field of a derived type must be a [TypeComponent]; a field that is not does not compile:
+///
+/// ```compile_fail
+/// use runic_core::{derive::DialectType, dialects::test::TestDialect};
+///
+/// /// Not a `TypeComponent`.
+/// #[derive(Debug, Default, PartialEq, Eq, Hash)]
+/// struct Opaque;
+///
+/// #[derive(Debug, Default, PartialEq, Eq, Hash, DialectType)]
+/// #[ty(dialect = TestDialect)]
+/// struct HoldsOpaqueType {
+///     field: Opaque,
+/// }
+/// ```
+pub trait TypeImpl: Any + Eq + Hash + fmt::Debug + 'static {
+    /// Calls `visit` with each type this value holds directly, in a fixed order.
+    ///
+    /// It must be pure: it must not intern types, use the context, or panic.
+    fn visit_subtypes(&self, visit: &mut dyn FnMut(Type));
+
+    /// A copy of this value in which each directly held type `t` is `replace(t)`; `replace` is
+    /// called in the order of [Self::visit_subtypes], and everything else is unchanged.
+    ///
+    /// It must be pure: it must not intern types, use the context, or panic.
+    fn replace_subtypes(&self, replace: &mut dyn FnMut(Type) -> Type) -> Self
+    where
+        Self: Sized;
+}
 
 /// What every interned type starts with.
 ///
@@ -268,6 +299,12 @@ impl Type {
         self.as_function().is_some()
     }
 
+    /// Calls `visit` with each type this type's value holds directly, in the order of its
+    /// [TypeImpl::visit_subtypes].
+    pub fn visit_subtypes(&self, visit: &mut dyn FnMut(Type)) {
+        self.name().visit_fn()(*self, visit)
+    }
+
     /// Returns this type as the interface `Trait`, if its registration declares it.
     pub fn as_trait<Trait>(&self) -> Option<&Trait>
     where
@@ -434,7 +471,13 @@ mod tests {
     /// A type with no [TypePrinter], registered with no dialect but its own isolated one.
     #[derive(Debug, Default, PartialEq, Eq, Hash)]
     struct PrinterlessType;
-    impl TypeImpl for PrinterlessType {}
+    impl TypeImpl for PrinterlessType {
+        fn visit_subtypes(&self, _: &mut dyn FnMut(Type)) {}
+
+        fn replace_subtypes(&self, _: &mut dyn FnMut(Type) -> Type) -> Self {
+            PrinterlessType
+        }
+    }
     impl TypeRegistration for PrinterlessType {
         type Dialect = PrinterlessDialect;
 
@@ -525,7 +568,13 @@ mod tests {
     /// Declares `Describe` with the vtable built for `WideType` instead of itself.
     #[derive(Debug, Default, PartialEq, Eq, Hash)]
     struct MislabelledTraits(u8);
-    impl TypeImpl for MislabelledTraits {}
+    impl TypeImpl for MislabelledTraits {
+        fn visit_subtypes(&self, _: &mut dyn FnMut(Type)) {}
+
+        fn replace_subtypes(&self, _: &mut dyn FnMut(Type) -> Type) -> Self {
+            MislabelledTraits(self.0)
+        }
+    }
     impl TypeRegistration for MislabelledTraits {
         type Dialect = MislabelledTraitsDialect;
 
@@ -563,7 +612,16 @@ mod tests {
         tag: u8,
         wide: u128,
     }
-    impl TypeImpl for WideType {}
+    impl TypeImpl for WideType {
+        fn visit_subtypes(&self, _: &mut dyn FnMut(Type)) {}
+
+        fn replace_subtypes(&self, _: &mut dyn FnMut(Type) -> Type) -> Self {
+            WideType {
+                tag: self.tag,
+                wide: self.wide,
+            }
+        }
+    }
     impl TypeRegistration for WideType {
         type Dialect = TestDialect;
 
@@ -587,7 +645,16 @@ mod tests {
         tag: u8,
         wide: u128,
     }
-    impl TypeImpl for OtherType {}
+    impl TypeImpl for OtherType {
+        fn visit_subtypes(&self, _: &mut dyn FnMut(Type)) {}
+
+        fn replace_subtypes(&self, _: &mut dyn FnMut(Type) -> Type) -> Self {
+            OtherType {
+                tag: self.tag,
+                wide: self.wide,
+            }
+        }
+    }
     impl TypeRegistration for OtherType {
         type Dialect = TestDialect;
 
@@ -789,7 +856,13 @@ mod tests {
             self.0.set(self.0.get() + 1);
         }
     }
-    impl TypeImpl for Counted {}
+    impl TypeImpl for Counted {
+        fn visit_subtypes(&self, _: &mut dyn FnMut(Type)) {}
+
+        fn replace_subtypes(&self, _: &mut dyn FnMut(Type) -> Type) -> Self {
+            Counted(self.0.clone())
+        }
+    }
     impl TypeRegistration for Counted {
         type Dialect = TestDialect;
 
@@ -835,7 +908,13 @@ mod tests {
             }
         }
     }
-    impl TypeImpl for InternsOnDrop {}
+    impl TypeImpl for InternsOnDrop {
+        fn visit_subtypes(&self, _: &mut dyn FnMut(Type)) {}
+
+        fn replace_subtypes(&self, _: &mut dyn FnMut(Type) -> Type) -> Self {
+            InternsOnDrop(self.0.clone())
+        }
+    }
     impl TypeRegistration for InternsOnDrop {
         type Dialect = TestDialect;
 
@@ -866,7 +945,13 @@ mod tests {
     struct OverAligned {
         value: u64,
     }
-    impl TypeImpl for OverAligned {}
+    impl TypeImpl for OverAligned {
+        fn visit_subtypes(&self, _: &mut dyn FnMut(Type)) {}
+
+        fn replace_subtypes(&self, _: &mut dyn FnMut(Type) -> Type) -> Self {
+            OverAligned { value: self.value }
+        }
+    }
     impl TypeRegistration for OverAligned {
         type Dialect = TestDialect;
 
@@ -949,7 +1034,13 @@ mod tests {
         ($ty:ident($field:ty), $dialect:ident, $name:literal) => {
             #[derive(Debug, Default, PartialEq, Eq, Hash)]
             struct $ty($field);
-            impl TypeImpl for $ty {}
+            impl TypeImpl for $ty {
+                fn visit_subtypes(&self, _: &mut dyn FnMut(Type)) {}
+
+                fn replace_subtypes(&self, _: &mut dyn FnMut(Type) -> Type) -> Self {
+                    Self(self.0)
+                }
+            }
             impl TypeRegistration for $ty {
                 type Dialect = $dialect;
 
@@ -1192,5 +1283,167 @@ mod tests {
             alloc::format!("{nested}"),
             "!test.pair<!test.pair<!test.marker, !test.marker>, !test.marker>"
         );
+    }
+
+    /// The types `ty` holds directly, in visit order.
+    fn subtypes(ty: Type) -> alloc::vec::Vec<Type> {
+        let mut types = alloc::vec::Vec::new();
+        ty.visit_subtypes(&mut |subtype| types.push(subtype));
+        types
+    }
+
+    /// A struct type of three fields, `struct<i8, ptr<i16>, array<i32; 2>>`.
+    fn three_fields(context: &Context) -> (Type, [Type; 3]) {
+        use crate::StructField;
+
+        let fields = [
+            context.i8(),
+            context.ptr_type(context.i16()),
+            context.array_type(context.i32(), 2),
+        ];
+        let ty = context.struct_type(StructType::new(fields.map(StructField::new)));
+        (ty, fields)
+    }
+
+    #[test]
+    fn builtin_types_visit_what_they_hold_directly_in_order() {
+        let context = Context::default();
+        let (i8, i16, i32, i64) = (context.i8(), context.i16(), context.i32(), context.i64());
+        assert_eq!(subtypes(context.ptr_type(i32)), [i32]);
+        assert_eq!(subtypes(context.opaque_ptr_type()), []);
+        assert_eq!(subtypes(context.ptr_type_in(None, 3)), []);
+        assert_eq!(subtypes(context.array_type(i8, 4)), [i8]);
+        let (point, fields) = three_fields(&context);
+        assert_eq!(subtypes(point), fields);
+        assert_eq!(subtypes(context.function_type([i8, i16], [i32, i64])), [i8, i16, i32, i64]);
+        for scalar in [
+            context.i1(),
+            i8,
+            context.int_type(24),
+            context.isize(),
+            context.f32(),
+            context.f64(),
+            context.unknown_type(),
+            context.never_type(),
+        ] {
+            assert_eq!(subtypes(scalar), [], "{scalar}");
+        }
+    }
+
+    #[test]
+    fn mapping_with_the_identity_returns_the_same_type() {
+        let context = Context::default();
+        let i32 = context.i32();
+        let (point, _) = three_fields(&context);
+        for ty in [
+            context.ptr_type(i32),
+            context.opaque_ptr_type(),
+            context.array_type(context.i8(), 4),
+            point,
+            context.function_type([context.i8(), context.i16()], [i32, context.i64()]),
+            i32,
+            context.isize(),
+            context.f64(),
+            context.unknown_type(),
+            context.never_type(),
+            context.intern_type(crate::dialects::test::TestVectorType::new(i32, 4)),
+        ] {
+            assert_eq!(context.map_subtypes(ty, &mut |subtype| subtype), ty, "{ty}");
+        }
+    }
+
+    #[test]
+    fn mapping_replaces_only_the_directly_held_types() {
+        use core::num::NonZeroU16;
+
+        use crate::{StructField, StructRepr};
+
+        let context = Context::default();
+        let (i32, i64) = (context.i32(), context.i64());
+        let point = |x: Type| {
+            context.struct_type(
+                StructType::named(
+                    Symbol::intern("point"),
+                    [
+                        StructField::new(x).named(Symbol::intern("x")),
+                        StructField::new(context.ptr_type(i32))
+                            .named(Symbol::intern("y"))
+                            .aligned(NonZeroU16::new(4).unwrap()),
+                    ],
+                )
+                .with_repr(StructRepr::Align(NonZeroU16::new(8).unwrap())),
+            )
+        };
+        let (before, expected) = (point(i32), point(i64));
+        assert_eq!(
+            alloc::format!("{before}"),
+            "struct point<align(8); x: i32, y: ptr<i32> align(4)>"
+        );
+        let mut seen = alloc::vec::Vec::new();
+        let after = context.map_subtypes(before, &mut |ty| {
+            seen.push(ty);
+            if ty == i32 { i64 } else { ty }
+        });
+        assert_eq!(seen, [i32, context.ptr_type(i32)], "map is called in visit order");
+        assert_eq!(after, expected, "{after}");
+        assert_eq!(
+            alloc::format!("{after}"),
+            "struct point<align(8); x: i64, y: ptr<i32> align(4)>"
+        );
+    }
+
+    #[test]
+    fn a_dialect_type_maps_its_fields() {
+        use crate::dialects::test::TestVectorType;
+
+        let context = Context::default();
+        let (i32, i64) = (context.i32(), context.i64());
+        let vector = context.intern_type(TestVectorType::new(i32, 4));
+        assert_eq!(subtypes(vector), [i32]);
+        let mapped = context.map_subtypes(vector, &mut |_| i64);
+        assert_eq!(mapped, context.intern_type(TestVectorType::new(i64, 4)));
+        assert_eq!(alloc::format!("{mapped}"), "!test.vector<i64 x 4>");
+    }
+
+    #[test]
+    fn enum_and_unit_types_hold_no_types() {
+        let context = Context::default();
+        let (f32, never) = (context.f32(), context.never_type());
+        assert!(f32.is::<FloatType>() && never.is::<NeverType>());
+        assert_eq!(subtypes(f32), []);
+        assert_eq!(subtypes(never), []);
+        let marker = context.intern_type(MarkerType);
+        assert_eq!(subtypes(marker), []);
+        let parsed = context.intern_type(ParsedType::Only);
+        assert_eq!(context.map_subtypes(parsed, &mut |_| unreachable!()), parsed);
+    }
+
+    #[test]
+    fn a_derived_dialect_type_walks_its_fields_in_declaration_order() {
+        let context = Context::default();
+        let (i8, i16) = (context.i8(), context.i16());
+        let pair = context.intern_type(PairType {
+            first: i16,
+            second: i8,
+        });
+        assert_eq!(subtypes(pair), [i16, i8]);
+        let mut next = [context.i32(), context.i64()].into_iter();
+        let mapped = context.map_subtypes(pair, &mut |_| next.next().unwrap());
+        assert_eq!(
+            mapped.downcast_ref::<PairType>(),
+            Some(&PairType {
+                first: context.i32(),
+                second: context.i64()
+            })
+        );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "a mapped sub-type is `i64`, a type of another context")]
+    fn mapping_to_a_type_of_another_context_panics() {
+        let (first, second) = (Context::default(), Context::default());
+        let ptr = first.ptr_type(first.i32());
+        first.map_subtypes(ptr, &mut |_| second.i64());
     }
 }

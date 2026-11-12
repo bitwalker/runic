@@ -12,7 +12,7 @@ use super::{
         PrintTypeFn,
     },
 };
-use crate::{interner::Symbol, traits::TraitInfo};
+use crate::{Context, interner::Symbol, traits::TraitInfo};
 
 /// The registration record of a type: its dialect, its name within the dialect, and the Rust type
 /// and interfaces that implement it.
@@ -36,6 +36,10 @@ struct TypeInfo {
     value_offset: usize,
     /// Formats a type whose name this is.
     debug: fn(Type, &mut fmt::Formatter<'_>) -> fmt::Result,
+    /// Calls the visitor with each type held directly by a type whose name this is.
+    visit: VisitSubtypesFn,
+    /// Interns a type whose name this is, with each type it holds directly replaced.
+    rebuild: RebuildTypeFn,
     /// Prints the syntax of this type, if it implements `TypePrinter`.
     print: Option<PrintTypeFn>,
     /// Parses the syntax of this type, if it implements `TypeParser`.
@@ -48,6 +52,30 @@ fn debug_value<T: TypeRegistration>(ty: Type, f: &mut fmt::Formatter<'_>) -> fmt
     let name = ty.name();
     let value = ty.downcast_ref::<T>().expect("a type is formatted by its own name");
     write!(f, "{}.{}({value:?})", name.dialect(), name.name())
+}
+
+/// Calls the visitor with each type held directly by a type of one registered Rust type.
+pub(crate) type VisitSubtypesFn = fn(Type, &mut dyn FnMut(Type));
+
+/// Interns a type of one registered Rust type with each type it holds directly replaced.
+pub(crate) type RebuildTypeFn = fn(&Context, Type, &mut dyn FnMut(Type) -> Type) -> Type;
+
+fn visit_subtypes<T: TypeRegistration>(ty: Type, visit: &mut dyn FnMut(Type)) {
+    ty.downcast_ref::<T>()
+        .expect("a type is visited by its own name")
+        .visit_subtypes(visit);
+}
+
+fn rebuild_type<T: TypeRegistration>(
+    context: &Context,
+    ty: Type,
+    replace: &mut dyn FnMut(Type) -> Type,
+) -> Type {
+    let value = ty
+        .downcast_ref::<T>()
+        .expect("a type is rebuilt by its own name")
+        .replace_subtypes(replace);
+    context.intern_type(value)
 }
 
 /// Returns true if `dialect` is the builtin dialect.
@@ -130,6 +158,8 @@ impl TypeName {
             traits: traits.into_boxed_slice(),
             value_offset: TypeStorage::<T>::VALUE_OFFSET,
             debug: debug_value::<T>,
+            visit: visit_subtypes::<T>,
+            rebuild: rebuild_type::<T>,
             print,
             parse,
             default,
@@ -219,6 +249,18 @@ impl TypeName {
     #[inline]
     pub(crate) fn debug_value(&self, ty: Type, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         (self.0.debug)(ty, f)
+    }
+
+    /// Calls the visitor with each type held directly by a type with this name.
+    #[inline]
+    pub(crate) fn visit_fn(&self) -> VisitSubtypesFn {
+        self.0.visit
+    }
+
+    /// Interns a type with this name with each type it holds directly replaced.
+    #[inline]
+    pub(crate) fn rebuild_fn(&self) -> RebuildTypeFn {
+        self.0.rebuild
     }
 
     fn get<Trait: ?Sized + 'static>(&self) -> Option<&TraitInfo> {

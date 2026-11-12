@@ -3,6 +3,8 @@ use heck::ToSnakeCase;
 use quote::quote;
 use syn::{Ident, spanned::Spanned};
 
+use super::type_component::Fieldwise;
+
 /// The parsed definition of a dialect type: a struct or enum whose values are the type's
 /// parameters, and which is interned as-is.
 #[derive(Debug, FromDeriveInput)]
@@ -10,6 +12,7 @@ use syn::{Ident, spanned::Spanned};
 pub struct DialectType {
     ident: Ident,
     generics: syn::Generics,
+    data: darling::ast::Data<syn::Variant, syn::Field>,
     dialect: syn::Path,
     #[darling(default)]
     name: Option<syn::LitStr>,
@@ -71,8 +74,20 @@ impl quote::ToTokens for DialectType {
         let dialect = &self.dialect;
         let name = self.type_name();
         let implements = &self.implements;
+        let Fieldwise { visit, map } = Fieldwise::new(&self.data);
         tokens.extend(quote! {
-            impl ::runic_core::types::TypeImpl for #ident {}
+            impl ::runic_core::types::TypeImpl for #ident {
+                fn visit_subtypes(&self, visit: &mut dyn FnMut(::runic_core::types::Type)) {
+                    #visit
+                }
+
+                fn replace_subtypes(
+                    &self,
+                    map: &mut dyn FnMut(::runic_core::types::Type) -> ::runic_core::types::Type,
+                ) -> Self {
+                    #map
+                }
+            }
 
             impl ::runic_core::types::TypeRegistration for #ident {
                 type Dialect = #dialect;
@@ -214,6 +229,33 @@ mod tests {
         let output = file.into_token_stream().to_string();
         assert!(output.contains("compile_error") && output.contains("TypeParser"));
         assert!(!output.contains("TypeRegistration"));
+    }
+
+    #[test]
+    fn the_sub_type_walk_goes_field_by_field() {
+        let file = derive(quote! {
+            #[ty(dialect = D)]
+            struct VectorType { lanes: u32, element: Type }
+        })
+        .unwrap();
+        let output = file.into_token_stream().to_string();
+        for (method, closure) in [("visit_types", "visit"), ("map_types", "map")] {
+            let [lanes, element] = ["lanes", "element"].map(|field| {
+                let field = syn::Ident::new(field, proc_macro2::Span::call_site());
+                let method = syn::Ident::new(method, proc_macro2::Span::call_site());
+                let closure = syn::Ident::new(closure, proc_macro2::Span::call_site());
+                quote!(::runic_core::types::TypeComponent::#method(&self.#field, #closure))
+                    .to_string()
+            });
+            let lanes = output.find(&lanes).unwrap_or_else(|| panic!("{lanes} in {output}"));
+            let element = output.find(&element).unwrap_or_else(|| panic!("{element} in {output}"));
+            assert!(lanes < element, "fields are walked in declaration order: {output}");
+        }
+        assert!(output.contains("fn visit_subtypes") && output.contains("fn replace_subtypes"));
+
+        let file = derive(quote! { #[ty(dialect = D)] enum FloatType { F32, F64 } }).unwrap();
+        let output = file.into_token_stream().to_string();
+        assert!(output.contains(&quote!(Self::F64 => Self::F64).to_string()), "{output}");
     }
 
     #[test]

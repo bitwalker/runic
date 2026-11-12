@@ -150,6 +150,26 @@ impl Context {
         self.type_tables().intern_type(value)
     }
 
+    /// The type whose value is `ty`'s with each type it holds directly replaced by `map` of it,
+    /// interned. `map` is called in the order of
+    /// [Type::visit_subtypes](crate::types::Type::visit_subtypes).
+    ///
+    /// Only the types `ty` holds directly are replaced; the types they hold in turn are not
+    /// visited. Mapping with the identity returns `ty` itself.
+    pub fn map_subtypes(
+        &self,
+        ty: crate::types::Type,
+        map: &mut dyn FnMut(crate::types::Type) -> crate::types::Type,
+    ) -> crate::types::Type {
+        self.debug_assert_owns_type(ty, "the type whose sub-types are mapped");
+        let rebuild = ty.name().rebuild_fn();
+        rebuild(self, ty, &mut |subtype| {
+            let mapped = map(subtype);
+            self.debug_assert_owns_type(mapped, "a mapped sub-type");
+            mapped
+        })
+    }
+
     /// The registration record of `T`, registering `T`'s dialect first if necessary.
     ///
     /// Panics if `T` is not registered with its dialect, or if another Rust type is registered

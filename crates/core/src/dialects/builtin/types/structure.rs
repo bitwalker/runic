@@ -5,14 +5,14 @@ use core::{
 };
 
 use crate::{
-    derive::DialectType,
+    derive::{DialectType, TypeComponent},
     dialects::builtin::BuiltinDialect,
     interner::Symbol,
     types::{Type, TypeFormatter, TypePrinter},
 };
 
 /// How a struct's fields are laid out.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, TypeComponent)]
 pub enum StructRepr {
     /// Laid out by the target's default rules.
     #[default]
@@ -26,7 +26,7 @@ pub enum StructRepr {
 }
 
 /// A field of a [StructType].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, TypeComponent)]
 pub struct StructField {
     pub name: Option<Symbol>,
     pub ty: Type,

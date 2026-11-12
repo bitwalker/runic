@@ -55,7 +55,9 @@ pub fn derive_dialect_attribute(input: proc_macro::TokenStream) -> proc_macro::T
 /// A type is printed with its `TypePrinter`, and parsed with its `TypeParser`, if it implements
 /// them; neither is listed in `implements(..)`. So that its text parses back, a dialect type
 /// implements both or neither, and one with no printer implements `Default`; registering a type
-/// that does not panics. A printer writes text with `write!(printer, ..)` and any type it
+/// that does not panics. The derive also implements `TypeImpl`'s sub-type walk field by field, as
+/// `#[derive(TypeComponent)]` does, so every field's type must be a `TypeComponent`. A printer
+/// writes text with `write!(printer, ..)` and any type it
 /// contains with `printer.ty(..)`:
 ///
 /// ```ignore
