@@ -262,6 +262,11 @@ pub struct OpPrintingFlags {
 
 /// A trait which must be implemented by all attribute types, for printing the attribute in
 /// assembly format
+///
+/// A type must be written with [AsmPrinter::print_type] or one of the printer's other type
+/// methods, never with its `Display` form: only the printer writes recursion-group members as
+/// the aliases its declarations define. A printer created to print a part separately must be
+/// made with [AsmPrinter::nested].
 pub trait AttrPrinter {
     fn print(&self, printer: &mut AsmPrinter<'_>);
 }
@@ -269,6 +274,11 @@ pub trait AttrPrinter {
 /// The `OpPrinter` trait is expected to be implemented by all [crate::Op] impls as a prequisite.
 ///
 /// The actual implementation is typically generated as part of deriving [crate::Op].
+///
+/// A type must be written with [AsmPrinter::print_type] or one of the printer's other type
+/// methods, never with its `Display` form: only the printer writes recursion-group members as
+/// the aliases its declarations define. A printer created to print a part separately must be
+/// made with [AsmPrinter::nested].
 pub trait OpPrinter {
     /// Prints this operation with the given `flags`
     fn print(&self, printer: &mut AsmPrinter<'_>);

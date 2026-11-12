@@ -128,7 +128,7 @@ impl quote::ToTokens for DeriveOpPrinter {
                     successors.extend(quote! {
                         printer.print_space();
                         *printer += ::runic_core::formatter::const_text("[");
-                        let mut p = ::runic_core::print::AsmPrinter::new(op.context_rc(), printer.flags());
+                        let mut p = printer.nested();
                         for (i, keyed_succ) in self.#field_name().iter().enumerate() {
                             use ::runic_core::AsValueRange;
                             if i > 0 {

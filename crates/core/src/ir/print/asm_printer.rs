@@ -1,29 +1,49 @@
 use alloc::{rc::Rc, string::String};
-use core::ops::AddAssign;
+use core::{cell::RefCell, fmt, ops::AddAssign};
 
 use super::*;
 use crate::{
     AsValueRange, Attribute, Block, Context, EntityList, FunctionType, Immediate, Location,
     NamedAttribute, OpSuccessorRange, SuccessorOperands, SymbolPath, Type, ValueRef,
-    attributes::Marker, formatter::Document, interner,
+    attributes::Marker,
+    formatter::Document,
+    interner,
+    types::{TypeAliases, TypeFormatter},
 };
 
 /// [AsmPrinter] provides utilities for pretty-printing an operation in either the generic
 /// or custom formats. It provides access to the current printer flags, and manages the output
 /// document to ensure that custom printers adhere to the requirements expected of all printers.
+///
+/// The aliases of recursion-group members are kept in a table shared by every printer of one
+/// print: a printer that is created while printing, to print a part of the output separately,
+/// must be made with [Self::nested].
 pub struct AsmPrinter<'a> {
     context: Rc<Context>,
     flags: &'a OpPrintingFlags,
     document: Document,
+    aliases: Rc<RefCell<TypeAliases>>,
 }
 
 impl<'a> AsmPrinter<'a> {
-    /// Construct a new printer with the given [OpPrintingFlags]
-    pub const fn new(context: Rc<Context>, flags: &'a OpPrintingFlags) -> Self {
+    /// Construct a new printer with the given [OpPrintingFlags], starting a print of its own.
+    pub fn new(context: Rc<Context>, flags: &'a OpPrintingFlags) -> Self {
         Self {
             context,
             flags,
             document: Document::Empty,
+            aliases: Rc::default(),
+        }
+    }
+
+    /// A printer with an empty document that is part of the same print as this one: it has the
+    /// same context and flags, and shares this printer's alias table.
+    pub fn nested(&self) -> AsmPrinter<'a> {
+        Self {
+            context: self.context.clone(),
+            flags: self.flags,
+            document: Document::Empty,
+            aliases: self.aliases.clone(),
         }
     }
 
@@ -248,7 +268,7 @@ impl<'a> AsmPrinter<'a> {
             if !acc.is_empty() {
                 acc += const_text(", ");
             }
-            acc + display(value.id()) + const_text(": ") + display(value.ty())
+            acc + display(value.id()) + const_text(": ") + self.format_type(value.ty())
         });
         self.document += doc;
     }
@@ -303,7 +323,7 @@ impl<'a> AsmPrinter<'a> {
         use crate::formatter::*;
 
         let doc = types.into_iter().fold(Document::Empty, |acc, ty| {
-            let ty = display(ty);
+            let ty = self.format_type(ty);
             if acc.is_empty() {
                 ty
             } else {
@@ -318,9 +338,19 @@ impl<'a> AsmPrinter<'a> {
 
     /// Print a single type
     pub fn print_type(&mut self, ty: Type) {
-        use crate::formatter::*;
+        self.document += self.format_type(ty);
+    }
 
-        self.document += display(ty);
+    /// `ty` as text, with its recursion-group members written as their aliases.
+    fn format_type(&self, ty: Type) -> Document {
+        crate::formatter::text(alloc::format!(
+            "{}",
+            Aliased {
+                ty,
+                aliases: &self.aliases,
+                definition: false,
+            }
+        ))
     }
 
     /// Print a function type (i.e. `(arg0, arg1) -> (result0, result1)`)
@@ -397,7 +427,7 @@ impl<'a> AsmPrinter<'a> {
         };
 
         self.document += const_text("{");
-        let mut printer = AsmPrinter::new(self.context.clone(), self.flags);
+        let mut printer = self.nested();
         let body = region.body().iter().enumerate().fold(Document::Empty, |mut acc, (i, block)| {
             if i > 0 || (i == 0 && !elide_entry_block_label) {
                 acc += nl();
@@ -444,7 +474,7 @@ impl<'a> AsmPrinter<'a> {
         use crate::formatter::*;
 
         let body = ops.iter().fold(Document::Empty, |acc, op| {
-            let mut printer = AsmPrinter::new(self.context.clone(), self.flags);
+            let mut printer = self.nested();
             op.print(&mut printer);
             let doc = printer.finish();
             if acc.is_empty() {
@@ -697,4 +727,23 @@ fn is_valid_bare_identifier(id: &str) -> bool {
     let mut chars = id.chars();
     chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '$'))
+}
+
+/// Writes a type with [TypeFormatter::ty], or its body with [TypeFormatter::definition], with
+/// recursion-group members written as their aliases.
+struct Aliased<'a> {
+    ty: Type,
+    aliases: &'a RefCell<TypeAliases>,
+    definition: bool,
+}
+
+impl fmt::Display for Aliased<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut printer = TypeFormatter::with_aliases(f, self.aliases);
+        if self.definition {
+            printer.definition(self.ty)
+        } else {
+            printer.ty(self.ty)
+        }
+    }
 }

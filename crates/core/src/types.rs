@@ -1,5 +1,6 @@
 //! Uniqued, immutable types owned by a [Context](crate::Context).
 
+mod alias;
 mod component;
 mod name;
 pub(crate) mod rec;
@@ -8,12 +9,14 @@ mod uniquer;
 
 use core::{
     any::{Any, TypeId},
+    cell::RefCell,
     fmt::{self, Write},
     hash::{Hash, Hasher},
     ptr::{DynMetadata, NonNull, Pointee},
 };
 
 pub use self::{
+    alias::TypeAliases,
     component::TypeComponent,
     name::TypeName,
     rec::{RecGroup, RecGroupError, collect_rec_groups},
@@ -483,12 +486,28 @@ pub struct TypeFormatter<'a, 'f> {
     f: &'a mut fmt::Formatter<'f>,
     /// How many types are being written around the one being written now.
     depth: u32,
+    /// The aliases recursion-group members are written as, if any.
+    aliases: Option<&'a RefCell<TypeAliases>>,
 }
 
 impl<'a, 'f> TypeFormatter<'a, 'f> {
     /// A printer writing to `f`.
     pub fn new(f: &'a mut fmt::Formatter<'f>) -> Self {
-        Self { f, depth: 0 }
+        Self {
+            f,
+            depth: 0,
+            aliases: None,
+        }
+    }
+
+    /// A printer writing to `f` that writes every recursion-group member as its alias in
+    /// `aliases`, naming the member's group there first if it is not named yet.
+    pub fn with_aliases(f: &'a mut fmt::Formatter<'f>, aliases: &'a RefCell<TypeAliases>) -> Self {
+        Self {
+            f,
+            depth: 0,
+            aliases: Some(aliases),
+        }
     }
 
     /// Writes `ty`.
@@ -496,17 +515,30 @@ impl<'a, 'f> TypeFormatter<'a, 'f> {
     /// A builtin type is written as its own syntax. Any other type is written as `!dialect.name`,
     /// followed by its own syntax in angle brackets if it has a [TypePrinter].
     ///
-    /// A recursion-group member is written as its body when it is the type being formatted, and
-    /// as a reference when it is nested inside it: `!name` if its body suggests a name (see
+    /// With an alias table, a recursion-group member is written as `!alias`, wherever it is. With
+    /// none, a member is written as its body when it is the type being formatted, and as a
+    /// reference when it is nested inside it: `!name` if its body suggests a name (see
     /// [TypeAliasName]) that is a bare identifier, otherwise `!rec<G>_<I>` for member `I` of the
     /// group created `G`-th in its context. That keeps the text of a recursive type finite; it
     /// is meant for diagnostics, and need not parse.
     pub fn ty(&mut self, ty: Type) -> fmt::Result {
-        if self.depth > 0
-            && let Some(group) = ty.rec_group()
-        {
-            return self.member_reference(ty, group);
+        if let Some(group) = ty.rec_group() {
+            if let Some(aliases) = self.aliases {
+                let alias = aliases.borrow_mut().alias_of(ty);
+                return write!(self, "!{alias}");
+            }
+            if self.depth > 0 {
+                return self.member_reference(ty, group);
+            }
         }
+        self.definition(ty)
+    }
+
+    /// Writes the body of `ty`: its own syntax, even if it is a recursion-group member, with the
+    /// types it holds written by [Self::ty].
+    ///
+    /// This is how a declaration writes the member it declares: `type !list = <definition>;`.
+    pub fn definition(&mut self, ty: Type) -> fmt::Result {
         self.depth += 1;
         let result = self.body(ty);
         self.depth -= 1;
