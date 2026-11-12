@@ -135,4 +135,23 @@ mod tests {
         assert_eq!(context.opaque_ptr_type().pointee(), None);
         assert!(context.opaque_ptr_type().is_pointer());
     }
+
+    #[test]
+    #[should_panic(expected = "1 to 16777215")]
+    fn int_type_rejects_zero_width() {
+        Context::default().int_type(0);
+    }
+
+    #[test]
+    #[should_panic(expected = "1 to 16777215")]
+    fn int_type_rejects_widths_above_the_maximum() {
+        Context::default().int_type(IntegerType::MAX_WIDTH + 1);
+    }
+
+    #[test]
+    fn the_maximum_integer_width_is_accepted() {
+        let context = Context::default();
+        assert!(IntegerType::new(IntegerType::MAX_WIDTH).is_some());
+        assert!(context.try_int_type(IntegerType::MAX_WIDTH).is_some());
+    }
 }
