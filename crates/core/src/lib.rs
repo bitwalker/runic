@@ -1,5 +1,7 @@
 #![no_std]
 #![feature(allocator_api)]
+#![feature(auto_traits)]
+#![feature(negative_impls)]
 #![feature(coerce_unsized)]
 #![feature(const_type_name)]
 #![feature(unsize)]
@@ -85,7 +87,7 @@ pub use runic_diagnostics as diagnostics;
 pub use self::{
     attributes::{
         Attribute, AttributeName, AttributeRef, AttributeRegistration, AttributeValue,
-        NamedAttribute, NamedAttributeList,
+        AttributeValueArg, IntoAttribute, NamedAttribute, NamedAttributeList, ReadyAttr,
     },
     dialects::builtin::attributes::{Location, Overflow, Visibility},
     direction::{Backward, Direction, Forward},

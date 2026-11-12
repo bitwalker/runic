@@ -1,4 +1,5 @@
 mod derive;
+mod into_attribute;
 mod name;
 mod registration;
 mod value;
@@ -16,6 +17,7 @@ pub use self::{
         DerivableTypeAttribute, InferAttributeType, InferAttributeValueType,
         MaybeInferAttributeType,
     },
+    into_attribute::{AttributeValueArg, IntoAttribute, ReadyAttr},
     name::AttributeName,
     registration::AttributeRegistration,
     value::*,
