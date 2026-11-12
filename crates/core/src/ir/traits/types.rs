@@ -716,7 +716,7 @@ mod tests {
     #[test]
     fn only_types_with_a_tracked_value_range_imply_a_range_constraint() {
         use super::ValueRangeConstraint;
-        use crate::{StructField, StructType};
+        use crate::{StructField, StructType, dialects::test::TestVectorType};
 
         let context = Context::default();
         for ty in [context.i1(), context.i32(), context.i128()] {
@@ -733,6 +733,7 @@ mod tests {
             context.f64_type(),
             context.array_type(context.i8(), 4),
             context.struct_type(StructType::new([StructField::new(context.i32())])),
+            context.intern_type(TestVectorType::new(context.f32_type(), 4)),
         ] {
             assert_eq!(ValueRangeConstraint::from_type(ty), None, "{ty} is unconstrained");
         }

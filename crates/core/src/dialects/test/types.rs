@@ -55,7 +55,13 @@ impl TypeParser for TestVectorType {
                 },
             });
         }
-        let lanes = parser.parse_decimal_integer::<u32>()?.into_inner();
+        let (span, lanes) = parser.parse_decimal_integer::<u32>()?.into_parts();
+        if lanes == 0 {
+            return Err(ParserError::InvalidIntegerLiteral {
+                span,
+                reason: "a vector has at least one lane".into(),
+            });
+        }
         Ok(parser.context().intern_type(Self::new(element, lanes)))
     }
 }

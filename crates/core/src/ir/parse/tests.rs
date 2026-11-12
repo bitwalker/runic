@@ -1590,6 +1590,7 @@ fn dialect_type_errors_name_the_problem() {
         ("!test.nosuchtype", "unknown type 'nosuchtype' in dialect 'test'"),
         ("!test.unit<i32>", "type 'test.unit' takes no parameters, but '<' follows it"),
         ("!test.vector", "type 'test.vector' requires parameters in '<..>'"),
+        ("!test.vector<f32 x 0>", "a vector has at least one lane"),
     ] {
         let message = type_error_text(&context, text);
         assert!(message.contains(expected), "`{text}`: {message}");
@@ -1960,6 +1961,13 @@ fn an_over_wide_integer_type_spelling_is_an_identifier() {
         DefaultParser::new(ParserState::new(ParserConfig::new(context.clone()), token_stream));
     let key = parser.parse_optional_keyword_or_string().unwrap().unwrap().into_inner();
     assert_eq!(key.as_str(), "i99999999999");
+
+    // The widest integer type parses as itself and prints as it was written.
+    let widest = parse_type_text(&context, "i16777215").unwrap();
+    assert_eq!(widest.integer_width(), Some(16_777_215));
+    assert_eq!(widest, context.int_type(16_777_215));
+    assert_eq!(format!("{widest}"), "i16777215");
+    assert_eq!(parse_type_text(&context, &format!("{widest}")).unwrap(), widest);
 
     // A width that fits is still an integer type, and one beyond the limit is a type error.
     let message = type_error_text(&context, "i16777216");
