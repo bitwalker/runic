@@ -16,7 +16,7 @@ use core::{
 pub use self::{
     component::TypeComponent,
     name::TypeName,
-    rec::{RecGroup, RecGroupError},
+    rec::{RecGroup, RecGroupError, collect_rec_groups},
     registration::{
         AliasNameFn, DefaultTypeFn, DialectTypeRegistrationInfo, ParseTypeFn, PrintTypeFn,
         TypeAliasName, TypeParser, TypePrinter, TypeRegistration,

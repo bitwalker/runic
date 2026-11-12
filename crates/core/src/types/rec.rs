@@ -256,6 +256,86 @@ impl RecGroupTable {
     }
 }
 
+/// Every recursion group reachable from `roots`, each exactly once, and each after every group
+/// that its members' bodies refer to.
+///
+/// A group is reachable from a type that holds one of its members, directly or through other
+/// types; a reachable group is followed through the types its members hold in turn. The order is
+/// a depth-first post-order over groups: roots are visited in the order given, and the types a
+/// type holds in the order of [Type::visit_subtypes]. A group's dependencies are the groups of
+/// the members reached from its members' held types, not counting the group itself.
+///
+/// The walk uses explicit stacks, so the depth of the types or of a chain of groups does not
+/// consume the call stack.
+pub fn collect_rec_groups(roots: impl IntoIterator<Item = Type>) -> Vec<RecGroup> {
+    /// A group being visited, and the groups it depends on that are still to be visited.
+    struct Frame {
+        group: RecGroup,
+        deps: alloc::vec::IntoIter<RecGroup>,
+    }
+
+    let mut order = Vec::new();
+    let mut entered = FxHashSet::default();
+    let mut frames: Vec<Frame> = Vec::new();
+    let enter = |group: RecGroup, entered: &mut FxHashSet<RecGroup>, frames: &mut Vec<Frame>| {
+        if entered.insert(group) {
+            let deps = group_dependencies(group).into_iter();
+            frames.push(Frame { group, deps });
+        }
+    };
+    for root in roots {
+        for group in groups_held_by([root], None) {
+            enter(group, &mut entered, &mut frames);
+            while let Some(frame) = frames.last_mut() {
+                match frame.deps.next() {
+                    Some(dep) => enter(dep, &mut entered, &mut frames),
+                    None => {
+                        order.push(frame.group);
+                        frames.pop();
+                    }
+                }
+            }
+        }
+    }
+    order
+}
+
+/// The groups `group`'s members refer to, other than `group` itself, in first-reached order.
+fn group_dependencies(group: RecGroup) -> Vec<RecGroup> {
+    let mut held = Vec::new();
+    for member in group.members() {
+        member.visit_subtypes(&mut |subtype| held.push(subtype));
+    }
+    groups_held_by(held, Some(group))
+}
+
+/// The groups of the members reachable from `types` without passing through a member, in
+/// first-reached order, leaving out `skip`. A member is not entered: its own group's members are
+/// walked when that group is visited.
+fn groups_held_by(types: impl IntoIterator<Item = Type>, skip: Option<RecGroup>) -> Vec<RecGroup> {
+    let mut groups = Vec::new();
+    let mut seen_groups = FxHashSet::default();
+    let mut visited = FxHashSet::default();
+    let mut stack: Vec<Type> = types.into_iter().collect();
+    stack.reverse();
+    let mut children = Vec::new();
+    while let Some(ty) = stack.pop() {
+        if !visited.insert(ty) {
+            continue;
+        }
+        if let Some(group) = ty.rec_group() {
+            if Some(group) != skip && seen_groups.insert(group) {
+                groups.push(group);
+            }
+            continue;
+        }
+        children.clear();
+        ty.visit_subtypes(&mut |subtype| children.push(subtype));
+        stack.extend(children.iter().rev());
+    }
+    groups
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::{format, vec::Vec};
@@ -664,6 +744,103 @@ mod tests {
             .expect("spawn a thread")
             .join()
             .expect("a large group fits a 1 MB stack");
+    }
+
+    /// `struct<ptr<rec.0>>`-style singleton group, optionally also holding `held`.
+    fn singleton(context: &Context, name: &str, held: Option<Type>) -> Type {
+        let mut fields = SmallVec::<[StructField; 2]>::new();
+        fields.push(context.ptr_type(context.rec_var(0)).into());
+        if let Some(held) = held {
+            fields.push(held.into());
+        }
+        let body = context.struct_type(StructType::named(sym(name), fields));
+        context.rec_group(&[body]).expect("a valid group")[0]
+    }
+
+    #[test]
+    fn types_without_members_have_no_groups() {
+        let context = Context::default();
+        let ty = context.ptr_type(context.struct_type(StructType::new([context.i32().into()])));
+        assert!(collect_rec_groups([context.i32(), ty]).is_empty());
+    }
+
+    #[test]
+    fn a_group_is_found_through_the_types_holding_its_member() {
+        let context = Context::default();
+        let members = list_and_node(&context);
+        let group = members[0].rec_group().unwrap();
+        let ty = context.ptr_type(context.array_type(members[1], 4));
+        assert_eq!(collect_rec_groups([ty]), [group]);
+        assert_eq!(collect_rec_groups([ty, members[0], ty]), [group]);
+    }
+
+    #[test]
+    fn a_group_follows_the_groups_its_members_refer_to() {
+        let context = Context::default();
+        let a = singleton(&context, "a", None);
+        let b = singleton(&context, "b", Some(context.ptr_type(a)));
+        let (ga, gb) = (a.rec_group().unwrap(), b.rec_group().unwrap());
+        assert_ne!(ga, gb);
+        assert_eq!(collect_rec_groups([b]), [ga, gb]);
+        assert_eq!(collect_rec_groups([b, a]), [ga, gb]);
+        assert_eq!(collect_rec_groups([a, b]), [ga, gb]);
+    }
+
+    #[test]
+    fn unrelated_groups_come_in_root_order() {
+        let context = Context::default();
+        let a = singleton(&context, "a", None);
+        let b = singleton(&context, "b", None);
+        let (ga, gb) = (a.rec_group().unwrap(), b.rec_group().unwrap());
+        assert_eq!(collect_rec_groups([a, b]), [ga, gb]);
+        assert_eq!(collect_rec_groups([b, a]), [gb, ga]);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn a_long_chain_of_groups_is_collected_on_a_small_stack() {
+        std::thread::Builder::new()
+            .stack_size(1 << 20)
+            .spawn(|| {
+                const N: usize = 5_000;
+                let context = Context::default();
+                let mut previous = None;
+                let mut expected = Vec::new();
+                for i in 0..N {
+                    let ty = singleton(
+                        &context,
+                        &format!("g{i}"),
+                        previous.map(|p| context.ptr_type(p)),
+                    );
+                    expected.push(ty.rec_group().unwrap());
+                    previous = Some(ty);
+                }
+                assert_eq!(collect_rec_groups([previous.unwrap()]), expected);
+                drop(context);
+            })
+            .expect("spawn a thread")
+            .join()
+            .expect("a long chain of groups fits a 1 MB stack");
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn deeply_nested_types_are_collected_on_a_small_stack() {
+        std::thread::Builder::new()
+            .stack_size(1 << 20)
+            .spawn(|| {
+                let context = Context::default();
+                let member = singleton(&context, "m", None);
+                let mut ty = member;
+                for _ in 0..20_000 {
+                    ty = context.ptr_type(ty);
+                }
+                assert_eq!(collect_rec_groups([ty]), [member.rec_group().unwrap()]);
+                drop(context);
+            })
+            .expect("spawn a thread")
+            .join()
+            .expect("deeply nested types fit a 1 MB stack");
     }
 
     #[test]
