@@ -23,6 +23,12 @@
 //! dialect-type  := '!' dialect-namespace '.' type-name ('<' type-body '>')?
 //! ```
 //!
+//! A type alias names the type it is declared as. Inside a `rec` block (see
+//! [print](crate::print)), an alias that is not defined before the block names a member of the
+//! block, which may be declared after its use; while the block is parsed it is a recursion
+//! variable, and the block's declarations become the members of a recursion group when it ends.
+//! Outside a block, an alias must be declared before it is used.
+//!
 //! A function type's results are a parenthesised list whenever they start with `(`, so a single
 //! result that is itself a function type is written in parentheses: `() -> (() -> i32)`. A
 //! one-element list `(T)` is the single result `T`.

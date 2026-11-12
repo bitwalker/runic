@@ -4,7 +4,10 @@
 //!
 //! ```text
 //! # File
-//! top-level := (operation | attribute-alias-def | type-alias-def)+
+//! top-level := (operation | attribute-alias-def | type-alias-def | rec-group-def)+
+//!
+//! A root operation is printed after the declarations of the recursion groups it refers to, one
+//! `rec` block per group, each after the groups it refers to, then a blank line.
 //!
 //! # Operations
 //! operation         := op-results? (generic-operation | custom-operation) trailing-location? ';'
@@ -143,7 +146,16 @@
 //! # Type Aliases
 //!
 //! type-alias := '!' alias-name
-//! type-alias-def := '!' alias-name '=' type ';'
+//! type-alias-def := 'type' '!' alias-name '=' type ';'
+//! rec-group-def  := 'rec' '{' type-alias-def+ '}'
+//!
+//! `type` and `rec` are keywords only here: `type` followed by `!`, and `rec` followed by `{`.
+//! A `rec` block declares a recursion group, whose members are its aliases in the order they are
+//! declared. Inside the block, an alias that is not defined before the block names a member of the
+//! block, whether or not it has been declared yet; after the block, each alias names its member.
+//! Blocks do not nest. The printer names the members itself: after the name of a named struct or
+//! enum (`!list`, then `!list_0`, `!list_1`, .. for others with that name), and `!t0`, `!t1`, ..
+//! otherwise.
 //!
 //! # Builtin Types
 //!
