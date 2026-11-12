@@ -2268,8 +2268,6 @@ fn unsupported_attribute_text_is_an_error_not_a_panic() {
     let context = Rc::new(Context::default());
     for (text, expected) in [
         ("{ a = {} }", "a dictionary is not supported as an attribute value"),
-        ("{ a = #builtin.bool<true> }", "attribute 'builtin.bool' has no parser"),
-        ("{ a = #builtin.string<\"str\"> }", "attribute 'builtin.string' has no parser"),
         ("{ a = #nosuch.attr<1> }", "unknown dialect 'nosuch'"),
         ("{ a = #nosuch.attr }", "unknown dialect 'nosuch'"),
     ] {
@@ -3410,6 +3408,7 @@ fn a_body_less_attribute_is_read_only_with_the_type_of_its_value() -> TestResult
         ("#builtin.int", ptr, "i32"),
         ("#builtin.i32", i8, "i32"),
         ("#builtin.bool", i32, "i1"),
+        ("#builtin.i64", isize, "i64"),
     ] {
         let err = parse_attribute_text(&context, text, ty).unwrap_err();
         let crate::parse::ParserError::InvalidAttributeValue { reason, .. } = err else {
@@ -3422,6 +3421,95 @@ fn a_body_less_attribute_is_read_only_with_the_type_of_its_value() -> TestResult
                 text.trim_start_matches('#')
             ),
         );
+    }
+    Ok(())
+}
+
+/// The value of an attribute, as text that is equal exactly when the values (and types) are.
+fn value_text(attr: &crate::AttributeRef) -> String {
+    use crate::dialects::builtin::attributes::StringAttr;
+
+    if let Some(string) = attr.borrow().downcast_ref::<StringAttr>() {
+        return format!("string {:?}", string.as_str());
+    }
+    let (value, ty) = int_and_type_of(attr);
+    format!("{value} : {ty}")
+}
+
+#[test]
+fn bool_attributes_parse() -> TestResult {
+    use crate::dialects::builtin::attributes::BoolAttr;
+
+    let context = Rc::new(Context::default());
+    for value in [true, false] {
+        let text = format!("#builtin.bool<{value}>");
+        let attr = parse_attribute_text(&context, &text, context.unknown_type())?;
+        assert_eq!(**attr.borrow().downcast_ref::<BoolAttr>().unwrap(), value);
+        assert_eq!(print_attribute_text(&context, &attr), text);
+    }
+    for text in ["#builtin.bool<1>", "#builtin.bool<x>", "#builtin.bool<>", "#builtin.bool<true"] {
+        assert!(parse_attribute_text(&context, text, context.unknown_type()).is_err(), "{text}");
+    }
+    Ok(())
+}
+
+#[test]
+fn string_attributes_parse() -> TestResult {
+    use crate::dialects::builtin::attributes::StringAttr;
+
+    let context = Rc::new(Context::default());
+    // every character `escape_default` escapes, and some it does not
+    for value in [
+        "a\"b\n",
+        "back\\slash",
+        "tab\tcr\rnl\n",
+        "it's",
+        "caf\u{e9} \u{1f600} \u{0}",
+        "",
+        "\\\"\\n",
+    ] {
+        let attr = context.create_attribute::<StringAttr, _>(crate::CompactString::from(value));
+        let text = print_attribute_text(&context, &attr.as_attribute_ref());
+        let parsed = parse_attribute_text(&context, &text, context.unknown_type())?;
+        assert_eq!(parsed.borrow().downcast_ref::<StringAttr>().unwrap().as_str(), value, "{text}");
+        assert_eq!(print_attribute_text(&context, &parsed), text);
+    }
+    let attr =
+        parse_attribute_text(&context, "#builtin.string<\"a\\\"b\\n\">", context.unknown_type())?;
+    assert_eq!(attr.borrow().downcast_ref::<StringAttr>().unwrap().as_str(), "a\"b\n");
+    for text in ["#builtin.string<x>", "#builtin.string<1>", "#builtin.string<\"\\q\">"] {
+        assert!(parse_attribute_text(&context, text, context.unknown_type()).is_err(), "{text}");
+    }
+    Ok(())
+}
+
+/// Every builtin integer, bool and string attribute prints, parses, and prints the same again.
+#[test]
+fn builtin_integer_bool_and_string_attributes_round_trip() -> TestResult {
+    let context = Rc::new(Context::default());
+    let unknown = context.unknown_type();
+    for text in [
+        "#builtin.int<-1 : i7>",
+        "#builtin.int<0 : i1>",
+        "#builtin.int<-1 : i128>",
+        "#builtin.int<5 : isize>",
+        "#builtin.bool<true>",
+        "#builtin.bool<false>",
+        "#builtin.i8<-128>",
+        "#builtin.i16<-1>",
+        "#builtin.i32<7>",
+        "#builtin.i64<-9223372036854775808>",
+        "#builtin.i128<-170141183460469231731687303715884105728>",
+        "#builtin.string<\"\">",
+        "#builtin.string<\"a\\\"b\\n\">",
+        "#builtin.string<\"caf\\u{e9}\">",
+    ] {
+        let first = parse_attribute_text(&context, text, unknown)?;
+        let printed = print_attribute_text(&context, &first);
+        assert_eq!(printed, text);
+        let second = parse_attribute_text(&context, &printed, unknown)?;
+        assert_eq!(print_attribute_text(&context, &second), printed);
+        assert_eq!(value_text(&first), value_text(&second), "{text}");
     }
     Ok(())
 }

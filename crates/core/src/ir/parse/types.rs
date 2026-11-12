@@ -403,7 +403,7 @@ fn parse_name<'input, P: Parser<'input>>(parser: &mut P, expected: &str) -> Pars
 }
 
 /// Undoes [str::escape_default], which the printer uses to quote a name.
-fn unescape(quoted: &str) -> Option<String> {
+pub(crate) fn unescape(quoted: &str) -> Option<String> {
     let mut unescaped = String::with_capacity(quoted.len());
     let mut chars = quoted.chars();
     while let Some(c) = chars.next() {

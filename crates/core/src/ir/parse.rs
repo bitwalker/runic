@@ -52,6 +52,7 @@ use core::{
     ops::{Deref, DerefMut},
 };
 
+pub(crate) use self::types::unescape;
 use self::{
     asm_parser::AsmParserState,
     lexer::{Lexed, Lexer, TokenStream},
