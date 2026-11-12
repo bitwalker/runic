@@ -23,6 +23,9 @@ use crate::{DialectRegistration, dialects::builtin::BuiltinDialect};
 
 /// The value a type is uniqued by: two types are the same type exactly when they have the same
 /// Rust type and compare equal.
+///
+/// A type's value must not change after it is interned: the uniquer finds a type by the hash and
+/// equality of its value, so it must not use interior mutability that affects `Eq` or `Hash`.
 pub trait TypeImpl: Any + Eq + Hash + fmt::Debug + 'static {}
 
 /// What every interned type starts with.
@@ -490,6 +493,45 @@ mod tests {
             (described as *const dyn Describe).cast::<()>(),
             (value as *const OverAligned).cast::<()>()
         );
+    }
+
+    #[derive(Debug, PartialEq, Eq, Hash, crate::derive::DialectType)]
+    #[ty(dialect = TestDialect, implements(Describe))]
+    struct EmptyType;
+    impl Describe for EmptyType {
+        fn describe(&self) -> u128 {
+            1
+        }
+    }
+
+    /// Zero-sized, yet aligned beyond the header.
+    #[derive(Debug, PartialEq, Eq, Hash, crate::derive::DialectType)]
+    #[ty(dialect = TestDialect, implements(Describe))]
+    #[repr(align(64))]
+    struct EmptyAlignedType;
+    impl Describe for EmptyAlignedType {
+        fn describe(&self) -> u128 {
+            64
+        }
+    }
+
+    #[test]
+    fn zero_sized_values_are_interned_and_read_back() {
+        let context = Context::default();
+        let empty = context.intern_type(EmptyType);
+        assert_eq!(empty, context.intern_type(EmptyType));
+        assert_eq!(empty.downcast_ref::<EmptyType>(), Some(&EmptyType));
+        assert_eq!(empty.as_trait::<dyn Describe>().map(|d| d.describe()), Some(1));
+
+        assert_eq!(TypeStorage::<EmptyAlignedType>::VALUE_OFFSET, 64);
+        let aligned = context.intern_type(EmptyAlignedType);
+        assert_ne!(aligned, empty);
+        assert_eq!(aligned, context.intern_type(EmptyAlignedType));
+        let value = aligned.downcast_ref::<EmptyAlignedType>().expect("an EmptyAlignedType");
+        assert!((value as *const EmptyAlignedType).is_aligned());
+        let described = aligned.as_trait::<dyn Describe>().expect("it implements Describe");
+        assert_eq!(described.describe(), 64);
+        assert!((described as *const dyn Describe).cast::<EmptyAlignedType>().is_aligned());
     }
 
     /// A tiny type registration: the type `$ty` named `$name` in `$dialect`.
