@@ -4413,7 +4413,13 @@ builtin.function public extern(\"C\") @f(%0: i32, %1: i64) -> i32 {
     let function = assert_function_round_trips(&test, source, source);
     let function = function.borrow();
     let signature = function.get_signature();
-    assert!(signature.params().iter().chain(signature.results()).all(|p| p.attrs.is_empty()));
+    assert!(
+        signature
+            .params()
+            .iter()
+            .chain(signature.results())
+            .all(|p| p.attributes().is_empty())
+    );
 }
 
 /// A parameter attribute that is not a builtin marker is kept like any other.
@@ -4427,9 +4433,9 @@ builtin.function public extern(\"C\") @f(%0: i32 { align = #builtin.i32<8> }) {
     let function = assert_function_round_trips(&test, source, source);
     let function = function.borrow();
     let signature = function.get_signature();
-    let align = signature.params()[0].attrs.find(&crate::interner::Symbol::intern("align"));
-    let align = align.get().expect("an `align` attribute");
-    assert_eq!(align.value.borrow().as_int(), Some(Int::from(8i32)));
+    let align = signature.params()[0].attribute(crate::interner::Symbol::intern("align"));
+    let align = align.expect("an `align` attribute");
+    assert_eq!(align.borrow().as_int(), Some(Int::from(8i32)));
 }
 
 /// A function declared with a list of types has no body, one empty region, and verifies.
@@ -4913,7 +4919,7 @@ fn marking_a_parameter_sret_twice_keeps_one_entry() {
     let context = test.context_rc();
     let mut param = AbiParam::sret(context.ptr_type(context.i32()), &context);
     param.mark_sret(&context);
-    assert_eq!(param.attrs.iter().count(), 1, "{param}");
+    assert_eq!(param.attributes().len(), 1, "{param}");
 
     let signature = Signature {
         params: alloc::vec![param],
@@ -4944,8 +4950,23 @@ fn a_parameter_built_with_a_repeated_key_keeps_the_last() {
         context.i8(),
         [NamedAttribute::new(key, zext), NamedAttribute::new(key, sext)],
     );
-    assert_eq!(param.attrs.iter().count(), 1, "{param}");
+    assert_eq!(param.attributes().len(), 1, "{param}");
     assert_eq!(param.extension(), ArgumentExtension::Sext);
+}
+
+/// Asking a function for its signature twice gives signatures that share their parameters'
+/// attributes: a signature's copy allocates no attribute.
+#[test]
+fn asking_for_a_signature_twice_shares_its_attributes() {
+    let test = ParserTest::default();
+    let source = "builtin.function public extern(\"C\") @f(i8 { extend = #builtin.zext });";
+    let function = test.parse::<Function>("c.hir", source).unwrap();
+    let function = function.borrow();
+    let first = crate::CallableOpInterface::signature(&*function);
+    let second = crate::CallableOpInterface::signature(&*function);
+    let a = first.params()[0].attributes()[0].value;
+    let b = second.params()[0].attributes()[0].value;
+    assert!(crate::AttributeRef::ptr_eq(&a, &b), "each call allocated a new attribute");
 }
 
 /// The text the printer writes for a parameter marked `sret` twice parses back to an equal
@@ -5077,15 +5098,14 @@ fn a_signature_type_of_another_context_does_not_verify() {
 }
 
 /// An open type in a declaration's signature does not verify. `AbiParam::new` panics on it in
-/// debug builds, so it is built as a literal, which no build checks.
+/// debug builds, so the parameter is built with a closed type and its public `ty` field set after,
+/// which no build checks.
 #[test]
 fn an_open_signature_type_does_not_verify() {
     let test = ParserTest::default();
     let context = test.context_rc();
-    let open = AbiParam {
-        ty: context.ptr_type(context.rec_var(0)),
-        attrs: Default::default(),
-    };
+    let mut open = AbiParam::new(context.i32());
+    open.ty = context.ptr_type(context.rec_var(0));
     let signature = Signature {
         params: alloc::vec![AbiParam::new(context.i32()), open],
         results: alloc::vec![],

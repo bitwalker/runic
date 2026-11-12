@@ -5,8 +5,8 @@ use core::{
 };
 
 use crate::{
-    AttrPrinter, AttributeRef, CallConv, Context, NamedAttribute, OpPrintingFlags, Type,
-    attributes::{AttrParser, AttributeDict, Marker},
+    AttrPrinter, AttributeRef, CallConv, Context, NamedAttribute, OpPrintingFlags, SmallVec, Type,
+    attributes::{AttrParser, Marker},
     derive::DialectAttribute,
     diagnostics::{SourceSpan, TextRange, report},
     dialects::builtin::BuiltinDialect,
@@ -86,45 +86,34 @@ impl fmt::Display for ArgumentExtension {
 }
 
 /// Describes a function parameter or result.
-#[derive(Debug, PartialEq, Eq, Hash)]
+///
+/// Its attributes are shared handles, sorted by name with at most one entry per name. A copy of
+/// a parameter (or of a [Signature]) shares them with the original, so an attribute held by a
+/// parameter is replaced with [Self::set_attribute], never mutated in place: a change made through
+/// a shared handle would change every copy.
+///
+/// Two parameters are equal, and hash alike, when their types and the names and values of their
+/// attributes are; the handles need not be the same.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AbiParam {
     /// The type associated with this value
     pub ty: Type,
-    /// The attributes associated with this value
-    pub attrs: AttributeDict,
-}
-
-impl Clone for AbiParam {
-    fn clone(&self) -> Self {
-        let mut attrs = AttributeDict::new();
-        for attr in self.attrs.iter() {
-            let value = attr.value.borrow();
-            let new_value = value.dyn_clone();
-            let new_attr = value.context_rc().alloc_map_item(NamedAttribute {
-                name: attr.name,
-                value: new_value,
-            });
-            attrs.insert(new_attr);
-        }
-        Self { ty: self.ty, attrs }
-    }
+    /// The attributes associated with this value, sorted by name, one per name
+    attrs: SmallVec<[NamedAttribute; 1]>,
 }
 
 impl AbiParam {
     /// Panics, in debug builds, if `ty` is open: a parameter's type enters IR.
     #[track_caller]
     pub fn new(ty: Type) -> Self {
-        Self::new_with_attribute_dict(ty, AttributeDict::new())
-    }
-
-    /// Panics, in debug builds, if `ty` is open: a parameter's type enters IR.
-    #[track_caller]
-    pub fn new_with_attribute_dict(ty: Type, attrs: AttributeDict) -> Self {
         crate::types::debug_assert_closed(ty, "the type of a parameter");
-        Self { ty, attrs }
+        Self {
+            ty,
+            attrs: SmallVec::new_const(),
+        }
     }
 
-    /// A parameter of type `ty` holding `attributes`. A key given more than once keeps its last
+    /// A parameter of type `ty` holding `attributes`. A name given more than once keeps its last
     /// value, as [Self::set_attribute] does.
     ///
     /// Panics, in debug builds, if `ty` is open or belongs to another context than an attribute.
@@ -141,16 +130,36 @@ impl AbiParam {
         param
     }
 
+    /// The attributes of the parameter, sorted by name.
+    #[inline]
+    pub fn attributes(&self) -> &[NamedAttribute] {
+        self.attrs.as_slice()
+    }
+
+    /// The attribute `name`, if the parameter has it.
+    pub fn attribute(&self, name: impl Into<interner::Symbol>) -> Option<AttributeRef> {
+        let name = name.into();
+        self.find(name).ok().map(|index| self.attrs[index].value)
+    }
+
     /// Sets the attribute `name` to `value`, replacing any value it already has.
     pub fn set_attribute(&mut self, name: impl Into<interner::Symbol>, value: AttributeRef) {
         let name = name.into();
-        let attr = value.borrow().context_rc().alloc_map_item(NamedAttribute::new(name, value));
-        if self.attrs.find(&name).is_null() {
-            self.attrs.insert(attr);
-        } else {
-            let mut existing = self.attrs.find_mut(&name);
-            existing.replace_with(attr).expect("attribute cursor unexpectedly became null");
+        match self.find(name) {
+            Ok(index) => self.attrs[index].value = value,
+            Err(index) => self.attrs.insert(index, NamedAttribute::new(name, value)),
         }
+    }
+
+    /// Removes the attribute `name`, returning its value if the parameter had it.
+    pub fn remove_attribute(&mut self, name: impl Into<interner::Symbol>) -> Option<AttributeRef> {
+        let name = name.into();
+        self.find(name).ok().map(|index| self.attrs.remove(index).value)
+    }
+
+    /// The index of the attribute `name`, or where it would be inserted to keep the order.
+    fn find(&self, name: interner::Symbol) -> Result<usize, usize> {
+        self.attrs.binary_search_by(|attr| attr.name.cmp(&name))
     }
 
     pub fn zext(ty: Type, context: &Rc<Context>) -> Self {
@@ -181,16 +190,16 @@ impl AbiParam {
     }
 
     pub fn is_sret_param(&self) -> bool {
-        self.attrs.contains(&interner::symbols::Sret)
+        self.find(interner::symbols::Sret).is_ok()
     }
 
     /// How the parameter is extended: the value of its `extend` attribute, `#builtin.zext` or
     /// `#builtin.sext`.
     pub fn extension(&self) -> ArgumentExtension {
-        match self.attrs.find(&interner::symbols::Extend).get() {
+        match self.attribute(interner::symbols::Extend) {
             None => ArgumentExtension::None,
             Some(attr) => {
-                let value = attr.value.borrow();
+                let value = attr.borrow();
                 if value.is::<ZextAttr>() {
                     ArgumentExtension::Zext
                 } else if value.is::<SextAttr>() {
@@ -405,7 +414,7 @@ pub(crate) trait SignatureWriter {
     /// Writes `string` quoted, escaped as by `str::escape_default`.
     fn write_string(&mut self, string: &str);
     /// Writes `attrs`, which is not empty, as a dictionary attribute.
-    fn write_attributes(&mut self, attrs: &AttributeDict);
+    fn write_attributes(&mut self, attrs: &[NamedAttribute]);
 }
 
 impl SignatureWriter for AsmPrinter<'_> {
@@ -421,8 +430,8 @@ impl SignatureWriter for AsmPrinter<'_> {
         self.print_string(string);
     }
 
-    fn write_attributes(&mut self, attrs: &AttributeDict) {
-        self.print_attribute_dictionary(attrs.iter().map(|attr| *attr));
+    fn write_attributes(&mut self, attrs: &[NamedAttribute]) {
+        self.print_attribute_dictionary(attrs.iter().copied());
     }
 }
 
@@ -453,7 +462,7 @@ impl SignatureWriter for PlainText {
         let _ = write!(self.text, "\"{}\"", string.escape_default());
     }
 
-    fn write_attributes(&mut self, _attrs: &AttributeDict) {
+    fn write_attributes(&mut self, _attrs: &[NamedAttribute]) {
         unreachable!("a signature with attributes is displayed with a printer")
     }
 }
@@ -467,7 +476,7 @@ fn display_with<'a>(
 ) -> fmt::Result {
     let context = params
         .into_iter()
-        .find_map(|param| param.attrs.iter().next().map(|attr| attr.value.borrow().context_rc()));
+        .find_map(|param| param.attributes().first().map(|attr| attr.value.borrow().context_rc()));
     match context {
         Some(context) => {
             let flags = OpPrintingFlags::default();
@@ -495,9 +504,9 @@ fn print_signature<W: SignatureWriter + ?Sized>(writer: &mut W, signature: &Sign
 /// Writes a `param`: its type, then its attributes as a dictionary if it has any.
 fn write_param<W: SignatureWriter + ?Sized>(writer: &mut W, param: &AbiParam) {
     writer.write_type(param.ty);
-    if !param.attrs.is_empty() {
+    if !param.attributes().is_empty() {
         writer.write_text(" ");
-        writer.write_attributes(&param.attrs);
+        writer.write_attributes(param.attributes());
     }
 }
 
@@ -518,7 +527,7 @@ pub(crate) fn print_param_list<W: SignatureWriter + ?Sized>(writer: &mut W, para
 /// unparenthesised result never has a dictionary, and a `{` after it is not one.
 pub(crate) fn print_result_list<W: SignatureWriter + ?Sized>(writer: &mut W, results: &[AbiParam]) {
     match results {
-        [result] if result.attrs.is_empty() && !result.ty.is_function() => {
+        [result] if result.attributes().is_empty() && !result.ty.is_function() => {
             writer.write_type(result.ty)
         }
         results => print_param_list(writer, results),
@@ -647,6 +656,111 @@ mod tests {
     fn an_open_parameter_type_panics() {
         let context = crate::Context::default();
         let _ = AbiParam::new(context.ptr_type(context.rec_var(0)));
+    }
+
+    /// The hash of `value` under one fixed hasher.
+    fn hash_of<T: core::hash::Hash>(value: &T) -> u64 {
+        use core::hash::{BuildHasher, BuildHasherDefault};
+        BuildHasherDefault::<rustc_hash::FxHasher>::default().hash_one(value)
+    }
+
+    /// A copy of a parameter holds the same attribute handles as the original: cloning allocates
+    /// no attribute.
+    #[test]
+    fn a_cloned_parameter_shares_its_attributes() {
+        let context = Rc::new(crate::Context::default());
+        let param = AbiParam::zext(context.i8(), &context);
+        let copy = param.clone();
+        let original = param.attribute(interner::symbols::Extend).unwrap();
+        let shared = copy.attribute(interner::symbols::Extend).unwrap();
+        assert!(AttributeRef::ptr_eq(&original, &shared));
+        assert_eq!(copy, param);
+    }
+
+    /// The order attributes are set in does not matter: the parameters are equal, hash alike,
+    /// print alike, and list their attributes sorted by name.
+    #[test]
+    fn a_parameter_does_not_depend_on_the_order_its_attributes_are_set_in() {
+        let context = Rc::new(crate::Context::default());
+        let ty = context.ptr_type(context.i8());
+        let sret = context.create_attribute::<SretAttr, _>(()).as_attribute_ref();
+        let zext = context.create_attribute::<ZextAttr, _>(()).as_attribute_ref();
+
+        let mut first = AbiParam::new(ty);
+        first.set_attribute(interner::symbols::Sret, sret);
+        first.set_attribute(interner::symbols::Extend, zext);
+        let mut second = AbiParam::new(ty);
+        second.set_attribute(interner::symbols::Extend, zext);
+        second.set_attribute(interner::symbols::Sret, sret);
+
+        assert_eq!(first, second);
+        assert_eq!(hash_of(&first), hash_of(&second));
+        assert_eq!(format!("{first}"), format!("{second}"));
+        assert_eq!(format!("{first}"), "ptr<i8> { extend = #builtin.zext, sret = #builtin.sret }");
+        let names = |param: &AbiParam| {
+            param.attributes().iter().map(|attr| attr.name.as_str()).collect::<Vec<_>>()
+        };
+        assert_eq!(names(&first), ["extend", "sret"]);
+        assert_eq!(names(&second), ["extend", "sret"]);
+
+        // Equality compares attribute values, not handles
+        let mut third = AbiParam::new(ty);
+        third.set_attribute(
+            interner::symbols::Extend,
+            context.create_attribute::<ZextAttr, _>(()).as_attribute_ref(),
+        );
+        third.set_attribute(
+            interner::symbols::Sret,
+            context.create_attribute::<SretAttr, _>(()).as_attribute_ref(),
+        );
+        assert_eq!(first, third);
+        assert_eq!(hash_of(&first), hash_of(&third));
+    }
+
+    /// `set_attribute` on a name the parameter has replaces its value, and `remove_attribute`
+    /// takes it out.
+    #[test]
+    fn setting_an_attribute_replaces_and_removing_takes_it_out() {
+        let context = Rc::new(crate::Context::default());
+        let zext = context.create_attribute::<ZextAttr, _>(()).as_attribute_ref();
+        let sext = context.create_attribute::<SextAttr, _>(()).as_attribute_ref();
+        let key = interner::symbols::Extend;
+
+        let mut param = AbiParam::new(context.i8());
+        assert!(param.remove_attribute(key).is_none());
+        param.set_attribute(key, zext);
+        param.set_attribute(key, sext);
+        assert_eq!(param.attributes().len(), 1, "{param}");
+        assert!(AttributeRef::ptr_eq(&param.attribute(key).unwrap(), &sext));
+        assert_eq!(param.extension(), ArgumentExtension::Sext);
+
+        let removed = param.remove_attribute(key).expect("an `extend` attribute");
+        assert!(AttributeRef::ptr_eq(&removed, &sext));
+        assert!(param.attribute(key).is_none());
+        assert!(param.attributes().is_empty());
+        assert_eq!(param.extension(), ArgumentExtension::None);
+        assert_eq!(param, AbiParam::new(context.i8()));
+    }
+
+    /// A name given more than once to `new_with_attrs` keeps its last value.
+    #[test]
+    fn a_parameter_built_with_a_repeated_name_keeps_the_last() {
+        let context = Rc::new(crate::Context::default());
+        let zext = context.create_attribute::<ZextAttr, _>(()).as_attribute_ref();
+        let sext = context.create_attribute::<SextAttr, _>(()).as_attribute_ref();
+        let sret = context.create_attribute::<SretAttr, _>(()).as_attribute_ref();
+        let key = interner::symbols::Extend;
+        let param = AbiParam::new_with_attrs(
+            context.ptr_type(context.i8()),
+            [
+                NamedAttribute::new(key, zext),
+                NamedAttribute::new(interner::symbols::Sret, sret),
+                NamedAttribute::new(key, sext),
+            ],
+        );
+        assert_eq!(param.attributes().len(), 2, "{param}");
+        assert!(AttributeRef::ptr_eq(&param.attribute(key).unwrap(), &sext));
+        assert!(param.is_sret_param());
     }
 
     /// A function that never returns declares the single result `never`, and produces no values.

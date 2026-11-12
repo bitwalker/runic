@@ -290,10 +290,10 @@ impl OpPrinter for Function {
                 *printer += display(arg.id()) + const_text(": ");
                 printer.print_type(arg.ty());
                 if let Some(param) = sig.params().get(i)
-                    && !param.attrs.is_empty()
+                    && !param.attributes().is_empty()
                 {
                     printer.print_space();
-                    printer.write_attributes(&param.attrs);
+                    printer.write_attributes(param.attributes());
                 }
             }
             printer.print_rparen();

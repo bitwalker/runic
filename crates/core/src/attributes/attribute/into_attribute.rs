@@ -215,7 +215,7 @@ mod tests {
         let context = Rc::new(Context::default());
         let mut signature = Signature::new(&context, [context.i8()], []);
         signature.params[0] = AbiParam::zext(context.i8(), &context);
-        assert!(!signature.params[0].attrs.is_empty());
+        assert!(!signature.params[0].attributes().is_empty());
 
         let attr = into::<SignatureAttr>(&context, signature.clone());
         assert_eq!(**attr.borrow(), signature);
