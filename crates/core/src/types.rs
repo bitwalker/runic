@@ -293,9 +293,12 @@ impl PartialEq for Type {
     }
 }
 /// A type hashes as its stored hash, which is computed from its value, and so from its child
-/// types' stored hashes in turn: equal structure gives an equal hash, in any context and any
-/// run, and the iteration order of a map keyed by types does not depend on where the types
-/// happen to be allocated. Equality is still identity, which implies an equal hash.
+/// types' stored hashes in turn: equal structure gives an equal hash in any context, and the
+/// iteration order of a map keyed by types does not depend on where the types happen to be
+/// allocated. The hash is built from the structure, Rust [TypeId]s and interned
+/// [Symbol](crate::interner::Symbol) indices, so it is repeatable from run to run only for the
+/// same build and the same order of symbol interning (see `hash_of`). Equality is still
+/// identity, which implies an equal hash.
 impl Hash for Type {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
