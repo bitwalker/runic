@@ -23,6 +23,8 @@ struct TypeInfo {
     name: Symbol,
     /// The [TypeId] of the Rust type whose values are this type's storage.
     type_id: TypeId,
+    /// The name of that Rust type, for diagnostics.
+    rust_type_name: &'static str,
     /// The interfaces this type implements, sorted by trait `TypeId` for binary search.
     traits: Box<[TraitInfo]>,
     /// `TypeStorage::<T>::VALUE_OFFSET` for the registered `T`.
@@ -59,6 +61,7 @@ impl TypeName {
             dialect,
             name: T::name(),
             type_id: TypeId::of::<T>(),
+            rust_type_name: core::any::type_name::<T>(),
             traits: traits.into_boxed_slice(),
             value_offset: TypeStorage::<T>::VALUE_OFFSET,
             debug: debug_value::<T>,
@@ -83,6 +86,18 @@ impl TypeName {
     #[inline]
     pub fn is<T: 'static>(&self) -> bool {
         TypeId::of::<T>() == self.0.type_id
+    }
+
+    /// Returns true if `other` is implemented by the same Rust type as this name.
+    #[inline]
+    pub(crate) fn has_rust_type_of(&self, other: &TypeName) -> bool {
+        self.0.type_id == other.0.type_id
+    }
+
+    /// The name of the Rust type that implements this type.
+    #[inline]
+    pub(crate) fn rust_type_name(&self) -> &'static str {
+        self.0.rust_type_name
     }
 
     /// Returns true if this type implements `Trait`.

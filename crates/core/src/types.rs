@@ -448,56 +448,63 @@ mod tests {
         );
     }
 
-    /// Two Rust types that claim the same name in the same dialect.
-    #[derive(Debug, PartialEq, Eq, Hash)]
-    struct ClashSmall(u8);
-    impl TypeImpl for ClashSmall {}
-    impl TypeRegistration for ClashSmall {
-        type Dialect = TestDialect;
+    /// A tiny type registration: the type `$ty` named `$name` in `$dialect`.
+    macro_rules! named_type {
+        ($ty:ident($field:ty), $dialect:ident, $name:literal) => {
+            #[derive(Debug, PartialEq, Eq, Hash)]
+            struct $ty($field);
+            impl TypeImpl for $ty {}
+            impl TypeRegistration for $ty {
+                type Dialect = $dialect;
 
-        fn name() -> Symbol {
-            Symbol::intern("clash")
-        }
+                fn name() -> Symbol {
+                    Symbol::intern($name)
+                }
 
-        fn traits() -> Box<[TraitInfo]> {
-            Box::from([TraitInfo::new::<Self, dyn Any>()])
-        }
+                fn traits() -> Box<[TraitInfo]> {
+                    Box::from([TraitInfo::new::<Self, dyn Any>()])
+                }
+            }
+        };
     }
+
+    isolated_dialect!(ClashDialect, "type_clash");
+
+    // Two Rust types that claim the same name in the same dialect.
+    named_type!(ClashSmall(u8), ClashDialect, "clash");
     inventory::submit!(DialectTypeRegistrationInfo::new::<ClashSmall>());
-
-    #[derive(Debug, PartialEq, Eq, Hash)]
-    struct ClashWide(u128);
-    impl TypeImpl for ClashWide {}
-    impl TypeRegistration for ClashWide {
-        type Dialect = TestDialect;
-
-        fn name() -> Symbol {
-            Symbol::intern("clash")
-        }
-
-        fn traits() -> Box<[TraitInfo]> {
-            Box::from([TraitInfo::new::<Self, dyn Any>()])
-        }
-    }
+    named_type!(ClashWide(u128), ClashDialect, "clash");
     inventory::submit!(DialectTypeRegistrationInfo::new::<ClashWide>());
 
     #[test]
-    fn a_name_claimed_by_another_rust_type_is_not_handed_out() {
+    #[should_panic(
+        expected = "dialect 'type_clash' registers the type name 'clash' for two Rust types"
+    )]
+    fn a_dialect_registering_one_name_for_two_rust_types_panics_when_registered() {
         let context = Context::default();
-        let dialect = context.get_or_register_dialect::<TestDialect>();
-        let small = dialect.registered_type_name::<ClashSmall>();
-        let wide = dialect.registered_type_name::<ClashWide>();
-        assert!(small.is_some() != wide.is_some(), "exactly one type owns the name");
-        assert!(small.is_none_or(|name| name.is::<ClashSmall>()));
-        assert!(wide.is_none_or(|name| name.is::<ClashWide>()));
+        context.get_or_register_dialect::<ClashDialect>();
+    }
+
+    isolated_dialect!(ClaimedNameDialect, "claimed_name");
+
+    // `Impostor` names itself after `Claimed` but is never registered.
+    named_type!(Claimed(u8), ClaimedNameDialect, "claimed");
+    inventory::submit!(DialectTypeRegistrationInfo::new::<Claimed>());
+    named_type!(Impostor(u8), ClaimedNameDialect, "claimed");
+
+    #[test]
+    fn a_name_registered_for_another_rust_type_is_not_handed_out() {
+        let context = Context::default();
+        let dialect = context.get_or_register_dialect::<ClaimedNameDialect>();
+        assert!(dialect.registered_type_name::<Claimed>().is_some());
+        assert!(dialect.registered_type_name::<Impostor>().is_none());
     }
 
     #[test]
     #[should_panic(expected = "is not registered")]
     fn interning_a_type_whose_name_another_rust_type_owns_panics() {
         let context = Context::default();
-        context.intern_type(ClashSmall(1));
-        context.intern_type(ClashWide(1));
+        context.intern_type(Impostor(1));
     }
 
     #[derive(Debug, PartialEq, Eq, Hash, crate::derive::DialectType)]

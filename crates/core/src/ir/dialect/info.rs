@@ -156,15 +156,27 @@ impl DialectInfo {
 
     /// Returns the type registered under `name`, registering it with `init` if there is none.
     ///
-    /// A name already registered keeps its registration, even when `init` is for a different Rust
-    /// type.
+    /// Panics if `name` is already registered for a different Rust type than the one `init`
+    /// registers.
     pub fn get_or_register_type_with(
         &mut self,
         name: interner::Symbol,
         init: fn(interner::Symbol) -> TypeName,
     ) -> TypeName {
         match self.registered_types.binary_search_by_key(&name, |ty| ty.name()) {
-            Ok(index) => self.registered_types[index].clone(),
+            Ok(index) => {
+                let registered = &self.registered_types[index];
+                let candidate = init(self.name);
+                assert!(
+                    registered.has_rust_type_of(&candidate),
+                    "dialect '{}' registers the type name '{name}' for two Rust types: `{}` and \
+                     `{}`",
+                    self.name,
+                    registered.rust_type_name(),
+                    candidate.rust_type_name()
+                );
+                registered.clone()
+            }
             Err(index) => {
                 let ty = init(self.name);
                 debug_assert_eq!(ty.name(), name);
