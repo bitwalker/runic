@@ -8,6 +8,12 @@ use core::{
 pub struct TraitInfo {
     /// The [TypeId] of the trait type, used as a unique key for [TraitImpl]s
     type_id: TypeId,
+    /// The name of the trait type, for diagnostics
+    type_name: &'static str,
+    /// The [TypeId] of the concrete type whose vtable `metadata` is
+    concrete_type_id: TypeId,
+    /// The name of the concrete type, for diagnostics
+    concrete_type_name: &'static str,
     /// Type-erased dyn metadata containing the trait vtable pointer for the concrete type
     ///
     /// This is transmuted to the correct trait type when reifying a `&dyn Trait` reference,
@@ -25,6 +31,9 @@ impl TraitInfo {
         let (_, metadata) = ptr.to_raw_parts();
         Self {
             type_id,
+            type_name: core::any::type_name::<Trait>(),
+            concrete_type_id: TypeId::of::<T>(),
+            concrete_type_name: core::any::type_name::<T>(),
             metadata: unsafe {
                 core::mem::transmute::<DynMetadata<Trait>, DynMetadata<dyn Any>>(metadata)
             },
@@ -34,6 +43,24 @@ impl TraitInfo {
     #[inline(always)]
     pub const fn type_id(&self) -> &TypeId {
         &self.type_id
+    }
+
+    /// The name of the trait type.
+    #[inline(always)]
+    pub const fn type_name(&self) -> &'static str {
+        self.type_name
+    }
+
+    /// The [TypeId] of the concrete type this info was built for, whose vtable it holds.
+    #[inline(always)]
+    pub const fn concrete_type_id(&self) -> &TypeId {
+        &self.concrete_type_id
+    }
+
+    /// The name of the concrete type this info was built for.
+    #[inline(always)]
+    pub const fn concrete_type_name(&self) -> &'static str {
+        self.concrete_type_name
     }
 
     /// Obtain the dyn metadata for `Trait` from this info.

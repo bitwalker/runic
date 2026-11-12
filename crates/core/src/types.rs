@@ -205,6 +205,58 @@ mod tests {
     use super::*;
     use crate::{Context, dialects::test::TestDialect, interner::Symbol, traits::TraitInfo};
 
+    /// Defines a dialect that is not submitted to `inventory`, so that only a test that registers
+    /// it explicitly (with `Context::get_or_register_dialect`) initialises it and its types.
+    macro_rules! isolated_dialect {
+        ($dialect:ident, $namespace:literal) => {
+            #[derive(Debug)]
+            struct $dialect {
+                info: crate::DialectInfo,
+            }
+            impl crate::Dialect for $dialect {
+                fn info(&self) -> &crate::DialectInfo {
+                    &self.info
+                }
+            }
+            impl crate::DialectRegistration for $dialect {
+                const NAMESPACE: &'static str = $namespace;
+
+                fn init(info: crate::DialectInfo) -> Self {
+                    Self { info }
+                }
+            }
+        };
+    }
+
+    isolated_dialect!(MislabelledTraitsDialect, "mislabelled_traits");
+
+    /// Declares `Describe` with the vtable built for `WideType` instead of itself.
+    #[derive(Debug, PartialEq, Eq, Hash)]
+    struct MislabelledTraits(u8);
+    impl TypeImpl for MislabelledTraits {}
+    impl TypeRegistration for MislabelledTraits {
+        type Dialect = MislabelledTraitsDialect;
+
+        fn name() -> Symbol {
+            Symbol::intern("mislabelled")
+        }
+
+        fn traits() -> Box<[TraitInfo]> {
+            Box::from([
+                TraitInfo::new::<Self, dyn Any>(),
+                TraitInfo::new::<WideType, dyn Describe>(),
+            ])
+        }
+    }
+    inventory::submit!(DialectTypeRegistrationInfo::new::<MislabelledTraits>());
+
+    #[test]
+    #[should_panic(expected = "was built for another type")]
+    fn a_trait_table_entry_built_for_another_type_is_rejected() {
+        let context = Context::default();
+        context.intern_type(MislabelledTraits(1));
+    }
+
     /// An interface a type may implement, to exercise `Type::as_trait`.
     trait Describe {
         fn describe(&self) -> u128;
