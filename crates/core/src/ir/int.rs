@@ -2,6 +2,8 @@ use core::{cmp::Ordering, fmt};
 
 mod arith;
 
+pub use self::arith::fold_isize;
+
 /// An integer of a fixed width between 1 and 128 bits.
 ///
 /// `Int` is signless: it is a bit pattern, and carries no interpretation as a signed or an unsigned
@@ -26,7 +28,8 @@ mod arith;
 /// | Counting | `count_ones`, `{leading,trailing}_{zeros,ones}` | plain bits, within the width |
 ///
 /// There is no `Add`, `Sub` or `Mul` operator: `a + b` would hide the choice between wrapping and
-/// overflow.
+/// overflow. [fold_isize] folds an operation on pointer-width constants when 32- and 64-bit targets
+/// agree.
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Int {
     bits: u128,

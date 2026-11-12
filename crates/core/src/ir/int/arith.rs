@@ -326,6 +326,32 @@ impl Not for Int {
     }
 }
 
+/// Folds an operation whose operands are `isize` constants (64-bit values) so that the result is
+/// right on a 32-bit target as well as a 64-bit one.
+///
+/// `f` is called with the operands as they are, and again with each truncated to 32 bits. The fold
+/// succeeds when both calls do and agree: a 64-bit result truncated to 32 bits equals the 32-bit
+/// result, or, for a result of another width (a comparison's `i1`), the two are equal. It returns
+/// the first call's result.
+///
+/// Panics if an operand is not 64 bits wide.
+pub fn fold_isize<const N: usize>(
+    operands: [Int; N],
+    f: impl Fn([Int; N]) -> Option<Int>,
+) -> Option<Int> {
+    for operand in operands {
+        assert_eq!(operand.width(), 64, "isize constants are 64 bits wide");
+    }
+    let wide = f(operands)?;
+    let narrow = f(operands.map(|operand| operand.trunc(32)))?;
+    let expected = if wide.width() == 64 {
+        wide.trunc(32)
+    } else {
+        wide
+    };
+    (narrow == expected).then_some(wide)
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::vec::Vec;
@@ -690,5 +716,101 @@ mod tests {
     #[should_panic]
     fn operator_on_different_widths_panics() {
         let _ = Int::from(1u8) & Int::from(1u16);
+    }
+
+    // fold_isize
+
+    fn isize_const(v: i64) -> Int {
+        Int::from(v)
+    }
+
+    fn shl_amount(b: Int) -> u32 {
+        b.unsigned().min(u32::MAX as u128) as u32
+    }
+
+    #[test]
+    fn fold_isize_commuting_operations_fold() {
+        let values = [
+            0i64,
+            1,
+            -1,
+            2,
+            i64::MIN,
+            i64::MAX,
+            1 << 32,
+            (1 << 32) - 1,
+            0x1234_5678_9abc_def0,
+        ];
+        for &a in &values {
+            for &b in &values {
+                let (x, y) = (isize_const(a), isize_const(b));
+                let fold =
+                    |f: fn(Int, Int) -> Int| super::fold_isize([x, y], |[p, q]| Some(f(p, q)));
+                assert_eq!(fold(Int::wrapping_add), Some(isize_const(a.wrapping_add(b))));
+                assert_eq!(fold(Int::wrapping_sub), Some(isize_const(a.wrapping_sub(b))));
+                assert_eq!(fold(Int::wrapping_mul), Some(isize_const(a.wrapping_mul(b))));
+                assert_eq!(fold(|p, q| p & q), Some(isize_const(a & b)));
+                assert_eq!(fold(|p, q| p | q), Some(isize_const(a | b)));
+                assert_eq!(fold(|p, q| p ^ q), Some(isize_const(a ^ b)));
+            }
+        }
+    }
+
+    #[test]
+    fn fold_isize_shl() {
+        let shl = |a: i64, amount: i64| {
+            super::fold_isize([isize_const(a), isize_const(amount)], |[p, q]| {
+                Some(p.shl(shl_amount(q)))
+            })
+        };
+        for amount in [0i64, 1, 31, 32, 40, 63, 64, 100] {
+            assert_eq!(
+                shl(0x1234_5678_9abc_def1, amount),
+                Some(isize_const(0x1234_5678_9abc_def1).shl(amount as u32))
+            );
+        }
+        assert_eq!(shl(1, (1 << 32) + 1), None);
+    }
+
+    #[test]
+    fn fold_isize_operations_that_depend_on_the_width() {
+        let div = |a: i64, b: i64| {
+            super::fold_isize([isize_const(a), isize_const(b)], |[p, q]| p.div_unsigned(q))
+        };
+        assert_eq!(div(1 << 32, 2), None);
+        assert_eq!(div(100, 7), Some(isize_const(14)));
+
+        let ult = |a: i64, b: i64| {
+            super::fold_isize([isize_const(a), isize_const(b)], |[p, q]| {
+                Some(Int::from(p.cmp_unsigned(q) == Ordering::Less))
+            })
+        };
+        assert_eq!(ult(1 << 32, 1), None);
+        assert_eq!(ult(5, 7), Some(Int::from(true)));
+        assert_eq!(ult(7, 5), Some(Int::from(false)));
+
+        let lshr = |a: i64, n: i64| {
+            super::fold_isize([isize_const(a), isize_const(n)], |[p, q]| {
+                Some(p.lshr(shl_amount(q)))
+            })
+        };
+        assert_eq!(lshr(-1, 1), None);
+        assert_eq!(lshr(8, 1), Some(isize_const(4)));
+    }
+
+    #[test]
+    fn fold_isize_propagates_none() {
+        assert_eq!(super::fold_isize([isize_const(1)], |_| None), None);
+        // Fails only on the 32-bit call: the operand is 2^32, which truncates to zero.
+        let div = super::fold_isize([isize_const(1 << 32)], |[p]| {
+            Int::from_bits(p.width(), 1).div_unsigned(p)
+        });
+        assert_eq!(div, None);
+    }
+
+    #[test]
+    #[should_panic]
+    fn fold_isize_requires_64_bit_operands() {
+        let _ = super::fold_isize([Int::from(1u32)], |[p]| Some(p));
     }
 }
