@@ -467,7 +467,7 @@ fn converted_operands_for(
     type_converter: Option<&TypeConverter>,
     rewriter: &mut ConversionPatternRewriter,
 ) -> Result<Vec<SmallVec<[ValueRef; 2]>>, Report> {
-    let (span, operand_groups) = {
+    let (context, span, operand_groups) = {
         let op = op.borrow();
         let span = op.span();
         let operand_groups = op
@@ -480,7 +480,7 @@ fn converted_operands_for(
                     .collect::<SmallVec<[ValueRef; 2]>>()
             })
             .collect::<Vec<_>>();
-        (span, operand_groups)
+        (op.context_rc(), span, operand_groups)
     };
 
     let mut converted = vec![];
@@ -491,7 +491,7 @@ fn converted_operands_for(
                 converted_group.push(value);
                 continue;
             };
-            let converted_ty = type_converter.convert_value_1_to_1(value)?;
+            let converted_ty = type_converter.convert_value_1_to_1(&context, value)?;
             converted_group.push(type_converter.materialize_target_conversion(
                 rewriter,
                 value,
@@ -928,7 +928,7 @@ mod tests {
     fn i32_to_i64_converter(context: &Context) -> TypeConverter {
         let (from, to) = (context.i32(), context.i64());
         let mut converter = TypeConverter::new();
-        converter.add_conversion(move |ty| {
+        converter.add_conversion(move |_, ty| {
             if ty == from {
                 Some(TypeConversion::One(to))
             } else {
@@ -1123,7 +1123,7 @@ builtin.function public extern(\"C\") @full_conversion_rewrites_illegal_op_to_le
         });
         let (i32, i64) = (test.context().i32(), test.context().i64());
         let mut converter = TypeConverter::new();
-        converter.add_conversion(move |ty| {
+        converter.add_conversion(move |_, ty| {
             if ty == i32 {
                 Some(TypeConversion::Many(smallvec::smallvec![i64, i64]))
             } else {

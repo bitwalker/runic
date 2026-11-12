@@ -4,7 +4,7 @@ use smallvec::SmallVec;
 
 use super::TypeConverter;
 use crate::{
-    BlockRef, CallOpInterface, CallableOpInterface, OperationRef, RegionBranchOpInterface,
+    BlockRef, CallOpInterface, CallableOpInterface, Context, OperationRef, RegionBranchOpInterface,
     RegionBranchTerminatorOpInterface, RegionSuccessorInfo, Report, SuccessorOperand,
     SuccessorOperands, Type, Value, ValueRef, dialects::builtin::attributes::Signature,
     traits::BranchOpInterface,
@@ -39,6 +39,7 @@ impl SignatureConversion {
         block: BlockRef,
         type_converter: &TypeConverter,
     ) -> Result<Self, Report> {
+        let context = block.borrow().context_rc();
         let arguments = block
             .borrow()
             .arguments()
@@ -49,7 +50,7 @@ impl SignatureConversion {
 
         let mut conversion = Self::new();
         for (index, argument) in arguments.into_iter().enumerate() {
-            conversion.keep_input(index, type_converter.convert_value_1_to_1(argument)?);
+            conversion.keep_input(index, type_converter.convert_value_1_to_1(&context, argument)?);
         }
         Ok(conversion)
     }
@@ -193,20 +194,22 @@ pub enum InputMapping {
     },
 }
 
-/// Convert a builtin ABI signature 1:1, preserving ABI metadata on each parameter/result.
+/// Convert a builtin ABI signature of `context` 1:1, preserving ABI metadata on each
+/// parameter/result.
 ///
 /// This updates only parameter and result types. Calling convention and other ABI metadata remain
 /// unchanged.
 pub fn convert_signature_1_to_1(
+    context: &Context,
     signature: &Signature,
     type_converter: &TypeConverter,
 ) -> Result<Signature, Report> {
     let mut converted = signature.clone();
     for param in converted.params.iter_mut() {
-        param.ty = type_converter.convert_type_1_to_1(param.ty)?;
+        param.ty = type_converter.convert_type_1_to_1(context, param.ty)?;
     }
     for result in converted.results.iter_mut() {
-        result.ty = type_converter.convert_type_1_to_1(result.ty)?;
+        result.ty = type_converter.convert_type_1_to_1(context, result.ty)?;
     }
     Ok(converted)
 }
@@ -223,7 +226,7 @@ pub fn converted_callable_signature_1_to_1(
     let Some(callable) = op.as_trait::<dyn CallableOpInterface>() else {
         return Ok(None);
     };
-    convert_signature_1_to_1(&callable.signature(), type_converter).map(Some)
+    convert_signature_1_to_1(op.context(), &callable.signature(), type_converter).map(Some)
 }
 
 /// Resolve a call-like operation and return the converted callee signature.
@@ -240,7 +243,7 @@ pub fn converted_resolved_call_signature_1_to_1(
         return Ok(None);
     };
     let signature = resolve_call_signature(op.name().to_string(), call)?;
-    convert_signature_1_to_1(&signature, type_converter).map(Some)
+    convert_signature_1_to_1(op.context(), &signature, type_converter).map(Some)
 }
 
 /// Verify that a call-like operation's operands/results match its resolved callable signature.
@@ -592,7 +595,7 @@ mod tests {
     fn i32_to_i64_converter(context: &Context) -> TypeConverter {
         let (from, to) = (context.i32(), context.i64());
         let mut converter = TypeConverter::new();
-        converter.add_conversion(move |ty| {
+        converter.add_conversion(move |_, ty| {
             if ty == from {
                 Some(super::super::TypeConversion::One(to))
             } else {
@@ -646,7 +649,7 @@ mod tests {
         test.with_function("rejects_non_1_to_1_block_argument_conversion", &[i32], &[]);
         let block = test.entry_block();
         let mut converter = TypeConverter::new();
-        converter.add_conversion(move |ty| {
+        converter.add_conversion(move |_, ty| {
             if ty == i32 {
                 Some(super::super::TypeConversion::Drop)
             } else {
@@ -664,7 +667,8 @@ mod tests {
         let signature = Signature::new(&context, [context.i32()], [context.i32()]);
 
         let converted =
-            convert_signature_1_to_1(&signature, &i32_to_i64_converter(&context)).unwrap();
+            convert_signature_1_to_1(&context, &signature, &i32_to_i64_converter(&context))
+                .unwrap();
 
         assert_eq!(converted.params()[0].ty, context.i64());
         assert_eq!(converted.results()[0].ty, context.i64());

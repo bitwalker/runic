@@ -3,10 +3,12 @@ use alloc::{format, rc::Rc, vec::Vec};
 use smallvec::SmallVec;
 
 use super::rewriter::ConversionPatternRewriter;
-use crate::{Report, SourceSpan, Type, ValueRef, dialects::builtin::UnrealizedConversionCast};
+use crate::{
+    Context, Report, SourceSpan, Type, ValueRef, dialects::builtin::UnrealizedConversionCast,
+};
 
-type TypeConversionFn = Rc<dyn Fn(Type) -> Option<TypeConversion>>;
-type ValueConversionFn = Rc<dyn Fn(ValueRef) -> Option<TypeConversion>>;
+type TypeConversionFn = Rc<dyn Fn(&Context, Type) -> Option<TypeConversion>>;
+type ValueConversionFn = Rc<dyn Fn(&Context, ValueRef) -> Option<TypeConversion>>;
 type MaterializationFn = Rc<
     dyn Fn(
         &mut ConversionPatternRewriter,
@@ -63,7 +65,8 @@ impl TypeConversion {
 ///
 /// A type converter is attached to conversion patterns that need operand/result type remapping.
 /// Conversion callbacks are tried in registration order. If no type callback handles a type, the
-/// converter treats it as an identity conversion.
+/// converter treats it as an identity conversion. Each callback is given the context of the IR
+/// being converted, in which it builds the types it converts to.
 ///
 /// The initial driver supports 1:1 boundary materialization. `Many` and `Drop` results are
 /// accepted by the data model for future ABI/aggregate-lowering work, but callers must use the
@@ -86,11 +89,11 @@ impl TypeConverter {
     /// Add a type conversion callback.
     ///
     /// Return `Some` to handle the source type, or `None` to let later callbacks try. Callbacks are
-    /// evaluated in insertion order.
+    /// evaluated in insertion order, and are given the context the source type belongs to.
     #[inline]
     pub fn add_conversion<F>(&mut self, callback: F) -> &mut Self
     where
-        F: Fn(Type) -> Option<TypeConversion> + 'static,
+        F: Fn(&Context, Type) -> Option<TypeConversion> + 'static,
     {
         self.conversions.push(Rc::new(callback));
         self
@@ -103,7 +106,7 @@ impl TypeConverter {
     #[inline]
     pub fn add_value_conversion<F>(&mut self, callback: F) -> &mut Self
     where
-        F: Fn(ValueRef) -> Option<TypeConversion> + 'static,
+        F: Fn(&Context, ValueRef) -> Option<TypeConversion> + 'static,
     {
         self.value_conversions.push(Rc::new(callback));
         self
@@ -148,42 +151,46 @@ impl TypeConverter {
         self
     }
 
-    /// Convert a type.
+    /// Convert `ty`, a type of `context`.
     ///
     /// If no callback handles `ty`, it is treated as an identity conversion.
-    pub fn convert_type(&self, ty: Type) -> Option<TypeConversion> {
+    pub fn convert_type(&self, context: &Context, ty: Type) -> Option<TypeConversion> {
         self.conversions
             .iter()
-            .find_map(|convert| convert(ty))
+            .find_map(|convert| convert(context, ty))
             .or_else(|| Some(TypeConversion::One(ty)))
     }
 
-    /// Convert a value, allowing value-specific callbacks to override type-only conversion.
-    pub fn convert_value(&self, value: ValueRef) -> Option<TypeConversion> {
+    /// Convert `value`, a value in `context`, allowing value-specific callbacks to override
+    /// type-only conversion.
+    pub fn convert_value(&self, context: &Context, value: ValueRef) -> Option<TypeConversion> {
         self.value_conversions
             .iter()
-            .find_map(|convert| convert(value))
-            .or_else(|| self.convert_type(value.borrow().ty()))
+            .find_map(|convert| convert(context, value))
+            .or_else(|| self.convert_type(context, value.borrow().ty()))
     }
 
-    /// Return true when `ty` converts to itself.
+    /// Return true when `ty`, a type of `context`, converts to itself.
     #[inline]
-    pub fn is_legal_type(&self, ty: Type) -> bool {
-        matches!(self.convert_type(ty), Some(TypeConversion::One(converted)) if converted == ty)
+    pub fn is_legal_type(&self, context: &Context, ty: Type) -> bool {
+        matches!(
+            self.convert_type(context, ty),
+            Some(TypeConversion::One(converted)) if converted == ty
+        )
     }
 
-    /// Convert `ty` and require a 1:1 result.
+    /// Convert `ty`, a type of `context`, and require a 1:1 result.
     ///
     /// This returns an error for `Many`, `Drop`, or an unhandled conversion.
-    pub fn convert_type_1_to_1(&self, ty: Type) -> Result<Type, Report> {
-        self.require_1_to_1(self.convert_type(ty), || format!("type '{ty}'"))
+    pub fn convert_type_1_to_1(&self, context: &Context, ty: Type) -> Result<Type, Report> {
+        self.require_1_to_1(self.convert_type(context, ty), || format!("type '{ty}'"))
     }
 
-    /// Convert `value` and require a 1:1 result.
+    /// Convert `value`, a value in `context`, and require a 1:1 result.
     ///
     /// Value-specific callbacks are considered before type callbacks.
-    pub fn convert_value_1_to_1(&self, value: ValueRef) -> Result<Type, Report> {
-        self.require_1_to_1(self.convert_value(value), || {
+    pub fn convert_value_1_to_1(&self, context: &Context, value: ValueRef) -> Result<Type, Report> {
+        self.require_1_to_1(self.convert_value(context, value), || {
             format!("value '{}' of type '{}'", value.borrow(), value.borrow().ty())
         })
     }
@@ -297,8 +304,8 @@ mod tests {
         let context = Context::default();
         let converter = TypeConverter::new();
 
-        assert_eq!(converter.convert_type_1_to_1(context.i32()).unwrap(), context.i32());
-        assert!(converter.is_legal_type(context.i32()));
+        assert_eq!(converter.convert_type_1_to_1(&context, context.i32()).unwrap(), context.i32());
+        assert!(converter.is_legal_type(&context, context.i32()));
     }
 
     #[test]
@@ -306,7 +313,7 @@ mod tests {
         let context = Context::default();
         let (i32, i64) = (context.i32(), context.i64());
         let mut converter = TypeConverter::new();
-        converter.add_conversion(move |ty| {
+        converter.add_conversion(move |_, ty| {
             if ty == i32 {
                 Some(TypeConversion::One(i64))
             } else {
@@ -314,8 +321,21 @@ mod tests {
             }
         });
 
-        assert_eq!(converter.convert_type_1_to_1(i32).unwrap(), i64);
-        assert!(!converter.is_legal_type(i32));
+        assert_eq!(converter.convert_type_1_to_1(&context, i32).unwrap(), i64);
+        assert!(!converter.is_legal_type(&context, i32));
+    }
+
+    #[test]
+    fn a_conversion_can_build_types_in_the_context_it_is_given() {
+        let context = Context::default();
+        let mut converter = TypeConverter::new();
+        converter.add_conversion(|context, ty| {
+            (!ty.is_pointer()).then(|| TypeConversion::One(context.ptr_type(ty)))
+        });
+
+        let i32 = context.i32();
+        assert_eq!(converter.convert_type_1_to_1(&context, i32).unwrap(), context.ptr_type(i32));
+        assert!(converter.is_legal_type(&context, context.opaque_ptr_type()));
     }
 
     #[test]
@@ -323,23 +343,27 @@ mod tests {
         let context = Context::default();
         let (i32, i64) = (context.i32(), context.i64());
         let mut many = TypeConverter::new();
-        many.add_conversion(move |ty| {
+        many.add_conversion(move |_, ty| {
             if ty == i32 {
                 Some(TypeConversion::Many(smallvec![i64, i64]))
             } else {
                 None
             }
         });
-        assert!(format!("{}", many.convert_type_1_to_1(i32).unwrap_err()).contains("1:1"));
+        assert!(
+            format!("{}", many.convert_type_1_to_1(&context, i32).unwrap_err()).contains("1:1")
+        );
 
         let mut drop = TypeConverter::new();
-        drop.add_conversion(move |ty| {
+        drop.add_conversion(move |_, ty| {
             if ty == i32 {
                 Some(TypeConversion::Drop)
             } else {
                 None
             }
         });
-        assert!(format!("{}", drop.convert_type_1_to_1(i32).unwrap_err()).contains("1:1"));
+        assert!(
+            format!("{}", drop.convert_type_1_to_1(&context, i32).unwrap_err()).contains("1:1")
+        );
     }
 }

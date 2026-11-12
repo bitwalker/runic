@@ -428,7 +428,8 @@ impl ConversionPatternRewriter {
                      converter is available",
                 ));
             };
-            let expected_ty = type_converter.convert_value_1_to_1(original)?;
+            let context = self.inner.context_rc();
+            let expected_ty = type_converter.convert_value_1_to_1(&context, original)?;
             if expected_ty != replacement_ty {
                 return Err(Report::msg(format!(
                     "replacement value type '{}' does not match converted result type '{}'",
