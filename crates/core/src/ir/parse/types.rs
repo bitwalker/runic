@@ -38,9 +38,15 @@ use crate::{
     interner::Symbol,
 };
 
-/// The number of types a type may be nested in. Each level of nesting is a few recursive calls,
-/// so the limit keeps deeply nested input from overflowing the stack.
-pub(super) const MAX_TYPE_NESTING: u32 = 256;
+/// The number of types a type may be nested in: 64.
+///
+/// Each level of nesting is a few recursive calls, so the limit keeps deeply nested input from
+/// overflowing the stack. In an unoptimized build a level costs up to about 11.4 KB of stack (a
+/// nested `struct<`; a function type costs about 9 KB, and `ptr<` and `array<` much less), so 64
+/// levels use about 0.75 MB. That fits a 1 MB stack, the smallest one a parser is expected to run
+/// on (the main thread on Windows), with margin to spare for the frames of the enclosing parse,
+/// and is far beyond any realistic nesting of types.
+pub(super) const MAX_TYPE_NESTING: u32 = 64;
 
 /// Parses a type if the next token can start one, and returns `None` otherwise.
 ///

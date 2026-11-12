@@ -2071,46 +2071,68 @@ fn nested_type_text(open: &str, inner: &str, close: &str, depth: usize) -> Strin
     format!("{}{inner}{}", open.repeat(depth), close.repeat(depth))
 }
 
-/// Type nesting is limited, so that deeply nested input is an error instead of a stack overflow.
-///
-/// The limit is far below what overflows the stack of the main thread, but an unoptimized build
-/// needs more than a test thread's default stack for the deepest types, so this runs on a thread
-/// with the stack of a main thread.
+/// Runs `body` on a thread with a stack of exactly 1 MB, the smallest stack a parser is expected
+/// to run on, so that the result does not depend on the test harness's thread size.
 #[cfg(feature = "std")]
-#[test]
-fn type_nesting_is_limited_to_256_levels() {
+fn on_a_1_mb_stack(body: impl FnOnce() + Send + 'static) {
     std::thread::Builder::new()
-        .stack_size(8 << 20)
-        .spawn(|| {
-            let context = Rc::new(Context::default());
-            for (open, inner, close) in [
-                ("ptr<", "i32", ">"),
-                ("struct<", "i32", ">"),
-                ("array<", "i32", "; 1>"),
-                ("(", "i32", ") -> ()"),
-                ("!test.vector<", "i32", " x 1>"),
-            ] {
-                let deepest = nested_type_text(open, inner, close, 256);
-                if let Err(err) = parse_type_text(&context, &deepest) {
-                    panic!("{open}: 256 levels should parse: {err:?}");
-                }
-
-                let message = type_error_text(&context, &nested_type_text(open, inner, close, 257));
-                assert!(
-                    message.contains("type nesting is too deep (limit 256)"),
-                    "{open}: {message}"
-                );
-
-                let message = type_error_text(&context, &nested_type_text(open, "", "", 10_000));
-                assert!(
-                    message.contains("type nesting is too deep (limit 256)"),
-                    "{open}: {message}"
-                );
-            }
-        })
+        .stack_size(1024 * 1024)
+        .spawn(body)
         .expect("spawn a thread")
         .join()
         .expect("type nesting is limited");
+}
+
+/// Type nesting is limited to 64 levels, so that deeply nested input is an error instead of a
+/// stack overflow, on a 1 MB stack and in an unoptimized build.
+#[cfg(feature = "std")]
+#[test]
+fn type_nesting_is_limited_to_64_levels() {
+    on_a_1_mb_stack(|| {
+        let context = Rc::new(Context::default());
+        for (open, inner, close) in [
+            ("ptr<", "i32", ">"),
+            ("struct<", "i32", ">"),
+            ("array<", "i32", "; 1>"),
+            ("(", "i32", ") -> ()"),
+            ("!test.vector<", "i32", " x 1>"),
+        ] {
+            let deepest = nested_type_text(open, inner, close, 64);
+            if let Err(err) = parse_type_text(&context, &deepest) {
+                panic!("{open}: 64 levels should parse: {err:?}");
+            }
+
+            let message = type_error_text(&context, &nested_type_text(open, inner, close, 65));
+            assert!(message.contains("type nesting is too deep (limit 64)"), "{open}: {message}");
+
+            let message = type_error_text(&context, &nested_type_text(open, "", "", 10_000));
+            assert!(message.contains("type nesting is too deep (limit 64)"), "{open}: {message}");
+        }
+    });
+}
+
+/// A type nested to the limit in a function signature is parsed by the operation parser, whose
+/// own frames are live below it, and still fits a 1 MB stack.
+#[cfg(feature = "std")]
+#[test]
+fn a_type_nested_to_the_limit_parses_in_a_function_signature() {
+    on_a_1_mb_stack(|| {
+        for (open, inner, close) in [
+            ("ptr<", "i32", ">"),
+            ("struct<", "i32", ">"),
+            ("array<", "i32", "; 1>"),
+            ("(", "i32", ") -> ()"),
+        ] {
+            let test = ParserTest::default();
+            let deepest = nested_type_text(open, inner, close, 64);
+            let source = format!(
+                "builtin.function public extern(\"C\") @deep(%a: {deepest}) {{\n    ret;\n}};"
+            );
+            if let Err(err) = test.parse::<Function>("deep.hir", &source) {
+                panic!("{open}: 64 levels in a signature should parse: {err:?}");
+            }
+        }
+    });
 }
 
 /// Parses `text` as an attribute dictionary, in a parser over `text` alone, and returns the
