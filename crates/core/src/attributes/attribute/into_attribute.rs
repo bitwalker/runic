@@ -19,20 +19,16 @@ pub trait IntoAttribute<A: AttributeRegistration>: Sized {
 ///
 /// The attribute is used as it is: its type is not derived again from its value.
 ///
-/// The attribute must be of the kind the parameter expects:
+/// The attribute must be of the kind the parameter expects: `test.constant`'s `value` is an
+/// `IntAttr`, so a `BoolAttr` is not accepted.
 ///
 /// ```compile_fail
-/// use std::rc::Rc;
-/// use runic_core::{Context, IntoAttribute, ReadyAttr};
-/// use runic_core::dialects::builtin::attributes::{BoolAttr, IntAttr};
+/// use runic_core::{ReadyAttr, UnsafeIntrusiveEntityRef};
+/// use runic_core::dialects::{builtin::attributes::BoolAttr, test::Constant};
 ///
-/// fn int_param(context: &Rc<Context>, value: impl IntoAttribute<IntAttr>) {
-///     let _ = value.into_attribute(context);
+/// fn set(constant: &mut Constant, flag: UnsafeIntrusiveEntityRef<BoolAttr>) {
+///     constant.set_value(ReadyAttr(flag));
 /// }
-///
-/// let context = Rc::new(Context::default());
-/// let flag = context.create_attribute::<BoolAttr, _>(true);
-/// int_param(&context, ReadyAttr(flag));
 /// ```
 pub struct ReadyAttr<A>(pub UnsafeIntrusiveEntityRef<A>);
 
@@ -46,8 +42,8 @@ pub auto trait AttributeValueArg {}
 
 impl<A> !AttributeValueArg for ReadyAttr<A> {}
 
-impl<T: ?Sized> AttributeValueArg for *const T {}
-impl<T: ?Sized> AttributeValueArg for *mut T {}
+/// The compiler does not see through the field of `NonNull` (a pattern type) when it implements an
+/// auto trait, so without this a value holding a `Type`, a `Vec` or a `Box` would not be a value.
 impl<T: ?Sized> AttributeValueArg for core::ptr::NonNull<T> {}
 
 impl<A, V> IntoAttribute<A> for V
