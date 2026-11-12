@@ -96,6 +96,25 @@
 //!
 //! A dictionary holds attributes, but is not itself an attribute value: `{ a = {} }` is an error.
 //!
+//! # Functions
+//!
+//! function      := 'builtin.function' visibility? 'extern'? '(' string ')' symbol-ref-id
+//!                  (definition | declaration) ('attributes' dictionary-attribute)?
+//! definition    := '(' (argument (',' argument)*)? ')' ('->' result-list)? region
+//! declaration   := '(' (param (',' param)*)? ')' ('->' result-list)?
+//! argument      := value-id ':' type dictionary-attribute? trailing-location?
+//! param         := type dictionary-attribute?
+//! result-list   := type | '(' (param (',' param)*)? ')'
+//!
+//! The dictionary of a parameter or result holds its attributes, such as
+//! `{ extend = #builtin.zext }` or `{ sret = #builtin.sret }`, and is left out when it is empty. A
+//! result list is written without parentheses only when it is one result without attributes whose
+//! type does not start with `(`, so the `{` after `-> i32` is always a body. An empty parameter
+//! list followed by a region is a definition, and followed by anything else a declaration; a
+//! non-empty list is a definition exactly when its first element starts with a value id, and an
+//! element of the other form is an error. A declaration has no body. A function that never returns
+//! has the single result `never`.
+//!
 //! # Attribute Aliases
 //!
 //! attribute-alias-def := '#' alias-name '=' attribute-value ';'
@@ -120,6 +139,9 @@
 //!     operation name of the generic form and a base64 byte string, which are taken as written)
 //! symbol-ref-attribute := symbol-ref-id ('::' symbol-ref-id)*
 //! location-attribute := 'loc' '(' location ')'
+//! signature-attribute := '#builtin.signature' '<' 'extern' '(' string ')'
+//!                        '(' (param (',' param)*)? ')' ('->' result-list)? '>'
+//!     (`param` and `result-list` as for functions, read and written by the same code)
 //!
 //! No bare attribute is followed by a `: type` suffix. An integer literal is an attribute only
 //! where the syntax that reads it expects an integer type, such as an operation's own format: an
