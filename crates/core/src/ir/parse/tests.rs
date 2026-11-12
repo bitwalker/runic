@@ -1622,3 +1622,21 @@ builtin.module public @types {
     assert_eq!(print(&printed)?, printed);
     Ok(())
 }
+
+/// A field may be named like a struct representation; only a `:` after the name tells them apart.
+#[test]
+fn a_field_named_like_a_representation_round_trips() {
+    let context = Rc::new(Context::default());
+    for text in [
+        "struct<align: i32>",
+        "struct<packed: i8>",
+        "struct<transparent: i8>",
+        "struct<align(2); align: i32>",
+        "struct<packed(1); packed: i8, transparent: i8>",
+        "struct<transparent; transparent: i8>",
+        "struct point<align: i32, y: i32>",
+    ] {
+        let ty = parse_type_text(&context, text).unwrap_or_else(|err| panic!("{text}: {err:?}"));
+        assert_eq!(format!("{ty}"), text);
+    }
+}

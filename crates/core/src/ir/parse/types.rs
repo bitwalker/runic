@@ -191,6 +191,10 @@ fn parse_struct_type<'input, P: Parser<'input>>(parser: &mut P) -> ParseResult<T
 fn parse_optional_struct_repr<'input, P: Parser<'input>>(
     parser: &mut P,
 ) -> ParseResult<Option<StructRepr>> {
+    // `align: i32` is a field named `align`, not a representation.
+    if is_next_token_followed_by_a_colon(parser) {
+        return Ok(None);
+    }
     let Some(repr) = parser.token_stream_mut().next_if_map(|tok| match tok {
         Token::BareIdent(repr @ ("align" | "packed" | "transparent")) => Some(repr),
         _ => None,
@@ -235,13 +239,19 @@ fn is_next_field_name<'input, P: Parser<'input>>(parser: &mut P) -> bool {
     };
     match token {
         Token::String(_) | Token::BareIdent(_) => true,
-        token if token.is_keyword() => {
-            // The remaining source starts just after the upcoming token.
-            let rest = parser.token_stream().remaining_source().trim_start();
-            rest.starts_with(':') && !rest.starts_with("::")
-        }
+        token if token.is_keyword() => is_next_token_followed_by_a_colon(parser),
         _ => false,
     }
+}
+
+/// Returns true if the source just after the upcoming token starts with a single `:`.
+fn is_next_token_followed_by_a_colon<'input, P: Parser<'input>>(parser: &mut P) -> bool {
+    if !matches!(parser.token_stream_mut().peek(), Ok(Some(_))) {
+        return false;
+    }
+    // The remaining source starts just after the upcoming token.
+    let rest = parser.token_stream().remaining_source().trim_start();
+    rest.starts_with(':') && !rest.starts_with("::")
 }
 
 /// Parses a struct or field name: a bare identifier (which may be spelled like a keyword) or a
