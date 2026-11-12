@@ -9,6 +9,13 @@ use core::fmt;
 pub use self::{debug::*, instance::EffectInstance, interface::*, memory::*, speculation::*};
 use crate::{DynPartialEq, any::AsAny, eq::PartialEqable};
 
+/// A kind of side effect an operation can declare, such as [MemoryEffect] or [DebugEffect].
+///
+/// A dialect can define its own kinds, with their own interface and recursive marker, and walk
+/// them with [RecursiveEffectIterator]. The generic passes (dead-code elimination, common
+/// subexpression elimination, sinking, ..) ask about memory effects only, so an effect of another
+/// kind does not keep an operation alive or stop it from being moved or merged. An effect that
+/// those passes must respect is a [MemoryEffect] on a [Resource] of the dialect's own.
 pub trait Effect: AsAny + fmt::Debug {
     /// Returns true if `op` declares that its effects of this kind include those of the operations
     /// nested within its regions.

@@ -15,6 +15,14 @@ impl<T: HasRecursiveMemoryEffects> HasRecursiveEffects<MemoryEffect> for T {}
 
 pub trait EffectOpInterface<T: Effect> {
     /// Return the set all of the operation's effects
+    ///
+    /// An operation reports its own effects only. The effects of the operations in its regions
+    /// are found by the recursive walk ([RecursiveEffectIterator],
+    /// [Operation::get_effects_recursively](crate::Operation::get_effects_recursively)) when the
+    /// operation has the `HasRecursive*` marker for this kind of effect (for memory effects,
+    /// [HasRecursiveMemoryEffects]). Reporting them here as well would count them twice, and,
+    /// since the walk asks every operation it visits for its effects, an implementation that
+    /// starts the walk at its own operation would recurse without bound.
     fn effects(&self) -> EffectIterator<T>;
     /// Returns true if this operation has no effects
     fn has_no_effect(&self) -> bool {

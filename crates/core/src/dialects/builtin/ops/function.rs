@@ -4,7 +4,7 @@ use crate::{
     AsValueRange, BlockRef, CallConv, CallableOpInterface, CallableSymbol, EntityRef, IdentAttr,
     Op, OpParser, OpPrinter, Operation, RegionKind, RegionKindInterface, RegionRef, SmallVec,
     Symbol, SymbolUse, SymbolUseList, Type, UnsafeIntrusiveEntityRef, Usable, Visibility,
-    derive::operation,
+    derive::{EffectOpInterface, operation},
     dialects::builtin::{
         BuiltinDialect,
         attributes::{
@@ -67,6 +67,14 @@ pub struct Function {
     uses: SymbolUseList,
 }
 
+/// The effects a function declares for itself: those of its `memory_effects` property for a
+/// declaration, and none for a definition.
+///
+/// A definition's effects are its body's. That is what [HasRecursiveMemoryEffects] says, and the
+/// recursive queries ([Operation::is_memory_effect_free], [Operation::get_effects_recursively],
+/// `RecursiveEffectIterator`) report them, "unknown" included. They must not be reported here as
+/// well: the recursive walk asks every operation it visits for its own effects, the function
+/// included, so reporting the body here would recurse without bound and count each effect twice.
 impl EffectOpInterface<MemoryEffect> for Function {
     fn effects(&self) -> EffectIterator<MemoryEffect> {
         if self.is_declaration() {
@@ -75,11 +83,7 @@ impl EffectOpInterface<MemoryEffect> for Function {
                 memory_effects.as_value().iter().map(|desc| EffectInstance::new(desc.effect)),
             )
         } else {
-            EffectIterator::new(
-                self.as_operation()
-                    .get_effects_recursively::<MemoryEffect>()
-                    .unwrap_or_default(),
-            )
+            EffectIterator::new([])
         }
     }
 }
@@ -525,10 +529,14 @@ fn type_list(types: &[Type]) -> String {
 }
 
 /// Returns from the enclosing function with the provided operands as its results.
+///
+/// Returning touches no memory: the operation declares that it has no memory effects.
+#[derive(EffectOpInterface)]
+#[effects(MemoryEffect())]
 #[operation(
     dialect = BuiltinDialect,
     traits(Terminator, ReturnLike),
-    implements(OperandRangeRequirementOpInterface, OpPrinter)
+    implements(OperandRangeRequirementOpInterface, MemoryEffectOpInterface, OpPrinter)
 )]
 pub struct Ret {
     #[operands]
@@ -597,10 +605,14 @@ impl OpParser for Ret {
 }
 
 /// Returns from the enclosing function with the provided integer constant as its result.
+///
+/// Returning touches no memory: the operation declares that it has no memory effects.
+#[derive(EffectOpInterface)]
+#[effects(MemoryEffect())]
 #[operation(
     dialect = BuiltinDialect,
     traits(Terminator, ReturnLike),
-    implements(OpPrinter)
+    implements(MemoryEffectOpInterface, OpPrinter)
 )]
 pub struct RetImm {
     #[attr(hidden)]
@@ -656,7 +668,15 @@ impl OpParser for RetImm {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{dialects::builtin::attributes::MemoryEffectDescriptor, testing::Test};
+    use crate::{
+        Builder, BuilderExt, OperationRef, Overflow, SourceSpan, ValueRef,
+        dialects::{
+            builtin::attributes::MemoryEffectDescriptor,
+            test::{self as test_dialect, Add, Load, Store},
+        },
+        effects::RecursiveEffectIterator,
+        testing::Test,
+    };
 
     fn effects_of(function: &Function) -> Vec<MemoryEffect> {
         EffectOpInterface::<MemoryEffect>::effects(function)
@@ -687,5 +707,179 @@ mod tests {
         let function = function.borrow();
         assert_eq!(effects_of(&function), [MemoryEffect::Read, MemoryEffect::Write]);
         assert!(!function.as_operation().is_memory_effect_free());
+    }
+
+    /// What the body of a test function holds.
+    #[derive(Copy, Clone, PartialEq, Eq)]
+    enum Body {
+        /// No operation at all
+        Empty,
+        /// A `test.add`, which declares that it has no memory effects
+        Pure,
+        /// A `test.load`
+        Reads,
+        /// A `test.store`
+        Writes,
+        /// A `test.ret`, which declares nothing about its memory effects
+        Unknown,
+        /// A `builtin.ret`
+        Returns,
+        /// A `test.add` and a `builtin.ret`
+        PureAndReturns,
+    }
+
+    /// A function definition `f(ptr<i32>, i32)` whose body is `body`.
+    fn definition(body: Body) -> (Test, FunctionRef) {
+        let mut test = Test::named("effects");
+        let i32 = test.context().i32();
+        let pointer = test.context().ptr_type(i32);
+        test.with_function("effects", &[pointer, i32], &[]);
+        {
+            let mut builder = test.function_builder();
+            let entry = builder.entry_block();
+            let (addr, value) = {
+                let block = entry.borrow();
+                (block.arguments()[0] as ValueRef, block.arguments()[1] as ValueRef)
+            };
+            let builder = builder.builder_mut();
+            builder.set_insertion_point_to_end(entry);
+            let span = SourceSpan::UNKNOWN;
+            if matches!(body, Body::Pure | Body::PureAndReturns) {
+                builder.create::<Add, _>(span)(value, value, Overflow::Wrapping).unwrap();
+            }
+            match body {
+                Body::Empty | Body::Pure => (),
+                Body::Reads => {
+                    builder.create::<Load, _>(span)(addr).unwrap();
+                }
+                Body::Writes => {
+                    builder.create::<Store, _>(span)(addr, value).unwrap();
+                }
+                Body::Unknown => {
+                    builder.create::<test_dialect::Ret, ([ValueRef; 0],)>(span)([]).unwrap();
+                }
+                Body::Returns | Body::PureAndReturns => {
+                    builder.create::<Ret, ([ValueRef; 0],)>(span)([]).unwrap();
+                }
+            }
+        }
+        let function = test.function();
+        assert!(!function.borrow().is_declaration());
+        (test, function)
+    }
+
+    fn walk(op: OperationRef) -> Vec<Option<MemoryEffect>> {
+        RecursiveEffectIterator::<MemoryEffect>::new(op)
+            .map(|(_, effect)| effect.map(|instance| *instance.effect()))
+            .collect()
+    }
+
+    /// Asking a definition for its effects returns: the function declares none of its own, its
+    /// effects are its body's (`HasRecursiveMemoryEffects`).
+    #[test]
+    fn a_definition_reports_no_effects_of_its_own() {
+        for body in [Body::Empty, Body::Pure, Body::Reads, Body::Writes, Body::Unknown] {
+            let (_test, function) = definition(body);
+            assert!(effects_of(&function.borrow()).is_empty());
+        }
+    }
+
+    /// `is_memory_effect_free` on a definition answers from the body, and an operation whose
+    /// effects are unknown makes the function not free.
+    #[test]
+    fn a_definition_is_effect_free_exactly_when_its_body_is() {
+        for (body, free) in [
+            (Body::Empty, true),
+            (Body::Pure, true),
+            (Body::Reads, false),
+            (Body::Writes, false),
+            (Body::Unknown, false),
+        ] {
+            let (_test, function) = definition(body);
+            assert_eq!(function.borrow().as_operation().is_memory_effect_free(), free);
+        }
+    }
+
+    /// The recursive effects of a definition are its body's, each once, and "unknown" stays
+    /// distinct from "none": `None` for a body with an operation that declares nothing, `Some([])`
+    /// for a body with no effects.
+    #[test]
+    fn the_recursive_effects_of_a_definition_keep_unknown_apart_from_none() {
+        let effects = |body| {
+            let (_test, function) = definition(body);
+            let function = function.borrow();
+            function
+                .as_operation()
+                .get_effects_recursively::<MemoryEffect>()
+                .map(|effects| {
+                    effects.iter().map(|instance| *instance.effect()).collect::<Vec<_>>()
+                })
+        };
+        assert_eq!(effects(Body::Empty), Some(alloc::vec![]));
+        assert_eq!(effects(Body::Pure), Some(alloc::vec![]));
+        assert_eq!(effects(Body::Reads), Some(alloc::vec![MemoryEffect::Read]));
+        // Once, not twice: the function must not report its body's effects as its own as well
+        assert_eq!(effects(Body::Writes), Some(alloc::vec![MemoryEffect::Write]));
+        assert_eq!(effects(Body::Unknown), None);
+    }
+
+    /// The walk started at a definition reports the body's effects, and "unknown" for an
+    /// operation that declares nothing.
+    #[test]
+    fn the_walk_started_at_a_definition_reports_its_body() {
+        for (body, expected) in [
+            (Body::Empty, alloc::vec![]),
+            (Body::Pure, alloc::vec![]),
+            (Body::Writes, alloc::vec![Some(MemoryEffect::Write)]),
+            (Body::Unknown, alloc::vec![None]),
+        ] {
+            let (_test, function) = definition(body);
+            assert_eq!(walk(function.borrow().as_operation().as_operation_ref()), expected);
+        }
+    }
+
+    /// The other queries on `Operation` return for a definition. They are not recursive (as for
+    /// any other operation with regions): a definition has no memory effect of its own.
+    #[test]
+    fn the_single_effect_queries_return_for_a_definition() {
+        let (_test, function) = definition(Body::Writes);
+        let function = function.borrow();
+        let op = function.as_operation();
+        assert!(!op.has_memory_effect(MemoryEffect::Write));
+        assert!(!op.has_single_memory_effect(MemoryEffect::Write));
+        assert!(!op.would_be_trivially_dead_even_if_terminator());
+    }
+
+    /// A function whose body only computes without memory effects and returns is free of memory
+    /// effects: returning touches no memory (`builtin.ret` declares that it has none).
+    #[test]
+    fn a_function_that_only_computes_and_returns_is_free_of_memory_effects() {
+        for body in [Body::Returns, Body::PureAndReturns] {
+            let (_test, function) = definition(body);
+            let function = function.borrow();
+            assert!(function.as_operation().is_memory_effect_free());
+            let effects = function.as_operation().get_effects_recursively::<MemoryEffect>();
+            assert_eq!(effects.map(|effects| effects.len()), Some(0));
+        }
+    }
+
+    /// `builtin.ret_imm` declares that it has no memory effects, as `builtin.ret` does.
+    #[test]
+    fn ret_imm_has_no_memory_effects() {
+        let mut test = Test::named("ret_imm");
+        let i32 = test.context().i32();
+        test.with_function("ret_imm", &[], &[i32]);
+        let ret = {
+            let context = test.context_rc();
+            let mut builder = test.function_builder();
+            let entry = builder.entry_block();
+            let builder = builder.builder_mut();
+            builder.set_insertion_point_to_end(entry);
+            let value = context.int_attr(crate::Int::from(1i32), i32);
+            builder.create::<RetImm, _>(SourceSpan::UNKNOWN)(crate::ReadyAttr(value)).unwrap()
+        };
+        let ret = ret.borrow();
+        assert!(ret.as_operation().is_memory_effect_free());
+        assert_eq!(walk(ret.as_operation().as_operation_ref()), []);
     }
 }
