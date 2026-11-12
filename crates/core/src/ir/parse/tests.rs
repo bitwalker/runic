@@ -1445,3 +1445,180 @@ fn a_failed_parse_leaves_pending_diagnostics_on_the_context() {
 
     assert_eq!(diagnostic_messages(&context.take_diagnostics()), ["pending"]);
 }
+
+/// A type of the test dialect that has no parameters, and so no parser.
+#[derive(Debug, Default, PartialEq, Eq, Hash, crate::derive::DialectType)]
+#[ty(dialect = TestDialect, name = "unit")]
+struct UnitTestType;
+
+/// Parses `text` as exactly one type, in a parser over `text` alone.
+fn parse_type_text(context: &Rc<Context>, text: &str) -> Result<Type, Report> {
+    use super::{DefaultParser, Parser, ParserError, ParserState, Scanner, Token, TokenStream};
+
+    context.get_or_register_dialect::<TestDialect>();
+    let id = context.add_source("type.runic", text).unwrap();
+    let sources = context.sources();
+    let scanner = Scanner::new(sources.get(id).unwrap().text.unwrap());
+    let token_stream = TokenStream::new(id, scanner);
+    let mut parser =
+        DefaultParser::new(ParserState::new(ParserConfig::new(context.clone()), token_stream));
+    let result = parser.parse_type().and_then(|ty| match parser.token_stream_mut().next()? {
+        None => Ok(ty.into_inner()),
+        Some(token) if matches!(token.inner(), Token::Eof) => Ok(ty.into_inner()),
+        Some(token) => Err(ParserError::UnexpectedToken {
+            span: token.span(),
+            token: token.to_string(),
+            expected: Some("end of input".into()),
+        }),
+    });
+    result.map_err(|err| Report::from(err).attach_session_sources(context.sources()))
+}
+
+/// The rendered text of a type parse error, on one line.
+fn type_error_text(context: &Rc<Context>, text: &str) -> String {
+    let err = parse_type_text(context, text).expect_err(text);
+    format!("{}", err.display()).split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+#[test]
+fn every_builtin_type_round_trips_through_the_printer_and_parser() {
+    let context = Rc::new(Context::default());
+    for text in [
+        "?",
+        "never",
+        "i1",
+        "i24",
+        "i32",
+        "i256",
+        "isize",
+        "f32",
+        "f64",
+        "ptr",
+        "ptr<1>",
+        "ptr<i32>",
+        "ptr<i32, 3>",
+        "ptr<ptr<i8>>",
+        "array<i8; 16>",
+        "array<i8; 0>",
+        "array<array<i32; 2>; 3>",
+        "struct<>",
+        "struct<i32, i8>",
+        "struct point<x: i32, y: i32>",
+        "struct<packed(1); i8, i32 align(2)>",
+        "struct<transparent; i32>",
+        "struct<align(8); i64>",
+        "struct<transparent;>",
+        "struct<align(2);>",
+        "struct<x: i32 align(2)>",
+        "struct \"not an identifier\"<\"field one\": i32>",
+        "(i32, i8) -> i32",
+        "() -> (i32, i8)",
+        "(i32) -> ()",
+        "(ptr<(i32) -> i32>) -> ()",
+        "() -> (() -> i32)",
+        "(i32) -> ((i8) -> (i16, i32))",
+        "!test.vector<f32 x 4>",
+        "ptr<!test.vector<i8 x 16>>",
+        "!test.unit",
+    ] {
+        let ty = parse_type_text(&context, text).unwrap_or_else(|err| panic!("{text}: {err:?}"));
+        assert_eq!(format!("{ty}"), text);
+        assert_eq!(parse_type_text(&context, text).unwrap(), ty, "{text} is not uniqued");
+    }
+    assert_eq!(
+        parse_type_text(&context, "[i8; 16]").unwrap(),
+        context.array_type(context.i8(), 16)
+    );
+}
+
+#[test]
+fn types_built_in_code_print_as_the_text_that_parses_to_them() {
+    use crate::{StructField, StructType};
+
+    let context = Rc::new(Context::default());
+    let empty = context.array_type(context.i8(), 0);
+    assert_eq!(format!("{empty}"), "array<i8; 0>");
+    assert_eq!(parse_type_text(&context, "array<i8; 0>").unwrap(), empty);
+
+    let field = StructField::new(context.i32())
+        .named(crate::interner::Symbol::intern("x"))
+        .aligned(core::num::NonZeroU16::new(2).unwrap());
+    let aligned = context.struct_type(StructType::new([field]));
+    assert_eq!(format!("{aligned}"), "struct<x: i32 align(2)>");
+    assert_eq!(parse_type_text(&context, "struct<x: i32 align(2)>").unwrap(), aligned);
+}
+
+#[test]
+fn pointers_in_the_default_address_space_are_the_plain_pointer_types() {
+    let context = Rc::new(Context::default());
+    assert_eq!(context.ptr_type_in(None, 0), context.opaque_ptr_type());
+    assert_eq!(parse_type_text(&context, "ptr<0>").unwrap(), context.opaque_ptr_type());
+    assert_eq!(
+        parse_type_text(&context, "ptr<i32, 0>").unwrap(),
+        context.ptr_type(context.i32())
+    );
+    assert_eq!(context.ptr_type(context.i32()).pointee(), Some(context.i32()));
+    assert_eq!(context.opaque_ptr_type().pointee(), None);
+    assert_eq!(context.i32().pointee(), None);
+    assert_eq!(context.array_type(context.i8(), 4).pointee(), None);
+}
+
+#[test]
+fn malformed_and_unknown_types_are_errors_not_panics() {
+    let context = Rc::new(Context::default());
+    for text in [
+        "i0",
+        "u32",
+        "!nosuchdialect.thing",
+        "!test.nosuchtype",
+        "ptr<",
+        "struct<packed(0); i8>",
+        "(i32) ->",
+        "(i32, i8)",
+        "!test.vector<f32 4>",
+        "!test.vector<f32 x>",
+    ] {
+        assert!(parse_type_text(&context, text).is_err(), "`{text}` should not parse");
+    }
+}
+
+#[test]
+fn dialect_type_errors_name_the_problem() {
+    let context = Rc::new(Context::default());
+    for (text, expected) in [
+        ("!nosuchdialect.thing", "unknown dialect 'nosuchdialect'"),
+        ("!test.nosuchtype", "unknown type 'nosuchtype' in dialect 'test'"),
+        ("!test.unit<i32>", "type 'test.unit' takes no parameters, but '<' follows it"),
+        ("!test.vector", "type 'test.vector' requires parameters in '<..>'"),
+    ] {
+        let message = type_error_text(&context, text);
+        assert!(message.contains(expected), "`{text}`: {message}");
+    }
+}
+
+/// An op whose signature and body use non-trivial builtin types and a dialect type prints as text
+/// that parses back to the same op.
+#[test]
+fn an_op_using_builtin_and_dialect_types_round_trips() -> TestResult {
+    let source = "\
+builtin.module public @types {
+    builtin.function public extern(\"C\") @f(%0: i64, %1: isize, %2: ptr<struct point<x: i32, y: \
+                  i32>>, %3: !test.vector<f32 x 4>) -> !test.vector<f32 x 4> {
+        %4 = builtin.unrealized_conversion_cast %0 <{ ty = #builtin.type<isize> }>;
+        %5 = builtin.unrealized_conversion_cast %2 <{ ty = #builtin.type<ptr<!test.vector<i8 x \
+                  16>>> }>;
+        builtin.ret %3 : (!test.vector<f32 x 4>);
+    };
+};";
+    let print = |text: &str| -> TestResult<String> {
+        let test = ParserTest::default();
+        test.context().get_or_register_dialect::<TestDialect>();
+        let op = test.parse_any("types.hir", text)?;
+        Ok(format!("{}", op.borrow()))
+    };
+    let printed = print(source)?;
+    assert!(printed.contains("!test.vector<f32 x 4>"), "{printed}");
+    assert!(printed.contains("ptr<struct point<x: i32, y: i32>>"), "{printed}");
+    assert_eq!(print(&printed)?, printed);
+    Ok(())
+}

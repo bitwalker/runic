@@ -39,7 +39,7 @@ use crate::{
 /// late-filled child type could, for example, form a cycle that printing never leaves).
 ///
 /// A type's `Eq` and `Hash` must not intern types or otherwise use the context: `Eq` runs while
-/// the context's uniquer is borrowed. They should not panic either: a panic while the uniquer is
+/// the context's uniquer is borrowed. They must not panic either: a panic while the uniquer is
 /// probing, combined with a `Drop` that interns, aborts.
 pub trait TypeImpl: Any + Eq + Hash + fmt::Debug + 'static {}
 
@@ -297,6 +297,41 @@ mod tests {
                 }
             }
         };
+    }
+
+    isolated_dialect!(PrinterlessDialect, "printerless");
+
+    /// A type with no [TypePrinter], registered with no dialect but its own isolated one.
+    #[derive(Debug, PartialEq, Eq, Hash)]
+    struct PrinterlessType;
+    impl TypeImpl for PrinterlessType {}
+    impl TypeRegistration for PrinterlessType {
+        type Dialect = PrinterlessDialect;
+
+        fn name() -> Symbol {
+            Symbol::intern("printerless")
+        }
+
+        fn traits() -> Box<[TraitInfo]> {
+            Box::from([TraitInfo::new::<Self, dyn Any>()])
+        }
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "builtin type `runic_core::types::tests::PrinterlessType` must implement \
+                    `TypePrinter`"
+    )]
+    fn naming_a_printerless_type_in_the_builtin_dialect_panics() {
+        let builtin =
+            <crate::dialects::builtin::BuiltinDialect as crate::DialectRegistration>::NAMESPACE;
+        let _ = TypeName::new::<PrinterlessType>(Symbol::intern(builtin));
+    }
+
+    #[test]
+    fn a_printerless_type_is_named_outside_the_builtin_dialect() {
+        let name = TypeName::new::<PrinterlessType>(Symbol::intern("printerless"));
+        assert!(name.print_fn().is_none());
     }
 
     isolated_dialect!(MislabelledTraitsDialect, "mislabelled_traits");
