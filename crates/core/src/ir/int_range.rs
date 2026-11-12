@@ -1,6 +1,6 @@
 use core::fmt;
 
-use super::{Immediate, Type};
+use super::{Int, Type};
 use crate::traits::ValueRangeConstraint;
 
 /// Bounds on an integer value, tracked using both signed and unsigned interpretations.
@@ -9,8 +9,8 @@ use crate::traits::ValueRangeConstraint;
 /// integer, is zero-extended to its storage width. Signed bounds interpret the same bit pattern
 /// at `width`; they are only meaningful for signed ordering at that width.
 ///
-/// This mirrors MLIR's `ConstantIntRanges`, but is intentionally bounded to the integer widths HIR
-/// can currently materialize as immediates. Values with unsupported or non-integer types are
+/// This mirrors MLIR's `ConstantIntRanges`, but is intentionally bounded to the integer widths an [Int]
+/// can hold (1 to 128 bits). Values with unsupported or non-integer types are
 /// represented by `width == 0`.
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct ConstantIntRange {
@@ -85,22 +85,10 @@ impl ConstantIntRange {
         }
     }
 
-    /// Return the exact range for an integer immediate.
-    pub fn constant(value: Immediate) -> Self {
-        match value {
-            Immediate::I1(value) => Self::from_unsigned(1, value as u128, value as u128),
-            Immediate::U8(value) => Self::from_unsigned(8, value as u128, value as u128),
-            Immediate::U16(value) => Self::from_unsigned(16, value as u128, value as u128),
-            Immediate::U32(value) => Self::from_unsigned(32, value as u128, value as u128),
-            Immediate::U64(value) => Self::from_unsigned(64, value as u128, value as u128),
-            Immediate::U128(value) => Self::from_unsigned(128, value, value),
-            Immediate::I8(value) => Self::from_signed(8, value as i128, value as i128),
-            Immediate::I16(value) => Self::from_signed(16, value as i128, value as i128),
-            Immediate::I32(value) => Self::from_signed(32, value as i128, value as i128),
-            Immediate::I64(value) => Self::from_signed(64, value as i128, value as i128),
-            Immediate::I128(value) => Self::from_signed(128, value, value),
-            Immediate::F64(_) => Self::untracked(),
-        }
+    /// Return the exact range for an integer value: its bit pattern, from which both the signed
+    /// and the unsigned bounds follow.
+    pub fn constant(value: Int) -> Self {
+        Self::from_unsigned(value.width() as u16, value.unsigned(), value.unsigned())
     }
 
     /// Return an exact boolean in the raw representation of `ty`.
@@ -404,7 +392,7 @@ impl IntegerValueRange {
 
     /// Create a proven exact range for `value`.
     #[inline]
-    pub fn constant(value: Immediate) -> Self {
+    pub fn constant(value: Int) -> Self {
         Self::proven(ConstantIntRange::constant(value))
     }
 
@@ -555,14 +543,14 @@ mod tests {
 
     #[test]
     fn mixed_width_joins_preserve_raw_values() {
-        let narrow = ConstantIntRange::constant(Immediate::I1(true));
-        let wide = ConstantIntRange::constant(Immediate::U32(7));
+        let narrow = ConstantIntRange::constant(Int::from(true));
+        let wide = ConstantIntRange::constant(Int::from(7u32));
         assert_eq!(narrow.union(&wide), ConstantIntRange::from_unsigned(32, 1, 7));
         assert_eq!(wide.union(&narrow), ConstantIntRange::from_unsigned(32, 1, 7));
 
         // The raw representation of -1i8 is 255; widening its interpretation cannot sign-extend it.
-        let negative = ConstantIntRange::constant(Immediate::I8(-1));
-        let zero = ConstantIntRange::constant(Immediate::U16(0));
+        let negative = ConstantIntRange::constant(Int::from(-1i8));
+        let zero = ConstantIntRange::constant(Int::from(0u16));
         assert_eq!(negative.union(&zero), ConstantIntRange::from_unsigned(16, 0, 255));
 
         // Keep the wider input's signed bounds, even when its unsigned interval crosses the sign bit.
@@ -573,12 +561,12 @@ mod tests {
 
     #[test]
     fn mixed_width_widening_compares_the_same_signed_interpretation() {
-        let byte = ConstantIntRange::constant(Immediate::I8(-1));
-        let word = ConstantIntRange::constant(Immediate::U16(255));
+        let byte = ConstantIntRange::constant(Int::from(-1i8));
+        let word = ConstantIntRange::constant(Int::from(255u16));
         assert_eq!(byte.widen(&word), word);
         assert_eq!(word.widen(&byte), word);
 
-        let negative_word = ConstantIntRange::constant(Immediate::I16(-1));
+        let negative_word = ConstantIntRange::constant(Int::from(-1i16));
         let widened = byte.widen(&negative_word);
         assert_eq!(widened.width(), 16);
         assert_eq!((widened.umin(), widened.umax()), (255, 65535));
@@ -682,7 +670,7 @@ mod tests {
     #[test]
     fn regression_unsigned_constraint_accepts_wider_representation() {
         let context = Context::default();
-        let range = ConstantIntRange::constant(Immediate::U64(1u64 << 31));
+        let range = ConstantIntRange::constant(Int::from(1u64 << 31));
         assert!(range.satisfies(&ValueRangeConstraint::Type(context.i32())));
         assert!(!range.satisfies(&ValueRangeConstraint::Type(context.i16())));
     }
@@ -691,20 +679,20 @@ mod tests {
     fn regression_type_range_contains_all_constants_of_its_width() {
         let context = Context::default();
         let top = ConstantIntRange::max_for_type(context.i64());
-        let constant = ConstantIntRange::constant(Immediate::U64(u64::MAX - 1));
+        let constant = ConstantIntRange::constant(Int::from(u64::MAX - 1));
         assert_eq!(top.union(&constant), top);
     }
 
     #[test]
     fn wrapping_add_uses_each_interpretation_independently() {
-        let unsigned = ConstantIntRange::constant(Immediate::U32(0x7fff_ffff));
-        let one = ConstantIntRange::constant(Immediate::U32(1));
+        let unsigned = ConstantIntRange::constant(Int::from(0x7fff_ffffu32));
+        let one = ConstantIntRange::constant(Int::from(1u32));
         assert_eq!(
             unsigned.add_wrapping(&one),
-            Some(ConstantIntRange::constant(Immediate::U32(0x8000_0000)))
+            Some(ConstantIntRange::constant(Int::from(0x8000_0000u32)))
         );
-        let signed = ConstantIntRange::constant(Immediate::I32(-1));
-        assert_eq!(signed.add_wrapping(&one), Some(ConstantIntRange::constant(Immediate::I32(0))));
+        let signed = ConstantIntRange::constant(Int::from(-1i32));
+        assert_eq!(signed.add_wrapping(&one), Some(ConstantIntRange::constant(Int::from(0i32))));
         let straddling = ConstantIntRange::from_unsigned(32, 0, 0x8000_0000);
         assert_eq!(
             straddling.add_wrapping(&one),
@@ -714,15 +702,15 @@ mod tests {
 
     #[test]
     fn checked_add_uses_the_selected_interpretation() {
-        let max = ConstantIntRange::constant(Immediate::U32(0x7fff_ffff));
-        let one = ConstantIntRange::constant(Immediate::U32(1));
+        let max = ConstantIntRange::constant(Int::from(0x7fff_ffffu32));
+        let one = ConstantIntRange::constant(Int::from(1u32));
         assert!(max.add_unsigned_without_overflow(&one).is_some());
         assert!(max.add_signed_without_overflow(&one).is_none());
-        let minus_one = ConstantIntRange::constant(Immediate::I32(-1));
+        let minus_one = ConstantIntRange::constant(Int::from(-1i32));
         assert!(minus_one.add_unsigned_without_overflow(&one).is_none());
         assert_eq!(
             minus_one.add_signed_without_overflow(&one),
-            Some(ConstantIntRange::constant(Immediate::I32(0)))
+            Some(ConstantIntRange::constant(Int::from(0i32)))
         );
     }
 
@@ -751,7 +739,7 @@ mod tests {
             precise.refined_by(&range).range(),
             Some(&ConstantIntRange::from_unsigned(32, 0, 10))
         );
-        let disjoint = IntegerValueRange::constant(Immediate::U64(u64::MAX));
+        let disjoint = IntegerValueRange::constant(Int::from(u64::MAX));
         assert_eq!(
             disjoint.refined_by(&range),
             IntegerValueRange::proven(ConstantIntRange::max_for_type(context.i32()))
@@ -808,7 +796,7 @@ mod tests {
         assert_eq!(proven.join_confidence(&assumed), Some(IntegerRangeConfidence::Assumed));
         assert_eq!(assumed.join_confidence(&proven), Some(IntegerRangeConfidence::Assumed));
         assert_eq!(proven.join_confidence(&IntegerValueRange::uninitialized()), None);
-        assert_eq!(proven.range(), Some(&ConstantIntRange::constant(Immediate::I1(true))));
+        assert_eq!(proven.range(), Some(&ConstantIntRange::constant(Int::from(true))));
     }
 
     #[test]
