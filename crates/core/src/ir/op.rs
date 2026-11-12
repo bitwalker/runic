@@ -77,12 +77,20 @@ pub trait Op: AsAny + OpVerifier {
         Ok(())
     }
 
+    /// Prints this operation with `flags`, by the rule of
+    /// [PrettyPrint for Operation](crate::formatter::PrettyPrint): an operation without a parent
+    /// is a root, preceded by the declarations of the recursion groups it refers to, and one with
+    /// a parent is a fragment.
     fn print(&self, flags: &OpPrintingFlags) -> crate::formatter::Document {
         use print::OpPrinter;
 
         let op = self.as_operation();
         let context = op.context_rc();
-        let mut printer = print::AsmPrinter::new(context, flags);
+        let mut printer = if op.parent_op().is_none() {
+            print::AsmPrinter::new(context, flags)
+        } else {
+            print::AsmPrinter::fragment(context, flags)
+        };
         op.print(&mut printer);
         printer.finish()
     }

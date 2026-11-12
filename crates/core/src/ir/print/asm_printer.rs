@@ -1,5 +1,5 @@
 use alloc::{rc::Rc, string::String};
-use core::{cell::RefCell, fmt, ops::AddAssign};
+use core::{cell::RefCell, ops::AddAssign};
 
 use super::*;
 use crate::{
@@ -8,7 +8,7 @@ use crate::{
     attributes::Marker,
     formatter::Document,
     interner,
-    types::{TypeAliases, TypeFormatter, collect_rec_groups},
+    types::{Aliased, TypeAliases, collect_rec_groups},
 };
 
 /// [AsmPrinter] provides utilities for pretty-printing an operation in either the generic
@@ -18,32 +18,52 @@ use crate::{
 /// The aliases of recursion-group members are kept in a table shared by every printer of one
 /// print: a printer that is created while printing, to print a part of the output separately,
 /// must be made with [Self::nested].
+///
+/// A printer made with [Self::new] is the *root* of its print: [Self::finish] writes the
+/// declarations of the recursion groups the print refers to in front of the printed text, so
+/// that the text parses on its own. A printer made with [Self::nested] or [Self::fragment]
+/// never writes declarations.
 pub struct AsmPrinter<'a> {
     context: Rc<Context>,
     flags: &'a OpPrintingFlags,
     document: Document,
     aliases: Rc<RefCell<TypeAliases>>,
+    /// Whether [Self::finish] writes the print's recursion-group declarations.
+    root: bool,
 }
 
 impl<'a> AsmPrinter<'a> {
-    /// Construct a new printer with the given [OpPrintingFlags], starting a print of its own.
+    /// Construct a new printer with the given [OpPrintingFlags], starting a print of its own whose
+    /// root it is: [Self::finish] precedes the printed text with its recursion-group declarations.
     pub fn new(context: Rc<Context>, flags: &'a OpPrintingFlags) -> Self {
         Self {
             context,
             flags,
             document: Document::Empty,
             aliases: Rc::default(),
+            root: true,
+        }
+    }
+
+    /// Construct a new printer that starts a print of its own, like [Self::new], but prints a
+    /// fragment: [Self::finish] writes no declarations, and the recursion-group members in its
+    /// text are aliases that it does not declare.
+    pub fn fragment(context: Rc<Context>, flags: &'a OpPrintingFlags) -> Self {
+        Self {
+            root: false,
+            ..Self::new(context, flags)
         }
     }
 
     /// A printer with an empty document that is part of the same print as this one: it has the
-    /// same context and flags, and shares this printer's alias table.
+    /// same context and flags, shares this printer's alias table, and is not a root.
     pub fn nested(&self) -> AsmPrinter<'a> {
         Self {
             context: self.context.clone(),
             flags: self.flags,
             document: Document::Empty,
             aliases: self.aliases.clone(),
+            root: false,
         }
     }
 
@@ -67,15 +87,26 @@ impl<'a> AsmPrinter<'a> {
     /// Render the current printer state as a [Document], and reset the printer to an empty buffer.
     ///
     /// This can be used to emit multiple separate documents using a single [AsmPrinter] instance.
+    /// The result is always a fragment: it never holds recursion-group declarations, even on a
+    /// root printer, so that the parts of a text assembled from several renders do not have
+    /// declarations in the middle. A root writes its declarations only in [Self::finish].
     #[inline]
     pub fn render(&mut self) -> Document {
         core::mem::take(&mut self.document)
     }
 
     /// Consume the printer, and render its state as a [Document].
-    #[inline(always)]
+    ///
+    /// On a root printer (see [Self::new]) whose print refers to recursion groups, the document is
+    /// [Self::rec_group_declarations], a blank line, then the printed text.
     pub fn finish(self) -> Document {
-        self.document
+        use crate::formatter::nl;
+
+        if !self.root || self.aliases.borrow().groups().is_empty() {
+            return self.document;
+        }
+        let declarations = self.rec_group_declarations();
+        declarations + nl() + nl() + self.document
     }
 }
 
@@ -360,6 +391,11 @@ impl<'a> AsmPrinter<'a> {
     /// Each group comes after every group its members refer to, so that the text parses in one
     /// pass; a group that is only referred to is named here, before any declaration is written,
     /// so that no name already printed changes. Members are declared in index order.
+    ///
+    /// The groups are all those the shared alias table has named, not only those named since an
+    /// earlier call: a second call, or [Self::finish] after a call, writes every group again. A
+    /// printer used for several roots in turn therefore declares, for each, the groups of every
+    /// root before it as well; print each root with a printer of its own to avoid that.
     pub fn rec_group_declarations(&self) -> Document {
         use crate::formatter::*;
 
@@ -766,23 +802,4 @@ fn is_valid_bare_identifier(id: &str) -> bool {
     let mut chars = id.chars();
     chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '$'))
-}
-
-/// Writes a type with [TypeFormatter::ty], or its body with [TypeFormatter::definition], with
-/// recursion-group members written as their aliases.
-struct Aliased<'a> {
-    ty: Type,
-    aliases: &'a RefCell<TypeAliases>,
-    definition: bool,
-}
-
-impl fmt::Display for Aliased<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut printer = TypeFormatter::with_aliases(f, self.aliases);
-        if self.definition {
-            printer.definition(self.ty)
-        } else {
-            printer.ty(self.ty)
-        }
-    }
 }

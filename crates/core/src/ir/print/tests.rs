@@ -166,3 +166,117 @@ fn a_nested_operation_prints_no_declarations() {
         "%1 = builtin.unrealized_conversion_cast %0 <{ ty = #builtin.type<ptr<!list>> }>;"
     );
 }
+
+#[test]
+fn a_group_reached_only_as_a_dependency_is_named_after_the_printed_ones() {
+    let (test, _) = function_with_casts(
+        |cx| {
+            let a = singleton(cx, "list", cx.i32());
+            let b = singleton(cx, "list", cx.ptr_type(a));
+            [b].into()
+        },
+        |_| Vec::new(),
+    );
+    assert_eq!(
+        print_function(&test),
+        "\
+rec {
+  type !list_0 = struct list<i32, ptr<!list_0>>;
+}
+rec {
+  type !list = struct list<ptr<!list_0>, ptr<!list>>;
+}
+
+builtin.function public extern(\"C\") @f(%0: !list) {
+    builtin.ret;
+};"
+    );
+}
+
+#[test]
+fn op_print_declares_the_groups_of_a_root_only() {
+    use crate::OpPrintingFlags;
+
+    let list = Cell::new(None);
+    let (test, ops) = function_with_casts(
+        |cx| {
+            let member = singleton(cx, "list", cx.i32());
+            list.set(Some(member));
+            [member].into()
+        },
+        |cx| [cx.ptr_type(list.get().unwrap())].into(),
+    );
+    let flags = OpPrintingFlags::default();
+    let root = test.function().borrow().print(&flags).to_string();
+    assert_eq!(root, print_function(&test));
+    assert!(root.starts_with("rec {\n  type !list = struct list<i32, ptr<!list>>;\n}\n\n"));
+    let cast = ops[0]
+        .try_downcast_op::<crate::dialects::builtin::UnrealizedConversionCast>()
+        .unwrap();
+    assert_eq!(
+        cast.borrow().print(&flags).to_string(),
+        "%1 = builtin.unrealized_conversion_cast %0 <{ ty = #builtin.type<ptr<!list>> }>;"
+    );
+}
+
+#[test]
+fn a_signature_attribute_shares_the_aliases_of_its_operation() {
+    use crate::dialects::builtin::attributes::{Signature, SignatureAttr};
+
+    let list = Cell::new(None);
+    let (test, mut ops) = function_with_casts(
+        |cx| {
+            let member = singleton(cx, "list", cx.i32());
+            list.set(Some(member));
+            [member].into()
+        },
+        |cx| [cx.ptr_type(list.get().unwrap())].into(),
+    );
+    let context = test.context_rc();
+    let list = list.get().unwrap();
+    let signature = Signature::new(&context, [context.ptr_type(list)], [list]);
+    let attr = context.create_attribute::<SignatureAttr, _>(signature);
+    ops[0].borrow_mut().set_attribute("sig", attr.as_attribute_ref());
+    let printed = print_function(&test);
+    assert_eq!(
+        printed,
+        "\
+rec {
+  type !list = struct list<i32, ptr<!list>>;
+}
+
+builtin.function public extern(\"C\") @f(%0: !list) {
+    %1 = builtin.unrealized_conversion_cast %0 <{ ty = #builtin.type<ptr<!list>> }> attributes { \
+         sig = #builtin.signature<extern(\"C\") (ptr<!list>) -> !list> };
+    builtin.ret;
+};"
+    );
+}
+
+#[test]
+fn a_region_or_block_printed_on_its_own_declares_its_groups() {
+    use crate::{OpPrintingFlags, formatter::PrettyPrint};
+
+    let list = Cell::new(None);
+    let (test, _) = function_with_casts(
+        |cx| {
+            let member = singleton(cx, "list", cx.i32());
+            list.set(Some(member));
+            [cx.i32()].into()
+        },
+        |_| [list.get().unwrap()].into(),
+    );
+    let declaration = "rec {\n  type !list = struct list<i32, ptr<!list>>;\n}\n\n";
+    let function = test.function();
+    let function = function.borrow();
+    let region = function.as_operation().regions().front().get().unwrap();
+    let flags = OpPrintingFlags::default();
+    let region_text = region.print(test.context_rc(), &flags).to_string();
+    assert!(region_text.starts_with(declaration), "unexpected region text:\n{region_text}");
+    assert_eq!(region_text.matches("rec {").count(), 1);
+
+    let block = region.entry_block_ref().unwrap();
+    let block_text = block.borrow().render().to_string();
+    assert!(block_text.starts_with(declaration), "unexpected block text:\n{block_text}");
+    assert_eq!(block_text.matches("rec {").count(), 1);
+}

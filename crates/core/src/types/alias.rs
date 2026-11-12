@@ -1,8 +1,9 @@
 //! The names the IR printer gives recursion-group members.
 
 use alloc::{format, string::String, vec::Vec};
+use core::{cell::RefCell, fmt};
 
-use super::{RecGroup, Type};
+use super::{RecGroup, Type, TypeFormatter};
 use crate::{FxHashMap, FxHashSet, interner::Symbol};
 
 /// The aliases chosen for recursion-group members during one print.
@@ -88,35 +89,35 @@ fn is_alias_identifier(text: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '$'))
 }
 
+/// Writes a type with [TypeFormatter::ty], or its body with [TypeFormatter::definition], with
+/// recursion-group members written as their aliases in `aliases`.
+pub(crate) struct Aliased<'a> {
+    pub ty: Type,
+    pub aliases: &'a RefCell<TypeAliases>,
+    pub definition: bool,
+}
+
+impl fmt::Display for Aliased<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut printer = TypeFormatter::with_aliases(f, self.aliases);
+        if self.definition {
+            printer.definition(self.ty)
+        } else {
+            printer.ty(self.ty)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::{format, string::String};
-    use core::{cell::RefCell, fmt};
+    use core::cell::RefCell;
 
     use super::*;
-    use crate::{Context, StructType, types::TypeFormatter};
+    use crate::{Context, StructType};
 
     fn sym(s: &str) -> Symbol {
         Symbol::intern(s)
-    }
-
-    /// Writes a type with [TypeFormatter::ty], or its body with [TypeFormatter::definition], using
-    /// an alias table.
-    struct Aliased<'a> {
-        ty: Type,
-        aliases: &'a RefCell<TypeAliases>,
-        definition: bool,
-    }
-
-    impl fmt::Display for Aliased<'_> {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            let mut printer = TypeFormatter::with_aliases(f, self.aliases);
-            if self.definition {
-                printer.definition(self.ty)
-            } else {
-                printer.ty(self.ty)
-            }
-        }
     }
 
     fn show(ty: Type, aliases: &RefCell<TypeAliases>) -> String {

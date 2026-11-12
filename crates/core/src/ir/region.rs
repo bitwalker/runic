@@ -704,6 +704,8 @@ impl Region {
 
 /// Printing
 impl Region {
+    /// Prints this region on its own, as the root of a print: it is preceded by the declarations
+    /// of the recursion groups it refers to (see [AsmPrinter::finish](crate::print::AsmPrinter)).
     pub fn print(
         &self,
         context: Rc<Context>,

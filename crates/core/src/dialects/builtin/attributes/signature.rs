@@ -244,6 +244,9 @@ impl formatter::PrettyPrint for AbiParam {
     fn render(&self) -> formatter::Document {
         use formatter::*;
 
+        // Only reached outside an IR print, through the `Display` of `AbiParam` and `Signature`
+        // (the `AttrPrinter` of a signature writes its types with the printer), so the type is
+        // written with its `Display` form and the attributes below start prints of their own.
         let ty = text(format!("{}", self.ty));
 
         let mut doc = Document::Empty;

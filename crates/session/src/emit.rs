@@ -278,3 +278,57 @@ impl Emit for Component {
         writer.write_fmt(format_args!("{}", printer.finish()))
     }
 }
+
+#[cfg(all(test, feature = "std"))]
+mod tests {
+    use alloc::{rc::Rc, string::String, vec::Vec};
+
+    use runic_core::{
+        BuilderExt, Context, Ident, SourceSpan, StructType, Visibility,
+        dialects::builtin::{
+            ComponentBuilder, ModuleBuilder, World, WorldBuilder, attributes::Signature,
+        },
+        interner,
+    };
+    use tempfile::TempDir;
+
+    use super::*;
+    use crate::{InputFile, InputType, Options};
+
+    #[test]
+    fn an_emitted_module_declares_the_recursion_groups_it_refers_to() {
+        let context = Rc::new(Context::default());
+        let body = context.struct_type(StructType::named(
+            interner::Symbol::intern("list"),
+            [context.i32().into(), context.ptr_type(context.rec_var(0)).into()],
+        ));
+        let list = context.rec_group(&[body]).unwrap()[0];
+
+        let world = context.clone().builder().create::<World, ()>(SourceSpan::UNKNOWN)().unwrap();
+        let component =
+            WorldBuilder::new(world).define_component(Ident::from("acme::app")).unwrap();
+        let module = ComponentBuilder::new(component).define_module(Ident::from("m")).unwrap();
+        let signature = Signature::new(&context, [context.ptr_type(list)], []);
+        ModuleBuilder::new(module)
+            .define_function(Ident::from("f"), Visibility::Public, signature)
+            .unwrap();
+
+        let temp = TempDir::new().unwrap();
+        let options = Options {
+            current_dir: temp.path().to_path_buf(),
+            target_dir: temp.path().join("target"),
+            ..Options::default()
+        };
+        let input = InputFile::new(InputType::Real("m.hir".into()));
+        let session = Session::new(input, Box::new(options)).unwrap();
+
+        let mut out = Vec::new();
+        module.borrow().write_to(&mut out, OutputMode::Text, &session).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(
+            text.starts_with("rec {\n  type !list = struct list<i32, ptr<!list>>;\n}\n\n"),
+            "unexpected emitted text:\n{text}"
+        );
+        assert!(text.contains("ptr<!list>"), "unexpected emitted text:\n{text}");
+    }
+}

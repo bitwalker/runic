@@ -162,6 +162,8 @@ impl fmt::Display for Block {
 }
 
 impl crate::formatter::PrettyPrint for Block {
+    /// Prints this block on its own, as the root of a print: it is preceded by the declarations
+    /// of the recursion groups it refers to (see [AsmPrinter::finish](crate::print::AsmPrinter)).
     fn render(&self) -> crate::formatter::Document {
         let flags = OpPrintingFlags::default();
 

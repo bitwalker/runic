@@ -15,6 +15,11 @@ use core::{
     ptr::{DynMetadata, NonNull, Pointee},
 };
 
+pub(crate) use self::{
+    alias::Aliased,
+    rec::{RecGroupData, RecGroupTable},
+    uniquer::TypeUniquer,
+};
 pub use self::{
     alias::TypeAliases,
     component::TypeComponent,
@@ -24,10 +29,6 @@ pub use self::{
         AliasNameFn, DefaultTypeFn, DialectTypeRegistrationInfo, ParseTypeFn, PrintTypeFn,
         TypeAliasName, TypeParser, TypePrinter, TypeRegistration,
     },
-};
-pub(crate) use self::{
-    rec::{RecGroupData, RecGroupTable},
-    uniquer::TypeUniquer,
 };
 use crate::dialects::builtin::types::{
     ArrayType, EnumType, FloatType, FunctionType, IntegerType, IsizeType, NeverType, PointerType,

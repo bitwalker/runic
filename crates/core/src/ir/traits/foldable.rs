@@ -145,6 +145,7 @@ impl core::fmt::Display for OpFoldResult {
         match self {
             OpFoldResult::Attribute(attr) => {
                 let attr = attr.borrow();
+                // Only reached outside an IR print, so this starts a print of its own.
                 let mut printer = AsmPrinter::new(attr.context_rc(), &flags);
                 printer.print_attribute_value(&*attr);
                 write!(f, "{}", printer.finish())

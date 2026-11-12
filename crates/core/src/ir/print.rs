@@ -315,26 +315,19 @@ impl crate::formatter::PrettyPrint for Operation {
     /// An operation without a parent operation is the root of what is printed, and its text is
     /// preceded by the declarations of the recursion groups it refers to (see
     /// [AsmPrinter::rec_group_declarations]) and a blank line, so that it parses on its own. An
-    /// operation with a parent prints no declarations: its text is a fragment of its root's,
-    /// and its recursion-group members are written as aliases declared there.
+    /// operation with a parent is printed as a fragment ([AsmPrinter::fragment]), with no
+    /// declarations: its text is part of its root's, and its recursion-group members are written
+    /// as aliases declared there.
     fn render(&self) -> Document {
-        use crate::formatter::nl;
-
         let flags = OpPrintingFlags::default();
         let context = self.context_rc();
-        let mut printer = AsmPrinter::new(context, &flags);
-        self.print(&mut printer);
-        let declarations = if self.parent_op().is_none() {
-            printer.rec_group_declarations()
+        let mut printer = if self.parent_op().is_none() {
+            AsmPrinter::new(context, &flags)
         } else {
-            Document::Empty
+            AsmPrinter::fragment(context, &flags)
         };
-        let operation = printer.finish();
-        if declarations.is_empty() {
-            operation
-        } else {
-            declarations + nl() + nl() + operation
-        }
+        self.print(&mut printer);
+        printer.finish()
     }
 }
 
