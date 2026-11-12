@@ -465,7 +465,7 @@ mod tests {
     use core::hash::Hasher;
 
     use crate::{
-        Attribute, Immediate, ImmediateAttr, Type, attributes::IntegerLikeAttr,
+        Attribute, Immediate, ImmediateAttr, attributes::IntegerLikeAttr,
         dialects::builtin::attributes::U32Attr, testing::Test,
     };
 
@@ -524,14 +524,14 @@ mod tests {
         let test = Test::default();
 
         let immediate = test.context_rc().create_attribute::<ImmediateAttr, _>(Immediate::I32(1));
-        assert_eq!(immediate.borrow().ty(), Type::I32);
+        assert_eq!(immediate.borrow().ty(), test.context().i32());
 
         let erased = immediate.as_attribute_ref();
-        assert_eq!(erased.borrow().ty(), Type::I32);
+        assert_eq!(erased.borrow().ty(), test.context().i32());
 
         let roundtrip = erased.try_downcast_attr::<ImmediateAttr>().unwrap();
         let roundtrip = roundtrip.borrow();
-        assert_eq!(roundtrip.ty(), Type::I32);
+        assert_eq!(roundtrip.ty(), test.context().i32());
         assert_eq!(roundtrip.as_immediate(), Immediate::I32(1));
     }
 

@@ -425,12 +425,15 @@ mod tests {
 
     #[test]
     fn failed_typed_build_preserves_existing_uses() {
-        let test = Test::new("failed_typed_build", &[Type::I1, Type::U32], &[]);
+        let mut test = Test::named("failed_typed_build");
+        let i1 = test.context().i1();
+        let i32 = test.context().i32();
+        test.with_function("failed_typed_build", &[i1, i32], &[]);
         let context = test.context_rc();
         let entry = test.entry_block();
         let boolean = entry.borrow().get_argument(0) as ValueRef;
         let integer = entry.borrow().get_argument(1) as ValueRef;
-        let target = context.create_block_with_params([Type::U32]);
+        let target = context.create_block_with_params([i32]);
         let mut builder = context.builder();
         builder.set_insertion_point_to_end(entry);
 
@@ -456,13 +459,16 @@ mod tests {
 
     #[test]
     fn failed_generic_build_cleans_operand_and_successor_uses() {
-        let test = Test::new("failed_generic_build", &[Type::I1, Type::U32], &[]);
+        let mut test = Test::named("failed_generic_build");
+        let i1 = test.context().i1();
+        let i32 = test.context().i32();
+        test.with_function("failed_generic_build", &[i1, i32], &[]);
         let context = test.context_rc();
         context.get_or_register_dialect::<TestDialect>();
         let entry = test.entry_block();
         let boolean = entry.borrow().get_argument(0) as ValueRef;
         let integer = entry.borrow().get_argument(1) as ValueRef;
-        let target = context.create_block_with_params([Type::I1]);
+        let target = context.create_block_with_params([i1]);
         let name = context.get_registered_name::<CheckedBranch>();
         let mut builder = context.clone().builder();
 
@@ -476,7 +482,7 @@ mod tests {
 
             // Generic assembly can attach regions before the outer operation is validated.
             let mut region = context.create_region();
-            let nested_block = context.create_block_with_params([Type::I1]);
+            let nested_block = context.create_block_with_params([i1]);
             region.borrow_mut().push_back(nested_block);
             let mut nested_builder = context.clone().builder();
             nested_builder.set_insertion_point_to_end(nested_block);
@@ -501,17 +507,20 @@ mod tests {
 
     #[test]
     fn failed_build_after_inference_cleans_uses() {
-        let test = Test::new("failed_build_after_inference", &[Type::U32], &[]);
+        let mut test = Test::named("failed_build_after_inference");
+        let i32 = test.context().i32();
+        test.with_function("failed_build_after_inference", &[i32], &[]);
         let context = test.context_rc();
         context.get_or_register_dialect::<TestDialect>();
         let value = test.entry_block().borrow().get_argument(0) as ValueRef;
-        let target = context.create_block_with_params([Type::U32]);
+        let target = context.create_block_with_params([i32]);
         let name = context.get_registered_name::<Shl>();
         let op = name.alloc_default(context.clone());
+        let unknown = context.unknown_type();
         let mut builder = context.builder();
         let mut op_builder = GenericOperationBuilder::new(&mut builder, op);
         op_builder.with_operands([value, value]);
-        op_builder.with_results([Type::Unknown]);
+        op_builder.with_results([unknown]);
         op_builder.with_successor(target, [value]);
         let error = op_builder.build().unwrap_err();
         assert!(error.to_string().contains("invalid operation test.shl"), "{error}");

@@ -479,9 +479,10 @@ mod tests {
     /// A signature's `Display` output must render its results, not a second copy of its params.
     #[test]
     fn display_renders_params_and_results_separately() {
+        let context = crate::Context::default();
         let signature = Signature {
-            params: alloc::vec![AbiParam::new(Type::U32)],
-            results: alloc::vec![AbiParam::new(Type::U64)],
+            params: alloc::vec![AbiParam::new(context.i32())],
+            results: alloc::vec![AbiParam::new(context.i64())],
             cc: CallConv::default(),
         };
 
@@ -490,9 +491,9 @@ mod tests {
             .split_once("\"results\"")
             .unwrap_or_else(|| panic!("expected a 'results' key in {rendered}"));
 
-        assert!(params.contains("u32"), "expected 'u32' under params in {rendered}");
-        assert!(!params.contains("u64"), "unexpected 'u64' under params in {rendered}");
-        assert!(results.contains("u64"), "expected 'u64' under results in {rendered}");
-        assert!(!results.contains("u32"), "unexpected 'u32' under results in {rendered}");
+        assert!(params.contains("i32"), "expected 'i32' under params in {rendered}");
+        assert!(!params.contains("i64"), "unexpected 'i64' under params in {rendered}");
+        assert!(results.contains("i64"), "expected 'i64' under results in {rendered}");
+        assert!(!results.contains("i32"), "unexpected 'i32' under results in {rendered}");
     }
 }

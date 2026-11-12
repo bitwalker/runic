@@ -829,7 +829,9 @@ mod tests {
 
     #[test]
     fn matcher_foldable_operand_of_trait() {
-        let mut test = Test::new("matcher_foldable_operand_of_trait", &[Type::U32], &[Type::U32]);
+        let mut test = Test::named("matcher_foldable_operand_of_trait");
+        let i32 = test.context().i32();
+        test.with_function("matcher_foldable_operand_of_trait", &[i32], &[i32]);
 
         let mut builder = test.function_builder();
         let shift = builder.u32(1, SourceSpan::default()).unwrap();
@@ -851,7 +853,8 @@ mod tests {
     }
 
     fn setup(name: &'static str, test: &mut Test) -> (ValueRef, ValueRef, ValueRef) {
-        test.with_function(name, &[Type::U32], &[Type::U32]);
+        let i32 = test.context().i32();
+        test.with_function(name, &[i32], &[i32]);
 
         // Define function body
         let mut builder = test.function_builder();

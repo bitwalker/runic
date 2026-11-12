@@ -551,6 +551,7 @@ mod tests {
     use alloc::vec;
 
     use super::*;
+    use crate::Context;
 
     #[test]
     fn mixed_width_joins_preserve_raw_values() {
@@ -671,22 +672,25 @@ mod tests {
 
     #[test]
     fn regression_checked_refinement_does_not_prove_assumed_bounds() {
-        let assumed = IntegerValueRange::max_for_type(&Type::U8);
-        let refined = assumed.refined_by(&ConstantIntRange::max_for_type(&Type::U32));
+        let context = Context::default();
+        let assumed = IntegerValueRange::max_for_type(context.i8());
+        let refined = assumed.refined_by(&ConstantIntRange::max_for_type(context.i32()));
         assert!(refined.is_proven());
         assert_eq!(refined.range().unwrap().umax(), u32::MAX as u128);
     }
 
     #[test]
     fn regression_unsigned_constraint_accepts_wider_representation() {
+        let context = Context::default();
         let range = ConstantIntRange::constant(Immediate::U64(1u64 << 31));
-        assert!(range.satisfies(&ValueRangeConstraint::Type(Type::U32)));
-        assert!(!range.satisfies(&ValueRangeConstraint::Type(Type::U16)));
+        assert!(range.satisfies(&ValueRangeConstraint::Type(context.i32())));
+        assert!(!range.satisfies(&ValueRangeConstraint::Type(context.i16())));
     }
 
     #[test]
-    fn regression_felt_type_range_contains_all_felt_constants() {
-        let top = ConstantIntRange::max_for_type(&Type::U64);
+    fn regression_type_range_contains_all_constants_of_its_width() {
+        let context = Context::default();
+        let top = ConstantIntRange::max_for_type(context.i64());
         let constant = ConstantIntRange::constant(Immediate::U64(u64::MAX - 1));
         assert_eq!(top.union(&constant), top);
     }
@@ -728,7 +732,8 @@ mod tests {
         assert_eq!(range.intersection(&ConstantIntRange::untracked()), Some(range));
         assert_eq!(ConstantIntRange::untracked().intersection(&range), Some(range));
         assert_eq!(range.intersection(&ConstantIntRange::from_unsigned(8, 6, 10)), None);
-        assert_eq!(range.intersection(&ConstantIntRange::max_for_type(&Type::U16)), None);
+        let context = Context::default();
+        assert_eq!(range.intersection(&ConstantIntRange::max_for_type(context.i16())), None);
         let lhs = ConstantIntRange::from_unsigned(8, 0, 50)
             .union(&ConstantIntRange::from_unsigned(8, 128, 200));
         let rhs = ConstantIntRange::from_unsigned(8, 60, 127)
@@ -738,7 +743,8 @@ mod tests {
 
     #[test]
     fn refinement_waits_for_input_and_preserves_proven_bounds() {
-        let range = ConstantIntRange::max_for_type(&Type::U32);
+        let context = Context::default();
+        let range = ConstantIntRange::max_for_type(context.i32());
         assert!(IntegerValueRange::uninitialized().refined_by(&range).is_uninitialized());
         let precise = IntegerValueRange::proven(ConstantIntRange::from_unsigned(64, 0, 10));
         assert_eq!(
@@ -748,7 +754,7 @@ mod tests {
         let disjoint = IntegerValueRange::constant(Immediate::U64(u64::MAX));
         assert_eq!(
             disjoint.refined_by(&range),
-            IntegerValueRange::proven(ConstantIntRange::max_for_type(&Type::U32))
+            IntegerValueRange::proven(ConstantIntRange::max_for_type(context.i32()))
         );
     }
 
@@ -783,8 +789,9 @@ mod tests {
     }
 
     #[test]
-    fn signed_constraints_check_the_zero_extended_representation() {
-        for (ty, width) in [(Type::I8, 8), (Type::I16, 16), (Type::I32, 32)] {
+    fn integer_constraints_check_the_zero_extended_representation() {
+        let context = Context::default();
+        for (ty, width) in [(context.i8(), 8), (context.i16(), 16), (context.i32(), 32)] {
             let constraint = ValueRangeConstraint::Type(ty);
             let max = (1u128 << width) - 1;
             assert!(ConstantIntRange::from_unsigned(64, 0, max).satisfies(&constraint));
@@ -794,8 +801,9 @@ mod tests {
 
     #[test]
     fn confidence_join_waits_and_never_upgrades_assumptions() {
-        let proven = IntegerValueRange::exact_bool(&Type::I1, true);
-        let assumed = IntegerValueRange::max_for_type(&Type::I1);
+        let context = Context::default();
+        let proven = IntegerValueRange::exact_bool(context.i1(), true);
+        let assumed = IntegerValueRange::max_for_type(context.i1());
         assert_eq!(proven.join_confidence(&proven), Some(IntegerRangeConfidence::Proven));
         assert_eq!(proven.join_confidence(&assumed), Some(IntegerRangeConfidence::Assumed));
         assert_eq!(assumed.join_confidence(&proven), Some(IntegerRangeConfidence::Assumed));

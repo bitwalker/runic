@@ -693,17 +693,19 @@ impl<T: TypeConstraint, U: TypeConstraint> TypeConstraint for Or<T, U> {
 #[cfg(test)]
 mod tests {
     use super::{Bool, Int32, TypeConstraint};
-    use crate::Type;
+    use crate::Context;
 
     #[test]
     fn sized_integer_constraints_require_the_declared_width() {
+        let context = Context::default();
         let boolean = Bool::get();
-        assert!(boolean.matches(&Type::I1));
-        assert!(!boolean.matches(&Type::U32));
+        assert!(boolean.matches(context.i1()));
+        assert!(!boolean.matches(context.i32()));
 
         let int32 = Int32::get();
-        assert!(int32.matches(&Type::I32));
-        assert!(int32.matches(&Type::U32));
-        assert!(!int32.matches(&Type::I1));
+        assert!(int32.matches(context.i32()));
+        assert!(int32.matches(context.int_type(32)));
+        assert!(!int32.matches(context.i1()));
+        assert!(!int32.matches(context.isize_type()));
     }
 }

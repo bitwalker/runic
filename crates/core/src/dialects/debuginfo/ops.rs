@@ -144,7 +144,7 @@ mod tests {
     use alloc::string::ToString;
 
     use runic_core::{
-        Builder, RawWalk, Report, SourceSpan, Type, ValueRef,
+        Builder, RawWalk, Report, SourceSpan, ValueRef,
         dialects::{
             builtin::BuiltinOpBuilder,
             debuginfo::{
@@ -160,8 +160,9 @@ mod tests {
 
     #[test]
     fn debug_value_verifier_rejects_erased_producer() -> Result<(), Report> {
-        let mut test =
-            Test::new("debug_value_verifier_rejects_erased_producer", &[Type::U32], &[Type::U32]);
+        let mut test = Test::named("debug_value_verifier_rejects_erased_producer");
+        let i32 = test.context().i32();
+        test.with_function("debug_value_verifier_rejects_erased_producer", &[i32], &[i32]);
         test.context().get_or_register_dialect::<DebugInfoDialect>();
 
         let (mut producer_op, debug_op) = {
@@ -195,10 +196,12 @@ mod tests {
 
     #[test]
     fn erase_debug_info_removes_debug_value_before_producer_erasure() -> Result<(), Report> {
-        let mut test = Test::new(
+        let mut test = Test::named("erase_debug_info_removes_debug_value_before_producer_erasure");
+        let i32 = test.context().i32();
+        test.with_function(
             "erase_debug_info_removes_debug_value_before_producer_erasure",
-            &[Type::U32],
-            &[Type::U32],
+            &[i32],
+            &[i32],
         );
         test.context().get_or_register_dialect::<DebugInfoDialect>();
 
@@ -253,11 +256,9 @@ mod tests {
 
         use crate::dialects::debuginfo::DebugValue;
 
-        let mut test = Test::new(
-            "salvage_debug_info_prepends_inverse_expression_ops",
-            &[Type::U32],
-            &[Type::U32],
-        );
+        let mut test = Test::named("salvage_debug_info_prepends_inverse_expression_ops");
+        let i32 = test.context().i32();
+        test.with_function("salvage_debug_info_prepends_inverse_expression_ops", &[i32], &[i32]);
         test.context().get_or_register_dialect::<DebugInfoDialect>();
 
         let (old_value, replacement, mut producer_op) = {
@@ -314,10 +315,13 @@ mod tests {
 
     #[test]
     fn salvage_debug_info_rehomes_debug_value_before_producer_erasure() -> Result<(), Report> {
-        let mut test = Test::new(
+        let mut test =
+            Test::named("salvage_debug_info_rehomes_debug_value_before_producer_erasure");
+        let i32 = test.context().i32();
+        test.with_function(
             "salvage_debug_info_rehomes_debug_value_before_producer_erasure",
-            &[Type::U32],
-            &[Type::U32],
+            &[i32],
+            &[i32],
         );
         test.context().get_or_register_dialect::<DebugInfoDialect>();
 

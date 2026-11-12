@@ -1141,7 +1141,7 @@ mod tests {
     use alloc::boxed::Box;
 
     use crate::{
-        EntityMut, Operation, OperationName, Report, SourceSpan, Type,
+        EntityMut, Operation, OperationName, Report, SourceSpan,
         dialects::{builtin::BuiltinOpBuilder, test::TestOpBuilder},
         pass::{Pass, PassExecutionState},
         testing::Test,
@@ -1189,7 +1189,9 @@ mod tests {
 
     #[test]
     fn pass_manager_detects_broken_invariant() {
-        let mut test = Test::new("test_verify", &[Type::I32, Type::I32], &[Type::I32]);
+        let mut test = Test::named("test_verify");
+        let i32 = test.context().i32();
+        test.with_function("test_verify", &[i32, i32], &[i32]);
 
         {
             let entry = test.entry_block();

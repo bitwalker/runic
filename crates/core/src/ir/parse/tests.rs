@@ -69,7 +69,9 @@ pub struct GroupedOperands {
 fn declared_operand_cardinality_is_checked_before_building_and_verifying() -> TestResult {
     use crate::{GenericOperationBuilder, Op, OpVerifier};
 
-    let test = Test::new("operand_groups", &[Type::I1], &[]);
+    let mut test = Test::named("operand_groups");
+    let i1 = test.context().i1();
+    test.with_function("operand_groups", &[i1], &[]);
     let context = test.context_rc();
     context.get_or_register_dialect::<TestDialect>();
     let value = test.function().borrow().entry_block().borrow().arguments()[0] as ValueRef;
@@ -110,7 +112,10 @@ fn declared_operand_cardinality_is_checked_before_building_and_verifying() -> Te
 fn variadic_operand_types_are_checked_when_building_and_verifying() -> TestResult {
     use crate::{GenericOperationBuilder, Op, OpVerifier};
 
-    let test = Test::new("operand_types", &[Type::I1, Type::U32], &[]);
+    let mut test = Test::named("operand_types");
+    let i1 = test.context().i1();
+    let i32 = test.context().i32();
+    test.with_function("operand_types", &[i1, i32], &[]);
     let context = test.context_rc();
     context.get_or_register_dialect::<TestDialect>();
     let (boolean, integer) = {
@@ -128,7 +133,7 @@ fn variadic_operand_types_are_checked_when_building_and_verifying() -> TestResul
     op_builder.with_operands_in_group(0, [boolean]);
     op_builder.with_operands_in_group(1, [integer]);
     op_builder.with_operands_in_group(2, [boolean]);
-    assert!(op_builder.build().is_err(), "u32 must not satisfy the variadic Bool constraint");
+    assert!(op_builder.build().is_err(), "i32 must not satisfy the variadic Bool constraint");
 
     let op = name.alloc_default(context.clone());
     let mut op_builder = GenericOperationBuilder::new(&mut builder, op);
@@ -148,9 +153,9 @@ fn generic_operand_cardinality_is_checked_before_type_inference() {
     test.context().get_or_register_dialect::<TestDialect>();
     // Shl infers its result type from lhs. Missing operands must be rejected before that
     // accessor runs, even when recursive verification is disabled.
-    let source = r#"builtin.function public extern("C") @missing() -> u32 {
-    %result = "test.shl"() : () -> u32;
-    builtin.ret %result : (u32);
+    let source = r#"builtin.function public extern("C") @missing() -> i32 {
+    %result = "test.shl"() : () -> i32;
+    builtin.ret %result : (i32);
 };"#;
     let error = test
         .parse_any_unverified("missing_inference_operand.hir", source)
@@ -286,7 +291,7 @@ builtin.function public extern(\"C\") @entrypoint(%a: i32) -> i32 {
     assert_eq!(entrypoint.name().as_str(), "entrypoint");
     assert_eq!(
         &*entrypoint.get_signature(),
-        &Signature::new(&test.context_rc(), [Type::I32], [Type::I32])
+        &Signature::new(&test.context_rc(), [test.context().i32()], [test.context().i32()])
     );
     assert_eq!(entrypoint.num_locals(), 0);
     assert_eq!(entrypoint.body().entry().body().len(), 1);
@@ -315,7 +320,7 @@ fn parse_simple_function_generic() -> TestResult {
     assert_eq!(entrypoint.name().as_str(), "entrypoint");
     assert_eq!(
         &*entrypoint.get_signature(),
-        &Signature::new(&test.context_rc(), [Type::I32], [Type::I32])
+        &Signature::new(&test.context_rc(), [test.context().i32()], [test.context().i32()])
     );
     assert_eq!(entrypoint.num_locals(), 0);
     assert_eq!(entrypoint.body().entry().body().len(), 1);
@@ -331,9 +336,9 @@ fn parse_module_with_intra_function_symbol_references() -> TestResult {
     builtin.module public @test {
         builtin.global_variable public @var : i32;
 
-        builtin.function public extern(\"C\") @entrypoint(%a: i32) -> ptr<u8, byte> {
-            %ptr = builtin.global_symbol ::@test::@var+8 : ptr<u8, byte>;
-            builtin.ret %ptr : (ptr<u8, byte>);
+        builtin.function public extern(\"C\") @entrypoint(%a: i32) -> ptr<i8> {
+            %ptr = builtin.global_symbol ::@test::@var+8 : ptr<i8>;
+            builtin.ret %ptr : (ptr<i8>);
         };
     };";
 
@@ -507,13 +512,15 @@ fn module_reserved_memory_roundtrip() -> TestResult {
 
 #[test]
 fn derive_roundtrip_test() -> TestResult {
-    let test = Test::new("derive_roundtrip_test", &[Type::I32], &[Type::U32]);
+    let mut test = Test::named("derive_roundtrip_test");
+    let (i32, i64) = (test.context().i32(), test.context().i64());
+    test.with_function("derive_roundtrip_test", &[i32], &[i64]);
     let mut test = ParserTest { test };
 
     {
         let mut f = test.function_builder();
         let v0 = f.entry_block().borrow().arguments()[0] as ValueRef;
-        let v1 = f.builder_mut().unrealized_conversion_cast(v0, Type::U32, SourceSpan::UNKNOWN)?;
+        let v1 = f.builder_mut().unrealized_conversion_cast(v0, i64, SourceSpan::UNKNOWN)?;
         f.builder_mut().ret([v1], SourceSpan::UNKNOWN);
     }
 
@@ -534,9 +541,9 @@ fn derive_roundtrip_test() -> TestResult {
     filecheck!(
         &roundtripped,
         r#"
-    // CHECK: builtin.function public extern("C") @derive_roundtrip_test([[V0:%\d+]]: i32) -> u32 {
-    // CHECK-NEXT: [[V1:%\d+]] = builtin.unrealized_conversion_cast [[V0]] <{ ty = #builtin.type<u32> }>;
-    // CHECK-NEXT: builtin.ret [[V1]] : (u32);
+    // CHECK: builtin.function public extern("C") @derive_roundtrip_test([[V0:%\d+]]: i32) -> i64 {
+    // CHECK-NEXT: [[V1:%\d+]] = builtin.unrealized_conversion_cast [[V0]] <{ ty = #builtin.type<i64> }>;
+    // CHECK-NEXT: builtin.ret [[V1]] : (i64);
     // CHECK-NEXT: };
     "#
     );
@@ -549,14 +556,14 @@ fn parse_ret_imm_coerces_literal_to_declared_type() -> TestResult {
     let test = ParserTest::default();
 
     let source = "\
-builtin.function public extern(\"C\") @retconst() -> u32 {
-    builtin.ret_imm 42 : u32;
+builtin.function public extern(\"C\") @retconst() -> i32 {
+    builtin.ret_imm 42 : i32;
 };";
 
     let function = test.parse::<Function>("parse_ret_imm.hir", source)?;
     let printed = format!("{}", function.as_operation_ref().borrow());
     assert!(
-        printed.contains("builtin.ret_imm 42 : u32"),
+        printed.contains("builtin.ret_imm 42 : i32"),
         "expected the declared type to survive the round trip, got:\n{printed}"
     );
 
@@ -570,7 +577,7 @@ builtin.function public extern(\"C\") @retconst() -> u32 {
         .expect("expected the function terminator to be builtin.ret_imm");
     let imm = ret_imm.borrow().value().as_ref().as_immediate();
     assert!(
-        matches!(imm, Immediate::U32(42)),
+        matches!(imm, Immediate::I32(42)),
         "expected the literal to be coerced to the declared type, got {imm:?}"
     );
 
@@ -578,8 +585,8 @@ builtin.function public extern(\"C\") @retconst() -> u32 {
     let result = test.parse::<Function>(
         "parse_ret_imm_invalid.hir",
         "\
-builtin.function public extern(\"C\") @retconst() -> u8 {
-    builtin.ret_imm 300 : u8;
+builtin.function public extern(\"C\") @retconst() -> i8 {
+    builtin.ret_imm 300 : i8;
 };",
     );
     assert!(result.is_err(), "expected an out-of-range immediate to be rejected");
@@ -1225,19 +1232,18 @@ builtin.function public extern(\"C\") @entrypoint(%a: i32) -> i32 {{
 
 #[test]
 fn array_types_parse_print_and_report_invalid_lengths() {
-    use crate::{AddressSpace, ArrayType, Op, PointerType};
-    for (source, expected) in [
-        ("[i32; 4]", Type::from(ArrayType::new(Type::I32, 4))),
-        ("array<i32; 4>", Type::from(ArrayType::new(Type::I32, 4))),
-        (
-            "ptr<[[i32; 4]; 2], byte>",
-            Type::from(PointerType::new_with_address_space(
-                Type::from(ArrayType::new(Type::from(ArrayType::new(Type::I32, 4)), 2)),
-                AddressSpace::Byte,
-            )),
-        ),
-    ] {
+    use crate::Op;
+    type Expected = fn(&Context) -> Type;
+    let cases: [(&str, Expected); 3] = [
+        ("[i32; 4]", |context| context.array_type(context.i32(), 4)),
+        ("array<i32; 4>", |context| context.array_type(context.i32(), 4)),
+        ("ptr<[[i32; 4]; 2]>", |context| {
+            context.ptr_type(context.array_type(context.array_type(context.i32(), 4), 2))
+        }),
+    ];
+    for (source, expected) in cases {
         let context = Rc::new(Context::default());
+        let expected = expected(&context);
         let text = format!(
             "builtin.function private extern(\"C\") @array(%x: {source}) {{ builtin.ret; }};"
         );
@@ -1250,7 +1256,7 @@ fn array_types_parse_print_and_report_invalid_lengths() {
         parse::parse_any(ParserConfig::new(fresh.clone()), "array-roundtrip.hir", &printed)
             .unwrap();
     }
-    for source in ["[u32; -1]", "[u32; 18446744073709551616]", "[u32 4]", "[u32; 4>"] {
+    for source in ["[i32; -1]", "[i32; 18446744073709551616]", "[i32 4]", "[i32; 4>"] {
         let context = Rc::new(Context::default());
         let text = format!(
             "builtin.function private extern(\"C\") @array(%x: {source}) {{ builtin.ret; }};"

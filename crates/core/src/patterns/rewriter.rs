@@ -1532,7 +1532,6 @@ mod tests {
 
     use super::*;
     use crate::{
-        Type,
         derive::operation,
         dialects::{
             builtin::BuiltinOpBuilder,
@@ -1578,7 +1577,9 @@ mod tests {
         ValueRef,
         ValueRef,
     ) {
-        let mut test = Test::new("block_splicing", &[Type::U32], &[]);
+        let mut test = Test::named("block_splicing");
+        let i32 = test.context().i32();
+        test.with_function("block_splicing", &[i32], &[]);
         let (dest, src, dest_ops, src_ops, arg, replacement) = {
             let mut builder = test.function_builder();
             let dest = builder.entry_block();
@@ -1596,7 +1597,7 @@ mod tests {
                         .unwrap(),
                 );
             }
-            let src = builder.create_block(dest.parent().unwrap(), None, &[Type::U32]);
+            let src = builder.create_block(dest.parent().unwrap(), None, &[i32]);
             let arg = src.borrow().arguments()[0] as ValueRef;
             let value = builder.add(arg, arg, SourceSpan::UNKNOWN).unwrap();
             let first = value.borrow().get_defining_op().unwrap();
@@ -1905,7 +1906,7 @@ mod tests {
             assert_eq!(inherited.borrow().get_attribute(INLINE_CALL_CHAIN_ATTR_NAME), Some(chain));
             // Generic construction must preserve explicit metadata, including an empty chain.
             let mut state = OperationState::new(SourceSpan::UNKNOWN, root.name());
-            state.results.push(Type::U32);
+            state.results.push(scope.context().i32());
             state.add_attribute("value", root.borrow().get_attribute("value").unwrap());
             state.add_attribute(INLINE_CALL_CHAIN_ATTR_NAME, empty);
             let explicit = scope.create_operation(&mut state).unwrap();
@@ -1934,7 +1935,9 @@ mod tests {
 
     #[test]
     fn conditional_value_replacement_updates_operand_payloads() {
-        let mut test = Test::new("conditional_value_replacement", &[], &[Type::U32, Type::U32]);
+        let mut test = Test::named("conditional_value_replacement");
+        let i32 = test.context().i32();
+        test.with_function("conditional_value_replacement", &[], &[i32, i32]);
         let (from, to, replaced_user, retained_user) = {
             let mut builder = test.function_builder();
             let from = builder.u32(1, SourceSpan::UNKNOWN).unwrap();
@@ -1979,7 +1982,9 @@ mod tests {
 
     #[test]
     fn conditional_value_replacement_updates_multiple_operands_in_same_owner() {
-        let mut test = Test::new("conditional_value_replacement_same_owner", &[], &[Type::U32]);
+        let mut test = Test::named("conditional_value_replacement_same_owner");
+        let i32 = test.context().i32();
+        test.with_function("conditional_value_replacement_same_owner", &[], &[i32]);
         let (from, to, replaced_user) = {
             let mut builder = test.function_builder();
             let from = builder.u32(1, SourceSpan::UNKNOWN).unwrap();
@@ -2017,7 +2022,9 @@ mod tests {
             interner::Symbol,
         };
 
-        let mut test = Test::new("erase_op_with_debug_users", &[Type::U32], &[Type::U32]);
+        let mut test = Test::named("erase_op_with_debug_users");
+        let i32 = test.context().i32();
+        test.with_function("erase_op_with_debug_users", &[i32], &[i32]);
         test.context().get_or_register_dialect::<DebugInfoDialect>();
         let function = test.function();
         let dead = {
@@ -2076,7 +2083,9 @@ mod tests {
     fn a_transparent_user_holding_a_result_twice_is_erased_once() {
         use crate::{BuilderExt, Op};
 
-        let mut test = Test::new("erase_op_with_a_double_user", &[Type::U32], &[Type::U32]);
+        let mut test = Test::named("erase_op_with_a_double_user");
+        let i32 = test.context().i32();
+        test.with_function("erase_op_with_a_double_user", &[i32], &[i32]);
         let function = test.function();
         let dead = {
             let mut builder = test.function_builder();

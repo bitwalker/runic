@@ -449,7 +449,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        BuilderExt, Op, PointerType, Report, SourceSpan, Type, Value, ValueRef,
+        BuilderExt, Op, Report, SourceSpan, Type, Value, ValueRef,
         derive::operation,
         dialects::{
             builtin::{BuiltinOpBuilder, attributes::TypeAttr},
@@ -476,16 +476,21 @@ mod tests {
 
     impl InferTypeOpInterface for AnyCast {
         fn infer_return_types(&mut self, _context: &Context) -> Result<(), Report> {
-            let ty = self.get_ty().clone();
+            let ty = *self.get_ty();
             self.result_mut().set_type(ty);
             Ok(())
         }
     }
 
+    /// The operand and result types of a cast, made in the test's context.
+    type CastTypes = fn(&Context) -> (Type, Type);
+
     /// Verify a function that casts its argument, of type `from`, to `to`.
-    fn verify_cast(from: Type, to: Type) -> Result<(), Report> {
+    fn verify_cast(types: CastTypes) -> Result<(), Report> {
         let span = SourceSpan::UNKNOWN;
-        let mut test = Test::new("verify_cast", &[from], &[]);
+        let mut test = Test::named("verify_cast");
+        let (from, to) = types(test.context());
+        test.with_function("verify_cast", &[from], &[]);
         {
             let mut builder = test.function_builder();
             let arg = builder.entry_block().borrow().arguments()[0] as ValueRef;
@@ -496,43 +501,43 @@ mod tests {
         test.function().borrow().as_operation().recursively_verify()
     }
 
-    fn pointer() -> Type {
-        Type::from(PointerType::new(Type::U8))
-    }
-
     #[test]
     fn transparent_casts_keep_the_bits_and_the_kind() {
-        for (from, to) in [
-            (Type::U32, Type::I32),
-            (Type::I64, Type::U64),
-            (Type::U128, Type::I128),
-            (pointer(), Type::from(PointerType::new(Type::U64))),
-            (pointer(), Type::U32),
-            (Type::I32, pointer()),
-        ] {
-            verify_cast(from.clone(), to.clone())
-                .unwrap_or_else(|err| panic!("{from} to {to} should be transparent: {err}"));
+        let cases: [CastTypes; 4] = [
+            |context| (context.i32(), context.i32()),
+            |context| (context.i64(), context.i64()),
+            |context| (context.i128(), context.i128()),
+            |context| (context.ptr_type(context.i8()), context.ptr_type(context.i64())),
+        ];
+        for types in cases {
+            verify_cast(types).unwrap_or_else(|err| {
+                let (from, to) = types(&Context::default());
+                panic!("{from} to {to} should be transparent: {err}")
+            });
         }
     }
 
-    /// The help of the verifier's error for a cast of `from` to `to`, on one line.
-    fn rejection(from: Type, to: Type) -> alloc::string::String {
-        let err = verify_cast(from, to).unwrap_err();
+    /// The help of the verifier's error for a cast, on one line.
+    fn rejection(types: CastTypes) -> alloc::string::String {
+        let err = verify_cast(types).unwrap_err();
         format!("{err:?}").split_whitespace().collect::<alloc::vec::Vec<_>>().join(" ")
     }
 
     #[test]
     fn a_transparent_cast_never_changes_the_bit_width() {
-        for (from, to) in [(Type::U32, Type::U64), (Type::I64, Type::I128), (pointer(), Type::U16)]
-        {
-            let message = rejection(from, to);
+        let cases: [CastTypes; 2] = [
+            |context| (context.i32(), context.i64()),
+            |context| (context.i64(), context.i128()),
+        ];
+        for types in cases {
+            let message = rejection(types);
             assert!(message.contains("to be of the same bit width"), "{message}");
         }
     }
 
     #[test]
     fn a_transparent_cast_never_changes_the_kind_of_value() {
-        let message = rejection(Type::F64, Type::I64);
+        let message = rejection(|context| (context.f64_type(), context.i64()));
         assert!(message.contains("converts only integers to integers"), "{message}");
     }
 }

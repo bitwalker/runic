@@ -67,9 +67,11 @@ mod tests {
 
     #[test]
     fn derived_op_builder_test() {
-        use crate::{SourceSpan, Type};
+        use crate::SourceSpan;
 
-        let mut test = Test::new("derived_op_builder", &[Type::U32, Type::U32], &[]);
+        let mut test = Test::named("derived_op_builder");
+        let i32 = test.context().i32();
+        test.with_function("derived_op_builder", &[i32, i32], &[]);
 
         let entry = test.entry_block();
         let (lhs, rhs) = {
@@ -90,11 +92,13 @@ mod tests {
     }
 
     #[test]
-    #[should_panic = "expected 'u32', got 'i64'"]
+    #[should_panic = "expected 'i32', got 'i64'"]
     fn derived_op_verifier_test() {
-        use crate::{SourceSpan, Type};
+        use crate::SourceSpan;
 
-        let mut test = Test::new("derived_op_verifier", &[Type::U32, Type::I64], &[]);
+        let mut test = Test::named("derived_op_verifier");
+        let (i32, i64) = (test.context().i32(), test.context().i64());
+        test.with_function("derived_op_verifier", &[i32, i64], &[]);
 
         let entry = test.entry_block();
         let (lhs, invalid_rhs) = {
@@ -119,12 +123,13 @@ mod tests {
     /// struct that has differing types in its result and arguments, despite implementing the
     /// [`SameOperandsAndResultType`] trait.
     #[test]
-    #[should_panic = "expected 'i32', got 'u64'"]
+    #[should_panic = "expected 'i32', got 'i64'"]
     fn same_operands_and_result_type_verifier_test() {
-        use crate::{SourceSpan, Type};
+        use crate::SourceSpan;
 
-        let mut test =
-            Test::new("same_operands_and_result_type_verifier", &[Type::I32, Type::I32], &[]);
+        let mut test = Test::named("same_operands_and_result_type_verifier");
+        let (i32, i64) = (test.context().i32(), test.context().i64());
+        test.with_function("same_operands_and_result_type_verifier", &[i32, i32], &[]);
         let block = test.entry_block();
         let (lhs, rhs) = {
             let block = block.borrow();
@@ -142,7 +147,7 @@ mod tests {
         {
             let mut binding = op.borrow_mut();
             let mut result = binding.result_mut();
-            result.set_type(Type::U64);
+            result.set_type(i64);
         }
 
         // Construct a pass manager with the default pass pipeline

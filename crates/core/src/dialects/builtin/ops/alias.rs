@@ -248,7 +248,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        CallableOpInterface, Context, Ident, SymbolTable, Type,
+        CallableOpInterface, Context, Ident, SymbolTable,
         dialects::builtin::{Module, ModuleBuilder, ModuleRef, attributes::Signature},
         parse::{ParserConfig, parse},
         testing::Test,
@@ -256,7 +256,8 @@ mod tests {
 
     fn module_with_alias() -> (Rc<Context>, ModuleRef, FunctionAliasRef) {
         let mut test = Test::default().in_module("test");
-        let primary = test.define_function("foo", &[], &[Type::I32]);
+        let i32 = test.context().i32();
+        let primary = test.define_function("foo", &[], &[i32]);
         let module = test.module();
         let alias = {
             let mut mb = ModuleBuilder::new(module);
@@ -307,8 +308,8 @@ mod tests {
 builtin.module public @test {
     builtin.function_alias public @bar -> @first;
     builtin.function_alias private @first -> @foo;
-    builtin.function public extern("C") @foo(%arg: u32) -> u32 {
-        builtin.ret %arg : (u32);
+    builtin.function public extern("C") @foo(%arg: i32) -> i32 {
+        builtin.ret %arg : (i32);
     };
 };
 "#;
@@ -336,7 +337,8 @@ builtin.module public @test {
     #[test]
     fn alias_missing_target_fails_verification() {
         let mut test = Test::default().in_module("test");
-        let primary = test.define_function("foo", &[], &[Type::I32]);
+        let i32 = test.context().i32();
+        let primary = test.define_function("foo", &[], &[i32]);
         let mut module = test.module();
         {
             let mut mb = ModuleBuilder::new(module);
@@ -359,7 +361,8 @@ builtin.module public @test {
     #[test]
     fn alias_to_non_callable_fails_verification() {
         let mut test = Test::default().in_module("test");
-        let primary = test.define_function("foo", &[], &[Type::I32]);
+        let i32 = test.context().i32();
+        let primary = test.define_function("foo", &[], &[i32]);
         let mut module = test.module();
         {
             let mut mb = ModuleBuilder::new(module);
@@ -377,7 +380,7 @@ builtin.module public @test {
             mb.define_global_variable(
                 Ident::with_empty_span(SymbolName::intern("foo")),
                 Visibility::Public,
-                Type::I32,
+                i32,
             )
             .unwrap();
             assert!(mb.get_function("foo").is_none());
@@ -396,7 +399,7 @@ builtin.module public @test {
         mb.define_function_alias(Ident::from("chain"), Visibility::Public, alias)
             .unwrap();
         let mut target = mb.get_function("foo").unwrap();
-        let updated_signature = Signature::new(&ctx, [Type::U32], [Type::I64]);
+        let updated_signature = Signature::new(&ctx, [ctx.i32()], [ctx.i64()]);
         *target.borrow_mut().get_signature_mut() = updated_signature.clone();
 
         module.borrow().as_operation().recursively_verify().unwrap();

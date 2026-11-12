@@ -41,7 +41,9 @@ fn assert_location_erased(op: OperationRef) {
 
 #[test]
 fn deduplicated_constant_loses_inline_provenance() {
-    let mut test = Test::new("deduplicated_constant", &[], &[Type::U32, Type::U32]);
+    let mut test = Test::named("deduplicated_constant");
+    let i32 = test.context().i32();
+    test.with_function("deduplicated_constant", &[], &[i32, i32]);
     let (first, second, ret) = {
         let mut builder = test.function_builder();
         let first = builder.u32(42, SourceSpan::SYNTHETIC).unwrap();
@@ -63,7 +65,9 @@ fn deduplicated_constant_loses_inline_provenance() {
 
 #[test]
 fn hoisted_constant_loses_inline_provenance() {
-    let mut test = Test::new("hoisted_constant", &[], &[Type::U32]);
+    let mut test = Test::named("hoisted_constant");
+    let i32 = test.context().i32();
+    test.with_function("hoisted_constant", &[], &[i32]);
     let value = {
         let mut builder = test.function_builder();
         builder.u32(1, SourceSpan::UNKNOWN).unwrap();
@@ -81,7 +85,9 @@ fn hoisted_constant_loses_inline_provenance() {
 #[test]
 fn rehoisted_constant_loses_inline_provenance() {
     for via_fold in [false, true] {
-        let mut test = Test::new("rehoisted_constant", &[Type::U32], &[Type::U32]);
+        let mut test = Test::named("rehoisted_constant");
+        let i32 = test.context().i32();
+        test.with_function("rehoisted_constant", &[i32], &[i32]);
         let value = {
             let mut builder = test.function_builder();
             let value = builder.u32(42, SourceSpan::SYNTHETIC).unwrap();
@@ -120,7 +126,9 @@ fn cross_dialect_reused_constant_loses_inline_provenance() {
 }
 
 fn check_reused_constant(cross_dialect: bool) {
-    let mut test = Test::new("reused_constant", &[], &[Type::U32]);
+    let mut test = Test::named("reused_constant");
+    let i32 = test.context().i32();
+    test.with_function("reused_constant", &[], &[i32]);
     let value = {
         let mut builder = test.function_builder();
         let value = builder.u32(42, SourceSpan::UNKNOWN).unwrap();
@@ -136,7 +144,8 @@ fn check_reused_constant(cross_dialect: bool) {
         op.borrow().dialect()
     };
     let attr = crate::matchers::constant().matches(&op.borrow()).unwrap();
-    let reused = folder.get_or_create_constant(op.parent().unwrap(), dialect, attr, Type::U32);
+    let reused =
+        folder.get_or_create_constant(op.parent().unwrap(), dialect, attr, test.context().i32());
     assert_eq!(reused, Some(value));
     assert_location_erased(op);
 }
@@ -163,7 +172,7 @@ impl Dialect for ForwardingDialect {
         &self,
         builder: &mut dyn Builder,
         value: AttributeRef,
-        ty: &Type,
+        ty: Type,
         span: SourceSpan,
     ) -> Option<OperationRef> {
         builder
@@ -207,7 +216,9 @@ impl RewriterListener for BorrowingListener {
 /// Folding an op notifies the listeners only after its borrow of the op is released.
 #[test]
 fn folding_releases_the_op_before_notifying_listeners() {
-    let mut test = Test::new("fold_listener", &[], &[Type::U32, Type::U32]);
+    let mut test = Test::named("fold_listener");
+    let i32 = test.context().i32();
+    test.with_function("fold_listener", &[], &[i32, i32]);
     let (first, second) = {
         let mut builder = test.function_builder();
         let first = builder.u32(42, SourceSpan::UNKNOWN).unwrap();

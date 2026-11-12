@@ -290,51 +290,56 @@ mod tests {
     use smallvec::smallvec;
 
     use super::*;
-    use crate::Type;
+    use crate::Context;
 
     #[test]
     fn defaults_to_identity_conversion() {
+        let context = Context::default();
         let converter = TypeConverter::new();
 
-        assert_eq!(converter.convert_type_1_to_1(&Type::U32).unwrap(), Type::U32);
-        assert!(converter.is_legal_type(&Type::U32));
+        assert_eq!(converter.convert_type_1_to_1(context.i32()).unwrap(), context.i32());
+        assert!(converter.is_legal_type(context.i32()));
     }
 
     #[test]
     fn applies_registered_type_conversion() {
+        let context = Context::default();
+        let (i32, i64) = (context.i32(), context.i64());
         let mut converter = TypeConverter::new();
-        converter.add_conversion(|ty| {
-            if ty == &Type::U32 {
-                Some(TypeConversion::One(Type::I32))
+        converter.add_conversion(move |ty| {
+            if ty == i32 {
+                Some(TypeConversion::One(i64))
             } else {
                 None
             }
         });
 
-        assert_eq!(converter.convert_type_1_to_1(&Type::U32).unwrap(), Type::I32);
-        assert!(!converter.is_legal_type(&Type::U32));
+        assert_eq!(converter.convert_type_1_to_1(i32).unwrap(), i64);
+        assert!(!converter.is_legal_type(i32));
     }
 
     #[test]
     fn rejects_many_and_drop_for_1_to_1_queries() {
+        let context = Context::default();
+        let (i32, i64) = (context.i32(), context.i64());
         let mut many = TypeConverter::new();
-        many.add_conversion(|ty| {
-            if ty == &Type::U32 {
-                Some(TypeConversion::Many(smallvec![Type::I32, Type::I32]))
+        many.add_conversion(move |ty| {
+            if ty == i32 {
+                Some(TypeConversion::Many(smallvec![i64, i64]))
             } else {
                 None
             }
         });
-        assert!(format!("{}", many.convert_type_1_to_1(&Type::U32).unwrap_err()).contains("1:1"));
+        assert!(format!("{}", many.convert_type_1_to_1(i32).unwrap_err()).contains("1:1"));
 
         let mut drop = TypeConverter::new();
-        drop.add_conversion(|ty| {
-            if ty == &Type::U32 {
+        drop.add_conversion(move |ty| {
+            if ty == i32 {
                 Some(TypeConversion::Drop)
             } else {
                 None
             }
         });
-        assert!(format!("{}", drop.convert_type_1_to_1(&Type::U32).unwrap_err()).contains("1:1"));
+        assert!(format!("{}", drop.convert_type_1_to_1(i32).unwrap_err()).contains("1:1"));
     }
 }

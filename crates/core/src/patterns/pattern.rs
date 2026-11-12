@@ -333,7 +333,9 @@ mod tests {
 
     #[test]
     fn rewrite_pattern_api_test() {
-        let mut test = Test::new("rewrite_pattern_api_test", &[Type::U32], &[Type::U32]);
+        let mut test = Test::named("rewrite_pattern_api_test");
+        let i32 = test.context().i32();
+        test.with_function("rewrite_pattern_api_test", &[i32], &[i32]);
 
         let pattern = ConvertShiftLeftBy1ToMultiply::new(test.context_rc());
 
@@ -365,10 +367,10 @@ mod tests {
         let func = test.function().borrow();
         let output = func.as_operation().to_string();
         let expected = "\
-builtin.function public extern(\"C\") @rewrite_pattern_api_test(%0: u32) -> u32 {
-    %3 = test.constant 2 : u32;
+builtin.function public extern(\"C\") @rewrite_pattern_api_test(%0: i32) -> i32 {
+    %3 = test.constant 2 : i32;
     %4 = test.mul %0, %3 <{ overflow = #builtin.overflow<wrapping> }>;
-    builtin.ret %4 : (u32);
+    builtin.ret %4 : (i32);
 };";
         assert_str_eq!(output.as_str(), expected);
     }

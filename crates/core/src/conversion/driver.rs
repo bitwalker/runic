@@ -900,7 +900,9 @@ mod tests {
     }
 
     fn add_function(name: &'static str) -> Test {
-        let mut test = Test::new(name, &[Type::U32, Type::U32], &[Type::U32]);
+        let mut test = Test::named(name);
+        let i32 = test.context().i32();
+        test.with_function(name, &[i32, i32], &[i32]);
         {
             let mut builder = test.function_builder();
             let block = builder.current_block();
@@ -923,11 +925,12 @@ mod tests {
         target
     }
 
-    fn u32_to_i32_converter() -> TypeConverter {
+    fn i32_to_i64_converter(context: &Context) -> TypeConverter {
+        let (from, to) = (context.i32(), context.i64());
         let mut converter = TypeConverter::new();
-        converter.add_conversion(|ty| {
-            if ty == &Type::U32 {
-                Some(TypeConversion::One(Type::I32))
+        converter.add_conversion(move |ty| {
+            if ty == from {
+                Some(TypeConversion::One(to))
             } else {
                 None
             }
@@ -935,8 +938,17 @@ mod tests {
         converter
     }
 
-    fn cast_chain_function(name: &'static str, middle: Type, result: Type) -> Test {
-        let mut test = Test::new(name, &[Type::U32], core::slice::from_ref(&result));
+    /// Builds a function taking an `i32` that casts it to `middle`, then to `result`, and returns it.
+    fn cast_chain_function(
+        name: &'static str,
+        middle: fn(&Context) -> Type,
+        result: fn(&Context) -> Type,
+    ) -> Test {
+        let mut test = Test::named(name);
+        let i32 = test.context().i32();
+        let middle = middle(test.context());
+        let result = result(test.context());
+        test.with_function(name, &[i32], &[result]);
         {
             let mut builder = test.function_builder();
             let block = builder.current_block();
@@ -975,10 +987,10 @@ mod tests {
         assert_eq!(result.converted_ops(), 1);
         let output = test.function().borrow().as_operation().to_string();
         let expected = "\
-builtin.function public extern(\"C\") @full_conversion_rewrites_illegal_op_to_legal_op(%0: u32, \
-                        %1: u32) -> u32 {
+builtin.function public extern(\"C\") @full_conversion_rewrites_illegal_op_to_legal_op(%0: i32, \
+                        %1: i32) -> i32 {
     %3 = test.mul %0, %1 <{ overflow = #builtin.overflow<checked> }>;
-    builtin.ret %3 : (u32);
+    builtin.ret %3 : (i32);
 };";
         assert_str_eq!(output.as_str(), expected);
     }
@@ -1071,7 +1083,10 @@ builtin.function public extern(\"C\") @full_conversion_rewrites_illegal_op_to_le
             target.add_legal_op::<Mul>().add_legal_op::<UnrealizedConversionCast>();
         });
         let mut patterns = ConversionPatternSet::new(test.context_rc());
-        patterns.push(AddToMulWithTypeConversion::new(test.context_rc(), u32_to_i32_converter()));
+        patterns.push(AddToMulWithTypeConversion::new(
+            test.context_rc(),
+            i32_to_i64_converter(test.context()),
+        ));
 
         let result = apply_full_conversion(
             test.function().as_operation_ref(),
@@ -1094,8 +1109,8 @@ builtin.function public extern(\"C\") @full_conversion_rewrites_illegal_op_to_le
         assert_eq!(inherited, 4, "replacement plus operand and result materializations");
         let output = test.function().borrow().as_operation().to_string();
         assert!(output.contains("builtin.unrealized_conversion_cast"));
+        assert!(output.contains("#builtin.type<i64>"));
         assert!(output.contains("#builtin.type<i32>"));
-        assert!(output.contains("#builtin.type<u32>"));
         assert!(output.contains("test.mul"));
         assert!(!output.contains("test.add"));
     }
@@ -1106,10 +1121,11 @@ builtin.function public extern(\"C\") @full_conversion_rewrites_illegal_op_to_le
         let target = target_with_test_ops(test.context_rc(), |target| {
             target.add_legal_op::<Mul>();
         });
+        let (i32, i64) = (test.context().i32(), test.context().i64());
         let mut converter = TypeConverter::new();
-        converter.add_conversion(|ty| {
-            if ty == &Type::U32 {
-                Some(TypeConversion::Many(smallvec::smallvec![Type::I32, Type::I32]))
+        converter.add_conversion(move |ty| {
+            if ty == i32 {
+                Some(TypeConversion::Many(smallvec::smallvec![i64, i64]))
             } else {
                 None
             }
@@ -1132,8 +1148,8 @@ builtin.function public extern(\"C\") @full_conversion_rewrites_illegal_op_to_le
     fn full_conversion_reconciles_identity_unrealized_casts() {
         let test = cast_chain_function(
             "full_conversion_reconciles_identity_unrealized_casts",
-            Type::U32,
-            Type::U32,
+            Context::i32,
+            Context::i32,
         );
         let mut target = ConversionTarget::new(test.context_rc());
         target
@@ -1157,8 +1173,8 @@ builtin.function public extern(\"C\") @full_conversion_rewrites_illegal_op_to_le
     fn full_conversion_reconciles_reversible_unrealized_cast_chains() {
         let test = cast_chain_function(
             "full_conversion_reconciles_reversible_unrealized_cast_chains",
-            Type::I32,
-            Type::U32,
+            Context::i64,
+            Context::i32,
         );
         let mut target = ConversionTarget::new(test.context_rc());
         target

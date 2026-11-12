@@ -575,7 +575,7 @@ mod tests {
     };
 
     use crate::{
-        Context, Type,
+        Context,
         diagnostics::{DiagnosticSet, diagnostic},
         testing::Test,
     };
@@ -585,7 +585,9 @@ mod tests {
     fn block_with_more_than_255_arguments() {
         const NUM_PARAMS: usize = 300;
 
-        let test = Test::new("wide", &vec![Type::U32; NUM_PARAMS], &[]);
+        let mut test = Test::named("wide");
+        let i32 = test.context().i32();
+        test.with_function("wide", &vec![i32; NUM_PARAMS], &[]);
         let function = test.function().borrow();
         let entry = function.entry_block().borrow();
         let args = entry.arguments();

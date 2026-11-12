@@ -20,12 +20,12 @@ fn find_common_ancestor_returns_innermost_common_region() -> TestResult {
     // The parser anchors parsed operations in a fresh `builtin.world`, so this source produces
     // the region hierarchy: world body > module body > function bodies.
     let source = r#"builtin.module public @test {
-    builtin.function public extern("C") @a(%x: i32) -> u32 {
-        %v = builtin.unrealized_conversion_cast %x <{ ty = #builtin.type<u32> }>;
-        builtin.ret %v : (u32);
+    builtin.function public extern("C") @a(%x: i32) -> i64 {
+        %v = builtin.unrealized_conversion_cast %x <{ ty = #builtin.type<i64> }>;
+        builtin.ret %v : (i64);
     };
-    builtin.function public extern("C") @b() -> u32 {
-        builtin.ret_imm 42 : u32;
+    builtin.function public extern("C") @b() -> i32 {
+        builtin.ret_imm 42 : i32;
     };
 };"#;
     let config = ParserConfig::new(context.clone());

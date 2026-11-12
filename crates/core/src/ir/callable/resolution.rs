@@ -197,7 +197,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        AsCallableSymbolRef, Op, SymbolNameComponent, SymbolTable, Type, Visibility,
+        AsCallableSymbolRef, Op, SymbolNameComponent, SymbolTable, Visibility,
         dialects::builtin::{
             Module, ModuleBuilder, ModuleRef,
             attributes::{SymbolRef as SymbolRefValue, SymbolRefAttr},
@@ -238,7 +238,8 @@ builtin.module public @test {
         assert!(alias.target().callable_region().is_some());
         let mut function = alias.target().as_function().unwrap();
         assert_eq!(function.borrow().visibility(), Visibility::Internal);
-        let updated = Signature::new(&test.context_rc(), [Type::U32], [Type::U64]);
+        let updated =
+            Signature::new(&test.context_rc(), [test.context().i32()], [test.context().i64()]);
         *function.borrow_mut().get_signature_mut() = updated.clone();
         assert_eq!(alias.signature(), updated);
         assert_eq!(alias.target().borrow().signature(), updated);
@@ -338,10 +339,10 @@ builtin.module public @test {
 
     #[test]
     fn alias_chain_with_non_callable_target_reports_not_callable() {
-        let (_test, mut module) = module(ALIASED);
+        let (test, mut module) = module(ALIASED);
         let mut mb = ModuleBuilder::new(module);
         module.borrow_mut().remove(SymbolName::intern("body"));
-        mb.define_global_variable("body".into(), Visibility::Private, Type::U32)
+        mb.define_global_variable("body".into(), Visibility::Private, test.context().i32())
             .unwrap();
         assert!(matches!(
             mb.resolve_callable("api"),
@@ -351,9 +352,9 @@ builtin.module public @test {
 
     #[test]
     fn resolving_a_non_callable_symbol_reports_not_callable() {
-        let (_test, module) = module(ALIASED);
+        let (test, module) = module(ALIASED);
         let mut mb = ModuleBuilder::new(module);
-        mb.define_global_variable("data".into(), Visibility::Private, Type::U32)
+        mb.define_global_variable("data".into(), Visibility::Private, test.context().i32())
             .unwrap();
         assert!(matches!(
             mb.resolve_callable("data"),
@@ -363,10 +364,10 @@ builtin.module public @test {
 
     #[test]
     fn canonical_resolution_accepts_non_callable_symbols() {
-        let (_test, module) = module(ALIASED);
+        let (test, module) = module(ALIASED);
         let mut mb = ModuleBuilder::new(module);
         let global = mb
-            .define_global_variable("data".into(), Visibility::Private, Type::U32)
+            .define_global_variable("data".into(), Visibility::Private, test.context().i32())
             .unwrap();
         let symbol = global.borrow().as_operation().as_symbol_ref().unwrap();
         assert_eq!(symbol.resolve_canonical().unwrap(), symbol);
@@ -433,7 +434,8 @@ builtin.module public @test {
     #[test]
     fn callable_declaration_has_signature_but_no_body() {
         let mut test = Test::default().in_module("test");
-        let decl = test.define_function("decl", &[Type::U32], &[Type::U32]);
+        let i32 = test.context().i32();
+        let decl = test.define_function("decl", &[i32], &[i32]);
         let mut module = ModuleBuilder::new(test.module());
         module.define_function_alias("entry".into(), Visibility::Public, decl).unwrap();
         let callee = module.resolve_callable("entry").unwrap();

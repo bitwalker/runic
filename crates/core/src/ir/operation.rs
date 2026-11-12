@@ -1818,9 +1818,7 @@ impl crate::traits::Foldable for Operation {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        AsCallableSymbolRef, AsSymbolRef, AttributeRef, ImmediateAttr, Op, Type, testing::Test,
-    };
+    use crate::{AsCallableSymbolRef, AsSymbolRef, AttributeRef, ImmediateAttr, Op, testing::Test};
 
     #[test]
     fn set_attribute_replaces_existing_attribute() {
@@ -1844,7 +1842,8 @@ mod tests {
     fn borrowed_operation_roundtrips_symbol_and_callable_handles() {
         let mut test = Test::named("borrowed_operation_roundtrips_symbol_and_callable_handles")
             .in_module("test");
-        let function = test.define_function("callee", &[], &[Type::I32]);
+        let i32 = test.context().i32();
+        let function = test.define_function("callee", &[], &[i32]);
         let op_ref = function.as_operation_ref();
 
         let symbol_ref = {

@@ -375,8 +375,8 @@ impl<'a> core::convert::TryFrom<&'a EffectValue> for EntityRef<'a, OpResult> {
 mod tests {
     use super::EffectValue;
     use crate::{
-        Attribute, AttributeRef, EntityRef, Immediate, ImmediateAttr, Type,
-        attributes::IntegerLikeAttr, testing::Test,
+        Attribute, AttributeRef, EntityRef, Immediate, ImmediateAttr, attributes::IntegerLikeAttr,
+        testing::Test,
     };
 
     #[test]
@@ -392,7 +392,7 @@ mod tests {
         };
 
         assert!(AttributeRef::ptr_eq(&attr, &expected));
-        assert_eq!(attr.borrow().ty(), Type::I32);
+        assert_eq!(attr.borrow().ty(), test.context().i32());
         let attr = attr.try_downcast_attr::<ImmediateAttr>().unwrap();
         assert_eq!(attr.borrow().as_immediate(), Immediate::I32(7));
     }
@@ -411,7 +411,7 @@ mod tests {
         };
 
         assert!(AttributeRef::ptr_eq(&attr, &expected));
-        assert_eq!(attr.borrow().ty(), Type::I32);
+        assert_eq!(attr.borrow().ty(), test.context().i32());
         let attr = attr.try_downcast_attr::<ImmediateAttr>().unwrap();
         assert_eq!(attr.borrow().as_immediate(), Immediate::I32(9));
     }

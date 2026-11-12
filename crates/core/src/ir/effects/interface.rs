@@ -264,7 +264,7 @@ mod derive_tests {
     use alloc::{rc::Rc, vec::Vec};
 
     use super::*;
-    use crate::{Context, Type};
+    use crate::Context;
 
     #[derive(crate::derive::EffectOpInterface)]
     #[effects(MemoryEffect(MemoryEffect::Read))]
@@ -288,7 +288,7 @@ mod derive_tests {
     #[test]
     fn effect_derive_combines_global_field_and_repeated_declarations() {
         let context = Rc::new(Context::default());
-        let block = context.create_block_with_params([Type::U32]);
+        let block = context.create_block_with_params([context.i32()]);
         let value = block.borrow().arguments()[0] as ValueRef;
         let op = CombinedEffects { value };
         let effects = op
@@ -319,7 +319,7 @@ mod derive_tests {
 mod tests {
     use super::*;
     use crate::{
-        Builder, BuilderExt, Op, SourceSpan, Type, ValueRef,
+        Builder, BuilderExt, Op, SourceSpan, ValueRef,
         dialects::test::{Store, TestDialect},
         testing::Test,
         traits::SingleBlock,
@@ -347,8 +347,10 @@ mod tests {
     /// effect story is its body's — was reported as having UNKNOWN effects instead of its body's.
     #[test]
     fn a_recursive_effects_op_is_walked_into() {
-        let pointer = Type::from(crate::PointerType::new(Type::U32));
-        let mut test = Test::new("recursive_marker_is_visible", &[pointer, Type::U32], &[]);
+        let mut test = Test::named("recursive_marker_is_visible");
+        let i32 = test.context().i32();
+        let pointer = test.context().ptr_type(i32);
+        test.with_function("recursive_marker_is_visible", &[pointer, i32], &[]);
         let region_op = {
             let mut builder = test.function_builder();
             let entry = builder.entry_block();

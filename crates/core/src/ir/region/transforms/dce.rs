@@ -447,7 +447,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        Builder, BuilderExt, Op, Type,
+        Builder, BuilderExt, Op,
         derive::{EffectOpInterface, operation},
         diagnostics::SourceSpan,
         dialects::{
@@ -474,8 +474,9 @@ mod tests {
 
     #[test]
     fn transparent_ops_are_not_considered_dead_unless_their_referent_value_is_dead() {
-        let mut test =
-            Test::new("transparent_ops_inherit_liveness_of_referent", &[Type::U32], &[Type::U32]);
+        let mut test = Test::named("transparent_ops_inherit_liveness_of_referent");
+        let i32 = test.context().i32();
+        test.with_function("transparent_ops_inherit_liveness_of_referent", &[i32], &[i32]);
 
         let op = test.function();
         let mut builder = test.function_builder();
@@ -514,7 +515,9 @@ mod tests {
 
     #[test]
     fn transparent_ops_do_not_interfere_with_dead_code_elimination() {
-        let mut test = Test::new("transparent_ops_no_dce_interference", &[Type::U32], &[Type::U32]);
+        let mut test = Test::named("transparent_ops_no_dce_interference");
+        let i32 = test.context().i32();
+        test.with_function("transparent_ops_no_dce_interference", &[i32], &[i32]);
 
         let op = test.function();
         {
@@ -566,7 +569,9 @@ mod tests {
             interner::Symbol,
         };
 
-        let mut test = Test::new("region_dce_salvages_debug_value", &[Type::U32], &[Type::U32]);
+        let mut test = Test::named("region_dce_salvages_debug_value");
+        let i32 = test.context().i32();
+        test.with_function("region_dce_salvages_debug_value", &[i32], &[i32]);
         test.context().get_or_register_dialect::<DebugInfoDialect>();
         let op = test.function();
         {

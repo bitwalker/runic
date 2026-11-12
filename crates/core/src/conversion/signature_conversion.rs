@@ -505,7 +505,7 @@ mod tests {
     use crate::{
         AttributeRef, BlockRef, Builder, BuilderExt, Context, Op, RegionBranchPoint, RegionKind,
         RegionKindInterface, RegionSuccessorIter, SourceSpan, SuccessorOperandRange,
-        SuccessorOperandRangeMut, Type,
+        SuccessorOperandRangeMut,
         derive::{EffectOpInterface, operation},
         dialects::{builtin::attributes::Signature, test::TestDialect},
         effects::MemoryEffectOpInterface,
@@ -589,11 +589,12 @@ mod tests {
         }
     }
 
-    fn u32_to_i32_converter() -> TypeConverter {
+    fn i32_to_i64_converter(context: &Context) -> TypeConverter {
+        let (from, to) = (context.i32(), context.i64());
         let mut converter = TypeConverter::new();
-        converter.add_conversion(|ty| {
-            if ty == &Type::U32 {
-                Some(super::super::TypeConversion::One(Type::I32))
+        converter.add_conversion(move |ty| {
+            if ty == from {
+                Some(super::super::TypeConversion::One(to))
             } else {
                 None
             }
@@ -603,47 +604,50 @@ mod tests {
 
     #[test]
     fn applies_1_to_1_block_argument_conversion_in_place() {
-        let test = Test::new(
-            "applies_1_to_1_block_argument_conversion_in_place",
-            &[Type::U32, Type::I32],
-            &[],
-        );
+        let mut test = Test::named("applies_1_to_1_block_argument_conversion_in_place");
+        let (i32, i64) = (test.context().i32(), test.context().i64());
+        test.with_function("applies_1_to_1_block_argument_conversion_in_place", &[i32, i64], &[]);
         let block = test.entry_block();
 
-        let conversion = SignatureConversion::for_block_1_to_1(block, &u32_to_i32_converter())
-            .expect("signature conversion failed");
+        let conversion =
+            SignatureConversion::for_block_1_to_1(block, &i32_to_i64_converter(test.context()))
+                .expect("signature conversion failed");
 
         assert!(conversion.apply_to_block_arguments_1_to_1(block).unwrap());
         let types = block.borrow().argument_types().collect::<Vec<_>>();
-        assert_eq!(types, vec![Type::I32, Type::I32]);
+        assert_eq!(types, vec![i64, i64]);
     }
 
     #[test]
     fn applies_1_to_1_non_entry_block_argument_conversion_in_place() {
         let mut test =
             Test::new("applies_1_to_1_non_entry_block_argument_conversion_in_place", &[], &[]);
+        let (i32, i64) = (test.context().i32(), test.context().i64());
         let block = {
             let mut builder = test.function_builder();
             let block = builder.create_block();
-            builder.append_block_param(block, Type::U32, SourceSpan::UNKNOWN);
+            builder.append_block_param(block, i32, SourceSpan::UNKNOWN);
             block
         };
 
-        let conversion = SignatureConversion::for_block_1_to_1(block, &u32_to_i32_converter())
-            .expect("signature conversion failed");
+        let conversion =
+            SignatureConversion::for_block_1_to_1(block, &i32_to_i64_converter(test.context()))
+                .expect("signature conversion failed");
 
         assert!(conversion.apply_to_block_arguments_1_to_1(block).unwrap());
         let types = block.borrow().argument_types().collect::<Vec<_>>();
-        assert_eq!(types, vec![Type::I32]);
+        assert_eq!(types, vec![i64]);
     }
 
     #[test]
     fn rejects_non_1_to_1_block_argument_conversion() {
-        let test = Test::new("rejects_non_1_to_1_block_argument_conversion", &[Type::U32], &[]);
+        let mut test = Test::named("rejects_non_1_to_1_block_argument_conversion");
+        let i32 = test.context().i32();
+        test.with_function("rejects_non_1_to_1_block_argument_conversion", &[i32], &[]);
         let block = test.entry_block();
         let mut converter = TypeConverter::new();
-        converter.add_conversion(|ty| {
-            if ty == &Type::U32 {
+        converter.add_conversion(move |ty| {
+            if ty == i32 {
                 Some(super::super::TypeConversion::Drop)
             } else {
                 None
@@ -657,38 +661,42 @@ mod tests {
     #[test]
     fn converts_builtin_signature_1_to_1() {
         let context = alloc::rc::Rc::new(Context::default());
-        let signature = Signature::new(&context, [Type::U32], [Type::U32]);
+        let signature = Signature::new(&context, [context.i32()], [context.i32()]);
 
-        let converted = convert_signature_1_to_1(&signature, &u32_to_i32_converter()).unwrap();
+        let converted =
+            convert_signature_1_to_1(&signature, &i32_to_i64_converter(&context)).unwrap();
 
-        assert_eq!(converted.params()[0].ty, Type::I32);
-        assert_eq!(converted.results()[0].ty, Type::I32);
+        assert_eq!(converted.params()[0].ty, context.i64());
+        assert_eq!(converted.results()[0].ty, context.i64());
         assert_eq!(converted.calling_convention(), signature.calling_convention());
     }
 
     #[test]
     fn converts_callable_signature_1_to_1() {
-        let test = Test::new("converts_callable_signature_1_to_1", &[Type::U32], &[Type::U32]);
+        let mut test = Test::named("converts_callable_signature_1_to_1");
+        let i32 = test.context().i32();
+        test.with_function("converts_callable_signature_1_to_1", &[i32], &[i32]);
 
         let converted = converted_callable_signature_1_to_1(
             test.function().as_operation_ref(),
-            &u32_to_i32_converter(),
+            &i32_to_i64_converter(test.context()),
         )
         .unwrap()
         .expect("function should implement CallableOpInterface");
 
-        assert_eq!(converted.params()[0].ty, Type::I32);
-        assert_eq!(converted.results()[0].ty, Type::I32);
+        assert_eq!(converted.params()[0].ty, test.context().i64());
+        assert_eq!(converted.results()[0].ty, test.context().i64());
     }
 
     #[test]
     fn reports_branch_successor_operand_arity_mismatch() {
-        let mut test =
-            Test::new("reports_branch_successor_operand_arity_mismatch", &[Type::U32], &[]);
+        let mut test = Test::named("reports_branch_successor_operand_arity_mismatch");
+        let i32 = test.context().i32();
+        test.with_function("reports_branch_successor_operand_arity_mismatch", &[i32], &[]);
         let op = {
             let mut builder = test.function_builder();
             let dest = builder.create_block();
-            builder.append_block_param(dest, Type::U32, SourceSpan::UNKNOWN);
+            builder.append_block_param(dest, i32, SourceSpan::UNKNOWN);
             let op_builder = builder
                 .builder_mut()
                 .create::<SignatureTestBr, (BlockRef, Vec<ValueRef>)>(SourceSpan::UNKNOWN);
@@ -701,13 +709,15 @@ mod tests {
 
     #[test]
     fn accepts_matching_branch_successor_operands() {
-        let mut test = Test::new("accepts_matching_branch_successor_operands", &[Type::U32], &[]);
+        let mut test = Test::named("accepts_matching_branch_successor_operands");
+        let i32 = test.context().i32();
+        test.with_function("accepts_matching_branch_successor_operands", &[i32], &[]);
         let op = {
             let mut builder = test.function_builder();
             let entry = builder.entry_block();
             let arg = entry.borrow().arguments()[0] as ValueRef;
             let dest: BlockRef = builder.create_block();
-            builder.append_block_param(dest, Type::U32, SourceSpan::UNKNOWN);
+            builder.append_block_param(dest, i32, SourceSpan::UNKNOWN);
             let op_builder = builder
                 .builder_mut()
                 .create::<SignatureTestBr, (BlockRef, [ValueRef; 1])>(SourceSpan::UNKNOWN);
@@ -727,7 +737,8 @@ mod tests {
                 .create::<SignatureTestRegionBranch, ()>(SourceSpan::UNKNOWN);
             let op = op_builder().unwrap();
             let region = op.borrow().body().as_region_ref();
-            builder.builder_mut().create_block(region, None, &[Type::U32]);
+            let i32 = builder.builder_mut().context().i32();
+            builder.builder_mut().create_block(region, None, &[i32]);
             op
         };
 
@@ -738,9 +749,11 @@ mod tests {
 
     #[test]
     fn reports_region_branch_terminator_successor_arity_mismatch() {
-        let mut test = Test::new(
+        let mut test = Test::named("reports_region_branch_terminator_successor_arity_mismatch");
+        let i32 = test.context().i32();
+        test.with_function(
             "reports_region_branch_terminator_successor_arity_mismatch",
-            &[Type::U32],
+            &[i32],
             &[],
         );
         let terminator = {
