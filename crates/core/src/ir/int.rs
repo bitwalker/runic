@@ -108,6 +108,22 @@ impl Int {
         Self::from_bits(width, u128::MAX)
     }
 
+    /// The minimum signed value of `width` bits: only the sign bit set.
+    ///
+    /// Panics if `width` is 0 or more than [Self::MAX_WIDTH].
+    pub const fn signed_min(width: u32) -> Self {
+        check_width(width);
+        Self::from_bits(width, 1u128 << (width - 1))
+    }
+
+    /// The maximum signed value of `width` bits: every bit but the sign bit set.
+    ///
+    /// Panics if `width` is 0 or more than [Self::MAX_WIDTH].
+    pub const fn signed_max(width: u32) -> Self {
+        check_width(width);
+        Self::from_bits(width, mask(width) >> 1)
+    }
+
     /// The width in bits of a constant of the type `ty`: `N` for `iN` with `N <= 128`, 64 for
     /// `isize`, and `None` for any other type (a wider integer type has no constants).
     ///
@@ -200,12 +216,14 @@ impl Int {
     }
 
     /// Compares the values as unsigned numbers. Panics if the widths differ.
+    #[track_caller]
     pub fn cmp_unsigned(self, other: Self) -> Ordering {
         assert_eq!(self.width, other.width, "cannot compare integers of different widths");
         self.bits.cmp(&other.bits)
     }
 
     /// Compares the values as two's complement numbers. Panics if the widths differ.
+    #[track_caller]
     pub fn cmp_signed(self, other: Self) -> Ordering {
         assert_eq!(self.width, other.width, "cannot compare integers of different widths");
         self.signed().cmp(&other.signed())

@@ -22,7 +22,28 @@ impl Int {
 
     /// Whether the value is the minimum signed value: only the sign bit set.
     fn is_signed_min(self) -> bool {
-        self.bits == 1u128 << (self.width() - 1)
+        self == Self::signed_min(self.width())
+    }
+
+    /// The value as an amount for `<<`, [Self::lshr] or [Self::ashr]: the unsigned value, clamped
+    /// to `u32::MAX`. Any amount of `width` or more behaves alike for these, so the clamp is exact.
+    ///
+    /// Not for a rotation: see [Self::rotate_amount].
+    pub const fn shift_amount(self) -> u32 {
+        if self.bits > u32::MAX as u128 {
+            u32::MAX
+        } else {
+            self.bits as u32
+        }
+    }
+
+    /// The value as an amount for [Self::rotl] or [Self::rotr] on a `width`-bit value: the
+    /// unsigned value modulo `width`.
+    ///
+    /// Panics if `width` is 0.
+    pub const fn rotate_amount(self, width: u32) -> u32 {
+        assert!(width != 0, "cannot rotate a zero-width integer");
+        (self.bits % width as u128) as u32
     }
 
     /// Wrapping addition, modulo `2^width`. The same bits for a signed or an unsigned reading.
@@ -197,6 +218,9 @@ impl Int {
     }
 
     /// Rotates left by `amount` modulo the width.
+    ///
+    /// A rotation depends on the amount modulo the width, so an amount held as an `Int` must not be
+    /// clamped with [Self::shift_amount]: use [Self::rotate_amount].
     pub fn rotl(self, amount: u32) -> Self {
         let width = self.width();
         let amount = amount % width;
@@ -207,6 +231,9 @@ impl Int {
     }
 
     /// Rotates right by `amount` modulo the width.
+    ///
+    /// A rotation depends on the amount modulo the width, so an amount held as an `Int` must not be
+    /// clamped with [Self::shift_amount]: use [Self::rotate_amount].
     pub fn rotr(self, amount: u32) -> Self {
         let width = self.width();
         self.rotl(width - amount % width)
@@ -304,8 +331,12 @@ bitwise_operator!(BitXor, bitxor, ^);
 
 /// Shifts left, filling with zeros. An amount of `width` or more gives zero.
 ///
-/// This is `Shl<u32>` rather than an inherent method so that the name `shl` does not collide with
-/// the standard trait's; call it as `x << amount` or `x.shl(amount)` with `core::ops::Shl` in scope.
+/// Left shift has one meaning for a bit pattern, like the bitwise operators, so it is an operator
+/// (an inherent method named `shl` trips clippy's `should_implement_trait`). Call it as
+/// `x << amount`, or `x.shl(amount)` with `core::ops::Shl` in scope.
+///
+/// Unlike Rust's `<<` on a primitive, an amount of `width` or more is not an overflow: it gives
+/// zero.
 impl Shl<u32> for Int {
     type Output = Int;
 
@@ -330,9 +361,12 @@ impl Not for Int {
 /// right on a 32-bit target as well as a 64-bit one.
 ///
 /// `f` is called with the operands as they are, and again with each truncated to 32 bits. The fold
-/// succeeds when both calls do and agree: a 64-bit result truncated to 32 bits equals the 32-bit
-/// result, or, for a result of another width (a comparison's `i1`), the two are equal. It returns
-/// the first call's result.
+/// succeeds when both calls do and agree. Whether the result is an `isize` is decided by both
+/// result widths: if the first is 64 bits wide and the second 32, the result is pointer-width and
+/// the first, truncated to 32 bits, must equal the second. Otherwise the two results must have the
+/// same width and be equal (a comparison's `i1`, or an extension to `i64` or `i128`, whose result
+/// does not change width with the target). Results of any other pair of widths do not fold. It
+/// returns the first call's result.
 ///
 /// Panics if an operand is not 64 bits wide.
 pub fn fold_isize<const N: usize>(
@@ -344,12 +378,12 @@ pub fn fold_isize<const N: usize>(
     }
     let wide = f(operands)?;
     let narrow = f(operands.map(|operand| operand.trunc(32)))?;
-    let expected = if wide.width() == 64 {
-        wide.trunc(32)
+    let agree = if wide.width() == 64 && narrow.width() == 32 {
+        wide.trunc(32) == narrow
     } else {
-        wide
+        wide == narrow
     };
-    (narrow == expected).then_some(wide)
+    agree.then_some(wide)
 }
 
 #[cfg(test)]
@@ -806,6 +840,122 @@ mod tests {
             Int::from_bits(p.width(), 1).div_unsigned(p)
         });
         assert_eq!(div, None);
+    }
+
+    #[test]
+    fn fold_isize_extensions() {
+        let sext = |a: i64| super::fold_isize([isize_const(a)], |[p]| Some(p.sext(64)));
+        assert_eq!(sext(5), Some(isize_const(5)));
+        assert_eq!(sext(1 << 32), None);
+        assert_eq!(sext(-1), Some(isize_const(-1)));
+        let zext = |a: i64| super::fold_isize([isize_const(a)], |[p]| Some(p.zext(64)));
+        assert_eq!(zext(5), Some(isize_const(5)));
+        assert_eq!(zext(1 << 32), None);
+        assert_eq!(zext(-1), None);
+        let wide = super::fold_isize([isize_const(-1)], |[p]| Some(p.sext(128)));
+        assert_eq!(wide, Some(Int::from(-1i128)));
+        // Models `sext isize -> i64` as written in terms of the operand's own width.
+        let modeled = super::fold_isize([isize_const(7)], |[p]| Some(p.trunc(p.width()).sext(64)));
+        assert_eq!(modeled, Some(isize_const(7)));
+    }
+
+    #[test]
+    fn fold_isize_other_result_widths() {
+        let same32 = super::fold_isize([isize_const(1 << 40)], |_| Some(Int::from(7u32)));
+        assert_eq!(same32, Some(Int::from(7u32)));
+        let same_width_32 =
+            super::fold_isize([isize_const(1)], |[p]| Some(Int::from_bits(32, p.unsigned())));
+        assert_eq!(same_width_32, Some(Int::from(1u32)));
+        let odd = super::fold_isize([isize_const(1)], |[p]| {
+            Some(Int::zero(if p.width() == 64 { 16 } else { 8 }))
+        });
+        assert_eq!(odd, None);
+    }
+
+    #[test]
+    fn shift_and_rotate_amounts() {
+        let big = Int::from((1u64 << 32) + 1);
+        assert_eq!(big.shift_amount(), u32::MAX);
+        assert_eq!(big.rotate_amount(64), 1);
+        assert_eq!(big.rotate_amount(7), (((1u64 << 32) + 1) % 7) as u32);
+        assert_eq!(Int::from(5u64).shift_amount(), 5);
+        assert_eq!(Int::from(u32::MAX as u64).shift_amount(), u32::MAX);
+        assert_eq!(Int::from(u128::MAX).shift_amount(), u32::MAX);
+        assert_eq!(Int::from(70u8).rotate_amount(64), 6);
+        assert_eq!(Int::from_bits(3, 7).shift_amount(), 7);
+    }
+
+    #[test]
+    #[should_panic]
+    fn rotate_amount_of_width_zero_panics() {
+        Int::from(1u8).rotate_amount(0);
+    }
+
+    #[test]
+    fn signed_bounds() {
+        assert_eq!(Int::signed_min(8).signed(), i8::MIN as i128);
+        assert_eq!(Int::signed_max(8).signed(), i8::MAX as i128);
+        assert_eq!(Int::signed_min(64).signed(), i64::MIN as i128);
+        assert_eq!(Int::signed_max(64).signed(), i64::MAX as i128);
+        assert_eq!(Int::signed_min(128).signed(), i128::MIN);
+        assert_eq!(Int::signed_max(128).signed(), i128::MAX);
+        assert_eq!(Int::signed_min(127).signed(), -(1i128 << 126));
+        assert_eq!(Int::signed_max(127).signed(), (1i128 << 126) - 1);
+        assert_eq!(Int::signed_min(1).signed(), -1);
+        assert_eq!(Int::signed_max(1).signed(), 0);
+        for w in 1..=128u32 {
+            assert_eq!(Int::signed_min(w).width(), w);
+            assert_eq!(Int::signed_max(w).width(), w);
+            assert!(Int::signed_min(w).is_signed_min());
+            assert_eq!(Int::signed_max(w), !Int::signed_min(w));
+        }
+    }
+
+    #[test]
+    fn sixty_three_bits_against_the_model() {
+        let w = 63u32;
+        let (lo, hi) = (-(1i128 << 62), (1i128 << 62) - 1);
+        let samples: [i128; 11] =
+            [0, 1, 2, -1, lo, lo + 1, hi, hi - 1, 1 << 32, (1 << 32) - 1, 1 << 31];
+        let unsigned_of = |v: i128| (v as u128) & ((1u128 << w) - 1);
+        let umax = (1i128 << w) - 1;
+        for &a in &samples {
+            for &b in &samples {
+                let (x, y) = (s(w, a), s(w, b));
+                let (ua, ub) = (unsigned_of(a) as i128, unsigned_of(b) as i128);
+                let signed = [(a + b, 0), (a - b, 1), (a * b, 2)];
+                let unsigned = [(ua + ub, 0), (ua - ub, 1), (ua * ub, 2)];
+                let so = [
+                    (x.overflowing_add_signed(y), x.checked_add_signed(y)),
+                    (x.overflowing_sub_signed(y), x.checked_sub_signed(y)),
+                    (x.overflowing_mul_signed(y), x.checked_mul_signed(y)),
+                ];
+                let uo = [
+                    (x.overflowing_add_unsigned(y), x.checked_add_unsigned(y)),
+                    (x.overflowing_sub_unsigned(y), x.checked_sub_unsigned(y)),
+                    (x.overflowing_mul_unsigned(y), x.checked_mul_unsigned(y)),
+                ];
+                let wrapped = [x.wrapping_add(y), x.wrapping_sub(y), x.wrapping_mul(y)];
+                for ((v, i), (uv, _)) in signed.into_iter().zip(unsigned) {
+                    let out = v < lo || v > hi;
+                    assert_eq!(so[i].0, (reduce(w, v), out), "signed {a} {b} op {i}");
+                    assert_eq!(so[i].1, (!out).then(|| reduce(w, v)));
+                    let uout = uv < 0 || uv > umax;
+                    assert_eq!(uo[i].0, (reduce(w, uv), uout), "unsigned {ua} {ub} op {i}");
+                    assert_eq!(uo[i].1, (!uout).then(|| reduce(w, uv)));
+                    assert_eq!(wrapped[i], reduce(w, v));
+                }
+            }
+        }
+        let min = s(w, lo);
+        assert_eq!(min.div_signed(s(w, -1)), None);
+        assert_eq!(min.rem_signed(s(w, -1)), Some(Int::zero(w)));
+    }
+
+    #[test]
+    #[should_panic(expected = "different widths")]
+    fn min_with_different_widths_panics() {
+        let _ = Int::from(1u8).min_signed(Int::from(1u16));
     }
 
     #[test]
