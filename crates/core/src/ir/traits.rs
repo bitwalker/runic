@@ -337,9 +337,10 @@ pub trait SingleRegion {
 /// op, and the copy becomes the result. A cast that checks or changes a value, such as `hir.cast`
 /// between signednesses or any widening or narrowing, must not implement this.
 ///
-/// The verifier admits one operand and one result of the same type, or that are both pointers.
-/// Integer types are signless and uniqued, so an integer cast is transparent only between
-/// identical types.
+/// The verifier admits one operand and one result of the same type, or that are both pointers in
+/// the same address space (the pointee may differ, and either may be opaque): a pointer in
+/// another address space need not have the same representation. Integer types are signless and
+/// uniqued, so an integer cast is transparent only between identical types.
 #[operation_trait]
 pub trait TransparentCast {
     #[verifier]
@@ -381,11 +382,23 @@ pub trait TransparentCast {
                 format!("{from} is {from_width} bits wide, but {to} is {to_width}"),
                 "requires an integer operand and result to be of the same type",
             )),
-            _ if from.is_pointer() && to.is_pointer() => Ok(()),
-            _ => Err(invalid(
-                format!("cannot reinterpret {from} as {to}"),
-                "converts only pointers to pointers, or a value to a value of its own type",
-            )),
+            _ => match (from.as_pointer(), to.as_pointer()) {
+                (Some(from_ptr), Some(to_ptr)) if from_ptr.addrspace() == to_ptr.addrspace() => {
+                    Ok(())
+                }
+                (Some(from_ptr), Some(to_ptr)) => Err(invalid(
+                    format!(
+                        "{from} is in address space {}, but {to} is in address space {}",
+                        from_ptr.addrspace(),
+                        to_ptr.addrspace()
+                    ),
+                    "requires pointers to be in the same address space",
+                )),
+                _ => Err(invalid(
+                    format!("cannot reinterpret {from} as {to}"),
+                    "converts only pointers to pointers, or a value to a value of its own type",
+                )),
+            },
         }
     }
 }
@@ -519,6 +532,34 @@ mod tests {
                 let (from, to) = types(&context);
                 panic!("{from} to {to} should be transparent: {err}")
             });
+        }
+    }
+
+    #[test]
+    fn a_transparent_cast_between_pointers_keeps_the_address_space() {
+        let typed_in_one: CastTypes = |context| {
+            (
+                context.ptr_type_in(Some(context.i8()), 1),
+                context.ptr_type_in(Some(context.i64()), 1),
+            )
+        };
+        let opaque_in_one: CastTypes =
+            |context| (context.ptr_type_in(None, 1), context.ptr_type_in(Some(context.i8()), 1));
+        for types in [typed_in_one, opaque_in_one] {
+            verify_cast(types).unwrap_or_else(|err| panic!("a cast within address space 1: {err}"));
+        }
+
+        let cases: [CastTypes; 3] = [
+            |context| (context.ptr_type(context.i8()), context.ptr_type_in(Some(context.i8()), 1)),
+            |context| (context.ptr_type_in(None, 2), context.opaque_ptr_type()),
+            |context| (context.ptr_type_in(None, 1), context.ptr_type_in(Some(context.i32()), 2)),
+        ];
+        for types in cases {
+            let message = rejection(types);
+            assert!(
+                message.contains("requires pointers to be in the same address space"),
+                "{message}"
+            );
         }
     }
 
