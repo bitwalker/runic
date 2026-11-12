@@ -1,5 +1,7 @@
 use core::{cmp::Ordering, fmt};
 
+mod arith;
+
 /// An integer of a fixed width between 1 and 128 bits.
 ///
 /// `Int` is signless: it is a bit pattern, and carries no interpretation as a signed or an unsigned
@@ -10,6 +12,21 @@ use core::{cmp::Ordering, fmt};
 /// constructor establishes it, and nothing else writes the fields.
 ///
 /// Two values are equal only if their widths and their bits are.
+///
+/// Arithmetic (in `int/arith.rs`; every method panics if two operands differ in width):
+///
+/// | Group | Methods | Reads the bits as |
+/// |---|---|---|
+/// | Wrapping | `wrapping_{add,sub,mul,neg}` | no interpretation (modulo `2^width`) |
+/// | Overflow flag, checked | `overflowing_*_{signed,unsigned}`, `checked_*_{signed,unsigned}` | the suffix |
+/// | Division | `div_`/`rem_` `{signed,unsigned}` | the suffix; `None` for a zero divisor |
+/// | Shifts, rotates | `shl` (the `Shl<u32>` impl), `lshr`, `ashr`, `rotl`, `rotr` | `ashr` uses the sign bit; the rest are plain bits |
+/// | Bitwise | `&`, `|`, `^`, `!` | plain bits |
+/// | Min, max | `{min,max}_{signed,unsigned}` | the suffix |
+/// | Counting | `count_ones`, `{leading,trailing}_{zeros,ones}` | plain bits, within the width |
+///
+/// There is no `Add`, `Sub` or `Mul` operator: `a + b` would hide the choice between wrapping and
+/// overflow.
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Int {
     bits: u128,
