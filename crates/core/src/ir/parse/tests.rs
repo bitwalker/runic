@@ -492,7 +492,7 @@ fn module_reserved_memory_roundtrip() -> TestResult {
     }
 
     let flags = Default::default();
-    let mut printer = AsmPrinter::new(test.context_rc(), &flags);
+    let mut printer = AsmPrinter::root(test.context_rc(), &flags);
     printer.print_operation(parsed.borrow());
     let printed = printer.finish().to_string();
     std::println!("{printed}");
@@ -525,7 +525,7 @@ fn derive_roundtrip_test() -> TestResult {
     }
 
     let flags = Default::default();
-    let mut printer = AsmPrinter::new(test.context_rc(), &flags);
+    let mut printer = AsmPrinter::root(test.context_rc(), &flags);
     printer.print_operation(test.function().borrow());
     let source = printer.render().to_string();
 
@@ -947,7 +947,7 @@ fn component_name_roundtrips_through_the_printer() -> TestResult {
         assert_eq!(Symbol::name(&*component.borrow()).as_str(), name);
 
         let flags = Default::default();
-        let mut printer = AsmPrinter::new(test.context_rc(), &flags);
+        let mut printer = AsmPrinter::root(test.context_rc(), &flags);
         printer.print_operation(component.as_operation_ref().borrow());
         let printed = printer.finish().to_string();
         assert!(printed.starts_with(header), "unexpected printed form:\n{printed}");
@@ -974,7 +974,7 @@ fn component_name_with_a_quoted_segment_roundtrips_through_the_printer() -> Test
     let component = WorldBuilder::new(world).define_component(path.to_symbol_name()?.into())?;
 
     let flags = Default::default();
-    let mut printer = AsmPrinter::new(test.context_rc(), &flags);
+    let mut printer = AsmPrinter::root(test.context_rc(), &flags);
     printer.print_operation(component.as_operation_ref().borrow());
     let printed = printer.finish().to_string();
     assert!(
@@ -1070,7 +1070,7 @@ builtin.world {
     let path = module.borrow().path();
     assert_eq!(path, leaf(&["my-mod"]));
     let flags = Default::default();
-    let mut printer = AsmPrinter::new(test.context_rc(), &flags);
+    let mut printer = AsmPrinter::root(test.context_rc(), &flags);
     printer.print_symbol_path(&path);
     assert_eq!(printer.finish().to_string(), "::@\"my-mod\"");
 
@@ -1331,7 +1331,7 @@ fn printed_locations_parse_back() {
             print_source_locations: true,
             ..Default::default()
         };
-        let mut printer = AsmPrinter::new(context.clone(), &flags);
+        let mut printer = AsmPrinter::root(context.clone(), &flags);
         printer.print_operation(op.borrow());
         printer.finish().to_string()
     };
@@ -2065,7 +2065,7 @@ fn builtin_integer_attributes_accept_a_sign_and_round_trip() -> TestResult {
     };
     let printed = |attr: &crate::AttributeRef| {
         let flags = Default::default();
-        let mut printer = AsmPrinter::new(context.clone(), &flags);
+        let mut printer = AsmPrinter::root(context.clone(), &flags);
         printer.print_attribute_value(&*attr.borrow());
         printer.finish().to_string()
     };
@@ -2803,7 +2803,7 @@ fn function_over(
 fn print_root(function: UnsafeIntrusiveEntityRef<Function>) -> String {
     let flags = Default::default();
     let function = function.as_operation_ref();
-    let mut printer = AsmPrinter::new(function.borrow().context_rc(), &flags);
+    let mut printer = AsmPrinter::root(function.borrow().context_rc(), &flags);
     printer.print_operation(function.borrow());
     printer.finish().to_string()
 }
@@ -3046,6 +3046,41 @@ fn a_member_used_only_inside_an_attribute_round_trips() {
     let printed = assert_round_trips(&test);
     assert!(printed.starts_with("rec {\n  type !list = struct list<ptr<!list>, i32>;\n}\n\n"));
     assert!(printed.contains("#builtin.type<ptr<!list>>"), "{printed}");
+}
+
+#[test]
+fn the_text_of_a_value_holding_a_member_has_no_declarations() {
+    use crate::{OpFoldResult, dialects::builtin::attributes::TypeAttr};
+
+    let context = Rc::new(Context::default());
+    let list = self_recursive(&context, Some("list"), context.i32());
+    let attr = context.create_attribute::<TypeAttr, _>(context.ptr_type(list));
+    let folded = OpFoldResult::Attribute(attr.as_attribute_ref());
+    assert_eq!(format!("{folded}"), "#builtin.type<ptr<!list>>");
+
+    let param = AbiParam::new_with_attrs(
+        context.i32(),
+        [crate::NamedAttribute::new("note", attr.as_attribute_ref())],
+    );
+    assert_eq!(format!("{param}"), "i32 { note = #builtin.type<ptr<!list>> }");
+}
+
+#[test]
+fn the_declarations_of_a_print_are_one_text_node() {
+    use crate::formatter::Document;
+
+    let test = function_over(|cx| list_and_node(cx).into(), |_, _| Vec::new());
+    let flags = Default::default();
+    let function = test.function().as_operation_ref();
+    let mut printer = AsmPrinter::root(function.borrow().context_rc(), &flags);
+    printer.print_operation(function.borrow());
+    let declarations = printer.rec_group_declarations();
+    assert!(matches!(declarations, Document::Text(..)), "{declarations:?}");
+    assert_eq!(
+        declarations.to_string(),
+        "rec {\n  type !list = struct list<i32, ptr<!node>>;\n  type !node = struct \
+         node<ptr<!list>, ptr<!node>>;\n}"
+    );
 }
 
 /// A group of 2,000 members, member `i` being `struct<ptr<member (i + 1) % 2000>>`, prints and

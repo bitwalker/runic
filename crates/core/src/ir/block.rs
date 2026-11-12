@@ -167,7 +167,7 @@ impl crate::formatter::PrettyPrint for Block {
     fn render(&self) -> crate::formatter::Document {
         let flags = OpPrintingFlags::default();
 
-        let mut printer = crate::print::AsmPrinter::new(self.context_rc(), &flags);
+        let mut printer = crate::print::AsmPrinter::root(self.context_rc(), &flags);
         printer.print_block(self);
         printer.finish()
     }

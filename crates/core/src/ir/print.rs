@@ -336,7 +336,7 @@ impl crate::formatter::PrettyPrint for Operation {
         let flags = OpPrintingFlags::default();
         let context = self.context_rc();
         let mut printer = if self.parent_op().is_none() {
-            AsmPrinter::new(context, &flags)
+            AsmPrinter::root(context, &flags)
         } else {
             AsmPrinter::fragment(context, &flags)
         };

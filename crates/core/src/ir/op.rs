@@ -87,7 +87,7 @@ pub trait Op: AsAny + OpVerifier {
         let op = self.as_operation();
         let context = op.context_rc();
         let mut printer = if op.parent_op().is_none() {
-            print::AsmPrinter::new(context, flags)
+            print::AsmPrinter::root(context, flags)
         } else {
             print::AsmPrinter::fragment(context, flags)
         };

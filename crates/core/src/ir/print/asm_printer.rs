@@ -19,7 +19,7 @@ use crate::{
 /// print: a printer that is created while printing, to print a part of the output separately,
 /// must be made with [Self::nested].
 ///
-/// A printer made with [Self::new] is the *root* of its print: [Self::finish] writes the
+/// A printer made with [Self::root] is the *root* of its print: [Self::finish] writes the
 /// declarations of the recursion groups the print refers to in front of the printed text, so
 /// that the text parses on its own. A printer made with [Self::nested] or [Self::fragment]
 /// never writes declarations.
@@ -35,7 +35,10 @@ pub struct AsmPrinter<'a> {
 impl<'a> AsmPrinter<'a> {
     /// Construct a new printer with the given [OpPrintingFlags], starting a print of its own whose
     /// root it is: [Self::finish] precedes the printed text with its recursion-group declarations.
-    pub fn new(context: Rc<Context>, flags: &'a OpPrintingFlags) -> Self {
+    ///
+    /// A printer created while printing, to print a part of the output separately, is made with
+    /// [Self::nested] instead, so that it shares this print's alias table.
+    pub fn root(context: Rc<Context>, flags: &'a OpPrintingFlags) -> Self {
         Self {
             context,
             flags,
@@ -45,13 +48,13 @@ impl<'a> AsmPrinter<'a> {
         }
     }
 
-    /// Construct a new printer that starts a print of its own, like [Self::new], but prints a
+    /// Construct a new printer that starts a print of its own, like [Self::root], but prints a
     /// fragment: [Self::finish] writes no declarations, and the recursion-group members in its
     /// text are aliases that it does not declare.
     pub fn fragment(context: Rc<Context>, flags: &'a OpPrintingFlags) -> Self {
         Self {
             root: false,
-            ..Self::new(context, flags)
+            ..Self::root(context, flags)
         }
     }
 
@@ -97,7 +100,7 @@ impl<'a> AsmPrinter<'a> {
 
     /// Consume the printer, and render its state as a [Document].
     ///
-    /// On a root printer (see [Self::new]) whose print refers to recursion groups, the document is
+    /// On a root printer (see [Self::root]) whose print refers to recursion groups, the document is
     /// [Self::rec_group_declarations], a blank line, then the printed text.
     pub fn finish(self) -> Document {
         use crate::formatter::nl;
@@ -388,6 +391,10 @@ impl<'a> AsmPrinter<'a> {
     /// of every group they refer to, as `rec { type !alias = definition; .. }` blocks separated
     /// by newlines; an empty document if there are none.
     ///
+    /// The declarations are one text node, newlines included, so that the size of a group or the
+    /// number of groups does not deepen the document; they belong at the start of a line, and are
+    /// not indented with the document around them.
+    ///
     /// Each group comes after every group its members refer to, so that the text parses in one
     /// pass; a group that is only referred to is named here, before any declaration is written,
     /// so that no name already printed changes. Members are declared in index order.
@@ -408,24 +415,32 @@ impl<'a> AsmPrinter<'a> {
             }
         }
 
-        let mut declarations = Document::Empty;
+        if order.is_empty() {
+            return Document::Empty;
+        }
+        let mut declarations = String::new();
         for (i, group) in order.iter().enumerate() {
             if i > 0 {
-                declarations += nl();
+                declarations.push('\n');
             }
-            let mut members = Document::Empty;
+            declarations.push_str("rec {");
             for member in group.members() {
-                let alias = self.aliases.borrow_mut().alias_of(*member);
                 let definition = Aliased {
                     ty: *member,
                     aliases: &self.aliases,
                     definition: true,
                 };
-                members += nl() + text(alloc::format!("type !{alias} = {definition};"));
+                let line = alloc::format!("\n  type !{} = {definition};", self.alias_of(*member));
+                declarations.push_str(&line);
             }
-            declarations += const_text("rec {") + indent(2, members) + nl() + const_text("}");
+            declarations.push_str("\n}");
         }
-        declarations
+        text(declarations)
+    }
+
+    /// The alias of the recursion-group member `member` in this print's alias table.
+    fn alias_of(&self, member: Type) -> String {
+        String::from(self.aliases.borrow_mut().alias_of(member))
     }
 
     /// Print a function type (i.e. `(arg0, arg1) -> (result0, result1)`)

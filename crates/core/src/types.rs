@@ -533,8 +533,8 @@ impl<'a, 'f> TypeFormatter<'a, 'f> {
     pub fn ty(&mut self, ty: Type) -> fmt::Result {
         if let Some(group) = ty.rec_group() {
             if let Some(aliases) = self.aliases {
-                let alias = aliases.borrow_mut().alias_of(ty);
-                return write!(self, "!{alias}");
+                let mut aliases = aliases.borrow_mut();
+                return write!(self, "!{}", aliases.alias_of(ty));
             }
             self.member_reference(ty, group)?;
             if self.depth > 0 {
@@ -549,7 +549,10 @@ impl<'a, 'f> TypeFormatter<'a, 'f> {
     /// types it holds written by [Self::ty].
     ///
     /// This is how a declaration writes the member it declares: `type !list = <definition>;`.
-    pub fn definition(&mut self, ty: Type) -> fmt::Result {
+    ///
+    /// It is crate-internal: a dialect printer that wrote a member it holds with it would
+    /// write that member's body, and so, through the cycle, recurse forever.
+    pub(crate) fn definition(&mut self, ty: Type) -> fmt::Result {
         self.depth += 1;
         let result = self.body(ty);
         self.depth -= 1;

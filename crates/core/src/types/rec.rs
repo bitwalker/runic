@@ -105,9 +105,11 @@ impl PartialEq for RecGroup {
 
 impl Eq for RecGroup {}
 
+/// A group hashes as its stored structural hash, which is the same in every context that builds
+/// the same group; equality is still identity, which implies an equal hash.
 impl Hash for RecGroup {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.0.hash(state);
+        state.write_u64(self.hash());
     }
 }
 
@@ -711,6 +713,18 @@ mod tests {
             assert_eq!(a.stored_hash(), b.stored_hash());
         }
         assert_ne!(a[0].stored_hash(), a[1].stored_hash());
+    }
+
+    #[test]
+    fn a_group_hashes_as_its_structure() {
+        use core::hash::BuildHasher;
+
+        let (first, second) = (Context::default(), Context::default());
+        let (a, b) = (list_and_node(&first), list_and_node(&second));
+        let (a, b) = (a[0].rec_group().unwrap(), b[0].rec_group().unwrap());
+        assert_ne!(a, b);
+        let state = crate::FxBuildHasher;
+        assert_eq!(state.hash_one(a), state.hash_one(b));
     }
 
     static DROPS: AtomicUsize = AtomicUsize::new(0);

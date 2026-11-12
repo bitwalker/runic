@@ -1,7 +1,9 @@
 //! The names the IR printer gives recursion-group members.
 
-use alloc::{format, string::String, vec::Vec};
+use alloc::vec::Vec;
 use core::{cell::RefCell, fmt};
+
+use compact_str::CompactString;
 
 use super::{RecGroup, Type, TypeFormatter};
 use crate::{FxHashMap, FxHashSet, interner::Symbol};
@@ -19,9 +21,9 @@ use crate::{FxHashMap, FxHashSet, interner::Symbol};
 #[derive(Default)]
 pub struct TypeAliases {
     /// The alias of each named member.
-    names: FxHashMap<Type, Symbol>,
+    names: FxHashMap<Type, CompactString>,
     /// Every alias handed out so far.
-    taken: FxHashSet<String>,
+    taken: FxHashSet<CompactString>,
     /// The named groups, in the order they were first named.
     groups: Vec<RecGroup>,
     /// For each base a suffix is added to (`None` for `t`), the smallest suffix that may still be
@@ -39,20 +41,20 @@ impl TypeAliases {
     /// named, every member of the group is named, in index order, and the group is queued.
     ///
     /// Panics if `member` is not a member of a recursion group.
-    pub fn alias_of(&mut self, member: Type) -> Symbol {
-        if let Some(alias) = self.names.get(&member) {
-            return *alias;
+    pub fn alias_of(&mut self, member: Type) -> &str {
+        if self.names.contains_key(&member) {
+            return &self.names[&member];
         }
         let group = member
             .rec_group()
             .unwrap_or_else(|| panic!("`{member}` is not a member of a recursion group"));
         for member in group.members() {
             let alias = self.fresh_alias(*member);
-            self.taken.insert(String::from(alias.as_str()));
+            self.taken.insert(alias.clone());
             self.names.insert(*member, alias);
         }
         self.groups.push(group);
-        self.names[&member]
+        &self.names[&member]
     }
 
     /// The groups named so far, in the order they were first named.
@@ -65,7 +67,7 @@ impl TypeAliases {
     /// A suffixed alias is the one with the smallest free suffix. Suffixes are tried from the
     /// base's [Self::next_suffix], not from 0, so that naming `n` members costs `O(n)` and not
     /// `O(n²)`; the result is the same, because names are never released.
-    fn fresh_alias(&mut self, member: Type) -> Symbol {
+    fn fresh_alias(&mut self, member: Type) -> CompactString {
         let suggested = member
             .name()
             .alias_name_fn()
@@ -74,18 +76,18 @@ impl TypeAliases {
         if let Some(name) = suggested
             && !self.taken.contains(name.as_str())
         {
-            return name;
+            return CompactString::from(name.as_str());
         }
         let next = self.next_suffix.entry(suggested).or_insert(0);
         let (suffix, alias) = (*next..)
             .map(|k| match suggested {
-                Some(name) => (k, format!("{name}_{k}")),
-                None => (k, format!("t{k}")),
+                Some(name) => (k, compact_str::format_compact!("{name}_{k}")),
+                None => (k, compact_str::format_compact!("t{k}")),
             })
             .find(|(_, alias)| !self.taken.contains(alias.as_str()))
             .expect("some suffix is free");
         *next = suffix + 1;
-        Symbol::intern(&alias)
+        alias
     }
 }
 
@@ -252,7 +254,19 @@ mod tests {
         assert_eq!(first, "(!list) -> ptr<!node>");
         assert_eq!(show(ty, &aliases), first);
         assert_eq!(aliases.borrow().groups(), [list.rec_group().unwrap()]);
-        assert_eq!(aliases.borrow_mut().alias_of(node), sym("node"));
+        assert_eq!(aliases.borrow_mut().alias_of(node), "node");
+    }
+
+    #[test]
+    fn aliases_are_not_interned() {
+        let context = Context::default();
+        let first = singleton(&context, Some("alias_probe"), context.i32());
+        let second = singleton(&context, Some("alias_probe"), context.i64());
+        let unnamed = singleton(&context, None, context.i8());
+        let aliases = RefCell::new(TypeAliases::new());
+        let shown = [first, second, unnamed].map(|ty| show(ty, &aliases));
+        assert_eq!(shown, ["!alias_probe", "!alias_probe_0", "!t0"]);
+        assert_eq!(Symbol::lookup("alias_probe_0"), None);
     }
 
     #[test]

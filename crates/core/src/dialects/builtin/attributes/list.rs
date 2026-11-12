@@ -28,9 +28,9 @@ impl fmt::Display for List {
             let attr = entry.as_trait::<dyn Attribute>().unwrap();
             list.entry_with(|f| {
                 let context = attr.context_rc();
-                // Only reached outside an IR print (the `AttrPrinter` of a list is not implemented), so
-                // this starts a print of its own.
-                let mut printer = AsmPrinter::new(context, &flags);
+                // Only reached outside an IR print (the `AttrPrinter` of a list is not implemented):
+                // the diagnostic text of a value, printed as a fragment, without declarations.
+                let mut printer = AsmPrinter::fragment(context, &flags);
                 printer.print_attribute_value(attr);
                 write!(f, "{}", printer.finish())
             });

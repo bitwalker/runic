@@ -713,7 +713,7 @@ impl Region {
     ) -> crate::formatter::Document {
         use crate::print::AsmPrinter;
 
-        let mut printer = AsmPrinter::new(context, flags);
+        let mut printer = AsmPrinter::root(context, flags);
         printer.print_region(self);
         printer.finish()
     }

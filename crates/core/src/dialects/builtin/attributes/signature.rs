@@ -251,7 +251,8 @@ impl formatter::PrettyPrint for AbiParam {
 
         // Only reached outside an IR print, through the `Display` of `AbiParam` and `Signature`
         // (the `AttrPrinter` of a signature writes its types with the printer), so the type is
-        // written with its `Display` form and the attributes below start prints of their own.
+        // written with its `Display` form and the attributes below are printed as fragments,
+        // without the declarations of the recursion groups they refer to.
         let ty = text(format!("{}", self.ty));
 
         let mut doc = Document::Empty;
@@ -266,7 +267,7 @@ impl formatter::PrettyPrint for AbiParam {
                     } else if value.is::<SextAttr>() {
                         (const_text("sext"), Document::Empty)
                     } else {
-                        let mut printer = AsmPrinter::new(value.context_rc(), &flags);
+                        let mut printer = AsmPrinter::fragment(value.context_rc(), &flags);
                         printer.print_attribute_value(&*value);
                         let value_pp = printer.finish();
                         (const_text("extend"), value_pp)
@@ -274,7 +275,7 @@ impl formatter::PrettyPrint for AbiParam {
                 }
                 other => {
                     let value = attr.value.borrow();
-                    let mut printer = AsmPrinter::new(value.context_rc(), &flags);
+                    let mut printer = AsmPrinter::fragment(value.context_rc(), &flags);
                     printer.print_attribute_value(&*value);
                     (const_text(other), printer.finish())
                 }

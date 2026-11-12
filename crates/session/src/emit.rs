@@ -248,7 +248,7 @@ impl Emit for Module {
         _session: &Session,
     ) -> Result<(), Report> {
         let flags = OpPrintingFlags::default();
-        let mut printer = AsmPrinter::new(self.as_operation().context_rc(), &flags);
+        let mut printer = AsmPrinter::root(self.as_operation().context_rc(), &flags);
         <Self as OpPrinter>::print(self, &mut printer);
         let document = printer.finish();
         writer.write_fmt(format_args!("{document}"))
@@ -273,7 +273,7 @@ impl Emit for Component {
         _session: &Session,
     ) -> Result<(), Report> {
         let flags = OpPrintingFlags::default();
-        let mut printer = AsmPrinter::new(self.as_operation().context_rc(), &flags);
+        let mut printer = AsmPrinter::root(self.as_operation().context_rc(), &flags);
         <Self as OpPrinter>::print(self, &mut printer);
         writer.write_fmt(format_args!("{}", printer.finish()))
     }
