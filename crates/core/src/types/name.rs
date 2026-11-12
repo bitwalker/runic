@@ -48,8 +48,23 @@ fn debug_value<T: TypeRegistration>(ty: Type, f: &mut fmt::Formatter<'_>) -> fmt
     write!(f, "{}.{}({value:?})", name.dialect(), name.name())
 }
 
+/// Builtin types print bare, with no `!dialect.name` to fall back on, so one without a
+/// [TypePrinter](super::TypePrinter) cannot be displayed.
+///
+/// Panics if `dialect` is the builtin dialect and `has_printer` is false.
+fn require_printer_for_builtin(dialect: Symbol, rust_type_name: &str, has_printer: bool) {
+    assert!(
+        has_printer
+            || dialect.as_str()
+                != <crate::dialects::builtin::BuiltinDialect as crate::DialectRegistration>::NAMESPACE,
+        "builtin type `{rust_type_name}` must implement `TypePrinter`: builtin types print bare"
+    );
+}
+
 impl TypeName {
     pub(crate) fn new<T: TypeRegistration>(dialect: Symbol) -> Self {
+        let print = <T as MaybeTypePrinter>::print_fn();
+        require_printer_for_builtin(dialect, core::any::type_name::<T>(), print.is_some());
         let mut traits = Vec::from(T::traits());
         // `Type::as_trait` pairs a `T` with the vtable in the table, so it must be `T`'s.
         for ti in traits.iter() {
@@ -70,7 +85,7 @@ impl TypeName {
             traits: traits.into_boxed_slice(),
             value_offset: TypeStorage::<T>::VALUE_OFFSET,
             debug: debug_value::<T>,
-            print: <T as MaybeTypePrinter>::print_fn(),
+            print,
             parse: <T as MaybeTypeParser>::parse_fn(),
             default: <T as MaybeDefaultType>::default_fn(),
         }))
@@ -206,5 +221,22 @@ impl core::hash::Hash for TypeInfo {
         self.dialect.hash(state);
         self.name.hash(state);
         self.type_id.hash(state);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[should_panic(expected = "builtin type `Broken` must implement `TypePrinter`")]
+    fn a_builtin_type_without_a_printer_is_rejected() {
+        require_printer_for_builtin(Symbol::intern("builtin"), "Broken", false);
+    }
+
+    #[test]
+    fn a_printer_is_optional_outside_the_builtin_dialect() {
+        require_printer_for_builtin(Symbol::intern("builtin"), "Fine", true);
+        require_printer_for_builtin(Symbol::intern("other"), "Fine", false);
     }
 }

@@ -246,9 +246,7 @@ impl fmt::Display for Type {
         let name = self.name();
         let print = name.print_fn();
         if name.dialect().as_str() == <BuiltinDialect as DialectRegistration>::NAMESPACE {
-            let Some(print) = print else {
-                panic!("builtin type `{name}` does not implement `TypePrinter`");
-            };
+            let print = print.expect("registration requires builtin types to have a printer");
             return print(*self, f);
         }
         write!(f, "!{}.{}", name.dialect(), name.name())?;
