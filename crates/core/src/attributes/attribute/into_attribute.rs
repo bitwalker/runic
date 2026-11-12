@@ -32,19 +32,43 @@ pub trait IntoAttribute<A: AttributeRegistration>: Sized {
 /// ```
 pub struct ReadyAttr<A>(pub UnsafeIntrusiveEntityRef<A>);
 
-/// Implemented by every type except [ReadyAttr]; it is what keeps the two implementations of
-/// [IntoAttribute] apart.
+/// Marks a type that is an attribute value argument: what [IntoAttribute] treats as a value to
+/// create an attribute from, as opposed to a [ReadyAttr]. It is what keeps the two implementations
+/// of [IntoAttribute] apart.
 ///
-/// The negative implementation is on the wrapper rather than on the attribute handle, because an
-/// auto trait is inherited through fields: an attribute value that holds a handle (a signature, a
-/// list of attributes) is still a value. No value type holds a [ReadyAttr].
+/// It is implemented for every type except [ReadyAttr] and a type that contains a [ReadyAttr] or an
+/// unsized trait object inline. An auto trait is inherited through fields, and a `dyn Trait` only
+/// implements it when the trait is named in the object type, so the pointer-like types below have
+/// explicit positive implementations: whatever they point to, they are values.
+///
+/// If a type that is a value is rejected, implement the trait for it in the crate that defines it
+/// (no feature flag is needed):
+///
+/// ```ignore
+/// impl runic_core::AttributeValueArg for MyValue {}
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot be used as an attribute value argument",
+    label = "not an attribute value argument",
+    note = "if `{Self}` is a value type, add `impl runic_core::AttributeValueArg for {Self} {{}}` \
+            in the crate that defines it"
+)]
 pub auto trait AttributeValueArg {}
 
 impl<A> !AttributeValueArg for ReadyAttr<A> {}
 
-/// The compiler does not see through the field of `NonNull` (a pattern type) when it implements an
-/// auto trait, so without this a value holding a `Type`, a `Vec` or a `Box` would not be a value.
+// A trait object does not implement an auto trait unless it names it, and `NonNull` is a pattern
+// type that the compiler does not see through. Without these, a value that reaches either (through
+// `Box`, `Rc`, `Arc`, `PhantomData`, or a reference) would not be a value argument.
 impl<T: ?Sized> AttributeValueArg for core::ptr::NonNull<T> {}
+impl<T: ?Sized> AttributeValueArg for core::marker::PhantomData<T> {}
+impl<T: ?Sized> AttributeValueArg for *const T {}
+impl<T: ?Sized> AttributeValueArg for *mut T {}
+impl<T: ?Sized> AttributeValueArg for &T {}
+impl<T: ?Sized> AttributeValueArg for &mut T {}
+// `DynMetadata` holds a `NonNull` of the unsized-for-`MetaSized` `VTable`, which the `NonNull` impl
+// above cannot name without the unstable `sized_hierarchy`.
+impl<T: ?Sized> AttributeValueArg for core::ptr::DynMetadata<T> {}
 
 impl<A, V> IntoAttribute<A> for V
 where
@@ -108,21 +132,82 @@ mod tests {
         assert_eq!(attr.borrow().ty(), context.isize());
     }
 
-    /// The standard containers and pointers a value type is built from are value arguments.
+    fn assert_value_arg<T: AttributeValueArg + ?Sized>() {}
+
+    /// The value type of every attribute the builtin and debuginfo dialects register, and the types
+    /// a value is built from, are value arguments (the check is the bound; it fails to compile).
     #[test]
-    fn standard_containers_and_pointers_are_value_arguments() {
-        fn is_value_arg<T: AttributeValueArg + ?Sized>() {}
-        is_value_arg::<alloc::vec::Vec<crate::Type>>();
-        is_value_arg::<alloc::boxed::Box<[u8]>>();
-        is_value_arg::<alloc::string::String>();
-        is_value_arg::<Rc<str>>();
-        is_value_arg::<core::num::NonZeroU32>();
-        is_value_arg::<crate::SmallVec<[crate::Type; 2]>>();
-        is_value_arg::<crate::CompactString>();
-        is_value_arg::<crate::interner::Symbol>();
-        is_value_arg::<crate::AttributeRef>();
-        is_value_arg::<*const u8>();
-        is_value_arg::<&'static str>();
+    fn every_registered_value_type_is_a_value_argument() {
+        use crate::dialects::{builtin::attributes::*, debuginfo::attributes::*};
+        macro_rules! values {
+            ($($attr:ty),* $(,)?) => {
+                $(assert_value_arg::<<$attr as AttributeRegistration>::Value>();)*
+            };
+        }
+        values!(
+            AdviceEffectArrayAttr,
+            LocalVariableArrayAttr,
+            MemoryEffectArrayAttr,
+            TypeArrayAttr,
+            U32ArrayAttr,
+            BoolAttr,
+            BytesAttr,
+            I8Attr,
+            I16Attr,
+            I32Attr,
+            I64Attr,
+            I128Attr,
+            IntAttr,
+            ListAttr,
+            LocalVariableAttr,
+            LocationAttr,
+            OverflowAttr,
+            SextAttr,
+            SignatureAttr,
+            SretAttr,
+            ZextAttr,
+            StringAttr,
+            SymbolRefAttr,
+            TypeAttr,
+            UnitAttr,
+            VisibilityAttr,
+            crate::IdentAttr,
+            CompileUnitAttr,
+            ExpressionAttr,
+            InlineCallChainAttr,
+            SubprogramAttr,
+            VariableAttr,
+        );
+
+        assert_value_arg::<crate::OperationName>();
+        assert_value_arg::<crate::AttributeName>();
+        assert_value_arg::<crate::Type>();
+        assert_value_arg::<crate::AttributeRef>();
+        assert_value_arg::<crate::OperationRef>();
+        assert_value_arg::<crate::ValueRef>();
+        assert_value_arg::<alloc::boxed::Box<dyn core::any::Any>>();
+        assert_value_arg::<Rc<dyn core::any::Any>>();
+        assert_value_arg::<&'static dyn core::any::Any>();
+        assert_value_arg::<core::ptr::DynMetadata<dyn core::any::Any>>();
+        assert_value_arg::<fn(u8)>();
+        assert_value_arg::<core::marker::PhantomData<dyn core::any::Any>>();
+        assert_value_arg::<alloc::vec::Vec<crate::Type>>();
+        assert_value_arg::<alloc::boxed::Box<[u8]>>();
+        assert_value_arg::<alloc::string::String>();
+        assert_value_arg::<Rc<str>>();
+        assert_value_arg::<core::num::NonZeroU32>();
+        assert_value_arg::<crate::SmallVec<[crate::Type; 2]>>();
+        assert_value_arg::<crate::CompactString>();
+        assert_value_arg::<crate::interner::Symbol>();
+        assert_value_arg::<*const u8>();
+        assert_value_arg::<&'static str>();
+    }
+
+    #[test]
+    fn a_list_value_builds_a_list_attribute() {
+        use crate::dialects::builtin::attributes::{List, ListAttr};
+        let context = Rc::new(Context::default());
+        let _ = into::<ListAttr>(&context, List::default());
     }
 
     #[test]
