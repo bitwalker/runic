@@ -224,10 +224,13 @@ impl Context {
     /// from a value equal to its own, with one exception: a group of one body that contains no
     /// variable is that body itself.
     ///
-    /// Fails if `bodies` is empty, or if a body is a bare variable, refers to a variable whose
-    /// index is not below `bodies.len()`, or is a builtin scalar (an integer, `isize`, a float,
-    /// `?` or `never`) in a group that is not one closed body; the errors of the first body that
-    /// has one are checked in that order.
+    /// Fails if `bodies` is empty, or if a body is a bare variable, is a member of another group
+    /// in a group that is not one closed body, refers to a variable whose index is not below
+    /// `bodies.len()`, or is a builtin scalar (an integer, `isize`, a float, `?` or `never`) in a
+    /// group that is not one closed body; the errors of the first body that has one are checked
+    /// in that order. A member of another group is rejected because groups are identified by
+    /// their bodies' handles, and the member and the ordinary type with the same value would
+    /// otherwise define two groups whose members are indistinguishable; write its body instead.
     pub fn rec_group(&self, bodies: &[Type]) -> Result<SmallVec<[Type; 4]>, RecGroupError> {
         for body in bodies {
             self.debug_assert_owns_type(*body, "a body of a recursion group");

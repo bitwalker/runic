@@ -2281,6 +2281,7 @@ where
             RecGroupError::Empty => rec_span,
             RecGroupError::BareVariable { member }
             | RecGroupError::ScalarMember { member }
+            | RecGroupError::MemberAsBody { member }
             | RecGroupError::VariableOutOfRange { member, .. } => declarations[member].1,
         };
         ParserError::InvalidType {

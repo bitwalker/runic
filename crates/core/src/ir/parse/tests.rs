@@ -2682,6 +2682,52 @@ fn invalid_rec_blocks_are_reported() {
     assert!(message.contains("unexpected end of input"), "{message}");
 }
 
+/// The message of the error that parsing `source` gives, on one line, and the ranges of its labels.
+fn parse_error_labels(source: &str) -> (String, Vec<(usize, usize)>) {
+    let test = ParserTest::default();
+    let err = test.parse_any("declarations.hir", source).expect_err(source);
+    let labels = crate::testing::label_ranges(err.as_diagnostic())
+        .into_iter()
+        .map(|range| (range.start, range.end))
+        .collect();
+    let message = format!("{}", err.display()).split_whitespace().collect::<Vec<_>>().join(" ");
+    (message, labels)
+}
+
+/// The byte range of the first occurrence of `text` in `source`.
+fn range_of(source: &str, text: &str) -> (usize, usize) {
+    let start = source.find(text).unwrap_or_else(|| panic!("`{text}` in `{source}`"));
+    (start, start + text.len())
+}
+
+#[test]
+fn a_member_of_another_group_is_not_a_body_in_a_rec_block() {
+    let source = "\
+rec { type !list = struct list<ptr<!list>, i32>; }
+rec { type !x = !list; type !y = struct<ptr<!x>>; }
+builtin.world {};";
+    let (message, labels) = parse_error_labels(source);
+    assert!(
+        message.contains(
+            "member 0 is a member of another recursion group: define it with its own body"
+        ),
+        "{message}"
+    );
+    assert_eq!(labels, [range_of(source, "type !x = !list;")], "{message}");
+
+    // Alone, a member is a closed body, and the block makes an alias of it.
+    let test = ParserTest::default();
+    let [list, x] = declared_types(
+        &test,
+        "rec { type !list = struct list<ptr<!list>, i32>; }\nrec { type !x = !list; }",
+        &["!list", "!x"],
+    )[..] else {
+        unreachable!()
+    };
+    assert_eq!(x, list);
+    assert_eq!(list.rec_index(), Some(0));
+}
+
 #[test]
 fn an_undefined_alias_outside_a_rec_block_is_still_undefined() {
     let message = parse_error_text(

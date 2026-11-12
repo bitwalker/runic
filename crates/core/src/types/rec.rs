@@ -121,12 +121,21 @@ impl fmt::Debug for RecGroup {
 }
 
 /// Why a list of bodies does not define a recursion group.
+///
+/// A body may be any type except a bare recursion variable, a builtin scalar, or a member of
+/// another recursion group; the last two are allowed only as the sole body of a group that
+/// contains no variable, which is that body itself. A member of another group cannot be a body
+/// because a group is identified by its bodies' handles: the member and the ordinary type with
+/// the same value would define two groups whose members cannot be told apart.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum RecGroupError {
     #[error("a recursion group has at least one member")]
     Empty,
     #[error("member {member} of a recursion group is a bare recursion variable")]
     BareVariable { member: usize },
+    #[error("member {member} is a member of another recursion group: define it with its own body")]
+    MemberAsBody { member: usize },
     #[error("member {member} of a recursion group is a scalar type, which cannot be recursive")]
     ScalarMember { member: usize },
     #[error(
@@ -151,6 +160,9 @@ pub(crate) fn validate(bodies: &[Type]) -> Result<(), RecGroupError> {
     for (member, body) in bodies.iter().enumerate() {
         if body.is::<RecVarType>() {
             return Err(RecGroupError::BareVariable { member });
+        }
+        if !one_closed_body && body.rec_group().is_some() {
+            return Err(RecGroupError::MemberAsBody { member });
         }
         if let Some(index) = variable_out_of_range(*body, bodies.len(), &mut visited, &mut stack) {
             return Err(RecGroupError::VariableOutOfRange {
@@ -625,6 +637,28 @@ mod tests {
                 }
             ),
             "member 0 of a recursion group refers to variable rec.2, but the group has 2 members"
+        );
+    }
+
+    #[test]
+    fn a_member_of_another_group_is_not_a_body() {
+        let context = Context::default();
+        let member = self_recursive_list(&context);
+        let unrolled = context.map_subtypes(member, &mut |ty| ty);
+        let other =
+            context.struct_type(StructType::new([context.ptr_type(context.rec_var(0)).into()]));
+        assert_eq!(
+            context.rec_group(&[member, other]),
+            Err(RecGroupError::MemberAsBody { member: 0 })
+        );
+        let members = context.rec_group(&[unrolled, other]).unwrap();
+        assert_eq!(members[0].as_struct(), member.as_struct());
+        assert_eq!(field_pointee(members[1], 0), Some(members[0]));
+        // One closed body is returned as it is, member or not.
+        assert_eq!(context.rec_group(&[member]).unwrap().as_slice(), [member]);
+        assert_eq!(
+            format!("{}", RecGroupError::MemberAsBody { member: 0 }),
+            "member 0 is a member of another recursion group: define it with its own body"
         );
     }
 

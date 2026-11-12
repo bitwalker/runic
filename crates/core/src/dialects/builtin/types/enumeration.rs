@@ -65,6 +65,7 @@ impl EnumVariant {
 
 /// Why an [EnumType] cannot be constructed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum InvalidEnumType {
     #[error("the discriminant of an enum is an integer type of at most 128 bits, or `isize`")]
     InvalidDiscriminantType,
