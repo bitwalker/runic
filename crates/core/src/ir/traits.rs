@@ -525,15 +525,15 @@ mod tests {
     #[test]
     fn a_cast_between_identical_types_is_always_transparent() {
         let cases: [CastTypes; 5] = [
-            |context| (context.isize_type(), context.isize_type()),
+            |context| (context.isize(), context.isize()),
             |context| (context.int_type(24), context.int_type(24)),
-            |context| (context.f64_type(), context.f64_type()),
+            |context| (context.f64(), context.f64()),
             |context| (context.array_type(context.i8(), 4), context.array_type(context.i8(), 4)),
             |context| {
                 let pair = || {
                     StructType::new([
                         StructField::new(context.i32()),
-                        StructField::new(context.isize_type()),
+                        StructField::new(context.isize()),
                     ])
                 };
                 (context.struct_type(pair()), context.struct_type(pair()))
@@ -553,8 +553,8 @@ mod tests {
         let cases: [CastTypes; 4] = [
             |context| (context.ptr_type(context.i8()), context.i32()),
             |context| (context.i32(), context.ptr_type(context.i8())),
-            |context| (context.ptr_type(context.i8()), context.isize_type()),
-            |context| (context.isize_type(), context.i64()),
+            |context| (context.ptr_type(context.i8()), context.isize()),
+            |context| (context.isize(), context.i64()),
         ];
         for types in cases {
             let message = rejection(types);
@@ -583,8 +583,8 @@ mod tests {
     #[test]
     fn a_transparent_cast_never_changes_the_kind_of_value() {
         let cases: [CastTypes; 2] = [
-            |context| (context.f64_type(), context.i64()),
-            |context| (context.i64(), context.f64_type()),
+            |context| (context.f64(), context.i64()),
+            |context| (context.i64(), context.f64()),
         ];
         for types in cases {
             let message = rejection(types);

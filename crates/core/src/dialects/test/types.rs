@@ -75,10 +75,10 @@ mod tests {
     #[test]
     fn a_vector_prints_its_body_after_the_dialect_prefix() {
         let context = Context::default();
-        let vector = context.intern_type(TestVectorType::new(context.f32_type(), 4));
+        let vector = context.intern_type(TestVectorType::new(context.f32(), 4));
         assert_eq!(alloc::format!("{vector}"), "!test.vector<f32 x 4>");
         assert!(vector.name().parse_fn().is_some());
         assert!(vector.name().default_fn().is_none());
-        assert_eq!(vector, context.intern_type(TestVectorType::new(context.f32_type(), 4)));
+        assert_eq!(vector, context.intern_type(TestVectorType::new(context.f32(), 4)));
     }
 }

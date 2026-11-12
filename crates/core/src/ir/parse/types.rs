@@ -123,9 +123,9 @@ fn parse_scalar_type<'input, P: Parser<'input>>(
     let ty = match token {
         Token::Question => Ok(context.unknown_type()),
         Token::Never => Ok(context.never_type()),
-        Token::Isize => Ok(context.isize_type()),
-        Token::F32 => Ok(context.f32_type()),
-        Token::F64 => Ok(context.f64_type()),
+        Token::Isize => Ok(context.isize()),
+        Token::F32 => Ok(context.f32()),
+        Token::F64 => Ok(context.f64()),
         Token::IntType(width) => {
             context.try_int_type(width).ok_or_else(|| ParserError::InvalidType {
                 span,

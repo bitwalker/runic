@@ -31,9 +31,9 @@ mod tests {
             (context.i32(), "i32"),
             (context.int_type(256), "i256"),
             (context.int_type(24), "i24"),
-            (context.isize_type(), "isize"),
-            (context.f32_type(), "f32"),
-            (context.f64_type(), "f64"),
+            (context.isize(), "isize"),
+            (context.f32(), "f32"),
+            (context.f64(), "f64"),
             (context.unknown_type(), "?"),
             (context.never_type(), "never"),
         ] {
@@ -49,9 +49,9 @@ mod tests {
         let context = Context::default();
         assert!(context.i64().is_integer());
         assert_eq!(context.i64().integer_width(), Some(64));
-        assert!(context.isize_type().is_integer() && context.isize_type().is_isize());
-        assert_eq!(context.isize_type().integer_width(), None);
-        assert!(!context.f64_type().is_integer() && context.f64_type().is_float());
+        assert!(context.isize().is_integer() && context.isize().is_isize());
+        assert_eq!(context.isize().integer_width(), None);
+        assert!(!context.f64().is_integer() && context.f64().is_float());
         assert!(context.unknown_type().is_unknown() && context.never_type().is_never());
         assert_eq!(IntegerType::new(0), None);
         assert_eq!(IntegerType::new(IntegerType::MAX_WIDTH + 1), None);
@@ -156,14 +156,14 @@ mod tests {
         let array = context.array_type(i32, 2);
         let structure = context.struct_type(StructType::new([i32.into()]));
         let function = context.function_type([i32], []);
-        let float = context.f64_type();
+        let float = context.f64();
         assert_eq!(i32.as_integer().map(IntegerType::width), Some(32));
         assert_eq!(float.as_float().map(FloatType::bits), Some(64));
         assert_eq!(ptr.as_pointer().and_then(PointerType::pointee), Some(i32));
         assert_eq!(array.as_array().map(ArrayType::len), Some(2));
         assert_eq!(structure.as_struct().map(StructType::len), Some(1));
         assert_eq!(function.as_function().map(|f| f.params().len()), Some(1));
-        for ty in [i32, ptr, array, structure, function, float, context.isize_type()] {
+        for ty in [i32, ptr, array, structure, function, float, context.isize()] {
             let kinds = [
                 ty.as_integer().is_some(),
                 ty.as_float().is_some(),
@@ -172,7 +172,7 @@ mod tests {
                 ty.as_struct().is_some(),
                 ty.as_function().is_some(),
             ];
-            let expected = usize::from(ty != context.isize_type());
+            let expected = usize::from(ty != context.isize());
             assert_eq!(kinds.iter().filter(|kind| **kind).count(), expected, "{ty}");
         }
     }

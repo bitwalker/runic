@@ -152,4 +152,4 @@ value_infers_as!(i64, i64);
 value_infers_as!(u64, i64);
 value_infers_as!(i128, i128);
 value_infers_as!(u128, i128);
-value_infers_as!(f64, f64_type);
+value_infers_as!(f64, f64);

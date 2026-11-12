@@ -107,7 +107,7 @@ impl Immediate {
             Self::U32(_) | Self::I32(_) => context.i32(),
             Self::U64(_) | Self::I64(_) => context.i64(),
             Self::U128(_) | Self::I128(_) => context.i128(),
-            Self::F64(_) => context.f64_type(),
+            Self::F64(_) => context.f64(),
         }
     }
 

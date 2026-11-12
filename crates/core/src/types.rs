@@ -711,7 +711,7 @@ mod tests {
     #[should_panic(expected = "a parameter of a function type is `f32`, a type of another context")]
     fn a_function_with_a_parameter_of_another_context_panics() {
         let (first, second) = (Context::default(), Context::default());
-        first.function_type([second.f32_type()], []);
+        first.function_type([second.f32()], []);
     }
 
     #[cfg(debug_assertions)]

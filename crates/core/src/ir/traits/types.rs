@@ -710,7 +710,7 @@ mod tests {
         assert!(int32.matches(context.i32()));
         assert!(int32.matches(context.int_type(32)));
         assert!(!int32.matches(context.i1()));
-        assert!(!int32.matches(context.isize_type()));
+        assert!(!int32.matches(context.isize()));
     }
 
     #[test]
@@ -728,12 +728,12 @@ mod tests {
             context.opaque_ptr_type(),
             context.ptr_type(context.i32()),
             context.function_type([context.i32()], [context.i32()]),
-            context.isize_type(),
+            context.isize(),
             context.int_type(256),
-            context.f64_type(),
+            context.f64(),
             context.array_type(context.i8(), 4),
             context.struct_type(StructType::new([StructField::new(context.i32())])),
-            context.intern_type(TestVectorType::new(context.f32_type(), 4)),
+            context.intern_type(TestVectorType::new(context.f32(), 4)),
         ] {
             assert_eq!(ValueRangeConstraint::from_type(ty), None, "{ty} is unconstrained");
         }

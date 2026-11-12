@@ -229,19 +229,19 @@ impl Context {
 
     /// The pointer-width integer type `isize`.
     #[inline]
-    pub fn isize_type(&self) -> crate::types::Type {
+    pub fn isize(&self) -> crate::types::Type {
         self.builtin_types.isize
     }
 
     /// The type `f32`.
     #[inline]
-    pub fn f32_type(&self) -> crate::types::Type {
+    pub fn f32(&self) -> crate::types::Type {
         self.builtin_types.f32
     }
 
     /// The type `f64`.
     #[inline]
-    pub fn f64_type(&self) -> crate::types::Type {
+    pub fn f64(&self) -> crate::types::Type {
         self.builtin_types.f64
     }
 
