@@ -11,6 +11,10 @@ impl<T: AsAny + CloneToUninit> AttributeValue for T {}
 /// Every attribute's constructor calls it on the new value. It does nothing, except for the
 /// values that are types (`TypeAttr`) or arrays of types (`TypeArrayAttr`), whose types must have
 /// been interned by `context` and must not be open.
+///
+/// It runs once, when the attribute is created: a value changed afterwards is not checked again,
+/// and neither is a type held in any other shape (a public field such as an `AbiParam`'s type, or
+/// a type inside a signature). The verifier does not look inside attribute values either.
 #[doc(hidden)]
 pub trait DebugAssertIrValue {
     fn debug_assert_ir_value(&self, context: &Context);

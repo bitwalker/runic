@@ -52,7 +52,7 @@
 //! block-id   := caret-id
 //! suffix-id  := [0-9]+
 //!             | [A-Za-z$._-][A-Za-z0-9$._-]*
-//! symbol-ref-id   := '@' (suffix-id | string)
+//! symbol-ref-id   := '@' (bare-id | string)
 //! generic-op-name := string
 //! custom-op-name  := bare-id
 //! dialect-namespace := bare-id
