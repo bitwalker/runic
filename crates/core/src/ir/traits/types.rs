@@ -401,8 +401,17 @@ macro_rules! type_constraint {
 
 type_constraint!(AnyType, "any type", true);
 
-// TODO(pauls): Extend Type with new Function variant, we'll use that to represent function handles
-//type_constraint!(AnyFunction, "a function type", crate::Type::is_function);
+type_constraint!(AnyFunction, "a function type", crate::Type::is_function);
+
+type_constraint!(AnyFloat, "a floating-point type", crate::Type::is_float);
+
+type_constraint!(Isize, "the pointer-width integer type `isize`", crate::Type::is_isize);
+
+impl BuildableTypeConstraint for Isize {
+    fn build(context: &Context) -> crate::Type {
+        context.isize()
+    }
+}
 
 type_constraint!(AnyArray, "any array type", crate::Type::is_array);
 
@@ -433,8 +442,25 @@ pub type Int64 = SizedInt<64>;
 /// A signless 128-bit integer
 pub type Int128 = SizedInt<128>;
 
-/// Represents a fixed-width integer of `N` bits
+/// Represents a fixed-width integer of `N` bits, `iN`; `isize` is not one.
+///
+/// `N` must be a valid integer width, from 1 to [IntegerType::MAX_WIDTH](crate::IntegerType):
+/// using the constraint with any other `N` does not compile.
+///
+/// ```compile_fail
+/// use runic_core::traits::{SizedInt, TypeConstraint};
+///
+/// let _ = SizedInt::<0>::get();
+/// ```
 pub struct SizedInt<const N: usize>(core::marker::PhantomData<[(); N]>);
+
+impl<const N: usize> SizedInt<N> {
+    /// Evaluated wherever the constraint is used, so that an invalid width fails to compile.
+    const VALID_WIDTH: () = assert!(
+        N >= 1 && N <= crate::IntegerType::MAX_WIDTH as usize,
+        "an integer type is 1 to 16777215 bits wide"
+    );
+}
 
 impl<const N: usize> Copy for SizedInt<N> {}
 
@@ -459,6 +485,7 @@ impl<const N: usize> fmt::Display for SizedInt<N> {
 impl<const N: usize> TypeConstraint for SizedInt<N> {
     #[inline(always)]
     fn get() -> Self {
+        let () = Self::VALID_WIDTH;
         Self(core::marker::PhantomData)
     }
 
@@ -473,12 +500,16 @@ impl<const N: usize> TypeConstraint for SizedInt<N> {
 
 impl<const N: usize> BuildableTypeConstraint for SizedInt<N> {
     fn build(context: &Context) -> crate::Type {
-        let width = u32::try_from(N).expect("an integer width fits in 32 bits");
-        context.int_type(width)
+        let () = Self::VALID_WIDTH;
+        // `VALID_WIDTH` holds, so `N` is a valid width, and so fits in a `u32`.
+        context.int_type(N as u32)
     }
 }
 
-/// A type constraint for pointer values
+/// A type constraint for typed pointers whose pointee matches `T`.
+///
+/// It matches only typed pointers, `ptr<T>`: an opaque `ptr` has no pointee to match. Use
+/// [AnyPointer] to accept both.
 pub struct PointerOf<T>(core::marker::PhantomData<T>);
 
 impl<T> Copy for PointerOf<T> {}
@@ -698,6 +729,34 @@ impl<T: TypeConstraint, U: TypeConstraint> TypeConstraint for Or<T, U> {
 mod tests {
     use super::{Bool, Int32, TypeConstraint};
     use crate::Context;
+
+    #[test]
+    fn float_isize_and_function_constraints_match_their_kind_only() {
+        use super::{AnyFloat, AnyFunction, BuildableTypeConstraint, Isize};
+
+        let context = Context::default();
+        let function = context.function_type([context.i32()], []);
+        assert!(AnyFloat::get().matches(context.f32()) && AnyFloat::get().matches(context.f64()));
+        assert!(!AnyFloat::get().matches(context.i32()));
+        assert!(Isize::get().matches(context.isize()));
+        assert!(!Isize::get().matches(context.i64()));
+        assert_eq!(Isize::build(&context), context.isize());
+        assert!(AnyFunction::get().matches(function));
+        assert!(!AnyFunction::get().matches(context.ptr_type(function)));
+    }
+
+    #[test]
+    fn a_pointer_of_constraint_matches_only_typed_pointers() {
+        use super::{AnyPointer, PointerOf};
+
+        let context = Context::default();
+        let typed = context.ptr_type(context.i32());
+        let opaque = context.opaque_ptr_type();
+        assert!(PointerOf::<Int32>::get().matches(typed));
+        assert!(!PointerOf::<Int32>::get().matches(opaque));
+        assert!(!PointerOf::<Int32>::get().matches(context.ptr_type(context.i8())));
+        assert!(AnyPointer::get().matches(typed) && AnyPointer::get().matches(opaque));
+    }
 
     #[test]
     fn sized_integer_constraints_require_the_declared_width() {
