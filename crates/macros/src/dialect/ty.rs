@@ -73,8 +73,8 @@ impl quote::ToTokens for DialectType {
                     ::runic_core::interner::Symbol::intern(#name)
                 }
 
-                fn traits() -> ::alloc::boxed::Box<[::runic_core::traits::TraitInfo]> {
-                    ::alloc::boxed::Box::from([
+                fn traits() -> ::runic_core::derive::__private::Box<[::runic_core::traits::TraitInfo]> {
+                    ::runic_core::derive::__private::Box::from([
                         ::runic_core::traits::TraitInfo::new::<Self, dyn ::core::any::Any>(),
                         #(
                             ::runic_core::traits::TraitInfo::new::<Self, dyn #implements>(),
@@ -167,6 +167,14 @@ mod tests {
                     .to_string()
             )
         );
+    }
+
+    #[test]
+    fn generated_paths_go_through_runic_core() {
+        let file = derive(quote! { #[ty(dialect = D)] struct XType; }).unwrap();
+        let output = file.into_token_stream().to_string();
+        assert!(!output.contains(":: alloc ::"), "a consumer need not declare `alloc`: {output}");
+        assert!(output.contains(&quote!(::runic_core::derive::__private::Box).to_string()));
     }
 
     #[test]

@@ -3,6 +3,13 @@ pub use runic_macros::{
     OpPrinter, operation, operation_trait,
 };
 
+/// What derived code names through `::runic_core`, so that a crate using a derive need not
+/// declare these crates itself.
+#[doc(hidden)]
+pub mod __private {
+    pub use alloc::boxed::Box;
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::format;
