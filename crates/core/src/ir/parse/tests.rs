@@ -3669,3 +3669,263 @@ fn a_property_given_an_attribute_of_another_kind_is_a_diagnostic() {
     assert!(err.contains("could not convert attribute of type 'builtin.i32'"), "{err}");
     assert_eq!(constant.borrow().value().as_int(), Int::from(1i32));
 }
+
+/// 0, 1, 2, the signed minimum and its neighbours, all-ones and its neighbour, at `w` bits.
+fn edge_bit_patterns(w: u32) -> Vec<u128> {
+    let mask = Int::all_ones(w).unsigned();
+    let min = 1u128 << (w - 1);
+    let mut patterns = alloc::vec![
+        0,
+        1 & mask,
+        2 & mask,
+        min,
+        (min + 1) & mask,
+        min.wrapping_sub(1) & mask,
+        mask,
+        mask.wrapping_sub(1) & mask,
+    ];
+    patterns.sort();
+    patterns.dedup();
+    patterns
+}
+
+/// Every pattern of `w` bits up to 10 bits, and the edge patterns of wider integers.
+fn bit_patterns(w: u32) -> Vec<u128> {
+    if w <= 10 {
+        (0..(1u128 << w)).collect()
+    } else {
+        edge_bit_patterns(w)
+    }
+}
+
+/// `#builtin.int<..>`, a bare literal read with an expected type, and its hex spelling all
+/// round-trip every pattern of the narrow widths and the edge patterns of the wide ones.
+#[test]
+fn int_attributes_round_trip_every_pattern() -> TestResult {
+    let context = Rc::new(Context::default());
+    let unknown = context.unknown_type();
+    for w in [
+        1u32, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 16, 17, 31, 32, 33, 63, 64, 65, 126, 127, 128,
+    ] {
+        let ty = context.int_type(w);
+        for bits in bit_patterns(w) {
+            let x = Int::from_bits(w, bits);
+            let attr = context.int_attr(x, ty).as_attribute_ref();
+            let text = print_attribute_text(&context, &attr);
+            let back = parse_attribute_text(&context, &text, unknown)?;
+            assert_eq!(int_and_type_of(&back), (x, ty), "{text}");
+            let bare = format!("{x}");
+            let back = parse_attribute_text(&context, &bare, ty)?;
+            assert_eq!(int_and_type_of(&back), (x, ty), "{bare} : {ty}");
+            let hex = format!("{x:#x}");
+            let back = parse_attribute_text(&context, &hex, ty)?;
+            assert_eq!(int_and_type_of(&back), (x, ty), "{hex} : {ty}");
+        }
+    }
+    for bits in edge_bit_patterns(64) {
+        let x = Int::from_bits(64, bits);
+        let attr = context.int_attr(x, context.isize()).as_attribute_ref();
+        let text = print_attribute_text(&context, &attr);
+        let back = parse_attribute_text(&context, &text, unknown)?;
+        assert_eq!(int_and_type_of(&back), (x, context.isize()), "{text}");
+    }
+    Ok(())
+}
+
+/// The per-width integer attributes round-trip: `I8Attr` every value, the others at the edges.
+#[test]
+fn per_width_integer_attributes_round_trip() -> TestResult {
+    use crate::dialects::builtin::attributes::{I8Attr, I32Attr, I64Attr, I128Attr};
+
+    let context = Rc::new(Context::default());
+    let unknown = context.unknown_type();
+    let mut attrs = Vec::new();
+    attrs.extend(
+        (i8::MIN..=i8::MAX).map(|v| context.create_attribute::<I8Attr, _>(v).as_attribute_ref()),
+    );
+    attrs.extend(
+        [i32::MIN, -1, 0, 1, i32::MAX]
+            .map(|v| context.create_attribute::<I32Attr, _>(v).as_attribute_ref()),
+    );
+    attrs.extend(
+        [i64::MIN, -1, 0, 1, i64::MAX]
+            .map(|v| context.create_attribute::<I64Attr, _>(v).as_attribute_ref()),
+    );
+    attrs.extend(
+        [i128::MIN, -1, 0, 1, i128::MAX]
+            .map(|v| context.create_attribute::<I128Attr, _>(v).as_attribute_ref()),
+    );
+    for attr in attrs {
+        let text = print_attribute_text(&context, &attr);
+        let back = parse_attribute_text(&context, &text, unknown)?;
+        assert_eq!(&*back.borrow(), &*attr.borrow(), "{text}");
+    }
+    Ok(())
+}
+
+/// `test.constant` and `builtin.ret_imm` round-trip every pattern of widths up to 4 and the edge
+/// patterns of wider ones through the text of a whole function.
+#[test]
+fn constant_and_ret_imm_ops_round_trip_every_pattern() -> TestResult {
+    for w in [1u32, 2, 3, 4, 7, 8, 64, 127, 128] {
+        let patterns = if w <= 4 {
+            bit_patterns(w)
+        } else {
+            edge_bit_patterns(w)
+        };
+        for bits in patterns {
+            let x = Int::from_bits(w, bits);
+            let source = format!(
+                "builtin.function public extern(\"C\") @f() -> i{w} {{\n    %0 = test.constant \
+                 {x} : i{w};\n    builtin.ret_imm {x} : i{w};\n}};"
+            );
+            let test = ParserTest::default();
+            test.context().get_or_register_dialect::<TestDialect>();
+            let parsed = test.parse::<Function>("c.hir", &source)?;
+            let values = |f: &UnsafeIntrusiveEntityRef<Function>| {
+                let f = f.borrow();
+                let body = f.body();
+                let entry = body.entry();
+                let c = entry.front().unwrap();
+                let c = c.borrow().get_attribute("value").unwrap();
+                let r = entry.terminator().unwrap();
+                let r = r.borrow().get_attribute("value").unwrap();
+                (c.borrow().as_int().unwrap(), r.borrow().as_int().unwrap())
+            };
+            assert_eq!(values(&parsed), (x, x), "{source}");
+            let text = format!("{}", parsed.as_operation_ref().borrow());
+            let fresh = ParserTest::default();
+            fresh.context().get_or_register_dialect::<TestDialect>();
+            let reparsed = fresh.parse::<Function>("c2.hir", &text)?;
+            assert_eq!(values(&reparsed), (x, x), "{text}");
+            assert_eq!(format!("{}", reparsed.as_operation_ref().borrow()), text);
+        }
+    }
+    Ok(())
+}
+
+/// Enum discriminants round-trip at the edge patterns of their width, `isize` included.
+#[test]
+fn enum_discriminants_round_trip_at_the_edges() -> TestResult {
+    let context = Rc::new(Context::default());
+    let cases = [1u32, 2, 7, 8, 64, 127, 128]
+        .into_iter()
+        .flat_map(|w| edge_bit_patterns(w).into_iter().map(move |bits| (format!("i{w}"), w, bits)))
+        .chain(edge_bit_patterns(64).into_iter().map(|bits| ("isize".to_string(), 64, bits)));
+    for (ty, w, bits) in cases {
+        let x = Int::from_bits(w, bits);
+        let text = format!("enum<{ty}; z = {x}>");
+        let parsed = parse_type_text(&context, &text)?;
+        let printed = format!("{parsed}");
+        assert_eq!(parsed, parse_type_text(&context, &printed)?, "{text} -> {printed}");
+    }
+    Ok(())
+}
+
+/// A data segment layout orders and checks segments as unsigned offsets on both sides of 2^31.
+#[test]
+fn segment_layout_treats_offsets_as_unsigned() -> TestResult {
+    use crate::dialects::builtin::{DataSegmentError, DataSegmentLayout, ModuleBuilder};
+
+    let test = ParserTest::default();
+    let module = test.parse_any("segment.hir", "builtin.module public @m {};")?;
+    let module = module.try_downcast_op::<Module>().unwrap();
+    let mut builder = ModuleBuilder::new(module);
+    let mut segment = |offset: u32, len: usize| {
+        builder
+            .define_data_segment(
+                offset,
+                alloc::vec![1u8; len].as_slice(),
+                true,
+                SourceSpan::UNKNOWN,
+            )
+            .unwrap()
+    };
+    let (hi, lo, top) = (segment(0x8000_0000, 4), segment(0x10, 4), segment(0xffff_fffc, 4));
+    let (overlap, past) = (segment(0x8000_0002, 4), segment(0xffff_fffe, 4));
+    for order in [[hi, lo, top], [top, hi, lo], [lo, top, hi]] {
+        let mut layout = DataSegmentLayout::default();
+        for s in order {
+            layout.insert(s).unwrap();
+        }
+        let offsets: Vec<u32> = layout.iter().map(|s| s.borrow().offset_in_bytes()).collect();
+        assert_eq!(offsets, alloc::vec![0x10, 0x8000_0000, 0xffff_fffc]);
+        assert!(matches!(
+            layout.insert(overlap),
+            Err(DataSegmentError::OverlappingSegments { .. })
+        ));
+        assert!(matches!(layout.insert(past), Err(DataSegmentError::OutOfBounds { .. })));
+        assert_eq!(layout.next_available_offset(), None);
+    }
+    Ok(())
+}
+
+/// The verifier rejects an integer constant whose value is not as wide as its type, and a
+/// `test.constant` whose result type is not its value's type, however they were made.
+#[test]
+fn the_verifier_rejects_an_inconsistent_int_attribute() {
+    use crate::{Op, dialects::test::Constant, testing::label_messages};
+
+    let message = |err: Report| label_messages(err.as_diagnostic()).join("\n");
+
+    let mut test = Test::new("f", |cx| ([cx.i32()], [cx.i32()]));
+    let context = test.context_rc();
+    let mut constant = {
+        let mut builder = test.function_builder();
+        let create = builder.builder_mut().create::<Constant, _>(SourceSpan::UNKNOWN);
+        create(Int::from(1i32)).unwrap()
+    };
+    assert!(constant.borrow().as_operation().verify().is_ok());
+
+    // the generated setter re-infers the attribute's type and leaves the result alone
+    constant.borrow_mut().set_value(Int::from(1i64 << 40));
+    let err = message(constant.borrow().as_operation().verify().unwrap_err());
+    assert!(err.contains("the result of 'test.constant' has type `i32`"), "{err}");
+    constant.borrow_mut().set_value(Int::from(1i32));
+    assert!(constant.borrow().as_operation().verify().is_ok());
+
+    // the generated value accessor changes the width under the attribute's type
+    *constant.borrow_mut().get_value_mut() = Int::from(-1i8);
+    let err = message(constant.borrow().as_operation().verify().unwrap_err());
+    assert!(
+        err.contains(
+            "property 'value' of 'test.constant' is an integer constant of type `i32` holding a \
+             8-bit value, but a constant of that type is 32 bits wide"
+        ),
+        "{err}"
+    );
+    *constant.borrow_mut().get_value_mut() = Int::from(1i32);
+    assert!(constant.borrow().as_operation().verify().is_ok());
+
+    // an unchecked constructor, as a discardable attribute
+    let bad = context
+        .create_attribute_with_type::<crate::dialects::builtin::attributes::IntAttr, _>(
+            Int::from(-1i32),
+            context.i64(),
+        )
+        .as_attribute_ref();
+    constant.borrow_mut().as_operation_mut().set_attribute("extra", bad);
+    let err = message(constant.borrow().as_operation().verify().unwrap_err());
+    assert!(
+        err.contains(
+            "attribute 'extra' of 'test.constant' is an integer constant of type `i64` holding a \
+             32-bit value"
+        ),
+        "{err}"
+    );
+}
+
+/// A well-formed `isize` constant verifies: its attribute holds a 64-bit value.
+#[test]
+fn a_well_formed_isize_constant_verifies() -> TestResult {
+    let test = ParserTest::default();
+    test.context().get_or_register_dialect::<TestDialect>();
+    let source = "builtin.function public extern(\"C\") @f() -> isize {\n    %0 = test.constant \
+                  -1 : isize;\n    builtin.ret %0 : (isize);\n};";
+    let function = test.parse::<Function>("isize.hir", source)?;
+    let function = function.borrow();
+    let body = function.body();
+    let op = body.entry().front().unwrap();
+    op.borrow().verify()?;
+    Ok(())
+}

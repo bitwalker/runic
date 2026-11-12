@@ -50,7 +50,9 @@ impl Dialect for TestDialect {
             let attr = attr.as_attr().as_trait::<dyn IntegerLikeAttr>()?;
             (attr.as_int(), attr.ty())
         };
-        if value_ty != ty {
+        // An `IntAttr` whose value is not as wide as a constant of its type is invalid (see
+        // `Operation::verify_int_attributes`); it is not materialized either.
+        if value_ty != ty || crate::Int::width_for_type(ty) != Some(value.width()) {
             return None;
         }
         let op_builder = builder.create::<Constant, _>(span);
@@ -86,6 +88,19 @@ mod tests {
         assert!(
             dialect
                 .materialize_constant(builder, narrow, context.i32(), SourceSpan::UNKNOWN)
+                .is_none()
+        );
+
+        // an invalid `IntAttr`, an `i32` value typed `i64`, is not materialized at its type
+        let invalid = context
+            .create_attribute_with_type::<crate::dialects::builtin::attributes::IntAttr, _>(
+                Int::from(-1i32),
+                context.i64(),
+            )
+            .as_attribute_ref();
+        assert!(
+            dialect
+                .materialize_constant(builder, invalid, context.i64(), SourceSpan::UNKNOWN)
                 .is_none()
         );
 

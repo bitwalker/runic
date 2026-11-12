@@ -103,13 +103,9 @@ pub struct EnumType {
 impl EnumType {
     /// The width in bits of values of the discriminant type `ty`, if it is a valid one: `N` for
     /// `iN` with `N <= 128`, and 64 for `isize`.
+    /// This is the width of a constant of that type, [Int::width_for_type](crate::Int::width_for_type).
     pub fn discriminant_width(ty: Type) -> Option<u32> {
-        match ty.integer_width() {
-            Some(width @ 1..=128) => Some(width),
-            Some(_) => None,
-            None if ty.is_isize() => Some(64),
-            None => None,
-        }
+        crate::Int::width_for_type(ty)
     }
 
     /// Creates an enum, checking that `discriminant` is a valid discriminant type, that every

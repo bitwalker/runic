@@ -508,9 +508,12 @@ impl Operation {
     /// Run any verifiers for this operation
     ///
     /// The first check, run for every operation, is that every type the operation holds was
-    /// interned by its context; see [Self::verify_type_ownership].
+    /// interned by its context; see [Self::verify_type_ownership]. The second is that every
+    /// integer constant among its properties and attributes is valid; see
+    /// [Self::verify_int_attributes].
     pub fn verify(&self) -> Result<(), Report> {
         self.verify_type_ownership()?;
+        self.verify_int_attributes()?;
         let dyn_op: &dyn Op = self.as_ref();
         dyn_op.verify(self.context())
     }
@@ -566,6 +569,57 @@ impl Operation {
         for attr in self.attributes() {
             let attr = attr.as_named_attribute();
             check(&format_args!("attribute '{}'", attr.name), attr.value().ty())?;
+        }
+        Ok(())
+    }
+
+    /// Check that every integer constant ([IntAttr]) among this operation's properties and
+    /// attributes is valid: its value is exactly as wide as a constant of its type, as given by
+    /// [Int::width_for_type](crate::Int::width_for_type) (`N` bits for `iN`, 64 for `isize`).
+    ///
+    /// [crate::Context::int_attr] checks this when it creates a constant; the unchecked
+    /// constructors, the generated setters and in-place mutation do not, so this check is what
+    /// catches an invalid constant in every build.
+    ///
+    /// Only the properties and attributes of the operation itself are visited: an `IntAttr`
+    /// nested inside a list or map attribute value is not checked.
+    ///
+    /// [IntAttr]: crate::dialects::builtin::attributes::IntAttr
+    pub fn verify_int_attributes(&self) -> Result<(), Report> {
+        use crate::dialects::builtin::attributes::IntAttr;
+
+        let check = |role: &dyn fmt::Display, attr: &AttributeRef| {
+            let attr = attr.borrow();
+            let Some(attr) = attr.downcast_ref::<IntAttr>() else {
+                return Ok(());
+            };
+            let ty = attr.ty();
+            let width = attr.as_value().width();
+            let problem = match crate::Int::width_for_type(ty) {
+                Some(expected) if expected == width => return Ok(()),
+                Some(expected) => alloc::format!("a constant of that type is {expected} bits wide"),
+                None => "no integer constant has that type".into(),
+            };
+            Err(crate::diagnostics::report!(
+                message: "invalid operation",
+                labels: [
+                    primary(
+                        self.span(),
+                        alloc::format!(
+                            "{role} of '{}' is an integer constant of type `{ty}` holding a \
+                             {width}-bit value, but {problem}",
+                            self.name()
+                        )
+                    ),
+                ],
+            ))
+        };
+        for prop in self.properties() {
+            check(&format_args!("property '{}'", prop.name), &prop.value)?;
+        }
+        for attr in self.attributes() {
+            let attr = attr.as_named_attribute();
+            check(&format_args!("attribute '{}'", attr.name), &attr.value)?;
         }
         Ok(())
     }

@@ -88,6 +88,18 @@ impl Int {
         Self::from_bits(width, u128::MAX)
     }
 
+    /// The width in bits of a constant of the type `ty`: `N` for `iN` with `N <= 128`, 64 for
+    /// `isize`, and `None` for any other type (a wider integer type has no constants).
+    ///
+    /// This is the one statement of the rule: an integer constant of type `ty` holds an `Int` of
+    /// exactly this width.
+    pub fn width_for_type(ty: crate::Type) -> Option<u32> {
+        match ty.integer_width() {
+            Some(width) => (width <= Self::MAX_WIDTH).then_some(width),
+            None => ty.is_isize().then_some(64),
+        }
+    }
+
     /// The width of this integer in bits.
     pub const fn width(self) -> u32 {
         self.width as u32
@@ -444,5 +456,21 @@ mod tests {
         let one = Int::from_bits(1, 1);
         assert!(one.is_one() && one.is_all_ones());
         assert!(!Int::from_bits(2, 1).is_all_ones());
+    }
+
+    #[test]
+    fn width_for_type() {
+        use crate::Context;
+
+        let context = Context::default();
+        for w in [1u32, 7, 8, 32, 64, 127, 128] {
+            assert_eq!(Int::width_for_type(context.int_type(w)), Some(w), "i{w}");
+        }
+        assert_eq!(Int::width_for_type(context.isize()), Some(64));
+        assert_eq!(Int::width_for_type(context.int_type(129)), None);
+        assert_eq!(Int::width_for_type(context.int_type(256)), None);
+        assert_eq!(Int::width_for_type(context.opaque_ptr_type()), None);
+        assert_eq!(Int::width_for_type(context.unknown_type()), None);
+        assert_eq!(Int::width_for_type(context.f64()), None);
     }
 }

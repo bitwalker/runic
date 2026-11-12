@@ -70,9 +70,12 @@ define_integer_attr!(I128, i128, 128);
 /// Its type is the integer type of its value's width, or `isize` for a 64-bit value. Every
 /// integer constant is an `IntAttr`; [crate::Context::int_attr] creates one of a given type.
 ///
-/// `int_attr` is the constructor that checks that the type matches the value's width;
-/// `create_attribute_with_type::<IntAttr, _>` does not check. An `IntAttr` whose type is not `iN`
-/// of its value's width (or `isize` with 64 bits) is invalid.
+/// An `IntAttr` whose type is not `iN` of its value's width (or `isize` with 64 bits) is invalid;
+/// [crate::Int::width_for_type] states the rule. It is checked in two places: by `int_attr`, which
+/// panics rather than create an invalid constant, and by the verifier
+/// ([crate::Operation::verify_int_attributes]), which rejects an operation holding one among its
+/// properties and attributes. `create_attribute_with_type::<IntAttr, _>`, the setters generated for
+/// an operation's `IntAttr` field, and mutation in place do not check it.
 #[derive(DialectAttribute)]
 #[attribute(
     dialect = BuiltinDialect,
@@ -96,12 +99,8 @@ impl IntegerLikeAttr for IntAttr {
 
     fn set_int(&mut self, value: crate::Int) {
         let ty = crate::Attribute::ty(self);
-        let width = if ty.is_isize() {
-            64
-        } else {
-            ty.integer_width()
-                .unwrap_or_else(|| panic!("an IntAttr has an integer type, got {ty}"))
-        };
+        let width = crate::Int::width_for_type(ty)
+            .unwrap_or_else(|| panic!("an IntAttr has an integer type, got {ty}"));
         assert_eq!(
             value.width(),
             width,

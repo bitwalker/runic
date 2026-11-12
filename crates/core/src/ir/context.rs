@@ -304,10 +304,8 @@ impl Context {
         value: Int,
         ty: Type,
     ) -> UnsafeIntrusiveEntityRef<crate::dialects::builtin::attributes::IntAttr> {
-        let matches =
-            ty.integer_width() == Some(value.width()) || (ty.is_isize() && value.width() == 64);
         assert!(
-            matches,
+            Int::width_for_type(ty) == Some(value.width()),
             "an integer constant of type {ty} cannot hold the {}-bit value {value}",
             value.width()
         );

@@ -1186,25 +1186,21 @@ impl IntegerLiteral {
     /// Fails, with an error at `span`, when `ty` is not an integer type, is wider than 128 bits,
     /// or the literal is out of range for it.
     pub fn to_int(self, ty: Type, span: SourceSpan) -> ParseResult<Int> {
-        let width = if ty.is_isize() {
-            64
-        } else {
-            match ty.integer_width() {
-                Some(width) => width,
-                None => {
-                    return Err(ParserError::InvalidIntegerLiteral {
-                        span,
-                        reason: format!("expected an integer type, got {ty}"),
-                    });
-                }
+        let width = match Int::width_for_type(ty) {
+            Some(width) => width,
+            None if ty.is_integer() => {
+                return Err(ParserError::InvalidIntegerLiteral {
+                    span,
+                    reason: "integer literals wider than 128 bits are not supported".into(),
+                });
+            }
+            None => {
+                return Err(ParserError::InvalidIntegerLiteral {
+                    span,
+                    reason: format!("expected an integer type, got {ty}"),
+                });
             }
         };
-        if width > Int::MAX_WIDTH {
-            return Err(ParserError::InvalidIntegerLiteral {
-                span,
-                reason: "integer literals wider than 128 bits are not supported".into(),
-            });
-        }
         self.to_int_of_width(width).ok_or_else(|| ParserError::InvalidIntegerLiteral {
             span,
             reason: format!("value is out of range for {ty}"),

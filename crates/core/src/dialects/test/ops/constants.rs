@@ -31,6 +31,32 @@ impl InferTypeOpInterface for Constant {
     }
 }
 
+/// A constant's result has the type of its value, as [InferTypeOpInterface] gives it. The generated
+/// setters do not maintain this: `set_value` gives the attribute the type inferred from the new
+/// value and leaves the result as it was.
+impl Verify<dyn InferTypeOpInterface> for Constant {
+    fn verify(&self, _context: &Context) -> Result<(), Report> {
+        let attr_ty = self.value().ty();
+        let result_ty = self.result().ty();
+        if attr_ty == result_ty {
+            return Ok(());
+        }
+        Err(crate::diagnostics::report!(
+            message: "invalid operation",
+            labels: [
+                primary(
+                    self.as_operation().span(),
+                    alloc::format!(
+                        "the result of '{}' has type `{result_ty}`, but its value has type \
+                         `{attr_ty}`",
+                        self.as_operation().name()
+                    )
+                ),
+            ],
+        ))
+    }
+}
+
 impl Foldable for Constant {
     #[inline]
     fn fold(&self, results: &mut smallvec::SmallVec<[OpFoldResult; 1]>) -> FoldResult {
