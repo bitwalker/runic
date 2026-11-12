@@ -111,15 +111,20 @@
 //!
 //! type-attribute := type
 //! integer-attribute := '-'? decimal-literal | hex-literal | binary-literal
+//! int-attribute := '#builtin.int' '<' integer-literal ':' type '>'
 //! boolean-attribute := 'true' | 'false'
 //! string-attribute := string
 //! symbol-ref-attribute := symbol-ref-id ('::' symbol-ref-id)*
 //! location-attribute := 'loc' '(' location ')'
 //!
-//! No attribute is followed by a `: type` suffix. An integer literal is an attribute only where
-//! the syntax that reads it expects an integer type, such as an operation's own format: an entry
-//! of a dictionary has no expected type, so `{ a = 1 }` is an error. Any other builtin attribute
-//! is written as a dialect attribute, `#builtin.name<..>`.
+//! No bare attribute is followed by a `: type` suffix. An integer literal is an attribute only
+//! where the syntax that reads it expects an integer type, such as an operation's own format: an
+//! entry of a dictionary has no expected type, so `{ a = 1 }` is an error. An integer literal
+//! read where an integer type is expected is a `#builtin.int` attribute of that type, and one
+//! written as `#builtin.int<-1 : i7>` carries its type. Any other builtin attribute is written
+//! as a dialect attribute, `#builtin.name<..>`; the integer, bool and string attributes
+//! (`#builtin.i32<-1>`, `#builtin.bool<true>`, `#builtin.string<"..">`) all parse back from what
+//! they print, a string being escaped as by `str::escape_default`.
 //!
 //! In attribute position a type is a type attribute, so `array<`, `ptr`, `struct` and `(` start a
 //! type. `[` starts no attribute value (it is kept for list attributes), and neither does `unit`.
