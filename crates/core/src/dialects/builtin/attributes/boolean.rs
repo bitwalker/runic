@@ -21,22 +21,12 @@ impl BoolLikeAttr for BoolAttr {
     fn as_bool(&self) -> bool {
         self.value
     }
-
-    #[inline(always)]
-    fn set_bool(&mut self, value: bool) {
-        self.value = value;
-    }
 }
 
 impl IntegerLikeAttr for BoolAttr {
     #[inline]
     fn as_int(&self) -> Int {
         Int::from(self.value)
-    }
-
-    fn set_int(&mut self, value: Int) {
-        assert_eq!(value.width(), 1, "cannot set a {}-bit value on an i1 attribute", value.width());
-        self.value = !value.is_zero();
     }
 }
 

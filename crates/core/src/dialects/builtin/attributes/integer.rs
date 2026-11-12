@@ -23,17 +23,6 @@ macro_rules! define_integer_attr {
                 fn as_int(&self) -> crate::Int {
                     crate::Int::from(self.value)
                 }
-
-                fn set_int(&mut self, value: crate::Int) {
-                    assert_eq!(
-                        value.width(),
-                        $width,
-                        "cannot set a {}-bit value on an i{} attribute",
-                        value.width(),
-                        $width,
-                    );
-                    self.value = value.signed() as $t;
-                }
             }
 
             impl AttrPrinter for [<$name Attr>] {
@@ -96,19 +85,6 @@ impl IntegerLikeAttr for IntAttr {
     fn as_int(&self) -> crate::Int {
         self.value
     }
-
-    fn set_int(&mut self, value: crate::Int) {
-        let ty = crate::Attribute::ty(self);
-        let width = crate::Int::width_for_type(ty)
-            .unwrap_or_else(|| panic!("an IntAttr has an integer type, got {ty}"));
-        assert_eq!(
-            value.width(),
-            width,
-            "cannot set a {}-bit value on an attribute of type {ty}",
-            value.width(),
-        );
-        self.value = value;
-    }
 }
 
 impl AttrPrinter for IntAttr {
@@ -137,59 +113,7 @@ mod tests {
     use alloc::rc::Rc;
 
     use super::*;
-    use crate::{Attribute, Context, Int, dialects::builtin::attributes::BoolAttr};
-
-    #[test]
-    fn set_int_on_a_per_width_attribute() {
-        let context = Rc::new(Context::default());
-        let mut attr = context.create_attribute::<I32Attr, _>(0i32);
-        attr.borrow_mut().set_int(Int::from(-1i32));
-        assert_eq!(**attr.borrow(), -1);
-        assert_eq!(attr.borrow().as_int(), Int::from(-1i32));
-    }
-
-    #[test]
-    #[should_panic(expected = "cannot set a 64-bit value on an i32 attribute")]
-    fn set_int_of_another_width_on_a_per_width_attribute_panics() {
-        let context = Rc::new(Context::default());
-        let mut attr = context.create_attribute::<I32Attr, _>(0i32);
-        attr.borrow_mut().set_int(Int::from(1i64));
-    }
-
-    #[test]
-    fn set_int_on_an_int_attribute() {
-        let context = Rc::new(Context::default());
-        let i7 = context.int_type(7);
-        let mut attr = context.int_attr(Int::zero(7), i7);
-        attr.borrow_mut().set_int(Int::from_bits(7, 5));
-        assert_eq!(attr.borrow().as_int(), Int::from_bits(7, 5));
-        assert_eq!(attr.borrow().ty(), i7);
-    }
-
-    #[test]
-    #[should_panic(expected = "cannot set a 8-bit value on an attribute of type i7")]
-    fn set_int_of_another_width_on_an_int_attribute_panics() {
-        let context = Rc::new(Context::default());
-        let mut attr = context.int_attr(Int::zero(7), context.int_type(7));
-        attr.borrow_mut().set_int(Int::from(1i8));
-    }
-
-    #[test]
-    #[should_panic(expected = "an IntAttr has an integer type, got ptr")]
-    fn set_int_on_an_int_attribute_of_a_non_integer_type_panics() {
-        let context = Rc::new(Context::default());
-        let mut attr = context
-            .create_attribute_with_type::<IntAttr, _>(Int::zero(32), context.opaque_ptr_type());
-        attr.borrow_mut().set_int(Int::zero(32));
-    }
-
-    #[test]
-    fn set_int_on_a_bool_attribute() {
-        let context = Rc::new(Context::default());
-        let mut attr = context.create_attribute::<BoolAttr, _>(false);
-        attr.borrow_mut().set_int(Int::from(true));
-        assert!(**attr.borrow());
-    }
+    use crate::{Attribute, Context, Int};
 
     #[test]
     #[should_panic(expected = "an integer constant of type i64 cannot hold the 32-bit value 1")]

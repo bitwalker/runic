@@ -55,17 +55,9 @@ impl Dialect for TestDialect {
         if value_ty != ty || crate::Int::width_for_type(ty) != Some(value.width()) {
             return None;
         }
+        let attr = builder.context_rc().int_attr(value, ty);
         let op_builder = builder.create::<Constant, _>(span);
-        let mut op = op_builder(value).ok()?;
-        if ty.is_isize() {
-            // The generated builder takes the attribute's value, not an `IntAttr`, so it infers
-            // the type from the width (`i64` for an `isize`); retype after the op is inserted.
-            use crate::{Attribute, Value};
-
-            let mut constant = op.borrow_mut();
-            constant.value_mut().set_type(ty);
-            constant.result_mut().set_type(ty);
-        }
+        let op = op_builder(crate::ReadyAttr(attr)).ok()?;
         Some(op.borrow().as_operation().as_operation_ref())
     }
 }

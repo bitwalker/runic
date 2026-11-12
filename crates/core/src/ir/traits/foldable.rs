@@ -161,6 +161,10 @@ impl core::fmt::Display for OpFoldResult {
 /// NOTE: Any `ConstantLike` operation must implement this trait as a no-op, i.e. returning the
 /// value of the constant directly, as this is used by the pattern matching infrastructure to
 /// extract the value of constant operations without knowing anything about the specific op.
+///
+/// A fold must not mutate an attribute it was handed, whether an operand's constant or one of
+/// the operation's own: attribute handles are shared, so the change would reach every holder. It
+/// creates a new attribute for its result instead.
 pub trait Foldable {
     /// Attempt to fold this operation using its current operand values.
     ///

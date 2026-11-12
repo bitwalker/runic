@@ -22,19 +22,14 @@ impl<T> Marker for T where T: AttributeRegistration<Value = ()> {}
 /// Implemented by every attribute whose value is an integer of a fixed width:
 /// [IntAttr](crate::dialects::builtin::attributes::IntAttr),
 /// [BoolAttr](crate::dialects::builtin::attributes::BoolAttr) and the per-width attributes
-/// `I8Attr` ... `I128Attr`. It reads and writes the value as an [Int], whatever the attribute
-/// stores.
+/// `I8Attr` ... `I128Attr`. It reads the value as an [Int], whatever the attribute stores.
 pub trait IntegerLikeAttr: Attribute {
     /// The value of this attribute.
     fn as_int(&self) -> Int;
-    /// Replaces the value. Panics if `value` does not have this attribute's width.
-    fn set_int(&mut self, value: Int);
 }
 
 /// Implemented by any attribute that represents a boolean value
 pub trait BoolLikeAttr: Attribute {
     /// Get the boolean value of this attribute
     fn as_bool(&self) -> bool;
-    /// Set the underlying boolean value of this attribute to `value`
-    fn set_bool(&mut self, value: bool);
 }

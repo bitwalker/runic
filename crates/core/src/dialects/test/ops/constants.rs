@@ -32,8 +32,8 @@ impl InferTypeOpInterface for Constant {
 }
 
 /// A constant's result has the type of its value, as [InferTypeOpInterface] gives it. The generated
-/// setters do not maintain this: `set_value` gives the attribute the type inferred from the new
-/// value and leaves the result as it was.
+/// setters do not maintain this: `set_value` replaces the attribute (one created from a value is
+/// typed by the value) and leaves the result as it was.
 ///
 /// The check hangs on [InferTypeOpInterface] because [ConstantLike] cannot carry it: the
 /// `#[operation_trait]` macro gives every such trait a blanket `Verify` impl that an operation
