@@ -233,8 +233,16 @@ impl Context {
 
     /// Returns the type denoted by `value`, interning it on first use.
     pub fn intern_type<T: TypeRegistration>(&self, value: T) -> crate::types::Type {
-        let (ty, rejected) = self.types.borrow_mut().get_or_insert_with(value, |value, hash| {
-            let name = self.get_registered_type_name::<T>();
+        let hash = crate::types::hash_of(&value);
+        if let Some(ty) = self.types.borrow().find(hash, &value) {
+            return ty;
+        }
+        // Resolved before the uniquer is borrowed again: this may register `T`'s dialect, and so
+        // run code that interns types.
+        let name = self.get_registered_type_name::<T>();
+        // That code may also have interned a value equal to `value`, which `get_or_insert_with`
+        // finds again rather than inserting a second type.
+        let (ty, rejected) = self.types.borrow_mut().get_or_insert_with(value, hash, |value| {
             let storage = self.allocator.put(TypeStorage::new(name, hash, value));
             // SAFETY: `storage` is an initialized `TypeStorage<T>` in the arena, which keeps it at
             // this address until the context's last `Rc<Blink>` is dropped and is never reset.

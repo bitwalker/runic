@@ -24,8 +24,13 @@ use crate::{DialectRegistration, dialects::builtin::BuiltinDialect};
 /// The value a type is uniqued by: two types are the same type exactly when they have the same
 /// Rust type and compare equal.
 ///
-/// A type's value must not change after it is interned: the uniquer finds a type by the hash and
-/// equality of its value, so it must not use interior mutability that affects `Eq` or `Hash`.
+/// A type's value never changes after it is interned: it must not use interior mutability at all,
+/// even in parts that `Eq` and `Hash` ignore. The uniquer finds a type by the hash and equality of
+/// its value, and other code relies on an interned type staying exactly as it was created (a
+/// late-filled child type could, for example, form a cycle that printing never leaves).
+///
+/// A type's `Eq` and `Hash` must not intern types or otherwise use the context: `Eq` runs while
+/// the context's uniquer is borrowed.
 pub trait TypeImpl: Any + Eq + Hash + fmt::Debug + 'static {}
 
 /// What every interned type starts with.
@@ -591,6 +596,59 @@ mod tests {
     fn interning_a_type_whose_name_another_rust_type_owns_panics() {
         let context = Context::default();
         context.intern_type(Impostor(1));
+    }
+
+    #[cfg(feature = "std")]
+    std::thread_local! {
+        /// The context `ReentrantDialect::init` interns into, if any; taken by the first `init`.
+        static REENTRANT_CONTEXT: core::cell::RefCell<alloc::rc::Weak<Context>> =
+            const { core::cell::RefCell::new(alloc::rc::Weak::new()) };
+        /// The type `ReentrantDialect::init` interned.
+        static REENTRANT_INNER: Cell<Option<Type>> = const { Cell::new(None) };
+    }
+
+    /// A dialect, not submitted to `inventory`, whose initialisation interns one of its own types
+    /// into the context it is being registered with.
+    #[cfg(feature = "std")]
+    #[derive(Debug)]
+    struct ReentrantDialect {
+        info: crate::DialectInfo,
+    }
+    #[cfg(feature = "std")]
+    impl crate::Dialect for ReentrantDialect {
+        fn info(&self) -> &crate::DialectInfo {
+            &self.info
+        }
+    }
+    #[cfg(feature = "std")]
+    impl crate::DialectRegistration for ReentrantDialect {
+        const NAMESPACE: &'static str = "reentrant";
+
+        fn init(info: crate::DialectInfo) -> Self {
+            let context = REENTRANT_CONTEXT.with(|context| context.take().upgrade());
+            if let Some(context) = context {
+                let inner = context.intern_type(ReentrantType(1));
+                REENTRANT_INNER.with(|slot| slot.set(Some(inner)));
+            }
+            Self { info }
+        }
+    }
+    #[cfg(feature = "std")]
+    named_type!(ReentrantType(u8), ReentrantDialect, "reentrant");
+    #[cfg(feature = "std")]
+    inventory::submit!(DialectTypeRegistrationInfo::new::<ReentrantType>());
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn interning_registers_the_dialect_outside_the_uniquer() {
+        let context = Rc::new(Context::default());
+        REENTRANT_CONTEXT.with(|slot| *slot.borrow_mut() = Rc::downgrade(&context));
+        // The first use of the dialect registers it, and its `init` interns an equal value first.
+        let ty = context.intern_type(ReentrantType(1));
+        let inner = REENTRANT_INNER.with(Cell::take).expect("the dialect's init interned a type");
+        assert_eq!(ty, inner, "the value interned during registration is not interned twice");
+        assert_eq!(ty.downcast_ref::<ReentrantType>(), Some(&ReentrantType(1)));
+        assert_eq!(ty, context.intern_type(ReentrantType(1)));
     }
 
     #[derive(Debug, PartialEq, Eq, Hash, crate::derive::DialectType)]
