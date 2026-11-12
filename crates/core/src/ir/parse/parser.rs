@@ -391,10 +391,10 @@ pub trait Parser<'input> {
                 // Parse symbol reference attribute
                 self.parse_symbol_ref().map(|spanned| spanned.map(|sym| sym.as_attribute_ref()))
             }
-            Token::Lbrace => {
-                // Parse value map
-                todo!("parsing of dict attributes")
-            }
+            Token::Lbrace => Err(ParserError::InvalidAttributeValue {
+                span,
+                reason: "a dictionary is not supported as an attribute value".to_string(),
+            }),
             Token::Loc => {
                 self.token_stream_mut().expect(Token::Lparen)?;
                 let loc = self.parse_location_instance()?;
@@ -1255,7 +1255,13 @@ pub(super) fn parse_extended_attribute<'input, P: Parser<'input>>(
         .split_once('.')
         .unwrap_or((parser.state().default_dialect_stack.last().unwrap().as_str(), name.as_str()));
 
-    let dialect = parser.context().get_registered_dialect(dialect);
+    let dialect = interner::Symbol::intern(dialect);
+    let Some(dialect) = parser.context().find_registered_dialect(dialect) else {
+        return Err(ParserError::UnknownDialect {
+            span: name_span,
+            dialect,
+        });
+    };
     let Some(name) = dialect.registered_attrs().iter().find(|attr| attr.name() == name).cloned()
     else {
         return Err(ParserError::UnknownAttribute { span: name_span });
@@ -1269,7 +1275,12 @@ pub(super) fn parse_extended_attribute<'input, P: Parser<'input>>(
             let span = span!(name_span.source().id(), name_span.range().start(), end);
             Ok(Span::new(span, attr))
         } else {
-            todo!("AttrParser is not yet implemented for '{name}'")
+            Err(ParserError::InvalidAttributeValue {
+                span: name_span,
+                reason: format!(
+                    "attribute '{name}' has no parser, so it cannot be written with a '<..>' body"
+                ),
+            })
         }
     } else {
         let mut value = name.create_default(&parser.context_rc());

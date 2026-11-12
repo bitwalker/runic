@@ -2067,3 +2067,36 @@ fn type_nesting_is_limited_to_256_levels() {
         .join()
         .expect("type nesting is limited");
 }
+
+/// Parses `text` as an attribute dictionary, in a parser over `text` alone, and returns the
+/// rendered error on one line.
+fn attribute_dict_error_text(context: &Rc<Context>, text: &str) -> String {
+    use super::{DefaultParser, ParsedAttrs, Parser, ParserState, Scanner, TokenStream};
+
+    let id = context.add_source("attrs.runic", text).unwrap();
+    let sources = context.sources();
+    let scanner = Scanner::new(sources.get(id).unwrap().text.unwrap());
+    let token_stream = TokenStream::new(id, scanner);
+    let mut parser =
+        DefaultParser::new(ParserState::new(ParserConfig::new(context.clone()), token_stream));
+    let mut attrs = ParsedAttrs::default();
+    let err = parser.parse_attribute_dict(&mut attrs).expect_err(text);
+    let err = Report::from(err).attach_session_sources(context.sources());
+    format!("{}", err.display()).split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Attribute text the parser does not support is reported as an error, not a panic.
+#[test]
+fn unsupported_attribute_text_is_an_error_not_a_panic() {
+    let context = Rc::new(Context::default());
+    for (text, expected) in [
+        ("{ a = {} }", "a dictionary is not supported as an attribute value"),
+        ("{ a = #builtin.bool<true> }", "attribute 'builtin.bool' has no parser"),
+        ("{ a = #builtin.string<\"str\"> }", "attribute 'builtin.string' has no parser"),
+        ("{ a = #nosuch.attr<1> }", "unknown dialect 'nosuch'"),
+        ("{ a = #nosuch.attr }", "unknown dialect 'nosuch'"),
+    ] {
+        let message = attribute_dict_error_text(&context, text);
+        assert!(message.contains(expected), "`{text}`: {message}");
+    }
+}
