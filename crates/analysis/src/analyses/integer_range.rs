@@ -1,7 +1,7 @@
 mod lattice;
 
 use runic_core::{
-    AttributeRef, Forward, Immediate, Operation, ProgramPoint, Report, SmallVec, ValueRef,
+    AttributeRef, Forward, Int, Operation, ProgramPoint, Report, SmallVec, ValueRef,
     attributes::IntegerLikeAttr,
     traits::{InferIntRangeInterface, operation_result_value_range_refinement},
 };
@@ -96,8 +96,8 @@ impl SparseForwardDataFlowAnalysis for IntegerRangeAnalysis {
         let Some(value) = lattice.anchor().as_value() else {
             return;
         };
-        let ty = value.borrow().ty().clone();
-        let entry_state = IntegerValueRange::max_for_type(&ty);
+        let ty = value.borrow().ty();
+        let entry_state = IntegerValueRange::max_for_type(ty);
         log::trace!(
             target: self.debug_name(),
             "setting integer range for {} to entry state {entry_state}",
@@ -193,11 +193,9 @@ fn constant_range_from_solver(
     }
 }
 
-fn immediate_from_attribute(attr: AttributeRef) -> Option<Immediate> {
+fn immediate_from_attribute(attr: AttributeRef) -> Option<Int> {
     let attr = attr.borrow();
-    attr.as_attr()
-        .as_trait::<dyn IntegerLikeAttr>()
-        .map(|integer| integer.as_immediate())
+    attr.as_attr().as_trait::<dyn IntegerLikeAttr>().map(|integer| integer.as_int())
 }
 
 fn refined_result_range(

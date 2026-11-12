@@ -270,9 +270,11 @@ fn stable_operation_cmp(a: &OperationRef, b: &OperationRef) -> core::cmp::Orderi
         (None, Some(_)) => Ordering::Less,
         (Some(_), None) => Ordering::Greater,
         (None, None) => {
-            let a = a.borrow();
-            let b = b.borrow();
-            a.name().cmp(&b.name()).then_with(|| a.span().cmp(&b.span()))
+            // Detached operations have no IR position. Order them by name only: the caller sorts
+            // with a stable sort, so operations with equal names keep their insertion order, which
+            // is the (deterministic) order in which the solver discovered them. Neither addresses
+            // nor hash-map iteration order take part.
+            a.borrow().name().cmp(&b.borrow().name())
         }
     }
 }
