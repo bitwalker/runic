@@ -161,6 +161,23 @@ impl Context {
         );
     }
 
+    /// Panics, in debug builds, unless `ty` was interned by this context and is not open. `role`
+    /// describes where `ty` enters IR, for the panic message.
+    ///
+    /// Types that enter IR are the types of block arguments, operation results, attributes and
+    /// signature parameters. Type constructors accept open types, so they use
+    /// [Self::debug_assert_owns_type] instead.
+    #[inline]
+    #[track_caller]
+    pub(crate) fn debug_assert_ir_type(&self, ty: crate::types::Type, role: &str) {
+        self.debug_assert_owns_type(ty, role);
+        debug_assert!(
+            !ty.is_open(),
+            "{role} is `{ty}`, an open type: a recursion variable is only meaningful inside the \
+             definition of a recursion group"
+        );
+    }
+
     /// Returns the type denoted by `value`, interning it on first use.
     pub fn intern_type<T: TypeRegistration>(&self, value: T) -> crate::types::Type {
         self.type_tables().intern_type(value)

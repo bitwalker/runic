@@ -673,4 +673,89 @@ mod tests {
         );
         assert!(message.contains("which belongs to another context"), "{message}");
     }
+
+    /// The verifier rejects a value whose type is open, in every build. Debug builds stop such a
+    /// type at the API that would store it, so the type is stored directly.
+    #[test]
+    fn the_verifier_rejects_open_types() {
+        let mut test = Test::new("f", |cx| ([cx.i32()], []));
+        let constant = {
+            let mut builder = test.function_builder();
+            let create = builder.builder_mut().create::<Constant, _>(SourceSpan::UNKNOWN);
+            create(Immediate::I32(1)).unwrap()
+        };
+        let op = constant.as_operation_ref();
+        let open = test.context().rec_var(0);
+        let open_ptr = test.context().ptr_type(open);
+
+        let mut result = op.borrow().results()[0];
+        result.borrow_mut().ty = open_ptr;
+        let err = op.borrow().verify().expect_err("an open result type");
+        let message = label_messages(err.as_diagnostic()).join("\n");
+        assert!(
+            message.contains("result 0 of 'test.constant' has type `ptr<rec.0>`"),
+            "{message}"
+        );
+        assert!(message.contains("which is open"), "{message}");
+        result.borrow_mut().ty = test.context().i32();
+        assert!(op.borrow().verify().is_ok());
+
+        let function = test.function().as_operation_ref();
+        let mut arg = test.function().borrow().entry_block().borrow().arguments()[0];
+        arg.borrow_mut().ty = open;
+        let err = function.borrow().verify().expect_err("an open argument type");
+        let message = label_messages(err.as_diagnostic()).join("\n");
+        assert!(message.contains("block argument 0 of 'builtin.function'"), "{message}");
+        assert!(message.contains("which is open"), "{message}");
+    }
+
+    /// The verifier rejects an attribute whose type is open.
+    #[test]
+    fn the_verifier_rejects_attributes_with_open_types() {
+        let mut test = Test::new("f", |cx| ([cx.i32()], []));
+        let constant = {
+            let mut builder = test.function_builder();
+            let create = builder.builder_mut().create::<Constant, _>(SourceSpan::UNKNOWN);
+            create(Immediate::I32(1)).unwrap()
+        };
+        let mut op = constant.as_operation_ref();
+        let mut attr = test
+            .context_rc()
+            .create_attribute::<ImmediateAttr, _>(Immediate::I32(7))
+            .as_attribute_ref();
+        op.borrow_mut().set_attribute("note", attr);
+        attr.borrow_mut().as_attr_mut().set_type_unchecked(test.context().rec_var(0));
+        let err = op.borrow().verify().expect_err("an attribute of an open type");
+        let message = label_messages(err.as_diagnostic()).join("\n");
+        assert!(
+            message.contains("attribute 'note' of 'test.constant' has type `rec.0`"),
+            "{message}"
+        );
+        assert!(message.contains("which is open"), "{message}");
+    }
+
+    /// Debug builds refuse an open type as a block argument or an operation result.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "an open type")]
+    fn a_block_argument_cannot_be_open() {
+        let context = Rc::new(Context::default());
+        let open = context.ptr_type(context.rec_var(0));
+        context.create_block_with_params([open]);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "an open type")]
+    fn an_operation_result_cannot_be_open() {
+        let mut test = Test::new("f", |cx| ([cx.i32()], []));
+        let constant = {
+            let mut builder = test.function_builder();
+            let create = builder.builder_mut().create::<Constant, _>(SourceSpan::UNKNOWN);
+            create(Immediate::I32(1)).unwrap()
+        };
+        let open = test.context().rec_var(0);
+        test.context()
+            .make_result(SourceSpan::UNKNOWN, open, constant.as_operation_ref(), 1);
+    }
 }

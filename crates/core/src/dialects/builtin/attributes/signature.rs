@@ -171,7 +171,7 @@ impl AbiParam {
         let mut attrs = AttributeDict::new();
         for attr in attributes {
             let context = attr.value.borrow().context_rc();
-            context.debug_assert_owns_type(ty, "the type of a parameter");
+            context.debug_assert_ir_type(ty, "the type of a parameter");
             attrs.insert(context.alloc_map_item(attr));
         }
         Self::new_with_attribute_dict(ty, attrs)
@@ -182,7 +182,7 @@ impl AbiParam {
     /// Integer types are signless, so there is no signedness to choose an extension from: no
     /// extension is applied.
     pub fn from_type_with_default_extension(ty: Type, context: &Rc<Context>) -> Self {
-        context.debug_assert_owns_type(ty, "the type of a parameter");
+        context.debug_assert_ir_type(ty, "the type of a parameter");
         Self::new(ty)
     }
 

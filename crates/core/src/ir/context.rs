@@ -332,7 +332,7 @@ impl Context {
         let mut block = Rc::clone(self).create_block();
         let owner = block;
         let args = tys.into_iter().enumerate().map(|(index, ty)| {
-            self.debug_assert_owns_type(ty, "the type of a block argument");
+            self.debug_assert_ir_type(ty, "the type of a block argument");
             let id = self.alloc_value_id();
             let arg = BlockArgument::new(
                 SourceSpan::default(),
@@ -356,7 +356,7 @@ impl Context {
         ty: Type,
         span: SourceSpan,
     ) -> ValueRef {
-        self.debug_assert_owns_type(ty, "the type of a block argument");
+        self.debug_assert_ir_type(ty, "the type of a block argument");
         let next_index = block.borrow().num_arguments();
         let id = self.alloc_value_id();
         let arg = BlockArgument::new(
@@ -411,7 +411,7 @@ impl Context {
         owner: OperationRef,
         index: u16,
     ) -> OpResultRef {
-        self.debug_assert_owns_type(ty, "the type of an operation result");
+        self.debug_assert_ir_type(ty, "the type of an operation result");
         let id = self.alloc_value_id();
         self.alloc(OpResult::new(span, id, ty, owner, index))
     }
@@ -428,7 +428,7 @@ impl Context {
         name: interner::Symbol,
         index: u8,
     ) -> OpResultRef {
-        self.debug_assert_owns_type(ty, "the type of an operation result");
+        self.debug_assert_ir_type(ty, "the type of an operation result");
         let id = ValueId::from_symbol(name).with_result_index(index);
         self.alloc(OpResult::new(span, id, ty, owner, index.into()))
     }

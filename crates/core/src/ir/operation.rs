@@ -516,24 +516,31 @@ impl Operation {
     }
 
     /// Check that the types of this operation's results, of the arguments of the blocks in its
-    /// regions, and of its properties and attributes were all interned by its context.
+    /// regions, and of its properties and attributes were all interned by its context and are
+    /// not open.
     ///
-    /// A type may only be used with the context that interned it. Debug builds check this where a
-    /// type is stored; this check is what catches a type of another context in every build.
+    /// A type may only be used with the context that interned it, and an open type (one holding a
+    /// recursion variable) may not be used in IR at all. Debug builds check both where a type is
+    /// stored; this check is what catches them in every build.
     pub fn verify_type_ownership(&self) -> Result<(), Report> {
         let context = self.context();
         let check = |role: &dyn fmt::Display, ty: Type| {
-            if context.owns_type(ty) {
+            let problem = if !context.owns_type(ty) {
+                "which belongs to another context: a type may only be used with the context that \
+                 interned it"
+            } else if ty.is_open() {
+                "which is open: a recursion variable is only meaningful inside the definition of a \
+                 recursion group"
+            } else {
                 return Ok(());
-            }
+            };
             Err(crate::diagnostics::report!(
                 message: "invalid operation",
                 labels: [
                     primary(
                         self.span(),
                         alloc::format!(
-                            "{role} of '{}' has type `{ty}`, which belongs to another context: a \
-                             type may only be used with the context that interned it",
+                            "{role} of '{}' has type `{ty}`, {problem}",
                             self.name()
                         )
                     ),
