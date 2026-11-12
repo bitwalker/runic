@@ -4196,3 +4196,66 @@ fn an_invalid_escape_in_a_string_is_an_error() {
     let err = parse_attribute_text(&context, "loc(\"\\q\":1:1)", unknown).unwrap_err();
     assert!(matches!(err, crate::parse::ParserError::InvalidString { .. }), "{err:?}");
 }
+
+/// Parses `text` as an attribute dictionary and returns its entries.
+fn parse_dictionary_text(
+    context: &Rc<Context>,
+    text: &str,
+) -> ParseResult<Vec<crate::NamedAttribute>> {
+    use super::{DefaultParser, ParsedAttrs, Parser, ParserState, Scanner, TokenStream};
+
+    let id = context.add_source("attrs.runic", text).unwrap();
+    let sources = context.sources();
+    let scanner = Scanner::new(sources.get(id).unwrap().text.unwrap());
+    let token_stream = TokenStream::new(id, scanner);
+    let mut parser =
+        DefaultParser::new(ParserState::new(ParserConfig::new(context.clone()), token_stream));
+    let mut attrs = ParsedAttrs::default();
+    parser.parse_attribute_dict(&mut attrs)?;
+    Ok(attrs.iter().cloned().collect())
+}
+
+fn print_dictionary_text(context: &Rc<Context>, attrs: &[crate::NamedAttribute]) -> String {
+    let flags = Default::default();
+    let mut printer = AsmPrinter::root(context.clone(), &flags);
+    printer.print_attribute_dictionary(attrs.iter().cloned());
+    printer.finish().to_string()
+}
+
+/// An attribute dictionary key that is not a bare identifier is written quoted and escaped, and
+/// read back as the same symbol.
+#[test]
+fn a_dictionary_key_that_is_not_bare_round_trips() -> TestResult {
+    let context = Rc::new(Context::default());
+    let keys = ["a b", "a\"b", "\u{e9}", "true", "loc", "a\\b", "a\nb", ""];
+    let text = format!(
+        "{{ {} }}",
+        keys.iter()
+            .map(|key| format!("\"{}\" = true", key.escape_default()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let parsed = parse_dictionary_text(&context, &text)?;
+    assert_eq!(parsed.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), keys);
+
+    let printed = print_dictionary_text(&context, &parsed);
+    let reparsed = parse_dictionary_text(&context, &printed)?;
+    assert_eq!(reparsed.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), keys, "{printed}");
+    assert_eq!(print_dictionary_text(&context, &reparsed), printed);
+
+    // A key that is bare stays bare, and a key that is not is quoted
+    let bare = parse_dictionary_text(&context, "{ plain = true, \"quoted\" = false }")?;
+    assert_eq!(
+        print_dictionary_text(&context, &bare),
+        "{ plain = #builtin.bool<true>, quoted = #builtin.bool<false> }"
+    );
+    assert!(printed.contains("\"a b\" = "), "{printed}");
+    assert!(printed.contains("\"a\\\"b\" = "), "{printed}");
+    Ok(())
+}
+
+#[test]
+fn an_invalid_escape_in_a_dictionary_key_is_an_error() {
+    let context = Rc::new(Context::default());
+    assert!(parse_dictionary_text(&context, "{ \"a\\qb\" = 1 }").is_err());
+}

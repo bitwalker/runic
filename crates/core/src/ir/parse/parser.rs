@@ -789,17 +789,23 @@ pub trait Parser<'input> {
             Token::Rbrace,
             /*allow_empty=*/ true,
             move |parser| {
+                // A quoted key is unescaped, as the printer escapes it
                 let key =
                     parser.token_stream_mut().expect_map("attribute dictionary key", |tok| {
                         match tok {
-                            Token::BareIdent(id) => Some(interner::Symbol::intern(id)),
-                            Token::String(id) => Some(interner::Symbol::intern(id)),
-                            tok if tok.is_keyword() => {
-                                Some(interner::Symbol::intern(tok.into_compact_string()))
-                            }
+                            Token::BareIdent(id) => Some((false, CompactString::from(id))),
+                            Token::String(id) => Some((true, CompactString::from(id))),
+                            tok if tok.is_keyword() => Some((false, tok.into_compact_string())),
                             _ => None,
                         }
                     })?;
+                let (span, (quoted, name)) = key.into_parts();
+                let key = if quoted {
+                    unescape_string(span, &name)?
+                } else {
+                    name
+                };
+                let key = Span::new(span, interner::Symbol::intern(key));
 
                 parser.parse_equal()?;
 
@@ -1164,7 +1170,6 @@ impl IntegerLiteral {
     }
 }
 
-/// Reads an attribute value of any form; [Parser::parse_attribute] holds it to the expected type.
 /// Undoes the escapes the printer writes in a quoted string, for the string token at `span`.
 fn unescape_string(span: SourceSpan, quoted: &str) -> ParseResult<CompactString> {
     unescape(quoted)
@@ -1176,6 +1181,7 @@ fn unescape_string(span: SourceSpan, quoted: &str) -> ParseResult<CompactString>
         })
 }
 
+/// Reads an attribute value of any form; [Parser::parse_attribute] holds it to the expected type.
 fn parse_attribute_value<'input, P: ?Sized + Parser<'input>>(
     parser: &mut P,
     ty: Type,

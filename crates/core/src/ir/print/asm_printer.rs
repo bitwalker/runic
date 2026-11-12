@@ -663,7 +663,7 @@ impl<'a> AsmPrinter<'a> {
         self.document += text(format!("loc({loc})"));
     }
 
-    /// Print an identifier as either a bare identifier or a string if it contains characters which
+    /// Print an identifier as either a bare identifier or a quoted, escaped string if it contains characters which
     /// are not valid in bare identifiers.
     ///
     /// This is only valid to call in positions where both bare identifiers and strings are valid.
@@ -674,7 +674,7 @@ impl<'a> AsmPrinter<'a> {
         if is_valid_bare_identifier(id) {
             self.document += const_text(id);
         } else {
-            self.document += display(id.escape_default());
+            self.print_string(id);
         }
     }
 

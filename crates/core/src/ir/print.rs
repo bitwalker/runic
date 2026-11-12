@@ -116,7 +116,8 @@
 //! boolean-attribute := 'true' | 'false'
 //! string-attribute := string
 //!     (every quoted string is written with the escapes of `str::escape_default` and read back by
-//!     undoing them; an invalid escape is a parse error)
+//!     undoing them; an invalid escape is a parse error. The two exceptions are the quoted
+//!     operation name of the generic form and a base64 byte string, which are taken as written)
 //! symbol-ref-attribute := symbol-ref-id ('::' symbol-ref-id)*
 //! location-attribute := 'loc' '(' location ')'
 //!
