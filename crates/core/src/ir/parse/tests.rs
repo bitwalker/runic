@@ -2729,6 +2729,22 @@ builtin.world {};";
 }
 
 #[test]
+fn the_diagnostic_form_of_a_member_does_not_parse() {
+    let context = Rc::new(Context::default());
+    let list = self_recursive(&context, Some("list"), context.i32());
+    let text = format!("{}", context.ptr_type(list));
+    assert_eq!(text, "ptr<!list@0.0>");
+    assert!(parse::parse_type(&context, "member.runic", &text).into_result().is_err());
+
+    // Not even where an alias of that name is declared.
+    let message = parse_error_text(&format!(
+        "rec {{ type !list = struct list<ptr<!list>, i32>; }}\nbuiltin.function public \
+         extern(\"C\") @f(%0: {text}) {{\n    builtin.ret;\n}};"
+    ));
+    assert!(message.contains("expected identifier"), "{message}");
+}
+
+#[test]
 fn an_undefined_alias_outside_a_rec_block_is_still_undefined() {
     let message = parse_error_text(
         "builtin.function public extern(\"C\") @f(%0: !nope) {\n    builtin.ret;\n};",

@@ -413,6 +413,14 @@ impl<'input> Lexer<'input> {
                 .expect("`lex_string` returns a string only once its quote is closed");
             Ok(Token::AtIdent(crate::interner::Symbol::intern(name).as_str()))
         } else {
+            let c = self.read();
+            if !(c.is_ascii_alphabetic() || c == '_') {
+                return Err(ParserError::UnexpectedToken {
+                    span: self.span(),
+                    token: format!("'{c}'"),
+                    expected: Some("expected identifier".to_string()),
+                });
+            }
             let Token::BareIdent(s) = self.lex_identifier()? else {
                 unreachable!()
             };

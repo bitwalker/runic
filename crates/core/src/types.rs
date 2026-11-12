@@ -472,7 +472,12 @@ impl fmt::Debug for Type {
     }
 }
 
-/// Prints a type with [TypeFormatter::ty].
+/// Prints a type with [TypeFormatter::ty], with no alias table.
+///
+/// A recursion-group member is written as `<reference> = <body>` at the top level, and as its
+/// reference when nested, e.g. `!list@0.0 = struct list<i32, ptr<!list@0.0>>` (see
+/// [TypeFormatter::ty]). This form is for diagnostics: the IR printer never produces it and the
+/// parser does not accept it.
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         TypeFormatter::new(f).ty(*self)
@@ -516,21 +521,26 @@ impl<'a, 'f> TypeFormatter<'a, 'f> {
     /// A builtin type is written as its own syntax. Any other type is written as `!dialect.name`,
     /// followed by its own syntax in angle brackets if it has a [TypePrinter].
     ///
-    /// With an alias table, a recursion-group member is written as `!alias`, wherever it is. With
-    /// none, a member is written as its body when it is the type being formatted, and as a
-    /// reference when it is nested inside it: `!name` if its body suggests a name (see
-    /// [TypeAliasName]) that is a bare identifier, otherwise `!rec<G>_<I>` for member `I` of the
-    /// group created `G`-th in its context. That keeps the text of a recursive type finite; it
-    /// is meant for diagnostics, and need not parse.
+    /// With an alias table, a recursion-group member is written as `!alias`, wherever it is.
+    ///
+    /// With none, a member nested inside the type being formatted is written as a reference:
+    /// `!name@G.I` if its body suggests a name (see [TypeAliasName]) that is a bare identifier,
+    /// otherwise `!rec@G.I`, for member `I` of the group created `G`-th in its context. A member
+    /// that is the type being formatted is written as its reference, ` = `, and its body:
+    /// `!list@0.0 = struct list<i32, ptr<!list@0.0>>`. That keeps the text of a recursive type
+    /// finite and tells a member from the ordinary type with the same value. It is meant for
+    /// diagnostics: the IR printer never writes it, and the parser does not accept it.
     pub fn ty(&mut self, ty: Type) -> fmt::Result {
         if let Some(group) = ty.rec_group() {
             if let Some(aliases) = self.aliases {
                 let alias = aliases.borrow_mut().alias_of(ty);
                 return write!(self, "!{alias}");
             }
+            self.member_reference(ty, group)?;
             if self.depth > 0 {
-                return self.member_reference(ty, group);
+                return Ok(());
             }
+            self.write_str(" = ")?;
         }
         self.definition(ty)
     }
@@ -551,13 +561,9 @@ impl<'a, 'f> TypeFormatter<'a, 'f> {
         let alias = ty.name().alias_name_fn().and_then(|alias_name| alias_name(ty));
         match alias {
             Some(alias) if is_bare_identifier(alias.as_str()) => write!(self, "!{alias}"),
-            _ => write!(
-                self,
-                "!rec{}_{}",
-                group.id(),
-                ty.rec_index().expect("a group member has an index")
-            ),
-        }
+            _ => self.write_str("!rec"),
+        }?;
+        write!(self, "@{}.{}", group.id(), ty.rec_index().expect("a group member has an index"))
     }
 
     /// Writes `ty` itself, without the reference form of a nested member.

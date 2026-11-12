@@ -545,7 +545,7 @@ mod tests {
         let vector = member.downcast_ref::<TestVectorType>().unwrap();
         assert_eq!(vector.element().pointee(), Some(member));
         assert_eq!(vector.lanes(), 4);
-        assert_eq!(format!("{member}"), "!test.vector<ptr<!rec0_0> x 4>");
+        assert_eq!(format!("{member}"), "!rec@0.0 = !test.vector<ptr<!rec@0.0> x 4>");
     }
 
     /// An interface implemented by [WeightedType].
@@ -670,18 +670,21 @@ mod tests {
             context.ptr_type(context.rec_var(0)).into(),
         ]));
         let unnamed = context.rec_group(&[unnamed]).unwrap()[0];
-        assert_eq!(format!("{unnamed}"), "struct<i32, ptr<!rec0_0>>");
+        assert_eq!(format!("{unnamed}"), "!rec@0.0 = struct<i32, ptr<!rec@0.0>>");
 
         let list = self_recursive_list(&context);
-        assert_eq!(format!("{list}"), "struct list<i32, ptr<!list>>");
-        assert_eq!(format!("{}", context.ptr_type(list)), "ptr<!list>");
+        assert_eq!(format!("{list}"), "!list@1.0 = struct list<i32, ptr<!list@1.0>>");
+        assert_eq!(format!("{}", context.ptr_type(list)), "ptr<!list@1.0>");
         assert_eq!(format!("{list:?}"), format!("{list}"));
         let group = list.rec_group().unwrap();
         assert_eq!(group.id(), 1);
         assert_eq!(
             format!("{group:?}"),
-            "RecGroup { id: 1, members: [struct list<i32, ptr<!list>>] }"
+            "RecGroup { id: 1, members: [!list@1.0 = struct list<i32, ptr<!list@1.0>>] }"
         );
+        // The ordinary type with a member's value reads differently from the member.
+        let unrolled = context.map_subtypes(list, &mut |ty| ty);
+        assert_eq!(format!("{unrolled}"), "struct list<i32, ptr<!list@1.0>>");
 
         // A name that is not a bare identifier is not used as a reference.
         let quoted = context.struct_type(StructType::named(
@@ -689,11 +692,14 @@ mod tests {
             [context.ptr_type(context.rec_var(0)).into()],
         ));
         let quoted = context.rec_group(&[quoted]).unwrap()[0];
-        assert_eq!(format!("{quoted}"), "struct \"my list\"<ptr<!rec2_0>>");
+        assert_eq!(format!("{quoted}"), "!rec@2.0 = struct \"my list\"<ptr<!rec@2.0>>");
 
         let members = list_and_node(&context);
-        assert_eq!(format!("{}", members[0]), "struct list<i32, ptr<!node>>");
-        assert_eq!(format!("{}", members[1]), "struct node<ptr<!list>, ptr<!node>>");
+        assert_eq!(format!("{}", members[0]), "!list@3.0 = struct list<i32, ptr<!node@3.1>>");
+        assert_eq!(
+            format!("{}", members[1]),
+            "!node@3.1 = struct node<ptr<!list@3.0>, ptr<!node@3.1>>"
+        );
     }
 
     #[test]
@@ -772,7 +778,7 @@ mod tests {
                 assert_eq!(group.members().len(), N as usize);
                 assert_eq!(field_pointee(group.members()[9_999], 0), Some(group.members()[0]));
                 assert_eq!(field_pointee(members[0], 0), Some(members[1]));
-                assert_eq!(format!("{}", members[9_999]), "struct<ptr<!rec0_0>>");
+                assert_eq!(format!("{}", members[9_999]), "!rec@0.9999 = struct<ptr<!rec@0.0>>");
                 drop(context);
             })
             .expect("spawn a thread")
