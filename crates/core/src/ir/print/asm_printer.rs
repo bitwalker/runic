@@ -391,9 +391,8 @@ impl<'a> AsmPrinter<'a> {
     /// of every group they refer to, as `rec { type !alias = definition; .. }` blocks separated
     /// by newlines; an empty document if there are none.
     ///
-    /// The declarations are one text node, newlines included, so that the size of a group or the
-    /// number of groups does not deepen the document; they belong at the start of a line, and are
-    /// not indented with the document around them.
+    /// The lines are joined as a balanced tree, so that the size of a group or the number of
+    /// groups does not make a deep document.
     ///
     /// Each group comes after every group its members refer to, so that the text parses in one
     /// pass; a group that is only referred to is named here, before any declaration is written,
@@ -418,24 +417,31 @@ impl<'a> AsmPrinter<'a> {
         if order.is_empty() {
             return Document::Empty;
         }
-        let mut declarations = String::new();
-        for (i, group) in order.iter().enumerate() {
-            if i > 0 {
-                declarations.push('\n');
-            }
-            declarations.push_str("rec {");
+        // One text node per line: a text node must not contain a newline.
+        let mut lines = alloc::vec::Vec::new();
+        for group in &order {
+            lines.push(const_text("rec {"));
             for member in group.members() {
                 let definition = Aliased {
                     ty: *member,
                     aliases: &self.aliases,
                     definition: true,
                 };
-                let line = alloc::format!("\n  type !{} = {definition};", self.alias_of(*member));
-                declarations.push_str(&line);
+                lines.push(text(alloc::format!(
+                    "  type !{} = {definition};",
+                    self.alias_of(*member)
+                )));
             }
-            declarations.push_str("\n}");
+            lines.push(const_text("}"));
         }
-        text(declarations)
+        let mut parts = alloc::vec::Vec::with_capacity(lines.len() * 2);
+        for (i, line) in lines.into_iter().enumerate() {
+            if i > 0 {
+                parts.push(nl());
+            }
+            parts.push(line);
+        }
+        concat_balanced(&mut parts)
     }
 
     /// The alias of the recursion-group member `member` in this print's alias table.
@@ -808,6 +814,19 @@ impl<'a> AsmPrinter<'a> {
 impl AddAssign<Document> for AsmPrinter<'_> {
     fn add_assign(&mut self, rhs: Document) {
         self.document += rhs;
+    }
+}
+
+/// Concatenates `parts` as a balanced tree, leaving them empty, so that a long list does not make
+/// a deep document.
+fn concat_balanced(parts: &mut [Document]) -> Document {
+    match parts {
+        [] => Document::Empty,
+        [part] => core::mem::take(part),
+        _ => {
+            let (left, right) = parts.split_at_mut(parts.len() / 2);
+            concat_balanced(left) + concat_balanced(right)
+        }
     }
 }
 
