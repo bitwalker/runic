@@ -2145,3 +2145,143 @@ fn unsupported_attribute_text_is_an_error_not_a_panic() {
         assert!(message.contains(expected), "`{text}`: {message}");
     }
 }
+
+/// A small deterministic generator (xorshift64*), so that generated tests need no dependency
+/// and fail the same way every run.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
+    }
+
+    /// A number below `bound`.
+    fn below(&mut self, bound: u64) -> u64 {
+        self.next() % bound
+    }
+
+    fn pick<'a, T>(&mut self, items: &'a [T]) -> &'a T {
+        &items[self.below(items.len() as u64) as usize]
+    }
+}
+
+/// A random builtin (or test dialect) type nested at most `depth` levels deep.
+fn random_type(rng: &mut Rng, context: &Context, depth: u32) -> Type {
+    use core::num::NonZeroU16;
+
+    use crate::{StructField, StructRepr, StructType, dialects::test::TestVectorType};
+
+    const NAMES: &[&str] = &[
+        "x", "point", "_1", "ptr", "align", "packed", "never", "my point", "a\"b", "é", "a\\b",
+    ];
+    let name = |rng: &mut Rng| crate::interner::Symbol::intern(rng.pick(NAMES));
+    let align = |rng: &mut Rng| NonZeroU16::new(1 << rng.below(4)).unwrap();
+
+    let leaf = depth == 0 || rng.below(3) == 0;
+    if leaf {
+        return match rng.below(9) {
+            0 => context.int_type(1 + rng.below(300) as u32),
+            1 => *rng.pick(&[context.i1(), context.i8(), context.i32(), context.i128()]),
+            2 => context.isize(),
+            3 => context.f32(),
+            4 => context.f64(),
+            5 => context.unknown_type(),
+            6 => context.never_type(),
+            7 => context.opaque_ptr_type(),
+            _ => context.ptr_type_in(None, rng.below(4) as u32),
+        };
+    }
+    let mut child = |rng: &mut Rng| random_type(rng, context, depth - 1);
+    match rng.below(6) {
+        0 => {
+            let pointee = child(rng);
+            context.ptr_type_in(Some(pointee), *rng.pick(&[0, 0, 1, u32::MAX]))
+        }
+        1 => {
+            let element = child(rng);
+            context.array_type(element, *rng.pick(&[0, 1, 16, u64::MAX]))
+        }
+        2 | 3 => {
+            let fields = (0..rng.below(4))
+                .map(|_| {
+                    let mut field = StructField::new(child(rng));
+                    if rng.below(2) == 0 {
+                        field = field.named(name(rng));
+                    }
+                    if rng.below(4) == 0 {
+                        field = field.aligned(align(rng));
+                    }
+                    field
+                })
+                .collect::<Vec<_>>();
+            let ty = if rng.below(2) == 0 {
+                StructType::named(name(rng), fields)
+            } else {
+                StructType::new(fields)
+            };
+            let repr = match rng.below(5) {
+                0 => StructRepr::Align(align(rng)),
+                1 => StructRepr::Packed(align(rng)),
+                2 => StructRepr::Transparent,
+                _ => StructRepr::Default,
+            };
+            context.struct_type(ty.with_repr(repr))
+        }
+        4 => {
+            let params = (0..rng.below(3)).map(|_| child(rng)).collect::<Vec<_>>();
+            let results = (0..rng.below(3)).map(|_| child(rng)).collect::<Vec<_>>();
+            context.function_type(params, results)
+        }
+        _ => {
+            let element = child(rng);
+            context.intern_type(TestVectorType::new(element, 1 + rng.below(8) as u32))
+        }
+    }
+}
+
+/// Generated nested types print as text that parses back to the same type.
+#[test]
+fn generated_types_round_trip_through_their_text() {
+    let context = Rc::new(Context::default());
+    context.get_or_register_dialect::<TestDialect>();
+    let mut rng = Rng(0x5eed_1234_abcd_ef01);
+    for case in 0..6000 {
+        let ty = random_type(&mut rng, &context, 6);
+        let text = format!("{ty}");
+        let parsed = parse_type_text(&context, &text)
+            .unwrap_or_else(|err| panic!("case {case}: `{text}` does not parse: {err:?}"));
+        assert_eq!(parsed, ty, "case {case}: `{text}` parses as `{parsed}`");
+    }
+}
+
+/// Many distinct types intern to distinct handles, and interning them again finds the same ones,
+/// across the uniquer's growth and the arena's chunks.
+#[test]
+fn interning_many_types_finds_each_again() {
+    use crate::{StructField, StructType, interner::Symbol};
+
+    const COUNT: u32 = 100_000;
+    let context = Context::default();
+    let build = |i: u32| {
+        let base = context.int_type(1 + i % 4096);
+        match i % 4 {
+            0 => context.ptr_type_in(Some(base), i),
+            1 => context.array_type(base, u64::from(i)),
+            2 => context.function_type([base], [context.ptr_type_in(None, i)]),
+            _ => context.struct_type(StructType::named(
+                Symbol::intern(format!("s{i}")),
+                [StructField::new(base), StructField::new(context.ptr_type(base))],
+            )),
+        }
+    };
+    let handles = (0..COUNT).map(build).collect::<Vec<_>>();
+    let distinct = handles.iter().map(|ty| ty.as_ptr()).collect::<crate::FxHashSet<_>>();
+    assert_eq!(distinct.len(), COUNT as usize);
+    for (i, ty) in handles.iter().enumerate() {
+        assert_eq!(build(i as u32), *ty, "type {i} was interned twice");
+    }
+    assert_eq!(format!("{}", handles[3]), "struct s3<i4, ptr<i4>>");
+}
