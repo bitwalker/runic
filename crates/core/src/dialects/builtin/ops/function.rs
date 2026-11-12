@@ -224,11 +224,7 @@ impl OpParser for Function {
             }));
         }
 
-        let sig = Signature {
-            params,
-            results,
-            cc,
-        };
+        let sig = Signature::from_parts(cc, params, results);
 
         let name = parser.context_rc().create_attribute::<IdentAttr, _>(name);
         state.add_attribute("name", name);

@@ -205,10 +205,10 @@ pub fn convert_signature_1_to_1(
     type_converter: &TypeConverter,
 ) -> Result<Signature, Report> {
     let mut converted = signature.clone();
-    for param in converted.params.iter_mut() {
+    for param in converted.params_mut().iter_mut() {
         param.ty = type_converter.convert_type_1_to_1(context, param.ty)?;
     }
-    for result in converted.results.iter_mut() {
+    for result in converted.declared_results_mut().iter_mut() {
         result.ty = type_converter.convert_type_1_to_1(context, result.ty)?;
     }
     Ok(converted)

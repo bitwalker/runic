@@ -4573,14 +4573,14 @@ fn a_signatures_display_is_the_text_the_printer_writes() {
         Signature::new(&context, [list, context.ptr_type(list)], [context.ptr_type(list)]),
         Signature::new(&context, [context.i32()], [function]),
         Signature::new(&context, [function], [context.never_type()]),
-        Signature {
-            params: alloc::vec![
+        Signature::from_parts(
+            CallConv::new("a\"b"),
+            alloc::vec![
                 AbiParam::zext(context.i8(), &context),
                 AbiParam::sret(context.ptr_type(list), &context),
             ],
-            results: alloc::vec![AbiParam::sext(context.i16(), &context)],
-            cc: CallConv::new("a\"b"),
-        },
+            alloc::vec![AbiParam::sext(context.i16(), &context)],
+        ),
     ];
     for signature in signatures {
         let displayed = format!("{signature}");
@@ -4921,11 +4921,7 @@ fn marking_a_parameter_sret_twice_keeps_one_entry() {
     param.mark_sret(&context);
     assert_eq!(param.attributes().len(), 1, "{param}");
 
-    let signature = Signature {
-        params: alloc::vec![param],
-        results: alloc::vec![],
-        cc: CallConv::default(),
-    };
+    let signature = Signature::from_parts(CallConv::default(), alloc::vec![param], alloc::vec![]);
     let printed = print_root(declared_function(&context, signature.clone()));
     let parsed = test
         .parse::<Function>("sret.hir", &printed)
@@ -4979,11 +4975,7 @@ fn a_parameter_marked_sret_twice_prints_text_that_parses_back() {
     let mut param = AbiParam::sret(context.ptr_type(context.i32()), &context);
     param.mark_sret(&context);
     assert_eq!(format!("{param}"), "ptr<i32> { sret = #builtin.sret }");
-    let signature = Signature {
-        params: alloc::vec![param],
-        results: alloc::vec![],
-        cc: CallConv::default(),
-    };
+    let signature = Signature::from_parts(CallConv::default(), alloc::vec![param], alloc::vec![]);
     let attr = context.create_attribute::<SignatureAttr, _>(signature.clone());
     let printed = print_attribute_text(&context, &attr.as_attribute_ref());
     let parsed = parse_attribute_text(&context, &printed, context.unknown_type())
@@ -5071,11 +5063,11 @@ fn a_signature_type_of_another_context_does_not_verify() {
     let other = Rc::new(Context::default());
     let foreign = other.ptr_type(other.i64());
     let context = test.context_rc();
-    let signature = Signature {
-        params: alloc::vec![AbiParam::new(foreign)],
-        results: alloc::vec![AbiParam::new(foreign)],
-        cc: CallConv::default(),
-    };
+    let signature = Signature::from_parts(
+        CallConv::default(),
+        alloc::vec![AbiParam::new(foreign)],
+        alloc::vec![AbiParam::new(foreign)],
+    );
     let message = verify_error_text(declared_function(&context, signature));
     assert!(
         message.contains(
@@ -5085,11 +5077,11 @@ fn a_signature_type_of_another_context_does_not_verify() {
         "{message}"
     );
 
-    let signature = Signature {
-        params: alloc::vec![],
-        results: alloc::vec![AbiParam::new(foreign)],
-        cc: CallConv::default(),
-    };
+    let signature = Signature::from_parts(
+        CallConv::default(),
+        alloc::vec![],
+        alloc::vec![AbiParam::new(foreign)],
+    );
     let message = verify_error_text(declared_function(&context, signature));
     assert!(
         message.contains("result 0 has type `ptr<i64>`, which belongs to another context"),
@@ -5106,11 +5098,11 @@ fn an_open_signature_type_does_not_verify() {
     let context = test.context_rc();
     let mut open = AbiParam::new(context.i32());
     open.ty = context.ptr_type(context.rec_var(0));
-    let signature = Signature {
-        params: alloc::vec![AbiParam::new(context.i32()), open],
-        results: alloc::vec![],
-        cc: CallConv::default(),
-    };
+    let signature = Signature::from_parts(
+        CallConv::default(),
+        alloc::vec![AbiParam::new(context.i32()), open],
+        alloc::vec![],
+    );
     let message = verify_error_text(declared_function(&context, signature));
     assert!(
         message.contains(
@@ -5176,7 +5168,7 @@ fn an_entry_block_that_disagrees_with_the_parameters_does_not_verify() {
     let test = built_function(|cx| (alloc::vec![cx.i32()], alloc::vec![]));
     let mut function = test.function();
     let i64 = test.context().i64();
-    function.borrow_mut().get_signature_mut().params.push(AbiParam::new(i64));
+    function.borrow_mut().get_signature_mut().params_mut().push(AbiParam::new(i64));
     let message = verify_error_text(function);
     assert!(message.contains("invalid operation builtin.function"), "{message}");
     assert!(
@@ -5190,7 +5182,7 @@ fn an_entry_block_that_disagrees_with_the_parameters_does_not_verify() {
     let test = built_function(|cx| (alloc::vec![cx.i32(), cx.i32()], alloc::vec![]));
     let mut function = test.function();
     let i64 = test.context().i64();
-    function.borrow_mut().get_signature_mut().params[1] = AbiParam::new(i64);
+    function.borrow_mut().get_signature_mut().params_mut()[1] = AbiParam::new(i64);
     let message = verify_error_text(function);
     assert!(
         message.contains(

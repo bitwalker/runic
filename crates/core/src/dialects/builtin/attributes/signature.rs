@@ -269,11 +269,11 @@ impl core::error::Error for InvalidSignature {}
 )]
 pub struct Signature {
     /// The arguments expected by this function
-    pub params: Vec<AbiParam>,
-    /// The results returned by this function
-    pub results: Vec<AbiParam>,
+    params: Vec<AbiParam>,
+    /// The results returned by this function, as declared
+    results: Vec<AbiParam>,
     /// The calling convention that applies to this function
-    pub cc: CallConv,
+    cc: CallConv,
 }
 
 impl fmt::Display for Signature {
@@ -318,9 +318,24 @@ impl Signature {
         Self::with_convention(context, Default::default(), params, results)
     }
 
+    /// A signature with the calling convention `cc`, the parameters `params` and the declared
+    /// results `results` (`[never]` for a function that never returns), as they are.
+    pub fn from_parts(cc: CallConv, params: Vec<AbiParam>, results: Vec<AbiParam>) -> Self {
+        Self {
+            params,
+            results,
+            cc,
+        }
+    }
+
     /// Get the calling convention of this function
     pub fn calling_convention(&self) -> CallConv {
         self.cc
+    }
+
+    /// Sets the calling convention of this function to `cc`.
+    pub fn set_calling_convention(&mut self, cc: CallConv) {
+        self.cc = cc;
     }
 
     /// Returns the number of arguments expected by this function
@@ -331,6 +346,12 @@ impl Signature {
     /// Returns a slice containing the parameters for this function
     pub fn params(&self) -> &[AbiParam] {
         self.params.as_slice()
+    }
+
+    /// The parameters of this function, to change in place.
+    #[inline]
+    pub fn params_mut(&mut self) -> &mut Vec<AbiParam> {
+        &mut self.params
     }
 
     /// Returns the parameter at `index`, if present
@@ -358,6 +379,12 @@ impl Signature {
     #[inline]
     pub fn declared_results(&self) -> &[AbiParam] {
         self.results.as_slice()
+    }
+
+    /// The results as declared, to change in place: `[never]` for a function that never returns.
+    #[inline]
+    pub fn declared_results_mut(&mut self) -> &mut Vec<AbiParam> {
+        &mut self.results
     }
 
     /// True if the single declared result is `never`.
@@ -395,11 +422,7 @@ impl AttrParser for SignatureAttr {
         parser.parse_rparen()?;
         let params = parse_param_list(parser)?;
         let results = parse_optional_results(parser)?;
-        let signature = Signature {
-            params,
-            results,
-            cc,
-        };
+        let signature = Signature::from_parts(cc, params, results);
         Ok(parser.context_rc().create_attribute::<SignatureAttr, _>(signature))
     }
 }
@@ -495,7 +518,7 @@ fn display_with<'a>(
 /// Writes `extern("cc") (param, ..)`, then ` -> result-list` if the signature declares results.
 fn print_signature<W: SignatureWriter + ?Sized>(writer: &mut W, signature: &Signature) {
     writer.write_text("extern(");
-    writer.write_string(signature.cc.as_str());
+    writer.write_string(signature.calling_convention().as_str());
     writer.write_text(") ");
     print_param_list(writer, signature.params());
     print_optional_results(writer, signature.declared_results());
@@ -763,6 +786,50 @@ mod tests {
         assert!(param.is_sret_param());
     }
 
+    /// `from_parts` holds what it is given; the `_mut` accessors and `set_calling_convention`
+    /// change the signature in place.
+    #[test]
+    fn a_signature_is_built_from_parts_and_changed_through_its_accessors() {
+        let context = Rc::new(crate::Context::default());
+        let zext = AbiParam::zext(context.i8(), &context);
+        let mut signature = Signature::from_parts(
+            CallConv::new("fast"),
+            alloc::vec![zext.clone()],
+            alloc::vec![AbiParam::new(context.i32())],
+        );
+        assert_eq!(signature.calling_convention(), CallConv::new("fast"));
+        assert_eq!(signature.params(), core::slice::from_ref(&zext));
+        assert_eq!(signature.declared_results(), [AbiParam::new(context.i32())]);
+        assert_eq!(
+            signature,
+            Signature::from_parts(
+                CallConv::new("fast"),
+                alloc::vec![AbiParam::zext(context.i8(), &context)],
+                alloc::vec![AbiParam::new(context.i32())],
+            )
+        );
+
+        signature.set_calling_convention(CallConv::default());
+        assert_eq!(signature.calling_convention(), CallConv::default());
+
+        signature.params_mut().push(AbiParam::new(context.i64()));
+        signature.params_mut()[0].ty = context.i16();
+        assert_eq!(signature.arity(), 2);
+        assert_eq!(signature.params()[0].ty, context.i16());
+        assert_eq!(signature.params()[0].extension(), ArgumentExtension::Zext);
+        assert_eq!(signature.params()[1], AbiParam::new(context.i64()));
+
+        signature.declared_results_mut()[0] = AbiParam::new(context.never_type());
+        assert!(signature.never_returns());
+        assert!(signature.results().is_empty());
+        assert_eq!(signature.declared_results().len(), 1);
+        signature.declared_results_mut().clear();
+        assert!(!signature.never_returns());
+        assert!(signature.results().is_empty() && signature.declared_results().is_empty());
+
+        assert_eq!(format!("{signature}"), "extern(\"C\") (i16 { extend = #builtin.zext }, i64)");
+    }
+
     /// A function that never returns declares the single result `never`, and produces no values.
     #[test]
     fn a_never_returning_signature_has_three_views() {
@@ -797,11 +864,11 @@ mod tests {
     #[test]
     fn display_renders_params_and_results_separately() {
         let context = crate::Context::default();
-        let signature = Signature {
-            params: alloc::vec![AbiParam::new(context.i32())],
-            results: alloc::vec![AbiParam::new(context.i64())],
-            cc: CallConv::default(),
-        };
+        let signature = Signature::from_parts(
+            CallConv::default(),
+            alloc::vec![AbiParam::new(context.i32())],
+            alloc::vec![AbiParam::new(context.i64())],
+        );
 
         let rendered = format!("{signature}");
         assert_eq!(rendered, "extern(\"C\") (i32) -> i64");
@@ -820,11 +887,11 @@ mod tests {
         assert_eq!(format!("{zext}"), "i8 { extend = #builtin.zext }");
         assert_eq!(format!("{}", AbiParam::new(context.i32())), "i32");
 
-        let signature = Signature {
-            params: alloc::vec![zext, AbiParam::sret(context.ptr_type(context.i32()), &context)],
-            results: alloc::vec![AbiParam::sext(context.i16(), &context)],
-            cc: CallConv::new("fast"),
-        };
+        let signature = Signature::from_parts(
+            CallConv::new("fast"),
+            alloc::vec![zext, AbiParam::sret(context.ptr_type(context.i32()), &context)],
+            alloc::vec![AbiParam::sext(context.i16(), &context)],
+        );
         assert_eq!(
             format!("{signature}"),
             "extern(\"fast\") (i8 { extend = #builtin.zext }, ptr<i32> { sret = #builtin.sret }) \
@@ -853,11 +920,11 @@ mod tests {
 
         let plain = Signature::new(&context, [ptr], [ptr]);
         assert_eq!(format!("{plain}"), "extern(\"C\") (ptr<!list>) -> ptr<!list>");
-        let marked = Signature {
-            params: alloc::vec![AbiParam::sret(ptr, &context)],
-            results: alloc::vec![],
-            cc: CallConv::default(),
-        };
+        let marked = Signature::from_parts(
+            CallConv::default(),
+            alloc::vec![AbiParam::sret(ptr, &context)],
+            alloc::vec![],
+        );
         assert_eq!(format!("{marked}"), "extern(\"C\") (ptr<!list> { sret = #builtin.sret })");
     }
 }
