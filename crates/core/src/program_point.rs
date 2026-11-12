@@ -536,7 +536,7 @@ mod tests {
     /// tracing rewriter listener reports an insertion made by a pattern that holds the op.
     #[test]
     fn program_point_renders_a_mutably_borrowed_op() {
-        let test = Test::new("borrowed", &[], &[]);
+        let test = Test::new("borrowed", |_| ([], []));
         let mut function = test.function();
         let op = function.borrow().as_operation_ref();
         let _guard = function.borrow_mut();

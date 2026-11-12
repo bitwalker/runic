@@ -1868,7 +1868,7 @@ mod tests {
                 INLINE_CALL_CHAIN_ATTR_NAME, InlineCallChain, InlineCallChainAttr, InlineCallFrame,
             },
         };
-        let mut test = Test::new("inline_call_scopes", &[], &[]);
+        let mut test = Test::new("inline_call_scopes", |_| ([], []));
         let (mut root, unmarked) = {
             let mut builder = test.function_builder();
             let root =

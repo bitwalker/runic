@@ -1822,7 +1822,7 @@ mod tests {
 
     #[test]
     fn set_attribute_replaces_existing_attribute() {
-        let test = Test::new("set_attribute_replaces_existing_attribute", &[], &[]);
+        let test = Test::new("set_attribute_replaces_existing_attribute", |_| ([], []));
         let mut function = test.function();
         let first = test.context_rc().create_attribute::<ImmediateAttr, _>(0u32).as_attribute_ref();
         let replacement =

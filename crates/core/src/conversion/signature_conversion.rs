@@ -621,7 +621,7 @@ mod tests {
     #[test]
     fn applies_1_to_1_non_entry_block_argument_conversion_in_place() {
         let mut test =
-            Test::new("applies_1_to_1_non_entry_block_argument_conversion_in_place", &[], &[]);
+            Test::new("applies_1_to_1_non_entry_block_argument_conversion_in_place", |_| ([], []));
         let (i32, i64) = (test.context().i32(), test.context().i64());
         let block = {
             let mut builder = test.function_builder();
@@ -729,7 +729,8 @@ mod tests {
 
     #[test]
     fn reports_region_branch_entry_successor_arity_mismatch() {
-        let mut test = Test::new("reports_region_branch_entry_successor_arity_mismatch", &[], &[]);
+        let mut test =
+            Test::new("reports_region_branch_entry_successor_arity_mismatch", |_| ([], []));
         let op = {
             let mut builder = test.function_builder();
             let op_builder = builder

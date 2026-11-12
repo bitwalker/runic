@@ -42,6 +42,9 @@ pub fn enable_compiler_instrumentation() {}
 /// * Tests are automatically instrumented
 /// * Tests are named to make diagnostics clearer
 /// * Conveniences for applying passes to the primary test function.
+///
+/// Types are owned by the test's own [Context], available from [`Test::context`]; build every type
+/// you pass to a test from it, never from another context.
 pub struct Test {
     context: Rc<Context>,
     name: &'static str,
@@ -68,11 +71,21 @@ impl Default for Test {
 }
 
 impl Test {
-    /// Create a new test in a function named `name` with the given parameter and result types.
-    pub fn new(name: &'static str, params: &[Type], results: &[Type]) -> Self {
+    /// Create a new test in a function named `name`.
+    ///
+    /// `signature` receives the test's own [Context] and returns the parameter and result types of
+    /// the function, e.g. `Test::new("f", |cx| ([cx.i32(), cx.i32()], [cx.i32()]))`.
+    pub fn new<P, R>(name: &'static str, signature: impl FnOnce(&Context) -> (P, R)) -> Self
+    where
+        P: IntoIterator<Item = Type>,
+        R: IntoIterator<Item = Type>,
+    {
         let mut test = Self::named(name);
+        let (params, results) = signature(&test.context);
+        let params = params.into_iter().collect::<alloc::vec::Vec<_>>();
+        let results = results.into_iter().collect::<alloc::vec::Vec<_>>();
 
-        test.with_function(name, params, results);
+        test.with_function(name, &params, &results);
 
         test
     }
@@ -104,7 +117,7 @@ impl Test {
     }
 
     /// Modifies this test with a new primary function called `name` with the given parameter and
-    /// result types.
+    /// result types, which must have been created by this test's [`Test::context`].
     ///
     /// NOTE: If this is called after `Test::new`, or a previous call to `with_function`, then the
     /// previous function is _not_ erased or modified in any way - that is left up to the caller.
@@ -131,6 +144,7 @@ impl Test {
     /// and will assert that this is the case.
     ///
     /// The function which is defined has public visibility, and uses the default calling convention.
+    /// The parameter and result types must have been created by this test's [`Test::context`].
     pub fn define_function(
         &mut self,
         name: impl Into<interner::Symbol>,
@@ -154,7 +168,7 @@ impl Test {
         self.name
     }
 
-    /// Get a reference to the current [Context]
+    /// Get a reference to the test's [Context], which owns every type used with this test.
     pub fn context(&self) -> &Context {
         &self.context
     }
@@ -286,4 +300,25 @@ pub(crate) fn label_ranges(
     let mut labels = Labels(alloc::vec::Vec::new());
     diagnostic.visit(&mut labels);
     labels.0
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec::Vec;
+
+    use super::*;
+
+    #[test]
+    fn new_builds_the_signature_from_the_tests_own_context() {
+        let test = Test::new("signature", |cx| ([cx.i32(), cx.i32()], [cx.i32()]));
+
+        let i32 = test.context().i32();
+        let params = test.entry_block().borrow().argument_types().collect::<Vec<_>>();
+        assert_eq!(params, [i32, i32]);
+        let function = test.function();
+        let function = function.borrow();
+        let signature = function.signature();
+        assert_eq!(signature.results().len(), 1);
+        assert_eq!(signature.results()[0].ty, i32);
+    }
 }
