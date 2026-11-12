@@ -68,11 +68,11 @@ pub struct RecGroup(pub(crate) NonNull<RecGroupData>);
 impl RecGroup {
     fn data(&self) -> &RecGroupData {
         // SAFETY: a `RecGroup` points at a record that `Context::rec_group` put in the context's
-        // arena, which keeps it unmoved for as long as the context's types may be used. A
-        // `RecGroup` is made from a member's header (`Type::rec_group`) or found in the group
-        // table, so only for a published group, whose record is never written again:
-        // `rec_group` writes the record only before publishing any of its members, and makes no
-        // `RecGroup` for it until then.
+        // arena, which keeps it unmoved for as long as the context's types may be used. Before
+        // the group is published the record is only read through its members' headers
+        // (`Type::rec_group` on an unpublished member), and `rec_group` writes the member list
+        // only after any such reference has ended; once published the record is never written
+        // again.
         unsafe { self.0.as_ref() }
     }
 
@@ -664,6 +664,21 @@ mod tests {
             .expect("spawn a thread")
             .join()
             .expect("a large group fits a 1 MB stack");
+    }
+
+    #[test]
+    fn substituting_variables_rebuilds_the_open_types_around_them() {
+        let context = Context::default();
+        let open = context.ptr_type(context.array_type(context.rec_var(1), 4));
+        let closed = context.substitute_rec_vars(open, &mut |index| {
+            assert_eq!(index, 1);
+            context.i32()
+        });
+        assert_eq!(closed, context.ptr_type(context.array_type(context.i32(), 4)));
+        assert_eq!(
+            context.substitute_rec_vars(context.i8(), &mut |_| unreachable!()),
+            context.i8()
+        );
     }
 
     #[cfg(debug_assertions)]

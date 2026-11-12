@@ -44,8 +44,10 @@ use crate::dialects::builtin::types::{
 /// the context's uniquer is borrowed. They must not panic either: a panic while the uniquer is
 /// probing, combined with a `Drop` that interns, aborts. They compare and hash the types the value
 /// holds as [Type]s, by handle and stored hash, and must not read those types' values, nor may
-/// the value's `Drop`: a held type may be a recursion-group member whose value is still being
-/// filled in.
+/// the value's `Drop`, [Self::visit_subtypes] or [Self::replace_subtypes] (including the results
+/// `replace` returns): a held type may be a recursion-group member whose value is still being
+/// filled in, and while a group is being built these receive the handles of members whose values
+/// are not final yet.
 ///
 /// A type also exposes the types its value holds directly, through [Self::visit_subtypes] and
 /// [Self::replace_subtypes]. `#[derive(DialectType)]` implements both field by field, so every

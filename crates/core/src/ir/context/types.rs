@@ -250,10 +250,14 @@ impl Context {
 
         // Close each member's value: every variable `i` becomes member `i`, and the open types in
         // between are rebuilt and interned as ordinary types holding the members' handles.
+        // One memo serves the whole fill, so an open type shared between fields or members is
+        // rebuilt once.
+        let mut memo = FxHashMap::default();
         for (member, body) in members.iter().zip(bodies) {
             let fill_member = body.name().fill_member_fn();
-            let mut replace =
-                |ty| self.substitute_rec_vars(ty, &mut |index| members[index as usize]);
+            let mut replace = |ty| {
+                self.substitute_rec_vars_with(ty, &mut |index| members[index as usize], &mut memo)
+            };
             // SAFETY: `member` was allocated above by `alloc_member` for `body`'s name, so for a
             // body of its own Rust type, and has not been published. No reference to any
             // member's value exists: none is created here, and `replace` only substitutes,
@@ -269,8 +273,9 @@ impl Context {
         // has made a `RecGroup` or a reference to it.
         unsafe { RecGroupData::set_members(group, &members) };
         let mut types = self.types.borrow_mut();
-        // Interning may register a dialect, whose initialization may have created the same
-        // group meanwhile; that group is the one kept, and this one is never published.
+        // Defensive second probe: interning may register a dialect, whose initialization may have
+        // re-entered here and created the same group meanwhile; that group is the one kept, and
+        // this one is never published.
         if let Some(existing) = types.groups().find(hash, bodies) {
             return Ok(SmallVec::from_slice(existing.members()));
         }
@@ -281,6 +286,7 @@ impl Context {
     /// `ty` with every recursion variable `rec.i` it contains, however deeply, replaced by
     /// `subst(i)`. A type that is not open is returned unchanged; the open types around the
     /// variables are rebuilt with [Self::map_subtypes].
+    #[cfg(test)]
     pub(crate) fn substitute_rec_vars(&self, ty: Type, subst: &mut dyn FnMut(u32) -> Type) -> Type {
         self.substitute_rec_vars_with(ty, subst, &mut FxHashMap::default())
     }
