@@ -1,8 +1,10 @@
 mod attribute;
 mod ty;
+mod type_component;
 
 use darling::FromDeriveInput;
 
+pub use self::type_component::derive_type_component;
 use self::{attribute::Attribute, ty::DialectType};
 
 pub fn derive_attribute(input: &syn::DeriveInput) -> darling::Result<Attribute> {

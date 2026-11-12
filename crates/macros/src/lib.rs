@@ -75,6 +75,18 @@ pub fn derive_dialect_type(input: proc_macro::TokenStream) -> proc_macro::TokenS
     }
 }
 
+/// Implements `TypeComponent` for a struct or enum, field by field: `visit_types` visits each
+/// field in declaration order, and `map_types` rebuilds the value from each field's `map_types`.
+/// Every field's type must itself be a `TypeComponent`. Generic types and unions are rejected.
+#[proc_macro_derive(TypeComponent)]
+pub fn derive_type_component(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let derive = parse_macro_input!(input as DeriveInput);
+    match dialect::derive_type_component(&derive) {
+        Ok(ts) => ts.into(),
+        Err(err) => err.into_compile_error().into(),
+    }
+}
+
 #[proc_macro_derive(EffectOpInterface, attributes(effects))]
 pub fn derive_effect_op_interface(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     // Parse into syntax tree

@@ -1,6 +1,6 @@
 pub use runic_macros::{
     Dialect, DialectAttribute, DialectRegistration, DialectType, EffectOpInterface, OpParser,
-    OpPrinter, operation, operation_trait,
+    OpPrinter, TypeComponent, operation, operation_trait,
 };
 
 /// What derived code names through `::runic_core`, so that a crate using a derive need not
