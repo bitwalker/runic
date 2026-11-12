@@ -2,9 +2,8 @@ use alloc::format;
 
 use crate::{
     AsValueRange, BlockRef, CallConv, CallableOpInterface, CallableSymbol, EntityRef, IdentAttr,
-    Immediate, ImmediateAttr, Op, OpParser, OpPrinter, Operation, RegionKind, RegionKindInterface,
-    RegionRef, SmallVec, Symbol, SymbolUse, SymbolUseList, Type, UnsafeIntrusiveEntityRef, Usable,
-    Visibility,
+    ImmediateAttr, Op, OpParser, OpPrinter, Operation, RegionKind, RegionKindInterface, RegionRef,
+    SmallVec, Symbol, SymbolUse, SymbolUseList, Type, UnsafeIntrusiveEntityRef, Usable, Visibility,
     derive::operation,
     dialects::builtin::{
         BuiltinDialect,
@@ -494,27 +493,24 @@ impl OpParser for RetImm {
     ) -> crate::ParseResult {
         use crate::{diagnostics::SourceSpan, parse::ParserError};
 
-        let start = parser.token_stream().current_position();
-        let imm = parser.parse_integer::<Immediate>()?;
+        let (literal_span, literal) = parser.parse_integer_literal()?.into_parts();
         let ty = parser.parse_colon_type()?;
-        let end = parser.token_stream().current_span();
         let span = SourceSpan::session(
-            end.source().id(),
-            crate::diagnostics::TextRange::new(start, end.range().end()).expect("valid range"),
+            literal_span.source().id(),
+            crate::diagnostics::TextRange::new(
+                literal_span.range().start(),
+                ty.span().range().end(),
+            )
+            .expect("valid range"),
         );
-
-        // Re-type the parsed literal to the declared type: integer parsing infers the narrowest
-        // representation, which would otherwise survive into the attribute and reprint with the
-        // wrong type.
-        let Some(imm) = imm.into_inner().coerced_to(*ty) else {
+        if !ty.is_integer() {
             return Err(ParserError::InvalidOperationType {
                 span,
                 ty_span: ty.span(),
-                reason: format!(
-                    "expected a numeric type able to represent the immediate, got {ty}"
-                ),
+                reason: format!("expected an integer type, got {ty}"),
             });
-        };
+        }
+        let imm = literal.to_immediate(*ty, literal_span)?;
 
         let attr = parser
             .context_rc()

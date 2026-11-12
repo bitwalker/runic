@@ -61,20 +61,16 @@ impl OpParser for Constant {
     fn parse(state: &mut OperationState, parser: &mut dyn OpAsmParser<'_>) -> ParseResult {
         use alloc::format;
 
-        use crate::{attributes::AttrParser, parse::ParserError};
+        use crate::parse::{ParserError, ParserExt};
 
-        let start = parser.current_location();
-        let imm = ImmediateAttr::parse(parser)?;
-        let mut imm = imm.try_downcast_attr::<ImmediateAttr>().unwrap();
-
+        let (literal_span, literal) = parser.parse_integer_literal()?.into_parts();
         let (ty_span, ty) = parser.parse_colon_type()?.into_parts();
         let span = SourceSpan::session(
-            start.source().id(),
-            crate::diagnostics::TextRange::new(start.range().start(), ty_span.range().end())
+            literal_span.source().id(),
+            crate::diagnostics::TextRange::new(literal_span.range().start(), ty_span.range().end())
                 .expect("valid range"),
         );
 
-        let mut imm_mut = imm.borrow_mut();
         if ty.integer_width().is_none() {
             return Err(ParserError::InvalidOperationType {
                 span,
@@ -82,17 +78,8 @@ impl OpParser for Constant {
                 reason: format!("expected integer type, got '{ty}'"),
             });
         }
-        let new_value = imm_mut.as_value().coerced_to(ty);
-
-        if let Some(new_value) = new_value {
-            imm_mut.set_type(ty);
-            *imm_mut.as_value_mut() = new_value;
-        } else {
-            return Err(ParserError::InvalidAttributeValue {
-                span,
-                reason: format!("could not convert value to type {ty}: value is out of range"),
-            });
-        }
+        let value = literal.to_immediate(ty, literal_span)?;
+        let imm = parser.context_rc().create_attribute_with_type::<ImmediateAttr, _>(value, ty);
 
         state.add_attribute("value", imm);
         state.results.push(ty);

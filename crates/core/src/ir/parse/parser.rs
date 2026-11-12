@@ -1,6 +1,7 @@
 use super::*;
 use crate::{
-    AttributeRef, AttributeRegistration, ImmediateAttr, SymbolNameComponent, SymbolPath, SymbolUse,
+    AttributeRef, AttributeRegistration, Immediate, ImmediateAttr, SymbolNameComponent, SymbolPath,
+    SymbolUse,
     diagnostics::{Report, report},
     dialects::builtin::{
         self,
@@ -363,6 +364,13 @@ pub trait Parser<'input> {
             return Ok(Span::new(span, self.context_rc().create_attribute::<TypeAttr, _>(parsed)));
         }
 
+        if self.token_stream_mut().is_next(|tok| {
+            matches!(tok, Token::Minus | Token::Int(_) | Token::Hex(_) | Token::Binary(_))
+        }) {
+            let literal = self.parse_integer_literal()?;
+            return integer_literal_attr(&self.context_rc(), literal, ty);
+        }
+
         let Some(spanned) = self.token_stream_mut().next()? else {
             return Err(ParserError::UnexpectedEof {
                 expected: vec!["attribute value".to_string()],
@@ -378,15 +386,6 @@ pub trait Parser<'input> {
             )),
             Token::String(s) => {
                 Ok(Span::new(span, self.context_rc().create_attribute::<StringAttr, _>(s)))
-            }
-            tok @ (Token::Int(s) | Token::Hex(s) | Token::Binary(s)) => {
-                let radix = match tok {
-                    Token::Int(_) => 10u32,
-                    Token::Hex(_) => 16u32,
-                    Token::Binary(_) => 2u32,
-                    _ => unreachable!(),
-                };
-                integer_literal_attr(&self.context_rc(), span, s, radix, ty)
             }
             Token::AtIdent(_) => {
                 // Parse symbol reference attribute
@@ -879,6 +878,50 @@ pub trait Parser<'input> {
 }
 
 pub trait ParserExt<'input>: Parser<'input> {
+    /// Parses an integer literal written for a value of an integer type: an optional `-` followed
+    /// by a decimal literal, or a hex or binary literal, which cannot be negated.
+    ///
+    /// See [IntegerLiteral::to_immediate] for the value it stands for in a given type.
+    fn parse_integer_literal(&mut self) -> ParseResult<Span<IntegerLiteral>> {
+        let start = match self.token_stream_mut().peek()? {
+            Some((start, ..)) => start,
+            None => 0,
+        };
+        let negative = self.token_stream_mut().next_if_eq(Token::Minus)?;
+        let token = self
+            .token_stream_mut()
+            .expect_if("integer", |tok| {
+                matches!(tok, Token::Int(_) | Token::Hex(_) | Token::Binary(_))
+            })?
+            .into_inner();
+        let span = span!(self.source_id(), start, self.token_stream().previous_end());
+        let (digits, radix) = match token {
+            Token::Int(digits) => (digits, 10),
+            Token::Hex(digits) => (digits, 16),
+            Token::Binary(digits) => (digits, 2),
+            _ => unreachable!(),
+        };
+        if negative && radix != 10 {
+            return Err(ParserError::InvalidIntegerLiteral {
+                span,
+                reason: "only a decimal literal can be negative".to_string(),
+            });
+        }
+        let magnitude = u128::try_from_str_radix(digits, radix).map_err(|err| {
+            ParserError::InvalidIntegerLiteral {
+                span,
+                reason: err.to_string(),
+            }
+        })?;
+        Ok(Span::new(
+            span,
+            IntegerLiteral {
+                negative,
+                magnitude,
+            },
+        ))
+    }
+
     /// Parse an integer value from the stream.
     fn parse_integer<I>(&mut self) -> ParseResult<Span<I>>
     where
@@ -1106,59 +1149,91 @@ pub trait ParserExt<'input>: Parser<'input> {
 
 impl<'input, P: ?Sized + Parser<'input>> ParserExt<'input> for P {}
 
-/// Creates the attribute for the integer literal `s` (in `radix`) of the integer type `ty`.
-///
-/// Integer types are signless: an `N`-bit literal may be anything in `[0, 2^N - 1]` (a negative
-/// literal is not a single token), and the attribute holds its `N`-bit pattern.
-fn integer_literal_attr(
-    context: &Rc<Context>,
-    span: SourceSpan,
-    s: &str,
-    radix: u32,
-    ty: Type,
-) -> ParseResult<Span<AttributeRef>> {
-    let Some(width) = ty.integer_width() else {
-        return Err(ParserError::InvalidAttributeValue {
-            span,
-            reason: format!("expected value of type {ty}, got integer value '{s}'"),
-        });
-    };
-    let value =
-        u128::try_from_str_radix(s, radix).map_err(|err| ParserError::InvalidIntegerLiteral {
-            span,
-            reason: err.to_string(),
-        })?;
-    if width < 128 && value >> width != 0 {
-        return Err(ParserError::InvalidIntegerLiteral {
-            span,
-            reason: format!("value is out of range for {ty}"),
-        });
-    }
-    let attr = match width {
-        1 => context
-            .create_attribute_with_type::<BoolAttr, _>(value == 1, ty)
-            .as_attribute_ref(),
-        8 => context
-            .create_attribute_with_type::<I8Attr, _>(value as i8, ty)
-            .as_attribute_ref(),
-        16 => context
-            .create_attribute_with_type::<I16Attr, _>(value as i16, ty)
-            .as_attribute_ref(),
-        32 => context
-            .create_attribute_with_type::<I32Attr, _>(value as i32, ty)
-            .as_attribute_ref(),
-        64 => context
-            .create_attribute_with_type::<I64Attr, _>(value as i64, ty)
-            .as_attribute_ref(),
-        128 => context
-            .create_attribute_with_type::<I128Attr, _>(value as i128, ty)
-            .as_attribute_ref(),
-        _ => {
-            return Err(ParserError::InvalidAttributeValue {
+/// An integer literal as written: its magnitude, and whether a `-` precedes it.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct IntegerLiteral {
+    pub negative: bool,
+    pub magnitude: u128,
+}
+
+impl IntegerLiteral {
+    /// The value this literal, found at `span`, stands for as a value of the integer type `ty`.
+    ///
+    /// Integer types are signless: an `N`-bit literal may be anything in `[-2^(N-1), 2^N - 1]`,
+    /// and stands for its `N`-bit pattern, held in the signed representation of the width (so
+    /// `255` and `-1` are the same `i8`). An `i1` literal is `-1`, `0` or `1`.
+    ///
+    /// Fails, with an error at `span`, when `ty` is not an integer type of 1, 8, 16, 32, 64 or 128
+    /// bits, or the literal is out of range for it.
+    pub fn to_immediate(self, ty: Type, span: SourceSpan) -> ParseResult<Immediate> {
+        let Some(width @ (1 | 8 | 16 | 32 | 64 | 128)) = ty.integer_width() else {
+            return Err(ParserError::InvalidIntegerLiteral {
                 span,
                 reason: format!("integer literals of type {ty} are not supported"),
             });
+        };
+        let unsigned_max = if width == 128 {
+            u128::MAX
+        } else {
+            (1u128 << width) - 1
+        };
+        let negative_max = 1u128 << (width - 1);
+        let bits = match (self.negative, self.magnitude) {
+            (false, magnitude) if magnitude <= unsigned_max => magnitude,
+            (true, magnitude) if magnitude <= negative_max => {
+                magnitude.wrapping_neg() & unsigned_max
+            }
+            _ => {
+                return Err(ParserError::InvalidIntegerLiteral {
+                    span,
+                    reason: format!("value is out of range for {ty}"),
+                });
+            }
+        };
+        Ok(match width {
+            1 => Immediate::I1(bits == 1),
+            8 => Immediate::I8(bits as u8 as i8),
+            16 => Immediate::I16(bits as u16 as i16),
+            32 => Immediate::I32(bits as u32 as i32),
+            64 => Immediate::I64(bits as u64 as i64),
+            _ => Immediate::I128(bits as i128),
+        })
+    }
+}
+
+/// Creates the attribute for an integer literal of the integer type `ty`.
+fn integer_literal_attr(
+    context: &Rc<Context>,
+    literal: Span<IntegerLiteral>,
+    ty: Type,
+) -> ParseResult<Span<AttributeRef>> {
+    let (span, literal) = literal.into_parts();
+    if !ty.is_integer() {
+        return Err(ParserError::InvalidAttributeValue {
+            span,
+            reason: format!("expected value of type {ty}, got an integer literal"),
+        });
+    }
+    let attr = match literal.to_immediate(ty, span)? {
+        Immediate::I1(value) => {
+            context.create_attribute_with_type::<BoolAttr, _>(value, ty).as_attribute_ref()
         }
+        Immediate::I8(value) => {
+            context.create_attribute_with_type::<I8Attr, _>(value, ty).as_attribute_ref()
+        }
+        Immediate::I16(value) => {
+            context.create_attribute_with_type::<I16Attr, _>(value, ty).as_attribute_ref()
+        }
+        Immediate::I32(value) => {
+            context.create_attribute_with_type::<I32Attr, _>(value, ty).as_attribute_ref()
+        }
+        Immediate::I64(value) => {
+            context.create_attribute_with_type::<I64Attr, _>(value, ty).as_attribute_ref()
+        }
+        Immediate::I128(value) => {
+            context.create_attribute_with_type::<I128Attr, _>(value, ty).as_attribute_ref()
+        }
+        _ => unreachable!("an integer literal is held in signed storage"),
     };
     Ok(Span::new(span, attr))
 }

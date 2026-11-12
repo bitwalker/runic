@@ -63,12 +63,19 @@ impl AttrParser for ImmediateAttr {
     fn parse(
         parser: &mut dyn super::parse::Parser<'_>,
     ) -> super::parse::ParseResult<crate::AttributeRef> {
-        use crate::parse::Token;
-
-        let imm = if parser.token_stream_mut().is_next(|tok| matches!(tok, Token::Minus)) {
-            Immediate::I128(parser.parse_decimal_integer::<i128>()?.into_inner())
+        // The type is not known here, so a negative literal is kept as an `i128` and a
+        // non-negative one as a `u128`, for the user to coerce to the type it is given.
+        let (span, literal) = parser.parse_integer_literal()?.into_parts();
+        let imm = if literal.negative {
+            let value = 0i128.checked_sub_unsigned(literal.magnitude).ok_or_else(|| {
+                crate::parse::ParserError::InvalidIntegerLiteral {
+                    span,
+                    reason: "value is out of range for i128".into(),
+                }
+            })?;
+            Immediate::I128(value)
         } else {
-            Immediate::U128(parser.parse_decimal_integer::<u128>()?.into_inner())
+            Immediate::U128(literal.magnitude)
         };
 
         Ok(parser.context_rc().create_attribute::<ImmediateAttr, _>(imm))

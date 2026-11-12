@@ -1640,3 +1640,192 @@ fn a_field_named_like_a_representation_round_trips() {
         assert_eq!(format!("{ty}"), text);
     }
 }
+
+/// The integer literals that a value of an `N`-bit integer type accepts, as text, with the `N`-bit
+/// pattern each stands for: every value in `[-2^(N-1), 2^N - 1]`.
+fn integer_literals_in_range(width: u32) -> Vec<(String, u128)> {
+    let mask = if width == 128 {
+        u128::MAX
+    } else {
+        (1u128 << width) - 1
+    };
+    let half = 1u128 << (width - 1);
+    alloc::vec![
+        ("0".into(), 0),
+        ("1".into(), 1),
+        ("-1".into(), mask),
+        (format!("{}", half - 1), half - 1),
+        (format!("-{half}"), half),
+        (format!("{half}"), half),
+        (format!("{mask}"), mask),
+    ]
+}
+
+/// The integer literals just outside the range of an `N`-bit integer type.
+fn integer_literals_out_of_range(width: u32) -> Vec<String> {
+    let half = 1u128 << (width - 1);
+    let above = if width == 128 {
+        "340282366920938463463374607431768211456".into()
+    } else {
+        format!("{}", 1u128 << width)
+    };
+    alloc::vec![above, format!("-{}", half + 1)]
+}
+
+/// The immediate holding the `N`-bit pattern `bits`, as the parser stores an `N`-bit literal.
+fn immediate_of_width(width: u32, bits: u128) -> Immediate {
+    match width {
+        1 => Immediate::I1(bits & 1 == 1),
+        8 => Immediate::I8(bits as u8 as i8),
+        16 => Immediate::I16(bits as u16 as i16),
+        32 => Immediate::I32(bits as u32 as i32),
+        64 => Immediate::I64(bits as u64 as i64),
+        128 => Immediate::I128(bits as i128),
+        _ => unreachable!(),
+    }
+}
+
+/// A function returning `literal : iN` with `builtin.ret_imm`, after `test.constant literal : iN`.
+fn function_with_integer_literal(width: u32, literal: &str) -> String {
+    format!(
+        "builtin.function public extern(\"C\") @f() -> i{width} {{\n    %0 = test.constant \
+         {literal} : i{width};\n    builtin.ret_imm {literal} : i{width};\n}};"
+    )
+}
+
+/// The values of the `test.constant` and the `builtin.ret_imm` in a parsed function.
+fn integer_literal_values(function: &crate::UnsafeIntrusiveEntityRef<Function>) -> [Immediate; 2] {
+    let function = function.borrow();
+    let body = function.body();
+    let entry = body.entry();
+    let constant = entry.front().unwrap();
+    let constant = constant.borrow();
+    let constant = constant
+        .get_typed_attribute::<crate::ImmediateAttr>("value")
+        .expect("test.constant has an immediate value");
+    let ret = entry.terminator().unwrap().try_downcast_op::<RetImm>().unwrap();
+    let ret = ret.borrow().value().as_ref().as_immediate();
+    let constant = constant.borrow().as_immediate();
+    [constant, ret]
+}
+
+#[test]
+fn integer_literals_of_every_width_round_trip_in_signed_storage() -> TestResult {
+    for width in [8, 16, 32, 64, 128] {
+        for (literal, bits) in integer_literals_in_range(width) {
+            let expected = immediate_of_width(width, bits);
+            let test = ParserTest::default();
+            test.context().get_or_register_dialect::<TestDialect>();
+            let source = function_with_integer_literal(width, &literal);
+            let parsed = test.parse::<Function>("literal.hir", &source)?;
+            assert_eq!(integer_literal_values(&parsed), [expected; 2], "{literal} : i{width}");
+
+            let printed = format!("{}", parsed.as_operation_ref().borrow());
+            let fresh = ParserTest::default();
+            fresh.context().get_or_register_dialect::<TestDialect>();
+            let reparsed = fresh.parse::<Function>("literal-printed.hir", &printed)?;
+            assert_eq!(integer_literal_values(&reparsed), [expected; 2], "{printed}");
+            assert_eq!(format!("{}", reparsed.as_operation_ref().borrow()), printed);
+        }
+        for literal in integer_literals_out_of_range(width) {
+            let test = ParserTest::default();
+            test.context().get_or_register_dialect::<TestDialect>();
+            for source in [
+                format!(
+                    "builtin.function public extern(\"C\") @f() -> i{width} {{\n    \
+                     builtin.ret_imm {literal} : i{width};\n}};"
+                ),
+                function_with_integer_literal(width, "0").replacen(
+                    "test.constant 0",
+                    &format!("test.constant {literal}"),
+                    1,
+                ),
+            ] {
+                assert!(
+                    test.parse::<Function>("out-of-range.hir", &source).is_err(),
+                    "`{literal} : i{width}` should be rejected"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn an_upper_half_literal_and_its_negative_spelling_are_the_same_constant() -> TestResult {
+    let test = ParserTest::default();
+    test.context().get_or_register_dialect::<TestDialect>();
+    let unsigned = test.parse::<Function>("255.hir", &function_with_integer_literal(8, "255"))?;
+    let signed = test.parse::<Function>("-1.hir", &function_with_integer_literal(8, "-1"))?;
+    assert_eq!(integer_literal_values(&unsigned), integer_literal_values(&signed));
+    let printed = format!("{}", unsigned.as_operation_ref().borrow());
+    assert!(printed.contains("builtin.ret_imm -1 : i8"), "{printed}");
+    Ok(())
+}
+
+#[test]
+fn a_boolean_literal_is_minus_one_zero_or_one() -> TestResult {
+    let test = ParserTest::default();
+    test.context().get_or_register_dialect::<TestDialect>();
+    for (literal, bit) in [("0", false), ("1", true), ("-1", true)] {
+        let parsed =
+            test.parse::<Function>("i1.hir", &function_with_integer_literal(1, literal))?;
+        assert_eq!(integer_literal_values(&parsed), [Immediate::I1(bit); 2], "{literal} : i1");
+        let printed = format!("{}", parsed.as_operation_ref().borrow());
+        // A set bit prints as `1`, however it was written.
+        let expected = format!("builtin.ret_imm {} : i1", u8::from(bit));
+        assert!(printed.contains(&expected), "{printed}");
+        let reparsed = test.parse::<Function>("i1-printed.hir", &printed)?;
+        assert_eq!(integer_literal_values(&reparsed), [Immediate::I1(bit); 2], "{printed}");
+    }
+    for literal in ["2", "-2"] {
+        let source = function_with_integer_literal(1, literal);
+        assert!(test.parse::<Function>("i1-invalid.hir", &source).is_err(), "{literal} : i1");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_negated_hex_or_binary_literal_is_a_spanned_error() {
+    let test = ParserTest::default();
+    test.context().get_or_register_dialect::<TestDialect>();
+    for literal in ["-0x1", "-0b1"] {
+        let source = function_with_integer_literal(8, "0").replacen(
+            "builtin.ret_imm 0",
+            &format!("builtin.ret_imm {literal}"),
+            1,
+        );
+        let err = test.parse::<Function>("negated.hir", &source).err().expect(literal);
+        let message = format!("{}", err.display());
+        assert!(message.contains("only a decimal literal can be negative"), "{message}");
+    }
+}
+
+/// An integer literal in attribute position, where the expected type is known, follows the same
+/// rules as one in an op's own syntax.
+#[test]
+fn integer_literals_in_attribute_position_accept_a_sign() {
+    use super::{DefaultParser, Parser, ParserState, Scanner, TokenStream};
+
+    let context = Rc::new(Context::default());
+    let parse = |text: &str, ty: Type| {
+        let id = context.add_source("attr.runic", text).unwrap();
+        let sources = context.sources();
+        let scanner = Scanner::new(sources.get(id).unwrap().text.unwrap());
+        let token_stream = TokenStream::new(id, scanner);
+        let mut parser =
+            DefaultParser::new(ParserState::new(ParserConfig::new(context.clone()), token_stream));
+        parser.parse_attribute(ty).map(|attr| {
+            let attr = attr.into_inner();
+            let attr = attr.borrow();
+            attr.as_attr().as_trait::<dyn IntegerLikeAttr>().unwrap().as_immediate()
+        })
+    };
+    assert_eq!(parse("-1", context.i8()).unwrap(), Immediate::I8(-1));
+    assert_eq!(parse("255", context.i8()).unwrap(), Immediate::I8(-1));
+    assert_eq!(parse("-128", context.i8()).unwrap(), Immediate::I8(-128));
+    assert!(parse("-129", context.i8()).is_err());
+    assert!(parse("256", context.i8()).is_err());
+    assert!(parse("-0x1", context.i8()).is_err());
+    assert_eq!(parse("-1", context.i1()).unwrap(), Immediate::I1(true));
+}
