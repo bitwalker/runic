@@ -51,6 +51,7 @@ pub enum Token<'input> {
     Never,
     Ptr,
     Struct,
+    Enum,
     Array,
 
     // Delimiters
@@ -141,6 +142,7 @@ impl Token<'_> {
             Self::Never => CompactString::const_new("never"),
             Self::Ptr => CompactString::const_new("ptr"),
             Self::Struct => CompactString::const_new("struct"),
+            Self::Enum => CompactString::const_new("enum"),
             Self::Array => CompactString::const_new("array"),
             Self::Langle => CompactString::const_new("<"),
             Self::Rangle => CompactString::const_new(">"),
@@ -201,6 +203,7 @@ impl fmt::Display for Token<'_> {
             Self::Never => f.write_str("never"),
             Self::Ptr => f.write_str("ptr"),
             Self::Struct => f.write_str("struct"),
+            Self::Enum => f.write_str("enum"),
             Self::Array => f.write_str("array"),
             Self::Langle => f.write_char('<'),
             Self::Rangle => f.write_char('>'),
@@ -251,6 +254,7 @@ impl<'input> Token<'input> {
                 | Token::Ptr
                 | Token::Array
                 | Token::Struct
+                | Token::Enum
         )
     }
 
@@ -286,6 +290,7 @@ impl<'input> Token<'input> {
             "never" => Self::Never,
             "ptr" => Self::Ptr,
             "struct" => Self::Struct,
+            "enum" => Self::Enum,
             "array" => Self::Array,
             _ => match Self::int_type_width(s) {
                 Some(width) => Self::IntType(width),

@@ -2,7 +2,8 @@
 //!
 //! ```text
 //! type          := '?' | 'never' | integer-type | 'isize' | 'f32' | 'f64'
-//!                | pointer-type | array-type | struct-type | function-type
+//!                | pointer-type | array-type | struct-type | enum-type
+//!                | function-type
 //!                | type-alias | dialect-type
 //! integer-type  := 'i' [1-9][0-9]*
 //! pointer-type  := 'ptr' ('<' (address-space | type (',' address-space)?) '>')?
@@ -12,6 +13,10 @@
 //! struct-name   := bare-id | string
 //! struct-repr   := 'align' '(' N ')' | 'packed' ('(' N ')')? | 'transparent'
 //! struct-field  := (field-name ':')? type ('align' '(' N ')')?
+//! enum-type     := 'enum' enum-name? '<' type (';' enum-variant (',' enum-variant)*)? '>'
+//! enum-name     := bare-id | string
+//! enum-variant  := variant-name ('=' integer-literal)? (':' type)?
+//! variant-name  := bare-id | string
 //! field-name    := bare-id | string
 //! function-type := '(' (type (',' type)*)? ')' '->' (type | '(' (type (',' type)*)? ')')
 //! type-alias    := '!' alias-name
@@ -31,9 +36,9 @@ use alloc::{
 };
 use core::num::NonZeroU16;
 
-use super::{ParseResult, Parser, ParserError, ParserExt, Token};
+use super::{IntegerLiteral, ParseResult, Parser, ParserError, ParserExt, Token};
 use crate::{
-    IntegerType, SmallVec, StructField, StructRepr, StructType, Type,
+    EnumType, EnumVariant, IntegerType, SmallVec, StructField, StructRepr, StructType, Type,
     diagnostics::{SourceSpan, Span},
     interner::Symbol,
 };
@@ -97,6 +102,7 @@ fn parse_optional_type_nested<'input, P: Parser<'input>>(
         Token::Ptr => parse_pointer_type(parser),
         Token::Array => parse_array_type(parser),
         Token::Struct => parse_struct_type(parser),
+        Token::Enum => parse_enum_type(parser),
         Token::Lparen => parse_function_type(parser),
         Token::BangIdent(id) => parse_alias_or_dialect_type(parser, id, start, end),
         token => match parse_scalar_type(parser, token, start, end) {
@@ -224,6 +230,82 @@ fn parse_struct_type<'input, P: Parser<'input>>(parser: &mut P) -> ParseResult<T
         None => StructType::new(fields),
     };
     Ok(parser.context().struct_type(ty.with_repr(repr.unwrap_or_default())))
+}
+
+/// Parses `enum`, an optional name, then the discriminant type and variants in angle brackets.
+fn parse_enum_type<'input, P: Parser<'input>>(parser: &mut P) -> ParseResult<Type> {
+    let start = parser.token_stream_mut().peek()?.map_or(0, |(start, ..)| start);
+    parser.token_stream_mut().next()?;
+    let name = if parser.token_stream_mut().is_next(|tok| matches!(tok, Token::Langle)) {
+        None
+    } else {
+        Some(parse_name(parser, "enum name or '<'")?)
+    };
+    parser.parse_langle()?;
+
+    let discriminant = parse_type(parser)?;
+    // An invalid discriminant is reported with the enum, once it has been parsed.
+    let width = EnumType::discriminant_width(discriminant);
+
+    let mut variants = SmallVec::<[EnumVariant; 4]>::default();
+    if parser.parse_optional_semicolon()? {
+        loop {
+            variants.push(parse_enum_variant(parser, width)?);
+            if !parser.parse_optional_comma()? {
+                break;
+            }
+        }
+    }
+    parser.parse_rangle()?;
+
+    let span = span!(parser.source_id(), start, parser.token_stream().previous_end());
+    let ty =
+        EnumType::new(name, discriminant, variants).map_err(|err| ParserError::InvalidType {
+            span,
+            reason: err.to_string(),
+        })?;
+    Ok(parser.context().enum_type(ty))
+}
+
+/// Parses an enum variant: a name, an optional `= value` and an optional `: payload`.
+///
+/// `width` is the width of the discriminant type, if that is a valid one.
+fn parse_enum_variant<'input, P: Parser<'input>>(
+    parser: &mut P,
+    width: Option<u32>,
+) -> ParseResult<EnumVariant> {
+    let mut variant = EnumVariant::new(parse_name(parser, "variant name")?);
+    if parser.parse_optional_equal()? {
+        let (span, literal) = parser.parse_integer_literal()?.into_parts();
+        // Without a valid discriminant the enum is rejected, whatever its values are.
+        let bits = width.map_or(Ok(0), |width| literal_bits(literal, width, span))?;
+        variant = variant.with_value(bits);
+    }
+    if parser.parse_optional_colon()? {
+        variant = variant.with_payload(parse_type(parser)?);
+    }
+    Ok(variant)
+}
+
+/// The `width`-bit pattern that `literal`, found at `span`, stands for.
+///
+/// A literal may be anything in `[-2^(width-1), 2^width - 1]`, and a negative one is its two's
+/// complement.
+fn literal_bits(literal: IntegerLiteral, width: u32, span: SourceSpan) -> ParseResult<u128> {
+    let mask = if width == 128 {
+        u128::MAX
+    } else {
+        (1u128 << width) - 1
+    };
+    let bits = if literal.negative {
+        (literal.magnitude <= 1u128 << (width - 1)).then(|| literal.magnitude.wrapping_neg() & mask)
+    } else {
+        (literal.magnitude <= mask).then_some(literal.magnitude)
+    };
+    bits.ok_or_else(|| ParserError::InvalidIntegerLiteral {
+        span,
+        reason: format!("value is out of range for a {width}-bit discriminant"),
+    })
 }
 
 /// Parses a struct representation, if the next token starts one.
@@ -421,6 +503,7 @@ pub(super) fn bare_builtin_spelling(name: &str) -> Option<&'static str> {
         "ptr" => "`ptr`, `ptr<N>`, `ptr<T>` or `ptr<T, N>`",
         "array" => "`array<T; N>`",
         "struct" => "`struct<..>`",
+        "enum" => "`enum<..>`",
         "function" => "`(..) -> ..`",
         "unknown" => "`?`",
         "never" => "`never`",

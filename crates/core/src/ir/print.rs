@@ -155,6 +155,7 @@
 //!               | pointer-type
 //!               | array-type
 //!               | struct-type
+//!               | enum-type
 //!               | function-type
 //!
 //! unknown-type := '?'
@@ -176,6 +177,15 @@
 //!               | 'transparent'
 //! struct-field := (field-name ':')? type ('align' '(' nonzero-decimal-literal ')')?
 //! field-name   := bare-id | string
+//!
+//! enum-type    := 'enum' enum-name? '<' type (';' enum-variant (',' enum-variant)*)? '>'
+//! enum-name    := bare-id | string
+//! enum-variant := variant-name ('=' integer-literal)? (':' type)?
+//! variant-name := bare-id | string
+//!
+//! The type of an enum is its discriminant, an integer type of at most 128 bits or `isize`. A
+//! variant without `= value` has the previous variant's value plus one, or 0 if it is the
+//! first; the printer writes a value only where it differs from that, as a signed decimal.
 //!
 //! function-type := type-list-parens '->' function-results
 //! function-results := type-list-parens | type

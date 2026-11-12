@@ -27,8 +27,8 @@ pub(crate) use self::{
     uniquer::TypeUniquer,
 };
 use crate::dialects::builtin::types::{
-    ArrayType, FloatType, FunctionType, IntegerType, IsizeType, NeverType, PointerType, StructType,
-    UnknownType,
+    ArrayType, EnumType, FloatType, FunctionType, IntegerType, IsizeType, NeverType, PointerType,
+    StructType, UnknownType,
 };
 
 /// The value a type is uniqued by: two types are the same type exactly when they have the same
@@ -343,6 +343,12 @@ impl Type {
         self.downcast_ref::<StructType>()
     }
 
+    /// This type as an enum type, if it is one.
+    #[inline]
+    pub fn as_enum(&self) -> Option<&EnumType> {
+        self.downcast_ref::<EnumType>()
+    }
+
     /// This type as a function type, if it is one.
     #[inline]
     pub fn as_function(&self) -> Option<&FunctionType> {
@@ -397,6 +403,11 @@ impl Type {
     /// Returns true if this type is a struct.
     pub fn is_struct(&self) -> bool {
         self.as_struct().is_some()
+    }
+
+    /// Returns true if this type is an enum.
+    pub fn is_enum(&self) -> bool {
+        self.as_enum().is_some()
     }
 
     /// Returns true if this type is a function type.

@@ -1,6 +1,7 @@
 //! The builtin dialect's types, which print without a `!builtin.` prefix.
 
 mod array;
+mod enumeration;
 mod float;
 mod function;
 mod integer;
@@ -9,8 +10,11 @@ mod rec_var;
 mod special;
 mod structure;
 
+use core::fmt::{self, Write};
+
 pub use self::{
     array::ArrayType,
+    enumeration::{EnumType, EnumVariant, InvalidEnumType},
     float::FloatType,
     function::FunctionType,
     integer::{IntegerType, IsizeType},
@@ -19,6 +23,17 @@ pub use self::{
     special::{NeverType, UnknownType},
     structure::{StructField, StructRepr, StructType},
 };
+use crate::types::TypeFormatter;
+
+/// Writes `name` bare if it is a bare identifier, otherwise as a quoted, escaped string.
+fn print_name(printer: &mut TypeFormatter<'_, '_>, name: crate::interner::Symbol) -> fmt::Result {
+    let text = name.as_str();
+    if crate::types::is_bare_identifier(text) {
+        printer.write_str(text)
+    } else {
+        write!(printer, "\"{}\"", text.escape_default())
+    }
+}
 
 #[cfg(test)]
 mod tests {

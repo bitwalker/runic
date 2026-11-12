@@ -4,6 +4,7 @@ use core::{
     num::NonZeroU16,
 };
 
+use super::print_name;
 use crate::{
     derive::{DialectType, TypeComponent},
     dialects::builtin::BuiltinDialect,
@@ -118,16 +119,6 @@ impl StructType {
 impl TypeAliasName for StructType {
     fn alias_name(&self) -> Option<Symbol> {
         self.name
-    }
-}
-
-/// Writes `name` bare if it is a bare identifier, otherwise as a quoted, escaped string.
-fn print_name(printer: &mut TypeFormatter<'_, '_>, name: Symbol) -> fmt::Result {
-    let text = name.as_str();
-    if crate::types::is_bare_identifier(text) {
-        printer.write_str(text)
-    } else {
-        write!(printer, "\"{}\"", text.escape_default())
     }
 }
 

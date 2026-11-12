@@ -10,8 +10,8 @@ use super::*;
 use crate::{
     FxHashMap,
     dialects::builtin::types::{
-        ArrayType, FloatType, FunctionType, IntegerType, IsizeType, NeverType, PointerType,
-        RecVarType, StructType, UnknownType,
+        ArrayType, EnumType, FloatType, FunctionType, IntegerType, IsizeType, NeverType,
+        PointerType, RecVarType, StructType, UnknownType,
     },
     types::{
         RecGroup, RecGroupData, RecGroupError, Type, TypeFlags, TypeName, TypeRegistration,
@@ -472,6 +472,17 @@ impl Context {
     pub fn struct_type(&self, ty: StructType) -> crate::types::Type {
         for field in ty.fields() {
             self.debug_assert_owns_type(field.ty, "a field of a struct type");
+        }
+        self.intern_type(ty)
+    }
+
+    /// The enum type `ty`. Its discriminant and payload types must belong to this context.
+    pub fn enum_type(&self, ty: EnumType) -> crate::types::Type {
+        self.debug_assert_owns_type(ty.discriminant(), "the discriminant of an enum type");
+        for variant in ty.variants() {
+            if let Some(payload) = variant.payload() {
+                self.debug_assert_owns_type(payload, "the payload of an enum variant");
+            }
         }
         self.intern_type(ty)
     }

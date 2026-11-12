@@ -1588,6 +1588,125 @@ fn every_builtin_type_round_trips_through_the_printer_and_parser() {
     }
 }
 
+/// Parses `text`, prints it, and checks that the text is `printed` and that it parses to the same
+/// type again.
+fn assert_type_prints_as(context: &Rc<Context>, text: &str, printed: &str) -> Type {
+    let ty = parse_type_text(context, text).unwrap_or_else(|err| panic!("{text}: {err:?}"));
+    assert_eq!(format!("{ty}"), printed, "{text}");
+    assert_eq!(parse_type_text(context, printed).unwrap(), ty, "{printed} is not uniqued");
+    ty
+}
+
+#[test]
+fn enum_types_round_trip_through_the_printer_and_parser() {
+    let context = Rc::new(Context::default());
+    for text in [
+        "enum<i8>",
+        "enum<i8; a>",
+        "enum option<i8; none, some: i32>",
+        "enum color<i8; red = 1, green = 2, blue = 4>",
+        "enum<i8; a = -1>",
+        "enum<i8; a, b = 5, c = 6>",
+        "enum<i1; a, b>",
+        "enum<isize; a, b: ptr<i8>>",
+        "enum<i128; a = -170141183460469231731687303715884105728>",
+        "enum<i3; a = -4, b = -3>",
+        "enum \"my enum\"<i32; struct, enum: i8, \"a b\">",
+        "enum<i8; a: enum<i8; b: i8>>",
+        "struct<enum<i8; a>>",
+        "struct<enum: enum<i8; enum>>",
+        "ptr<enum<i8; a, b>>",
+    ] {
+        assert_type_prints_as(&context, text, text);
+    }
+}
+
+#[test]
+fn enum_values_are_resolved_and_printed_as_signed_decimals() {
+    let context = Rc::new(Context::default());
+    let minus_one = assert_type_prints_as(&context, "enum<i8; a = -1>", "enum<i8; a = -1>");
+    assert_eq!(parse_type_text(&context, "enum<i8; a = 255>").unwrap(), minus_one);
+    assert_eq!(minus_one.as_enum().unwrap().variants()[0].value(), 255);
+    assert_eq!(parse_type_text(&context, "enum<i8; a = 0xff>").unwrap(), minus_one);
+    let implicit = assert_type_prints_as(&context, "enum<i8; a = 0, b = 1>", "enum<i8; a, b>");
+    assert_eq!(parse_type_text(&context, "enum<i8; a, b>").unwrap(), implicit);
+    let widest = assert_type_prints_as(
+        &context,
+        "enum<i128; a = 340282366920938463463374607431768211455>",
+        "enum<i128; a = -1>",
+    );
+    assert_eq!(widest.as_enum().unwrap().variants()[0].value(), u128::MAX);
+    assert_eq!(parse_type_text(&context, "enum<i128; a = -1>").unwrap(), widest);
+}
+
+#[test]
+fn enum_types_nest_in_aggregates_and_pointers() {
+    let context = Rc::new(Context::default());
+    let color = parse_type_text(&context, "enum color<i8; red, green>").unwrap();
+    let ty = parse_type_text(
+        &context,
+        "struct<x: enum color<i8; red, green>, y: ptr<enum color<i8; red, green>>>",
+    )
+    .unwrap();
+    let fields = ty.as_struct().unwrap().fields();
+    assert_eq!(fields[0].ty, color);
+    assert_eq!(fields[1].ty.pointee(), Some(color));
+}
+
+#[test]
+fn invalid_enum_types_are_reported_with_a_reason() {
+    let context = Rc::new(Context::default());
+    for (text, reason) in [
+        ("enum<i8; a, a>", "more than one variant named `a`"),
+        ("enum<i8; a = 1, b = 1>", "have the same value"),
+        ("enum<i8; a = 1, b = 0, c>", "have the same value"),
+        ("enum<i8; a = 256>", "out of range for a 8-bit discriminant"),
+        ("enum<i8; a = -129>", "out of range for a 8-bit discriminant"),
+        ("enum<i8; a = 0xfff>", "out of range for a 8-bit discriminant"),
+        ("enum<i128; a = 340282366920938463463374607431768211456>", "number too large"),
+        ("enum<i128; a = -170141183460469231731687303715884105729>", "out of range"),
+        ("enum<i8; a = 255, b>", "the implicit value of variant `b` does not fit"),
+        ("enum<f32; a>", "the discriminant of an enum is an integer type"),
+        ("enum<ptr; a>", "the discriminant of an enum is an integer type"),
+        ("enum<i129; a>", "the discriminant of an enum is an integer type"),
+        ("enum<struct<i8>; a>", "the discriminant of an enum is an integer type"),
+        ("enum<i8; a = 0xff.>", ""),
+        ("enum<i8; a = -0xff>", "only a decimal literal can be negative"),
+        ("enum<i8; a", ""),
+        ("enum<i8; a,>", ""),
+        ("enum<i8;>", ""),
+        ("enum<i8 a>", ""),
+        ("enum<>", ""),
+        ("enum", ""),
+    ] {
+        let message = type_error_text(&context, text);
+        assert!(message.contains(reason), "{text}: {message}");
+    }
+}
+
+#[cfg(feature = "std")]
+#[test]
+fn enum_payload_nesting_is_limited() {
+    on_a_1_mb_stack(|| {
+        let context = Rc::new(Context::default());
+        let deepest = nested_type_text("enum<i8; a: ", "i32", ">", 64);
+        if let Err(err) = parse_type_text(&context, &deepest) {
+            panic!("64 levels should parse: {err:?}");
+        }
+        let message = type_error_text(&context, &nested_type_text("enum<i8; a: ", "i32", ">", 65));
+        assert!(message.contains("type nesting is too deep (limit 64)"), "{message}");
+        let message = type_error_text(&context, &nested_type_text("enum<i8; a: ", "", "", 10_000));
+        assert!(message.contains("type nesting is too deep (limit 64)"), "{message}");
+    });
+}
+
+#[test]
+fn a_builtin_enum_named_as_a_dialect_type_gives_its_bare_spelling() {
+    let context = Rc::new(Context::default());
+    let message = type_error_text(&context, "!builtin.enum");
+    assert!(message.contains("`enum<..>`"), "{message}");
+}
+
 /// A builtin type named as if it were a dialect type is an error that gives its bare spelling.
 #[test]
 fn builtin_types_are_written_without_a_dialect_prefix() {

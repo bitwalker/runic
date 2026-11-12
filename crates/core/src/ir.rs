@@ -97,8 +97,9 @@ pub use self::{
 };
 pub use crate::{
     dialects::builtin::types::{
-        ArrayType, FloatType, FunctionType, IntegerType, IsizeType, NeverType, PointerType,
-        RecVarType, StructField, StructRepr, StructType, UnknownType,
+        ArrayType, EnumType, EnumVariant, FloatType, FunctionType, IntegerType, InvalidEnumType,
+        IsizeType, NeverType, PointerType, RecVarType, StructField, StructRepr, StructType,
+        UnknownType,
     },
     types::{
         RecGroup, RecGroupError, Type, TypeAliasName, TypeComponent, TypeFormatter, TypeImpl,
