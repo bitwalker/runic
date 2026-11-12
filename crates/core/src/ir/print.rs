@@ -104,6 +104,7 @@
 //!
 //! builtin-attribute := type-attribute
 //!                    | integer-attribute
+//!                    | int-attribute
 //!                    | boolean-attribute
 //!                    | string-attribute
 //!                    | symbol-ref-attribute
@@ -114,6 +115,7 @@
 //! int-attribute := '#builtin.int' '<' integer-literal ':' type '>'
 //! boolean-attribute := 'true' | 'false'
 //! string-attribute := string
+//!     (read as written, escapes included: only `#builtin.string<..>` is unescaped today)
 //! symbol-ref-attribute := symbol-ref-id ('::' symbol-ref-id)*
 //! location-attribute := 'loc' '(' location ')'
 //!

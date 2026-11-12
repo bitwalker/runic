@@ -9,9 +9,9 @@ use crate::traits::ValueRangeConstraint;
 /// integer, is zero-extended to its storage width. Signed bounds interpret the same bit pattern
 /// at `width`; they are only meaningful for signed ordering at that width.
 ///
-/// This mirrors MLIR's `ConstantIntRanges`, but is intentionally bounded to the integer widths an [Int]
-/// can hold (1 to 128 bits). Values with unsupported or non-integer types are
-/// represented by `width == 0`.
+/// This mirrors MLIR's `ConstantIntRanges`, but is intentionally bounded to the integer widths an
+/// [Int] can hold (1 to 128 bits). Values with unsupported or non-integer types are represented by
+/// `width == 0`.
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct ConstantIntRange {
     width: u16,

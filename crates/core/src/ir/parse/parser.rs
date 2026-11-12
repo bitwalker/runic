@@ -1164,17 +1164,12 @@ impl IntegerLiteral {
         if !(1..=Int::MAX_WIDTH).contains(&width) {
             return None;
         }
-        let mask = if width == 128 {
-            u128::MAX
+        if self.negative {
+            (self.magnitude <= 1u128 << (width - 1))
+                .then(|| Int::from_bits(width, self.magnitude.wrapping_neg()))
         } else {
-            (1u128 << width) - 1
-        };
-        let bits = if self.negative {
-            (self.magnitude <= 1u128 << (width - 1)).then(|| self.magnitude.wrapping_neg() & mask)
-        } else {
-            (self.magnitude <= mask).then_some(self.magnitude)
-        };
-        bits.map(|bits| Int::from_bits(width, bits))
+            Int::from_unsigned(width, self.magnitude)
+        }
     }
 
     /// The value this literal, found at `span`, stands for as a value of the integer type `ty`.

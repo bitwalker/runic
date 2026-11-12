@@ -111,6 +111,9 @@ impl Int {
     }
 
     /// The bits as a two's complement number: the value, sign-extended from [Self::width].
+    ///
+    /// A 1-bit value that is set reads as `-1`, not `1`: use [Self::unsigned] where `0` or `1` is
+    /// meant, as for a boolean.
     pub const fn signed(self) -> i128 {
         let shift = 128 - self.width as u32;
         ((self.bits << shift) as i128) >> shift

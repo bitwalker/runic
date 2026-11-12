@@ -3436,6 +3436,26 @@ fn value_text(attr: &crate::AttributeRef) -> String {
     format!("{value} : {ty}")
 }
 
+/// Parses `text` as an attribute dictionary of one entry, `a`, and returns its value.
+fn parse_dictionary_entry_text(
+    context: &Rc<Context>,
+    text: &str,
+) -> ParseResult<crate::AttributeRef> {
+    use super::{DefaultParser, ParsedAttrs, Parser, ParserState, Scanner, TokenStream};
+
+    let id = context.add_source("attrs.runic", text).unwrap();
+    let sources = context.sources();
+    let scanner = Scanner::new(sources.get(id).unwrap().text.unwrap());
+    let token_stream = TokenStream::new(id, scanner);
+    let mut parser =
+        DefaultParser::new(ParserState::new(ParserConfig::new(context.clone()), token_stream));
+    let mut attrs = ParsedAttrs::default();
+    parser.parse_attribute_dict(&mut attrs)?;
+    assert_eq!(attrs.len(), 1, "{text}");
+    assert_eq!(attrs[0].name.as_str(), "a", "{text}");
+    Ok(attrs[0].value)
+}
+
 #[test]
 fn bool_attributes_parse() -> TestResult {
     use crate::dialects::builtin::attributes::BoolAttr;
@@ -3446,6 +3466,8 @@ fn bool_attributes_parse() -> TestResult {
         let attr = parse_attribute_text(&context, &text, context.unknown_type())?;
         assert_eq!(**attr.borrow().downcast_ref::<BoolAttr>().unwrap(), value);
         assert_eq!(print_attribute_text(&context, &attr), text);
+        let entry = parse_dictionary_entry_text(&context, &format!("{{ a = {text} }}"))?;
+        assert_eq!(**entry.borrow().downcast_ref::<BoolAttr>().unwrap(), value);
     }
     for text in ["#builtin.bool<1>", "#builtin.bool<x>", "#builtin.bool<>", "#builtin.bool<true"] {
         assert!(parse_attribute_text(&context, text, context.unknown_type()).is_err(), "{text}");
@@ -3477,6 +3499,8 @@ fn string_attributes_parse() -> TestResult {
     let attr =
         parse_attribute_text(&context, "#builtin.string<\"a\\\"b\\n\">", context.unknown_type())?;
     assert_eq!(attr.borrow().downcast_ref::<StringAttr>().unwrap().as_str(), "a\"b\n");
+    let entry = parse_dictionary_entry_text(&context, "{ a = #builtin.string<\"str\"> }")?;
+    assert_eq!(entry.borrow().downcast_ref::<StringAttr>().unwrap().as_str(), "str");
     for text in ["#builtin.string<x>", "#builtin.string<1>", "#builtin.string<\"\\q\">"] {
         assert!(parse_attribute_text(&context, text, context.unknown_type()).is_err(), "{text}");
     }
@@ -3928,4 +3952,23 @@ fn a_well_formed_isize_constant_verifies() -> TestResult {
     let op = body.entry().front().unwrap();
     op.borrow().verify()?;
     Ok(())
+}
+
+/// `as_bool` reads any 1-bit integer attribute, an `i1` constant as well as a `BoolAttr`, and
+/// nothing wider.
+#[test]
+fn as_bool_reads_a_one_bit_integer_attribute() {
+    use crate::dialects::builtin::attributes::BoolAttr;
+
+    let context = Rc::new(Context::default());
+    let one = context.int_attr(Int::from(true), context.i1()).as_attribute_ref();
+    assert_eq!(one.borrow().as_bool(), Some(true));
+    let parsed = parse_attribute_text(&context, "0", context.i1()).unwrap();
+    assert_eq!(parsed.borrow().as_bool(), Some(false));
+    let tru = context.create_attribute::<BoolAttr, _>(true).as_attribute_ref();
+    assert_eq!(tru.borrow().as_bool(), Some(true));
+    let wide = context.int_attr(Int::from(1i32), context.i32()).as_attribute_ref();
+    assert_eq!(wide.borrow().as_bool(), None);
+    let narrow = context.int_attr(Int::from(1i8), context.i8()).as_attribute_ref();
+    assert_eq!(narrow.borrow().as_bool(), None);
 }

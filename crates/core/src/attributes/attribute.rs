@@ -121,12 +121,13 @@ impl dyn Attribute {
         Attribute::as_any_mut(self).downcast_mut::<T>()
     }
 
-    /// A convenience function for downcasting a `bool` attribute value to the concrete boolean
-    /// value.
+    /// The value of a 1-bit integer attribute (an `i1` constant or a `bool` attribute) as a
+    /// `bool`: `true` when its bit is set.
     ///
-    /// Returns `None` if this value is not a `bool`.
+    /// Returns `None` if this is not an integer attribute, or its value is not 1 bit wide.
     pub fn as_bool(&self) -> Option<bool> {
-        self.value().as_any().downcast_ref::<bool>().copied()
+        let value = self.as_int()?;
+        (value.width() == 1).then(|| !value.is_zero())
     }
 
     /// The value of an integer attribute as a `u32`, reading its bits as unsigned.

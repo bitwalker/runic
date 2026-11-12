@@ -1,6 +1,10 @@
 use crate::{
-    AttrPrinter, CompactString, attributes::AttrParser, derive::DialectAttribute,
-    dialects::builtin::BuiltinDialect, print::AsmPrinter,
+    AttrPrinter, AttributeRef, CompactString,
+    attributes::AttrParser,
+    derive::DialectAttribute,
+    dialects::builtin::BuiltinDialect,
+    parse::{ParseResult, Parser, ParserError, unescape},
+    print::AsmPrinter,
 };
 
 #[derive(DialectAttribute)]
@@ -19,16 +23,12 @@ impl AttrPrinter for StringAttr {
 }
 
 impl AttrParser for StringAttr {
-    fn parse(
-        parser: &mut dyn crate::parse::Parser<'_>,
-    ) -> crate::parse::ParseResult<crate::AttributeRef> {
+    fn parse(parser: &mut dyn Parser<'_>) -> ParseResult<AttributeRef> {
         let (span, quoted) = parser.parse_string()?.into_parts();
-        let value = crate::parse::unescape(&quoted).ok_or_else(|| {
-            crate::parse::ParserError::InvalidString {
-                span,
-                reason: "invalid escape sequence: a string is escaped as by `str::escape_default`"
-                    .into(),
-            }
+        let value = unescape(&quoted).ok_or_else(|| ParserError::InvalidString {
+            span,
+            reason: "invalid escape sequence: a string is escaped as by `str::escape_default`"
+                .into(),
         })?;
         Ok(parser
             .context_rc()

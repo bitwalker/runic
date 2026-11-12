@@ -1,9 +1,9 @@
 use crate::{
-    AttrPrinter, Int,
+    AttrPrinter, AttributeRef, Int,
     attributes::{AttrParser, BoolLikeAttr, IntegerLikeAttr},
     derive::DialectAttribute,
     dialects::builtin::BuiltinDialect,
-    parse::Token,
+    parse::{ParseResult, Parser, Token},
     print::AsmPrinter,
 };
 
@@ -47,9 +47,7 @@ impl AttrPrinter for BoolAttr {
 }
 
 impl AttrParser for BoolAttr {
-    fn parse(
-        parser: &mut dyn crate::parse::Parser<'_>,
-    ) -> crate::parse::ParseResult<crate::AttributeRef> {
+    fn parse(parser: &mut dyn Parser<'_>) -> ParseResult<AttributeRef> {
         let value = parser.token_stream_mut().expect_map("'true' or 'false'", |tok| match tok {
             Token::True => Some(true),
             Token::False => Some(false),

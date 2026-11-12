@@ -19,9 +19,11 @@ pub trait Marker {}
 
 impl<T> Marker for T where T: AttributeRegistration<Value = ()> {}
 
-/// Implemented by every attribute whose value is an integer of a fixed width: [crate::IntAttr],
-/// [crate::dialects::builtin::attributes::BoolAttr] and the per-width attributes `I8Attr` ...
-/// `I128Attr`. It reads and writes the value as an [Int], whatever the attribute stores.
+/// Implemented by every attribute whose value is an integer of a fixed width:
+/// [IntAttr](crate::dialects::builtin::attributes::IntAttr),
+/// [BoolAttr](crate::dialects::builtin::attributes::BoolAttr) and the per-width attributes
+/// `I8Attr` ... `I128Attr`. It reads and writes the value as an [Int], whatever the attribute
+/// stores.
 pub trait IntegerLikeAttr: Attribute {
     /// The value of this attribute.
     fn as_int(&self) -> Int;
