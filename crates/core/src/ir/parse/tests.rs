@@ -3212,3 +3212,79 @@ rec {
     assert_eq!(print_root(reparsed), reprinted);
     assert_eq!(reprinted.split_once("\n\n").unwrap().0, declarations);
 }
+
+fn lit(negative: bool, magnitude: u128) -> super::IntegerLiteral {
+    super::IntegerLiteral {
+        negative,
+        magnitude,
+    }
+}
+
+#[test]
+fn integer_literals_convert_to_int() {
+    use crate::Int;
+
+    let context = Context::default();
+    let to_int = |literal, ty| super::IntegerLiteral::to_int(literal, ty, SourceSpan::UNKNOWN);
+    let i8 = context.i8();
+    assert_eq!(to_int(lit(false, 255), i8).unwrap(), Int::from(-1i8));
+    assert_eq!(to_int(lit(true, 1), i8).unwrap(), Int::from(255u8));
+    assert_eq!(to_int(lit(true, 128), i8).unwrap(), Int::from(-128i8));
+    assert!(to_int(lit(false, 256), i8).is_err());
+    assert!(to_int(lit(true, 129), i8).is_err());
+
+    let i1 = context.i1();
+    assert_eq!(to_int(lit(true, 1), i1).unwrap(), Int::from(true));
+    assert_eq!(to_int(lit(false, 0), i1).unwrap(), Int::from(false));
+    assert_eq!(to_int(lit(false, 1), i1).unwrap(), Int::from(true));
+    assert!(to_int(lit(false, 2), i1).is_err());
+    assert!(to_int(lit(true, 2), i1).is_err());
+
+    let i7 = context.int_type(7);
+    assert_eq!(to_int(lit(false, 127), i7).unwrap(), Int::from_bits(7, 127));
+    assert_eq!(to_int(lit(true, 64), i7).unwrap(), Int::from_bits(7, 64));
+    assert!(to_int(lit(false, 128), i7).is_err());
+    assert!(to_int(lit(true, 65), i7).is_err());
+
+    let isize = context.isize();
+    assert_eq!(to_int(lit(true, 1), isize).unwrap(), Int::from(-1i64));
+    assert_eq!(to_int(lit(false, 1 << 63), isize).unwrap().width(), 64);
+    assert!(to_int(lit(false, 1 << 64), isize).is_err());
+
+    assert_eq!(to_int(lit(false, u128::MAX), context.i128()).unwrap(), Int::all_ones(128));
+
+    let reason = |result: ParseResult<Int>| match result.unwrap_err() {
+        crate::parse::ParserError::InvalidIntegerLiteral { reason, .. } => reason,
+        other => panic!("unexpected error {other:?}"),
+    };
+    assert_eq!(
+        reason(to_int(lit(false, 1), context.int_type(256))),
+        "integer literals wider than 128 bits are not supported"
+    );
+    let ptr = context.opaque_ptr_type();
+    assert_eq!(
+        reason(to_int(lit(false, 1), ptr)),
+        format!("expected an integer type, got {ptr}")
+    );
+    assert_eq!(reason(to_int(lit(false, 256), i8)), format!("value is out of range for {i8}"));
+}
+
+#[test]
+fn int_text_round_trips_through_literals() {
+    use crate::Int;
+
+    for w in 1..=9u32 {
+        for b in 0..(1u128 << w) {
+            let x = Int::from_bits(w, b);
+            let text = format!("{x}");
+            let (negative, digits) = match text.strip_prefix('-') {
+                Some(digits) => (true, digits),
+                None => (false, text.as_str()),
+            };
+            let literal = lit(negative, digits.parse::<u128>().unwrap());
+            assert_eq!(literal.to_int_of_width(w), Some(x), "{text} : i{w}");
+        }
+    }
+    assert_eq!(lit(false, 1).to_int_of_width(0), None);
+    assert_eq!(lit(false, 1).to_int_of_width(129), None);
+}

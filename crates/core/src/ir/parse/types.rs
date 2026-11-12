@@ -44,7 +44,7 @@ use core::num::NonZeroU16;
 
 use super::{IntegerLiteral, ParseResult, Parser, ParserError, ParserExt, Token};
 use crate::{
-    EnumType, EnumVariant, IntegerType, SmallVec, StructField, StructRepr, StructType, Type,
+    EnumType, EnumVariant, Int, IntegerType, SmallVec, StructField, StructRepr, StructType, Type,
     diagnostics::{SourceSpan, Span},
     interner::Symbol,
 };
@@ -284,37 +284,23 @@ fn parse_enum_variant<'input, P: Parser<'input>>(
     if parser.parse_optional_equal()? {
         let (span, literal) = parser.parse_integer_literal()?.into_parts();
         // Without a valid discriminant the enum is rejected, whatever its values are.
-        let bits = width.map_or(Ok(0), |width| literal_bits(literal, width, span))?;
+        let bits = width.map_or(Ok(0), |width| {
+            literal.to_int_of_width(width).map(Int::unsigned).ok_or_else(|| {
+                ParserError::InvalidIntegerLiteral {
+                    span,
+                    reason: format!(
+                        "value is out of range for a discriminant of {width} bit{}",
+                        if width == 1 { "" } else { "s" }
+                    ),
+                }
+            })
+        })?;
         variant = variant.with_value(bits);
     }
     if parser.parse_optional_colon()? {
         variant = variant.with_payload(parse_type(parser)?);
     }
     Ok(variant)
-}
-
-/// The `width`-bit pattern that `literal`, found at `span`, stands for.
-///
-/// A literal may be anything in `[-2^(width-1), 2^width - 1]`, and a negative one is its two's
-/// complement.
-fn literal_bits(literal: IntegerLiteral, width: u32, span: SourceSpan) -> ParseResult<u128> {
-    let mask = if width == 128 {
-        u128::MAX
-    } else {
-        (1u128 << width) - 1
-    };
-    let bits = if literal.negative {
-        (literal.magnitude <= 1u128 << (width - 1)).then(|| literal.magnitude.wrapping_neg() & mask)
-    } else {
-        (literal.magnitude <= mask).then_some(literal.magnitude)
-    };
-    bits.ok_or_else(|| ParserError::InvalidIntegerLiteral {
-        span,
-        reason: format!(
-            "value is out of range for a discriminant of {width} bit{}",
-            if width == 1 { "" } else { "s" }
-        ),
-    })
 }
 
 /// Parses a struct representation, if the next token starts one.

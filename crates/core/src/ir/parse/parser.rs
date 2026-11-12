@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
-    AttributeRef, AttributeRegistration, Immediate, ImmediateAttr, SymbolNameComponent, SymbolPath,
-    SymbolUse,
+    AttributeRef, AttributeRegistration, Immediate, ImmediateAttr, Int, SymbolNameComponent,
+    SymbolPath, SymbolUse,
     diagnostics::{Report, report},
     dialects::builtin::{
         self,
@@ -886,7 +886,7 @@ pub trait ParserExt<'input>: Parser<'input> {
     /// Parses an integer literal written for a value of an integer type: an optional `-` followed
     /// by a decimal literal, or a hex or binary literal, which cannot be negated.
     ///
-    /// See [IntegerLiteral::to_immediate] for the value it stands for in a given type.
+    /// See [IntegerLiteral::to_int] for the value it stands for in a given type.
     fn parse_integer_literal(&mut self) -> ParseResult<Span<IntegerLiteral>> {
         let start = match self.token_stream_mut().peek()? {
             Some((start, ..)) => start,
@@ -1159,6 +1159,61 @@ impl<'input, P: ?Sized + Parser<'input>> ParserExt<'input> for P {}
 pub struct IntegerLiteral {
     pub negative: bool,
     pub magnitude: u128,
+}
+
+impl IntegerLiteral {
+    /// The `width`-bit integer this literal stands for, or `None` unless `1 <= width <= 128` and
+    /// the literal is in `[-2^(width-1), 2^width - 1]`. A negative literal is its two's complement.
+    pub fn to_int_of_width(self, width: u32) -> Option<Int> {
+        if !(1..=Int::MAX_WIDTH).contains(&width) {
+            return None;
+        }
+        let mask = if width == 128 {
+            u128::MAX
+        } else {
+            (1u128 << width) - 1
+        };
+        let bits = if self.negative {
+            (self.magnitude <= 1u128 << (width - 1)).then(|| self.magnitude.wrapping_neg() & mask)
+        } else {
+            (self.magnitude <= mask).then_some(self.magnitude)
+        };
+        bits.map(|bits| Int::from_bits(width, bits))
+    }
+
+    /// The value this literal, found at `span`, stands for as a value of the integer type `ty`.
+    ///
+    /// Integer types are signless: an `N`-bit literal may be anything in `[-2^(N-1), 2^N - 1]`,
+    /// and stands for its `N`-bit pattern (so `255` and `-1` are the same `i8`). An `i1` literal
+    /// is `-1`, `0` or `1`. `isize` is taken as 64 bits.
+    ///
+    /// Fails, with an error at `span`, when `ty` is not an integer type, is wider than 128 bits,
+    /// or the literal is out of range for it.
+    pub fn to_int(self, ty: Type, span: SourceSpan) -> ParseResult<Int> {
+        let width = if ty.is_isize() {
+            64
+        } else {
+            match ty.integer_width() {
+                Some(width) => width,
+                None => {
+                    return Err(ParserError::InvalidIntegerLiteral {
+                        span,
+                        reason: format!("expected an integer type, got {ty}"),
+                    });
+                }
+            }
+        };
+        if width > Int::MAX_WIDTH {
+            return Err(ParserError::InvalidIntegerLiteral {
+                span,
+                reason: "integer literals wider than 128 bits are not supported".into(),
+            });
+        }
+        self.to_int_of_width(width).ok_or_else(|| ParserError::InvalidIntegerLiteral {
+            span,
+            reason: format!("value is out of range for {ty}"),
+        })
+    }
 }
 
 impl IntegerLiteral {

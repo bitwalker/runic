@@ -3,7 +3,7 @@ use core::fmt::{self, Write};
 
 use super::print_name;
 use crate::{
-    FxHashMap, FxHashSet,
+    FxHashMap, FxHashSet, Int,
     derive::{DialectType, TypeComponent},
     dialects::builtin::BuiltinDialect,
     interner::Symbol,
@@ -195,15 +195,7 @@ impl TypeAliasName for EnumType {
 
 /// Writes the `width`-bit pattern `bits` as a signed decimal; an `i1` is written as `0` or `1`.
 fn write_signed(printer: &mut TypeFormatter<'_, '_>, bits: u128, width: u32) -> fmt::Result {
-    if width == 1 || bits >> (width - 1) == 0 {
-        return write!(printer, "{bits}");
-    }
-    let mask = if width == 128 {
-        u128::MAX
-    } else {
-        (1u128 << width) - 1
-    };
-    write!(printer, "-{}", bits.wrapping_neg() & mask)
+    write!(printer, "{}", Int::from_bits(width, bits))
 }
 
 impl TypePrinter for EnumType {
