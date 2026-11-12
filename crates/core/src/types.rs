@@ -298,10 +298,14 @@ impl PartialEq for Type {
         core::ptr::addr_eq(self.0.as_ptr(), other.0.as_ptr())
     }
 }
+/// A type hashes as its stored hash, which is computed from its value, and so from its child
+/// types' stored hashes in turn: equal structure gives an equal hash, in any context and any
+/// run, and the iteration order of a map keyed by types does not depend on where the types
+/// happen to be allocated. Equality is still identity, which implies an equal hash.
 impl Hash for Type {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.0.as_ptr().addr().hash(state);
+        state.write_u64(self.stored_hash());
     }
 }
 impl fmt::Debug for Type {
@@ -381,6 +385,13 @@ impl fmt::Write for TypeFormatter<'_, '_> {
 }
 
 /// The hash a type with value `value` is stored under in the uniquer.
+///
+/// It is the same in every run of the same build for the same value: it hashes `T`'s [TypeId],
+/// which is fixed for a build, and the value, whose child types hash as their own stored hashes
+/// and whose [Symbol](crate::interner::Symbol)s hash as their interned indices. Those indices
+/// depend on the order in which strings are first interned in the process, so the hash is
+/// reproducible given the same order of construction, but differs between builds and may
+/// differ when strings are interned in another order.
 pub(crate) fn hash_of<T: TypeImpl>(value: &T) -> u64 {
     let mut hasher = crate::FxHasher::default();
     TypeId::of::<T>().hash(&mut hasher);
@@ -656,6 +667,47 @@ mod tests {
         assert!(!first.owns_type(b) && !second.owns_type(a));
         assert!(!first.owns_type(second.i32()));
         assert_ne!(a.owner_id(), b.owner_id());
+    }
+
+    /// A type hashes by structure, so that maps keyed by types iterate in the same order in
+    /// every run that builds the same types in the same order.
+    #[test]
+    fn equal_types_of_two_contexts_hash_alike() {
+        use crate::{StructField, interner::Symbol};
+
+        fn hash(ty: Type) -> u64 {
+            let mut hasher = crate::FxHasher::default();
+            ty.hash(&mut hasher);
+            hasher.finish()
+        }
+        fn build(context: &Context) -> alloc::vec::Vec<Type> {
+            let i32 = context.i32();
+            let point = context.struct_type(StructType::named(
+                Symbol::intern("point"),
+                [StructField::new(i32).named(Symbol::intern("x")), StructField::new(i32)],
+            ));
+            let pair = context.intern_type(PairType {
+                first: point,
+                second: context.ptr_type(point),
+            });
+            alloc::vec![
+                i32,
+                context.int_type(24),
+                context.ptr_type(i32),
+                context.array_type(context.ptr_type(point), 3),
+                point,
+                context.function_type([point, i32], [context.never_type()]),
+                pair,
+            ]
+        }
+
+        let (first, second) = (Context::default(), Context::default());
+        let (a, b) = (build(&first), build(&second));
+        for (a, b) in a.iter().zip(&b) {
+            assert_ne!(a, b);
+            assert_eq!(hash(*a), hash(*b), "{a}");
+        }
+        assert_ne!(hash(a[0]), hash(a[1]));
     }
 
     #[test]
