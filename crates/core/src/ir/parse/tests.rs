@@ -4258,13 +4258,21 @@ fn a_dictionary_key_that_is_not_bare_round_trips() -> TestResult {
     );
     assert!(printed.contains("\"a b\" = "), "{printed}");
     assert!(printed.contains("\"a\\\"b\" = "), "{printed}");
+
+    // A type keyword is a bare key
+    let keywords = parse_dictionary_text(&context, "{ struct = true, i32 = true, ptr = true }")?;
+    let printed = print_dictionary_text(&context, &keywords);
+    for key in ["struct", "i32", "ptr"] {
+        assert!(printed.contains(&format!("{key} = ")), "{printed}");
+    }
     Ok(())
 }
 
 #[test]
 fn an_invalid_escape_in_a_dictionary_key_is_an_error() {
     let context = Rc::new(Context::default());
-    assert!(parse_dictionary_text(&context, "{ \"a\\qb\" = 1 }").is_err());
+    let err = parse_dictionary_text(&context, "{ \"a\\qb\" = true }").unwrap_err();
+    assert!(matches!(err, crate::parse::ParserError::InvalidString { .. }), "{err:?}");
 }
 
 /// `text` with the numbers of its value ids taken out: value ids count up across a context.
@@ -4482,6 +4490,49 @@ fn signature_attributes_round_trip() -> TestResult {
         &Signature::new(&context, [context.i32(), context.i64()], [context.i32()])
     );
     Ok(())
+}
+
+/// `Signature`'s `Display` and the IR printer write through two writers; for each signature, the
+/// `Display` text is the text the printer writes inside `#builtin.signature<..>`.
+#[test]
+fn a_signatures_display_is_the_text_the_printer_writes() {
+    use crate::dialects::builtin::attributes::SignatureAttr;
+
+    let context = Rc::new(Context::default());
+    let fields = [context.i32().into(), context.ptr_type(context.rec_var(0)).into()];
+    let body = context
+        .struct_type(crate::StructType::named(crate::interner::Symbol::intern("list"), fields));
+    let list = context.rec_group(&[body]).unwrap()[0];
+    let function = context.function_type([context.i32()], [context.i64()]);
+
+    let signatures = [
+        Signature::with_convention(&context, CallConv::new("a\"b"), [context.i32()], []),
+        Signature::with_convention(&context, CallConv::new("\u{e9}"), [], [context.i8()]),
+        Signature::new(&context, [list, context.ptr_type(list)], [context.ptr_type(list)]),
+        Signature::new(&context, [context.i32()], [function]),
+        Signature::new(&context, [function], [context.never_type()]),
+        Signature {
+            params: alloc::vec![
+                AbiParam::zext(context.i8(), &context),
+                AbiParam::sret(context.ptr_type(list), &context),
+            ],
+            results: alloc::vec![AbiParam::sext(context.i16(), &context)],
+            cc: CallConv::new("a\"b"),
+        },
+    ];
+    for signature in signatures {
+        let displayed = format!("{signature}");
+        let attr = context.create_attribute::<SignatureAttr, _>(signature);
+        let flags = Default::default();
+        let mut printer = AsmPrinter::fragment(context.clone(), &flags);
+        printer.print_attribute_value(&*attr.borrow());
+        let printed = printer.finish().to_string();
+        let inner = printed
+            .strip_prefix("#builtin.signature<")
+            .and_then(|text| text.strip_suffix('>'))
+            .unwrap_or_else(|| panic!("{printed}"));
+        assert_eq!(displayed, inner);
+    }
 }
 
 /// A calling-convention name with a quote and a non-ASCII character survives a declaration and a

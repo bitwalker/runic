@@ -663,8 +663,8 @@ impl<'a> AsmPrinter<'a> {
         self.document += text(format!("loc({loc})"));
     }
 
-    /// Print an identifier as either a bare identifier or a quoted, escaped string if it contains characters which
-    /// are not valid in bare identifiers.
+    /// Print an identifier as either a bare identifier or a quoted, escaped string if it contains
+    /// characters which are not valid in bare identifiers.
     ///
     /// This is only valid to call in positions where both bare identifiers and strings are valid.
     pub fn print_identifier(&mut self, ident: interner::Symbol) {
