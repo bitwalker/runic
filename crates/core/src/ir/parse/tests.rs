@@ -2774,6 +2774,29 @@ fn type_nesting_is_limited_in_a_rec_block() {
     });
 }
 
+/// 20,000 type declarations, each referring to the one before it, then an operation using the last,
+/// parse on a 1 MB stack.
+#[cfg(feature = "std")]
+#[test]
+fn many_type_declarations_parse() {
+    on_a_1_mb_stack(|| {
+        const N: usize = 20_000;
+        let mut declarations = String::from("type !a0 = i32;\n");
+        for i in 1..N {
+            declarations.push_str(&format!("type !a{i} = ptr<!a{}>;\n", i - 1));
+        }
+        let test = ParserTest::default();
+        let [last] = declared_types(&test, &declarations, &[&format!("!a{}", N - 1)])[..] else {
+            unreachable!()
+        };
+        let mut ty = last;
+        for _ in 1..N {
+            ty = ty.pointee().expect("a pointer");
+        }
+        assert_eq!(ty, test.context().i32());
+    });
+}
+
 /// A function `f`, built in a test of its own with the test dialect registered, with an argument of
 /// each type `params` returns and, in its body, a cast of its first argument to each type `casts`
 /// returns. The casts' types are written inside an attribute, `#builtin.type<..>`.

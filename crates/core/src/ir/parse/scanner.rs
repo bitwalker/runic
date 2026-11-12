@@ -115,17 +115,19 @@ impl<'input> Scanner<'input> {
     }
 
     /// Get a string slice representing the given range in the underlying source
+    ///
+    /// Panics if the range is out of bounds or does not fall on character boundaries.
     #[inline]
     pub fn slice(&self, span: impl Into<Range<usize>>) -> &'input str {
-        let range = span.into();
-        let bytes = &self.input.as_bytes()[range];
-        core::str::from_utf8(bytes).expect("invalid slice indices")
+        &self.input[span.into()]
     }
 
-    /// Get a string slice representing the rest of the source starting from offset `start`
+    /// Get a string slice representing the rest of the source starting from offset `start`, in
+    /// constant time.
+    ///
+    /// Panics if `start` is out of bounds or not on a character boundary.
     #[inline]
     pub fn slice_from(&self, start: usize) -> &'input str {
-        let bytes = &self.input.as_bytes()[start..];
-        core::str::from_utf8(bytes).expect("invalid slice indices")
+        &self.input[start..]
     }
 }

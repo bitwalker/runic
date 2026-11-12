@@ -26,11 +26,11 @@ pub struct AsmParserState {
 
     /// A mapping from attribute aliases in the input source file to their parser state
     attr_aliases: SmallVec<[AttributeAliasDefinition; 4]>,
-    attr_alias_to_idx: SmallDenseMap<interner::Symbol, usize, 4>,
+    attr_alias_to_idx: FxHashMap<interner::Symbol, usize>,
 
     /// A mapping from type aliases in the input source file to their parser state
     type_aliases: SmallVec<[TypeAliasDefinition; 4]>,
-    type_alias_to_idx: SmallDenseMap<interner::Symbol, usize, 4>,
+    type_alias_to_idx: FxHashMap<interner::Symbol, usize>,
 
     /// A set of value definitions that are placeholders for forward references.
     /// This map should be empty if the parser finishes successfully.
@@ -142,7 +142,7 @@ impl AsmParserState {
         span: SourceSpan,
         value: Option<AttributeRef>,
     ) {
-        use crate::adt::smallmap::Entry;
+        use hashbrown::hash_map::Entry;
 
         // Location aliases may be referenced before they are defined.
         match self.attr_alias_to_idx.entry(name) {
@@ -166,7 +166,7 @@ impl AsmParserState {
         value: Type,
     ) {
         assert!(
-            self.type_alias_to_idx.insert_new(name, self.type_aliases.len()),
+            self.type_alias_to_idx.insert(name, self.type_aliases.len()).is_none(),
             "unexpected type alias redefinition"
         );
         self.type_aliases.push(TypeAliasDefinition::new(name, span, value));
@@ -232,7 +232,7 @@ impl AsmParserState {
 
     /// Add a source uses of the given attribute alias.
     pub fn add_attr_alias_uses(&mut self, name: interner::Symbol, locations: &[SourceSpan]) {
-        use crate::adt::smallmap::Entry;
+        use hashbrown::hash_map::Entry;
 
         match self.attr_alias_to_idx.entry(name) {
             Entry::Vacant(entry) => {

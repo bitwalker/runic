@@ -702,10 +702,12 @@ impl<'input> TokenStream<'input> {
             return None;
         };
         let rest = self.lexer.scanner.slice_from(*end as usize);
-        let mut lexer = Lexer::new(self.source_id(), Scanner::new(rest));
-        match lexer.next()? {
-            Ok((_, token, _)) => Some(token),
-            Err(_) => None,
+        // `Lexer::new` lexes exactly one token, the one after the next; it is read here rather
+        // than with `next`, which would lex the token after it too.
+        let lexer = Lexer::new(self.source_id(), Scanner::new(rest));
+        match lexer.error {
+            Some(_) => None,
+            None => Some(lexer.token),
         }
     }
 
