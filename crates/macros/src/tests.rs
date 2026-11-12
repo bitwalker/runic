@@ -248,6 +248,141 @@ fn operation_impl_test() {
     }
 }
 
+/// The generated items of `#[operation]` on `input`, as a file.
+fn expand_operation(input: syn::DeriveInput) -> syn::File {
+    let output = crate::operation::derive_operation(input).unwrap();
+    syn::parse2(output).unwrap()
+}
+
+/// The `impl` blocks in `file` of the trait whose last path segment is `name`.
+fn trait_impls<'a>(file: &'a syn::File, name: &str) -> Vec<&'a syn::ItemImpl> {
+    file.items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Impl(item)
+                if item
+                    .trait_
+                    .as_ref()
+                    .is_some_and(|(_, path, _)| path.segments.last().unwrap().ident == name) =>
+            {
+                Some(item)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The generic argument of the trait `impl`, e.g. the argument tuple of `FnOnce<(..)>`.
+fn trait_argument(item: &syn::ItemImpl) -> String {
+    let (_, path, _) = item.trait_.as_ref().unwrap();
+    match &path.segments.last().unwrap().arguments {
+        syn::PathArguments::AngleBracketed(args) => args.args.to_token_stream().to_string(),
+        _ => String::new(),
+    }
+}
+
+/// The method `name` defined in an inherent `impl` block of `file`.
+fn inherent_method<'a>(file: &'a syn::File, name: &str) -> &'a syn::ImplItemFn {
+    file.items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Impl(item) if item.trait_.is_none() => Some(item),
+            _ => None,
+        })
+        .flat_map(|item| item.items.iter())
+        .find_map(|item| match item {
+            syn::ImplItem::Fn(method) if method.sig.ident == name => Some(method),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no method `{name}`"))
+}
+
+/// An attribute parameter of the builder and the setter accepts anything that is
+/// `IntoAttribute` the attribute: a value or a ready-made attribute. The `BuildableOp` impl that
+/// `create::<Op, _>` selects keeps the concrete value type.
+#[test]
+fn attribute_parameters_are_bounded_by_into_attribute() {
+    let file = expand_operation(syn::parse_quote! {
+        #[operation(dialect = TestDialect)]
+        pub struct Constant {
+            #[attr]
+            value: IntAttr,
+            #[result]
+            result: AnyInteger,
+        }
+    });
+    let text = file.to_token_stream().to_string();
+    assert!(!text.contains("From <"), "{text}");
+
+    let fn_once = trait_impls(&file, "FnOnce");
+    assert_eq!(fn_once.len(), 1);
+    let where_clause = fn_once[0].generics.where_clause.to_token_stream().to_string();
+    assert!(
+        where_clause.contains("TValueValue : :: runic_core :: IntoAttribute < IntAttr >"),
+        "{where_clause}"
+    );
+
+    let create = inherent_method(&file, "create");
+    let where_clause = create.sig.generics.where_clause.to_token_stream().to_string();
+    assert!(
+        where_clause.contains("TValueValue : :: runic_core :: IntoAttribute < IntAttr >"),
+        "{where_clause}"
+    );
+
+    let buildable = trait_impls(&file, "BuildableOp");
+    assert_eq!(buildable.len(), 1);
+    assert_eq!(
+        trait_argument(buildable[0]),
+        "(< IntAttr as :: runic_core :: AttributeRegistration > :: Value ,)"
+    );
+
+    let setter = inherent_method(&file, "set_value");
+    assert!(setter.sig.generics.params.is_empty(), "{}", setter.sig.to_token_stream());
+    let input = setter.sig.inputs.iter().nth(1).unwrap().to_token_stream().to_string();
+    assert_eq!(input, "value : impl :: runic_core :: IntoAttribute < IntAttr >");
+}
+
+/// An op with a `#[default]` attribute still has a minimal builder, which takes only the
+/// required parameters.
+#[test]
+fn a_defaulted_attribute_keeps_the_minimal_builder() {
+    let file = expand_operation(syn::parse_quote! {
+        #[operation(dialect = TestDialect)]
+        pub struct AddrOf {
+            #[operand]
+            base: AnyPointer,
+            #[attr]
+            #[default]
+            offset: I32Attr,
+            #[result]
+            result: AnyPointer,
+        }
+    });
+    let mut buildable = trait_impls(&file, "BuildableOp")
+        .into_iter()
+        .map(trait_argument)
+        .collect::<Vec<_>>();
+    buildable.sort();
+    assert_eq!(
+        buildable,
+        [
+            "(:: runic_core :: ValueRef , < I32Attr as :: runic_core :: AttributeRegistration > \
+             :: Value)",
+            "(:: runic_core :: ValueRef ,)",
+        ]
+    );
+
+    let mut fn_once =
+        trait_impls(&file, "FnOnce").into_iter().map(trait_argument).collect::<Vec<_>>();
+    fn_once.sort();
+    assert_eq!(
+        fn_once,
+        ["(:: runic_core :: ValueRef , TOffsetValue)", "(:: runic_core :: ValueRef ,)"]
+    );
+    let text = file.to_token_stream().to_string();
+    assert!(!text.contains("From <"), "{text}");
+}
+
 fn format_output(input: &str) -> String {
     use std::{
         io::{Read, Write},

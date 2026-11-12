@@ -477,7 +477,16 @@ impl quote::ToTokens for WithAttrs<'_> {
                 let span = name.span();
                 let field_name = syn::Lit::Str(syn::LitStr::new(&format!("{name}"), span));
                 tokens.extend(quote_spanned! { span =>
-                    op_builder.with_property::<#ty, _>(#field_name, #name)?;
+                    {
+                        let __attr = ::runic_core::IntoAttribute::<#ty>::into_attribute(
+                            #name,
+                            &op_builder.context_rc(),
+                        );
+                        op_builder.with_property_boxed(
+                            #field_name,
+                            ::runic_core::attributes::IntoAttributeRef::into_attribute_ref(__attr),
+                        )?;
+                    }
                 });
             }
         }
@@ -1414,7 +1423,10 @@ impl quote::ToTokens for OpAttrFns<'_> {
                 attr.span(),
             ));
             let set_attr_doc = syn::Lit::Str(syn::LitStr::new(
-                &format!(" Set the value of the `{attr}` attribute."),
+                &format!(
+                    " Set the `{attr}` attribute to a value, or to an attribute that already \
+                     exists ([::runic_core::ReadyAttr])."
+                ),
                 attr.span(),
             ));
             tokens.extend(quote_spanned! { span =>
@@ -1444,11 +1456,12 @@ impl quote::ToTokens for OpAttrFns<'_> {
 
                 #[doc = #set_attr_doc]
                 #[inline]
-                pub fn #set_attr<AttrValue>(&mut self, value: AttrValue)
-                where
-                    #attr_value_ty: From<AttrValue>,
+                pub fn #set_attr(&mut self, value: impl ::runic_core::IntoAttribute<#attr_ty>)
                 {
-                    let attr = self.op.context_rc().create_attribute::<#attr_ty, AttrValue>(value);
+                    let attr = ::runic_core::IntoAttribute::<#attr_ty>::into_attribute(
+                        value,
+                        &self.op.context_rc(),
+                    );
                     self.#attr = attr;
                 }
             });
@@ -2862,16 +2875,14 @@ impl OpCreateParam {
     ) {
         #[allow(clippy::single_match)]
         match &self.param_ty {
-            OpCreateParamType::Attr(OpAttribute { name, value_ty, .. })
-                if allow_attr_conversions =>
-            {
+            OpCreateParamType::Attr(OpAttribute { name, ty, .. }) if allow_attr_conversions => {
                 let param_ty = format_ident!(
                     "T{}Value",
                     name.to_string().to_upper_camel_case(),
                     span = name.span()
                 );
                 where_clause.predicates.push(parse_quote_spanned! { name.span() =>
-                    #value_ty: From<#param_ty>
+                    #param_ty: ::runic_core::IntoAttribute<#ty>
                 });
             }
             _ => (),

@@ -72,7 +72,73 @@ impl Dialect for TestDialect {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Int, SourceSpan, Value, dialects::test::TestDialect, testing::Test};
+    use alloc::format;
+
+    use crate::{
+        Attribute, AttributeRef, BuilderExt, Int, Op, ReadyAttr, SourceSpan, Value,
+        dialects::test::{Constant, TestDialect},
+        testing::Test,
+    };
+
+    /// Whether `constant`'s `value` property is the attribute `attr`.
+    fn holds(constant: &Constant, attr: AttributeRef) -> bool {
+        let value = constant.as_operation().get_attribute("value").unwrap();
+        AttributeRef::ptr_eq(&value, &attr)
+    }
+
+    /// A builder takes a ready-made attribute as it is: an `isize` constant keeps its type, which
+    /// a 64-bit value alone would make `i64`.
+    #[test]
+    fn a_constant_is_built_from_a_ready_attribute() {
+        let mut test = Test::new("f", |cx| ([cx.i32()], [cx.i32()]));
+        let context = test.context_rc();
+        let attr = context.int_attr(Int::from(-1i64), context.isize());
+        let (ready, value) = {
+            let mut builder = test.function_builder();
+            let create = builder.builder_mut().create::<Constant, _>(SourceSpan::UNKNOWN);
+            let ready = create(ReadyAttr(attr)).unwrap();
+            let create = builder.builder_mut().create::<Constant, _>(SourceSpan::UNKNOWN);
+            (ready, create(5i32).unwrap())
+        };
+
+        let constant = ready.borrow();
+        assert!(holds(&constant, attr.as_attribute_ref()));
+        assert_eq!(constant.value().ty(), context.isize());
+        assert_eq!(constant.result().ty(), context.isize());
+        assert!(constant.as_operation().verify().is_ok());
+        let text = format!("{}", constant.as_operation());
+        assert!(text.contains("test.constant -1 : isize"), "{text}");
+
+        let constant = value.borrow();
+        assert_eq!(*constant.get_value(), Int::from(5i32));
+        assert_eq!(constant.value().ty(), context.i32());
+        assert_eq!(constant.result().ty(), context.i32());
+        assert!(constant.as_operation().verify().is_ok());
+        let text = format!("{}", constant.as_operation());
+        assert!(text.contains("test.constant 5 : i32"), "{text}");
+    }
+
+    /// A setter takes a ready-made attribute and installs that handle; a value still works.
+    #[test]
+    fn a_setter_takes_a_ready_attribute_or_a_value() {
+        let mut test = Test::new("f", |cx| ([cx.i32()], [cx.i32()]));
+        let context = test.context_rc();
+        let mut constant = {
+            let mut builder = test.function_builder();
+            let create = builder.builder_mut().create::<Constant, _>(SourceSpan::UNKNOWN);
+            create(Int::from(1i32)).unwrap()
+        };
+
+        let attr = context.int_attr(Int::from(7i32), context.i32());
+        constant.borrow_mut().set_value(ReadyAttr(attr));
+        assert!(holds(&constant.borrow(), attr.as_attribute_ref()));
+        assert!(constant.borrow().as_operation().verify().is_ok());
+
+        constant.borrow_mut().set_value(Int::from(1i32));
+        assert!(!holds(&constant.borrow(), attr.as_attribute_ref()));
+        assert_eq!(*constant.borrow().get_value(), Int::from(1i32));
+        assert_eq!(constant.borrow().value().ty(), context.i32());
+    }
 
     /// A constant is materialized only at the type of its attribute: a signless value has no
     /// default extension to another width.
