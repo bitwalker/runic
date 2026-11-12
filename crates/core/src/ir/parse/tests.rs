@@ -1234,10 +1234,9 @@ builtin.function public extern(\"C\") @entrypoint(%a: i32) -> i32 {{
 fn array_types_parse_print_and_report_invalid_lengths() {
     use crate::Op;
     type Expected = fn(&Context) -> Type;
-    let cases: [(&str, Expected); 3] = [
-        ("[i32; 4]", |context| context.array_type(context.i32(), 4)),
+    let cases: [(&str, Expected); 2] = [
         ("array<i32; 4>", |context| context.array_type(context.i32(), 4)),
-        ("ptr<[[i32; 4]; 2]>", |context| {
+        ("ptr<array<array<i32; 4>; 2>>", |context| {
             context.ptr_type(context.array_type(context.array_type(context.i32(), 4), 2))
         }),
     ];
@@ -1256,7 +1255,12 @@ fn array_types_parse_print_and_report_invalid_lengths() {
         parse::parse_any(ParserConfig::new(fresh.clone()), "array-roundtrip.hir", &printed)
             .unwrap();
     }
-    for source in ["[i32; -1]", "[i32; 18446744073709551616]", "[i32 4]", "[i32; 4>"] {
+    for source in [
+        "array<i32; -1>",
+        "array<i32; 18446744073709551616>",
+        "array<i32 4>",
+        "array<i32; 4]",
+    ] {
         let context = Rc::new(Context::default());
         let text = format!(
             "builtin.function private extern(\"C\") @array(%x: {source}) {{ builtin.ret; }};"
@@ -1582,10 +1586,17 @@ fn every_builtin_type_round_trips_through_the_printer_and_parser() {
         assert_eq!(format!("{ty}"), text);
         assert_eq!(parse_type_text(&context, text).unwrap(), ty, "{text} is not uniqued");
     }
-    assert_eq!(
-        parse_type_text(&context, "[i8; 16]").unwrap(),
-        context.array_type(context.i8(), 16)
-    );
+}
+
+/// An array type is written `array<T; N>` only: `[`..`]` is left to list attributes.
+#[test]
+fn the_bracket_spelling_of_an_array_type_is_not_a_type() {
+    let context = Rc::new(Context::default());
+    for text in ["[i8; 16]", "ptr<[i8; 16]>"] {
+        let message = type_error_text(&context, text);
+        assert!(message.contains("unexpected token '['"), "`{text}`: {message}");
+        assert!(message.contains("help: type"), "`{text}`: {message}");
+    }
 }
 
 #[test]

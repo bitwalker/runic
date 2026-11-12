@@ -7,7 +7,7 @@
 //! integer-type  := 'i' [1-9][0-9]*
 //! pointer-type  := 'ptr' ('<' (address-space | type (',' address-space)?) '>')?
 //! address-space := decimal-literal
-//! array-type    := 'array' '<' type ';' decimal-literal '>' | '[' type ';' decimal-literal ']'
+//! array-type    := 'array' '<' type ';' decimal-literal '>'
 //! struct-type   := 'struct' struct-name? '<' (struct-repr ';')? (struct-field (',' struct-field)*)? '>'
 //! struct-name   := bare-identifier | string
 //! struct-repr   := 'align' '(' N ')' | 'packed' ('(' N ')')? | 'transparent'
@@ -90,7 +90,6 @@ fn parse_optional_type_nested<'input, P: Parser<'input>>(
     let ty = match token {
         Token::Ptr => parse_pointer_type(parser),
         Token::Array => parse_array_type(parser),
-        Token::Lbracket => parse_bracketed_array_type(parser),
         Token::Struct => parse_struct_type(parser),
         Token::Lparen => parse_function_type(parser),
         Token::BangIdent(id) => parse_alias_or_dialect_type(parser, id, start, end),
@@ -181,24 +180,10 @@ fn parse_pointer_type<'input, P: Parser<'input>>(parser: &mut P) -> ParseResult<
 fn parse_array_type<'input, P: Parser<'input>>(parser: &mut P) -> ParseResult<Type> {
     parser.token_stream_mut().next()?;
     parser.parse_langle()?;
-    let ty = parse_array_body(parser)?;
-    parser.parse_rangle()?;
-    Ok(ty)
-}
-
-/// Parses `[T; N]`.
-fn parse_bracketed_array_type<'input, P: Parser<'input>>(parser: &mut P) -> ParseResult<Type> {
-    parser.token_stream_mut().next()?;
-    let ty = parse_array_body(parser)?;
-    parser.parse_rbracket()?;
-    Ok(ty)
-}
-
-/// Parses `T; N`, the inside of `array<T; N>` and `[T; N]`.
-fn parse_array_body<'input, P: Parser<'input>>(parser: &mut P) -> ParseResult<Type> {
     let element = parse_type(parser)?;
     parser.parse_semicolon()?;
     let len = parser.parse_decimal_integer::<u64>()?.into_inner();
+    parser.parse_rangle()?;
     Ok(parser.context().array_type(element, len))
 }
 

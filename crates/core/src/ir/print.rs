@@ -171,7 +171,6 @@
 //! address-space := decimal-literal
 //!
 //! array-type := 'array' '<' type ';' decimal-literal '>'
-//!             | '[' type ';' decimal-literal ']'
 //!
 //! struct-type  := 'struct' struct-name? '<' (struct-repr ';')? (struct-field (',' struct-field)*)? '>'
 //! struct-name  := bare-identifier | string-literal
