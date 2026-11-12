@@ -29,7 +29,7 @@ impl UniquedConstant {
     pub fn new(op: &OperationRef, value: AttributeRef) -> Self {
         let op = op.borrow();
         let dialect = op.dialect();
-        let ty = op.results()[0].borrow().ty().clone();
+        let ty = op.results()[0].borrow().ty();
 
         Self { dialect, value, ty }
     }
@@ -162,7 +162,7 @@ impl OperationFolder {
                         insert_region,
                         dialect.clone(),
                         *attr_repl,
-                        op_result.borrow().ty().clone(),
+                        op_result.borrow().ty(),
                         self.erased_folded_location,
                     ) {
                         // Ensure that this constant dominates the operation we are replacing.
@@ -219,13 +219,9 @@ impl OperationFolder {
         let uniqued_constants = self.scopes.get_mut(&insert_region).unwrap();
 
         // Erase all of the references to this operation.
-        let ty = borrowed_op.results()[0].borrow().ty().clone();
+        let ty = borrowed_op.results()[0].borrow().ty();
         for dialect in referenced_dialects.drain(..) {
-            let uniqued_constant = UniquedConstant {
-                dialect,
-                value,
-                ty: ty.clone(),
-            };
+            let uniqued_constant = UniquedConstant { dialect, value, ty };
             uniqued_constants.remove(&uniqued_constant);
         }
     }
@@ -369,7 +365,7 @@ impl OperationFolder {
             self.rewriter.as_mut(),
             dialect.clone(),
             uniqued_constant.value,
-            &uniqued_constant.ty,
+            uniqued_constant.ty,
             span,
         )?;
 
@@ -385,7 +381,7 @@ impl OperationFolder {
         let new_uniqued_constant = UniquedConstant {
             dialect: new_dialect.clone(),
             value: uniqued_constant.value,
-            ty: uniqued_constant.ty.clone(),
+            ty: uniqued_constant.ty,
         };
         let maybe_existing_op = uniqued_constants.get(&new_uniqued_constant).cloned();
         uniqued_constants.insert(uniqued_constant, maybe_existing_op.unwrap_or(const_op));
@@ -427,7 +423,7 @@ fn materialize_constant(
     builder: &mut dyn Builder,
     dialect: Rc<dyn Dialect>,
     value: AttributeRef,
-    ty: &Type,
+    ty: Type,
     span: SourceSpan,
 ) -> Option<OperationRef> {
     let ip = *builder.insertion_point();

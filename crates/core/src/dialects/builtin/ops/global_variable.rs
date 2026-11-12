@@ -1,9 +1,8 @@
 use alloc::format;
 
 use crate::{
-    AsSymbolRef, Context, IdentAttr, OpParser, OpPrinter, Operation, PointerType, Report, Spanned,
-    Symbol, SymbolName, SymbolRef, SymbolUseList, Type, UnsafeIntrusiveEntityRef, Usable, Value,
-    Visibility,
+    AsSymbolRef, Context, IdentAttr, OpParser, OpPrinter, Operation, Report, Spanned, Symbol,
+    SymbolName, SymbolRef, SymbolUseList, UnsafeIntrusiveEntityRef, Usable, Value, Visibility,
     derive::{EffectOpInterface, operation},
     dialects::builtin::{
         BuiltinDialect,
@@ -13,8 +12,8 @@ use crate::{
     parse::{ParserError, ParserExt},
     print::AsmPrinter,
     traits::{
-        InferTypeOpInterface, IsolatedFromAbove, NoRegionArguments, PointerOf, SingleBlock,
-        SingleRegion, UInt8,
+        InferTypeOpInterface, Int8, IsolatedFromAbove, NoRegionArguments, PointerOf, SingleBlock,
+        SingleRegion,
     },
 };
 
@@ -126,7 +125,7 @@ impl OpPrinter for GlobalVariable {
         printer.print_space();
         printer.print_symbol_name(self.get_name().as_symbol());
         *printer += const_text(" : ");
-        printer.print_type(&self.get_ty());
+        printer.print_type(*self.get_ty());
         if self.is_declaration() {
             return;
         }
@@ -206,7 +205,7 @@ pub struct GlobalSymbol {
     #[default]
     offset: I32Attr,
     #[result]
-    addr: PointerOf<UInt8>,
+    addr: PointerOf<Int8>,
 }
 
 impl OpPrinter for GlobalSymbol {
@@ -281,8 +280,8 @@ impl ConditionallySpeculatable for GlobalSymbol {
 }
 
 impl InferTypeOpInterface for GlobalSymbol {
-    fn infer_return_types(&mut self, _context: &Context) -> Result<(), Report> {
-        self.addr_mut().set_type(Type::from(PointerType::new(Type::U8)));
+    fn infer_return_types(&mut self, context: &Context) -> Result<(), Report> {
+        self.addr_mut().set_type(context.ptr_type(context.i8()));
         Ok(())
     }
 }

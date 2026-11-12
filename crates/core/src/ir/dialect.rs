@@ -54,7 +54,7 @@ pub trait Dialect {
         &self,
         builder: &mut dyn Builder,
         attr: AttributeRef,
-        ty: &Type,
+        ty: Type,
         span: SourceSpan,
     ) -> Option<OperationRef> {
         None

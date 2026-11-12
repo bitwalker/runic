@@ -14,7 +14,7 @@ use traits::BranchOpInterface;
 mod types;
 
 use self::types::{BuiltinTypes, TypeTables};
-use super::{traits::BuildableTypeConstraint, *};
+use super::*;
 use crate::{
     AttributeRef, AttributeRegistration, FxHashMap,
     attributes::{AttributeName, DerivableTypeAttribute, Marker},
@@ -48,7 +48,6 @@ pub struct Context {
     builtin_types: BuiltinTypes,
     registered_dialects: RefCell<FxHashMap<interner::Symbol, Rc<dyn Dialect>>>,
     constants: RefCell<ConstantPool>,
-    type_cache: RefCell<FxHashMap<core::any::TypeId, Arc<Type>>>,
     uniqued_attr_cache: RefCell<FxHashMap<AttributeName, AttributeRef>>,
     next_block_id: Cell<u32>,
     next_value_id: Cell<u32>,
@@ -151,7 +150,6 @@ impl Context {
             builtin_types,
             registered_dialects,
             constants: Default::default(),
-            type_cache: Default::default(),
             uniqued_attr_cache: Default::default(),
             next_block_id: Cell::new(0),
             next_value_id: Cell::new(0),
@@ -284,22 +282,6 @@ impl Context {
 
     pub fn get_constant_size_in_bytes(&self, id: ConstantId) -> usize {
         self.constants.borrow().get_by_ref(id).len()
-    }
-
-    pub fn get_cached_type<T: BuildableTypeConstraint>(&self) -> Option<Arc<Type>> {
-        self.type_cache.borrow().get(&core::any::TypeId::of::<T>()).cloned()
-    }
-
-    pub fn get_or_insert_type<T: BuildableTypeConstraint>(&self) -> Arc<Type> {
-        match self.get_cached_type::<T>() {
-            Some(ty) => ty,
-            None => {
-                let ty = Arc::new(<T as BuildableTypeConstraint>::build(self));
-                let mut types = self.type_cache.borrow_mut();
-                types.insert(core::any::TypeId::of::<T>(), Arc::clone(&ty));
-                ty
-            }
-        }
     }
 
     /// Get a new [OpBuilder] for this context

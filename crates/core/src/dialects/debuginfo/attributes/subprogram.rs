@@ -1,4 +1,4 @@
-use alloc::{format, sync::Arc, vec::Vec};
+use alloc::{format, vec::Vec};
 
 use crate::{
     AttrPrinter, Type, attributes::AttrParser, derive::DialectAttribute,
@@ -52,8 +52,10 @@ impl Subprogram {
         }
     }
 
-    pub fn with_function_type(mut self, ty: crate::FunctionType) -> Self {
-        self.ty = Some(Type::Function(Arc::new(ty)));
+    /// Records the type of this subprogram, which is expected to be a function type.
+    pub fn with_function_type(mut self, ty: Type) -> Self {
+        debug_assert!(ty.is_function(), "expected a function type, got '{ty}'");
+        self.ty = Some(ty);
         self
     }
 
@@ -95,7 +97,7 @@ impl AttrPrinter for SubprogramAttr {
             printer.print_string(linkage.as_str());
         }
 
-        if let Some(ty) = &self.ty {
+        if let Some(ty) = self.ty {
             *printer += const_text(", ");
             *printer += const_text("ty") + const_text(" = ");
             printer.print_type(ty);

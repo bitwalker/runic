@@ -723,7 +723,8 @@ impl quote::ToTokens for WithResults<'_> {
                 let num_results =
                     syn::Lit::Int(syn::LitInt::new(&format!("{}usize", results.len()), group_span));
                 tokens.extend(quote_spanned! { group_span =>
-                    op_builder.with_results(::alloc::vec![::runic_core::Type::Unknown; #num_results]);
+                    let unknown = op_builder.context().unknown_type();
+                    op_builder.with_results(::alloc::vec![unknown; #num_results]);
                 });
             }
             // Named result groups can have an arbitrary number of results

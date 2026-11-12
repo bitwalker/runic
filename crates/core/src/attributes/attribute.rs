@@ -80,7 +80,7 @@ pub trait Attribute:
     fn name(&self) -> &AttributeName;
     fn value(&self) -> &dyn AttributeValue;
     fn value_mut(&mut self) -> &mut dyn AttributeValue;
-    fn ty(&self) -> &Type;
+    fn ty(&self) -> Type;
     fn set_type(&mut self, ty: Type);
     fn as_attr(&self) -> &Attr;
     fn as_attr_mut(&mut self) -> &mut Attr;
@@ -373,8 +373,8 @@ impl Attr {
 
     /// Get the [Type] associated with this attribute
     #[inline]
-    pub fn ty(&self) -> &Type {
-        &self.ty
+    pub fn ty(&self) -> Type {
+        self.ty
     }
 
     /// Set the [Type] associated with this attribute
@@ -524,14 +524,14 @@ mod tests {
         let test = Test::default();
 
         let immediate = test.context_rc().create_attribute::<ImmediateAttr, _>(Immediate::I32(1));
-        assert_eq!(immediate.borrow().ty().clone(), Type::I32);
+        assert_eq!(immediate.borrow().ty(), Type::I32);
 
         let erased = immediate.as_attribute_ref();
-        assert_eq!(erased.borrow().ty().clone(), Type::I32);
+        assert_eq!(erased.borrow().ty(), Type::I32);
 
         let roundtrip = erased.try_downcast_attr::<ImmediateAttr>().unwrap();
         let roundtrip = roundtrip.borrow();
-        assert_eq!(roundtrip.ty().clone(), Type::I32);
+        assert_eq!(roundtrip.ty(), Type::I32);
         assert_eq!(roundtrip.as_immediate(), Immediate::I32(1));
     }
 

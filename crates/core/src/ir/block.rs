@@ -701,7 +701,7 @@ impl Block {
     }
 
     pub fn argument_types(&self) -> impl ExactSizeIterator<Item = Type> + DoubleEndedIterator + '_ {
-        self.arguments.iter().copied().map(|arg| arg.borrow().ty().clone())
+        self.arguments.iter().copied().map(|arg| arg.borrow().ty())
     }
 
     #[inline]

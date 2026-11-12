@@ -1,5 +1,4 @@
 use alloc::format;
-use core::str::FromStr;
 
 use crate::{
     AsValueRange, BlockRef, CallConv, CallableOpInterface, CallableSymbol, EntityRef, IdentAttr,
@@ -152,14 +151,7 @@ impl OpParser for Function {
 
         parser.parse_lparen()?;
         let cc_string = parser.parse_string()?;
-        let cc = CallConv::from_str(cc_string.as_str()).map_err(|_| {
-            let (span, cc_string) = cc_string.into_parts();
-            ParserError::UnexpectedToken {
-                span,
-                token: cc_string.into_string(),
-                expected: Some("calling convention string".to_string()),
-            }
-        })?;
+        let cc = CallConv::new(cc_string.as_str());
         parser.parse_rparen()?;
 
         let name = parser.parse_symbol_name()?;
@@ -173,7 +165,7 @@ impl OpParser for Function {
         let sig = Signature::with_convention(
             &parser.context_rc(),
             cc,
-            args.iter().map(|arg| arg.ty.clone()),
+            args.iter().map(|arg| arg.ty),
             results,
         );
 
@@ -205,7 +197,6 @@ impl OpParser for Function {
 
 impl OpPrinter for Function {
     fn print(&self, printer: &mut AsmPrinter<'_>) {
-        use alloc::borrow::Cow;
         let sig = self.get_signature();
 
         printer.print_space();
@@ -220,8 +211,8 @@ impl OpPrinter for Function {
         printer.print_symbol_name(self.get_name().as_symbol());
         if self.is_declaration() {
             printer.print_function_type_parts(
-                sig.params().iter().map(|p| &p.ty),
-                sig.results().iter().map(|p| &p.ty),
+                sig.params().iter().map(|p| p.ty),
+                sig.results().iter().map(|p| p.ty),
             );
         } else {
             let body = self.body();
@@ -231,7 +222,7 @@ impl OpPrinter for Function {
                 printer.print_space();
                 printer.print_arrow_type_list(
                     /*elide_single_type_parens=*/ true,
-                    sig.results().iter().map(|p| Cow::Borrowed(&p.ty)),
+                    sig.results().iter().map(|p| p.ty),
                 );
             }
             printer.print_space();
@@ -262,7 +253,7 @@ impl Function {
         let block = self
             .as_operation()
             .context_rc()
-            .create_block_with_params(signature.params().iter().map(|p| p.ty.clone()));
+            .create_block_with_params(signature.params().iter().map(|p| p.ty));
         drop(signature);
         let mut body = self.body_mut();
         body.push_back(block);
@@ -313,21 +304,6 @@ impl Function {
     pub fn iter_locals(&self) -> impl ExactSizeIterator<Item = LocalVariable> {
         let fun = self.as_function_ref();
         (0..self.locals().len()).map(move |i| LocalVariable::new(fun, i))
-    }
-
-    /// The offset of each local from the start of the procedure frame, in elements, indexed by
-    /// local.
-    ///
-    /// A local wider than one element moves every local declared after it, so the offsets are the
-    /// running sum of the sizes of the preceding locals.
-    pub fn local_offsets(&self) -> impl Iterator<Item = usize> + '_ {
-        let locals = self.get_locals();
-        // The borrow of the locals table is carried by the scan state, so the offsets stay lazy.
-        (0..locals.len()).scan((locals, 0usize), |(locals, offset), index| {
-            let local_offset = *offset;
-            *offset += locals[index].size_in_felts();
-            Some(local_offset)
-        })
     }
 
     #[inline(always)]
@@ -433,8 +409,6 @@ impl OperandRangeRequirementOpInterface for Ret {
 
 impl OpPrinter for Ret {
     fn print(&self, printer: &mut AsmPrinter<'_>) {
-        use alloc::borrow::Cow;
-
         let returning = self.values();
         if returning.is_empty() {
             return;
@@ -443,7 +417,7 @@ impl OpPrinter for Ret {
         printer.print_space();
         printer.print_value_uses(returning.as_value_range());
         printer.print_space();
-        printer.print_colon_type_list(returning.iter().map(|r| Cow::Owned(r.borrow().ty())));
+        printer.print_colon_type_list(returning.iter().map(|r| r.borrow().ty()));
     }
 }
 
@@ -505,11 +479,11 @@ impl OpPrinter for RetImm {
 
         // Print the immediate as `<value> : <type>`, mirroring the grammar accepted by the
         // `OpParser` implementation below, so the output can be re-parsed.
-        let value = self.value().as_ref().as_immediate();
+        let value = self.value();
         printer.print_space();
-        printer.print_decimal_integer(value);
+        printer.print_decimal_integer(value.as_ref().as_immediate());
         *printer += const_text(" : ");
-        printer.print_type(&value.ty());
+        printer.print_type(crate::Attribute::ty(&*value));
     }
 }
 
@@ -532,7 +506,7 @@ impl OpParser for RetImm {
         // Re-type the parsed literal to the declared type: integer parsing infers the narrowest
         // representation, which would otherwise survive into the attribute and reprint with the
         // wrong type.
-        let Some(imm) = imm.into_inner().coerced_to(&ty) else {
+        let Some(imm) = imm.into_inner().coerced_to(*ty) else {
             return Err(ParserError::InvalidOperationType {
                 span,
                 ty_span: ty.span(),

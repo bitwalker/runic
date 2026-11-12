@@ -24,7 +24,7 @@ pub struct Constant {
 
 impl InferTypeOpInterface for Constant {
     fn infer_return_types(&mut self, _context: &Context) -> Result<(), Report> {
-        let ty = self.value().ty().clone();
+        let ty = self.value().ty();
         self.result_mut().set_type(ty);
 
         Ok(())
@@ -75,29 +75,17 @@ impl OpParser for Constant {
         );
 
         let mut imm_mut = imm.borrow_mut();
-        let new_value = match ty {
-            Type::I1 => imm_mut.as_bool().map(Immediate::I1),
-            Type::I8 => imm_mut.as_i8().map(Immediate::I8),
-            Type::U8 => imm_mut.as_u8().map(Immediate::U8),
-            Type::I16 => imm_mut.as_i16().map(Immediate::I16),
-            Type::U16 => imm_mut.as_u16().map(Immediate::U16),
-            Type::I32 => imm_mut.as_i32().map(Immediate::I32),
-            Type::U32 => imm_mut.as_u32().map(Immediate::U32),
-            Type::I64 => imm_mut.as_i64().map(Immediate::I64),
-            Type::U64 => imm_mut.as_u64().map(Immediate::U64),
-            Type::I128 => imm_mut.as_i128().map(Immediate::I128),
-            Type::U128 => imm_mut.as_u128().map(Immediate::U128),
-            invalid => {
-                return Err(ParserError::InvalidOperationType {
-                    span,
-                    ty_span,
-                    reason: format!("expected integer type, got '{invalid}'"),
-                });
-            }
-        };
+        if ty.integer_width().is_none() {
+            return Err(ParserError::InvalidOperationType {
+                span,
+                ty_span,
+                reason: format!("expected integer type, got '{ty}'"),
+            });
+        }
+        let new_value = imm_mut.as_value().coerced_to(ty);
 
         if let Some(new_value) = new_value {
-            imm_mut.set_type(ty.clone());
+            imm_mut.set_type(ty);
             *imm_mut.as_value_mut() = new_value;
         } else {
             return Err(ParserError::InvalidAttributeValue {

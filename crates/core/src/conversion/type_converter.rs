@@ -5,7 +5,7 @@ use smallvec::SmallVec;
 use super::rewriter::ConversionPatternRewriter;
 use crate::{Report, SourceSpan, Type, ValueRef, dialects::builtin::UnrealizedConversionCast};
 
-type TypeConversionFn = Rc<dyn Fn(&Type) -> Option<TypeConversion>>;
+type TypeConversionFn = Rc<dyn Fn(Type) -> Option<TypeConversion>>;
 type ValueConversionFn = Rc<dyn Fn(ValueRef) -> Option<TypeConversion>>;
 type MaterializationFn = Rc<
     dyn Fn(
@@ -90,7 +90,7 @@ impl TypeConverter {
     #[inline]
     pub fn add_conversion<F>(&mut self, callback: F) -> &mut Self
     where
-        F: Fn(&Type) -> Option<TypeConversion> + 'static,
+        F: Fn(Type) -> Option<TypeConversion> + 'static,
     {
         self.conversions.push(Rc::new(callback));
         self
@@ -151,11 +151,11 @@ impl TypeConverter {
     /// Convert a type.
     ///
     /// If no callback handles `ty`, it is treated as an identity conversion.
-    pub fn convert_type(&self, ty: &Type) -> Option<TypeConversion> {
+    pub fn convert_type(&self, ty: Type) -> Option<TypeConversion> {
         self.conversions
             .iter()
             .find_map(|convert| convert(ty))
-            .or_else(|| Some(TypeConversion::One(ty.clone())))
+            .or_else(|| Some(TypeConversion::One(ty)))
     }
 
     /// Convert a value, allowing value-specific callbacks to override type-only conversion.
@@ -168,14 +168,14 @@ impl TypeConverter {
 
     /// Return true when `ty` converts to itself.
     #[inline]
-    pub fn is_legal_type(&self, ty: &Type) -> bool {
-        matches!(self.convert_type(ty), Some(TypeConversion::One(converted)) if converted == *ty)
+    pub fn is_legal_type(&self, ty: Type) -> bool {
+        matches!(self.convert_type(ty), Some(TypeConversion::One(converted)) if converted == ty)
     }
 
     /// Convert `ty` and require a 1:1 result.
     ///
     /// This returns an error for `Many`, `Drop`, or an unhandled conversion.
-    pub fn convert_type_1_to_1(&self, ty: &Type) -> Result<Type, Report> {
+    pub fn convert_type_1_to_1(&self, ty: Type) -> Result<Type, Report> {
         self.require_1_to_1(self.convert_type(ty), || format!("type '{ty}'"))
     }
 
@@ -239,20 +239,20 @@ impl TypeConverter {
         span: SourceSpan,
         kind: &'static str,
     ) -> Result<ValueRef, Report> {
-        if *value.borrow().ty() == ty {
+        if value.borrow().ty() == ty {
             return Ok(value);
         }
 
         for materialize in callbacks {
-            if let Some(materialized) = materialize(rewriter, value, ty.clone(), span)? {
+            if let Some(materialized) = materialize(rewriter, value, ty, span)? {
                 return Ok(materialized);
             }
         }
 
-        let op = rewriter.create_op::<UnrealizedConversionCast, _>(span, (value, ty.clone()))?;
+        let op = rewriter.create_op::<UnrealizedConversionCast, _>(span, (value, ty))?;
         rewriter.mark_materialization_op(op.as_operation_ref());
         let result = op.borrow().result().as_value_ref();
-        if *result.borrow().ty() != ty {
+        if result.borrow().ty() != ty {
             return Err(Report::msg(format!(
                 "{kind} materialization produced type '{}', expected '{ty}'",
                 result.borrow().ty()

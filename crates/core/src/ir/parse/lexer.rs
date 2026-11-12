@@ -602,6 +602,8 @@ pub struct TokenStream<'input> {
     lexer: Lexer<'input>,
     upcoming: Option<Lexed<'input>>,
     current_position: u32,
+    /// The end of the last token consumed from the stream
+    previous_end: u32,
 }
 
 impl<'input> TokenStream<'input> {
@@ -613,6 +615,7 @@ impl<'input> TokenStream<'input> {
             lexer,
             upcoming,
             current_position,
+            previous_end: current_position,
         }
     }
 
@@ -621,6 +624,7 @@ impl<'input> TokenStream<'input> {
         let current_position = self.lexer.current_position();
         let upcoming = self.lexer.next();
         self.current_position = current_position;
+        self.previous_end = pos as u32;
         self.upcoming = upcoming;
     }
 
@@ -642,6 +646,21 @@ impl<'input> TokenStream<'input> {
     #[inline]
     pub const fn current_position(&self) -> u32 {
         self.current_position
+    }
+
+    /// Get the byte position just after the last token consumed from the stream.
+    #[inline]
+    pub const fn previous_end(&self) -> u32 {
+        self.previous_end
+    }
+
+    /// Get the source text from byte position `start` up to `end`.
+    ///
+    /// Panics if the range is out of bounds or does not lie on character boundaries; the bounds of
+    /// a token's span are always valid.
+    #[inline]
+    pub fn slice(&self, start: u32, end: u32) -> &'input str {
+        self.lexer.scanner.slice(start as usize..end as usize)
     }
 
     /// Get a [SourceSpan] corresponding to the current byte position of the underlying lexer.
@@ -681,7 +700,7 @@ impl<'input> TokenStream<'input> {
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> ParseResult<Option<Span<Token<'input>>>> {
         if let Some(lexed) = self.upcoming.take() {
-            self.advance();
+            self.advance(&lexed);
             let source_id = self.source_id();
             lexed.map(|(start, tok, end)| Some(spanned!(source_id, start, end, tok)))
         } else {
@@ -696,12 +715,13 @@ impl<'input> TokenStream<'input> {
     {
         if self.is_next(predicate) {
             let source_id = self.source_id();
-            let result = self
-                .upcoming
-                .take()
-                .map(|lexed| lexed.map(|(start, tok, end)| spanned!(source_id, start, end, tok)));
-            self.advance();
-            result.transpose()
+            let lexed = self.upcoming.take();
+            if let Some(lexed) = &lexed {
+                self.advance(lexed);
+            }
+            lexed
+                .map(|lexed| lexed.map(|(start, tok, end)| spanned!(source_id, start, end, tok)))
+                .transpose()
         } else {
             Ok(None)
         }
@@ -721,7 +741,7 @@ impl<'input> TokenStream<'input> {
                 let source_id = self.source_id();
                 let result = mapper(tok).map(|out| spanned!(source_id, start, end, out));
                 Ok(if result.is_some() {
-                    self.advance();
+                    self.advance(&Ok((start, tok, end)));
                     result
                 } else {
                     self.upcoming = Some(Ok((start, tok, end)));
@@ -809,8 +829,12 @@ impl<'input> TokenStream<'input> {
         }
     }
 
+    /// Moves past the upcoming token, which the caller has taken out of `upcoming`.
     #[inline]
-    fn advance(&mut self) {
+    fn advance(&mut self, consumed: &Lexed<'input>) {
+        if let Ok((_, _, end)) = consumed {
+            self.previous_end = *end;
+        }
         self.current_position = self.lexer.current_position();
         self.upcoming = self.lexer.next();
     }
@@ -821,7 +845,7 @@ impl<'input> Iterator for TokenStream<'input> {
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(lexed) = self.upcoming.take() {
-            self.advance();
+            self.advance(&lexed);
             Some(lexed)
         } else {
             None

@@ -392,7 +392,7 @@ mod tests {
         };
 
         assert!(AttributeRef::ptr_eq(&attr, &expected));
-        assert_eq!(attr.borrow().ty().clone(), Type::I32);
+        assert_eq!(attr.borrow().ty(), Type::I32);
         let attr = attr.try_downcast_attr::<ImmediateAttr>().unwrap();
         assert_eq!(attr.borrow().as_immediate(), Immediate::I32(7));
     }
@@ -411,7 +411,7 @@ mod tests {
         };
 
         assert!(AttributeRef::ptr_eq(&attr, &expected));
-        assert_eq!(attr.borrow().ty().clone(), Type::I32);
+        assert_eq!(attr.borrow().ty(), Type::I32);
         let attr = attr.try_downcast_attr::<ImmediateAttr>().unwrap();
         assert_eq!(attr.borrow().as_immediate(), Immediate::I32(9));
     }

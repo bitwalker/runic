@@ -138,7 +138,7 @@ pub trait RegionBranchOpInterface: Op {
     ///
     /// By default, the types are check for exact equality.
     #[inline]
-    fn are_types_compatible(&self, lhs: &Type, rhs: &Type) -> bool {
+    fn are_types_compatible(&self, lhs: Type, rhs: Type) -> bool {
         lhs == rhs
     }
     /// Returns `true` if control flow originating from the region at `index` may eventually branch
@@ -485,7 +485,7 @@ fn verify_exit(
         .operands()
         .all()
         .iter()
-        .map(|operand| operand.borrow().as_value_ref().borrow().ty().clone())
+        .map(|operand| operand.borrow().as_value_ref().borrow().ty())
         .collect::<SmallVec<[Type; 2]>>();
 
     match kind {
@@ -494,7 +494,7 @@ fn verify_exit(
                 .results()
                 .all()
                 .iter()
-                .map(|result| result.borrow().ty().clone())
+                .map(|result| result.borrow().ty())
                 .collect::<SmallVec<[Type; 2]>>();
             if operand_types != expected {
                 return reject(
@@ -538,7 +538,7 @@ fn verify_exit(
                 .entry()
                 .arguments()
                 .iter()
-                .map(|arg| arg.borrow().ty().clone())
+                .map(|arg| arg.borrow().ty())
                 .collect::<SmallVec<[Type; 2]>>();
             if operand_types != expected {
                 return reject(

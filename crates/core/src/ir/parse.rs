@@ -36,6 +36,7 @@ pub mod scanner;
 #[cfg(test)]
 mod tests;
 mod token;
+mod types;
 
 use alloc::{
     boxed::Box,
@@ -72,8 +73,8 @@ use super::{
     operation::ParseAssemblyFn,
 };
 use crate::{
-    AddressSpace, Attribute, AttributeRef, Builder, CallableOpInterface, CompactString,
-    FunctionType, FxHashMap, NamedAttribute, PointerType, ProgramPoint, SmallVec, ToCompactString,
+    Attribute, AttributeRef, Builder, CallableOpInterface, CompactString, FxHashMap,
+    NamedAttribute, ProgramPoint, SmallVec, ToCompactString,
     adt::{SmallOrdMap, smallmap::SmallMap},
     diagnostics::{
         ColumnNumber, LineNumber, Outcome, Report, SourceId, SourceProvider, SourceSpan, Span,
@@ -83,9 +84,7 @@ use crate::{
         attributes::{Location, LocationAttr},
     },
     formatter::DisplayValues,
-    interner,
-    print::TypePrinter,
-    smallvec,
+    interner, smallvec,
 };
 
 /// The interface for parsing operations printed to IR assembly
@@ -506,7 +505,7 @@ pub trait OpAsmParser<'input>: Parser<'input> {
         successors: Option<&[BlockRef]>,
         regions: Option<&[RegionRef]>,
         attrs: Option<ParsedAttrs>,
-        signature: Option<FunctionType>,
+        signature: Option<Type>,
     ) -> ParseResult;
 
     /// Parse a single SSA value operand name.
@@ -591,11 +590,11 @@ pub trait OpAsmParser<'input>: Parser<'input> {
     fn resolve_operands_of_uniform_type(
         &mut self,
         operands: &[UnresolvedOperand],
-        ty: &Type,
+        ty: Type,
         result: &mut SmallVec<[ValueRef; 2]>,
     ) -> ParseResult {
         for operand in operands.iter().copied() {
-            result.push(self.resolve_operand(operand, ty.clone())?);
+            result.push(self.resolve_operand(operand, ty)?);
         }
         Ok(())
     }
@@ -615,7 +614,7 @@ pub trait OpAsmParser<'input>: Parser<'input> {
                 num_types: tys.len(),
             });
         }
-        for (operand, ty) in operands.iter().copied().zip(tys.iter().cloned()) {
+        for (operand, ty) in operands.iter().copied().zip(tys.iter().copied()) {
             result.push(self.resolve_operand(operand, ty)?);
         }
         Ok(())

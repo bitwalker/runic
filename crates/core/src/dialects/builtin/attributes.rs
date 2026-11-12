@@ -33,7 +33,7 @@ pub use self::{
     },
     string::StringAttr,
     symbol_ref::{SymbolRef, SymbolRefAttr},
-    r#type::{FunctionTypeAttr, TypeAttr},
+    r#type::TypeAttr,
     unit::UnitAttr,
     visibility::{Visibility, VisibilityAttr},
 };

@@ -63,7 +63,7 @@ impl LocalVariable {
 
     pub fn ty(&self) -> Type {
         assert!(!self.is_uninit);
-        self.function.borrow().get_local(self).clone()
+        *self.function.borrow().get_local(self)
     }
 }
 
@@ -98,7 +98,7 @@ impl LocalVariableAttr {
         if self.value.is_bound() {
             self.value.ty()
         } else {
-            crate::Attribute::ty(self).clone()
+            crate::Attribute::ty(self)
         }
     }
 }
@@ -109,7 +109,7 @@ impl AttrPrinter for LocalVariableAttr {
 
         printer.print_decimal_integer(self.value.index);
         *printer += const_text(", ");
-        printer.print_type(&self.local_type());
+        printer.print_type(self.local_type());
     }
 }
 
@@ -119,7 +119,7 @@ impl AttrParser for LocalVariableAttr {
     ) -> crate::parse::ParseResult<crate::AttributeRef> {
         let index = parser.parse_decimal_integer::<u16>()?.into_inner();
         parser.parse_comma()?;
-        let ty = parser.parse_non_function_type()?.into_inner();
+        let ty = parser.parse_type()?.into_inner();
 
         let attr = parser.context_rc().create_attribute_with_type::<LocalVariableAttr, _>(
             LocalVariable {

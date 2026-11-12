@@ -1,7 +1,7 @@
 use alloc::string::String;
 use core::fmt;
 
-use crate::{CompactString, Type};
+use crate::CompactString;
 
 /// The token type produced by [super::Lexer], and consumed by the parser.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -42,23 +42,16 @@ pub enum Token<'input> {
     Loc,
 
     // Type Keywords
-    I1,
-    I8,
-    U8,
-    I16,
-    U16,
-    I32,
-    U32,
-    I64,
-    U64,
-    I128,
-    U128,
+    /// `iN`: an integer type of `N` bits, written as `i` followed by a decimal width without a
+    /// leading zero. A width too large for a `u32` is `u32::MAX`, which is not a valid width.
+    IntType(u32),
+    Isize,
+    F32,
+    F64,
     Never,
     Ptr,
     Struct,
-    List,
     Array,
-    Byte,
 
     // Delimiters
     /// <
@@ -141,23 +134,14 @@ impl Token<'_> {
             Self::True => CompactString::const_new("true"),
             Self::False => CompactString::const_new("false"),
             Self::Loc => CompactString::const_new("loc"),
-            Self::I1 => CompactString::const_new("i1"),
-            Self::I8 => CompactString::const_new("i8"),
-            Self::U8 => CompactString::const_new("u8"),
-            Self::I16 => CompactString::const_new("i16"),
-            Self::U16 => CompactString::const_new("u16"),
-            Self::I32 => CompactString::const_new("i32"),
-            Self::U32 => CompactString::const_new("u32"),
-            Self::I64 => CompactString::const_new("i61"),
-            Self::U64 => CompactString::const_new("u64"),
-            Self::I128 => CompactString::const_new("i128"),
-            Self::U128 => CompactString::const_new("u128"),
+            Self::IntType(width) => CompactString::from(alloc::format!("i{width}")),
+            Self::Isize => CompactString::const_new("isize"),
+            Self::F32 => CompactString::const_new("f32"),
+            Self::F64 => CompactString::const_new("f64"),
             Self::Never => CompactString::const_new("never"),
             Self::Ptr => CompactString::const_new("ptr"),
             Self::Struct => CompactString::const_new("struct"),
             Self::Array => CompactString::const_new("array"),
-            Self::List => CompactString::const_new("list"),
-            Self::Byte => CompactString::const_new("byte"),
             Self::Langle => CompactString::const_new("<"),
             Self::Rangle => CompactString::const_new(">"),
             Self::Lbrace => CompactString::const_new("{"),
@@ -210,23 +194,14 @@ impl fmt::Display for Token<'_> {
             Self::True => f.write_str("true"),
             Self::False => f.write_str("false"),
             Self::Loc => f.write_str("loc"),
-            Self::I1 => f.write_str("i1"),
-            Self::I8 => f.write_str("i8"),
-            Self::U8 => f.write_str("u8"),
-            Self::I16 => f.write_str("i16"),
-            Self::U16 => f.write_str("u16"),
-            Self::I32 => f.write_str("i32"),
-            Self::U32 => f.write_str("u32"),
-            Self::I64 => f.write_str("i61"),
-            Self::U64 => f.write_str("u64"),
-            Self::I128 => f.write_str("i128"),
-            Self::U128 => f.write_str("u128"),
+            Self::IntType(width) => write!(f, "i{width}"),
+            Self::Isize => f.write_str("isize"),
+            Self::F32 => f.write_str("f32"),
+            Self::F64 => f.write_str("f64"),
             Self::Never => f.write_str("never"),
             Self::Ptr => f.write_str("ptr"),
             Self::Struct => f.write_str("struct"),
             Self::Array => f.write_str("array"),
-            Self::List => f.write_str("list"),
-            Self::Byte => f.write_str("byte"),
             Self::Langle => f.write_char('<'),
             Self::Rangle => f.write_char('>'),
             Self::Lbrace => f.write_char('{'),
@@ -268,44 +243,19 @@ impl<'input> Token<'input> {
     pub fn is_type_keyword(&self) -> bool {
         matches!(
             self,
-            Token::I1
-                | Token::I8
-                | Token::I16
-                | Token::I32
-                | Token::I64
-                | Token::I128
-                | Token::U8
-                | Token::U16
-                | Token::U32
-                | Token::U64
-                | Token::U128
+            Token::IntType(_)
+                | Token::Isize
+                | Token::F32
+                | Token::F64
+                | Token::Never
                 | Token::Ptr
                 | Token::Array
-                | Token::List
                 | Token::Struct
         )
     }
 
-    pub fn as_type(&self) -> Option<Type> {
-        match self {
-            Token::I1 => Some(Type::I1),
-            Token::I8 => Some(Type::I8),
-            Token::I16 => Some(Type::I16),
-            Token::I32 => Some(Type::I32),
-            Token::I64 => Some(Type::I64),
-            Token::I128 => Some(Type::I128),
-            Token::U8 => Some(Type::U8),
-            Token::U16 => Some(Type::U16),
-            Token::U32 => Some(Type::U32),
-            Token::U64 => Some(Type::U64),
-            Token::U128 => Some(Type::U128),
-            _ => None,
-        }
-    }
-
     pub fn is_keyword(&self) -> bool {
-        matches!(self, Token::True | Token::False | Token::Loc | Token::Byte)
-            || self.is_type_keyword()
+        matches!(self, Token::True | Token::False | Token::Loc) || self.is_type_keyword()
     }
 
     /// Returns true if this token represents a known delimiter, e.g. `(`
@@ -330,24 +280,31 @@ impl<'input> Token<'input> {
             "true" => Self::True,
             "false" => Self::False,
             "loc" => Self::Loc,
-            "i1" => Self::I1,
-            "i8" => Self::I8,
-            "u8" => Self::U8,
-            "i16" => Self::I16,
-            "u16" => Self::U16,
-            "i32" => Self::I32,
-            "u32" => Self::U32,
-            "i64" => Self::I64,
-            "u64" => Self::U64,
-            "i128" => Self::I128,
-            "u128" => Self::U128,
+            "isize" => Self::Isize,
+            "f32" => Self::F32,
+            "f64" => Self::F64,
+            "never" => Self::Never,
             "ptr" => Self::Ptr,
             "struct" => Self::Struct,
             "array" => Self::Array,
-            "list" => Self::List,
-            "byte" => Self::Byte,
-            _ => Self::BareIdent(s),
+            _ => match Self::int_type_width(s) {
+                Some(width) => Self::IntType(width),
+                None => Self::BareIdent(s),
+            },
         }
+    }
+
+    /// The width of the integer type `s` names, if `s` is `i` followed by a decimal width with no
+    /// leading zero; `u32::MAX` if that width does not fit in a `u32`.
+    fn int_type_width(s: &str) -> Option<u32> {
+        let digits = s.strip_prefix('i')?;
+        let mut chars = digits.chars();
+        if !chars.next().is_some_and(|c| matches!(c, '1'..='9'))
+            || !chars.all(|c| c.is_ascii_digit())
+        {
+            return None;
+        }
+        Some(digits.parse::<u32>().unwrap_or(u32::MAX))
     }
 
     /// Parses a [Token] from a string corresponding to that token.

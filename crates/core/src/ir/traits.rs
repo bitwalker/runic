@@ -155,7 +155,7 @@ pub trait BranchOpInterface: crate::Op {
     /// This is called to compare types along control-flow edges.
     ///
     /// By default, types must be exactly equal to be compatible.
-    fn are_types_compatible(&self, lhs: &crate::Type, rhs: &crate::Type) -> bool {
+    fn are_types_compatible(&self, lhs: crate::Type, rhs: crate::Type) -> bool {
         lhs == rhs
     }
 
@@ -337,14 +337,13 @@ pub trait SingleRegion {
 /// op, and the copy becomes the result. A cast that checks or changes a value, such as `hir.cast`
 /// between signednesses or any widening or narrowing, must not implement this.
 ///
-/// The verifier admits one operand and one result of the same bit width, a felt counting as 32
-/// bits, which are both integers (felt included), both pointers, or a pointer and an `i32` or
-/// `u32`.
+/// The verifier admits one operand and one result that are both integers of the same fixed width
+/// (`iN`), or both pointers.
 #[operation_trait]
 pub trait TransparentCast {
     #[verifier]
     fn is_transparent_cast(op: &Operation, _context: &Context) -> Result<(), Report> {
-        use crate::{Type, Value};
+        use crate::Value;
 
         let invalid = |label: alloc::string::String, help: &str| {
             crate::diagnostics::report!(
@@ -370,43 +369,16 @@ pub trait TransparentCast {
                 "requires it to have exactly one operand and one result",
             ));
         }
-        let from = op.operands()[0].borrow().value().ty().clone();
-        let to = op.results()[0].borrow().ty().clone();
+        let from = op.operands()[0].borrow().value().ty();
+        let to = op.results()[0].borrow().ty();
 
-        if from.is_felt() && to.is_pointer() {
+        let same_width_integers =
+            from.integer_width().is_some_and(|width| to.integer_width() == Some(width));
+        if !same_width_integers && !(from.is_pointer() && to.is_pointer()) {
             return Err(invalid(
                 format!("cannot reinterpret {from} as {to}"),
-                "cannot convert a felt to a pointer: the felt must be converted to `u32` with \
-                 `hir.cast` first, which checks that it is in range",
-            ));
-        }
-        if from.is_pointer() && to.is_felt() {
-            return Err(invalid(
-                format!("cannot reinterpret {from} as {to}"),
-                "cannot convert a pointer to a felt: take its address as a `u32` with \
-                 `hir.ptr_to_int`, which then reinterprets as a felt unchanged",
-            ));
-        }
-        if from.size_in_bits() != to.size_in_bits() {
-            return Err(invalid(
-                format!(
-                    "{from} is {} bits wide, but {to} is {}",
-                    from.size_in_bits(),
-                    to.size_in_bits()
-                ),
-                "requires its operand and result to be of the same bit width",
-            ));
-        }
-        let is_word = |ty: &Type| matches!(ty, Type::I32 | Type::U32);
-        let same_kind = (from.is_integer() && to.is_integer())
-            || (from.is_pointer() && to.is_pointer())
-            || (from.is_pointer() && is_word(&to))
-            || (is_word(&from) && to.is_pointer());
-        if !same_kind {
-            return Err(invalid(
-                format!("cannot reinterpret {from} as {to}"),
-                "converts only integers to integers, pointers to pointers, or a pointer to or \
-                 from an `i32` or `u32`",
+                "converts only an integer to an integer of the same width, or a pointer to a \
+                 pointer",
             ));
         }
 

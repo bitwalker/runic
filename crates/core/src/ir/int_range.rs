@@ -71,21 +71,16 @@ impl ConstantIntRange {
     }
 
     /// Return the conservative range for all valid values of `ty`.
-    pub fn max_for_type(ty: &Type) -> Self {
-        match ty {
-            Type::I1 => Self::from_unsigned(1, 0, 1),
-            Type::U8 => Self::from_unsigned(8, 0, u8::MAX as u128),
-            Type::U16 => Self::from_unsigned(16, 0, u16::MAX as u128),
-            Type::U32 | Type::Ptr(_) | Type::Function(_) => {
-                Self::from_unsigned(32, 0, u32::MAX as u128)
+    ///
+    /// Integer types are signless, so every bit pattern of the width is valid: neither the
+    /// signed nor the unsigned bounds are constrained. Integers wider than 128 bits, `isize`,
+    /// and non-integer types (including pointers and functions) are untracked.
+    pub fn max_for_type(ty: Type) -> Self {
+        match ty.integer_width() {
+            Some(width @ 1..=128) => {
+                let width = width as u16;
+                Self::from_unsigned(width, 0, unsigned_max(width))
             }
-            Type::U64 => Self::from_unsigned(64, 0, u64::MAX as u128),
-            Type::U128 => Self::from_unsigned(128, 0, u128::MAX),
-            Type::I8 => Self::from_signed(8, i8::MIN as i128, i8::MAX as i128),
-            Type::I16 => Self::from_signed(16, i16::MIN as i128, i16::MAX as i128),
-            Type::I32 => Self::from_signed(32, i32::MIN as i128, i32::MAX as i128),
-            Type::I64 => Self::from_signed(64, i64::MIN as i128, i64::MAX as i128),
-            Type::I128 => Self::from_signed(128, i128::MIN, i128::MAX),
             _ => Self::untracked(),
         }
     }
@@ -109,7 +104,7 @@ impl ConstantIntRange {
     }
 
     /// Return an exact boolean in the raw representation of `ty`.
-    pub fn exact_bool(ty: &Type, value: bool) -> Self {
+    pub fn exact_bool(ty: Type, value: bool) -> Self {
         let width = Self::max_for_type(ty).width();
         let value = u128::from(value);
         Self::from_unsigned(width, value, value)
@@ -315,7 +310,7 @@ impl ConstantIntRange {
     pub fn satisfies(&self, constraint: &ValueRangeConstraint) -> bool {
         match constraint {
             ValueRangeConstraint::Type(ty) => {
-                let constraint = Self::max_for_type(ty);
+                let constraint = Self::max_for_type(*ty);
                 if self.is_untracked() || constraint.is_untracked() {
                     return false;
                 }
@@ -403,7 +398,7 @@ impl IntegerValueRange {
 
     /// Create an assumed top value for the range of `ty`.
     #[inline]
-    pub fn max_for_type(ty: &Type) -> Self {
+    pub fn max_for_type(ty: Type) -> Self {
         Self::assumed(ConstantIntRange::max_for_type(ty))
     }
 
@@ -450,7 +445,7 @@ impl IntegerValueRange {
     }
 
     /// Create a proven exact boolean in the raw representation of `ty`.
-    pub fn exact_bool(ty: &Type, value: bool) -> Self {
+    pub fn exact_bool(ty: Type, value: bool) -> Self {
         Self::proven(ConstantIntRange::exact_bool(ty, value))
     }
 

@@ -1,14 +1,8 @@
-mod aliasing;
 mod range;
-mod stack;
 
 use core::{any::Any, fmt};
 
-pub use self::{
-    aliasing::ValueOrAlias,
-    range::{AsValueRange, ValueRange},
-    stack::StackOperand,
-};
+pub use self::range::{AsValueRange, ValueRange};
 use super::*;
 use crate::{DynHash, DynPartialEq, PartialEqable, any::AsAny, interner, traits::Transparent};
 
@@ -164,7 +158,7 @@ pub trait Value:
     /// Set the source location of this value
     fn set_span(&mut self, span: SourceSpan);
     /// Get the type of this value
-    fn ty(&self) -> &Type;
+    fn ty(&self) -> Type;
     /// Set the type of this value
     fn set_type(&mut self, ty: Type);
     /// Get the defining operation for this value, _if_ defined by an operation.
@@ -373,8 +367,8 @@ macro_rules! value_impl {
             fn as_any_mut(&mut self) -> &mut dyn Any {
                 self
             }
-            fn ty(&self) -> &Type {
-                &self.ty
+            fn ty(&self) -> Type {
+                self.ty
             }
 
             fn set_span(&mut self, span: SourceSpan) {
@@ -517,7 +511,7 @@ impl crate::formatter::PrettyPrint for BlockArgument {
     fn render(&self) -> crate::formatter::Document {
         use crate::formatter::*;
 
-        display(self.id) + const_text(": ") + self.ty.render()
+        display(self.id) + const_text(": ") + display(self.ty)
     }
 }
 

@@ -32,7 +32,7 @@ pub struct UnrealizedConversionCast {
 
 impl InferTypeOpInterface for UnrealizedConversionCast {
     fn infer_return_types(&mut self, _context: &Context) -> Result<(), Report> {
-        let ty = self.get_ty().clone();
+        let ty = *self.get_ty();
         self.result_mut().set_type(ty);
         Ok(())
     }

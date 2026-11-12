@@ -5,7 +5,7 @@ use core::{
 
 use super::{AttrPrinter, parse::ParserExt};
 use crate::{
-    Type,
+    Context, Type,
     attributes::{AttrParser, InferAttributeType, IntegerLikeAttr},
     derive::DialectAttribute,
     dialects::builtin::BuiltinDialect,
@@ -76,52 +76,51 @@ impl AttrParser for ImmediateAttr {
 }
 
 impl InferAttributeType for ImmediateAttr {
-    fn infer_type() -> Type {
+    fn infer_type(context: &Context) -> Type {
         // We cannot know the type of this attribute until we have a concrete value
-        Type::Unknown
+        context.unknown_type()
     }
 
     #[inline]
-    fn infer_type_from_value(value: &<Self as crate::AttributeRegistration>::Value) -> Type {
-        value.ty()
+    fn infer_type_from_value(
+        context: &Context,
+        value: &<Self as crate::AttributeRegistration>::Value,
+    ) -> Type {
+        value.ty(context)
     }
 }
 
 impl Immediate {
-    pub fn ty(&self) -> Type {
+    /// The type of this immediate: the signless integer type of its width, or `f64`.
+    pub fn ty(&self, context: &Context) -> Type {
         match self {
-            Self::I1(_) => Type::I1,
-            Self::U8(_) => Type::U8,
-            Self::I8(_) => Type::I8,
-            Self::U16(_) => Type::U16,
-            Self::I16(_) => Type::I16,
-            Self::U32(_) => Type::U32,
-            Self::I32(_) => Type::I32,
-            Self::U64(_) => Type::U64,
-            Self::I64(_) => Type::I64,
-            Self::U128(_) => Type::U128,
-            Self::I128(_) => Type::I128,
-            Self::F64(_) => Type::F64,
+            Self::I1(_) => context.i1(),
+            Self::U8(_) | Self::I8(_) => context.i8(),
+            Self::U16(_) | Self::I16(_) => context.i16(),
+            Self::U32(_) | Self::I32(_) => context.i32(),
+            Self::U64(_) | Self::I64(_) => context.i64(),
+            Self::U128(_) | Self::I128(_) => context.i128(),
+            Self::F64(_) => context.f64_type(),
         }
     }
 
-    /// Converts this immediate to the representation matching `ty`, if the value fits.
+    /// Converts this immediate to the representation matching the integer type `ty`, if the
+    /// value fits.
     ///
-    /// Returns `None` when `ty` is not a representable numeric type, or the value is out of
-    /// range for it.
-    pub fn coerced_to(self, ty: &Type) -> Option<Self> {
-        match ty {
-            Type::I1 => self.as_bool().map(Self::I1),
-            Type::U8 => self.as_u8().map(Self::U8),
-            Type::I8 => self.as_i8().map(Self::I8),
-            Type::U16 => self.as_u16().map(Self::U16),
-            Type::I16 => self.as_i16().map(Self::I16),
-            Type::U32 => self.as_u32().map(Self::U32),
-            Type::I32 => self.as_i32().map(Self::I32),
-            Type::U64 => self.as_u64().map(Self::U64),
-            Type::I64 => self.as_i64().map(Self::I64),
-            Type::U128 => self.as_u128().map(Self::U128),
-            Type::I128 => self.as_i128().map(Self::I128),
+    /// Integer types are signless, so a value fits an `N`-bit type when it lies in
+    /// `[-2^(N-1), 2^N - 1]`; the result is the signed representation of the width, holding the
+    /// value's `N`-bit pattern.
+    ///
+    /// Returns `None` when `ty` is not an integer type of 1, 8, 16, 32, 64 or 128 bits, or the
+    /// value is out of range for it.
+    pub fn coerced_to(self, ty: Type) -> Option<Self> {
+        match ty.integer_width()? {
+            1 => self.as_i8().filter(|v| (-1..=1).contains(v)).map(|v| Self::I1(v != 0)),
+            8 => self.as_i8().or_else(|| self.as_u8().map(|v| v as i8)).map(Self::I8),
+            16 => self.as_i16().or_else(|| self.as_u16().map(|v| v as i16)).map(Self::I16),
+            32 => self.as_i32().or_else(|| self.as_u32().map(|v| v as i32)).map(Self::I32),
+            64 => self.as_i64().or_else(|| self.as_u64().map(|v| v as i64)).map(Self::I64),
+            128 => self.as_i128().or_else(|| self.as_u128().map(|v| v as i128)).map(Self::I128),
             _ => None,
         }
     }
@@ -817,18 +816,6 @@ impl Ord for Immediate {
                 x.cmp(&y)
             }
         }
-    }
-}
-impl From<Immediate> for Type {
-    #[inline]
-    fn from(imm: Immediate) -> Self {
-        imm.ty()
-    }
-}
-impl From<&Immediate> for Type {
-    #[inline(always)]
-    fn from(imm: &Immediate) -> Self {
-        imm.ty()
     }
 }
 impl From<bool> for Immediate {

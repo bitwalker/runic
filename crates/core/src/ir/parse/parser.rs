@@ -1,15 +1,12 @@
-use core::str::FromStr;
-
 use super::*;
 use crate::{
-    ArrayType, AttributeRef, AttributeRegistration, CallConv, FunctionType, ImmediateAttr,
-    PointerType, StructType, SymbolNameComponent, SymbolPath, SymbolUse,
+    AttributeRef, AttributeRegistration, ImmediateAttr, SymbolNameComponent, SymbolPath, SymbolUse,
     diagnostics::{Report, report},
     dialects::builtin::{
         self,
         attributes::{
-            BoolAttr, I8Attr, I16Attr, I32Attr, StringAttr, SymbolRefAttr, TypeAttr, U8Attr,
-            U16Attr, U32Attr,
+            BoolAttr, I8Attr, I16Attr, I32Attr, I64Attr, I128Attr, StringAttr, SymbolRefAttr,
+            TypeAttr,
         },
     },
 };
@@ -58,8 +55,13 @@ impl<'input> Parser<'input> for DefaultParser<'input> {
     }
 
     #[inline]
-    fn parse_extended_attribute(&mut self, ty: &Type) -> ParseResult<Span<AttributeRef>> {
+    fn parse_extended_attribute(&mut self, ty: Type) -> ParseResult<Span<AttributeRef>> {
         parse_extended_attribute(self, ty)
+    }
+
+    #[inline]
+    fn parse_optional_type(&mut self) -> ParseResult<Option<Span<Type>>> {
+        super::types::parse_optional_type(self)
     }
 }
 
@@ -108,8 +110,13 @@ impl<'input, P: Parser<'input>> Parser<'input> for ParserImpl<P> {
     }
 
     #[inline]
-    fn parse_extended_attribute(&mut self, ty: &Type) -> ParseResult<Span<AttributeRef>> {
+    fn parse_extended_attribute(&mut self, ty: Type) -> ParseResult<Span<AttributeRef>> {
         parse_extended_attribute(self, ty)
+    }
+
+    #[inline]
+    fn parse_optional_type(&mut self) -> ParseResult<Option<Span<Type>>> {
+        super::types::parse_optional_type(self)
     }
 }
 
@@ -345,9 +352,15 @@ pub trait Parser<'input> {
     ///
     /// If `name` is provided, it will be used for maintaining symbol references if the attribute
     /// is a symbol reference.
-    fn parse_attribute(&mut self, ty: &Type) -> ParseResult<Span<AttributeRef>> {
+    fn parse_attribute(&mut self, ty: Type) -> ParseResult<Span<AttributeRef>> {
         if self.token_stream_mut().is_next(|tok| matches!(tok, Token::HashIdent(_))) {
             return self.parse_extended_attribute(ty);
+        }
+
+        // A type in attribute position is a `TypeAttr`
+        if let Some(parsed) = self.parse_optional_type()? {
+            let (span, parsed) = parsed.into_parts();
+            return Ok(Span::new(span, self.context_rc().create_attribute::<TypeAttr, _>(parsed)));
         }
 
         let Some(spanned) = self.token_stream_mut().next()? else {
@@ -373,56 +386,11 @@ pub trait Parser<'input> {
                     Token::Binary(_) => 2u32,
                     _ => unreachable!(),
                 };
-
-                let context = self.context_rc();
-                match ty {
-                    Type::I1 => {
-                        if matches!(s, "0" | "1") {
-                            Ok(Span::new(
-                                span,
-                                self.context_rc().create_attribute::<BoolAttr, _>(s == "1"),
-                            ))
-                        } else {
-                            Err(ParserError::InvalidIntegerLiteral {
-                                span,
-                                reason: "value is out of range".to_string(),
-                            })
-                        }
-                    }
-                    Type::I8 => attr_from_str_radix::<I8Attr>(context, span, s, radix, ty),
-                    Type::U8 => attr_from_str_radix::<U8Attr>(context, span, s, radix, ty),
-                    Type::I16 => attr_from_str_radix::<I16Attr>(context, span, s, radix, ty),
-                    Type::U16 => attr_from_str_radix::<U16Attr>(context, span, s, radix, ty),
-                    Type::I32 => attr_from_str_radix::<I32Attr>(context, span, s, radix, ty),
-                    Type::U32 | Type::Ptr(_) => {
-                        attr_from_str_radix::<U32Attr>(context, span, s, radix, ty)
-                    }
-                    Type::U256 => todo!("parsing of u256 values"),
-                    Type::F64 => todo!("parsing of floats"),
-                    ty => Err(ParserError::InvalidAttributeValue {
-                        span,
-                        reason: format!(
-                            "expected value of type {}, got integer value '{s}'",
-                            TypePrinter(ty)
-                        ),
-                    }),
-                }
-            }
-            Token::Question => Ok(Span::new(
-                span,
-                self.context_rc().create_attribute::<TypeAttr, _>(Type::Unknown),
-            )),
-            Token::BangIdent(ty) => {
-                // Parse '!'-symbol
-                todo!("parsing of custom type names")
+                integer_literal_attr(&self.context_rc(), span, s, radix, ty)
             }
             Token::AtIdent(_) => {
                 // Parse symbol reference attribute
                 self.parse_symbol_ref().map(|spanned| spanned.map(|sym| sym.as_attribute_ref()))
-            }
-            Token::Lbracket => {
-                // Parse value list
-                todo!("parsing of array attributes")
             }
             Token::Lbrace => {
                 // Parse value map
@@ -433,66 +401,6 @@ pub trait Parser<'input> {
                 let loc = self.parse_location_instance()?;
                 self.token_stream_mut().expect(Token::Rparen)?;
                 Ok(Span::new(span, self.context_rc().create_attribute::<LocationAttr, _>(loc)))
-            }
-            Token::AtIdent(_symbol) => {
-                // Parse symbol reference attribute
-                todo!("parsing of symbol references")
-            }
-            Token::I1 => {
-                Ok(Span::new(span, self.context_rc().create_attribute::<TypeAttr, _>(Type::I1)))
-            }
-            Token::I8 => {
-                Ok(Span::new(span, self.context_rc().create_attribute::<TypeAttr, _>(Type::I8)))
-            }
-            Token::U8 => {
-                Ok(Span::new(span, self.context_rc().create_attribute::<TypeAttr, _>(Type::U8)))
-            }
-            Token::I16 => {
-                Ok(Span::new(span, self.context_rc().create_attribute::<TypeAttr, _>(Type::I16)))
-            }
-            Token::U16 => {
-                Ok(Span::new(span, self.context_rc().create_attribute::<TypeAttr, _>(Type::U16)))
-            }
-            Token::I32 => {
-                Ok(Span::new(span, self.context_rc().create_attribute::<TypeAttr, _>(Type::I32)))
-            }
-            Token::U32 => {
-                Ok(Span::new(span, self.context_rc().create_attribute::<TypeAttr, _>(Type::U32)))
-            }
-            Token::I64 => {
-                Ok(Span::new(span, self.context_rc().create_attribute::<TypeAttr, _>(Type::I64)))
-            }
-            Token::U64 => {
-                Ok(Span::new(span, self.context_rc().create_attribute::<TypeAttr, _>(Type::U64)))
-            }
-            Token::I128 => {
-                Ok(Span::new(span, self.context_rc().create_attribute::<TypeAttr, _>(Type::I128)))
-            }
-            Token::U128 => {
-                Ok(Span::new(span, self.context_rc().create_attribute::<TypeAttr, _>(Type::U128)))
-            }
-            Token::Ptr => {
-                self.parse_langle()?;
-                let pointee = self.parse_type()?;
-                self.parse_comma()?;
-                let addrspace = self.token_stream_mut().expect_map(
-                    "expected one of 'byte' or 'element'",
-                    |tok| match tok {
-                        Token::Byte => Some(AddressSpace::Byte),
-                        _ => None,
-                    },
-                )?;
-                self.parse_rangle()?;
-                Ok(Span::new(
-                    span,
-                    self.context_rc().create_attribute::<TypeAttr, _>(Type::Ptr(
-                        PointerType::new_with_address_space(
-                            pointee.into_inner(),
-                            addrspace.into_inner(),
-                        )
-                        .into(),
-                    )),
-                ))
             }
             other => Err(ParserError::UnexpectedToken {
                 span,
@@ -517,9 +425,9 @@ pub trait Parser<'input> {
         }
     }
 
-    fn parse_extended_attribute(&mut self, ty: &Type) -> ParseResult<Span<AttributeRef>>;
+    fn parse_extended_attribute(&mut self, ty: Type) -> ParseResult<Span<AttributeRef>>;
 
-    fn parse_optional_attribute(&mut self, ty: &Type) -> ParseResult<Option<Span<AttributeRef>>> {
+    fn parse_optional_attribute(&mut self, ty: Type) -> ParseResult<Option<Span<AttributeRef>>> {
         if self.token_stream_mut().is_next(|tok| match tok {
             Token::AtIdent(_)
             | Token::HashIdent(_)
@@ -531,8 +439,10 @@ pub trait Parser<'input> {
             | Token::True
             | Token::False
             | Token::Lbracket
-            | Token::Lbrace => true,
-            Token::Byte => false,
+            | Token::Lbrace
+            | Token::Question
+            | Token::Lparen
+            | Token::BangIdent(_) => true,
             other => other.is_type_keyword(),
         }) {
             self.parse_attribute(ty).map(Some)
@@ -702,81 +612,11 @@ pub trait Parser<'input> {
         Ok(ty)
     }
 
-    fn parse_optional_type(&mut self) -> ParseResult<Option<Span<Type>>> {
-        let start = self.current_location();
-        if self.token_stream_mut().next_if_eq(Token::Question)? {
-            return Ok(Some(Span::new(start, Type::Unknown)));
-        }
-
-        if let Some(ty) = self.token_stream_mut().next_if_map(|tok| match tok {
-            Token::I1 => Some(Type::I1),
-            Token::I8 => Some(Type::I8),
-            Token::U8 => Some(Type::U8),
-            Token::I16 => Some(Type::I16),
-            Token::U16 => Some(Type::U16),
-            Token::I32 => Some(Type::I32),
-            Token::U32 => Some(Type::U32),
-            Token::I64 => Some(Type::I64),
-            Token::U64 => Some(Type::U64),
-            Token::I128 => Some(Type::I128),
-            Token::U128 => Some(Type::U128),
-            _ => None,
-        })? {
-            return Ok(Some(ty));
-        }
-
-        let start = self.current_location();
-        if self.token_stream_mut().next_if_eq(Token::Ptr)? {
-            self.parse_langle()?;
-            let pointee = self.parse_type()?;
-            self.parse_comma()?;
-            let addrspace =
-                self.token_stream_mut().expect_map("one of 'byte' or 'felt'", |tok| match tok {
-                    Token::Byte => Some(AddressSpace::Byte),
-                    _ => None,
-                })?;
-            self.parse_rangle()?;
-            let end = self.current_location().range().end();
-            let span = span!(start.source().id(), start.range().start(), end);
-            return Ok(Some(Span::new(
-                span,
-                Type::Ptr(
-                    PointerType::new_with_address_space(
-                        pointee.into_inner(),
-                        addrspace.into_inner(),
-                    )
-                    .into(),
-                ),
-            )));
-        }
-
-        if self.token_stream_mut().next_if_eq(Token::Struct)? {
-            todo!()
-        }
-
-        let bracketed = self.token_stream_mut().next_if_eq(Token::Lbracket)?;
-        if bracketed || self.token_stream_mut().next_if_eq(Token::Array)? {
-            if !bracketed {
-                self.parse_langle()?;
-            }
-            let element = self.parse_type()?.into_inner();
-            self.parse_semicolon()?;
-            let length = self.parse_decimal_integer::<usize>()?.into_inner();
-            if bracketed {
-                self.parse_rbracket()?;
-            } else {
-                self.parse_rangle()?;
-            }
-            let span = span!(
-                start.source().id(),
-                start.range().start(),
-                self.current_location().range().end()
-            );
-            return Ok(Some(Span::new(span, Type::from(ArrayType::new(element, length)))));
-        }
-
-        Ok(None)
-    }
+    /// Parse a type, if the next token can start one.
+    ///
+    /// Implementations call `types::parse_optional_type` in this module's parent, which
+    /// implements the type grammar for every parser.
+    fn parse_optional_type(&mut self) -> ParseResult<Option<Span<Type>>>;
 
     /// Parse a type list.
     fn parse_type_list(&mut self, result: &mut SmallVec<[Type; 4]>) -> ParseResult {
@@ -803,10 +643,6 @@ pub trait Parser<'input> {
                 None => Ok(false),
             }
         })
-    }
-
-    fn parse_function_result_types(&mut self) -> ParseResult<SmallVec<[Type; 1]>> {
-        todo!()
     }
 
     /// Parse an `->` followed by a type list.
@@ -985,183 +821,6 @@ pub trait Parser<'input> {
         Ok(Span::new(span, body))
     }
 
-    /// Parse an extended type.
-    fn parse_extended_type(&mut self) -> ParseResult<Span<Type>> {
-        todo!()
-    }
-
-    /// Parse an extended type.
-    fn parse_function_type(&mut self) -> ParseResult<Span<FunctionType>> {
-        let start = self.token_stream().current_position();
-        let cc = if self.token_stream_mut().next_if_eq(Token::BareIdent("extern"))? {
-            self.parse_lparen()?;
-            let cc = self.parse_string()?;
-            self.parse_rparen()?;
-            let cc_span = cc.span();
-            Some(CallConv::from_str(cc.as_str()).map_err(|_| {
-                ParserError::from(report! {
-                    message: "invalid calling convention string",
-                    labels: [
-                        primary(
-                            cc_span,
-                            format!("unrecognized calling convention '{}'", cc.as_str())
-                        ),
-                    ],
-                })
-            })?)
-        } else {
-            None
-        };
-        let mut params = SmallVec::<[Type; _]>::default();
-        self.parse_type_list(&mut params)?;
-        let mut results = SmallVec::<[Type; _]>::default();
-        self.parse_arrow_type_list(&mut results)?;
-
-        let end = self.token_stream().current_span();
-        let span = span!(end.source().id(), start, end.range().end());
-        Ok(Span::new(span, FunctionType::new(cc.unwrap_or_default(), params, results)))
-    }
-
-    /// Parse a non function type.
-    fn parse_non_function_type(&mut self) -> ParseResult<Span<Type>> {
-        if let Some(tok) = self.token_stream_mut().next_if_map(|tok| tok.as_type())? {
-            return Ok(tok);
-        }
-
-        if self.token_stream_mut().next_if_eq(Token::Ptr)? {
-            let start = self.token_stream().current_position();
-            self.parse_langle()?;
-            let pointee_ty = self.parse_type()?;
-            let addrspace = if self.parse_optional_comma()? {
-                self.token_stream_mut()
-                    .expect_map("pointer address space, e.g. byte or element", |tok| match tok {
-                        Token::Byte => Some(AddressSpace::Byte),
-                        _ => None,
-                    })?
-                    .into_inner()
-            } else {
-                AddressSpace::Byte
-            };
-            self.parse_rangle()?;
-            let end = self.token_stream().current_span();
-
-            let span = span!(end.source().id(), start, end.range().end());
-            return Ok(Span::new(
-                span,
-                Type::Ptr(Arc::new(PointerType::new_with_address_space(
-                    pointee_ty.into_inner(),
-                    addrspace,
-                ))),
-            ));
-        }
-
-        if self
-            .token_stream_mut()
-            .is_next(|token| matches!(token, Token::Array | Token::Lbracket))
-        {
-            return self.parse_type();
-        }
-
-        if self.token_stream_mut().next_if_eq(Token::Struct)? {
-            let start = self.token_stream().current_position();
-            self.parse_langle()?;
-
-            let repr = match self.token_stream_mut().next_if_map(|tok| match tok {
-                Token::BareIdent(repr @ ("transparent" | "align" | "packed")) => Some(repr),
-                _ => None,
-            })? {
-                None => crate::TypeRepr::Default,
-                Some(repr) => {
-                    let repr = repr.into_inner();
-                    let repr = match repr {
-                        "transparent" => crate::TypeRepr::Transparent,
-                        "align" => {
-                            self.parse_lparen()?;
-                            let alignment = self.parse_decimal_integer::<u16>()?;
-                            let span = alignment.span();
-                            let Some(alignment) =
-                                core::num::NonZeroU16::new(alignment.into_inner())
-                            else {
-                                return Err(ParserError::InvalidIntegerLiteral {
-                                    span,
-                                    reason: "expected non-zero alignment".to_string(),
-                                });
-                            };
-                            self.parse_rparen()?;
-                            crate::TypeRepr::Align(alignment)
-                        }
-                        "packed" => {
-                            self.parse_lparen()?;
-                            let alignment = self.parse_decimal_integer::<u16>()?;
-                            let span = alignment.span();
-                            let Some(alignment) =
-                                core::num::NonZeroU16::new(alignment.into_inner())
-                            else {
-                                return Err(ParserError::InvalidIntegerLiteral {
-                                    span,
-                                    reason: "expected non-zero alignment".to_string(),
-                                });
-                            };
-                            self.parse_rparen()?;
-                            self.parse_semicolon()?;
-                            crate::TypeRepr::Packed(alignment)
-                        }
-                        _ => unreachable!(),
-                    };
-                    self.parse_semicolon()?;
-                    repr
-                }
-            };
-
-            let mut fields = SmallVec::<[Type; 4]>::default();
-            self.parse_comma_separated_list_until(
-                Token::Rangle,
-                /*allow_empty=*/ false,
-                |parser| {
-                    let ty = parser.parse_type()?.into_inner();
-                    if parser.token_stream_mut().next_if_eq(Token::BareIdent("align"))? {
-                        parser.parse_lparen()?;
-                        let _alignment = parser.parse_decimal_integer::<u16>()?.into_inner();
-                        parser.parse_rparen()?;
-                    }
-                    fields.push(ty);
-                    Ok(true)
-                },
-            )?;
-
-            self.parse_rangle()?;
-            let end = self.token_stream().current_span();
-
-            let span = span!(end.source().id(), start, end.range().end());
-
-            return Ok(Span::new(span, Type::from(StructType::new_with_repr(repr, fields))));
-        }
-
-        if self.token_stream_mut().is_next(|tok| matches!(tok, Token::Lparen)) {
-            let ty = self.parse_tuple_type()?;
-            if self.token_stream_mut().is_next(|tok| matches!(tok, Token::Rstab)) {
-                return Err(ParserError::from(report! {
-                    message: "invalid type",
-                    labels: [primary(ty.span(), "expected non-function type here")],
-                }));
-            }
-            return Ok(ty);
-        }
-
-        self.parse_extended_type()
-    }
-
-    /// Parse a tuple type.
-    fn parse_tuple_type(&mut self) -> ParseResult<Span<Type>> {
-        let mut elements = SmallVec::<[Type; 4]>::default();
-        let start = self.token_stream().current_position();
-        self.parse_type_list(&mut elements)?;
-        let end = self.token_stream().current_span();
-
-        let span = span!(end.source().id(), start, end.range().end());
-        Ok(Span::new(span, Type::from(StructType::new(elements))))
-    }
-
     /// Parse an attribute dictionary.
     fn parse_attribute_dict(&mut self, attrs: &mut ParsedAttrs) -> ParseResult {
         self.parse_lbrace()?;
@@ -1183,7 +842,8 @@ pub trait Parser<'input> {
 
                 parser.parse_equal()?;
 
-                let value = parser.parse_attribute(&Type::Unknown)?;
+                let unknown = parser.context().unknown_type();
+                let value = parser.parse_attribute(unknown)?;
 
                 attrs.push(NamedAttribute::new(key.into_inner(), value.into_inner()));
 
@@ -1215,16 +875,6 @@ pub trait Parser<'input> {
         } else {
             Ok(())
         }
-    }
-
-    /// Parse a decimal or a hexadecimal literal, which can be either an integer or a float
-    /// attribute.
-    fn parse_dec_or_hex_attr(
-        &mut self,
-        ty: &Type,
-        is_negative: bool,
-    ) -> ParseResult<Span<AttributeRef>> {
-        todo!()
     }
 }
 
@@ -1379,20 +1029,9 @@ pub trait ParserExt<'input>: Parser<'input> {
         }
     }
 
-    fn parse_custom_type_with_fallback<F>(&mut self, parse_type: F) -> ParseResult<Span<Type>>
-    where
-        F: Fn(&mut Self) -> ParseResult<Span<Type>>,
-    {
-        if self.token_stream_mut().is_next(|tok| matches!(tok, Token::BangIdent(_))) {
-            self.parse_type()
-        } else {
-            parse_type(self)
-        }
-    }
-
     fn parse_custom_attribute_with_fallback<F>(
         &mut self,
-        ty: &Type,
+        ty: Type,
         parse_attribute: F,
     ) -> ParseResult<Span<AttributeRef>>
     where
@@ -1412,7 +1051,7 @@ pub trait ParserExt<'input>: Parser<'input> {
     fn parse_optional_attribute_with_token<T>(
         &mut self,
         token: Token<'_>,
-        ty: &Type,
+        ty: Type,
     ) -> ParseResult<Option<Span<UnsafeIntrusiveEntityRef<T>>>>
     where
         T: AttributeRegistration,
@@ -1441,7 +1080,7 @@ pub trait ParserExt<'input>: Parser<'input> {
         }
     }
 
-    fn parse_typed_attribute<T>(&mut self, ty: &Type) -> ParseResult<Span<AttributeRef>>
+    fn parse_typed_attribute<T>(&mut self, ty: Type) -> ParseResult<Span<AttributeRef>>
     where
         T: AttributeRegistration,
     {
@@ -1467,31 +1106,66 @@ pub trait ParserExt<'input>: Parser<'input> {
 
 impl<'input, P: ?Sized + Parser<'input>> ParserExt<'input> for P {}
 
-fn attr_from_str_radix<A>(
-    context: Rc<Context>,
+/// Creates the attribute for the integer literal `s` (in `radix`) of the integer type `ty`.
+///
+/// Integer types are signless: an `N`-bit literal may be anything in `[0, 2^N - 1]` (a negative
+/// literal is not a single token), and the attribute holds its `N`-bit pattern.
+fn integer_literal_attr(
+    context: &Rc<Context>,
     span: SourceSpan,
     s: &str,
     radix: u32,
-    ty: &Type,
-) -> ParseResult<Span<AttributeRef>>
-where
-    A: AttributeRegistration,
-    <A as AttributeRegistration>::Value: FromStrRadix,
-{
-    let parsed =
-        <<A as AttributeRegistration>::Value as FromStrRadix>::try_from_str_radix(s, radix)
-            .map_err(|err| ParserError::InvalidIntegerLiteral {
+    ty: Type,
+) -> ParseResult<Span<AttributeRef>> {
+    let Some(width) = ty.integer_width() else {
+        return Err(ParserError::InvalidAttributeValue {
+            span,
+            reason: format!("expected value of type {ty}, got integer value '{s}'"),
+        });
+    };
+    let value =
+        u128::try_from_str_radix(s, radix).map_err(|err| ParserError::InvalidIntegerLiteral {
+            span,
+            reason: err.to_string(),
+        })?;
+    if width < 128 && value >> width != 0 {
+        return Err(ParserError::InvalidIntegerLiteral {
+            span,
+            reason: format!("value is out of range for {ty}"),
+        });
+    }
+    let attr = match width {
+        1 => context
+            .create_attribute_with_type::<BoolAttr, _>(value == 1, ty)
+            .as_attribute_ref(),
+        8 => context
+            .create_attribute_with_type::<I8Attr, _>(value as i8, ty)
+            .as_attribute_ref(),
+        16 => context
+            .create_attribute_with_type::<I16Attr, _>(value as i16, ty)
+            .as_attribute_ref(),
+        32 => context
+            .create_attribute_with_type::<I32Attr, _>(value as i32, ty)
+            .as_attribute_ref(),
+        64 => context
+            .create_attribute_with_type::<I64Attr, _>(value as i64, ty)
+            .as_attribute_ref(),
+        128 => context
+            .create_attribute_with_type::<I128Attr, _>(value as i128, ty)
+            .as_attribute_ref(),
+        _ => {
+            return Err(ParserError::InvalidAttributeValue {
                 span,
-                reason: err.to_string(),
-            })?;
-
-    let attr = context.create_attribute_with_type::<A, _>(parsed, ty.clone());
+                reason: format!("integer literals of type {ty} are not supported"),
+            });
+        }
+    };
     Ok(Span::new(span, attr))
 }
 
 pub(super) fn parse_extended_attribute<'input, P: Parser<'input>>(
     parser: &mut P,
-    ty: &Type,
+    ty: Type,
 ) -> ParseResult<Span<AttributeRef>> {
     let (name_span, name) = parser
         .token_stream_mut()
@@ -1524,8 +1198,8 @@ pub(super) fn parse_extended_attribute<'input, P: Parser<'input>>(
         }
     } else {
         let mut value = name.create_default(&parser.context_rc());
-        if !matches!(ty, Type::Unknown) {
-            value.borrow_mut().set_type(ty.clone());
+        if !ty.is_unknown() {
+            value.borrow_mut().set_type(ty);
         }
         Ok(Span::new(name_span, value))
     }

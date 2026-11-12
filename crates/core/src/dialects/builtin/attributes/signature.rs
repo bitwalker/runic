@@ -1,8 +1,8 @@
 use alloc::{format, rc::Rc, vec::Vec};
-use core::{fmt, str::FromStr};
+use core::fmt;
 
 use crate::{
-    AttrPrinter, CallConv, Context, NamedAttribute, OpPrintingFlags, Type,
+    AttrPrinter, CallConv, Context, FunctionType, NamedAttribute, OpPrintingFlags, Type,
     attributes::{AttrParser, AttributeDict},
     derive::DialectAttribute,
     dialects::builtin::BuiltinDialect,
@@ -156,10 +156,7 @@ impl Clone for AbiParam {
             });
             attrs.insert(new_attr);
         }
-        Self {
-            ty: self.ty.clone(),
-            attrs,
-        }
+        Self { ty: self.ty, attrs }
     }
 }
 
@@ -181,12 +178,12 @@ impl AbiParam {
         Self::new_with_attribute_dict(ty, attrs)
     }
 
-    pub fn from_type_with_default_extension(ty: Type, context: &Rc<Context>) -> Self {
-        match ty {
-            Type::I1 | Type::U8 | Type::U16 => Self::zext(ty, context),
-            Type::I8 | Type::I16 => Self::sext(ty, context),
-            ty => Self::new(ty),
-        }
+    /// The parameter for a value of type `ty`, with the default extension for that type.
+    ///
+    /// Integer types are signless, so there is no signedness to choose an extension from: no
+    /// extension is applied, and the context is not used.
+    pub fn from_type_with_default_extension(ty: Type, _context: &Rc<Context>) -> Self {
+        Self::new(ty)
     }
 
     pub fn zext(ty: Type, context: &Rc<Context>) -> Self {
@@ -348,8 +345,8 @@ impl fmt::Display for Signature {
 impl Signature {
     /// Create a new signature for a function with the given calling convention and types.
     ///
-    /// The input types are mapped to [AbiParam] using the default exteension rules for a 32-bit
-    /// target.
+    /// The input types are mapped to [AbiParam] with
+    /// [AbiParam::from_type_with_default_extension].
     pub fn with_convention<P, R>(context: &Rc<Context>, cc: CallConv, params: P, results: R) -> Self
     where
         P: IntoIterator<Item = Type>,
@@ -370,8 +367,8 @@ impl Signature {
 
     /// Create a new signature for a function with the default calling convention and given types.
     ///
-    /// The input types are mapped to [AbiParam] using the default exteension rules for a 32-bit
-    /// target.
+    /// The input types are mapped to [AbiParam] with
+    /// [AbiParam::from_type_with_default_extension].
     pub fn new<P, R>(context: &Rc<Context>, params: P, results: R) -> Self
     where
         P: IntoIterator<Item = Type>,
@@ -382,7 +379,7 @@ impl Signature {
 
     /// Get the calling convention of this function
     pub fn calling_convention(&self) -> CallConv {
-        self.cc.clone()
+        self.cc
     }
 
     /// Returns the number of arguments expected by this function
@@ -410,11 +407,7 @@ impl Signature {
     /// Returns a slice containing the results of this function
     pub fn results(&self) -> &[AbiParam] {
         match self.results.as_slice() {
-            [
-                AbiParam {
-                    ty: Type::Never, ..
-                },
-            ] => &[],
+            [AbiParam { ty, .. }] if ty.is_never() => &[],
             results => results,
         }
     }
@@ -440,8 +433,8 @@ impl AttrPrinter for SignatureAttr {
         printer.print_rparen();
         printer.print_space();
         printer.print_function_type_parts(
-            self.params().iter().map(|p| &p.ty),
-            self.results().iter().map(|p| &p.ty),
+            self.params().iter().map(|p| p.ty),
+            self.results().iter().map(|p| p.ty),
         );
     }
 }
@@ -456,17 +449,22 @@ impl AttrParser for SignatureAttr {
         parser.parse_lparen()?;
         let cc_string = parser.parse_string()?;
         parser.parse_rparen()?;
-        let ty = parser.parse_function_type()?.into_inner();
+        let (ty_span, ty) = parser.parse_type()?.into_parts();
+        let Some(fn_ty) = ty.downcast_ref::<FunctionType>() else {
+            return Err(ParserError::InvalidAttributeValue {
+                span: ty_span,
+                reason: format!("expected a function type, got '{ty}'"),
+            });
+        };
 
-        let cc = CallConv::from_str(cc_string.as_str()).map_err(|_| {
-            ParserError::InvalidAttributeValue {
-                span: cc_string.span(),
-                reason: format!("calling convention '{}' is unrecognized", cc_string.as_str()),
-            }
-        })?;
-
+        let cc = CallConv::new(cc_string.as_str());
         let context = parser.context_rc();
-        let signature = Signature::with_convention(&context, cc, ty.params, ty.results);
+        let signature = Signature::with_convention(
+            &context,
+            cc,
+            fn_ty.params().iter().copied(),
+            fn_ty.results().iter().copied(),
+        );
         let attr = context.create_attribute::<SignatureAttr, _>(signature);
         Ok(attr)
     }

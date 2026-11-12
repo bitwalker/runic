@@ -166,9 +166,9 @@ impl quote::ToTokens for DeriveOpParser {
                             // of `#key -> ^block(...)` entries (`#delimiter` is `Bracket` here);
                             // the delimiter lets a fallback successor follow unambiguously.
                             parser.parse_comma_separated_list(#delimiter, Some(#field_name_str), |parser| {
-                                let key_ty = <<#key_ty as ::runic_core::KeyedSuccessor>::KeyStorage as ::runic_core::attributes::MaybeInferAttributeType>::maybe_infer_type()
-                                    .unwrap_or(::runic_core::Type::Unknown);
-                                let key = parser.parse_typed_attribute::<<#key_ty as ::runic_core::KeyedSuccessor>::KeyStorage>(&key_ty)?.into_inner();
+                                let key_ty = <<#key_ty as ::runic_core::KeyedSuccessor>::KeyStorage as ::runic_core::attributes::MaybeInferAttributeType>::maybe_infer_type(parser.context())
+                                    .unwrap_or_else(|| parser.context().unknown_type());
+                                let key = parser.parse_typed_attribute::<<#key_ty as ::runic_core::KeyedSuccessor>::KeyStorage>(key_ty)?.into_inner();
                                 parser.parse_arrow()?;
                                 // The first successor uses the operand group reserved for this
                                 // field; additional ones append new groups at the end, since
@@ -267,7 +267,7 @@ impl quote::ToTokens for DeriveOpParser {
                         self.ident.span(),
                     ));
                     signature.extend(quote! {
-                        sig_results.resize(#len_lit, ::runic_core::Type::Unknown);
+                        sig_results.resize(#len_lit, parser.context().unknown_type());
                     });
                 }
             }
@@ -314,7 +314,8 @@ impl quote::ToTokens for DeriveOpParser {
         if format.signature.can_infer {
             resolve_operands.extend(quote! {
                 for (i, operand_group) in gathered_operands.iter_mut().enumerate() {
-                    parser.resolve_operands_of_uniform_type(operand_group, &::runic_core::Type::Unknown, &mut state.operands[i])?;
+                    let unknown = parser.context().unknown_type();
+                    parser.resolve_operands_of_uniform_type(operand_group, unknown, &mut state.operands[i])?;
                 }
             });
         } else {

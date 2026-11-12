@@ -2,8 +2,8 @@ use alloc::{format, string::ToString};
 use core::fmt;
 
 use crate::{
-    CompactString, ConstantIntRange, Context, IntegerValueRange, Op, Operation, PointerType,
-    Report, Type, ValueRef, derive::operation_trait, ir::value::Value,
+    ArrayType, CompactString, ConstantIntRange, Context, IntegerValueRange, Op, Operation, Report,
+    Type, ValueRef, derive::operation_trait, ir::value::Value,
 };
 
 /// OpInterface to compute the return type(s) of an operation.
@@ -33,17 +33,17 @@ pub enum ValueRangeConstraint {
 impl ValueRangeConstraint {
     /// Return the implicit value-range constraint for `ty`, if values of that type must be more
     /// constrained than an arbitrary field element.
-    pub fn from_type(ty: &Type) -> Option<Self> {
+    pub fn from_type(ty: Type) -> Option<Self> {
         if is_unconstrained_value_type(ty) {
             None
         } else {
-            Some(Self::Type(ty.clone()))
+            Some(Self::Type(ty))
         }
     }
 
-    pub fn ty(&self) -> &Type {
+    pub fn ty(&self) -> Type {
         match self {
-            Self::Type(ty) => ty,
+            Self::Type(ty) => *ty,
         }
     }
 }
@@ -99,8 +99,8 @@ pub fn default_operand_range_requirement(
 }
 
 /// Return true if values of `ty` are unconstrained by type alone.
-pub fn is_unconstrained_value_type(ty: &Type) -> bool {
-    matches!(ty, Type::Unknown | Type::Never)
+pub fn is_unconstrained_value_type(ty: Type) -> bool {
+    ty.is_unknown() || ty.is_never()
 }
 
 /// OpInterface for operations with operand-specific value-range requirements.
@@ -176,14 +176,14 @@ pub trait SameTypeOperands {
         let (expected_ty, set_by) = {
             let operand = first_operand.borrow();
             let value = operand.value();
-            (value.ty().clone(), value.span())
+            (value.ty(), value.span())
         };
 
         for operand in operands {
             let operand = operand.borrow();
             let value = operand.value();
             let value_ty = value.ty();
-            if value_ty != &expected_ty {
+            if value_ty != expected_ty {
                 return Err(crate::diagnostics::report!(
                     message: (::alloc::format!("invalid operation {}", op.name())),
                     labels: [
@@ -237,7 +237,7 @@ pub trait SameOperandsAndResultType: SameTypeOperands {
         let (expected_ty, set_by) = {
             let operand = first_operand.borrow();
             let value = operand.value();
-            (value.ty().clone(), value.span())
+            (value.ty(), value.span())
         };
 
         let results = op.results();
@@ -260,7 +260,7 @@ pub trait SameOperandsAndResultType: SameTypeOperands {
             let value = result.as_value_ref().borrow();
             let result_ty = result.ty();
 
-            if result_ty != &expected_ty {
+            if result_ty != expected_ty {
                 return Err(crate::diagnostics::report!(
                     message: (::alloc::format!("invalid operation result {}", op.name())),
                     labels: [
@@ -322,7 +322,7 @@ pub trait TypeConstraint: 'static {
     where
         Self: Sized;
     fn description(&self) -> CompactString;
-    fn matches(&self, ty: &crate::Type) -> bool;
+    fn matches(&self, ty: crate::Type) -> bool;
 }
 
 /// A type that can be constructed as a [crate::Type]
@@ -346,7 +346,7 @@ macro_rules! type_constraint {
             }
 
             #[inline]
-            fn matches(&self, _ty: &$crate::Type) -> bool {
+            fn matches(&self, _ty: $crate::Type) -> bool {
                 $matcher
             }
         }
@@ -367,8 +367,8 @@ macro_rules! type_constraint {
             }
 
             #[inline]
-            fn matches(&self, ty: &$crate::Type) -> bool {
-                $matcher(ty)
+            fn matches(&self, ty: $crate::Type) -> bool {
+                $matcher(&ty)
             }
         }
     };
@@ -388,7 +388,7 @@ macro_rules! type_constraint {
             }
 
             #[inline]
-            fn matches(&self, $matcher_input: &$crate::Type) -> bool {
+            fn matches(&self, $matcher_input: $crate::Type) -> bool {
                 $matcher
             }
         }
@@ -399,7 +399,6 @@ type_constraint!(AnyType, "any type", true);
 
 // TODO(pauls): Extend Type with new Function variant, we'll use that to represent function handles
 //type_constraint!(AnyFunction, "a function type", crate::Type::is_function);
-type_constraint!(AnyList, "any list type", crate::Type::is_list);
 
 type_constraint!(AnyArray, "any array type", crate::Type::is_array);
 
@@ -412,127 +411,23 @@ type_constraint!(AnyInteger, "an integral type", crate::Type::is_integer);
 type_constraint!(AnyPointerOrInteger, "an integral or pointer type", |ty| ty.is_pointer()
     || ty.is_integer());
 
-type_constraint!(AnySignedInteger, "a signed integral type", crate::Type::is_signed_integer);
-
-type_constraint!(
-    AnyUnsignedInteger,
-    "an unsigned integral type",
-    crate::Type::is_unsigned_integer
-);
-
 /// A boolean
 pub type Bool = SizedInt<1>;
 
 /// A signless 8-bit integer
 pub type Int8 = SizedInt<8>;
 
-/// A signed 8-bit integer
-pub type SInt8 = And<AnySignedInteger, SizedInt<8>>;
-
-/// An unsigned 8-bit integer
-pub type UInt8 = And<AnyUnsignedInteger, SizedInt<8>>;
-
 /// A signless 16-bit integer
 pub type Int16 = SizedInt<16>;
-
-/// A signed 16-bit integer
-pub type SInt16 = And<AnySignedInteger, SizedInt<16>>;
-
-/// An unsigned 16-bit integer
-pub type UInt16 = And<AnyUnsignedInteger, SizedInt<16>>;
 
 /// A signless 32-bit integer
 pub type Int32 = SizedInt<32>;
 
-/// A signed 16-bit integer
-pub type SInt32 = And<AnySignedInteger, SizedInt<32>>;
-
-/// An unsigned 16-bit integer
-pub type UInt32 = And<AnyUnsignedInteger, SizedInt<32>>;
-
 /// A signless 64-bit integer
 pub type Int64 = SizedInt<64>;
 
-/// A signed 64-bit integer
-pub type SInt64 = And<AnySignedInteger, SizedInt<64>>;
-
-/// An unsigned 64-bit integer
-pub type UInt64 = And<AnyUnsignedInteger, SizedInt<64>>;
-
 /// A signless 128-bit integer
 pub type Int128 = SizedInt<128>;
-
-/// A signed 128-bit integer
-pub type SInt128 = And<AnySignedInteger, SizedInt<128>>;
-
-/// An unsigned 128-bit integer
-pub type UInt128 = And<AnyUnsignedInteger, SizedInt<128>>;
-
-impl BuildableTypeConstraint for Bool {
-    fn build(_context: &Context) -> crate::Type {
-        crate::Type::I1
-    }
-}
-
-impl BuildableTypeConstraint for UInt8 {
-    fn build(_context: &Context) -> crate::Type {
-        crate::Type::U8
-    }
-}
-
-impl BuildableTypeConstraint for SInt8 {
-    fn build(_context: &Context) -> crate::Type {
-        crate::Type::I8
-    }
-}
-
-impl BuildableTypeConstraint for UInt16 {
-    fn build(_context: &Context) -> crate::Type {
-        crate::Type::U16
-    }
-}
-
-impl BuildableTypeConstraint for SInt16 {
-    fn build(_context: &Context) -> crate::Type {
-        crate::Type::I16
-    }
-}
-
-impl BuildableTypeConstraint for UInt32 {
-    fn build(_context: &Context) -> crate::Type {
-        crate::Type::U32
-    }
-}
-
-impl BuildableTypeConstraint for SInt32 {
-    fn build(_context: &Context) -> crate::Type {
-        crate::Type::I32
-    }
-}
-
-impl BuildableTypeConstraint for UInt64 {
-    fn build(_context: &Context) -> crate::Type {
-        crate::Type::U64
-    }
-}
-
-impl BuildableTypeConstraint for SInt64 {
-    fn build(_context: &Context) -> crate::Type {
-        crate::Type::I64
-    }
-}
-
-impl BuildableTypeConstraint for UInt128 {
-    fn build(_context: &Context) -> crate::Type {
-        crate::Type::U128
-    }
-}
-
-impl BuildableTypeConstraint for SInt128 {
-    fn build(_context: &Context) -> crate::Type {
-        crate::Type::I128
-    }
-}
 
 /// Represents a fixed-width integer of `N` bits
 pub struct SizedInt<const N: usize>(core::marker::PhantomData<[(); N]>);
@@ -567,32 +462,15 @@ impl<const N: usize> TypeConstraint for SizedInt<N> {
         CompactString::from(self.to_string())
     }
 
-    fn matches(&self, ty: &crate::Type) -> bool {
-        ty.is_integer() && ty.size_in_bits() == N
+    fn matches(&self, ty: crate::Type) -> bool {
+        ty.integer_width().is_some_and(|width| width as usize == N)
     }
 }
 
-impl BuildableTypeConstraint for SizedInt<8> {
-    fn build(_context: &Context) -> crate::Type {
-        crate::Type::I8
-    }
-}
-
-impl BuildableTypeConstraint for SizedInt<16> {
-    fn build(_context: &Context) -> crate::Type {
-        crate::Type::I16
-    }
-}
-
-impl BuildableTypeConstraint for SizedInt<32> {
-    fn build(_context: &Context) -> crate::Type {
-        crate::Type::I32
-    }
-}
-
-impl BuildableTypeConstraint for SizedInt<64> {
-    fn build(_context: &Context) -> crate::Type {
-        crate::Type::I64
+impl<const N: usize> BuildableTypeConstraint for SizedInt<N> {
+    fn build(context: &Context) -> crate::Type {
+        let width = u32::try_from(N).expect("an integer width fits in 32 bits");
+        context.int_type(width)
     }
 }
 
@@ -630,7 +508,7 @@ impl<T: TypeConstraint> TypeConstraint for PointerOf<T> {
         CompactString::from(self.to_string())
     }
 
-    fn matches(&self, ty: &crate::Type) -> bool {
+    fn matches(&self, ty: crate::Type) -> bool {
         ty.pointee()
             .is_some_and(|pointee| <T as TypeConstraint>::get().matches(pointee))
     }
@@ -638,7 +516,7 @@ impl<T: TypeConstraint> TypeConstraint for PointerOf<T> {
 
 impl<T: BuildableTypeConstraint> BuildableTypeConstraint for PointerOf<T> {
     fn build(context: &Context) -> crate::Type {
-        crate::Type::from(PointerType::new(<T as BuildableTypeConstraint>::build(context)))
+        context.ptr_type(<T as BuildableTypeConstraint>::build(context))
     }
 }
 
@@ -676,11 +554,9 @@ impl<T: TypeConstraint> TypeConstraint for AnyArrayOf<T> {
         CompactString::from(self.to_string())
     }
 
-    fn matches(&self, ty: &crate::Type) -> bool {
-        match ty {
-            crate::Type::Array(ty) => <T as TypeConstraint>::get().matches(ty.element_type()),
-            _ => false,
-        }
+    fn matches(&self, ty: crate::Type) -> bool {
+        ty.downcast_ref::<ArrayType>()
+            .is_some_and(|array| <T as TypeConstraint>::get().matches(array.element()))
     }
 }
 
@@ -718,20 +594,17 @@ impl<const N: usize, T: TypeConstraint> TypeConstraint for ArrayOf<N, T> {
         CompactString::from(self.to_string())
     }
 
-    fn matches(&self, ty: &crate::Type) -> bool {
-        match ty {
-            crate::Type::Array(ty) if ty.len() == N => {
-                <T as TypeConstraint>::get().matches(ty.element_type())
-            }
-            _ => false,
-        }
+    fn matches(&self, ty: crate::Type) -> bool {
+        ty.downcast_ref::<ArrayType>().is_some_and(|array| {
+            array.len() == N as u64 && <T as TypeConstraint>::get().matches(array.element())
+        })
     }
 }
 
 impl<const N: usize, T: BuildableTypeConstraint> BuildableTypeConstraint for ArrayOf<N, T> {
     fn build(context: &Context) -> crate::Type {
         let element = <T as BuildableTypeConstraint>::build(context);
-        crate::Type::from(crate::ArrayType::new(element, N))
+        context.array_type(element, N as u64)
     }
 }
 
@@ -771,7 +644,7 @@ impl<T: TypeConstraint, U: TypeConstraint> TypeConstraint for And<T, U> {
     }
 
     #[inline]
-    fn matches(&self, ty: &crate::Type) -> bool {
+    fn matches(&self, ty: crate::Type) -> bool {
         <T as TypeConstraint>::get().matches(ty) && <U as TypeConstraint>::get().matches(ty)
     }
 }
@@ -812,7 +685,7 @@ impl<T: TypeConstraint, U: TypeConstraint> TypeConstraint for Or<T, U> {
     }
 
     #[inline]
-    fn matches(&self, ty: &crate::Type) -> bool {
+    fn matches(&self, ty: crate::Type) -> bool {
         <T as TypeConstraint>::get().matches(ty) || <U as TypeConstraint>::get().matches(ty)
     }
 }

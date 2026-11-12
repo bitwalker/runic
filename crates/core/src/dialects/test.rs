@@ -3,8 +3,8 @@ mod ops;
 
 pub use self::{builders::TestOpBuilder, ops::*};
 use crate::{
-    AttributeRef, Builder, BuilderExt, Dialect, DialectInfo, Immediate, OperationRef, SourceSpan,
-    Type, attributes::IntegerLikeAttr, derive::DialectRegistration,
+    AttributeRef, Builder, BuilderExt, Dialect, DialectInfo, OperationRef, SourceSpan, Type,
+    attributes::IntegerLikeAttr, derive::DialectRegistration,
 };
 
 #[derive(DialectRegistration, Debug)]
@@ -29,7 +29,7 @@ impl Dialect for TestDialect {
         &self,
         builder: &mut dyn Builder,
         attr: AttributeRef,
-        ty: &Type,
+        ty: Type,
         span: SourceSpan,
     ) -> Option<OperationRef> {
         use crate::Op;
@@ -47,11 +47,11 @@ impl Dialect for TestDialect {
             .borrow()
             .as_attr()
             .as_trait::<dyn IntegerLikeAttr>()
-            .map(|attr| (attr.as_immediate(), attr.ty().clone()));
+            .map(|attr| (attr.as_immediate(), attr.ty()));
         if let Some((imm, imm_ty)) = imm {
             // If the immediate value is of the same type as the expected result type, we're ready
             // to materialize the constant
-            if &imm_ty == ty {
+            if imm_ty == ty {
                 let op_builder = builder.create::<Constant, _>(span);
                 return op_builder(imm)
                     .ok()
@@ -60,43 +60,11 @@ impl Dialect for TestDialect {
 
             // The immediate value has a different type than expected, but we can coerce types, so
             // long as the value fits in the target type
-            if imm_ty.size_in_bits() > ty.size_in_bits() {
+            if imm_ty.integer_width()? > ty.integer_width()? {
                 return None;
             }
 
-            let imm = match ty {
-                Type::I8 => match imm {
-                    Immediate::I1(value) => Immediate::I8(value as i8),
-                    Immediate::U8(value) => Immediate::I8(i8::try_from(value).ok()?),
-                    _ => return None,
-                },
-                Type::U8 => match imm {
-                    Immediate::I1(value) => Immediate::U8(value as u8),
-                    Immediate::I8(value) => Immediate::U8(u8::try_from(value).ok()?),
-                    _ => return None,
-                },
-                Type::I16 => match imm {
-                    Immediate::I1(value) => Immediate::I16(value as i16),
-                    Immediate::I8(value) => Immediate::I16(value as i16),
-                    Immediate::U8(value) => Immediate::I16(value.into()),
-                    Immediate::U16(value) => Immediate::I16(i16::try_from(value).ok()?),
-                    _ => return None,
-                },
-                Type::U16 => match imm {
-                    Immediate::I1(value) => Immediate::U16(value as u16),
-                    Immediate::I8(value) => Immediate::U16(u16::try_from(value).ok()?),
-                    Immediate::U8(value) => Immediate::U16(value as u16),
-                    Immediate::I16(value) => Immediate::U16(u16::try_from(value).ok()?),
-                    _ => return None,
-                },
-                Type::I32 => Immediate::I32(imm.as_i32()?),
-                Type::U32 => Immediate::U32(imm.as_u32()?),
-                Type::I64 => Immediate::I64(imm.as_i64()?),
-                Type::U64 => Immediate::U64(imm.as_u64()?),
-                Type::I128 => Immediate::I128(imm.as_i128()?),
-                Type::U128 => Immediate::U128(imm.as_u128()?),
-                ty => unimplemented!("unrecognized integral type '{ty}'"),
-            };
+            let imm = imm.coerced_to(ty)?;
 
             let op_builder = builder.create::<Constant, _>(span);
             return op_builder(imm).ok().map(|op| op.borrow().as_operation().as_operation_ref());

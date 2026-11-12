@@ -73,7 +73,7 @@ impl AttrPrinter for VariableAttr {
             printer.print_decimal_integer(arg_index);
         }
 
-        if let Some(ty) = &self.ty {
+        if let Some(ty) = self.ty {
             *printer += const_text(", ");
             *printer += const_text("ty") + const_text(" = ");
             printer.print_type(ty);

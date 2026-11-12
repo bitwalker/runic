@@ -1,4 +1,4 @@
-use alloc::{borrow::Cow, rc::Rc, string::String};
+use alloc::{rc::Rc, string::String};
 use core::ops::AddAssign;
 
 use super::*;
@@ -121,26 +121,22 @@ impl<'a> AsmPrinter<'a> {
 
         // Print operation type
         self.document += const_text(" : ");
-        if op.has_successors() {
-            if op.operands().group(0).len() == 1 {
-                self.print_type(&op.operands()[0].borrow().ty());
-            } else {
-                self.print_type_list(
-                    op.operands().group(0).iter().map(|operand| Cow::Owned(operand.borrow().ty())),
-                );
-            }
-        } else if op.operands().len() == 1 {
-            self.print_type(&op.operands()[0].borrow().ty());
+        // A lone operand type prints without parentheses, unless it is a function type, which
+        // would otherwise run into the `->` of the operation's type.
+        let operand_types: crate::SmallVec<[Type; 4]> = if op.has_successors() {
+            op.operands().group(0).iter().map(|operand| operand.borrow().ty()).collect()
         } else {
-            self.print_type_list(
-                op.operands().all().iter().map(|operand| Cow::Owned(operand.borrow().ty())),
-            );
+            op.operands().all().iter().map(|operand| operand.borrow().ty()).collect()
+        };
+        match operand_types.as_slice() {
+            [ty] if !ty.is_function() => self.print_type(*ty),
+            _ => self.print_type_list(operand_types),
         }
 
         self.document += const_text(" ");
         self.print_arrow_type_list(
             /*elide_single_type_parens=*/ true,
-            op.results().all().iter().map(|result| Cow::Owned(result.borrow().ty().clone())),
+            op.results().all().iter().map(|result| result.borrow().ty()),
         );
 
         // Add source location if requested
@@ -214,7 +210,7 @@ impl<'a> AsmPrinter<'a> {
         }
         let types = values
             .iter()
-            .map(|value| Cow::Owned(value.borrow().ty().clone()))
+            .map(|value| value.borrow().ty())
             .collect::<crate::SmallVec<[_; 4]>>();
         self.document += const_text("(");
         self.print_value_uses(values);
@@ -252,13 +248,13 @@ impl<'a> AsmPrinter<'a> {
             if !acc.is_empty() {
                 acc += const_text(", ");
             }
-            acc + display(value.id()) + const_text(": ") + text(TypePrinter(value.ty()))
+            acc + display(value.id()) + const_text(": ") + display(value.ty())
         });
         self.document += doc;
     }
 
     /// Prints zero or more types in parentheses, i.e. `(i1, i32)`
-    pub fn print_type_list<'t>(&mut self, types: impl IntoIterator<Item = Cow<'t, Type>>) {
+    pub fn print_type_list(&mut self, types: impl IntoIterator<Item = Type>) {
         use crate::formatter::*;
 
         self.document += const_text("(");
@@ -267,7 +263,7 @@ impl<'a> AsmPrinter<'a> {
     }
 
     /// Prints a colon and then zero or more types in parentheses, i.e. `: (i1, i32)`
-    pub fn print_colon_type_list<'t>(&mut self, types: impl IntoIterator<Item = Cow<'t, Type>>) {
+    pub fn print_colon_type_list(&mut self, types: impl IntoIterator<Item = Type>) {
         use crate::formatter::*;
 
         self.document += const_text(": ");
@@ -275,7 +271,7 @@ impl<'a> AsmPrinter<'a> {
     }
 
     /// Prints a colon and then a single type
-    pub fn print_colon_type(&mut self, ty: &Type) {
+    pub fn print_colon_type(&mut self, ty: Type) {
         use crate::formatter::*;
 
         self.document += const_text(": ");
@@ -285,28 +281,29 @@ impl<'a> AsmPrinter<'a> {
     /// Prints an arrow and then zero or more types in parentheses, i.e. `-> (i1, i32)`.
     ///
     /// If `elide_single_type_parens` is true, then if the input collection only has a single type,
-    /// then the parentheses will be elided
-    pub fn print_arrow_type_list<'t>(
+    /// then the parentheses will be elided, unless that type is a function type: `-> (() -> i32)`
+    /// keeps them, so that the result cannot be read as the start of a longer function type.
+    pub fn print_arrow_type_list(
         &mut self,
         elide_single_type_parens: bool,
-        types: impl ExactSizeIterator<Item = Cow<'t, Type>>,
+        types: impl IntoIterator<Item = Type>,
     ) {
         use crate::formatter::*;
 
         self.document += const_text("-> ");
-        if elide_single_type_parens && types.len() == 1 {
-            self.print_types(types);
-        } else {
-            self.print_type_list(types);
+        let types = types.into_iter().collect::<crate::SmallVec<[Type; 4]>>();
+        match types.as_slice() {
+            [ty] if elide_single_type_parens && !ty.is_function() => self.print_type(*ty),
+            _ => self.print_type_list(types),
         }
     }
 
     /// Prints zero or more comma-separated types
-    pub fn print_types<'t>(&mut self, types: impl IntoIterator<Item = Cow<'t, Type>>) {
+    pub fn print_types(&mut self, types: impl IntoIterator<Item = Type>) {
         use crate::formatter::*;
 
         let doc = types.into_iter().fold(Document::Empty, |acc, ty| {
-            let ty = text(format!("{}", TypePrinter(ty.as_ref())));
+            let ty = display(ty);
             if acc.is_empty() {
                 ty
             } else {
@@ -320,33 +317,30 @@ impl<'a> AsmPrinter<'a> {
     }
 
     /// Print a single type
-    pub fn print_type(&mut self, ty: &Type) {
+    pub fn print_type(&mut self, ty: Type) {
         use crate::formatter::*;
 
-        self.document += text(format!("{}", TypePrinter(ty)));
+        self.document += display(ty);
     }
 
     /// Print a function type (i.e. `(arg0, arg1) -> (result0, result1)`)
     ///
     /// The printed type will elide parens around single-result types
     pub fn print_function_type(&mut self, ty: &FunctionType) {
-        self.print_function_type_parts(ty.params().iter(), ty.results().iter());
+        self.print_function_type_parts(ty.params().iter().copied(), ty.results().iter().copied());
     }
 
     /// Print a function type (i.e. `(arg0, arg1) -> (result0, result1)`) given its component parts.
     ///
     /// The printed type will elide parens around single-result types
-    pub fn print_function_type_parts<'f, P, R>(&mut self, params: P, results: R)
-    where
-        P: ExactSizeIterator<Item = &'f Type>,
-        R: ExactSizeIterator<Item = &'f Type>,
-    {
-        self.print_type_list(params.map(Cow::Borrowed));
+    pub fn print_function_type_parts(
+        &mut self,
+        params: impl IntoIterator<Item = Type>,
+        results: impl IntoIterator<Item = Type>,
+    ) {
+        self.print_type_list(params);
         self.print_space();
-        self.print_arrow_type_list(
-            /*elide_single_type_parens=*/ true,
-            results.map(Cow::Borrowed),
-        );
+        self.print_arrow_type_list(/*elide_single_type_parens=*/ true, results);
     }
 
     /// Prints zero or more regions

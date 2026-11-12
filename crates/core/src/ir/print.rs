@@ -135,7 +135,7 @@
 //!
 //! type := type-alias | dialect-type | builtin-type
 //! type-list-no-parens := type (',' type)*
-//! type-list-parens := '(' ')' | type-list-no-parens
+//! type-list-parens := '(' (type-list-no-parens)? ')'
 //!
 //! # Type Aliases
 //!
@@ -147,63 +147,47 @@
 //! builtin-type := unknown-type
 //!               | never-type
 //!               | integer-type
+//!               | index-type
 //!               | float-type
 //!               | pointer-type
-//!               | list-type
 //!               | array-type
 //!               | struct-type
-//!               | tuple-type
 //!               | function-type
-//!
-//! function-type := (type | type-list-parens) '->' (type | type-list-parens)
 //!
 //! unknown-type := '?'
 //! never-type := 'never'
 //!
-//! integer-type := signed-integer-type | unsigned-integer-type | 'felt'
-//! signed-integer-type := 'i1'
-//!                      | 'i8'
-//!                      | 'i16'
-//!                      | 'i32'
-//!                      | 'i64'
-//!                      | 'i128'
-//! unsigned-integer-type := 'u8'
-//!                      | 'u16'
-//!                      | 'u32'
-//!                      | 'u64'
-//!                      | 'u128'
-//!                      | 'u256'
+//! integer-type := 'i' [1-9][0-9]*            (a signless integer of 1 to 16777215 bits)
+//! index-type := 'isize'
+//! float-type := 'f32' | 'f64'
 //!
-//! float-type := 'f64'
+//! pointer-type := 'ptr' ('<' (address-space | type (',' address-space)?) '>')?
+//! address-space := decimal-literal
 //!
-//! pointer-type := 'ptr' '<' type (',' address-space)? '>'
-//! address-space := 'byte' | 'felt'
-//!
-//! list-type := 'list' '<' type '>'
 //! array-type := 'array' '<' type ';' decimal-literal '>'
+//!             | '[' type ';' decimal-literal ']'
 //!
-//! struct-type   := 'struct' '<' (struct-repr ';')? struct-fields* '>'
-//! struct-fields := struct-field (',' struct-field)*
-//! struct-field  := type struct-repr-align?
-//! struct-repr   := struct-repr-align
-//!                | 'packed' ('(' nonzero-decimal-literal ')')?
-//!                | 'transparent'
-//! struct-repr-align := 'align' '(' nonzero-decimal-literal ')'
+//! struct-type  := 'struct' struct-name? '<' (struct-repr ';')? (struct-field (',' struct-field)*)? '>'
+//! struct-name  := bare-identifier | string-literal
+//! struct-repr  := 'align' '(' nonzero-decimal-literal ')'
+//!               | 'packed' ('(' nonzero-decimal-literal ')')?
+//!               | 'transparent'
+//! struct-field := (field-name ':')? type ('align' '(' nonzero-decimal-literal ')')?
+//! field-name   := bare-identifier | string-literal
 //!
-//! tuple-type := 'tuple' '<' (type (',' type)*)? '>'
+//! function-type := type-list-parens '->' function-results
+//! function-results := type-list-parens | type
+//!
+//! A function type's results start with '(' exactly when they are a parenthesised list, so a
+//! single result that is itself a function type is parenthesised: `() -> (() -> i32)`.
 //!
 //! # Dialect Types
 //!
-//! dialect-type := '!' (opaque-dialect-type | pretty-dialect-type)
-//! opaque-dialect-type := dialect-namespace dialect-type-body
-//! pretty-dialect-type := dialect-namespace '.' pretty-dialect-type-lead-id dialect-type-body?
-//! pretty-dialect-type-lead-id := [A-Za-z][A-Za-z0-9._]*
-//! dialect-type-body := '<' dialect-type-contents+ '>'
-//! dialect-type-contents := dialect-type-body
-//!                        | '(' dialect-type-contents+ ')'
-//!                        | '[' dialect-type-contents+ ']'
-//!                        | '{' dialect-type-contents+ '}'
-//!                        | [^\[<({\]>)}\0]+
+//! dialect-type := '!' dialect-namespace '.' dialect-type-name dialect-type-body?
+//! dialect-type-body := '<' dialect-type-contents '>'
+//!
+//! The contents of a dialect type's body are whatever the type's own printer prints, and are
+//! parsed by its own parser.
 //!
 //! ```
 //!
@@ -219,11 +203,11 @@
 //! ```text
 //! %flag, %out:2 = "dialect.op"(%arg0, %0) <{ prop = true }> ({
 //!     builtin.br ^after(%arg0, %0);
-//! ^after(%1: i32, %2 : ptr<u8>):
+//! ^after(%1: i32, %2 : ptr<i8>):
 //!     %3 = arith.constant 0 : i32;
 //!     %4 = arith.eq %1, %3 : i1;
 //!     builtin.ret %4, %1, %3;
-//! }) { attr = "string" } : (i32, ptr<u8>) -> (i1, i32, i32) loc<"file.hir":1:1 to :32>;
+//! }) { attr = "string" } : (i32, ptr<i8>) -> (i1, i32, i32) loc<"file.hir":1:1 to :32>;
 //! ```
 //!
 //! This example shows the `cf.cond_br` operation in generic form, with some other notable features:
@@ -247,15 +231,11 @@
 //!   round-trip the operation through the printed form and back.
 
 mod asm_printer;
-mod type_printer;
 
-use alloc::{borrow::Cow, format};
+use alloc::format;
 use core::fmt;
 
-pub use self::{
-    asm_printer::AsmPrinter,
-    type_printer::{FunctionTypePrinter, TypePrinter},
-};
+pub use self::asm_printer::AsmPrinter;
 use super::{OpOperandRange, OpResultRange, Operation, Region, RegionList, ValueRange};
 use crate::{EntityWithId, Location, Value, formatter::Document};
 

@@ -20,11 +20,11 @@ where
         <A as AttributeRegistration>::Value: From<V>,
     {
         let value = <<A as AttributeRegistration>::Value>::from(value);
-        let ty = <A as MaybeInferAttributeType>::maybe_infer_type_from_value(&value);
+        let ty = <A as MaybeInferAttributeType>::maybe_infer_type_from_value(context, &value);
         A::create::<<A as AttributeRegistration>::Value>(
             context,
             value,
-            ty.unwrap_or(Type::Unknown),
+            ty.unwrap_or_else(|| context.unknown_type()),
         )
     }
 }
@@ -33,12 +33,12 @@ where
 pub trait InferAttributeValueType: AttributeValue {
     /// Infer a [Type] for any value of this type
     ///
-    /// Implementations should return `Type::Unknown` if a type cannot be inferred for all values
-    /// of this type.
-    fn infer_type() -> Type;
+    /// Implementations should return the unknown type `?` if a type cannot be inferred for all
+    /// values of this type.
+    fn infer_type(context: &Context) -> Type;
     /// Infer a [Type] for this value
-    fn infer_type_from_value(&self) -> Type {
-        Self::infer_type()
+    fn infer_type_from_value(&self, context: &Context) -> Type {
+        Self::infer_type(context)
     }
 }
 
@@ -50,11 +50,14 @@ pub trait InferAttributeValueType: AttributeValue {
 pub trait InferAttributeType: AttributeRegistration {
     /// Infer a [Type] for any value of this attribute
     ///
-    /// Implementations should return `Type::Unknown` if a type cannot be inferred for all values
-    /// of this attribute.
-    fn infer_type() -> Type;
+    /// Implementations should return the unknown type `?` if a type cannot be inferred for all
+    /// values of this attribute.
+    fn infer_type(context: &Context) -> Type;
     /// Infer the type for `value`
-    fn infer_type_from_value(value: &<Self as AttributeRegistration>::Value) -> Type;
+    fn infer_type_from_value(
+        context: &Context,
+        value: &<Self as AttributeRegistration>::Value,
+    ) -> Type;
 }
 
 impl<T: AttributeRegistration> InferAttributeType for T
@@ -62,14 +65,17 @@ where
     <T as AttributeRegistration>::Value: InferAttributeValueType,
 {
     #[inline]
-    fn infer_type() -> Type {
-        <<Self as AttributeRegistration>::Value as InferAttributeValueType>::infer_type()
+    fn infer_type(context: &Context) -> Type {
+        <<Self as AttributeRegistration>::Value as InferAttributeValueType>::infer_type(context)
     }
 
     #[inline]
-    fn infer_type_from_value(value: &<Self as AttributeRegistration>::Value) -> Type {
+    fn infer_type_from_value(
+        context: &Context,
+        value: &<Self as AttributeRegistration>::Value,
+    ) -> Type {
         <<Self as AttributeRegistration>::Value as InferAttributeValueType>::infer_type_from_value(
-            value,
+            value, context,
         )
     }
 }
@@ -82,9 +88,12 @@ where
 /// valid instance of the attribute value to derive a [Type]
 pub trait MaybeInferAttributeType: AttributeRegistration {
     /// Infer a type for any value of this attribute, or return `None` if one cannot be inferred
-    fn maybe_infer_type() -> Option<Type>;
+    fn maybe_infer_type(context: &Context) -> Option<Type>;
     /// Infer a type for `value`, or return `None` if one cannot be inferred
-    fn maybe_infer_type_from_value(value: &<Self as AttributeRegistration>::Value) -> Option<Type>;
+    fn maybe_infer_type_from_value(
+        context: &Context,
+        value: &<Self as AttributeRegistration>::Value,
+    ) -> Option<Type>;
 }
 
 impl<T, V> MaybeInferAttributeType for T
@@ -92,11 +101,12 @@ where
     V: AttributeValue,
     T: AttributeRegistration<Value = V>,
 {
-    default fn maybe_infer_type() -> Option<Type> {
+    default fn maybe_infer_type(_context: &Context) -> Option<Type> {
         None
     }
 
     default fn maybe_infer_type_from_value(
+        _context: &Context,
         _value: &<Self as AttributeRegistration>::Value,
     ) -> Option<Type> {
         None
@@ -108,35 +118,38 @@ where
     V: AttributeValue,
     T: AttributeRegistration<Value = V> + InferAttributeType,
 {
-    fn maybe_infer_type() -> Option<Type> {
-        Some(<T as InferAttributeType>::infer_type())
+    fn maybe_infer_type(context: &Context) -> Option<Type> {
+        Some(<T as InferAttributeType>::infer_type(context))
     }
 
-    fn maybe_infer_type_from_value(value: &<Self as AttributeRegistration>::Value) -> Option<Type> {
-        Some(<T as InferAttributeType>::infer_type_from_value(value))
+    fn maybe_infer_type_from_value(
+        context: &Context,
+        value: &<Self as AttributeRegistration>::Value,
+    ) -> Option<Type> {
+        Some(<T as InferAttributeType>::infer_type_from_value(context, value))
     }
 }
 
 macro_rules! value_infers_as {
-    ($value_ty:ty, $ty:expr) => {
+    ($value_ty:ty, $ty:ident) => {
         impl InferAttributeValueType for $value_ty {
             #[inline(always)]
-            fn infer_type() -> Type {
-                $ty
+            fn infer_type(context: &Context) -> Type {
+                context.$ty()
             }
         }
     };
 }
 
-value_infers_as!(bool, Type::I1);
-value_infers_as!(i8, Type::I8);
-value_infers_as!(u8, Type::U8);
-value_infers_as!(i16, Type::I16);
-value_infers_as!(u16, Type::U16);
-value_infers_as!(i32, Type::I32);
-value_infers_as!(u32, Type::U32);
-value_infers_as!(i64, Type::I64);
-value_infers_as!(u64, Type::U64);
-value_infers_as!(i128, Type::I128);
-value_infers_as!(u128, Type::U128);
-value_infers_as!(f64, Type::F64);
+value_infers_as!(bool, i1);
+value_infers_as!(i8, i8);
+value_infers_as!(u8, i8);
+value_infers_as!(i16, i16);
+value_infers_as!(u16, i16);
+value_infers_as!(i32, i32);
+value_infers_as!(u32, i32);
+value_infers_as!(i64, i64);
+value_infers_as!(u64, i64);
+value_infers_as!(i128, i128);
+value_infers_as!(u128, i128);
+value_infers_as!(f64, f64_type);

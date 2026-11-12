@@ -152,8 +152,8 @@ impl SignatureConversion {
 
         let mut changed = false;
         for (mut argument, ty) in arguments.into_iter().zip(self.converted_types.iter()) {
-            if argument.borrow().ty() != ty {
-                argument.borrow_mut().set_type(ty.clone());
+            if argument.borrow().ty() != *ty {
+                argument.borrow_mut().set_type(*ty);
                 changed = true;
             }
         }
@@ -203,10 +203,10 @@ pub fn convert_signature_1_to_1(
 ) -> Result<Signature, Report> {
     let mut converted = signature.clone();
     for param in converted.params.iter_mut() {
-        param.ty = type_converter.convert_type_1_to_1(&param.ty)?;
+        param.ty = type_converter.convert_type_1_to_1(param.ty)?;
     }
     for result in converted.results.iter_mut() {
-        result.ty = type_converter.convert_type_1_to_1(&result.ty)?;
+        result.ty = type_converter.convert_type_1_to_1(result.ty)?;
     }
     Ok(converted)
 }
@@ -284,7 +284,7 @@ pub fn verify_call_signature_operands_and_results(op: OperationRef) -> Result<()
         )));
     }
     for (index, (result, expected)) in op.results().iter().zip(results.iter()).enumerate() {
-        let result_ty = result.borrow().ty().clone();
+        let result_ty = result.borrow().ty();
         if result_ty != expected.ty {
             return Err(Report::msg(format!(
                 "operation '{op_name}' result {index} has type '{result_ty}', but the resolved \
@@ -455,7 +455,7 @@ fn verify_successor_operands_against_inputs(
     edge: alloc::string::String,
     operands: &impl SuccessorOperands,
     inputs: impl IntoIterator<Item = ValueRef>,
-    are_types_compatible: impl Fn(&Type, &Type) -> bool,
+    are_types_compatible: impl Fn(Type, Type) -> bool,
 ) -> Result<(), Report> {
     let inputs = inputs.into_iter().collect::<SmallVec<[ValueRef; 4]>>();
     if operands.len() != inputs.len() {
@@ -484,9 +484,9 @@ fn verify_successor_operands_against_inputs(
         let SuccessorOperand::Forwarded(value) = successor_operand else {
             continue;
         };
-        let value_ty = value.borrow().ty().clone();
-        let input_ty = input.borrow().ty().clone();
-        if !are_types_compatible(&value_ty, &input_ty) {
+        let value_ty = value.borrow().ty();
+        let input_ty = input.borrow().ty();
+        if !are_types_compatible(value_ty, input_ty) {
             return Err(Report::msg(format!(
                 "operation '{op_name}' forwards operand {index} of type '{value_ty}' to {edge}, \
                  but the destination expects '{input_ty}'"

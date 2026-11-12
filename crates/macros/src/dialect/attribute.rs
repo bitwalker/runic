@@ -24,6 +24,7 @@ pub struct Attribute {
     name: Option<Ident>,
     #[darling(default)]
     remote: Option<syn::Path>,
+    /// A function `fn(&Context) -> Value` giving the attribute's default value.
     #[darling(default)]
     default: Option<syn::Path>,
     #[darling(default)]
@@ -185,9 +186,9 @@ impl quote::ToTokens for Attribute {
             parse_quote_spanned! { default_ctor.span() =>
                 #[allow(clippy::let_unit_value)]
                 fn create_default(context: &::alloc::rc::Rc<::runic_core::Context>) -> ::runic_core::UnsafeIntrusiveEntityRef<Self> {
-                    let value: <Self as ::runic_core::AttributeRegistration>::Value = #default_ctor();
-                    let ty = <Self as ::runic_core::attributes::MaybeInferAttributeType>::maybe_infer_type_from_value(&value);
-                    Self::create(context, value, ty.unwrap_or(::runic_core::Type::Unknown))
+                    let value: <Self as ::runic_core::AttributeRegistration>::Value = #default_ctor(context);
+                    let ty = <Self as ::runic_core::attributes::MaybeInferAttributeType>::maybe_infer_type_from_value(context, &value);
+                    Self::create(context, value, ty.unwrap_or_else(|| context.unknown_type()))
                 }
             }
         } else {
@@ -195,8 +196,8 @@ impl quote::ToTokens for Attribute {
                 #[allow(clippy::let_unit_value)]
                 fn create_default(context: &::alloc::rc::Rc<::runic_core::Context>) -> ::runic_core::UnsafeIntrusiveEntityRef<Self> {
                     let value = <<Self as ::runic_core::AttributeRegistration>::Value>::default();
-                    let ty = <Self as ::runic_core::attributes::MaybeInferAttributeType>::maybe_infer_type_from_value(&value);
-                    Self::create(context, value, ty.unwrap_or(::runic_core::Type::Unknown))
+                    let ty = <Self as ::runic_core::attributes::MaybeInferAttributeType>::maybe_infer_type_from_value(context, &value);
+                    Self::create(context, value, ty.unwrap_or_else(|| context.unknown_type()))
                 }
             }
         };
@@ -255,7 +256,7 @@ impl quote::ToTokens for Attribute {
                 fn value_mut(&mut self) -> &mut dyn ::runic_core::attributes::AttributeValue {
                     &mut self.value
                 }
-                fn ty(&self) -> &::runic_core::Type {
+                fn ty(&self) -> ::runic_core::Type {
                     self._attr.ty()
                 }
                 fn set_type(&mut self, ty: ::runic_core::Type) {

@@ -4,7 +4,7 @@ use alloc::{
 };
 
 use crate::{
-    BlockId, CompactString, Type, ValueId,
+    BlockId, CompactString, ValueId,
     diagnostics::{Diagnostic, OwnedDiagnostic, OwnedLabel, Report, SourceSpan},
     formatter::DisplayValues,
     interner,
@@ -118,8 +118,8 @@ pub enum ParserError {
         span: SourceSpan,
         #[label("previously used here with type {prev_ty}")]
         prev_span: SourceSpan,
-        ty: Type,
-        prev_ty: Type,
+        ty: CompactString,
+        prev_ty: CompactString,
     },
     #[error("invalid use of result number in argument list")]
     ResultNumberUsedInArgumentList {
@@ -142,8 +142,8 @@ pub enum ParserError {
         span: SourceSpan,
         #[label("previous use here expects {prev_ty}")]
         prev_span: SourceSpan,
-        ty: Type,
-        prev_ty: Type,
+        ty: CompactString,
+        prev_ty: CompactString,
     },
     #[error("mismatched value and type lists")]
     MismatchedValueAndTypeLists {
@@ -179,6 +179,38 @@ pub enum ParserError {
         #[label(primary, "this dialect is not registered")]
         span: SourceSpan,
         dialect: interner::Symbol,
+    },
+    #[error("unknown type '{name}' in dialect '{dialect}'")]
+    #[diagnostic(help = "only types registered with the dialect can be named here")]
+    UnknownType {
+        #[label(primary, "this type is not registered with '{dialect}'")]
+        span: SourceSpan,
+        dialect: interner::Symbol,
+        name: CompactString,
+    },
+    #[error("invalid type")]
+    TypeTakesNoParameters {
+        #[label(primary, "type '{name}' takes no parameters, but '<' follows it")]
+        span: SourceSpan,
+        name: String,
+    },
+    #[error("invalid type")]
+    TypeRequiresParameters {
+        #[label(primary, "type '{name}' requires parameters in '<..>'")]
+        span: SourceSpan,
+        name: String,
+    },
+    #[error("invalid type")]
+    InvalidType {
+        #[label(primary, "{reason}")]
+        span: SourceSpan,
+        reason: String,
+    },
+    #[error("use of undefined type alias '!{id}'")]
+    UndefinedTypeAlias {
+        #[label(primary, "no type alias with this name is defined before this point")]
+        span: SourceSpan,
+        id: interner::Symbol,
     },
     #[error("invalid operation")]
     NonTerminatorWithSuccessors {
@@ -277,8 +309,8 @@ pub enum ParserError {
         #[label(primary, "expected {expected}, got {ty}")]
         span: SourceSpan,
         arg: ValueId,
-        ty: Type,
-        expected: Type,
+        ty: CompactString,
+        expected: CompactString,
     },
     #[error("attribute '{name}' occurs more than once in the attribute list")]
     DuplicateAttribute {

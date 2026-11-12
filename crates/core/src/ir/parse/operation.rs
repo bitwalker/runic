@@ -1,3 +1,5 @@
+use compact_str::format_compact;
+
 use super::*;
 use crate::{
     BlockArgument, Builder, EntityWithId, Forward, FunctionType, FxHashSet, GenericSuccessorLayout,
@@ -78,8 +80,13 @@ where
     }
 
     #[inline]
-    fn parse_extended_attribute(&mut self, ty: &Type) -> ParseResult<Span<AttributeRef>> {
+    fn parse_extended_attribute(&mut self, ty: Type) -> ParseResult<Span<AttributeRef>> {
         super::parser::parse_extended_attribute(self, ty)
+    }
+
+    #[inline]
+    fn parse_optional_type(&mut self) -> ParseResult<Option<Span<Type>>> {
+        super::types::parse_optional_type(self)
     }
 }
 
@@ -387,8 +394,8 @@ where
                 return Err(ParserError::ValueDefinitionTypeMismatch {
                     span: use_info.loc,
                     prev_span: existing.span(),
-                    ty: value.borrow().ty().clone(),
-                    prev_ty: existing.borrow().ty().clone(),
+                    ty: format_compact!("{}", value.borrow().ty()),
+                    prev_ty: format_compact!("{}", existing.borrow().ty()),
                 });
             }
 
@@ -500,7 +507,7 @@ where
             let (span, value_ref) = value_ref.into_parts();
             let value = value_ref.borrow();
             let prev_ty = value.ty();
-            if prev_ty == &ty || matches!(ty, Type::Unknown) {
+            if prev_ty == ty || ty.is_unknown() {
                 if let Some(asm_state) = self.parser.state_mut().asm_state.as_deref_mut() {
                     asm_state.add_uses(value_ref, &[use_info.loc]);
                 }
@@ -510,8 +517,8 @@ where
             return Err(ParserError::ValueUseTypeMismatch {
                 span: use_info.loc,
                 prev_span: span,
-                ty,
-                prev_ty: prev_ty.clone(),
+                ty: format_compact!("{ty}"),
+                prev_ty: format_compact!("{prev_ty}"),
             });
         }
 
@@ -633,7 +640,7 @@ where
         let result = {
             let mut op = op_ref.borrow_mut();
             op.set_span(loc);
-            op.set_ty(ty.clone());
+            op.set_ty(ty);
             let mut op = op.as_operation_mut();
             let result = op.context().make_result(loc, ty, op.as_operation_ref(), 0);
             op.results_mut().group_mut(0).push(result);
@@ -972,7 +979,7 @@ where
         parsed_successors: Option<&[BlockRef]>,
         parsed_regions: Option<&[RegionRef]>,
         parsed_attributes: Option<ParsedAttrs>,
-        parsed_fn_type: Option<FunctionType>,
+        parsed_fn_type: Option<Type>,
     ) -> ParseResult {
         let successor_layout = result.name.generic_successor_layout();
         if successor_layout == GenericSuccessorLayout::Unsupported {
@@ -1058,30 +1065,45 @@ where
         }
 
         // Parse the operation type, if not explicitly provided.
-        let fn_ty = if let Some(provided_fn_ty) = parsed_fn_type {
-            Span::new(result.span, provided_fn_ty)
+        let mut params = SmallVec::<[Type; 4]>::default();
+        let mut results = SmallVec::<[Type; 4]>::default();
+        let ty_span = if let Some(provided_fn_ty) = parsed_fn_type {
+            let Some(fn_ty) = provided_fn_ty.downcast_ref::<FunctionType>() else {
+                return Err(ParserError::InvalidOperationType {
+                    span: result.span,
+                    ty_span: result.span,
+                    reason: format!("expected a function type, got '{provided_fn_ty}'"),
+                });
+            };
+            params.extend_from_slice(fn_ty.params());
+            results.extend_from_slice(fn_ty.results());
+            result.span
         } else {
             self.parser.parse_colon()?;
-            self.parser.parse_function_type()?
+            let start = self.parser.token_stream_mut().peek()?.map(|(start, ..)| start);
+            self.parser.parse_type_list(&mut params)?;
+            self.parser.parse_arrow_type_list(&mut results)?;
+            let end = self.parser.token_stream().previous_end();
+            span!(self.parser.source_id(), start.unwrap_or(end), end)
         };
-        result.results.extend(fn_ty.results().iter().cloned());
+        result.results.extend(results);
 
         // Check that we have the right number of types for the operands.
-        if operand_info.len() != fn_ty.arity() {
+        if operand_info.len() != params.len() {
             return Err(ParserError::InvalidOperationType {
                 span: result.span,
-                ty_span: fn_ty.span(),
+                ty_span,
                 reason: format!(
                     "expected {} operand type(s), but got {}",
                     operand_info.len(),
-                    fn_ty.arity()
+                    params.len()
                 ),
             });
         }
 
         // Resolve all of the operands.
-        for (use_info, ty) in operand_info.iter().zip(fn_ty.params()) {
-            let value = self.resolve_ssa_use(*use_info, ty.clone())?;
+        for (use_info, ty) in operand_info.iter().zip(params) {
+            let value = self.resolve_ssa_use(*use_info, ty)?;
             result.operands[0].push(value);
         }
 
@@ -1332,7 +1354,7 @@ where
                 }
                 let arg = self
                     .context()
-                    .append_block_argument(owning_block, arg.ty.clone(), arg_info.loc)
+                    .append_block_argument(owning_block, arg.ty, arg_info.loc)
                     .borrow()
                     .downcast_ref::<BlockArgument>()
                     .unwrap()
@@ -1513,12 +1535,12 @@ where
                     let arg = owner.arguments()[next_argument];
                     next_argument += 1;
                     let arg_borrowed = arg.borrow();
-                    if arg_borrowed.ty() != &ty {
+                    if arg_borrowed.ty() != ty {
                         return Err(ParserError::BlockArgumentTypeMismatch {
                             span: use_info.loc,
                             arg: arg_borrowed.id(),
-                            ty: arg_borrowed.ty().clone(),
-                            expected: ty.clone(),
+                            ty: format_compact!("{}", arg_borrowed.ty()),
+                            expected: format_compact!("{ty}"),
                         });
                     }
                     arg
@@ -1754,15 +1776,15 @@ where
         self.parser.current_location()
     }
 
-    fn parse_attribute(&mut self, ty: &Type) -> ParseResult<Span<AttributeRef>> {
+    fn parse_attribute(&mut self, ty: Type) -> ParseResult<Span<AttributeRef>> {
         self.parser.parse_attribute(ty)
     }
 
-    fn parse_extended_attribute(&mut self, ty: &Type) -> ParseResult<Span<AttributeRef>> {
+    fn parse_extended_attribute(&mut self, ty: Type) -> ParseResult<Span<AttributeRef>> {
         self.parser.parse_extended_attribute(ty)
     }
 
-    fn parse_optional_attribute(&mut self, ty: &Type) -> ParseResult<Option<Span<AttributeRef>>> {
+    fn parse_optional_attribute(&mut self, ty: Type) -> ParseResult<Option<Span<AttributeRef>>> {
         self.parser.parse_optional_attribute(ty)
     }
 
@@ -1782,28 +1804,8 @@ where
         self.parser.parse_type_list_no_parens(result)
     }
 
-    fn parse_function_result_types(&mut self) -> ParseResult<SmallVec<[Type; 1]>> {
-        self.parser.parse_function_result_types()
-    }
-
     fn parse_dialect_symbol_body(&mut self) -> ParseResult<Span<CompactString>> {
         self.parser.parse_dialect_symbol_body()
-    }
-
-    fn parse_extended_type(&mut self) -> ParseResult<Span<Type>> {
-        self.parser.parse_extended_type()
-    }
-
-    fn parse_function_type(&mut self) -> ParseResult<Span<FunctionType>> {
-        self.parser.parse_function_type()
-    }
-
-    fn parse_non_function_type(&mut self) -> ParseResult<Span<Type>> {
-        self.parser.parse_non_function_type()
-    }
-
-    fn parse_tuple_type(&mut self) -> ParseResult<Span<Type>> {
-        self.parser.parse_tuple_type()
     }
 
     fn parse_attribute_dict(&mut self, attrs: &mut ParsedAttrs) -> ParseResult {
@@ -1819,14 +1821,6 @@ where
         attrs: &mut ParsedAttrs,
     ) -> ParseResult {
         self.parser.parse_optional_attribute_dict_with_keyword(attrs)
-    }
-
-    fn parse_dec_or_hex_attr(
-        &mut self,
-        ty: &Type,
-        is_negative: bool,
-    ) -> ParseResult<Span<AttributeRef>> {
-        self.parser.parse_dec_or_hex_attr(ty, is_negative)
     }
 }
 
@@ -1847,7 +1841,7 @@ where
         parsed_successors: Option<&[BlockRef]>,
         parsed_regions: Option<&[RegionRef]>,
         parsed_attributes: Option<ParsedAttrs>,
-        parsed_fn_type: Option<FunctionType>,
+        parsed_fn_type: Option<Type>,
     ) -> ParseResult {
         self.parser.parse_generic_operation_after_name(
             result,
@@ -1938,7 +1932,7 @@ where
         let loc = self.parse_optional_location_specifier()?.unwrap_or(Location::Unknown);
         Ok(Argument {
             name,
-            ty: ty.map(|t| t.into_inner()).unwrap_or(Type::Unknown),
+            ty: ty.map_or_else(|| self.context().unknown_type(), |t| t.into_inner()),
             attrs,
             loc,
         })
@@ -2137,7 +2131,8 @@ where
     parser.parse_equal()?;
 
     // Parse the attribute
-    let (alias_span, attr) = parser.parse_attribute(&Type::Unknown)?.into_parts();
+    let unknown = parser.context().unknown_type();
+    let (alias_span, attr) = parser.parse_attribute(unknown)?.into_parts();
 
     // Register this alias with the parser state.
     let state = parser.state_mut();
@@ -2191,7 +2186,7 @@ where
     // Register this alias with the parser state.
     let state = parser.state_mut();
     if let Some(asm_state) = state.asm_state.as_deref_mut() {
-        asm_state.add_type_alias_definition(id, span, ty.clone());
+        asm_state.add_type_alias_definition(id, span, ty);
     }
 
     state.symbols.type_alias_definitions.insert(id, Span::new(span, ty));

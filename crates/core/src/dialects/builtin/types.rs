@@ -101,6 +101,18 @@ mod tests {
             (context.function_type([], [i32, i8]), "() -> (i32, i8)"),
             (context.function_type([i32], []), "(i32) -> ()"),
             (
+                context.function_type([], [context.function_type([i32], [i32])]),
+                "() -> ((i32) -> i32)",
+            ),
+            (
+                context.struct_type(StructType::new([]).with_repr(StructRepr::Transparent)),
+                "struct<transparent;>",
+            ),
+            (
+                context.struct_type(StructType::new([]).with_repr(StructRepr::Align(two))),
+                "struct<align(2);>",
+            ),
+            (
                 context.struct_type(StructType::named(
                     sym("my point"),
                     [StructField::new(i32).named(sym("x\"y"))],

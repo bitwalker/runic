@@ -37,6 +37,7 @@ pub use self::{
     },
     builder::{Builder, BuilderExt, InsertionGuard, Listener, ListenerType, OpBuilder},
     callable::*,
+    callconv::CallConv,
     context::{Context, DiagnosticScope},
     dialect::{
         Dialect, DialectAttributeRegistrationInfo, DialectInfo, DialectOpRegistrationInfo,
@@ -83,16 +84,22 @@ pub use self::{
     },
     symbols::*,
     traits::{FoldResult, OpFoldResult},
-    types::*,
     usable::Usable,
     value::{
         AsValueRange, BlockArgument, BlockArgumentRange, BlockArgumentRangeMut, BlockArgumentRef,
-        OpResult, OpResultRange, OpResultRangeMut, OpResultRef, OpResultStorage, StackOperand,
-        Value, ValueId, ValueOrAlias, ValueRange, ValueRef,
+        OpResult, OpResultRange, OpResultRangeMut, OpResultRef, OpResultStorage, Value, ValueId,
+        ValueRange, ValueRef,
     },
     verifier::{OpVerifier, Verify},
     visit::{
         OpVisitor, OperationVisitor, RawWalk, ReverseBlock, Searcher, SymbolVisitor, Visitor, Walk,
         WalkMut, WalkOrder, WalkResult, WalkStage,
     },
+};
+pub use crate::{
+    dialects::builtin::types::{
+        ArrayType, FloatType, FunctionType, IntegerType, IsizeType, NeverType, PointerType,
+        StructField, StructRepr, StructType, UnknownType,
+    },
+    types::{Type, TypeImpl, TypeName, TypeParser, TypePrinter, TypeRegistration},
 };

@@ -405,7 +405,7 @@ impl ConversionPatternRewriter {
             .map(|result| {
                 let value = result.borrow().as_value_ref();
                 let value_ref = value.borrow();
-                let ty = value_ref.ty().clone();
+                let ty = value_ref.ty();
                 let is_used = value_ref.is_used();
                 drop(value_ref);
                 (value, ty, is_used)
@@ -416,7 +416,7 @@ impl ConversionPatternRewriter {
         for ((original, original_ty, is_used), replacement) in
             original_results.into_iter().zip(replacement_values.iter().copied())
         {
-            let replacement_ty = replacement.borrow().ty().clone();
+            let replacement_ty = replacement.borrow().ty();
             if replacement_ty == original_ty || !is_used {
                 replacements.push(replacement);
                 continue;

@@ -535,15 +535,14 @@ impl GreedyPatternRewriteDriver {
                 log::trace!(target: "pattern-rewrite-driver", "replacing op with fold results..");
                 let mut replacements = SmallVec::<[Option<ValueRef>; 2]>::default();
                 let mut materialization_succeeded = true;
-                for (fold_result, result_ty) in results
-                    .into_iter()
-                    .zip(op.results().all().iter().map(|r| r.borrow().ty().clone()))
+                for (fold_result, result_ty) in
+                    results.into_iter().zip(op.results().all().iter().map(|r| r.borrow().ty()))
                 {
                     match fold_result {
                         OpFoldResult::Value(value) => {
                             assert_eq!(
                                 value.borrow().ty(),
-                                &result_ty,
+                                result_ty,
                                 "folder produced value of incorrect type"
                             );
                             replacements.push(Some(value));
@@ -558,7 +557,7 @@ impl GreedyPatternRewriteDriver {
                             let constant_op = op.dialect().materialize_constant(
                                 &mut *rewriter,
                                 attr,
-                                &result_ty,
+                                result_ty,
                                 span,
                             );
                             match constant_op {
@@ -602,7 +601,7 @@ impl GreedyPatternRewriteDriver {
                                     let result: ValueRef = const_op.results().all()[0].upcast();
                                     assert_eq!(
                                         result.borrow().ty(),
-                                        &result_ty,
+                                        result_ty,
                                         "materialize_constant produced incorrect result type"
                                     );
                                     log::trace!(

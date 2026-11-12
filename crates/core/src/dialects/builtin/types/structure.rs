@@ -134,13 +134,15 @@ impl TypePrinter for StructType {
         f.write_str("<")?;
         match self.repr {
             StructRepr::Default => (),
-            StructRepr::Align(n) => write!(f, "align({n}); ")?,
-            StructRepr::Packed(n) => write!(f, "packed({n}); ")?,
-            StructRepr::Transparent => f.write_str("transparent; ")?,
+            StructRepr::Align(n) => write!(f, "align({n});")?,
+            StructRepr::Packed(n) => write!(f, "packed({n});")?,
+            StructRepr::Transparent => f.write_str("transparent;")?,
         }
         for (i, field) in self.fields.iter().enumerate() {
             if i > 0 {
                 f.write_str(", ")?;
+            } else if self.repr != StructRepr::Default {
+                f.write_str(" ")?;
             }
             if let Some(name) = field.name {
                 print_name(f, name)?;

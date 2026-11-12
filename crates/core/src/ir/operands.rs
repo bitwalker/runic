@@ -52,7 +52,7 @@ impl OpOperandImpl {
     }
 
     pub fn ty(&self) -> crate::Type {
-        self.value().ty().clone()
+        self.value().ty()
     }
 
     /// Get the index of the operand group of the owning operation that this operand belongs to
@@ -91,9 +91,9 @@ impl fmt::Debug for OpOperandImpl {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         #[derive(Debug)]
         #[allow(unused)]
-        struct ValueInfo<'a> {
+        struct ValueInfo {
             id: ValueId,
-            ty: &'a Type,
+            ty: Type,
         }
 
         let value = self.value.map(|value| value.borrow());

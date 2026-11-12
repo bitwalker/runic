@@ -373,8 +373,8 @@ impl FullConversionDriver<'_> {
                 let Some((input, result)) = unrealized_conversion_cast_values(cast) else {
                     continue;
                 };
-                let input_ty = input.borrow().ty().clone();
-                let result_ty = result.borrow().ty().clone();
+                let input_ty = input.borrow().ty();
+                let result_ty = result.borrow().ty();
                 if input_ty == result_ty {
                     rewriter.replace_op(cast, &[input])?;
                     reconciled = true;
@@ -393,7 +393,7 @@ impl FullConversionDriver<'_> {
                 else {
                     continue;
                 };
-                if *previous_input.borrow().ty() == result_ty {
+                if previous_input.borrow().ty() == result_ty {
                     rewriter.replace_op(cast, &[previous_input])?;
                     if self.is_live(previous_cast) && !previous_cast.borrow().is_used() {
                         rewriter.erase_op(previous_cast)?;

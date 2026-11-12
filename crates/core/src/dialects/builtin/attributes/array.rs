@@ -231,15 +231,15 @@ impl<T> core::ops::IndexMut<usize> for Array<T> {
 }
 
 impl<T: Clone + InferAttributeValueType> InferAttributeValueType for Array<T> {
-    fn infer_type() -> crate::Type {
-        <T as InferAttributeValueType>::infer_type()
+    fn infer_type(context: &crate::Context) -> crate::Type {
+        <T as InferAttributeValueType>::infer_type(context)
     }
 
-    fn infer_type_from_value(&self) -> crate::Type {
+    fn infer_type_from_value(&self, context: &crate::Context) -> crate::Type {
         if self.0.is_empty() {
-            Self::infer_type()
+            Self::infer_type(context)
         } else {
-            <T as InferAttributeValueType>::infer_type_from_value(&self.0[0])
+            <T as InferAttributeValueType>::infer_type_from_value(&self.0[0], context)
         }
     }
 }
@@ -280,7 +280,7 @@ impl crate::print::AttrPrinter for TypeArrayAttr {
             if i > 0 {
                 *printer += const_text(", ");
             }
-            printer.print_type(value);
+            printer.print_type(*value);
         }
     }
 }

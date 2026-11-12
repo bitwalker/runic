@@ -44,7 +44,7 @@ impl InferTypeOpInterface for Load {
         let pointee = {
             let addr = self.addr();
             let addr_value = addr.value();
-            addr_value.ty().pointee().cloned()
+            addr_value.ty().pointee()
         };
         match pointee {
             Some(pointee) => {

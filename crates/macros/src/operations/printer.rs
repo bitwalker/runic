@@ -218,7 +218,7 @@ impl quote::ToTokens for DeriveOpPrinter {
                         syn::Lit::Int(syn::LitInt::new(&group.to_string(), self.ident.span()));
                     signature.extend(quote! {
                         printer.print_space();
-                        printer.print_colon_type_list(op.operands().group(#operand_group_index).iter().map(|r| ::alloc::borrow::Cow::Owned(r.borrow().ty().clone())));
+                        printer.print_colon_type_list(op.operands().group(#operand_group_index).iter().map(|r| r.borrow().ty()));
                     });
                 }
                 ParamShape::TrailingVarArgs { fixed, varargs } => {
@@ -231,7 +231,7 @@ impl quote::ToTokens for DeriveOpPrinter {
                             let fixed_group = op.operands().group(#fixed_group_index).into_iter();
                             let varargs_group = op.operands().group(#varargs_group_index).into_iter();
                             printer.print_space();
-                            printer.print_colon_type_list(fixed_group.chain(varargs_group).map(|r| ::alloc::borrow::Cow::Owned(r.borrow().ty().clone())));
+                            printer.print_colon_type_list(fixed_group.chain(varargs_group).map(|r| r.borrow().ty()));
                         }
                     });
                 }
@@ -244,12 +244,12 @@ impl quote::ToTokens for DeriveOpPrinter {
                             printer.print_space();
                             printer.print_arrow();
                             printer.print_space();
-                            printer.print_type_list(op.results().all().iter().map(|r| ::alloc::borrow::Cow::Owned(r.borrow().ty().clone())));
+                            printer.print_type_list(op.results().all().iter().map(|r| r.borrow().ty()));
                         }
                     } else {
                         quote! {
                             printer.print_space();
-                            printer.print_colon_type_list(op.results().all().iter().map(|r| ::alloc::borrow::Cow::Owned(r.borrow().ty().clone())));
+                            printer.print_colon_type_list(op.results().all().iter().map(|r| r.borrow().ty()));
                         }
                     });
                 }
@@ -259,12 +259,12 @@ impl quote::ToTokens for DeriveOpPrinter {
                             printer.print_space();
                             printer.print_arrow();
                             printer.print_space();
-                            printer.print_type_list(op.results().all().iter().map(|r| ::alloc::borrow::Cow::Owned(r.borrow().ty().clone())));
+                            printer.print_type_list(op.results().all().iter().map(|r| r.borrow().ty()));
                         }
                     } else {
                         quote! {
                             printer.print_space();
-                            printer.print_colon_type_list(op.results().all().iter().map(|r| ::alloc::borrow::Cow::Owned(r.borrow().ty().clone())));
+                            printer.print_colon_type_list(op.results().all().iter().map(|r| r.borrow().ty()));
                         }
                     });
                 }

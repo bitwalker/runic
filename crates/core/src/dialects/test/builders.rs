@@ -1,5 +1,5 @@
 use crate::{
-    Builder, BuilderExt, OpBuilder, Report, UnsafeIntrusiveEntityRef, ValueRef,
+    Builder, BuilderExt, Immediate, OpBuilder, Report, UnsafeIntrusiveEntityRef, ValueRef,
     dialects::{builtin::FunctionBuilder, test::*},
 };
 

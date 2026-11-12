@@ -10,17 +10,17 @@ macro_rules! infer_return_ty_for_binary_op {
     ($Op:ty) => {
         impl InferTypeOpInterface for $Op {
             fn infer_return_types(&mut self, _context: &Context) -> Result<(), Report> {
-                let lhs = self.lhs().ty().clone();
+                let lhs = self.lhs().ty();
                 self.result_mut().set_type(lhs);
                 Ok(())
             }
         }
     };
 
-    ($Op:ty as $manually_specified_ty:expr) => {
+    ($Op:ty as $manually_specified_ty:ident) => {
         impl InferTypeOpInterface for $Op {
-            fn infer_return_types(&mut self, _context: &Context) -> Result<(), Report> {
-                self.result_mut().set_type($manually_specified_ty);
+            fn infer_return_types(&mut self, context: &Context) -> Result<(), Report> {
+                self.result_mut().set_type(context.$manually_specified_ty());
                 Ok(())
             }
         }
@@ -80,7 +80,7 @@ pub struct Shl {
     #[operand]
     lhs: AnyInteger,
     #[operand]
-    shift: UInt32,
+    shift: Int32,
     #[result]
     result: AnyInteger,
 }
@@ -103,7 +103,7 @@ pub struct Eq {
     result: Bool,
 }
 
-infer_return_ty_for_binary_op!(Eq as Type::I1);
+infer_return_ty_for_binary_op!(Eq as i1);
 
 /// Inequality comparison
 #[derive(OpParser, OpPrinter, EffectOpInterface)]
@@ -121,4 +121,4 @@ pub struct Neq {
     result: Bool,
 }
 
-infer_return_ty_for_binary_op!(Neq as Type::I1);
+infer_return_ty_for_binary_op!(Neq as i1);

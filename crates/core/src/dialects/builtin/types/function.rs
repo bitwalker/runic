@@ -9,8 +9,8 @@ use crate::{
 
 /// The type of a function: parameter types and result types, `(T, U) -> V`.
 ///
-/// A single result prints without parentheses; no result or several results print parenthesised.
-/// It carries no calling convention.
+/// A single result prints without parentheses unless it is itself a function type; no result or
+/// several results print parenthesised. It carries no calling convention.
 #[derive(Debug, PartialEq, Eq, Hash, DialectType)]
 #[ty(dialect = BuiltinDialect, name = "function")]
 pub struct FunctionType {
@@ -53,12 +53,13 @@ impl TypePrinter for FunctionType {
         f.write_str("(")?;
         print_list(f, &self.params)?;
         f.write_str(") -> ")?;
-        if let [result] = &*self.results {
-            write!(f, "{result}")
-        } else {
-            f.write_str("(")?;
-            print_list(f, &self.results)?;
-            f.write_str(")")
+        match &*self.results {
+            [result] if !result.is_function() => write!(f, "{result}"),
+            results => {
+                f.write_str("(")?;
+                print_list(f, results)?;
+                f.write_str(")")
+            }
         }
     }
 }
