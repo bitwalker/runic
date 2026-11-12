@@ -43,20 +43,28 @@ impl quote::ToTokens for DialectType {
             return;
         }
 
-        if let Some(printer) = self
-            .implements
-            .iter()
-            .find(|path| path.segments.last().is_some_and(|segment| segment.ident == "TypePrinter"))
-        {
-            tokens.extend(
-                syn::Error::new(
-                    printer.span(),
-                    "`TypePrinter` must not be listed in `implements(..)`: a type that implements \
-                     it is printed with it automatically",
-                )
-                .into_compile_error(),
-            );
-            return;
+        for (hook, reason) in [
+            ("TypePrinter", "a type that implements it is printed with it automatically"),
+            (
+                "TypeParser",
+                "a type that implements it is parsed with it automatically, and it cannot be \
+                 looked up as an interface",
+            ),
+        ] {
+            if let Some(path) = self
+                .implements
+                .iter()
+                .find(|path| path.segments.last().is_some_and(|segment| segment.ident == hook))
+            {
+                tokens.extend(
+                    syn::Error::new(
+                        path.span(),
+                        format!("`{hook}` must not be listed in `implements(..)`: {reason}"),
+                    )
+                    .into_compile_error(),
+                );
+                return;
+            }
         }
 
         let ident = &self.ident;
@@ -193,6 +201,18 @@ mod tests {
         .unwrap();
         let output = file.into_token_stream().to_string();
         assert!(output.contains("compile_error") && output.contains("TypePrinter"));
+        assert!(!output.contains("TypeRegistration"));
+    }
+
+    #[test]
+    fn listing_the_parser_is_rejected() {
+        let file = derive(quote! {
+            #[ty(dialect = D, implements(TypeParser, Describe))]
+            struct XType;
+        })
+        .unwrap();
+        let output = file.into_token_stream().to_string();
+        assert!(output.contains("compile_error") && output.contains("TypeParser"));
         assert!(!output.contains("TypeRegistration"));
     }
 

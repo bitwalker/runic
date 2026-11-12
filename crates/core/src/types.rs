@@ -379,7 +379,7 @@ mod tests {
     isolated_dialect!(PrinterlessDialect, "printerless");
 
     /// A type with no [TypePrinter], registered with no dialect but its own isolated one.
-    #[derive(Debug, PartialEq, Eq, Hash)]
+    #[derive(Debug, Default, PartialEq, Eq, Hash)]
     struct PrinterlessType;
     impl TypeImpl for PrinterlessType {}
     impl TypeRegistration for PrinterlessType {
@@ -411,10 +411,66 @@ mod tests {
         assert!(name.print_fn().is_none());
     }
 
+    isolated_dialect!(FieldsOnlyDialect, "fields_only");
+
+    /// Has a field, but neither a printer nor a default: no text could tell its values apart.
+    #[derive(Debug, PartialEq, Eq, Hash, crate::derive::DialectType)]
+    #[ty(dialect = FieldsOnlyDialect)]
+    struct FieldsOnlyType(u8);
+
+    #[test]
+    #[should_panic(expected = "type `runic_core::types::tests::FieldsOnlyType` has no \
+                               `TypePrinter`, so it must implement `Default`")]
+    fn a_dialect_type_with_neither_a_printer_nor_a_default_is_rejected() {
+        Context::default().get_or_register_dialect::<FieldsOnlyDialect>();
+    }
+
+    isolated_dialect!(PrintOnlyDialect, "print_only");
+
+    /// Prints its field, but cannot parse it back.
+    #[derive(Debug, PartialEq, Eq, Hash, crate::derive::DialectType)]
+    #[ty(dialect = PrintOnlyDialect)]
+    struct PrintOnlyType(u8);
+    impl TypePrinter for PrintOnlyType {
+        fn print(&self, printer: &mut TypeFormatter<'_, '_>) -> fmt::Result {
+            write!(printer, "{}", self.0)
+        }
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "type `runic_core::types::tests::PrintOnlyType` implements `TypePrinter` but \
+                    not `TypeParser`"
+    )]
+    fn a_dialect_type_with_a_printer_but_no_parser_is_rejected() {
+        Context::default().get_or_register_dialect::<PrintOnlyDialect>();
+    }
+
+    isolated_dialect!(ParseOnlyDialect, "parse_only");
+
+    /// Parses a body, but prints none.
+    #[derive(Debug, Default, PartialEq, Eq, Hash, crate::derive::DialectType)]
+    #[ty(dialect = ParseOnlyDialect)]
+    struct ParseOnlyType;
+    impl TypeParser for ParseOnlyType {
+        fn parse(parser: &mut dyn crate::parse::Parser<'_>) -> crate::parse::ParseResult<Type> {
+            Ok(parser.context().intern_type(ParseOnlyType))
+        }
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "type `runic_core::types::tests::ParseOnlyType` implements `TypeParser` but \
+                    not `TypePrinter`"
+    )]
+    fn a_dialect_type_with_a_parser_but_no_printer_is_rejected() {
+        Context::default().get_or_register_dialect::<ParseOnlyDialect>();
+    }
+
     isolated_dialect!(MislabelledTraitsDialect, "mislabelled_traits");
 
     /// Declares `Describe` with the vtable built for `WideType` instead of itself.
-    #[derive(Debug, PartialEq, Eq, Hash)]
+    #[derive(Debug, Default, PartialEq, Eq, Hash)]
     struct MislabelledTraits(u8);
     impl TypeImpl for MislabelledTraits {}
     impl TypeRegistration for MislabelledTraits {
@@ -449,7 +505,7 @@ mod tests {
     }
 
     /// 16-aligned on purpose: more aligned than the header, which is 8-aligned.
-    #[derive(Debug, PartialEq, Eq, Hash)]
+    #[derive(Debug, Default, PartialEq, Eq, Hash)]
     struct WideType {
         tag: u8,
         wide: u128,
@@ -473,7 +529,7 @@ mod tests {
     }
     inventory::submit!(DialectTypeRegistrationInfo::new::<WideType>());
 
-    #[derive(Debug, PartialEq, Eq, Hash)]
+    #[derive(Debug, Default, PartialEq, Eq, Hash)]
     struct OtherType {
         tag: u8,
         wide: u128,
@@ -623,7 +679,7 @@ mod tests {
         first.function_type([first.i1()], [second.never_type()]);
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, Default)]
     struct Counted(Rc<Cell<usize>>);
     impl PartialEq for Counted {
         fn eq(&self, _: &Self) -> bool {
@@ -667,7 +723,7 @@ mod tests {
     }
 
     /// Interns a type into its context when dropped, while that context is alive.
-    #[derive(Debug)]
+    #[derive(Debug, Default)]
     struct InternsOnDrop(alloc::rc::Weak<Context>);
     impl PartialEq for InternsOnDrop {
         fn eq(&self, _: &Self) -> bool {
@@ -711,7 +767,7 @@ mod tests {
     }
 
     /// Aligned beyond the header, so the value is preceded by padding.
-    #[derive(Debug, PartialEq, Eq, Hash)]
+    #[derive(Debug, Default, PartialEq, Eq, Hash)]
     #[repr(C, align(32))]
     struct OverAligned {
         value: u64,
@@ -755,7 +811,7 @@ mod tests {
         );
     }
 
-    #[derive(Debug, PartialEq, Eq, Hash, crate::derive::DialectType)]
+    #[derive(Debug, Default, PartialEq, Eq, Hash, crate::derive::DialectType)]
     #[ty(dialect = TestDialect, implements(Describe))]
     struct EmptyType;
     impl Describe for EmptyType {
@@ -765,7 +821,7 @@ mod tests {
     }
 
     /// Zero-sized, yet aligned beyond the header.
-    #[derive(Debug, PartialEq, Eq, Hash, crate::derive::DialectType)]
+    #[derive(Debug, Default, PartialEq, Eq, Hash, crate::derive::DialectType)]
     #[ty(dialect = TestDialect, implements(Describe))]
     #[repr(align(64))]
     struct EmptyAlignedType;
@@ -797,7 +853,7 @@ mod tests {
     /// A tiny type registration: the type `$ty` named `$name` in `$dialect`.
     macro_rules! named_type {
         ($ty:ident($field:ty), $dialect:ident, $name:literal) => {
-            #[derive(Debug, PartialEq, Eq, Hash)]
+            #[derive(Debug, Default, PartialEq, Eq, Hash)]
             struct $ty($field);
             impl TypeImpl for $ty {}
             impl TypeRegistration for $ty {
@@ -917,6 +973,14 @@ mod tests {
             printer.types([self.first, self.second])
         }
     }
+    impl TypeParser for PairType {
+        fn parse(parser: &mut dyn crate::parse::Parser<'_>) -> crate::parse::ParseResult<Type> {
+            let first = parser.parse_type()?.into_inner();
+            parser.parse_comma()?;
+            let second = parser.parse_type()?.into_inner();
+            Ok(parser.context().intern_type(PairType { first, second }))
+        }
+    }
 
     #[derive(Debug, Default, PartialEq, Eq, Hash, crate::derive::DialectType)]
     #[ty(dialect = TestDialect)]
@@ -944,6 +1008,11 @@ mod tests {
     #[ty(dialect = TestDialect)]
     enum ParsedType {
         Only,
+    }
+    impl TypePrinter for ParsedType {
+        fn print(&self, _: &mut TypeFormatter<'_, '_>) -> fmt::Result {
+            Ok(())
+        }
     }
     impl TypeParser for ParsedType {
         fn parse(parser: &mut dyn crate::parse::Parser<'_>) -> crate::parse::ParseResult<Type> {
@@ -977,6 +1046,14 @@ mod tests {
     impl TypePrinter for UndeclaredPrinterType {
         fn print(&self, printer: &mut TypeFormatter<'_, '_>) -> fmt::Result {
             write!(printer, "{}", self.0)
+        }
+    }
+    impl TypeParser for UndeclaredPrinterType {
+        fn parse(parser: &mut dyn crate::parse::Parser<'_>) -> crate::parse::ParseResult<Type> {
+            use crate::parse::ParserExt;
+
+            let value = parser.parse_decimal_integer::<u8>()?.into_inner();
+            Ok(parser.context().intern_type(UndeclaredPrinterType(value)))
         }
     }
 

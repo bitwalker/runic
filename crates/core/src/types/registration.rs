@@ -33,6 +33,9 @@ pub trait TypePrinter {
 }
 
 /// Parses what a type's [TypePrinter] prints, and interns the type it describes.
+///
+/// A dialect type implements this exactly when it implements [TypePrinter], and the parser must
+/// return a type of its own kind: the type parser rejects any other.
 pub trait TypeParser: TypeRegistration {
     fn parse(parser: &mut dyn parse::Parser<'_>) -> parse::ParseResult<Type>;
 }

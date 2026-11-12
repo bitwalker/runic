@@ -61,10 +61,58 @@ fn require_printer_for_builtin(dialect: Symbol, rust_type_name: &str, has_printe
     );
 }
 
+/// A dialect type prints as `!dialect.name`, followed by `<..>` holding what its
+/// [TypePrinter](super::TypePrinter) prints, if it has one. For that text to parse back, a type
+/// with a printer must have a [TypeParser](super::TypeParser) for its body, and one without a
+/// printer must be [Default], which is what `!dialect.name` alone parses as. Builtin types print
+/// and parse their own syntax, and are not subject to this.
+///
+/// Panics, naming `rust_type_name`, if the type `name` in `dialect` breaks either rule.
+fn require_round_trip(
+    dialect: Symbol,
+    name: Symbol,
+    rust_type_name: &str,
+    has_printer: bool,
+    has_parser: bool,
+    has_default: bool,
+) {
+    if dialect.as_str()
+        == <crate::dialects::builtin::BuiltinDialect as crate::DialectRegistration>::NAMESPACE
+    {
+        return;
+    }
+    assert!(
+        has_parser || !has_printer,
+        "type `{rust_type_name}` implements `TypePrinter` but not `TypeParser`: the body it \
+         prints after `!{dialect}.{name}` must parse back"
+    );
+    assert!(
+        has_printer || !has_parser,
+        "type `{rust_type_name}` implements `TypeParser` but not `TypePrinter`: it prints as \
+         `!{dialect}.{name}` without the body its parser reads"
+    );
+    assert!(
+        has_printer || has_default,
+        "type `{rust_type_name}` has no `TypePrinter`, so it must implement `Default`: it prints \
+         as `!{dialect}.{name}` alone, which parses as its default value"
+    );
+}
+
 impl TypeName {
     pub(crate) fn new<T: TypeRegistration>(dialect: Symbol) -> Self {
+        let rust_type_name = core::any::type_name::<T>();
         let print = <T as MaybeTypePrinter>::print_fn();
-        require_printer_for_builtin(dialect, core::any::type_name::<T>(), print.is_some());
+        let parse = <T as MaybeTypeParser>::parse_fn();
+        let default = <T as MaybeDefaultType>::default_fn();
+        require_printer_for_builtin(dialect, rust_type_name, print.is_some());
+        require_round_trip(
+            dialect,
+            T::name(),
+            rust_type_name,
+            print.is_some(),
+            parse.is_some(),
+            default.is_some(),
+        );
         let mut traits = Vec::from(T::traits());
         // `Type::as_trait` pairs a `T` with the vtable in the table, so it must be `T`'s.
         for ti in traits.iter() {
@@ -72,7 +120,7 @@ impl TypeName {
                 *ti.concrete_type_id() == TypeId::of::<T>(),
                 "the `{}` entry in the trait table of type `{}` was built for another type, `{}`",
                 ti.type_name(),
-                core::any::type_name::<T>(),
+                rust_type_name,
                 ti.concrete_type_name()
             );
         }
@@ -81,13 +129,13 @@ impl TypeName {
             dialect,
             name: T::name(),
             type_id: TypeId::of::<T>(),
-            rust_type_name: core::any::type_name::<T>(),
+            rust_type_name,
             traits: traits.into_boxed_slice(),
             value_offset: TypeStorage::<T>::VALUE_OFFSET,
             debug: debug_value::<T>,
             print,
-            parse: <T as MaybeTypeParser>::parse_fn(),
-            default: <T as MaybeDefaultType>::default_fn(),
+            parse,
+            default,
         }))
     }
 
@@ -238,5 +286,15 @@ mod tests {
     fn a_printer_is_optional_outside_the_builtin_dialect() {
         require_printer_for_builtin(Symbol::intern("builtin"), "Fine", true);
         require_printer_for_builtin(Symbol::intern("other"), "Fine", false);
+    }
+
+    #[test]
+    fn a_dialect_type_round_trips_with_a_printer_and_parser_or_a_default() {
+        let (other, name) = (Symbol::intern("other"), Symbol::intern("t"));
+        require_round_trip(other, name, "Printed", true, true, false);
+        require_round_trip(other, name, "PrintedDefault", true, true, true);
+        require_round_trip(other, name, "Unit", false, false, true);
+        // Builtin types parse their own syntax.
+        require_round_trip(Symbol::intern("builtin"), name, "Builtin", true, false, false);
     }
 }

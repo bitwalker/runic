@@ -1474,6 +1474,53 @@ fn parse_type_text(context: &Rc<Context>, text: &str) -> Result<Type, Report> {
     result.map_err(|err| Report::from(err).attach_session_sources(context.sources()))
 }
 
+/// A dialect, not submitted to `inventory`, whose type's parser returns a type of another kind.
+#[derive(Debug)]
+struct LiarDialect {
+    info: crate::DialectInfo,
+}
+impl crate::Dialect for LiarDialect {
+    fn info(&self) -> &crate::DialectInfo {
+        &self.info
+    }
+}
+impl crate::DialectRegistration for LiarDialect {
+    const NAMESPACE: &'static str = "liar";
+
+    fn init(info: crate::DialectInfo) -> Self {
+        Self { info }
+    }
+}
+
+/// Prints an empty body, which its parser reads as `i32`.
+#[derive(Debug, Default, PartialEq, Eq, Hash, crate::derive::DialectType)]
+#[ty(dialect = LiarDialect, name = "liar")]
+struct LiarType;
+impl crate::TypePrinter for LiarType {
+    fn print(&self, _: &mut crate::TypeFormatter<'_, '_>) -> core::fmt::Result {
+        Ok(())
+    }
+}
+impl crate::TypeParser for LiarType {
+    fn parse(parser: &mut dyn super::Parser<'_>) -> ParseResult<Type> {
+        Ok(parser.context().i32())
+    }
+}
+
+#[test]
+fn a_dialect_type_parser_must_return_its_own_type() {
+    let context = Rc::new(Context::default());
+    context.get_or_register_dialect::<LiarDialect>();
+    let liar = context.intern_type(LiarType);
+    assert_eq!(format!("{liar}"), "!liar.liar<>");
+    let message = type_error_text(&context, "!liar.liar<>");
+    assert!(
+        message.contains("the parser of type 'liar.liar' returned `i32`, a type of another kind"),
+        "{message}"
+    );
+    assert_eq!(parse_type_text(&context, "!liar.liar").unwrap(), liar);
+}
+
 /// The rendered text of a type parse error, on one line.
 fn type_error_text(context: &Rc<Context>, text: &str) -> String {
     let err = parse_type_text(context, text).expect_err(text);

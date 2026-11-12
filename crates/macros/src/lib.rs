@@ -53,8 +53,10 @@ pub fn derive_dialect_attribute(input: proc_macro::TokenStream) -> proc_macro::T
 /// trailing `Type`.
 ///
 /// A type is printed with its `TypePrinter`, and parsed with its `TypeParser`, if it implements
-/// them; neither is listed in `implements(..)`. A printer writes text with `write!(printer, ..)`
-/// and any type it contains with `printer.ty(..)`:
+/// them; neither is listed in `implements(..)`. So that its text parses back, a dialect type
+/// implements both or neither, and one with no printer implements `Default`; registering a type
+/// that does not panics. A printer writes text with `write!(printer, ..)` and any type it
+/// contains with `printer.ty(..)`:
 ///
 /// ```ignore
 /// impl TypePrinter for VectorType {

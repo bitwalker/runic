@@ -463,6 +463,14 @@ fn parse_alias_or_dialect_type<'input, P: Parser<'input>>(
             });
         };
         let ty = parse(parser)?;
+        if ty.name() != &type_name {
+            return Err(ParserError::InvalidType {
+                span,
+                reason: format!(
+                    "the parser of type '{type_name}' returned `{ty}`, a type of another kind"
+                ),
+            });
+        }
         parser.parse_rangle()?;
         Ok(ty)
     } else {
