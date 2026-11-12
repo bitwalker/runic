@@ -24,7 +24,7 @@
 //! # Locations
 //!
 //! trailing-location := 'loc' '(' location ')'
-//! location := '?'
+//! location := 'unknown'
 //!           | 'synthetic'
 //!           | 'opaque' '<' decimal-literal '>'
 //!           | file-line-col
@@ -128,6 +128,7 @@
 //!                    | string-attribute
 //!                    | symbol-ref-attribute
 //!                    | location-attribute
+//!                    | signature-attribute
 //!
 //! type-attribute := type
 //! integer-attribute := '-'? decimal-literal | hex-literal | binary-literal

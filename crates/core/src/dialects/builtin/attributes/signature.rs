@@ -365,22 +365,6 @@ impl Signature {
         }
         Ok(())
     }
-
-    /// Returns the result at `index` of [Self::results], if present
-    #[inline]
-    pub fn result(&self, index: usize) -> Option<&AbiParam> {
-        self.results().get(index)
-    }
-
-    /// Returns the result at `index` of [Self::results], mutably, if present
-    #[inline]
-    pub fn result_mut(&mut self, index: usize) -> Option<&mut AbiParam> {
-        if self.never_returns() {
-            None
-        } else {
-            self.results.get_mut(index)
-        }
-    }
 }
 
 impl AttrPrinter for SignatureAttr {
@@ -665,27 +649,21 @@ mod tests {
     #[test]
     fn a_never_returning_signature_has_three_views() {
         let context = Rc::new(crate::Context::default());
-        let mut signature = Signature::new(&context, [context.i32()], [context.never_type()]);
+        let signature = Signature::new(&context, [context.i32()], [context.never_type()]);
         assert!(signature.never_returns());
         assert!(signature.results().is_empty());
         assert_eq!(signature.declared_results().len(), 1);
         assert!(signature.declared_results()[0].ty.is_never());
-        assert!(signature.result(0).is_none());
-        assert!(signature.result_mut(0).is_none());
     }
 
     /// An ordinary signature declares the results it produces.
     #[test]
     fn an_ordinary_signature_declares_what_it_produces() {
         let context = Rc::new(crate::Context::default());
-        let mut signature =
-            Signature::new(&context, [context.i32()], [context.i64(), context.i8()]);
+        let signature = Signature::new(&context, [context.i32()], [context.i64(), context.i8()]);
         assert!(!signature.never_returns());
         assert_eq!(signature.results(), signature.declared_results());
         assert_eq!(signature.results().len(), 2);
-        assert_eq!(signature.result(1).map(|r| r.ty), Some(context.i8()));
-        assert_eq!(signature.result_mut(0).map(|r| r.ty), Some(context.i64()));
-        assert!(signature.result(2).is_none());
 
         // `never` among other results is not a never-returning function
         let mixed = Signature::new(&context, [], [context.never_type(), context.i32()]);

@@ -4172,6 +4172,62 @@ fn a_location_file_name_round_trips() -> TestResult {
     Ok(())
 }
 
+/// Debug-info strings in the positions not tested above read back what the printer escapes: a
+/// subprogram's parameter names, the names in an expression, and a compile unit (whose printer
+/// always writes `optimized`, so the comma its parser wants after `file` is always there).
+#[test]
+fn debug_info_strings_that_need_escaping_round_trip() {
+    use crate::dialects::debuginfo::attributes::*;
+
+    let context = Rc::new(Context::default());
+    let unknown = context.unknown_type();
+    for &value in ROUND_TRIP_STRINGS {
+        let subprogram = Subprogram::new(value.into(), value.into(), 1, None)
+            .with_param_names([value.into(), "plain".into()]);
+        let attr = context.create_attribute::<SubprogramAttr, _>(subprogram.clone());
+        let first = print_attribute_text(&context, &attr.as_attribute_ref());
+        let parsed = parse_attribute_text(&context, &first, unknown).unwrap();
+        assert_eq!(**parsed.borrow().downcast_ref::<SubprogramAttr>().unwrap(), subprogram);
+        assert_eq!(print_attribute_text(&context, &parsed), first);
+
+        let unit = CompileUnit::new(value.into(), value.into());
+        let attr = context.create_attribute::<CompileUnitAttr, _>(unit.clone());
+        let first = print_attribute_text(&context, &attr.as_attribute_ref());
+        let parsed = parse_attribute_text(&context, &first, unknown).unwrap();
+        assert_eq!(**parsed.borrow().downcast_ref::<CompileUnitAttr>().unwrap(), unit);
+
+        let expression = Expression::with_ops(alloc::vec![
+            ExpressionOp::GlobalSlot(value.into()),
+            ExpressionOp::FrameBase {
+                base: FrameBase::GlobalSlot(value.into()),
+                byte_offset: -8,
+            },
+        ]);
+        let attr = context.create_attribute::<ExpressionAttr, _>(expression.clone());
+        let first = print_attribute_text(&context, &attr.as_attribute_ref());
+        let parsed = parse_attribute_text(&context, &first, unknown)
+            .unwrap_or_else(|err| panic!("{first}: {err:?}"));
+        assert_eq!(**parsed.borrow().downcast_ref::<ExpressionAttr>().unwrap(), expression);
+        assert_eq!(print_attribute_text(&context, &parsed), first);
+    }
+
+    // the minimal compile unit the printer writes, and the hand-written one it never writes
+    let unit = CompileUnit::new("rust".into(), "a.rs".into());
+    let attr = context.create_attribute::<CompileUnitAttr, _>(unit);
+    assert_eq!(
+        print_attribute_text(&context, &attr.as_attribute_ref()),
+        "#di.compile_unit<{ language = \"rust\", file = \"a.rs\", optimized = false }>"
+    );
+    assert!(
+        parse_attribute_text(
+            &context,
+            "#di.compile_unit<{ language = \"rust\", file = \"a.rs\" }>",
+            unknown
+        )
+        .is_err()
+    );
+}
+
 /// An invalid escape in a quoted string is an `InvalidString` error, wherever the string is read.
 #[test]
 fn an_invalid_escape_in_a_string_is_an_error() {
@@ -4640,6 +4696,159 @@ fn a_definition_without_a_body_is_an_error() {
     assert_eq!(labels.first(), Some(&range_of(source, ";")), "{message}");
 }
 
+/// Hostile but well-formed function text. Each source parses with verification on,
+/// prints as given, and the print parses back to an equal signature.
+#[test]
+fn hostile_but_well_formed_function_text_round_trips() {
+    let f = "builtin.function public extern(\"C\") @f";
+    for (source, printed) in [
+        // no spaces anywhere they are optional
+        (format!("{f}(i32)->i32;"), format!("{f}(i32) -> i32;")),
+        (
+            format!("{f}(i8{{extend=#builtin.zext}})->(i8{{extend=#builtin.sext}});"),
+            format!("{f}(i8 {{ extend = #builtin.zext }}) -> (i8 {{ extend = #builtin.sext }});"),
+        ),
+        (
+            format!(
+                "{f}(%0: i8{{extend=#builtin.zext}})->(i8{{extend=#builtin.sext}}){{builtin.ret \
+                 %0 : (i8);}};"
+            ),
+            format!(
+                "{f}(%0: i8 {{ extend = #builtin.zext }}) -> (i8 {{ extend = #builtin.sext }}) \
+                 {{\n    builtin.ret %0 : (i8);\n}};"
+            ),
+        ),
+        (
+            format!("{f}()->i32{{builtin.ret_imm 1 : i32;}};"),
+            format!("{f}() -> i32 {{\n    builtin.ret_imm 1 : i32;\n}};"),
+        ),
+        // function types as parameters and results, with and without dictionaries
+        (
+            format!("{f}((i32) -> i32 {{ a = true }}) -> ((i32) -> i32 {{ b = true }});"),
+            format!(
+                "{f}((i32) -> i32 {{ a = #builtin.bool<true> }}) -> ((i32) -> i32 {{ b = \
+                 #builtin.bool<true> }});"
+            ),
+        ),
+        (format!("{f}(() -> ()) -> (() -> ());"), format!("{f}(() -> ()) -> (() -> ());")),
+        (format!("{f}(() -> ());"), format!("{f}(() -> ());")),
+        (
+            format!("{f}() -> ((i32) -> i32, i64);"),
+            format!("{f}() -> ((i32) -> i32, i64);"),
+        ),
+        // parentheses the printer does not write
+        (format!("{f}(i32) -> (never);"), format!("{f}(i32) -> never;")),
+        (
+            format!("{f}(i32) -> (never {{ a = true }});"),
+            format!("{f}(i32) -> (never {{ a = #builtin.bool<true> }});"),
+        ),
+        (format!("{f}(i32) -> ();"), format!("{f}(i32);")),
+        (format!("{f}(i32 {{}}) -> (i32 {{}});"), format!("{f}(i32) -> i32;")),
+        (
+            format!("{f}() -> () {{\n    builtin.ret;\n}};"),
+            format!("{f}() {{\n    builtin.ret;\n}};"),
+        ),
+        (
+            format!("{f}(%0: i32 {{}}) {{\n    builtin.ret;\n}};"),
+            format!("{f}(%0: i32) {{\n    builtin.ret;\n}};"),
+        ),
+        // what follows a declaration
+        (
+            format!("{f}(i32) attributes {{ a = true }};"),
+            format!("{f}(i32) attributes {{ a = #builtin.bool<true> }};"),
+        ),
+        (
+            format!("{f}() -> i32 attributes {{ a = true }};"),
+            format!("{f}() -> i32 attributes {{ a = #builtin.bool<true> }};"),
+        ),
+        (format!("{f}(i32) -> i32 loc(\"a\":1:1);"), format!("{f}(i32) -> i32;")),
+        (format!("{f}(i32) loc(\"a\":1:1);"), format!("{f}(i32);")),
+        // an argument with a dictionary and a location
+        (
+            format!(
+                "{f}(%0: i32 {{ a = true }} loc(\"a\":1:1), %1: i64) {{\n    builtin.ret;\n}};"
+            ),
+            format!(
+                "{f}(%0: i32 {{ a = #builtin.bool<true> }}, %1: i64) {{\n    builtin.ret;\n}};"
+            ),
+        ),
+        // types of one token
+        (format!("{f}(?) -> ?;"), format!("{f}(?) -> ?;")),
+        (format!("{f}(ptr) -> ptr;"), format!("{f}(ptr) -> ptr;")),
+        // a quoted key that needs no quotes, and a signature inside a dictionary
+        (
+            format!("{f}(i8 {{ \"extend\" = #builtin.zext }});"),
+            format!("{f}(i8 {{ extend = #builtin.zext }});"),
+        ),
+        (
+            format!(
+                "{f}(i32 {{ sig = #builtin.signature<extern(\"a>b\") (i8 {{ extend = \
+                 #builtin.zext }}) -> never> }});"
+            ),
+            format!(
+                "{f}(i32 {{ sig = #builtin.signature<extern(\"a>b\") (i8 {{ extend = \
+                 #builtin.zext }}) -> never> }});"
+            ),
+        ),
+        // convention names
+        (
+            "builtin.function public extern(\"\") @f();".to_string(),
+            "builtin.function public extern(\"\") @f();".to_string(),
+        ),
+        (
+            "builtin.function public extern(\"a\\u{0}b\") @f();".to_string(),
+            "builtin.function public extern(\"a\\u{0}b\") @f();".to_string(),
+        ),
+        // an empty region is no body: this is a declaration
+        (format!("{f}() {{}};"), format!("{f}();")),
+    ] {
+        let test = ParserTest::default();
+        let first = test
+            .parse::<Function>("hostile.hir", &source)
+            .unwrap_or_else(|err| panic!("{source}\n{}", one_line(&err)));
+        let text = print_root(first);
+        assert_eq!(without_value_ids(&text), without_value_ids(&printed), "{source}");
+        let second = test
+            .parse::<Function>("hostile2.hir", &text)
+            .unwrap_or_else(|err| panic!("{text}\n{}", one_line(&err)));
+        assert_eq!(signature_of(second), signature_of(first), "{text}");
+    }
+}
+
+/// Text that is close to a function but is not one, with the error each gives.
+#[test]
+fn hostile_function_text_that_is_an_error() {
+    let f = "builtin.function public extern(\"C\") @f";
+    for (source, reason) in [
+        // a bare function-type result. The printer writes `-> ((i32) -> i32)`.
+        (format!("{f}() -> (i32) -> i32;"), "unexpected token '->'"),
+        (
+            format!("{f}(i32) -> () {{\n    builtin.ret;\n}};"),
+            "a function declared without parameter names cannot have a body",
+        ),
+        (format!("{f}() -> i32 {{ a = true }};"), "unknown/unregistered operation"),
+        (format!("{f}(%0: i32,) {{\n    builtin.ret;\n}};"), "expected a named parameter"),
+        (format!("{f}(i32,);"), "unexpected token ')'"),
+        (format!("{f}(i8 {{ extend = #builtin.zext<> }});"), "has no parser"),
+        // an open type cannot be written outside a `rec` block, in any build
+        (format!("{f}(ptr<rec.0>);"), "unexpected token"),
+        (format!("{f}(%0: ptr<rec.0>) {{\n    builtin.ret;\n}};"), "unexpected token"),
+        // variadics are not in the grammar yet: `...` is a token, and it is an error here
+        (format!("{f}(i32, ...);"), "unexpected token '...'"),
+        (format!("{f}(...);"), "unexpected token '...'"),
+        // a named list's region may not label its entry block
+        (
+            format!("{f}(%0: i32) {{\n^entry:\n    builtin.ret;\n}};"),
+            "invalid block name in region with named arguments",
+        ),
+    ] {
+        let test = ParserTest::default();
+        let err = test.parse::<Function>("hostile.hir", &source).map(|_| ()).expect_err(&source);
+        let message = one_line(&err);
+        assert!(message.contains(reason), "{source}\n{message}");
+    }
+}
+
 /// A key given twice in the dictionary of a parameter or a result is an error at its second
 /// occurrence, as in an operation's attribute dictionary.
 #[test]
@@ -4941,8 +5150,8 @@ fn an_entry_block_that_disagrees_with_the_parameters_does_not_verify() {
     assert!(message.contains("invalid operation builtin.function"), "{message}");
     assert!(
         message.contains(
-            "expected one entry block argument per parameter: the signature has 2 parameters, the \
-             entry block has 1 arguments"
+            "expected one entry block argument per parameter; parameter count: 2, entry block \
+             argument count: 1"
         ),
         "{message}"
     );

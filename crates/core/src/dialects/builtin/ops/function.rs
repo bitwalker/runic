@@ -492,8 +492,8 @@ impl crate::Verify<dyn CallableSymbol> for Function {
         let arguments = entry.arguments();
         if arguments.len() != signature.params().len() {
             return Err(invalid(format!(
-                "expected one entry block argument per parameter: the signature has {} \
-                 parameters, the entry block has {} arguments",
+                "expected one entry block argument per parameter; parameter count: {}, entry \
+                 block argument count: {}",
                 signature.params().len(),
                 arguments.len()
             )));

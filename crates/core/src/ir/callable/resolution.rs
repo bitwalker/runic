@@ -238,8 +238,11 @@ builtin.module public @test {
         assert!(alias.target().callable_region().is_some());
         let mut function = alias.target().as_function().unwrap();
         assert_eq!(function.borrow().visibility(), Visibility::Internal);
+        // A signature the body (`builtin.ret` of nothing) still agrees with: only the convention
+        // changes.
         let updated =
-            Signature::new(&test.context_rc(), [test.context().i32()], [test.context().i64()]);
+            Signature::with_convention(&test.context_rc(), crate::CallConv::new("fast"), [], []);
+        assert_ne!(alias.signature(), updated);
         *function.borrow_mut().get_signature_mut() = updated.clone();
         assert_eq!(alias.signature(), updated);
         assert_eq!(alias.target().borrow().signature(), updated);
