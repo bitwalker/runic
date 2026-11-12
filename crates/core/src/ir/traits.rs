@@ -337,8 +337,8 @@ pub trait SingleRegion {
 /// op, and the copy becomes the result. A cast that checks or changes a value, such as `hir.cast`
 /// between signednesses or any widening or narrowing, must not implement this.
 ///
-/// The verifier admits one operand and one result that are both integers of the same fixed width
-/// (`iN`), or both pointers.
+/// The verifier admits one operand and one result of the same type, or that are both integers of
+/// the same fixed width (`iN`), or both pointers.
 #[operation_trait]
 pub trait TransparentCast {
     #[verifier]
@@ -372,17 +372,22 @@ pub trait TransparentCast {
         let from = op.operands()[0].borrow().value().ty();
         let to = op.results()[0].borrow().ty();
 
-        let same_width_integers =
-            from.integer_width().is_some_and(|width| to.integer_width() == Some(width));
-        if !same_width_integers && !(from.is_pointer() && to.is_pointer()) {
-            return Err(invalid(
-                format!("cannot reinterpret {from} as {to}"),
-                "converts only an integer to an integer of the same width, or a pointer to a \
-                 pointer",
-            ));
+        if from == to {
+            return Ok(());
         }
-
-        Ok(())
+        match (from.integer_width(), to.integer_width()) {
+            (Some(from_width), Some(to_width)) if from_width == to_width => Ok(()),
+            (Some(from_width), Some(to_width)) => Err(invalid(
+                format!("{from} is {from_width} bits wide, but {to} is {to_width}"),
+                "requires its operand and result to be of the same bit width",
+            )),
+            _ if from.is_pointer() && to.is_pointer() => Ok(()),
+            _ => Err(invalid(
+                format!("cannot reinterpret {from} as {to}"),
+                "converts only integers to integers of the same width, pointers to pointers, or a \
+                 value to a value of its own type",
+            )),
+        }
     }
 }
 
@@ -449,7 +454,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        BuilderExt, Op, Report, SourceSpan, Type, Value, ValueRef,
+        BuilderExt, Op, Report, SourceSpan, StructField, StructType, Type, Value, ValueRef,
         derive::operation,
         dialects::{
             builtin::{BuiltinOpBuilder, attributes::TypeAttr},
@@ -511,9 +516,50 @@ mod tests {
         ];
         for types in cases {
             verify_cast(types).unwrap_or_else(|err| {
-                let (from, to) = types(&Context::default());
+                let context = Context::default();
+                let (from, to) = types(&context);
                 panic!("{from} to {to} should be transparent: {err}")
             });
+        }
+    }
+
+    #[test]
+    fn a_cast_between_identical_types_is_always_transparent() {
+        let cases: [CastTypes; 5] = [
+            |context| (context.isize_type(), context.isize_type()),
+            |context| (context.int_type(24), context.int_type(24)),
+            |context| (context.f64_type(), context.f64_type()),
+            |context| (context.array_type(context.i8(), 4), context.array_type(context.i8(), 4)),
+            |context| {
+                let pair = || {
+                    StructType::new([
+                        StructField::new(context.i32()),
+                        StructField::new(context.isize_type()),
+                    ])
+                };
+                (context.struct_type(pair()), context.struct_type(pair()))
+            },
+        ];
+        for types in cases {
+            verify_cast(types).unwrap_or_else(|err| {
+                let context = Context::default();
+                let (from, to) = types(&context);
+                panic!("{from} to {to} should be transparent: {err}")
+            });
+        }
+    }
+
+    #[test]
+    fn a_transparent_cast_never_reinterprets_a_pointer_as_an_integer() {
+        let cases: [CastTypes; 4] = [
+            |context| (context.ptr_type(context.i8()), context.i32()),
+            |context| (context.i32(), context.ptr_type(context.i8())),
+            |context| (context.ptr_type(context.i8()), context.isize_type()),
+            |context| (context.isize_type(), context.i64()),
+        ];
+        for types in cases {
+            let message = rejection(types);
+            assert!(message.contains("converts only integers to integers"), "{message}");
         }
     }
 
