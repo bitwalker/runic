@@ -1276,8 +1276,21 @@ pub(super) fn parse_extended_attribute<'input, P: Parser<'input>>(
         }
     } else {
         let mut value = name.create_default(&parser.context_rc());
-        if !ty.is_unknown() {
-            value.borrow_mut().set_type(ty);
+        let attr_ty = value.borrow().ty();
+        if attr_ty.is_unknown() {
+            // The attribute has no type of its own, so it takes the expected one.
+            if !ty.is_unknown() {
+                value.borrow_mut().set_type(ty);
+            }
+        } else if !ty.is_unknown() && ty != attr_ty {
+            // The attribute's type follows from its value; it cannot be retyped.
+            return Err(ParserError::InvalidAttributeValue {
+                span: name_span,
+                reason: format!(
+                    "expected a value of type {ty}, got '{name}' with no value, which has type \
+                     {attr_ty}"
+                ),
+            });
         }
         Ok(Span::new(name_span, value))
     }

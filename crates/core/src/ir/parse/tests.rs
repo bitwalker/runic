@@ -3375,13 +3375,54 @@ fn int_attributes_round_trip_through_text() -> TestResult {
     Ok(())
 }
 
-/// A body-less `#builtin.int` is the attribute's default value, a 32-bit zero.
+/// A body-less attribute with a type of its own keeps it: it is read only where that type, or an
+/// unknown one, is expected.
 #[test]
-fn a_body_less_int_attribute_is_a_32_bit_zero() -> TestResult {
+fn a_body_less_attribute_is_read_only_with_the_type_of_its_value() -> TestResult {
     let context = Rc::new(Context::default());
-    let attr = parse_attribute_text(&context, "#builtin.int", context.unknown_type())?;
-    assert_eq!(int_and_type_of(&attr), (Int::zero(32), context.i32()));
-    assert_eq!(print_attribute_text(&context, &attr), "#builtin.int<0 : i32>");
+    let (unknown, i8, i32, isize, ptr, i1) = (
+        context.unknown_type(),
+        context.i8(),
+        context.i32(),
+        context.isize(),
+        context.opaque_ptr_type(),
+        context.i1(),
+    );
+    for (text, ty, value, expected) in [
+        ("#builtin.int", unknown, Int::zero(32), i32),
+        ("#builtin.int", i32, Int::zero(32), i32),
+        ("#builtin.i32", i32, Int::zero(32), i32),
+        ("#builtin.bool", i1, Int::from(false), i1),
+    ] {
+        let attr = parse_attribute_text(&context, text, ty)?;
+        assert_eq!(int_and_type_of(&attr), (value, expected), "{text} : {ty}");
+        let width = expected.integer_width().unwrap();
+        assert_eq!(attr.borrow().as_int().unwrap().width(), width, "{text} : {ty}");
+    }
+    assert_eq!(
+        print_attribute_text(&context, &parse_attribute_text(&context, "#builtin.int", i32)?),
+        "#builtin.int<0 : i32>"
+    );
+
+    for (text, ty, attr_ty) in [
+        ("#builtin.int", i8, "i32"),
+        ("#builtin.int", isize, "i32"),
+        ("#builtin.int", ptr, "i32"),
+        ("#builtin.i32", i8, "i32"),
+        ("#builtin.bool", i32, "i1"),
+    ] {
+        let err = parse_attribute_text(&context, text, ty).unwrap_err();
+        let crate::parse::ParserError::InvalidAttributeValue { reason, .. } = err else {
+            panic!("{text} : {ty}: {err:?}");
+        };
+        assert_eq!(
+            reason,
+            format!(
+                "expected a value of type {ty}, got '{}' with no value, which has type {attr_ty}",
+                text.trim_start_matches('#')
+            ),
+        );
+    }
     Ok(())
 }
 
@@ -3474,13 +3515,16 @@ fn a_segment_offset_in_the_upper_half_round_trips() -> TestResult {
     let module = test.parse_any("segment.hir", "builtin.module public @m {};")?;
     let module = module.try_downcast_op::<Module>().unwrap();
     let mut builder = ModuleBuilder::new(module);
-    let segment = builder.define_data_segment(
+    let mut segment = builder.define_data_segment(
         0x8000_0000,
         [1u8, 2, 3, 4].as_slice(),
         true,
         SourceSpan::UNKNOWN,
     )?;
     assert_eq!(segment.borrow().offset_in_bytes(), 0x8000_0000);
+    segment.borrow_mut().set_offset_in_bytes(0xffff_ffff);
+    assert_eq!(segment.borrow().offset_in_bytes(), 0xffff_ffff);
+    segment.borrow_mut().set_offset_in_bytes(0x8000_0000);
 
     let printed = format!("{}", module.as_operation_ref().borrow());
     let offset = "#builtin.i32<-2147483648>";

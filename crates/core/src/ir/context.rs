@@ -297,7 +297,8 @@ impl Context {
     /// Creates the integer constant `value` of type `ty`.
     ///
     /// Panics unless `ty` is the integer type of `value`'s width, or `isize` and `value` is 64
-    /// bits wide.
+    /// bits wide. Unlike `create_attribute_with_type::<IntAttr, _>`, which does not check, this
+    /// constructor never yields an invalid `IntAttr`.
     pub fn int_attr(
         self: &Rc<Context>,
         value: Int,

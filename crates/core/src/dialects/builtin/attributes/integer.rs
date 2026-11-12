@@ -69,6 +69,10 @@ define_integer_attr!(I128, i128, 128);
 ///
 /// Its type is the integer type of its value's width, or `isize` for a 64-bit value. Every
 /// integer constant is an `IntAttr`; [crate::Context::int_attr] creates one of a given type.
+///
+/// `int_attr` is the constructor that checks that the type matches the value's width;
+/// `create_attribute_with_type::<IntAttr, _>` does not check. An `IntAttr` whose type is not `iN`
+/// of its value's width (or `isize` with 64 bits) is invalid.
 #[derive(DialectAttribute)]
 #[attribute(
     dialect = BuiltinDialect,
@@ -95,7 +99,8 @@ impl IntegerLikeAttr for IntAttr {
         let width = if ty.is_isize() {
             64
         } else {
-            ty.integer_width().unwrap_or(self.value.width())
+            ty.integer_width()
+                .unwrap_or_else(|| panic!("an IntAttr has an integer type, got {ty}"))
         };
         assert_eq!(
             value.width(),
@@ -168,6 +173,15 @@ mod tests {
         let context = Rc::new(Context::default());
         let mut attr = context.int_attr(Int::zero(7), context.int_type(7));
         attr.borrow_mut().set_int(Int::from(1i8));
+    }
+
+    #[test]
+    #[should_panic(expected = "an IntAttr has an integer type, got ptr")]
+    fn set_int_on_an_int_attribute_of_a_non_integer_type_panics() {
+        let context = Rc::new(Context::default());
+        let mut attr = context
+            .create_attribute_with_type::<IntAttr, _>(Int::zero(32), context.opaque_ptr_type());
+        attr.borrow_mut().set_int(Int::zero(32));
     }
 
     #[test]

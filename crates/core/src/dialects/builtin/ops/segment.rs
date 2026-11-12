@@ -63,6 +63,11 @@ impl Segment {
         *self.get_offset() as u32
     }
 
+    /// Set the offset, in bytes, storing the bits of the `u32`.
+    pub fn set_offset_in_bytes(&mut self, offset: u32) {
+        **self.offset_mut() = offset as i32;
+    }
+
     /// The size, in bytes, of this data segment.
     ///
     /// By default this will be the same size as `init`, unless explicitly given.

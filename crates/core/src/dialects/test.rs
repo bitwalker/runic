@@ -56,7 +56,8 @@ impl Dialect for TestDialect {
         let op_builder = builder.create::<Constant, _>(span);
         let mut op = op_builder(value).ok()?;
         if ty.is_isize() {
-            // The builder infers the type from the value's width, which for an `isize` is `i64`
+            // The generated builder takes the attribute's value, not an `IntAttr`, so it infers
+            // the type from the width (`i64` for an `isize`); retype after the op is inserted.
             use crate::{Attribute, Value};
 
             let mut constant = op.borrow_mut();
