@@ -8,7 +8,7 @@ use crate::{
     derive::{DialectType, TypeComponent},
     dialects::builtin::BuiltinDialect,
     interner::Symbol,
-    types::{Type, TypeFormatter, TypePrinter},
+    types::{Type, TypeAliasName, TypeFormatter, TypePrinter},
 };
 
 /// How a struct's fields are laid out.
@@ -114,13 +114,17 @@ impl StructType {
     }
 }
 
+/// A recursive struct is referred to by its name.
+impl TypeAliasName for StructType {
+    fn alias_name(&self) -> Option<Symbol> {
+        self.name
+    }
+}
+
 /// Writes `name` bare if it is a bare identifier, otherwise as a quoted, escaped string.
 fn print_name(printer: &mut TypeFormatter<'_, '_>, name: Symbol) -> fmt::Result {
     let text = name.as_str();
-    let mut chars = text.chars();
-    let bare = chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
-    if bare {
+    if crate::types::is_bare_identifier(text) {
         printer.write_str(text)
     } else {
         write!(printer, "\"{}\"", text.escape_default())

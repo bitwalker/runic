@@ -1,12 +1,16 @@
-use super::{Type, TypeImpl};
+use super::{RecGroupTable, Type, TypeImpl};
 
-/// The types interned in a context, keyed by the hash stored in each type's header.
+/// The types interned in a context, keyed by the hash stored in each type's header, and the
+/// recursion groups created in it.
 ///
-/// The table holds only `Copy` handles, so dropping it never reads the type storage they point
-/// at.
+/// Recursion-group members are not in the type table: they are found through their group, so
+/// [Self::find] only ever compares the values of ordinary types.
+///
+/// The tables hold only `Copy` handles, so dropping them never reads the storage they point at.
 #[derive(Default)]
 pub(crate) struct TypeUniquer {
     table: hashbrown::HashTable<Type>,
+    groups: RecGroupTable,
 }
 
 impl TypeUniquer {
@@ -39,5 +43,15 @@ impl TypeUniquer {
         debug_assert_eq!(ty.stored_hash(), hash);
         self.table.insert_unique(hash, ty, |ty| ty.stored_hash());
         (ty, None)
+    }
+
+    /// The recursion groups of the context.
+    pub(crate) fn groups(&self) -> &RecGroupTable {
+        &self.groups
+    }
+
+    /// The recursion groups of the context, to create one.
+    pub(crate) fn groups_mut(&mut self) -> &mut RecGroupTable {
+        &mut self.groups
     }
 }

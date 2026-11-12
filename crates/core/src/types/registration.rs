@@ -71,6 +71,43 @@ fn print_value<T: TypeRegistration + TypePrinter>(
         .print(printer)
 }
 
+/// Suggests the name a recursion-group member whose body is this value is referred to by.
+///
+/// A type that implements this trait is found automatically, as a [TypePrinter] is. Printers use
+/// the name, when it is a bare identifier, for a member nested inside another type, and
+/// otherwise choose one themselves.
+pub trait TypeAliasName {
+    fn alias_name(&self) -> Option<Symbol>;
+}
+
+/// The alias name suggested by one registered type's [TypeAliasName].
+pub type AliasNameFn = fn(Type) -> Option<Symbol>;
+
+/// The alias name suggestion of `T`, if `T` implements [TypeAliasName].
+pub(super) trait MaybeTypeAliasName {
+    fn alias_name_fn() -> Option<AliasNameFn>;
+}
+
+impl<T> MaybeTypeAliasName for T {
+    #[inline(always)]
+    default fn alias_name_fn() -> Option<AliasNameFn> {
+        None
+    }
+}
+
+impl<T: TypeRegistration + TypeAliasName> MaybeTypeAliasName for T {
+    #[inline(always)]
+    fn alias_name_fn() -> Option<AliasNameFn> {
+        Some(alias_name_of::<T>)
+    }
+}
+
+fn alias_name_of<T: TypeRegistration + TypeAliasName>(ty: Type) -> Option<Symbol> {
+    ty.downcast_ref::<T>()
+        .expect("a type's alias name is suggested by its own name")
+        .alias_name()
+}
+
 /// Parses the syntax of one registered type.
 pub type ParseTypeFn = fn(&mut dyn parse::Parser<'_>) -> parse::ParseResult<Type>;
 

@@ -2,14 +2,16 @@ use alloc::{boxed::Box, rc::Rc, vec::Vec};
 use core::{
     any::TypeId,
     fmt,
-    ptr::{DynMetadata, Pointee},
+    ptr::{DynMetadata, NonNull, Pointee},
 };
 
+use blink_alloc::Blink;
+
 use super::{
-    Type, TypeRegistration, TypeStorage,
+    RecGroupData, Type, TypeRegistration, TypeStorage,
     registration::{
-        DefaultTypeFn, MaybeDefaultType, MaybeTypeParser, MaybeTypePrinter, ParseTypeFn,
-        PrintTypeFn,
+        AliasNameFn, DefaultTypeFn, MaybeDefaultType, MaybeTypeAliasName, MaybeTypeParser,
+        MaybeTypePrinter, ParseTypeFn, PrintTypeFn,
     },
 };
 use crate::{Context, interner::Symbol, traits::TraitInfo};
@@ -34,24 +36,23 @@ struct TypeInfo {
     traits: Box<[TraitInfo]>,
     /// `TypeStorage::<T>::VALUE_OFFSET` for the registered `T`.
     value_offset: usize,
-    /// Formats a type whose name this is.
-    debug: fn(Type, &mut fmt::Formatter<'_>) -> fmt::Result,
     /// Calls the visitor with each type held directly by a type whose name this is.
     visit: VisitSubtypesFn,
     /// Interns a type whose name this is, with each type it holds directly replaced.
     rebuild: RebuildTypeFn,
+    /// Allocates a recursion-group member whose body has this name.
+    alloc_member: AllocMemberFn,
+    /// Fills in the value of a member allocated by `alloc_member`.
+    fill_member: FillMemberFn,
+    /// Suggests the name of a member whose body has this name, if it implements
+    /// `TypeAliasName`.
+    alias_name: Option<AliasNameFn>,
     /// Prints the syntax of this type, if it implements `TypePrinter`.
     print: Option<PrintTypeFn>,
     /// Parses the syntax of this type, if it implements `TypeParser`.
     parse: Option<ParseTypeFn>,
     /// Interns the default value of this type, if it implements `Default`.
     default: Option<DefaultTypeFn>,
-}
-
-fn debug_value<T: TypeRegistration>(ty: Type, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    let name = ty.name();
-    let value = ty.downcast_ref::<T>().expect("a type is formatted by its own name");
-    write!(f, "{}.{}({value:?})", name.dialect(), name.name())
 }
 
 /// Calls the visitor with each type held directly by a type of one registered Rust type.
@@ -76,6 +77,78 @@ fn rebuild_type<T: TypeRegistration>(
         .expect("a type is rebuilt by its own name")
         .replace_subtypes(replace);
     context.intern_type(value)
+}
+
+/// Allocates the storage of member `index` of `group`, owned by the context whose id is `owner`,
+/// whose body is `body`. The member's value is a copy of the open body until it is filled in.
+pub(crate) type AllocMemberFn = fn(&Blink, Type, u64, u32, NonNull<RecGroupData>, u32) -> Type;
+
+/// Replaces the value of a member by its body's value with each type it holds directly replaced.
+///
+/// # Safety
+///
+/// See [fill_member].
+pub(crate) type FillMemberFn = unsafe fn(Type, Type, &mut dyn FnMut(Type) -> Type);
+
+/// Allocates the storage of a member whose body is `body`, holding a copy of the open body.
+///
+/// The member is not published: [Type::from_storage]'s contract lets `Context::rec_group` fill it
+/// in with [fill_member] before returning it.
+fn alloc_member<T: TypeRegistration>(
+    allocator: &Blink,
+    body: Type,
+    hash: u64,
+    owner: u32,
+    group: NonNull<RecGroupData>,
+    index: u32,
+) -> Type {
+    let value = body.downcast_ref::<T>().expect("a member is allocated by its body's name");
+    let placeholder = value.replace_subtypes(&mut |ty| ty);
+    let storage = allocator.put(TypeStorage::new_member(
+        body.name().clone(),
+        hash,
+        owner,
+        group,
+        index,
+        placeholder,
+    ));
+    // SAFETY: `storage` is an initialized `TypeStorage<T>` in the arena, which keeps it at this
+    // address until the context's last `Rc<Blink>` is dropped and is never reset. The `&mut`
+    // from `put` is converted to a pointer here and never used again, so the pointer carries
+    // write provenance over the whole storage and no reference to it remains. The value is
+    // written again only by `fill_member`, before the member is published.
+    unsafe { Type::from_storage(NonNull::from(storage)) }
+}
+
+/// Replaces the value of `member` by `body`'s value with its held types replaced by `replace`.
+///
+/// # Safety
+///
+/// `member` was returned by `alloc_member::<T>` for a body of the same Rust type, and its handle
+/// has not been published (see [Type::from_storage]). No reference to the value of any
+/// unpublished member exists when this is called, and `replace` must not read the value of any
+/// unpublished member (it may read their headers, and store their handles in other types).
+unsafe fn fill_member<T: TypeRegistration>(
+    member: Type,
+    body: Type,
+    replace: &mut dyn FnMut(Type) -> Type,
+) {
+    // Computed completely before the storage is touched: `replace` interns types, and while it
+    // runs nothing may be writing the member.
+    let closed = body
+        .downcast_ref::<T>()
+        .expect("a member is filled from a body of its own type")
+        .replace_subtypes(replace);
+    assert!(member.is::<T>(), "a member is filled from a body of its own type");
+    let storage = member.as_storage_ptr::<T>();
+    // SAFETY: `member` is a `TypeStorage<T>` (checked above) created by `alloc_member`, whose
+    // pointer carries write provenance over the whole storage. It is unpublished and, by the
+    // contract, no reference to its value exists, so this write aliases nothing; references to
+    // its header (`Type::header`) cover only the header, which is not written. The value was
+    // initialized by `alloc_member`, so replacing it is sound.
+    let placeholder = unsafe { core::ptr::addr_of_mut!((*storage).value).replace(closed) };
+    // Dropped once the member holds its closed value: a value's `Drop` may run arbitrary code.
+    drop(placeholder);
 }
 
 /// Returns true if `dialect` is the builtin dialect.
@@ -157,9 +230,11 @@ impl TypeName {
             rust_type_name,
             traits: traits.into_boxed_slice(),
             value_offset: TypeStorage::<T>::VALUE_OFFSET,
-            debug: debug_value::<T>,
             visit: visit_subtypes::<T>,
             rebuild: rebuild_type::<T>,
+            alloc_member: alloc_member::<T>,
+            fill_member: fill_member::<T>,
+            alias_name: <T as MaybeTypeAliasName>::alias_name_fn(),
             print,
             parse,
             default,
@@ -246,11 +321,6 @@ impl TypeName {
         self.0.default
     }
 
-    #[inline]
-    pub(crate) fn debug_value(&self, ty: Type, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        (self.0.debug)(ty, f)
-    }
-
     /// Calls the visitor with each type held directly by a type with this name.
     #[inline]
     pub(crate) fn visit_fn(&self) -> VisitSubtypesFn {
@@ -261,6 +331,25 @@ impl TypeName {
     #[inline]
     pub(crate) fn rebuild_fn(&self) -> RebuildTypeFn {
         self.0.rebuild
+    }
+
+    /// Allocates a recursion-group member whose body has this name.
+    #[inline]
+    pub(crate) fn alloc_member_fn(&self) -> AllocMemberFn {
+        self.0.alloc_member
+    }
+
+    /// Fills in the value of a member allocated with [Self::alloc_member_fn].
+    #[inline]
+    pub(crate) fn fill_member_fn(&self) -> FillMemberFn {
+        self.0.fill_member
+    }
+
+    /// The name suggested for a recursion-group member whose body has this name, if this type
+    /// implements [TypeAliasName](crate::types::TypeAliasName).
+    #[inline]
+    pub fn alias_name_fn(&self) -> Option<AliasNameFn> {
+        self.0.alias_name
     }
 
     fn get<Trait: ?Sized + 'static>(&self) -> Option<&TraitInfo> {

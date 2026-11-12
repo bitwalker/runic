@@ -1,18 +1,22 @@
 //! The type table of a [Context]: interning, and the builtin types' cached handles and constructors.
 
 use alloc::rc::Rc;
-use core::cell::RefCell;
+use core::{cell::RefCell, ptr::NonNull};
 
 use blink_alloc::Blink;
+use smallvec::SmallVec;
 
 use super::*;
 use crate::{
     FxHashMap,
     dialects::builtin::types::{
         ArrayType, FloatType, FunctionType, IntegerType, IsizeType, NeverType, PointerType,
-        StructType, UnknownType,
+        RecVarType, StructType, UnknownType,
     },
-    types::{TypeName, TypeRegistration, TypeStorage, TypeUniquer},
+    types::{
+        RecGroup, RecGroupData, RecGroupError, Type, TypeFlags, TypeName, TypeRegistration,
+        TypeStorage, TypeUniquer, rec,
+    },
 };
 
 /// The parts of a [Context] that interning a type uses, borrowed separately so that the builtin
@@ -36,10 +40,22 @@ impl TypeTables<'_> {
         // Resolved before the uniquer is borrowed again: this may register `T`'s dialect, and so
         // run code that interns types.
         let name = self.get_registered_type_name::<T>();
+        // Only a type's own name and the headers of the types it holds are read here, never their
+        // values: those may be recursion-group members that are still being filled in.
+        let mut open = name.is::<RecVarType>();
+        if !open {
+            value.visit_subtypes(&mut |subtype| open |= subtype.is_open());
+        }
+        let flags = if open {
+            TypeFlags::OPEN
+        } else {
+            TypeFlags::NONE
+        };
         // That code may also have interned a value equal to `value`, which `get_or_insert_with`
         // finds again rather than inserting a second type.
         let (ty, rejected) = self.types.borrow_mut().get_or_insert_with(value, hash, |value| {
-            let storage = self.allocator.put(TypeStorage::new(name, hash, self.owner, value));
+            let storage =
+                self.allocator.put(TypeStorage::new(name, hash, self.owner, flags, value));
             // SAFETY: `storage` is an initialized `TypeStorage<T>` in the arena, which keeps it at
             // this address until the context's last `Rc<Blink>` is dropped and is never reset.
             // The `&mut` from `put` is converted to a pointer here and never used again, so
@@ -155,7 +171,9 @@ impl Context {
     /// [Type::visit_subtypes](crate::types::Type::visit_subtypes).
     ///
     /// Only the types `ty` holds directly are replaced; the types they hold in turn are not
-    /// visited. Mapping with the identity returns `ty` itself.
+    /// visited. Mapping with the identity returns `ty` itself, unless `ty` is a recursion-group
+    /// member: mapping a member, even with the identity, yields an ordinary type with the
+    /// member's name and the mapped value, never a member.
     pub fn map_subtypes(
         &self,
         ty: crate::types::Type,
@@ -168,6 +186,126 @@ impl Context {
             self.debug_assert_owns_type(mapped, "a mapped sub-type");
             mapped
         })
+    }
+
+    /// The recursion variable `rec.N`: member `index` of the group being defined. See
+    /// [Self::rec_group].
+    pub fn rec_var(&self, index: u32) -> Type {
+        self.intern_type(RecVarType::new(index))
+    }
+
+    /// The members of the recursion group defined by `bodies`, in order.
+    ///
+    /// Each body is an ordinary type, written over recursion variables ([Self::rec_var]):
+    /// variable `i` stands for member `i`. Member `i` has the name of body `i` and its value,
+    /// with every variable replaced by the member it denotes, however deeply it is nested; so a
+    /// member is a struct exactly when its body is, and so on, and it holds the handles of the
+    /// members it refers to.
+    ///
+    /// Two calls with the same bodies, in the same order, return the same members. Every member
+    /// is distinct from every other type, including the other members and any type interned
+    /// from a value equal to its own, with one exception: a group of one body that contains no
+    /// variable is that body itself.
+    ///
+    /// Fails if `bodies` is empty, or if a body is a bare variable, refers to a variable whose
+    /// index is not below `bodies.len()`, or is a builtin scalar (an integer, `isize`, a float,
+    /// `?` or `never`) in a group that is not one closed body; the errors of the first body that
+    /// has one are checked in that order.
+    pub fn rec_group(&self, bodies: &[Type]) -> Result<SmallVec<[Type; 4]>, RecGroupError> {
+        for body in bodies {
+            self.debug_assert_owns_type(*body, "a body of a recursion group");
+        }
+        rec::validate(bodies)?;
+        if let [body] = bodies
+            && !body.is_open()
+        {
+            return Ok(SmallVec::from_slice(bodies));
+        }
+        let hash = rec::group_hash(bodies);
+        if let Some(group) = self.types.borrow().groups().find(hash, bodies) {
+            return Ok(SmallVec::from_slice(group.members()));
+        }
+
+        // Allocate the group record, and each member holding a copy of its open body. None of
+        // them is published until the group is returned.
+        let id = self.types.borrow_mut().groups_mut().next_id();
+        let group = NonNull::from(self.allocator.put(RecGroupData::new(id, hash, bodies)));
+        let members: SmallVec<[Type; 4]> = bodies
+            .iter()
+            .enumerate()
+            .map(|(index, body)| {
+                let index =
+                    u32::try_from(index).expect("a recursion group has at most 2^32 members");
+                let alloc_member = body.name().alloc_member_fn();
+                alloc_member(
+                    &self.allocator,
+                    *body,
+                    rec::member_hash(hash, index),
+                    self.id,
+                    group,
+                    index,
+                )
+            })
+            .collect();
+
+        // Close each member's value: every variable `i` becomes member `i`, and the open types in
+        // between are rebuilt and interned as ordinary types holding the members' handles.
+        for (member, body) in members.iter().zip(bodies) {
+            let fill_member = body.name().fill_member_fn();
+            let mut replace =
+                |ty| self.substitute_rec_vars(ty, &mut |index| members[index as usize]);
+            // SAFETY: `member` was allocated above by `alloc_member` for `body`'s name, so for a
+            // body of its own Rust type, and has not been published. No reference to any
+            // member's value exists: none is created here, and `replace` only substitutes,
+            // rebuilds and interns types, which reads the members' headers (hash, owner, flags)
+            // through their handles but never their values (`TypeImpl`'s `Eq` and `Hash`
+            // compare and hash held types by handle and stored hash), and returns no reference.
+            unsafe { fill_member(*member, *body, &mut replace) };
+        }
+
+        // SAFETY: `group` is the record allocated above, through `put`'s `&mut`, so its pointer
+        // carries write provenance. It is unpublished: it is not in the group table, and the
+        // only handles to it are in the headers of the unpublished members, from which nothing
+        // has made a `RecGroup` or a reference to it.
+        unsafe { RecGroupData::set_members(group, &members) };
+        let mut types = self.types.borrow_mut();
+        // Interning may register a dialect, whose initialization may have created the same
+        // group meanwhile; that group is the one kept, and this one is never published.
+        if let Some(existing) = types.groups().find(hash, bodies) {
+            return Ok(SmallVec::from_slice(existing.members()));
+        }
+        types.groups_mut().insert(RecGroup(group));
+        Ok(members)
+    }
+
+    /// `ty` with every recursion variable `rec.i` it contains, however deeply, replaced by
+    /// `subst(i)`. A type that is not open is returned unchanged; the open types around the
+    /// variables are rebuilt with [Self::map_subtypes].
+    pub(crate) fn substitute_rec_vars(&self, ty: Type, subst: &mut dyn FnMut(u32) -> Type) -> Type {
+        self.substitute_rec_vars_with(ty, subst, &mut FxHashMap::default())
+    }
+
+    /// [Self::substitute_rec_vars], remembering in `memo` the result for each open type.
+    fn substitute_rec_vars_with(
+        &self,
+        ty: Type,
+        subst: &mut dyn FnMut(u32) -> Type,
+        memo: &mut FxHashMap<Type, Type>,
+    ) -> Type {
+        if !ty.is_open() {
+            return ty;
+        }
+        if let Some(var) = ty.downcast_ref::<RecVarType>() {
+            return subst(var.index());
+        }
+        if let Some(result) = memo.get(&ty) {
+            return *result;
+        }
+        let result = self.map_subtypes(ty, &mut |subtype| {
+            self.substitute_rec_vars_with(subtype, &mut *subst, &mut *memo)
+        });
+        memo.insert(ty, result);
+        result
     }
 
     /// The registration record of `T`, registering `T`'s dialect first if necessary.

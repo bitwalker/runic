@@ -2,6 +2,7 @@
 
 mod component;
 mod name;
+pub(crate) mod rec;
 mod registration;
 mod uniquer;
 
@@ -12,14 +13,18 @@ use core::{
     ptr::{DynMetadata, NonNull, Pointee},
 };
 
-pub(crate) use self::uniquer::TypeUniquer;
 pub use self::{
     component::TypeComponent,
     name::TypeName,
+    rec::{RecGroup, RecGroupError},
     registration::{
-        DefaultTypeFn, DialectTypeRegistrationInfo, ParseTypeFn, PrintTypeFn, TypeParser,
-        TypePrinter, TypeRegistration,
+        AliasNameFn, DefaultTypeFn, DialectTypeRegistrationInfo, ParseTypeFn, PrintTypeFn,
+        TypeAliasName, TypeParser, TypePrinter, TypeRegistration,
     },
+};
+pub(crate) use self::{
+    rec::{RecGroupData, RecGroupTable},
+    uniquer::TypeUniquer,
 };
 use crate::dialects::builtin::types::{
     ArrayType, FloatType, FunctionType, IntegerType, IsizeType, NeverType, PointerType, StructType,
@@ -37,7 +42,10 @@ use crate::dialects::builtin::types::{
 ///
 /// A type's `Eq` and `Hash` must not intern types or otherwise use the context: `Eq` runs while
 /// the context's uniquer is borrowed. They must not panic either: a panic while the uniquer is
-/// probing, combined with a `Drop` that interns, aborts.
+/// probing, combined with a `Drop` that interns, aborts. They compare and hash the types the value
+/// holds as [Type]s, by handle and stored hash, and must not read those types' values, nor may
+/// the value's `Drop`: a held type may be a recursion-group member whose value is still being
+/// filled in.
 ///
 /// A type also exposes the types its value holds directly, through [Self::visit_subtypes] and
 /// [Self::replace_subtypes]. `#[derive(DialectType)]` implements both field by field, so every
@@ -78,12 +86,34 @@ pub trait TypeImpl: Any + Eq + Hash + fmt::Debug + 'static {
 #[repr(C)]
 pub(crate) struct TypeHeader {
     name: TypeName,
-    /// The hash this type is stored under in the context's uniquer.
+    /// The hash this type is stored under: in the context's uniquer for an ordinary type, and
+    /// computed from its group and index for a group member (see [Type::stored_hash]).
     hash: u64,
+    /// The recursion group this type is a member of, if any.
+    group: Option<NonNull<RecGroupData>>,
     /// The id of the context that interned this type; see [Type::owner_id].
     owner: u32,
-    /// Reserved, and always zero for now.
-    flags: u32,
+    /// Properties of the type computed when it is interned; see [TypeFlags].
+    flags: TypeFlags,
+    /// This type's index in `group`; 0 if it is not a member.
+    index: u32,
+}
+
+/// Properties of a type, computed once when it is interned and kept in its header.
+#[derive(Copy, Clone, PartialEq, Eq)]
+#[repr(transparent)]
+pub(crate) struct TypeFlags(u32);
+
+impl TypeFlags {
+    /// No flag set.
+    pub(crate) const NONE: Self = Self(0);
+    /// The type is open: it is a recursion variable, or a type it holds directly is open.
+    pub(crate) const OPEN: Self = Self(1);
+
+    #[inline]
+    fn contains(self, flags: Self) -> bool {
+        self.0 & flags.0 == flags.0
+    }
 }
 
 /// An interned type: its header followed by its value.
@@ -103,25 +133,57 @@ impl<T: TypeImpl> TypeStorage<T> {
     pub(crate) const VALUE_OFFSET: usize = core::mem::offset_of!(Self, value);
 
     /// Creates the storage of a type whose value is `value`, interned by the context whose id is
-    /// `owner`.
+    /// `owner`, with the properties `flags`.
     ///
     /// Panics if `name` is not the registration record of `T`: [Type::downcast_ref] and
     /// [Type::as_trait] trust the name to describe the storage behind the header.
-    pub(crate) fn new(name: TypeName, hash: u64, owner: u32, value: T) -> Self {
+    pub(crate) fn new(name: TypeName, hash: u64, owner: u32, flags: TypeFlags, value: T) -> Self {
+        Self::assert_named(&name);
+        Self {
+            header: TypeHeader {
+                name,
+                hash,
+                group: None,
+                owner,
+                flags,
+                index: 0,
+            },
+            value,
+        }
+    }
+
+    /// Creates the storage of member `index` of the recursion group `group`, owned by the
+    /// context whose id is `owner`. A member is never open.
+    ///
+    /// Panics if `name` is not the registration record of `T`, as [Self::new] does.
+    pub(crate) fn new_member(
+        name: TypeName,
+        hash: u64,
+        owner: u32,
+        group: NonNull<RecGroupData>,
+        index: u32,
+        value: T,
+    ) -> Self {
+        Self::assert_named(&name);
+        Self {
+            header: TypeHeader {
+                name,
+                hash,
+                group: Some(group),
+                owner,
+                flags: TypeFlags::NONE,
+                index,
+            },
+            value,
+        }
+    }
+
+    fn assert_named(name: &TypeName) {
         assert!(
             name.is::<T>(),
             "type name `{name}` does not describe `{}`",
             core::any::type_name::<T>()
         );
-        Self {
-            header: TypeHeader {
-                name,
-                hash,
-                owner,
-                flags: 0,
-            },
-            value,
-        }
     }
 }
 
@@ -148,8 +210,15 @@ impl Type {
     ///
     /// `storage` must point at an initialized `TypeStorage<T>` that lives, unmoved, for as long as
     /// the handle (or any copy of it) is used, and that is immutable once the handle is
-    /// published, that is from the moment the handle is first handed to code other than the one
-    /// creating it; the pointer must carry provenance over the whole storage.
+    /// published; the pointer must carry provenance over the whole storage, for writing as well
+    /// as reading.
+    ///
+    /// A handle is published when it is first handed to code other than the one creating it. The
+    /// one exception is a recursion-group member, which `Context::rec_group` publishes only when
+    /// it returns it: until then the member's value may be written, and the member's handle may
+    /// be stored in other types' values and its header read (by hashing, equality, flag
+    /// computation and ownership checks), but no reference to its value may exist when it is
+    /// written, and nothing reads its value.
     pub(crate) unsafe fn from_storage<T: TypeImpl>(storage: NonNull<TypeStorage<T>>) -> Self {
         Self(storage.cast())
     }
@@ -157,15 +226,49 @@ impl Type {
     #[inline]
     fn header(&self) -> &TypeHeader {
         // SAFETY: a handle is only created by `from_storage`, whose contract keeps the storage it
-        // points at alive while the handle is used and immutable once it is published; the
-        // storage is `repr(C)` with
-        // the header first, so the pointer is a valid, aligned pointer to an initialized header.
+        // points at alive while the handle is used; the storage is `repr(C)` with the header
+        // first, so the pointer is a valid, aligned pointer to an initialized header. The header
+        // is never written after the storage is created (only an unpublished member's value is),
+        // and the reference covers the header alone, not the value after it.
         unsafe { self.0.as_ref() }
     }
 
+    /// A pointer to this type's storage as a `TypeStorage<T>`, with the handle's provenance.
+    ///
+    /// The pointer is only valid to use if this type's Rust type is `T`.
+    #[inline]
+    fn as_storage_ptr<T: TypeImpl>(&self) -> *mut TypeStorage<T> {
+        debug_assert!(self.is::<T>(), "a type's storage is accessed as its own Rust type");
+        self.0.cast::<TypeStorage<T>>().as_ptr()
+    }
+
+    /// The hash this type hashes as: computed from its value for an ordinary type, and from its
+    /// group's bodies and its index for a group member.
     #[inline]
     pub(crate) fn stored_hash(&self) -> u64 {
         self.header().hash
+    }
+
+    /// Returns true if this type is open: a recursion variable, or a type that holds an open
+    /// type. Open types define recursion groups (see
+    /// [Context::rec_group](crate::Context::rec_group)) and may not appear in IR. A group member
+    /// is never open.
+    #[inline]
+    pub fn is_open(&self) -> bool {
+        self.header().flags.contains(TypeFlags::OPEN)
+    }
+
+    /// The recursion group this type is a member of, if it is one.
+    #[inline]
+    pub fn rec_group(&self) -> Option<RecGroup> {
+        self.header().group.map(RecGroup)
+    }
+
+    /// This type's index in its recursion group, if it is a member of one.
+    #[inline]
+    pub fn rec_index(&self) -> Option<u32> {
+        let header = self.header();
+        header.group.map(|_| header.index)
     }
 
     /// The id of the context that interned this type.
@@ -344,9 +447,11 @@ impl Hash for Type {
         state.write_u64(self.stored_hash());
     }
 }
+/// Writes the [Display](fmt::Display) form, which stays finite for a recursive type; the derived
+/// `Debug` of a value holding a group member would follow the cycle forever.
 impl fmt::Debug for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.name().debug_value(*self, f)
+        fmt::Display::fmt(self, f)
     }
 }
 
@@ -363,19 +468,54 @@ impl fmt::Display for Type {
 /// is the one place that decides how a type is written, at the top level or inside another type.
 pub struct TypeFormatter<'a, 'f> {
     f: &'a mut fmt::Formatter<'f>,
+    /// How many types are being written around the one being written now.
+    depth: u32,
 }
 
 impl<'a, 'f> TypeFormatter<'a, 'f> {
     /// A printer writing to `f`.
     pub fn new(f: &'a mut fmt::Formatter<'f>) -> Self {
-        Self { f }
+        Self { f, depth: 0 }
     }
 
     /// Writes `ty`.
     ///
     /// A builtin type is written as its own syntax. Any other type is written as `!dialect.name`,
     /// followed by its own syntax in angle brackets if it has a [TypePrinter].
+    ///
+    /// A recursion-group member is written as its body when it is the type being formatted, and
+    /// as a reference when it is nested inside it: `!name` if its body suggests a name (see
+    /// [TypeAliasName]) that is a bare identifier, otherwise `!rec<G>_<I>` for member `I` of the
+    /// group created `G`-th in its context. That keeps the text of a recursive type finite; it
+    /// is meant for diagnostics, and need not parse.
     pub fn ty(&mut self, ty: Type) -> fmt::Result {
+        if self.depth > 0
+            && let Some(group) = ty.rec_group()
+        {
+            return self.member_reference(ty, group);
+        }
+        self.depth += 1;
+        let result = self.body(ty);
+        self.depth -= 1;
+        result
+    }
+
+    /// Writes the reference to the group member `ty` of `group`.
+    fn member_reference(&mut self, ty: Type, group: RecGroup) -> fmt::Result {
+        let alias = ty.name().alias_name_fn().and_then(|alias_name| alias_name(ty));
+        match alias {
+            Some(alias) if is_bare_identifier(alias.as_str()) => write!(self, "!{alias}"),
+            _ => write!(
+                self,
+                "!rec{}_{}",
+                group.id(),
+                ty.rec_index().expect("a group member has an index")
+            ),
+        }
+    }
+
+    /// Writes `ty` itself, without the reference form of a nested member.
+    fn body(&mut self, ty: Type) -> fmt::Result {
         let name = ty.name();
         let print = name.print_fn();
         if name.is_builtin() {
@@ -418,6 +558,14 @@ impl fmt::Write for TypeFormatter<'_, '_> {
     fn write_fmt(&mut self, args: fmt::Arguments<'_>) -> fmt::Result {
         self.f.write_fmt(args)
     }
+}
+
+/// Returns true if `text` is a bare identifier: an ASCII letter or `_`, then ASCII letters,
+/// digits and `_`.
+pub(crate) fn is_bare_identifier(text: &str) -> bool {
+    let mut chars = text.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// The hash a type with value `value` is stored under in the uniquer.
@@ -972,8 +1120,10 @@ mod tests {
 
     #[test]
     fn a_value_aligned_past_the_header_is_found_at_its_recorded_offset() {
+        // The 40-byte header, rounded up to the value's 32-byte alignment.
+        assert_eq!(core::mem::size_of::<TypeHeader>(), 40);
         let offset = TypeStorage::<OverAligned>::VALUE_OFFSET;
-        assert_eq!(offset, 32);
+        assert_eq!(offset, 64);
         assert!(offset > core::mem::size_of::<TypeHeader>());
 
         let context = Context::default();
