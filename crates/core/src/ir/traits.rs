@@ -337,8 +337,9 @@ pub trait SingleRegion {
 /// op, and the copy becomes the result. A cast that checks or changes a value, such as `hir.cast`
 /// between signednesses or any widening or narrowing, must not implement this.
 ///
-/// The verifier admits one operand and one result of the same type, or that are both integers of
-/// the same fixed width (`iN`), or both pointers.
+/// The verifier admits one operand and one result of the same type, or that are both pointers.
+/// Integer types are signless and uniqued, so an integer cast is transparent only between
+/// identical types.
 #[operation_trait]
 pub trait TransparentCast {
     #[verifier]
@@ -376,16 +377,14 @@ pub trait TransparentCast {
             return Ok(());
         }
         match (from.integer_width(), to.integer_width()) {
-            (Some(from_width), Some(to_width)) if from_width == to_width => Ok(()),
             (Some(from_width), Some(to_width)) => Err(invalid(
                 format!("{from} is {from_width} bits wide, but {to} is {to_width}"),
-                "requires its operand and result to be of the same bit width",
+                "requires an integer operand and result to be of the same type",
             )),
             _ if from.is_pointer() && to.is_pointer() => Ok(()),
             _ => Err(invalid(
                 format!("cannot reinterpret {from} as {to}"),
-                "converts only integers to integers of the same width, pointers to pointers, or a \
-                 value to a value of its own type",
+                "converts only pointers to pointers, or a value to a value of its own type",
             )),
         }
     }
@@ -507,12 +506,12 @@ mod tests {
     }
 
     #[test]
-    fn transparent_casts_keep_the_bits_and_the_kind() {
+    fn a_transparent_cast_between_pointers_ignores_the_pointee() {
         let cases: [CastTypes; 4] = [
-            |context| (context.i32(), context.i32()),
-            |context| (context.i64(), context.i64()),
-            |context| (context.i128(), context.i128()),
             |context| (context.ptr_type(context.i8()), context.ptr_type(context.i64())),
+            |context| (context.ptr_type(context.i8()), context.opaque_ptr_type()),
+            |context| (context.opaque_ptr_type(), context.ptr_type(context.i8())),
+            |context| (context.opaque_ptr_type(), context.opaque_ptr_type()),
         ];
         for types in cases {
             verify_cast(types).unwrap_or_else(|err| {
@@ -559,7 +558,7 @@ mod tests {
         ];
         for types in cases {
             let message = rejection(types);
-            assert!(message.contains("converts only integers to integers"), "{message}");
+            assert!(message.contains("converts only pointers to pointers"), "{message}");
         }
     }
 
@@ -577,13 +576,19 @@ mod tests {
         ];
         for types in cases {
             let message = rejection(types);
-            assert!(message.contains("to be of the same bit width"), "{message}");
+            assert!(message.contains("to be of the same type"), "{message}");
         }
     }
 
     #[test]
     fn a_transparent_cast_never_changes_the_kind_of_value() {
-        let message = rejection(|context| (context.f64_type(), context.i64()));
-        assert!(message.contains("converts only integers to integers"), "{message}");
+        let cases: [CastTypes; 2] = [
+            |context| (context.f64_type(), context.i64()),
+            |context| (context.i64(), context.f64_type()),
+        ];
+        for types in cases {
+            let message = rejection(types);
+            assert!(message.contains("converts only pointers to pointers"), "{message}");
+        }
     }
 }
