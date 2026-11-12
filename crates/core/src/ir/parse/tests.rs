@@ -1973,3 +1973,50 @@ fn an_over_wide_integer_type_spelling_is_an_identifier() {
     let message = type_error_text(&context, "i16777216");
     assert!(message.contains("an integer type is 1 to 16777215 bits wide"), "{message}");
 }
+
+/// `depth` levels of `open` around `i32`, each closed by `close`; unterminated if `close` is empty.
+fn nested_type_text(open: &str, inner: &str, close: &str, depth: usize) -> String {
+    format!("{}{inner}{}", open.repeat(depth), close.repeat(depth))
+}
+
+/// Type nesting is limited, so that deeply nested input is an error instead of a stack overflow.
+///
+/// The limit is far below what overflows the stack of the main thread, but an unoptimized build
+/// needs more than a test thread's default stack for the deepest types, so this runs on a thread
+/// with the stack of a main thread.
+#[cfg(feature = "std")]
+#[test]
+fn type_nesting_is_limited_to_256_levels() {
+    std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(|| {
+            let context = Rc::new(Context::default());
+            for (open, inner, close) in [
+                ("ptr<", "i32", ">"),
+                ("struct<", "i32", ">"),
+                ("array<", "i32", "; 1>"),
+                ("(", "i32", ") -> ()"),
+                ("!test.vector<", "i32", " x 1>"),
+            ] {
+                let deepest = nested_type_text(open, inner, close, 256);
+                if let Err(err) = parse_type_text(&context, &deepest) {
+                    panic!("{open}: 256 levels should parse: {err:?}");
+                }
+
+                let message = type_error_text(&context, &nested_type_text(open, inner, close, 257));
+                assert!(
+                    message.contains("type nesting is too deep (limit 256)"),
+                    "{open}: {message}"
+                );
+
+                let message = type_error_text(&context, &nested_type_text(open, "", "", 10_000));
+                assert!(
+                    message.contains("type nesting is too deep (limit 256)"),
+                    "{open}: {message}"
+                );
+            }
+        })
+        .expect("spawn a thread")
+        .join()
+        .expect("type nesting is limited");
+}

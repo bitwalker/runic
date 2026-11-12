@@ -38,73 +38,103 @@ use crate::{
     interner::Symbol,
 };
 
+/// The number of types a type may be nested in. Each level of nesting is a few recursive calls,
+/// so the limit keeps deeply nested input from overflowing the stack.
+pub(super) const MAX_TYPE_NESTING: u32 = 256;
+
 /// Parses a type if the next token can start one, and returns `None` otherwise.
+///
+/// Fails if the type would be nested in more than [MAX_TYPE_NESTING] types.
 pub(super) fn parse_optional_type<'input, P: Parser<'input>>(
     parser: &mut P,
 ) -> ParseResult<Option<Span<Type>>> {
-    let Some((start, token, end)) = parser.token_stream_mut().peek()? else {
-        return Ok(None);
+    let enclosing = parser.state().type_nesting;
+    if enclosing > MAX_TYPE_NESTING {
+        return Err(type_nesting_too_deep(parser));
+    }
+    // Restored on every return from the nested parse, successful or not, so that the count
+    // always matches the types actually being parsed.
+    parser.state_mut().type_nesting = enclosing + 1;
+    let result = parse_optional_type_nested(parser);
+    parser.state_mut().type_nesting = enclosing;
+    result
+}
+
+/// The error for a type nested in more than [MAX_TYPE_NESTING] types, at the next token.
+#[cold]
+#[inline(never)]
+fn type_nesting_too_deep<'input, P: Parser<'input>>(parser: &mut P) -> ParserError {
+    let span = match parser.token_stream_mut().peek() {
+        Ok(Some((start, _, end))) => span!(parser.source_id(), start, end),
+        Ok(None) => parser.current_location(),
+        Err(err) => return err,
     };
-    let token_span = span!(parser.source_id(), start, end);
-    let context = parser.context_rc();
+    ParserError::InvalidType {
+        span,
+        reason: format!("type nesting is too deep (limit {MAX_TYPE_NESTING})"),
+    }
+}
+
+/// [parse_optional_type], once the nesting has been accounted for.
+///
+/// Each kind of type is parsed by a function of its own, so that this frame, which is live at
+/// every level of a nested type, stays small.
+fn parse_optional_type_nested<'input, P: Parser<'input>>(
+    parser: &mut P,
+) -> ParseResult<Option<Span<Type>>> {
+    let (start, token, end) = match parser.token_stream_mut().peek() {
+        Ok(Some(next)) => next,
+        Ok(None) => return Ok(None),
+        Err(err) => return Err(err),
+    };
     let ty = match token {
-        Token::Question => {
-            parser.token_stream_mut().next()?;
-            context.unknown_type()
-        }
-        Token::Never => {
-            parser.token_stream_mut().next()?;
-            context.never_type()
-        }
-        Token::Isize => {
-            parser.token_stream_mut().next()?;
-            context.isize_type()
-        }
-        Token::F32 => {
-            parser.token_stream_mut().next()?;
-            context.f32_type()
-        }
-        Token::F64 => {
-            parser.token_stream_mut().next()?;
-            context.f64_type()
-        }
-        Token::IntType(width) => {
-            parser.token_stream_mut().next()?;
-            context.try_int_type(width).ok_or_else(|| ParserError::InvalidType {
-                span: token_span,
-                reason: format!("an integer type is 1 to {} bits wide", IntegerType::MAX_WIDTH),
-            })?
-        }
-        Token::Ptr => {
-            parser.token_stream_mut().next()?;
-            parse_pointer_type(parser)?
-        }
-        Token::Array => {
-            parser.token_stream_mut().next()?;
-            parser.parse_langle()?;
-            let ty = parse_array_body(parser)?;
-            parser.parse_rangle()?;
-            ty
-        }
-        Token::Lbracket => {
-            parser.token_stream_mut().next()?;
-            let ty = parse_array_body(parser)?;
-            parser.parse_rbracket()?;
-            ty
-        }
-        Token::Struct => {
-            parser.token_stream_mut().next()?;
-            parse_struct_type(parser)?
-        }
-        Token::Lparen => parse_function_type(parser)?,
-        Token::BangIdent(id) => {
-            parser.token_stream_mut().next()?;
-            parse_alias_or_dialect_type(parser, id, token_span)?
-        }
-        _ => return Ok(None),
+        Token::Ptr => parse_pointer_type(parser),
+        Token::Array => parse_array_type(parser),
+        Token::Lbracket => parse_bracketed_array_type(parser),
+        Token::Struct => parse_struct_type(parser),
+        Token::Lparen => parse_function_type(parser),
+        Token::BangIdent(id) => parse_alias_or_dialect_type(parser, id, start, end),
+        token => match parse_scalar_type(parser, token, start, end) {
+            Some(ty) => ty,
+            None => return Ok(None),
+        },
     };
+    match ty {
+        Ok(ty) => Ok(Some(spanned_from(parser, start, ty))),
+        Err(err) => Err(err),
+    }
+}
+
+/// `ty`, spanning the source from `start` to the end of the last token consumed.
+fn spanned_from<'input, P: Parser<'input>>(parser: &mut P, start: u32, ty: Type) -> Span<Type> {
     let end = parser.token_stream().previous_end();
-    Ok(Some(Span::new(span!(parser.source_id(), start, end), ty)))
+    Span::new(span!(parser.source_id(), start, end), ty)
+}
+
+/// Parses a type that is a single token, if `token`, the next one, is such a type.
+fn parse_scalar_type<'input, P: Parser<'input>>(
+    parser: &mut P,
+    token: Token<'input>,
+    start: u32,
+    end: u32,
+) -> Option<ParseResult<Type>> {
+    let span = span!(parser.source_id(), start, end);
+    let context = parser.context();
+    let ty = match token {
+        Token::Question => Ok(context.unknown_type()),
+        Token::Never => Ok(context.never_type()),
+        Token::Isize => Ok(context.isize_type()),
+        Token::F32 => Ok(context.f32_type()),
+        Token::F64 => Ok(context.f64_type()),
+        Token::IntType(width) => {
+            context.try_int_type(width).ok_or_else(|| ParserError::InvalidType {
+                span,
+                reason: format!("an integer type is 1 to {} bits wide", IntegerType::MAX_WIDTH),
+            })
+        }
+        _ => return None,
+    };
+    Some(parser.token_stream_mut().next().and(ty))
 }
 
 /// Parses a type, failing if the next token cannot start one.
@@ -124,8 +154,9 @@ fn parse_type<'input, P: Parser<'input>>(parser: &mut P) -> ParseResult<Type> {
     }
 }
 
-/// Parses what follows `ptr`: nothing, or `<N>`, `<T>` or `<T, N>`.
+/// Parses `ptr`, followed by nothing, or by `<N>`, `<T>` or `<T, N>`.
 fn parse_pointer_type<'input, P: Parser<'input>>(parser: &mut P) -> ParseResult<Type> {
+    parser.token_stream_mut().next()?;
     let context = parser.context_rc();
     if !parser.parse_optional_langle()? {
         return Ok(context.opaque_ptr_type());
@@ -146,6 +177,23 @@ fn parse_pointer_type<'input, P: Parser<'input>>(parser: &mut P) -> ParseResult<
     Ok(context.ptr_type_in(pointee, addrspace))
 }
 
+/// Parses `array<T; N>`.
+fn parse_array_type<'input, P: Parser<'input>>(parser: &mut P) -> ParseResult<Type> {
+    parser.token_stream_mut().next()?;
+    parser.parse_langle()?;
+    let ty = parse_array_body(parser)?;
+    parser.parse_rangle()?;
+    Ok(ty)
+}
+
+/// Parses `[T; N]`.
+fn parse_bracketed_array_type<'input, P: Parser<'input>>(parser: &mut P) -> ParseResult<Type> {
+    parser.token_stream_mut().next()?;
+    let ty = parse_array_body(parser)?;
+    parser.parse_rbracket()?;
+    Ok(ty)
+}
+
 /// Parses `T; N`, the inside of `array<T; N>` and `[T; N]`.
 fn parse_array_body<'input, P: Parser<'input>>(parser: &mut P) -> ParseResult<Type> {
     let element = parse_type(parser)?;
@@ -154,9 +202,9 @@ fn parse_array_body<'input, P: Parser<'input>>(parser: &mut P) -> ParseResult<Ty
     Ok(parser.context().array_type(element, len))
 }
 
-/// Parses what follows `struct`: an optional name, then the representation and fields in angle
-/// brackets.
+/// Parses `struct`, an optional name, then the representation and fields in angle brackets.
 fn parse_struct_type<'input, P: Parser<'input>>(parser: &mut P) -> ParseResult<Type> {
+    parser.token_stream_mut().next()?;
     let name = if parser.token_stream_mut().is_next(|tok| matches!(tok, Token::Langle)) {
         None
     } else {
@@ -373,12 +421,15 @@ fn parse_parenthesised_types<'input, P: Parser<'input>>(
     Ok(types)
 }
 
-/// Resolves `!id`, which names a type alias, or a dialect type if it contains a `.`.
+/// Parses `!id`, which names a type alias, or a dialect type if it contains a `.`.
 fn parse_alias_or_dialect_type<'input, P: Parser<'input>>(
     parser: &mut P,
     id: &str,
-    span: SourceSpan,
+    start: u32,
+    end: u32,
 ) -> ParseResult<Type> {
+    let span = span!(parser.source_id(), start, end);
+    parser.token_stream_mut().next()?;
     let Some((dialect, name)) = id.split_once('.') else {
         let alias = Symbol::intern(id);
         return parser

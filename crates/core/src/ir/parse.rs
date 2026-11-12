@@ -145,6 +145,8 @@ pub struct ParserState<'input> {
     /// implementing `OpAsmOpInterface`, and popped when done. At the top-level we start with
     /// "builtin" as the default, so that the top-level builtin operations parse as-is.
     pub default_dialect_stack: SmallVec<[interner::Symbol; 1]>,
+    /// The number of types enclosing the one being parsed, which the type parser limits.
+    type_nesting: u32,
 }
 
 impl<'input> ParserState<'input> {
@@ -155,6 +157,7 @@ impl<'input> ParserState<'input> {
             symbols: Default::default(),
             asm_state: None,
             default_dialect_stack: smallvec![interner::Symbol::intern("builtin")],
+            type_nesting: 0,
         }
     }
 
