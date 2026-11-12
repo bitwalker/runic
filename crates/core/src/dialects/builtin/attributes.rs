@@ -7,7 +7,7 @@ mod list;
 mod local_variable;
 mod location;
 mod overflow;
-mod signature;
+pub(crate) mod signature;
 mod string;
 mod symbol_ref;
 mod r#type;

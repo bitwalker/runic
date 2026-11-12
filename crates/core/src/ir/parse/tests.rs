@@ -682,17 +682,21 @@ fn parsing_a_module_still_wraps_it_in_a_world() -> TestResult {
     Ok(())
 }
 
-/// Well-formed as text, ill-formed as IR: `builtin.function` carries the `SingleRegion` trait, so
-/// a function with no region at all parses (it is how a declaration is written) and then fails
-/// verification with "requires exactly one region, but got 0".
+/// Well-formed as text, ill-formed as IR: `test.add` carries the `SameTypeOperands` trait, so an
+/// addition of an `i32` and an `i64` parses (the text gives each operand its type) and then fails
+/// verification.
 const UNVERIFIABLE_SOURCE: &str = "\
 builtin.module public @lib {
-    builtin.function public extern(\"C\") @main();
+    builtin.function public extern(\"C\") @main(%0: i32, %1: i64) {
+        %2 = test.add %0, %1 <{ overflow = #builtin.overflow<checked> }>;
+        builtin.ret;
+    };
 };";
 
 #[test]
 fn parsing_verifies_what_it_parsed() {
     let test = ParserTest::default();
+    test.context().get_or_register_dialect::<TestDialect>();
 
     // Verification used to run inside `OperationParser::finalize`, and moving it out to
     // `parse_anchored_source` left nothing pinning that it still runs at all: the tests that
@@ -714,8 +718,8 @@ fn parsing_verifies_what_it_parsed() {
         .expect("the source is well-formed as text — only verification rejects it");
 
     assert!(
-        err.contains("invalid operation builtin.function"),
-        "expected the verifier's rejection of the region-less function, got: {err}"
+        err.contains("invalid operation test.add"),
+        "expected the verifier's rejection of the addition of mismatched types, got: {err}"
     );
 }
 
@@ -1297,16 +1301,19 @@ fn a_syntax_error_is_one_error_diagnostic_with_sources_attached() {
 #[test]
 fn an_outcome_renders_sources_loaded_while_parsing() {
     let context = Rc::new(Context::default());
+    context.get_or_register_dialect::<TestDialect>();
     let origin = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
     assert!(context.sources().find_by_name(origin).is_none());
+    // The addition fails verification (see `UNVERIFIABLE_SOURCE`), at its location
     let source = format!(
-        "builtin.module public @lib {{\n    builtin.function public extern(\"C\") @main() \
-         loc(\"{origin}\":1:1);\n}};"
+        "builtin.module public @lib {{\n    builtin.function public extern(\"C\") @main(%0: i32, \
+         %1: i64) {{\n        %2 = test.add %0, %1 <{{ overflow = #builtin.overflow<checked> }}> \
+         loc(\"{origin}\":1:1);\n        builtin.ret;\n    }};\n}};"
     );
     let outcome = parse::parse_any(ParserConfig::new(context.clone()), "origin.runic", source);
     assert!(context.sources().find_by_name(origin).is_some(), "the location loaded its file");
 
-    let report = outcome.into_result().expect_err("a region-less function fails verification");
+    let report = outcome.into_result().expect_err("an ill-typed addition fails verification");
     let rendered = alloc::format!("{}", report.display());
     assert!(!rendered.contains("missing source"), "rendered without its source: {rendered}");
     assert!(
@@ -4258,4 +4265,326 @@ fn a_dictionary_key_that_is_not_bare_round_trips() -> TestResult {
 fn an_invalid_escape_in_a_dictionary_key_is_an_error() {
     let context = Rc::new(Context::default());
     assert!(parse_dictionary_text(&context, "{ \"a\\qb\" = 1 }").is_err());
+}
+
+/// `text` with the numbers of its value ids taken out: value ids count up across a context.
+fn without_value_ids(text: &str) -> String {
+    let mut out = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        out.push(c);
+        if c == '%' {
+            while chars.next_if(char::is_ascii_digit).is_some() {}
+        }
+    }
+    out
+}
+
+/// Parses `source` as a function in the context of `test`, checks that it prints, as the root of
+/// a print, as `expected` (value ids aside), then parses the print and checks that it has an equal
+/// signature and prints the same again. Returns the function parsed from `source`.
+fn assert_function_round_trips(
+    test: &ParserTest,
+    source: &str,
+    expected: &str,
+) -> UnsafeIntrusiveEntityRef<Function> {
+    let first = test
+        .parse::<Function>("signature_first.hir", source)
+        .unwrap_or_else(|err| panic!("{source}\n{err:?}"));
+    let printed = print_root(first);
+    assert_eq!(without_value_ids(&printed), without_value_ids(expected));
+
+    let second = test
+        .parse::<Function>("signature_second.hir", &printed)
+        .unwrap_or_else(|err| panic!("{printed}\n{err:?}"));
+    assert_eq!(*second.borrow().get_signature(), *first.borrow().get_signature(), "{printed}");
+    assert_eq!(without_value_ids(&print_root(second)), without_value_ids(&printed));
+    first
+}
+
+/// The builtin markers print without a body, and parse back through their default value.
+#[test]
+fn marker_attributes_print_without_a_body_and_parse_back() -> TestResult {
+    use crate::dialects::builtin::attributes::{SextAttr, SretAttr, ZextAttr};
+
+    let context = Rc::new(Context::default());
+    let text = "{ extend = #builtin.zext, other = #builtin.sext, sret = #builtin.sret }";
+    let parsed = parse_dictionary_text(&context, text)?;
+    assert!(parsed[0].value.borrow().is::<ZextAttr>());
+    assert!(parsed[1].value.borrow().is::<SextAttr>());
+    assert!(parsed[2].value.borrow().is::<SretAttr>());
+    assert_eq!(print_dictionary_text(&context, &parsed), text);
+    Ok(())
+}
+
+/// Attributes on a parameter and on a result of a definition survive print and parse.
+#[test]
+fn a_definition_with_parameter_and_result_attributes_round_trips() {
+    use crate::dialects::builtin::attributes::ArgumentExtension;
+
+    let test = ParserTest::default();
+    let source = "\
+builtin.function public extern(\"C\") @f(%0: i8 { extend = #builtin.zext }, %1: ptr<i32> { sret = \
+                  #builtin.sret }) -> (i32 { extend = #builtin.sext }) {
+    builtin.ret_imm 0 : i32;
+};";
+    let function = assert_function_round_trips(&test, source, source);
+    let function = function.borrow();
+    let signature = function.get_signature();
+    assert_eq!(signature.params()[0].extension(), ArgumentExtension::Zext);
+    assert!(!signature.params()[0].is_sret_param());
+    assert!(signature.params()[1].is_sret_param());
+    assert_eq!(signature.params()[1].extension(), ArgumentExtension::None);
+    assert_eq!(signature.results()[0].extension(), ArgumentExtension::Sext);
+}
+
+/// A definition without attributes prints as it always has: no dictionaries, a bare result.
+#[test]
+fn a_definition_without_attributes_prints_as_before() {
+    let test = ParserTest::default();
+    let source = "\
+builtin.function public extern(\"C\") @f(%0: i32, %1: i64) -> i32 {
+    builtin.ret %0 : (i32);
+};";
+    let function = assert_function_round_trips(&test, source, source);
+    let function = function.borrow();
+    let signature = function.get_signature();
+    assert!(signature.params().iter().chain(signature.results()).all(|p| p.attrs.is_empty()));
+}
+
+/// A parameter attribute that is not a builtin marker is kept like any other.
+#[test]
+fn a_parameter_attribute_that_is_not_a_marker_round_trips() {
+    let test = ParserTest::default();
+    let source = "\
+builtin.function public extern(\"C\") @f(%0: i32 { align = #builtin.i32<8> }) {
+    builtin.ret;
+};";
+    let function = assert_function_round_trips(&test, source, source);
+    let function = function.borrow();
+    let signature = function.get_signature();
+    let align = signature.params()[0].attrs.find(&crate::interner::Symbol::intern("align"));
+    let align = align.get().expect("an `align` attribute");
+    assert_eq!(align.value.borrow().as_int(), Some(Int::from(8i32)));
+}
+
+/// A function declared with a list of types has no body, one empty region, and verifies.
+#[test]
+fn a_declaration_round_trips() {
+    use crate::{Op, dialects::builtin::attributes::ArgumentExtension};
+
+    let test = ParserTest::default();
+    let source =
+        "builtin.function public extern(\"C\") @f(ptr<i32>, i8 { extend = #builtin.zext }) -> i32;";
+    let function = assert_function_round_trips(&test, source, source);
+    let function = function.borrow();
+    assert!(function.is_declaration());
+    assert_eq!(function.as_operation().num_regions(), 1);
+    assert!(function.body().is_empty());
+    function.as_operation().verify().expect("a declaration verifies");
+    let signature = function.get_signature();
+    assert_eq!(signature.params().len(), 2);
+    assert_eq!(signature.params()[0].ty, test.context().ptr_type(test.context().i32()));
+    assert_eq!(signature.params()[1].extension(), ArgumentExtension::Zext);
+    assert_eq!(signature.results()[0].ty, test.context().i32());
+}
+
+/// A declaration without parameters, and one whose parameter and result are function types.
+#[test]
+fn declarations_without_parameters_or_of_function_types_round_trip() {
+    let test = ParserTest::default();
+    for source in [
+        "builtin.function public extern(\"C\") @f();",
+        "builtin.function public extern(\"C\") @f() -> i32;",
+        "builtin.function public extern(\"C\") @f((i32) -> i32) -> ((i32) -> i32);",
+    ] {
+        let function = assert_function_round_trips(&test, source, source);
+        assert!(function.borrow().is_declaration(), "{source}");
+    }
+    let function = test
+        .parse::<Function>("fn_type.hir", "builtin.function public extern(\"C\") @f((i32) -> i32);")
+        .unwrap();
+    let function = function.borrow();
+    let signature = function.get_signature();
+    assert_eq!(signature.params().len(), 1);
+    assert!(signature.params()[0].ty.is_function());
+}
+
+/// A declaration whose signature uses a recursion-group member writes the member's alias, and
+/// declares its group in front of the print.
+#[test]
+fn a_declaration_using_a_recursion_group_member_round_trips() {
+    let test = ParserTest::default();
+    let source = "\
+rec { type !list = struct list<i32, ptr<!list>>; }
+builtin.function public extern(\"C\") @f(ptr<!list>) -> ptr<!list>;";
+    let expected = "\
+rec {
+  type !list = struct list<i32, ptr<!list>>;
+}
+
+builtin.function public extern(\"C\") @f(ptr<!list>) -> ptr<!list>;";
+    let function = assert_function_round_trips(&test, source, expected);
+    assert!(function.borrow().is_declaration());
+}
+
+/// A lone `never` result is declared, printed and read back, on a definition and on a declaration.
+#[test]
+fn a_never_result_round_trips() {
+    let test = ParserTest::default();
+    test.context().get_or_register_dialect::<TestDialect>();
+    for source in [
+        "builtin.function public extern(\"C\") @f(%0: i32) -> never {\n    test.ret : ();\n};",
+        "builtin.function public extern(\"C\") @f(i32) -> never;",
+    ] {
+        let function = assert_function_round_trips(&test, source, source);
+        let function = function.borrow();
+        let signature = function.get_signature();
+        assert!(signature.never_returns(), "{source}");
+        assert!(signature.results().is_empty(), "{source}");
+        assert_eq!(signature.declared_results().len(), 1, "{source}");
+    }
+}
+
+/// `#builtin.signature<..>` reads and writes parameter and result attributes and a `never` result.
+#[test]
+fn signature_attributes_round_trip() -> TestResult {
+    use crate::dialects::builtin::attributes::{ArgumentExtension, SignatureAttr};
+
+    let context = Rc::new(Context::default());
+    let unknown = context.unknown_type();
+    let texts = [
+        "#builtin.signature<extern(\"C\") (i8 { extend = #builtin.zext }) -> (i32 { extend = \
+         #builtin.sext })>",
+        "#builtin.signature<extern(\"fast\") () -> never>",
+        "#builtin.signature<extern(\"C\") (i32, i64) -> i32>",
+    ];
+    let mut signatures = Vec::new();
+    for text in texts {
+        let attr = parse_attribute_text(&context, text, unknown)?;
+        let printed = print_attribute_text(&context, &attr);
+        assert_eq!(printed, text);
+        let reparsed = parse_attribute_text(&context, &printed, unknown)?;
+        assert_eq!(&*reparsed.borrow(), &*attr.borrow(), "{printed}");
+        let attr = attr.borrow();
+        signatures.push(Signature::clone(attr.downcast_ref::<SignatureAttr>().unwrap()));
+    }
+
+    let [extended, never, plain] = &signatures[..] else {
+        unreachable!()
+    };
+    assert_eq!(extended.params()[0].extension(), ArgumentExtension::Zext);
+    assert_eq!(extended.results()[0].extension(), ArgumentExtension::Sext);
+    assert_eq!(never.calling_convention().as_str(), "fast");
+    assert!(never.never_returns() && never.params().is_empty());
+    assert_eq!(
+        plain,
+        &Signature::new(&context, [context.i32(), context.i64()], [context.i32()])
+    );
+    Ok(())
+}
+
+/// A calling-convention name with a quote and a non-ASCII character survives a declaration and a
+/// signature attribute.
+#[test]
+fn a_quoted_calling_convention_name_round_trips_in_a_declaration() -> TestResult {
+    use crate::dialects::builtin::attributes::SignatureAttr;
+
+    let name = "q\"\u{e9}";
+    let escaped = name.escape_default().to_string();
+    let test = ParserTest::default();
+    let source = format!("builtin.function public extern(\"{escaped}\") @f(i32) -> i32;");
+    let function = assert_function_round_trips(&test, &source, &source);
+    assert_eq!(function.borrow().get_signature().calling_convention().as_str(), name);
+
+    let context = test.context_rc();
+    let text = format!("#builtin.signature<extern(\"{escaped}\") (i32)>");
+    let attr = parse_attribute_text(&context, &text, context.unknown_type())?;
+    assert_eq!(print_attribute_text(&context, &attr), text);
+    let attr = attr.borrow();
+    let signature = attr.downcast_ref::<SignatureAttr>().unwrap();
+    assert_eq!(signature.calling_convention().as_str(), name);
+    Ok(())
+}
+
+/// A parameter list names all of its parameters or none: the first element of the other form is
+/// the error.
+#[test]
+fn a_parameter_list_mixing_named_and_unnamed_parameters_is_an_error() {
+    for (source, labelled, reason) in [
+        (
+            "builtin.function public extern(\"C\") @f(%0: i32, i64) {\n    builtin.ret;\n};",
+            "i64",
+            "expected a named parameter, `%name: type`, as the first parameter of this list is \
+             named",
+        ),
+        (
+            "builtin.function public extern(\"C\") @f(i32, %1: i64);",
+            "%1",
+            "expected a type: the parameters of this list are not named",
+        ),
+    ] {
+        let (message, labels) = parse_error_labels(source);
+        assert!(message.contains("invalid parameter list"), "{message}");
+        assert!(message.contains(reason), "{message}");
+        assert_eq!(labels.first(), Some(&range_of(source, labelled)), "{message}");
+    }
+}
+
+/// A function declared with a list of types has no body.
+#[test]
+fn a_declaration_followed_by_a_body_is_an_error() {
+    let source = "builtin.function public extern(\"C\") @f(i32) {\n    builtin.ret;\n};";
+    let (message, labels) = parse_error_labels(source);
+    assert!(message.contains("invalid function declaration"), "{message}");
+    assert!(
+        message.contains("a function declared without parameter names cannot have a body"),
+        "{message}"
+    );
+    assert_eq!(labels.first(), Some(&range_of(source, "{")), "{message}");
+}
+
+/// A dictionary after an unparenthesised result of a declaration: a declaration has no body, so the
+/// `{` is reported as one, with the note that a result's attributes need the parentheses.
+#[test]
+fn a_dictionary_on_a_bare_result_of_a_declaration_is_an_error() {
+    let source = "builtin.function public extern(\"C\") @f(i32) -> i32 { extend = #builtin.sext };";
+    let (message, labels) = parse_error_labels(source);
+    assert!(message.contains("invalid function declaration"), "{message}");
+    assert!(
+        message.contains(
+            "a function declared without parameter names cannot have a body; the attributes of a \
+             result are written in parentheses, `-> (type { .. })`"
+        ),
+        "{message}"
+    );
+    assert_eq!(labels.first(), Some(&range_of(source, "{")), "{message}");
+}
+
+/// A dictionary after an unparenthesised result of a definition is read as the start of the body:
+/// the `{` after `-> i32` is always the body, so the dictionary's entry is read as an operation and
+/// fails there. That is acceptable because the printer never writes a dictionary on an
+/// unparenthesised result, so only hand-written text can reach it, and the error points at the
+/// entry that is not an operation.
+#[test]
+fn a_dictionary_on_a_bare_result_of_a_definition_is_read_as_the_body() {
+    let source = "builtin.function public extern(\"C\") @f(%0: i32) -> i32 { extend = \
+                  #builtin.sext } {\n    builtin.ret %0 : (i32);\n};";
+    let (message, labels) = parse_error_labels(source);
+    assert!(message.contains("invalid operation"), "{message}");
+    assert!(message.contains("unknown/unregistered operation"), "{message}");
+    assert_eq!(labels.first(), Some(&range_of(source, "extend")), "{message}");
+}
+
+/// A function whose parameters are named is a definition, and has a body.
+#[test]
+fn a_definition_without_a_body_is_an_error() {
+    let source = "builtin.function public extern(\"C\") @f(%0: i32) -> i32;";
+    let (message, labels) = parse_error_labels(source);
+    assert!(message.contains("invalid function definition"), "{message}");
+    assert!(
+        message.contains("expected the body of a function whose parameters are named"),
+        "{message}"
+    );
+    assert_eq!(labels.first(), Some(&range_of(source, ";")), "{message}");
 }

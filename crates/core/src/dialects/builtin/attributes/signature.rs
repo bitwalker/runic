@@ -1,14 +1,24 @@
-use alloc::{format, rc::Rc, vec::Vec};
-use core::fmt;
+use alloc::{rc::Rc, string::String, vec::Vec};
+use core::{
+    cell::RefCell,
+    fmt::{self, Write},
+};
 
 use crate::{
     AttrPrinter, CallConv, Context, NamedAttribute, OpPrintingFlags, Type,
-    attributes::{AttrParser, AttributeDict},
+    attributes::{AttrParser, AttributeDict, Marker},
     derive::DialectAttribute,
+    diagnostics::{SourceSpan, TextRange, report},
     dialects::builtin::BuiltinDialect,
-    formatter,
+    formatter, interner,
+    parse::{ParseResult, ParsedAttrs, Parser, ParserError, Token},
     print::AsmPrinter,
+    types::{Aliased, TypeAliases},
 };
+
+/// The value of the marker attributes of a parameter: they hold nothing, and print as their name
+/// alone (`#builtin.zext`).
+type MarkerValue = ();
 
 /// A marker attribute for "struct return" parameters of a function.
 ///
@@ -16,73 +26,37 @@ use crate::{
 /// allocate memory to hold the function results, and then pass a pointer to that allocation to
 /// the callee at a given parameter position (typically the first or last parameter). It is up to
 /// the caller to ensure the given pointer is of sufficient size and alignment to hold the results.
-#[derive(DialectAttribute, Debug, Copy, Clone, PartialEq, Eq, Default, Hash)]
-#[attribute(dialect = BuiltinDialect, implements(AttrPrinter))]
+#[derive(DialectAttribute)]
+#[attribute(dialect = BuiltinDialect, remote = "MarkerValue", implements(AttrPrinter, Marker))]
 #[allow(dead_code)]
-pub struct Sret;
-
-impl From<()> for Sret {
-    fn from(_value: ()) -> Self {
-        Self
-    }
-}
-
-impl fmt::Display for Sret {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("sret")
-    }
-}
+struct Sret;
 
 impl AttrPrinter for SretAttr {
-    fn print(&self, _printer: &mut crate::print::AsmPrinter<'_>) {}
+    fn print(&self, _printer: &mut AsmPrinter<'_>) {}
 }
 
 /// A marker attribute for argument parameters or results which should be zero-extended to the
 /// target architecture's native machine word size, _if and only if_ the parameter type is smaller
 /// than the native machine word size.
-#[derive(DialectAttribute, Debug, Copy, Clone, PartialEq, Eq, Default, Hash)]
-#[attribute(dialect = BuiltinDialect, implements(AttrPrinter))]
+#[derive(DialectAttribute)]
+#[attribute(dialect = BuiltinDialect, remote = "MarkerValue", implements(AttrPrinter, Marker))]
 #[allow(dead_code)]
-pub struct Zext;
-
-impl From<()> for Zext {
-    fn from(_value: ()) -> Self {
-        Self
-    }
-}
-
-impl fmt::Display for Zext {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("zext")
-    }
-}
+struct Zext;
 
 impl AttrPrinter for ZextAttr {
-    fn print(&self, _printer: &mut crate::print::AsmPrinter<'_>) {}
+    fn print(&self, _printer: &mut AsmPrinter<'_>) {}
 }
 
 /// A marker attribute for argument parameters or results which should be sign-extended to the
 /// target architecture's native machine word size, _if and only if_ the parameter type is smaller
 /// than the native machine word size.
-#[derive(DialectAttribute, Debug, Copy, Clone, PartialEq, Eq, Default, Hash)]
-#[attribute(dialect = BuiltinDialect, implements(AttrPrinter))]
+#[derive(DialectAttribute)]
+#[attribute(dialect = BuiltinDialect, remote = "MarkerValue", implements(AttrPrinter, Marker))]
 #[allow(dead_code)]
-pub struct Sext;
-
-impl From<()> for Sext {
-    fn from(_value: ()) -> Self {
-        Self
-    }
-}
-
-impl fmt::Display for Sext {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("sext")
-    }
-}
+struct Sext;
 
 impl AttrPrinter for SextAttr {
-    fn print(&self, _printer: &mut crate::print::AsmPrinter<'_>) {}
+    fn print(&self, _printer: &mut AsmPrinter<'_>) {}
 }
 
 /// Represents how to extend an integer argument or result narrower than the target's registers
@@ -137,6 +111,10 @@ impl Clone for AbiParam {
 }
 
 impl AbiParam {
+    /// The key of the attribute that says how a parameter is extended: `#builtin.zext` or
+    /// `#builtin.sext`.
+    pub const EXTEND: &str = "extend";
+
     /// Panics, in debug builds, if `ty` is open: a parameter's type enters IR.
     #[track_caller]
     pub fn new(ty: Type) -> Self {
@@ -162,12 +140,12 @@ impl AbiParam {
 
     pub fn zext(ty: Type, context: &Rc<Context>) -> Self {
         let zext = context.create_attribute::<ZextAttr, _>(());
-        Self::new_with_attrs(ty, [NamedAttribute::new(crate::interner::symbols::Extension, zext)])
+        Self::new_with_attrs(ty, [NamedAttribute::new(Self::EXTEND, zext)])
     }
 
     pub fn sext(ty: Type, context: &Rc<Context>) -> Self {
         let sext = context.create_attribute::<SextAttr, _>(());
-        Self::new_with_attrs(ty, [NamedAttribute::new(crate::interner::symbols::Extension, sext)])
+        Self::new_with_attrs(ty, [NamedAttribute::new(Self::EXTEND, sext)])
     }
 
     pub fn sret(ty: Type, context: &Rc<Context>) -> Self {
@@ -190,7 +168,7 @@ impl AbiParam {
     }
 
     pub fn extension(&self) -> ArgumentExtension {
-        match self.attrs.find(&crate::interner::symbols::Extension).get() {
+        match self.attrs.find(&interner::Symbol::intern(Self::EXTEND)).get() {
             None => ArgumentExtension::None,
             Some(attr) => {
                 let value = attr.value.borrow();
@@ -214,66 +192,10 @@ impl AbiParam {
     }
 }
 
-impl formatter::PrettyPrint for AbiParam {
-    fn render(&self) -> formatter::Document {
-        use formatter::*;
-
-        // Only reached outside an IR print, through the `Display` of `AbiParam` and `Signature`
-        // (the `AttrPrinter` of a signature writes its types with the printer), so the type is
-        // written with its `Display` form and the attributes below are printed as fragments,
-        // without the declarations of the recursion groups they refer to.
-        let ty = text(format!("{}", self.ty));
-
-        let mut doc = Document::Empty;
-        let flags = OpPrintingFlags::default();
-        for (i, attr) in self.attrs.iter().enumerate() {
-            let (key, value) = match attr.name.as_str() {
-                "sret" => (const_text("sret"), Document::Empty),
-                "extend" => {
-                    let value = attr.value.borrow();
-                    if value.is::<ZextAttr>() {
-                        (const_text("zext"), Document::Empty)
-                    } else if value.is::<SextAttr>() {
-                        (const_text("sext"), Document::Empty)
-                    } else {
-                        let mut printer = AsmPrinter::fragment(value.context_rc(), &flags);
-                        printer.print_attribute_value(&*value);
-                        let value_pp = printer.finish();
-                        (const_text("extend"), value_pp)
-                    }
-                }
-                other => {
-                    let value = attr.value.borrow();
-                    let mut printer = AsmPrinter::fragment(value.context_rc(), &flags);
-                    printer.print_attribute_value(&*value);
-                    (const_text(other), printer.finish())
-                }
-            };
-
-            if i == 0 {
-                doc += const_text(" { ");
-            } else {
-                doc += const_text(", ");
-            }
-            if value.is_empty() {
-                doc += key;
-            } else {
-                doc += key + const_text(" = ") + value;
-            }
-        }
-
-        if doc.is_empty() {
-            ty
-        } else {
-            ty + doc + const_text(" }")
-        }
-    }
-}
-
 impl fmt::Display for AbiParam {
+    /// The IR text of the parameter, `type dictionary-attribute?`, as a fragment.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use crate::formatter::PrettyPrint;
-        write!(f, "{}", self.render())
+        display_with(f, [self], |writer| write_param(writer, self))
     }
 }
 
@@ -297,26 +219,11 @@ pub struct Signature {
 }
 
 impl fmt::Display for Signature {
+    /// The IR text of the signature, `extern("cc") (params) -> results`, as a fragment.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_map()
-            .key(&"params")
-            .value_with(|f| {
-                let mut builder = f.debug_list();
-                for param in self.params.iter() {
-                    builder.entry(&format_args!("{param}"));
-                }
-                builder.finish()
-            })
-            .key(&"results")
-            .value_with(|f| {
-                let mut builder = f.debug_list();
-                for result in self.results.iter() {
-                    builder.entry(&format_args!("{result}"));
-                }
-                builder.finish()
-            })
-            .entry(&"cc", &format_args!("{}", self.cc))
-            .finish()
+        display_with(f, self.params.iter().chain(&self.results), |writer| {
+            print_signature(writer, self)
+        })
     }
 }
 
@@ -419,46 +326,265 @@ impl Signature {
 
 impl AttrPrinter for SignatureAttr {
     fn print(&self, printer: &mut AsmPrinter<'_>) {
-        printer.print_keyword("extern");
-        printer.print_lparen();
-        printer.print_string(self.cc.as_str());
-        printer.print_rparen();
-        printer.print_space();
-        printer.print_function_type_parts(
-            self.params().iter().map(|p| p.ty),
-            self.results().iter().map(|p| p.ty),
-        );
+        print_signature(printer, self);
     }
 }
 
 impl AttrParser for SignatureAttr {
-    fn parse(
-        parser: &mut dyn crate::parse::Parser<'_>,
-    ) -> crate::parse::ParseResult<crate::AttributeRef> {
-        use crate::parse::ParserError;
-
+    /// Reads `'extern' '(' string ')' '(' (param (',' param)*)? ')' ('->' result-list)?`.
+    fn parse(parser: &mut dyn Parser<'_>) -> ParseResult<crate::AttributeRef> {
         parser.parse_custom_keyword("extern")?;
         parser.parse_lparen()?;
-        let cc_string = parser.parse_string()?;
+        let cc = CallConv::new(parser.parse_string()?.as_str());
         parser.parse_rparen()?;
-        let (ty_span, ty) = parser.parse_type()?.into_parts();
-        let Some(fn_ty) = ty.as_function() else {
-            return Err(ParserError::InvalidAttributeValue {
-                span: ty_span,
-                reason: format!("expected a function type, got '{ty}'"),
-            });
-        };
-
-        let cc = CallConv::new(cc_string.as_str());
-        let context = parser.context_rc();
-        let signature = Signature::with_convention(
-            &context,
+        let params = parse_param_list(parser)?;
+        let results = parse_optional_results(parser)?;
+        let signature = Signature {
+            params,
+            results,
             cc,
-            fn_ty.params().iter().copied(),
-            fn_ty.results().iter().copied(),
-        );
-        let attr = context.create_attribute::<SignatureAttr, _>(signature);
-        Ok(attr)
+        };
+        Ok(parser.context_rc().create_attribute::<SignatureAttr, _>(signature))
+    }
+}
+
+/// What the signature helpers below write to: an [AsmPrinter], or [PlainText] for the `Display` of
+/// a signature or parameter without attributes, which has no context to make a printer with.
+pub(crate) trait SignatureWriter {
+    /// Writes `text` as it is.
+    fn write_text(&mut self, text: &'static str);
+    /// Writes `ty`, a recursion-group member as its alias.
+    fn write_type(&mut self, ty: Type);
+    /// Writes `string` quoted, escaped as by `str::escape_default`.
+    fn write_string(&mut self, string: &str);
+    /// Writes `attrs`, which is not empty, as a dictionary attribute.
+    fn write_attributes(&mut self, attrs: &AttributeDict);
+}
+
+impl SignatureWriter for AsmPrinter<'_> {
+    fn write_text(&mut self, text: &'static str) {
+        *self += formatter::const_text(text);
+    }
+
+    fn write_type(&mut self, ty: Type) {
+        self.print_type(ty);
+    }
+
+    fn write_string(&mut self, string: &str) {
+        self.print_string(string);
+    }
+
+    fn write_attributes(&mut self, attrs: &AttributeDict) {
+        self.print_attribute_dictionary(attrs.iter().map(|attr| *attr));
+    }
+}
+
+/// The text an [AsmPrinter] made with [AsmPrinter::fragment] writes for a signature without
+/// attributes, written without one.
+#[derive(Default)]
+struct PlainText {
+    text: String,
+    aliases: RefCell<TypeAliases>,
+}
+
+impl SignatureWriter for PlainText {
+    fn write_text(&mut self, text: &'static str) {
+        self.text.push_str(text);
+    }
+
+    fn write_type(&mut self, ty: Type) {
+        let aliased = Aliased {
+            ty,
+            aliases: &self.aliases,
+            definition: false,
+        };
+        // Writing to a `String` does not fail
+        let _ = write!(self.text, "{aliased}");
+    }
+
+    fn write_string(&mut self, string: &str) {
+        let _ = write!(self.text, "\"{}\"", string.escape_default());
+    }
+
+    fn write_attributes(&mut self, _attrs: &AttributeDict) {
+        unreachable!("a signature with attributes is displayed with a printer")
+    }
+}
+
+/// Writes to `f` what `write` writes: with a fragment printer made with the context of the first
+/// attribute of `params`, or as [PlainText] if they have none.
+fn display_with<'a>(
+    f: &mut fmt::Formatter<'_>,
+    params: impl IntoIterator<Item = &'a AbiParam>,
+    write: impl FnOnce(&mut dyn SignatureWriter),
+) -> fmt::Result {
+    let context = params
+        .into_iter()
+        .find_map(|param| param.attrs.iter().next().map(|attr| attr.value.borrow().context_rc()));
+    match context {
+        Some(context) => {
+            let flags = OpPrintingFlags::default();
+            let mut printer = AsmPrinter::fragment(context, &flags);
+            write(&mut printer);
+            write!(f, "{}", printer.finish())
+        }
+        None => {
+            let mut text = PlainText::default();
+            write(&mut text);
+            f.write_str(&text.text)
+        }
+    }
+}
+
+/// Writes `extern("cc") (param, ..)`, then ` -> result-list` if the signature declares results.
+fn print_signature<W: SignatureWriter + ?Sized>(writer: &mut W, signature: &Signature) {
+    writer.write_text("extern(");
+    writer.write_string(signature.cc.as_str());
+    writer.write_text(") ");
+    print_param_list(writer, signature.params());
+    print_optional_results(writer, signature.declared_results());
+}
+
+/// Writes a `param`: its type, then its attributes as a dictionary if it has any.
+fn write_param<W: SignatureWriter + ?Sized>(writer: &mut W, param: &AbiParam) {
+    writer.write_type(param.ty);
+    if !param.attrs.is_empty() {
+        writer.write_text(" ");
+        writer.write_attributes(&param.attrs);
+    }
+}
+
+/// Writes a parenthesised list of `param`: `(ptr<i32>, i8 { extend = #builtin.zext })`.
+pub(crate) fn print_param_list<W: SignatureWriter + ?Sized>(writer: &mut W, params: &[AbiParam]) {
+    writer.write_text("(");
+    for (i, param) in params.iter().enumerate() {
+        if i > 0 {
+            writer.write_text(", ");
+        }
+        write_param(writer, param);
+    }
+    writer.write_text(")");
+}
+
+/// Writes a `result-list`: the type alone when it is one result without attributes whose type does
+/// not start with `(` (is not a function type), a parenthesised list of `param` otherwise. So an
+/// unparenthesised result never has a dictionary, and a `{` after it is not one.
+pub(crate) fn print_result_list<W: SignatureWriter + ?Sized>(writer: &mut W, results: &[AbiParam]) {
+    match results {
+        [result] if result.attrs.is_empty() && !result.ty.is_function() => {
+            writer.write_type(result.ty)
+        }
+        results => print_param_list(writer, results),
+    }
+}
+
+/// Writes ` -> result-list` if there are `results`, and nothing otherwise.
+pub(crate) fn print_optional_results<W: SignatureWriter + ?Sized>(
+    writer: &mut W,
+    results: &[AbiParam],
+) {
+    if !results.is_empty() {
+        writer.write_text(" -> ");
+        print_result_list(writer, results);
+    }
+}
+
+/// The span of the next token (with the `%` of a value name), or the current location at the end
+/// of the input.
+pub(crate) fn next_token_span<'input, P: ?Sized + Parser<'input>>(
+    parser: &mut P,
+) -> ParseResult<SourceSpan> {
+    match parser.token_stream_mut().peek()? {
+        Some((start, token, end)) => {
+            // The token of a value name is the name after its `%`
+            let start = if matches!(token, Token::PercentIdent(_)) {
+                start - 1
+            } else {
+                start
+            };
+            Ok(SourceSpan::session(
+                parser.source_id(),
+                TextRange::new(start, end).expect("the lexer produces ordered ranges"),
+            ))
+        }
+        None => Ok(parser.current_location()),
+    }
+}
+
+/// An "invalid parameter list" error labelled `reason` at `span`.
+pub(crate) fn invalid_parameter_list(span: SourceSpan, reason: &str) -> ParserError {
+    ParserError::from(report! {
+        message: "invalid parameter list",
+        labels: [primary(span, String::from(reason))],
+    })
+}
+
+/// Reads a `param`: a type, then an optional dictionary of its attributes.
+///
+/// A value name is an error: a list that does not name its first parameter names none.
+fn parse_param<'input, P: ?Sized + Parser<'input>>(parser: &mut P) -> ParseResult<AbiParam> {
+    if parser.token_stream_mut().is_next(|tok| matches!(tok, Token::PercentIdent(_))) {
+        let span = next_token_span(parser)?;
+        return Err(invalid_parameter_list(
+            span,
+            "expected a type: the parameters of this list are not named",
+        ));
+    }
+    let ty = parser.parse_type()?.into_inner();
+    let mut attrs = ParsedAttrs::default();
+    parser.parse_optional_attribute_dict(&mut attrs)?;
+    Ok(AbiParam::new_with_attrs(ty, attrs))
+}
+
+/// Reads the rest of a parenthesised list of `param` whose `(` has been read, up to and including
+/// its `)`, into `params`.
+pub(crate) fn parse_params_after_lparen<'input, P: ?Sized + Parser<'input>>(
+    parser: &mut P,
+    params: &mut Vec<AbiParam>,
+) -> ParseResult {
+    if parser.parse_optional_rparen()? {
+        return Ok(());
+    }
+    loop {
+        params.push(parse_param(parser)?);
+        if !parser.parse_optional_comma()? {
+            break;
+        }
+    }
+    parser.parse_rparen()
+}
+
+/// Reads a parenthesised list of `param`.
+pub(crate) fn parse_param_list<'input, P: ?Sized + Parser<'input>>(
+    parser: &mut P,
+) -> ParseResult<Vec<AbiParam>> {
+    parser.parse_lparen()?;
+    let mut params = Vec::new();
+    parse_params_after_lparen(parser, &mut params)?;
+    Ok(params)
+}
+
+/// Reads a `result-list`: a parenthesised list of `param`, or a single type, which has no
+/// dictionary (a `{` after it is left for the caller).
+pub(crate) fn parse_result_list<'input, P: ?Sized + Parser<'input>>(
+    parser: &mut P,
+) -> ParseResult<Vec<AbiParam>> {
+    if parser.token_stream_mut().is_next(|tok| matches!(tok, Token::Lparen)) {
+        parse_param_list(parser)
+    } else {
+        let ty = parser.parse_type()?.into_inner();
+        Ok(alloc::vec![AbiParam::new(ty)])
+    }
+}
+
+/// Reads `'->' result-list` if the next token is `->`; no results otherwise.
+pub(crate) fn parse_optional_results<'input, P: ?Sized + Parser<'input>>(
+    parser: &mut P,
+) -> ParseResult<Vec<AbiParam>> {
+    if parser.parse_optional_arrow()? {
+        parse_result_list(parser)
+    } else {
+        Ok(Vec::new())
     }
 }
 
@@ -523,13 +649,60 @@ mod tests {
         };
 
         let rendered = format!("{signature}");
+        assert_eq!(rendered, "extern(\"C\") (i32) -> i64");
         let (params, results) = rendered
-            .split_once("\"results\"")
-            .unwrap_or_else(|| panic!("expected a 'results' key in {rendered}"));
+            .split_once("->")
+            .unwrap_or_else(|| panic!("expected a '->' in {rendered}"));
+        assert!(params.contains("i32") && !params.contains("i64"), "{rendered}");
+        assert!(results.contains("i64") && !results.contains("i32"), "{rendered}");
+    }
 
-        assert!(params.contains("i32"), "expected 'i32' under params in {rendered}");
-        assert!(!params.contains("i64"), "unexpected 'i64' under params in {rendered}");
-        assert!(results.contains("i64"), "expected 'i64' under results in {rendered}");
-        assert!(!results.contains("i32"), "unexpected 'i32' under results in {rendered}");
+    /// `Display` writes the IR text of a parameter and of a signature, attributes and all.
+    #[test]
+    fn display_writes_the_ir_text() {
+        let context = Rc::new(crate::Context::default());
+        let zext = AbiParam::zext(context.i8(), &context);
+        assert_eq!(format!("{zext}"), "i8 { extend = #builtin.zext }");
+        assert_eq!(format!("{}", AbiParam::new(context.i32())), "i32");
+
+        let signature = Signature {
+            params: alloc::vec![zext, AbiParam::sret(context.ptr_type(context.i32()), &context)],
+            results: alloc::vec![AbiParam::sext(context.i16(), &context)],
+            cc: CallConv::new("fast"),
+        };
+        assert_eq!(
+            format!("{signature}"),
+            "extern(\"fast\") (i8 { extend = #builtin.zext }, ptr<i32> { sret = #builtin.sret }) \
+             -> (i16 { extend = #builtin.sext })"
+        );
+
+        let never = Signature::new(&context, [], [context.never_type()]);
+        assert_eq!(format!("{never}"), "extern(\"C\") () -> never");
+        let none = Signature::new(&context, [context.i32()], []);
+        assert_eq!(format!("{none}"), "extern(\"C\") (i32)");
+        let function = context.function_type([context.i32()], [context.i32()]);
+        let returns_fn = Signature::new(&context, [function], [function]);
+        assert_eq!(format!("{returns_fn}"), "extern(\"C\") ((i32) -> i32) -> ((i32) -> i32)");
+    }
+
+    /// A recursion-group member in a signature is written as its alias, with or without
+    /// attributes, and without declarations.
+    #[test]
+    fn display_writes_a_recursion_group_member_as_its_alias() {
+        let context = Rc::new(crate::Context::default());
+        let fields = [context.i32().into(), context.ptr_type(context.rec_var(0)).into()];
+        let body = context
+            .struct_type(crate::StructType::named(crate::interner::Symbol::intern("list"), fields));
+        let list = context.rec_group(&[body]).unwrap()[0];
+        let ptr = context.ptr_type(list);
+
+        let plain = Signature::new(&context, [ptr], [ptr]);
+        assert_eq!(format!("{plain}"), "extern(\"C\") (ptr<!list>) -> ptr<!list>");
+        let marked = Signature {
+            params: alloc::vec![AbiParam::sret(ptr, &context)],
+            results: alloc::vec![],
+            cc: CallConv::default(),
+        };
+        assert_eq!(format!("{marked}"), "extern(\"C\") (ptr<!list> { sret = #builtin.sret })");
     }
 }

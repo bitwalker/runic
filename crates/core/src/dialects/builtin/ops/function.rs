@@ -1,4 +1,4 @@
-use alloc::format;
+use alloc::{format, string::String, vec::Vec};
 
 use crate::{
     AsValueRange, BlockRef, CallConv, CallableOpInterface, CallableSymbol, EntityRef, IdentAttr,
@@ -8,8 +8,12 @@ use crate::{
     dialects::builtin::{
         BuiltinDialect,
         attributes::{
-            AdviceEffectArrayAttr, AdviceResourceKind, IntAttr, LocalVariable,
+            AbiParam, AdviceEffectArrayAttr, AdviceResourceKind, IntAttr, LocalVariable,
             MemoryEffectArrayAttr, Signature, SignatureAttr, TypeArrayAttr, VisibilityAttr,
+            signature::{
+                SignatureWriter, invalid_parameter_list, next_token_span, parse_optional_results,
+                parse_params_after_lparen, print_optional_results, print_param_list,
+            },
         },
     },
     effects::{
@@ -117,7 +121,10 @@ impl OpParser for Function {
     ) -> crate::ParseResult {
         use alloc::string::ToString;
 
-        use crate::parse::{Delimiter, ParserError, Token};
+        use crate::{
+            diagnostics::report,
+            parse::{ParserError, Token},
+        };
 
         let visibility = match parser.parse_optional_keyword()? {
             Some(tok) => match tok.inner() {
@@ -155,18 +162,73 @@ impl OpParser for Function {
 
         let name = parser.parse_symbol_name()?;
 
-        let mut args = SmallVec::new_const();
-        parser.parse_argument_list(Delimiter::Paren, true, true, &mut args)?;
+        // A list whose first element is a value name is the argument list of a definition; any
+        // other list is the parameter list of a declaration, unless it is empty, when what follows
+        // the results decides (a region makes a definition).
+        parser.parse_lparen()?;
+        let is_named = |parser: &mut dyn crate::OpAsmParser<'_>| {
+            parser.token_stream_mut().is_next(|tok| matches!(tok, Token::PercentIdent(_)))
+        };
+        let named = is_named(parser);
+        let mut args = SmallVec::<[crate::parse::Argument; 4]>::new_const();
+        let mut params = Vec::new();
+        if named {
+            loop {
+                if !is_named(parser) {
+                    let span = next_token_span(parser)?;
+                    return Err(invalid_parameter_list(
+                        span,
+                        "expected a named parameter, `%name: type`, as the first parameter of \
+                         this list is named",
+                    ));
+                }
+                let arg =
+                    parser.parse_argument(/*allow_type=*/ true, /*allow_attrs=*/ true)?;
+                params.push(AbiParam::new_with_attrs(arg.ty, arg.attrs.iter().copied()));
+                args.push(arg);
+                if !parser.parse_optional_comma()? {
+                    break;
+                }
+            }
+            parser.parse_rparen()?;
+        } else {
+            parse_params_after_lparen(parser, &mut params)?;
+        }
 
-        let mut results = SmallVec::new_const();
-        parser.parse_optional_arrow_type_list(&mut results)?;
+        // Whether the results are a single type without parentheses, which has no dictionary
+        let bare_result = parser.token_stream_mut().is_next(|tok| matches!(tok, Token::Rstab))
+            && parser.token_stream().peek_second() != Some(Token::Lparen);
+        let results = parse_optional_results(parser)?;
 
-        let sig = Signature::with_convention(
-            &parser.context_rc(),
-            cc,
-            args.iter().map(|arg| arg.ty),
+        let declaration = !named && !params.is_empty();
+        let has_body = parser.token_stream_mut().is_next(|tok| matches!(tok, Token::Lbrace));
+        if declaration && has_body {
+            let span = next_token_span(parser)?;
+            let reason = if bare_result {
+                "a function declared without parameter names cannot have a body; the attributes of \
+                 a result are written in parentheses, `-> (type { .. })`"
+            } else {
+                "a function declared without parameter names cannot have a body"
+            };
+            return Err(ParserError::from(report! {
+                message: "invalid function declaration",
+                labels: [primary(span, String::from(reason))],
+            }));
+        }
+        if named && !has_body {
+            let span = next_token_span(parser)?;
+            let reason = "expected the body of a function whose parameters are named";
+            return Err(ParserError::from(report! {
+                message: "invalid function definition",
+                labels: [primary(span, reason)],
+            }));
+        }
+
+        let sig = Signature {
+            params,
             results,
-        );
+            cc,
+        };
 
         let name = parser.context_rc().create_attribute::<IdentAttr, _>(name);
         state.add_attribute("name", name);
@@ -186,9 +248,12 @@ impl OpParser for Function {
         let advice_effects = parser.context_rc().create_attribute::<AdviceEffectArrayAttr, _>([]);
         state.add_attribute("advice_effects", advice_effects);
 
-        if let Some(body) = parser.parse_optional_region(&args, false)? {
-            state.add_region(body);
-        }
+        // A declaration has one empty region
+        let body = match parser.parse_optional_region(&args, false)? {
+            Some(body) => body,
+            None => parser.context().create_region(),
+        };
+        state.add_region(body);
         parser.parse_optional_attribute_dict_with_keyword(&mut state.attrs)?;
         Ok(())
     }
@@ -196,6 +261,8 @@ impl OpParser for Function {
 
 impl OpPrinter for Function {
     fn print(&self, printer: &mut AsmPrinter<'_>) {
+        use crate::formatter::{const_text, display};
+
         let sig = self.get_signature();
 
         printer.print_space();
@@ -209,21 +276,28 @@ impl OpPrinter for Function {
 
         printer.print_symbol_name(self.get_name().as_symbol());
         if self.is_declaration() {
-            printer.print_function_type_parts(
-                sig.params().iter().map(|p| p.ty),
-                sig.results().iter().map(|p| p.ty),
-            );
+            print_param_list(printer, sig.params());
+            print_optional_results(printer, sig.declared_results());
         } else {
             let body = self.body();
             let entry = body.entry();
-            printer.print_value_id_and_type_list(entry.argument_values());
-            if !sig.results().is_empty() {
-                printer.print_space();
-                printer.print_arrow_type_list(
-                    /*elide_single_type_parens=*/ true,
-                    sig.results().iter().map(|p| p.ty),
-                );
+            printer.print_lparen();
+            for (i, arg) in entry.argument_values().enumerate() {
+                if i > 0 {
+                    *printer += const_text(", ");
+                }
+                let arg = arg.borrow();
+                *printer += display(arg.id()) + const_text(": ");
+                printer.print_type(arg.ty());
+                if let Some(param) = sig.params().get(i)
+                    && !param.attrs.is_empty()
+                {
+                    printer.print_space();
+                    printer.write_attributes(&param.attrs);
+                }
             }
+            printer.print_rparen();
+            print_optional_results(printer, sig.declared_results());
             printer.print_space();
             printer.print_region(&body);
         }
