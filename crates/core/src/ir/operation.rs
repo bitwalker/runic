@@ -19,14 +19,13 @@ pub use self::{
 };
 use super::{
     effects::{
-        AdviceEffectOpInterface, Effect, EffectInstance, HasRecursiveAdviceEffects,
-        HasRecursiveMemoryEffects, MemoryEffect, MemoryEffectOpInterface,
+        Effect, EffectInstance, HasRecursiveMemoryEffects, MemoryEffect, MemoryEffectOpInterface,
     },
     *,
 };
 use crate::{
     Attribute, AttributeRef, AttributeRegistration, Forward, NamedAttribute, ProgramPoint,
-    attributes::OpAttribute, dialects::builtin::attributes::SymbolRefAttr, effects::AdviceEffect,
+    attributes::OpAttribute, dialects::builtin::attributes::SymbolRefAttr,
     patterns::RewritePatternSet,
 };
 
@@ -1485,23 +1484,6 @@ impl Operation {
             }
         }
 
-        let effects = RecursiveEffectIterator::<AdviceEffect>::new(this_op);
-        for (_, effect) in effects {
-            // Advice ffects are precise, so we don't need to be conservative in the face
-            // of unknown effects
-            let Some(effect) = effect else {
-                continue;
-            };
-
-            // We can drop effects if:
-            //
-            // * the effect is a read
-            match effect.effect() {
-                AdviceEffect::Read => (),
-                _ => return false,
-            }
-        }
-
         // If we get here, none of the operations had effects that prevented marking this operation
         // as dead.
         true
@@ -1549,48 +1531,6 @@ impl Operation {
         true
     }
 
-    /// Returns true if the given operation is free of advice provider effects.
-    ///
-    /// An operation is free of advice effects if its implementation of `AdviceEffectOpInterface`
-    /// indicates that it has no effects. Alternatively, if the operation has the
-    /// `HasRecursiveAdviceEffects` trait, then it is free of advice effects if all of its nested
-    /// operations are free of advice effects.
-    ///
-    /// If the operation has both, then it is free of advice effects if both conditions are
-    /// satisfied.
-    pub fn is_advice_effect_free(&self) -> bool {
-        if let Some(adv_interface) = self.as_trait::<dyn AdviceEffectOpInterface>() {
-            if !adv_interface.has_no_effect() {
-                return false;
-            }
-
-            // If the op does not have recursive side effects, then it is advice effect free
-            if !self.implements::<dyn HasRecursiveAdviceEffects>() {
-                return true;
-            }
-        } else if !self.implements::<dyn HasRecursiveAdviceEffects>() {
-            // Otherwise, if the op does not implement the advice effect interface and it does not
-            // have recursive side effects, then it cannot be known that the op is moveable.
-            return false;
-        }
-
-        // Recurse into the regions and ensure that all nested ops are advice effect free
-        for region in self.regions() {
-            let walk_result = region.prewalk(|op| {
-                if !op.is_advice_effect_free() {
-                    WalkResult::Break(())
-                } else {
-                    WalkResult::Continue(())
-                }
-            });
-            if walk_result.was_interrupted() {
-                return false;
-            }
-        }
-
-        true
-    }
-
     pub fn get_effects_recursively<T: Effect>(&self) -> Option<SmallVec<[EffectInstance<T>; 2]>> {
         use crate::effects::RecursiveEffectIterator;
 
@@ -1615,18 +1555,6 @@ impl Operation {
         mem_interface.effects().any(|effect| effect.effect() == expected_effect)
     }
 
-    /// Returns true if this operation is known to have `expected_effect`.
-    ///
-    /// Returns false if the op has unknown effects, no effects, or does not have `expected_effect`
-    /// amongst its effects.
-    pub fn has_advice_effect(&self, expected_effect: AdviceEffect) -> bool {
-        let Some(adv_interface) = self.as_trait::<dyn AdviceEffectOpInterface>() else {
-            return false;
-        };
-
-        adv_interface.effects().any(|effect| effect.effect() == expected_effect)
-    }
-
     /// Returns true if this operation has `expected_effect` and _only_ `expected_effect`.
     ///
     /// Returns false if the op has no effects, or has any effect other than `expected_effect`.
@@ -1638,24 +1566,6 @@ impl Operation {
             return false;
         }
         for effect in mem_interface.effects() {
-            if effect.effect() != expected_effect {
-                return false;
-            }
-        }
-        true
-    }
-
-    /// Returns true if this operation has `expected_effect` and _only_ `expected_effect`.
-    ///
-    /// Returns false if the op has no effects, or has any effect other than `expected_effect`.
-    pub fn has_single_advice_effect(&self, expected_effect: AdviceEffect) -> bool {
-        let Some(adv_interface) = self.as_trait::<dyn AdviceEffectOpInterface>() else {
-            return false;
-        };
-        if adv_interface.has_no_effect() {
-            return false;
-        }
-        for effect in adv_interface.effects() {
             if effect.effect() != expected_effect {
                 return false;
             }
@@ -2050,5 +1960,67 @@ mod tests {
 
         let symbol_from_callable = function.as_symbol_ref();
         assert_eq!(symbol_from_callable.borrow().as_operation_ref(), op_ref);
+    }
+
+    /// The memory-effect queries on `Operation` for an op that reads, one that writes and one with
+    /// no effect. Pinned before the advice effects were removed, and unchanged by it.
+    #[test]
+    fn memory_effect_queries_distinguish_read_write_and_no_effect() {
+        use crate::{
+            Builder, BuilderExt, SourceSpan, ValueRef,
+            dialects::{
+                builtin::attributes::Overflow,
+                test::{Add, Load, Store},
+            },
+            effects::MemoryEffect,
+        };
+
+        let mut test = Test::named("memory_effect_queries");
+        let i32 = test.context().i32();
+        let pointer = test.context().ptr_type(i32);
+        test.with_function("memory_effect_queries", &[pointer, i32], &[]);
+        let (store, load, add) = {
+            let mut builder = test.function_builder();
+            let entry = builder.entry_block();
+            let (addr, value) = {
+                let block = entry.borrow();
+                (block.arguments()[0] as ValueRef, block.arguments()[1] as ValueRef)
+            };
+            let builder = builder.builder_mut();
+            builder.set_insertion_point_to_end(entry);
+            let store = builder.create::<Store, _>(SourceSpan::UNKNOWN)(addr, value).unwrap();
+            let load = builder.create::<Load, _>(SourceSpan::UNKNOWN)(addr).unwrap();
+            let add =
+                builder.create::<Add, _>(SourceSpan::UNKNOWN)(value, value, Overflow::Wrapping)
+                    .unwrap();
+            (
+                store.borrow().as_operation().as_operation_ref(),
+                load.borrow().as_operation().as_operation_ref(),
+                add.borrow().as_operation().as_operation_ref(),
+            )
+        };
+
+        let store = store.borrow();
+        assert!(store.has_memory_effect(MemoryEffect::Write));
+        assert!(!store.has_memory_effect(MemoryEffect::Read));
+        assert!(store.has_single_memory_effect(MemoryEffect::Write));
+        assert!(!store.has_single_memory_effect(MemoryEffect::Read));
+        assert!(!store.is_memory_effect_free());
+        assert!(!store.would_be_trivially_dead_even_if_terminator());
+
+        let load = load.borrow();
+        assert!(load.has_memory_effect(MemoryEffect::Read));
+        assert!(!load.has_memory_effect(MemoryEffect::Write));
+        assert!(load.has_single_memory_effect(MemoryEffect::Read));
+        assert!(!load.has_single_memory_effect(MemoryEffect::Write));
+        assert!(!load.is_memory_effect_free());
+        assert!(load.would_be_trivially_dead_even_if_terminator());
+
+        let add = add.borrow();
+        assert!(!add.has_memory_effect(MemoryEffect::Read));
+        assert!(!add.has_memory_effect(MemoryEffect::Write));
+        assert!(!add.has_single_memory_effect(MemoryEffect::Read));
+        assert!(add.is_memory_effect_free());
+        assert!(add.would_be_trivially_dead_even_if_terminator());
     }
 }

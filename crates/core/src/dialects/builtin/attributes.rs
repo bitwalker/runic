@@ -15,13 +15,10 @@ mod unit;
 mod visibility;
 
 pub use self::{
-    array::{
-        AdviceEffectArrayAttr, Array, LocalVariableArrayAttr, MemoryEffectArrayAttr, TypeArrayAttr,
-        U32ArrayAttr,
-    },
+    array::{Array, LocalVariableArrayAttr, MemoryEffectArrayAttr, TypeArrayAttr, U32ArrayAttr},
     boolean::BoolAttr,
     bytes::{Bytes, BytesAttr},
-    effects::{AdviceEffectDescriptor, AdviceResourceKind, MemoryEffectDescriptor},
+    effects::MemoryEffectDescriptor,
     integer::*,
     list::{List, ListAttr},
     local_variable::{LocalVariable, LocalVariableAttr},

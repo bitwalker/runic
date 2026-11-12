@@ -12,7 +12,6 @@ use crate::{OperationRef, SymbolRef, ValueRef};
 pub trait HasRecursiveEffects<T: Effect> {}
 
 impl<T: HasRecursiveMemoryEffects> HasRecursiveEffects<MemoryEffect> for T {}
-impl<T: HasRecursiveAdviceEffects> HasRecursiveEffects<AdviceEffect> for T {}
 
 pub trait EffectOpInterface<T: Effect> {
     /// Return the set all of the operation's effects
@@ -325,18 +324,45 @@ mod tests {
         traits::SingleBlock,
     };
 
+    /// A second kind of effect, local to this test: the effect machinery is generic over the
+    /// effect kind, and dialects define their own.
+    #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+    enum PingEffect {
+        Ping,
+    }
+
+    impl Effect for PingEffect {
+        fn is_recursive_on(op: &crate::Operation) -> bool {
+            op.implements::<dyn HasRecursivePingEffects>()
+        }
+    }
+
+    trait PingEffectOpInterface = EffectOpInterface<PingEffect>;
+
+    trait HasRecursivePingEffects {}
+    impl<T: HasRecursivePingEffects> HasRecursiveEffects<PingEffect> for T {}
+
     #[derive(crate::derive::EffectOpInterface)]
     #[effects(MemoryEffect())]
-    #[effects(AdviceEffect())]
+    #[effects(PingEffect())]
     #[crate::derive::operation(
         dialect = TestDialect,
-        traits(SingleBlock, HasRecursiveMemoryEffects, HasRecursiveAdviceEffects),
-        implements(MemoryEffectOpInterface, AdviceEffectOpInterface)
+        traits(SingleBlock, HasRecursiveMemoryEffects, HasRecursivePingEffects),
+        implements(MemoryEffectOpInterface, PingEffectOpInterface)
     )]
     pub struct RecursiveRegion {
         #[region]
         body: Region,
     }
+
+    /// An op whose only effect is a `PingEffect`, and which says nothing about memory effects.
+    #[derive(crate::derive::EffectOpInterface)]
+    #[effects(PingEffect(PingEffect::Ping))]
+    #[crate::derive::operation(
+        dialect = TestDialect,
+        implements(PingEffectOpInterface)
+    )]
+    pub struct Ping {}
 
     /// **A DECLARED RECURSIVE-EFFECTS MARKER MUST BE VISIBLE TO THE WALK.**
     ///
@@ -382,5 +408,46 @@ mod tests {
             Some(MemoryEffect::Write),
             "the nested store's write is the op's recursive effect"
         );
+    }
+
+    /// Two effect kinds are walked independently over the same region: each kind sees its own
+    /// effects, and an op that says nothing about a kind is "unknown" for that kind only.
+    #[test]
+    fn the_walk_is_generic_over_the_effect_kind() {
+        let mut test = Test::named("two_effect_kinds");
+        let i32 = test.context().i32();
+        let pointer = test.context().ptr_type(i32);
+        test.with_function("two_effect_kinds", &[pointer, i32], &[]);
+        let region_op = {
+            let mut builder = test.function_builder();
+            let entry = builder.entry_block();
+            let (addr, value) = {
+                let block = entry.borrow();
+                (block.arguments()[0] as ValueRef, block.arguments()[1] as ValueRef)
+            };
+            let builder = builder.builder_mut();
+            builder.set_insertion_point_to_end(entry);
+            let op = builder.create::<RecursiveRegion, ()>(SourceSpan::UNKNOWN)().unwrap();
+            let body = op.borrow().body().as_region_ref();
+            let block = builder.create_block(body, None, &[]);
+            builder.set_insertion_point_to_end(block);
+            builder.create::<Store, _>(SourceSpan::UNKNOWN)(addr, value).unwrap();
+            builder.create::<Ping, ()>(SourceSpan::UNKNOWN)().unwrap();
+            op.borrow().as_operation().as_operation_ref()
+        };
+
+        let memory = RecursiveEffectIterator::<MemoryEffect>::new(region_op)
+            .map(|(_, effect)| effect.map(|instance| *instance.effect()))
+            .collect::<alloc::vec::Vec<_>>();
+        assert_eq!(memory.len(), 2, "{memory:?}");
+        assert!(memory.contains(&Some(MemoryEffect::Write)), "{memory:?}");
+        assert!(memory.contains(&None), "the ping op's memory effects are unknown: {memory:?}");
+
+        let ping = RecursiveEffectIterator::<PingEffect>::new(region_op)
+            .map(|(_, effect)| effect.map(|instance| *instance.effect()))
+            .collect::<alloc::vec::Vec<_>>();
+        assert_eq!(ping.len(), 2, "{ping:?}");
+        assert!(ping.contains(&Some(PingEffect::Ping)), "{ping:?}");
+        assert!(ping.contains(&None), "the store's ping effects are unknown: {ping:?}");
     }
 }

@@ -8,8 +8,8 @@ use crate::{
     dialects::builtin::{
         BuiltinDialect,
         attributes::{
-            AbiParam, AdviceEffectArrayAttr, AdviceResourceKind, IntAttr, LocalVariable,
-            MemoryEffectArrayAttr, Signature, SignatureAttr, TypeArrayAttr, VisibilityAttr,
+            AbiParam, IntAttr, LocalVariable, MemoryEffectArrayAttr, Signature, SignatureAttr,
+            TypeArrayAttr, VisibilityAttr,
             signature::{
                 SignatureWriter, invalid_parameter_list, next_token_span, parse_optional_results,
                 parse_params_after_lparen, print_optional_results, print_param_list,
@@ -17,9 +17,8 @@ use crate::{
         },
     },
     effects::{
-        AdviceEffect, AdviceEffectOpInterface, AdviceMapResource, AdviceStackResource,
-        EffectInstance, EffectIterator, EffectOpInterface, HasRecursiveAdviceEffects,
-        HasRecursiveMemoryEffects, MemoryEffect, MemoryEffectOpInterface, MerkleStoreResource,
+        EffectInstance, EffectIterator, EffectOpInterface, HasRecursiveMemoryEffects, MemoryEffect,
+        MemoryEffectOpInterface,
     },
     interner,
     parse::ParserExt,
@@ -36,7 +35,7 @@ pub type FunctionRef = UnsafeIntrusiveEntityRef<Function>;
 
 #[operation(
     dialect = BuiltinDialect,
-    traits(SingleRegion, IsolatedFromAbove, HasRecursiveMemoryEffects, HasRecursiveAdviceEffects),
+    traits(SingleRegion, IsolatedFromAbove, HasRecursiveMemoryEffects),
     implements(
         UsableSymbol,
         Symbol,
@@ -44,7 +43,6 @@ pub type FunctionRef = UnsafeIntrusiveEntityRef<Function>;
         CallableSymbol,
         RegionKindInterface,
         MemoryEffectOpInterface,
-        AdviceEffectOpInterface,
         OpPrinter
     )
 )]
@@ -60,9 +58,6 @@ pub struct Function {
     #[attr]
     #[default]
     memory_effects: MemoryEffectArrayAttr,
-    #[attr]
-    #[default]
-    advice_effects: AdviceEffectArrayAttr,
     /// The set of local variables allocated within this function
     #[attr]
     #[default]
@@ -83,31 +78,6 @@ impl EffectOpInterface<MemoryEffect> for Function {
             EffectIterator::new(
                 self.as_operation()
                     .get_effects_recursively::<MemoryEffect>()
-                    .unwrap_or_default(),
-            )
-        }
-    }
-}
-
-impl EffectOpInterface<AdviceEffect> for Function {
-    fn effects(&self) -> crate::effects::EffectIterator<AdviceEffect> {
-        if self.is_declaration() {
-            let advice_effects = self.advice_effects();
-            EffectIterator::new(advice_effects.as_value().iter().map(|desc| match desc.resource {
-                AdviceResourceKind::Map => {
-                    EffectInstance::new_with_resource(desc.effect, AdviceMapResource)
-                }
-                AdviceResourceKind::Stack => {
-                    EffectInstance::new_with_resource(desc.effect, AdviceStackResource)
-                }
-                AdviceResourceKind::MerkleStore => {
-                    EffectInstance::new_with_resource(desc.effect, MerkleStoreResource)
-                }
-            }))
-        } else {
-            EffectIterator::new(
-                self.as_operation()
-                    .get_effects_recursively::<AdviceEffect>()
                     .unwrap_or_default(),
             )
         }
@@ -240,9 +210,6 @@ impl OpParser for Function {
 
         let memory_effects = parser.context_rc().create_attribute::<MemoryEffectArrayAttr, _>([]);
         state.add_attribute("memory_effects", memory_effects);
-
-        let advice_effects = parser.context_rc().create_attribute::<AdviceEffectArrayAttr, _>([]);
-        state.add_attribute("advice_effects", advice_effects);
 
         // A declaration has one empty region
         let body = match parser.parse_optional_region(&args, false)? {
@@ -683,5 +650,42 @@ impl OpParser for RetImm {
         state.add_attribute("value", attr);
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{dialects::builtin::attributes::MemoryEffectDescriptor, testing::Test};
+
+    fn effects_of(function: &Function) -> Vec<MemoryEffect> {
+        EffectOpInterface::<MemoryEffect>::effects(function)
+            .map(|instance| *instance.effect())
+            .collect()
+    }
+
+    fn descriptor(effect: MemoryEffect) -> MemoryEffectDescriptor {
+        MemoryEffectDescriptor {
+            effect,
+            argument: None,
+            result: None,
+        }
+    }
+
+    /// A declaration reports exactly the effects in its `memory_effects` property.
+    #[test]
+    fn a_declaration_reports_its_memory_effects_property() {
+        let mut test = Test::named("declaration_effects").in_module("test");
+        let mut function = test.define_function("callee", &[], &[]);
+        assert!(function.borrow().is_declaration());
+        assert!(effects_of(&function.borrow()).is_empty());
+
+        function
+            .borrow_mut()
+            .set_memory_effects([descriptor(MemoryEffect::Read), descriptor(MemoryEffect::Write)]);
+
+        let function = function.borrow();
+        assert_eq!(effects_of(&function), [MemoryEffect::Read, MemoryEffect::Write]);
+        assert!(!function.as_operation().is_memory_effect_free());
     }
 }

@@ -145,7 +145,6 @@ mod tests {
             };
         }
         values!(
-            AdviceEffectArrayAttr,
             LocalVariableArrayAttr,
             MemoryEffectArrayAttr,
             TypeArrayAttr,
