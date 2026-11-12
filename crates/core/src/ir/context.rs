@@ -16,6 +16,7 @@ use crate::{
     AttributeRef, AttributeRegistration, FxHashMap,
     attributes::{AttributeName, DerivableTypeAttribute, Marker},
     constants::{ConstantData, ConstantId, ConstantPool},
+    dialects::builtin::types::{FloatType, IntegerType, IsizeType, NeverType, UnknownType},
     types::{TypeName, TypeRegistration, TypeStorage, TypeUniquer},
 };
 
@@ -41,6 +42,8 @@ pub struct Context {
     /// either order.
     types: RefCell<TypeUniquer>,
     allocator: Rc<Blink>,
+    /// Handles to the commonly used builtin types, interned when the context is created.
+    builtin_types: BuiltinTypes,
     registered_dialects: RefCell<FxHashMap<interner::Symbol, Rc<dyn Dialect>>>,
     constants: RefCell<ConstantPool>,
     type_cache: RefCell<FxHashMap<core::any::TypeId, Arc<Type>>>,
@@ -52,6 +55,101 @@ pub struct Context {
 impl Default for Context {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// The parts of a [Context] that interning a type uses, borrowed separately so that the builtin
+/// types can be interned before the context they belong to is assembled.
+#[derive(Copy, Clone)]
+struct TypeTables<'a> {
+    types: &'a RefCell<TypeUniquer>,
+    allocator: &'a Blink,
+    registered_dialects: &'a RefCell<FxHashMap<interner::Symbol, Rc<dyn Dialect>>>,
+}
+
+impl TypeTables<'_> {
+    /// See [Context::intern_type].
+    fn intern_type<T: TypeRegistration>(self, value: T) -> crate::types::Type {
+        let hash = crate::types::hash_of(&value);
+        if let Some(ty) = self.types.borrow().find(hash, &value) {
+            return ty;
+        }
+        // Resolved before the uniquer is borrowed again: this may register `T`'s dialect, and so
+        // run code that interns types.
+        let name = self.get_registered_type_name::<T>();
+        // That code may also have interned a value equal to `value`, which `get_or_insert_with`
+        // finds again rather than inserting a second type.
+        let (ty, rejected) = self.types.borrow_mut().get_or_insert_with(value, hash, |value| {
+            let storage = self.allocator.put(TypeStorage::new(name, hash, value));
+            // SAFETY: `storage` is an initialized `TypeStorage<T>` in the arena, which keeps it at
+            // this address until the context's last `Rc<Blink>` is dropped and is never reset.
+            // The `&mut` from `put` is converted to a pointer here and never used again, so
+            // nothing can mutate the storage, and the pointer covers the whole storage.
+            unsafe { crate::types::Type::from_storage(core::ptr::NonNull::from(storage)) }
+        });
+        // Dropped only now that the uniquer is released, as its `Drop` may intern types.
+        drop(rejected);
+        ty
+    }
+
+    /// See [Context::get_registered_type_name].
+    fn get_registered_type_name<T: TypeRegistration>(self) -> TypeName {
+        self.get_or_register_dialect::<T::Dialect>()
+            .registered_type_name::<T>()
+            .unwrap_or_else(|| {
+                panic!(
+                    "type `{}` is not registered with dialect '{}'",
+                    core::any::type_name::<T>(),
+                    <T::Dialect as DialectRegistration>::NAMESPACE
+                )
+            })
+    }
+
+    /// See [Context::get_or_register_dialect].
+    fn get_or_register_dialect<T: DialectRegistration>(self) -> Rc<dyn Dialect> {
+        let dialect_name = <T as DialectRegistration>::NAMESPACE.into();
+        if let Some(dialect) = self.registered_dialects.borrow().get(&dialect_name).cloned() {
+            return dialect;
+        }
+
+        let dialect = super::dialect::dialect_init::<T>();
+        self.registered_dialects.borrow_mut().insert(dialect_name, Rc::clone(&dialect));
+        dialect
+    }
+}
+
+/// Handles to the builtin types a [Context] interns when it is created.
+struct BuiltinTypes {
+    i1: crate::types::Type,
+    i8: crate::types::Type,
+    i16: crate::types::Type,
+    i32: crate::types::Type,
+    i64: crate::types::Type,
+    i128: crate::types::Type,
+    isize: crate::types::Type,
+    f32: crate::types::Type,
+    f64: crate::types::Type,
+    unknown: crate::types::Type,
+    never: crate::types::Type,
+}
+
+impl BuiltinTypes {
+    fn new(tables: TypeTables<'_>) -> Self {
+        let int =
+            |width| tables.intern_type(IntegerType::new(width).expect("a valid integer width"));
+        Self {
+            i1: int(1),
+            i8: int(8),
+            i16: int(16),
+            i32: int(32),
+            i64: int(64),
+            i128: int(128),
+            isize: tables.intern_type(IsizeType),
+            f32: tables.intern_type(FloatType::F32),
+            f64: tables.intern_type(FloatType::F64),
+            unknown: tables.intern_type(UnknownType),
+            never: tables.intern_type(NeverType),
+        }
     }
 }
 
@@ -129,12 +227,22 @@ impl Context {
         }
 
         let allocator = Rc::new(Blink::new());
+        let types = RefCell::default();
+        let registered_dialects = RefCell::new(registered_dialects);
+        // The handles stay valid when `types`, `allocator` and the dialects move into the context:
+        // a handle points at its storage in the arena, which the `Rc` keeps where it is.
+        let builtin_types = BuiltinTypes::new(TypeTables {
+            types: &types,
+            allocator: &allocator,
+            registered_dialects: &registered_dialects,
+        });
         Self {
             sources: RefCell::new(Arc::new(SourceMap::new(namespace))),
             diagnostics: RefCell::new(DiagnosticCollector::new()),
-            types: Default::default(),
+            types,
             allocator,
-            registered_dialects: RefCell::new(registered_dialects),
+            builtin_types,
+            registered_dialects,
             constants: Default::default(),
             type_cache: Default::default(),
             uniqued_attr_cache: Default::default(),
@@ -231,28 +339,19 @@ impl Context {
             .expect_registered_attribute_name::<T>()
     }
 
+    /// The parts of this context that interning a type uses.
+    #[inline]
+    fn type_tables(&self) -> TypeTables<'_> {
+        TypeTables {
+            types: &self.types,
+            allocator: &self.allocator,
+            registered_dialects: &self.registered_dialects,
+        }
+    }
+
     /// Returns the type denoted by `value`, interning it on first use.
     pub fn intern_type<T: TypeRegistration>(&self, value: T) -> crate::types::Type {
-        let hash = crate::types::hash_of(&value);
-        if let Some(ty) = self.types.borrow().find(hash, &value) {
-            return ty;
-        }
-        // Resolved before the uniquer is borrowed again: this may register `T`'s dialect, and so
-        // run code that interns types.
-        let name = self.get_registered_type_name::<T>();
-        // That code may also have interned a value equal to `value`, which `get_or_insert_with`
-        // finds again rather than inserting a second type.
-        let (ty, rejected) = self.types.borrow_mut().get_or_insert_with(value, hash, |value| {
-            let storage = self.allocator.put(TypeStorage::new(name, hash, value));
-            // SAFETY: `storage` is an initialized `TypeStorage<T>` in the arena, which keeps it at
-            // this address until the context's last `Rc<Blink>` is dropped and is never reset.
-            // The `&mut` from `put` is converted to a pointer here and never used again, so
-            // nothing can mutate the storage, and the pointer covers the whole storage.
-            unsafe { crate::types::Type::from_storage(core::ptr::NonNull::from(storage)) }
-        });
-        // Dropped only now that the uniquer is released, as its `Drop` may intern types.
-        drop(rejected);
-        ty
+        self.type_tables().intern_type(value)
     }
 
     /// The registration record of `T`, registering `T`'s dialect first if necessary.
@@ -260,29 +359,107 @@ impl Context {
     /// Panics if `T` is not registered with its dialect, or if another Rust type is registered
     /// under `T`'s name.
     pub fn get_registered_type_name<T: TypeRegistration>(&self) -> TypeName {
-        self.get_or_register_dialect::<T::Dialect>()
-            .registered_type_name::<T>()
-            .unwrap_or_else(|| {
-                panic!(
-                    "type `{}` is not registered with dialect '{}'",
-                    core::any::type_name::<T>(),
-                    <T::Dialect as DialectRegistration>::NAMESPACE
-                )
-            })
+        self.type_tables().get_registered_type_name::<T>()
     }
 
     pub fn get_or_register_dialect<T>(&self) -> Rc<dyn Dialect>
     where
         T: DialectRegistration,
     {
-        let dialect_name = <T as DialectRegistration>::NAMESPACE.into();
-        if let Some(dialect) = self.registered_dialects.borrow().get(&dialect_name).cloned() {
-            return dialect;
-        }
+        self.type_tables().get_or_register_dialect::<T>()
+    }
 
-        let dialect = super::dialect::dialect_init::<T>();
-        self.registered_dialects.borrow_mut().insert(dialect_name, Rc::clone(&dialect));
-        dialect
+    /// The integer type `iN` of `width` bits.
+    ///
+    /// Panics unless `1 <= width <= IntegerType::MAX_WIDTH`; see [Self::try_int_type].
+    pub fn int_type(&self, width: u32) -> crate::types::Type {
+        self.try_int_type(width).unwrap_or_else(|| {
+            panic!(
+                "invalid integer width {width}: an integer type is 1 to {} bits wide",
+                IntegerType::MAX_WIDTH
+            )
+        })
+    }
+
+    /// The integer type `iN` of `width` bits, or `None` unless
+    /// `1 <= width <= IntegerType::MAX_WIDTH`.
+    pub fn try_int_type(&self, width: u32) -> Option<crate::types::Type> {
+        let cached = &self.builtin_types;
+        Some(match width {
+            1 => cached.i1,
+            8 => cached.i8,
+            16 => cached.i16,
+            32 => cached.i32,
+            64 => cached.i64,
+            128 => cached.i128,
+            _ => return IntegerType::new(width).map(|ty| self.intern_type(ty)),
+        })
+    }
+
+    /// The type `i1`.
+    #[inline]
+    pub fn i1(&self) -> crate::types::Type {
+        self.builtin_types.i1
+    }
+
+    /// The type `i8`.
+    #[inline]
+    pub fn i8(&self) -> crate::types::Type {
+        self.builtin_types.i8
+    }
+
+    /// The type `i16`.
+    #[inline]
+    pub fn i16(&self) -> crate::types::Type {
+        self.builtin_types.i16
+    }
+
+    /// The type `i32`.
+    #[inline]
+    pub fn i32(&self) -> crate::types::Type {
+        self.builtin_types.i32
+    }
+
+    /// The type `i64`.
+    #[inline]
+    pub fn i64(&self) -> crate::types::Type {
+        self.builtin_types.i64
+    }
+
+    /// The type `i128`.
+    #[inline]
+    pub fn i128(&self) -> crate::types::Type {
+        self.builtin_types.i128
+    }
+
+    /// The pointer-width integer type `isize`.
+    #[inline]
+    pub fn isize_type(&self) -> crate::types::Type {
+        self.builtin_types.isize
+    }
+
+    /// The type `f32`.
+    #[inline]
+    pub fn f32_type(&self) -> crate::types::Type {
+        self.builtin_types.f32
+    }
+
+    /// The type `f64`.
+    #[inline]
+    pub fn f64_type(&self) -> crate::types::Type {
+        self.builtin_types.f64
+    }
+
+    /// The unknown type `?`.
+    #[inline]
+    pub fn unknown_type(&self) -> crate::types::Type {
+        self.builtin_types.unknown
+    }
+
+    /// The bottom type `never`.
+    #[inline]
+    pub fn never_type(&self) -> crate::types::Type {
+        self.builtin_types.never
     }
 
     pub fn get_marker<T>(self: &Rc<Context>) -> UnsafeIntrusiveEntityRef<T>

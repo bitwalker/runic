@@ -19,7 +19,13 @@ pub use self::{
         TypeRegistration,
     },
 };
-use crate::{DialectRegistration, dialects::builtin::BuiltinDialect};
+use crate::{
+    DialectRegistration,
+    dialects::builtin::{
+        BuiltinDialect,
+        types::{FloatType, IntegerType, IsizeType, NeverType, UnknownType},
+    },
+};
 
 /// The value a type is uniqued by: two types are the same type exactly when they have the same
 /// Rust type and compare equal.
@@ -135,6 +141,36 @@ impl Type {
         // `TypeStorage<T>`, and the handle's pointer has provenance over all of it. The storage
         // is never mutated, so a shared reference to its value is valid while the handle is.
         Some(unsafe { &self.0.cast::<TypeStorage<T>>().as_ref().value })
+    }
+
+    /// Returns true if this type is an integer: an `iN` or `isize`.
+    pub fn is_integer(&self) -> bool {
+        self.is::<IntegerType>() || self.is_isize()
+    }
+
+    /// The width in bits of this type if it is an `iN`; `None` for `isize` and non-integers.
+    pub fn integer_width(&self) -> Option<u32> {
+        self.downcast_ref::<IntegerType>().map(IntegerType::width)
+    }
+
+    /// Returns true if this type is the pointer-width integer `isize`.
+    pub fn is_isize(&self) -> bool {
+        self.is::<IsizeType>()
+    }
+
+    /// Returns true if this type is a floating-point type.
+    pub fn is_float(&self) -> bool {
+        self.is::<FloatType>()
+    }
+
+    /// Returns true if this type is the unknown type `?`.
+    pub fn is_unknown(&self) -> bool {
+        self.is::<UnknownType>()
+    }
+
+    /// Returns true if this type is the bottom type `never`.
+    pub fn is_never(&self) -> bool {
+        self.is::<NeverType>()
     }
 
     /// Returns this type as the interface `Trait`, if its registration declares it.
