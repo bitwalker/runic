@@ -111,10 +111,6 @@ impl Clone for AbiParam {
 }
 
 impl AbiParam {
-    /// The key of the attribute that says how a parameter is extended: `#builtin.zext` or
-    /// `#builtin.sext`.
-    pub const EXTEND: &str = "extend";
-
     /// Panics, in debug builds, if `ty` is open: a parameter's type enters IR.
     #[track_caller]
     pub fn new(ty: Type) -> Self {
@@ -140,35 +136,37 @@ impl AbiParam {
 
     pub fn zext(ty: Type, context: &Rc<Context>) -> Self {
         let zext = context.create_attribute::<ZextAttr, _>(());
-        Self::new_with_attrs(ty, [NamedAttribute::new(Self::EXTEND, zext)])
+        Self::new_with_attrs(ty, [NamedAttribute::new(interner::symbols::Extend, zext)])
     }
 
     pub fn sext(ty: Type, context: &Rc<Context>) -> Self {
         let sext = context.create_attribute::<SextAttr, _>(());
-        Self::new_with_attrs(ty, [NamedAttribute::new(Self::EXTEND, sext)])
+        Self::new_with_attrs(ty, [NamedAttribute::new(interner::symbols::Extend, sext)])
     }
 
     pub fn sret(ty: Type, context: &Rc<Context>) -> Self {
         assert!(ty.is_pointer(), "sret parameters must be pointers");
         let sret = context.create_attribute::<SretAttr, _>(());
-        Self::new_with_attrs(ty, [NamedAttribute::new("sret", sret)])
+        Self::new_with_attrs(ty, [NamedAttribute::new(interner::symbols::Sret, sret)])
     }
 
     pub fn mark_sret(&mut self, context: &Rc<Context>) {
         let sret = context.create_attribute::<SretAttr, _>(());
         let attr = context.alloc_map_item(NamedAttribute {
-            name: crate::interner::symbols::Sret,
+            name: interner::symbols::Sret,
             value: sret,
         });
         self.attrs.insert(attr);
     }
 
     pub fn is_sret_param(&self) -> bool {
-        self.attrs.contains(&crate::interner::symbols::Sret)
+        self.attrs.contains(&interner::symbols::Sret)
     }
 
+    /// How the parameter is extended: the value of its `extend` attribute, `#builtin.zext` or
+    /// `#builtin.sext`.
     pub fn extension(&self) -> ArgumentExtension {
-        match self.attrs.find(&interner::Symbol::intern(Self::EXTEND)).get() {
+        match self.attrs.find(&interner::symbols::Extend).get() {
             None => ArgumentExtension::None,
             Some(attr) => {
                 let value = attr.value.borrow();
