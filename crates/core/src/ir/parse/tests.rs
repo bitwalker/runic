@@ -1250,7 +1250,7 @@ fn array_types_parse_print_and_report_invalid_lengths() {
             parse::parse_any(ParserConfig::new(context.clone()), "array.hir", &text).unwrap();
         let function = parsed.try_downcast_op::<Function>().unwrap();
         assert_eq!(function.borrow().signature().params()[0].ty, expected);
-        let printed = format!("{}", function.borrow().as_operation());
+        let printed = format!("{}", crate::Op::as_operation(&*function.borrow()));
         let fresh = Rc::new(Context::default());
         parse::parse_any(ParserConfig::new(fresh.clone()), "array-roundtrip.hir", &printed)
             .unwrap();
@@ -2425,4 +2425,74 @@ fn interning_many_types_finds_each_again() {
         assert_eq!(build(i as u32), *ty, "type {i} was interned twice");
     }
     assert_eq!(format!("{}", handles[3]), "struct s3<i4, ptr<i4>>");
+}
+
+/// The rendered text of the error that parsing `source` gives, on one line.
+fn parse_error_text(source: &str) -> String {
+    let test = ParserTest::default();
+    test.context().get_or_register_dialect::<TestDialect>();
+    let err = test.parse_any("declarations.hir", source).expect_err(source);
+    format!("{}", err.display()).split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The types of the arguments of the function `f` that `source` defines.
+fn argument_types(test: &ParserTest, source: &str) -> Vec<Type> {
+    let function = test
+        .parse::<Function>("declarations.hir", source)
+        .unwrap_or_else(|err| panic!("{source}\n{err:?}"));
+    let function = function.borrow();
+    let entry = function.entry_block();
+    let entry = entry.borrow();
+    entry.arguments().iter().map(|arg| (*arg as ValueRef).borrow().ty()).collect()
+}
+
+#[test]
+fn a_declared_type_alias_is_usable_in_later_declarations_and_operations() {
+    let test = ParserTest::default();
+    let source = "\
+type !a = i32;
+type !b = ptr<!a>;
+builtin.function public extern(\"C\") @f(%0: !a, %1: !b) {
+    builtin.ret;
+};";
+    let context = test.context();
+    assert_eq!(argument_types(&test, source), [context.i32(), context.ptr_type(context.i32())]);
+}
+
+#[test]
+fn type_alias_declarations_keep_their_checks() {
+    let message = parse_error_text("type !a = i32;\ntype !a = i64;\nbuiltin.world {};");
+    assert!(message.contains("alias 'a' is already defined"), "{message}");
+
+    let message = parse_error_text("type !a.b = i32;\nbuiltin.world {};");
+    assert!(message.contains("reserved for dialect-defined names"), "{message}");
+
+    let message = parse_error_text("type !a = i32\nbuiltin.world {};");
+    assert!(message.contains("invalid syntax"), "a missing ';': {message}");
+}
+
+#[test]
+fn the_bare_type_alias_form_is_an_error() {
+    let message = parse_error_text("!a = i32;\nbuiltin.world {};");
+    assert!(
+        message.contains("a type alias is declared with `type !name = ..;`"),
+        "{message}"
+    );
+}
+
+#[test]
+fn type_and_rec_remain_attribute_names() {
+    let test = ParserTest::default();
+    let source = "\
+builtin.function public extern(\"C\") @f(%0: i32) {
+    %1 = builtin.unrealized_conversion_cast %0 <{ ty = #builtin.type<i64> }> attributes { type = \
+                  true, rec = false };
+    builtin.ret;
+};";
+    let function = test.parse::<Function>("names.hir", source).unwrap();
+    let printed = format!("{}", crate::Op::as_operation(&*function.borrow()));
+    assert!(
+        printed.contains("attributes { rec = #builtin.bool<false>, type = #builtin.bool<true> }"),
+        "{printed}"
+    );
 }

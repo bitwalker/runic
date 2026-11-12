@@ -337,6 +337,11 @@ pub enum ParserError {
         span: SourceSpan,
         id: interner::Symbol,
     },
+    #[error("invalid type alias definition")]
+    BareTypeAliasDefinition {
+        #[label(primary, "a type alias is declared with `type !name = ..;`")]
+        span: SourceSpan,
+    },
     #[error("invalid type alias name '{id}'")]
     InvalidTypeAliasName {
         #[label(primary, "{reason}")]

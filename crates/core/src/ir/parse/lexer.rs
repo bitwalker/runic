@@ -683,6 +683,24 @@ impl<'input> TokenStream<'input> {
         }
     }
 
+    /// Peek at the token after the next one, consuming neither.
+    ///
+    /// It is lexed from the input that follows the next token by a lexer of its own, so it costs
+    /// lexing that token twice; use it only where one token of lookahead cannot decide. It is
+    /// `None` if the next token is an error or the end of the input, or if the one after it is an
+    /// error.
+    pub fn peek_second(&self) -> Option<Token<'input>> {
+        let Some(Ok((_, _, end))) = self.upcoming.as_ref() else {
+            return None;
+        };
+        let rest = self.lexer.scanner.slice_from(*end as usize);
+        let mut lexer = Lexer::new(self.source_id(), Scanner::new(rest));
+        match lexer.next()? {
+            Ok((_, token, _)) => Some(token),
+            Err(_) => None,
+        }
+    }
+
     /// Returns true if `predicate` returns true on the next token in the stream.
     ///
     /// If the next token is an error, this always returns false.

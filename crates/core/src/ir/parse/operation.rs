@@ -2076,14 +2076,13 @@ where
                 break Ok(top_level_op);
             };
 
+            if parse_optional_type_declaration(&mut op_parser)? {
+                continue;
+            }
             match next_token {
                 // Parse an attribute alias
                 Token::HashIdent(_) => {
                     parse_attribute_alias_def(&mut op_parser)?;
-                }
-                // Parse a type alias
-                Token::BangIdent(_) => {
-                    parse_type_alias_def(&mut op_parser)?;
                 }
                 // Parse a file-level metadata dictionary.
                 Token::FileMetadataStart => {
@@ -2095,6 +2094,44 @@ where
                 }
             }
         }
+    }
+}
+
+/// Parses the type declarations that come next at the top level, if any.
+///
+///   type-declarations ::= (type-alias-def)*
+///
+pub(super) fn parse_type_declarations<'input, P>(parser: &mut OperationParser<P>) -> ParseResult
+where
+    P: Parser<'input>,
+{
+    while parse_optional_type_declaration(parser)? {}
+    Ok(())
+}
+
+/// Parses a type declaration if one comes next at the top level, and returns whether it did.
+///
+/// The keyword `type` is recognised only where it is followed by a `!`-identifier, so it remains
+/// usable as an operation or attribute name. A `!`-identifier at the top level is the removed
+/// `!alias = type` form, and is an error.
+fn parse_optional_type_declaration<'input, P>(parser: &mut OperationParser<P>) -> ParseResult<bool>
+where
+    P: Parser<'input>,
+{
+    let Some((start, token, end)) = parser.token_stream_mut().peek()? else {
+        return Ok(false);
+    };
+    match token {
+        Token::BareIdent("type")
+            if matches!(parser.token_stream().peek_second(), Some(Token::BangIdent(_))) =>
+        {
+            parse_type_alias_def(parser)?;
+            Ok(true)
+        }
+        Token::BangIdent(_) => Err(ParserError::BareTypeAliasDefinition {
+            span: span!(parser.source_id(), start, end),
+        }),
+        _ => Ok(false),
     }
 }
 
@@ -2147,12 +2184,33 @@ where
 
 /// Parse a type alias declaration.
 ///
-///   type-alias-def ::= '!' alias-name `=` type
+///   type-alias-def ::= 'type' '!' alias-name `=` type `;`
 ///
 fn parse_type_alias_def<'input, P>(parser: &mut OperationParser<P>) -> ParseResult
 where
     P: Parser<'input>,
 {
+    let start = parser.token_stream().current_position();
+    let (span, id) = parse_type_alias_def_head(parser)?;
+    if parser.state().symbols.type_alias_definitions.contains_key(&id) {
+        return Err(ParserError::TypeAliasAlreadyDefined { span, id });
+    }
+    let ty = parser.parse_type()?.into_inner();
+    parser.parse_semicolon()?;
+    let span = span!(parser.source_id(), start, parser.token_stream().previous_end());
+    define_type_alias(parser, id, span, ty);
+    Ok(())
+}
+
+/// Parse the start of a type alias declaration, `'type' '!' alias-name '='`, and return the alias
+/// and its span.
+fn parse_type_alias_def_head<'input, P>(
+    parser: &mut OperationParser<P>,
+) -> ParseResult<(SourceSpan, interner::Symbol)>
+where
+    P: Parser<'input>,
+{
+    parser.token_stream_mut().expect(Token::BareIdent("type"))?;
     let (span, id) = parser
         .token_stream_mut()
         .expect_map("!-identifier", |tok| match tok {
@@ -2160,11 +2218,6 @@ where
             _ => None,
         })?
         .into_parts();
-
-    // Check for redefinitions.
-    if parser.state().symbols.type_alias_definitions.contains_key(&id) {
-        return Err(ParserError::TypeAliasAlreadyDefined { span, id });
-    }
 
     // Make sure this isn't invading the dialect type namespace.
     if id.as_str().contains('.') {
@@ -2176,22 +2229,23 @@ where
     }
 
     parser.parse_equal()?;
+    Ok((span, id))
+}
 
-    // Parse the type
-    let (alias_span, ty) = parser.parse_type()?.into_parts();
-
-    // Compute a span covering the whole definition
-    let span = span!(span.source().id(), span.range().start(), alias_span.range().end());
-
-    // Register this alias with the parser state.
+/// Define the type alias `id` as `ty`, declared at `span`.
+fn define_type_alias<'input, P>(
+    parser: &mut OperationParser<P>,
+    id: interner::Symbol,
+    span: SourceSpan,
+    ty: Type,
+) where
+    P: Parser<'input>,
+{
     let state = parser.state_mut();
     if let Some(asm_state) = state.asm_state.as_deref_mut() {
         asm_state.add_type_alias_definition(id, span, ty);
     }
-
     state.symbols.type_alias_definitions.insert(id, Span::new(span, ty));
-
-    Ok(())
 }
 
 /// Parse a top-level file metadata dictionary.

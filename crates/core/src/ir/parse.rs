@@ -375,6 +375,9 @@ pub fn parse_file_anchored(
 
 /// Parse the single top-level operation in the source `source_id`, and return it.
 ///
+/// The operation may be preceded by type declarations (`type !a = ..;` and `rec { .. }`), which is
+/// how the printer writes the recursion groups a root operation refers to.
+///
 /// Symbol resolution is rooted at a [World](crate::dialects::builtin::World), so parsing needs one
 /// to anchor the operation it is reading — `OperationParser` takes a
 /// [World](crate::dialects::builtin::World) and parses into its body. For a source whose top-level
@@ -443,6 +446,7 @@ fn parse_anchored_source(
     let mut operation_parser = operation::OperationParser::new(parser, world);
 
     let result = (|| -> Result<OperationRef, Report> {
+        operation::parse_type_declarations(&mut operation_parser).map_err(Report::from)?;
         let op = operation_parser.parse_operation().map_err(Report::from)?;
         // See the note above: a parsed world is the root, not something to be rooted.
         //
