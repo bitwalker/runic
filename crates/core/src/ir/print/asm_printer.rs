@@ -3,7 +3,7 @@ use core::{cell::RefCell, ops::AddAssign};
 
 use super::*;
 use crate::{
-    AsValueRange, Attribute, Block, Context, EntityList, FunctionType, Immediate, Location,
+    AsValueRange, Attribute, Block, Context, EntityList, FunctionType, Immediate, Int, Location,
     NamedAttribute, OpSuccessorRange, SuccessorOperands, SymbolPath, Type, ValueRef,
     attributes::Marker,
     formatter::Document,
@@ -735,6 +735,13 @@ impl<'a> AsmPrinter<'a> {
         self.document += const_text(keyword);
     }
 
+    /// Print an integer value as a signed decimal at its width (`0` or `1` for an `i1`)
+    pub fn print_int(&mut self, value: Int) {
+        use crate::formatter::*;
+
+        self.document += display(value);
+    }
+
     /// Print a literal integer value in decimal format
     pub fn print_decimal_integer(&mut self, value: impl Into<Immediate>) {
         use crate::formatter::*;
@@ -836,4 +843,22 @@ fn is_valid_bare_identifier(id: &str) -> bool {
     let mut chars = id.chars();
     chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '$'))
+}
+
+#[cfg(test)]
+mod int_tests {
+    use alloc::{format, rc::Rc};
+
+    use super::*;
+    use crate::print::OpPrintingFlags;
+
+    #[test]
+    fn print_int_writes_the_display_form() {
+        let flags = OpPrintingFlags::default();
+        for (value, expected) in [(Int::from(-1i8), "-1"), (Int::from(true), "1")] {
+            let mut printer = AsmPrinter::fragment(Rc::new(Context::default()), &flags);
+            printer.print_int(value);
+            assert_eq!(format!("{}", printer.finish()), expected);
+        }
+    }
 }
