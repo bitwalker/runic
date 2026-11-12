@@ -35,6 +35,9 @@ use crate::{
 ///
 /// The [Context] _must_ live as long as any reference to an IR entity may be dereferenced.
 pub struct Context {
+    /// Identifies this context among all contexts created by the process; recorded in every type
+    /// it interns. See [Context::owns_type].
+    id: u32,
     /// Copy-on-write so `sources()` is an O(1) snapshot that reports can retain.
     sources: RefCell<Arc<SourceMap>>,
     /// Non-fatal diagnostics (warnings, notes) emitted while working on this context.
@@ -51,6 +54,23 @@ pub struct Context {
     uniqued_attr_cache: RefCell<FxHashMap<AttributeName, AttributeRef>>,
     next_block_id: Cell<u32>,
     next_value_id: Cell<u32>,
+}
+
+/// A fresh context id: ids are never reused, so a type records which context interned it.
+///
+/// Panics once `u32::MAX` contexts have been created.
+fn next_context_id() -> u32 {
+    use core::sync::atomic::{AtomicU32, Ordering};
+
+    static NEXT_ID: AtomicU32 = AtomicU32::new(1);
+    let mut id = NEXT_ID.load(Ordering::Relaxed);
+    loop {
+        let next = id.checked_add(1).expect("context ids exhausted");
+        match NEXT_ID.compare_exchange_weak(id, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return id,
+            Err(current) => id = current,
+        }
+    }
 }
 
 impl Default for Context {
@@ -132,17 +152,20 @@ impl Context {
             }
         }
 
+        let id = next_context_id();
         let allocator = Rc::new(Blink::new());
         let types = RefCell::default();
         let registered_dialects = RefCell::new(registered_dialects);
         // The handles stay valid when `types`, `allocator` and the dialects move into the context:
         // a handle points at its storage in the arena, which the `Rc` keeps where it is.
         let builtin_types = BuiltinTypes::new(TypeTables {
+            owner: id,
             types: &types,
             allocator: &allocator,
             registered_dialects: &registered_dialects,
         });
         Self {
+            id,
             sources: RefCell::new(Arc::new(SourceMap::new(namespace))),
             diagnostics: RefCell::new(DiagnosticCollector::new()),
             types,
@@ -309,6 +332,7 @@ impl Context {
         let mut block = Rc::clone(self).create_block();
         let owner = block;
         let args = tys.into_iter().enumerate().map(|(index, ty)| {
+            self.debug_assert_owns_type(ty, "the type of a block argument");
             let id = self.alloc_value_id();
             let arg = BlockArgument::new(
                 SourceSpan::default(),
@@ -332,6 +356,7 @@ impl Context {
         ty: Type,
         span: SourceSpan,
     ) -> ValueRef {
+        self.debug_assert_owns_type(ty, "the type of a block argument");
         let next_index = block.borrow().num_arguments();
         let id = self.alloc_value_id();
         let arg = BlockArgument::new(
@@ -386,6 +411,7 @@ impl Context {
         owner: OperationRef,
         index: u16,
     ) -> OpResultRef {
+        self.debug_assert_owns_type(ty, "the type of an operation result");
         let id = self.alloc_value_id();
         self.alloc(OpResult::new(span, id, ty, owner, index))
     }
@@ -402,6 +428,7 @@ impl Context {
         name: interner::Symbol,
         index: u8,
     ) -> OpResultRef {
+        self.debug_assert_owns_type(ty, "the type of an operation result");
         let id = ValueId::from_symbol(name).with_result_index(index);
         self.alloc(OpResult::new(span, id, ty, owner, index.into()))
     }

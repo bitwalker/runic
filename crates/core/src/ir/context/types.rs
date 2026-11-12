@@ -19,6 +19,8 @@ use crate::{
 /// types can be interned before the context they belong to is assembled.
 #[derive(Copy, Clone)]
 pub(super) struct TypeTables<'a> {
+    /// The id of the context the tables belong to, recorded in every type interned with them.
+    pub(super) owner: u32,
     pub(super) types: &'a RefCell<TypeUniquer>,
     pub(super) allocator: &'a Blink,
     pub(super) registered_dialects: &'a RefCell<FxHashMap<interner::Symbol, Rc<dyn Dialect>>>,
@@ -37,7 +39,7 @@ impl TypeTables<'_> {
         // That code may also have interned a value equal to `value`, which `get_or_insert_with`
         // finds again rather than inserting a second type.
         let (ty, rejected) = self.types.borrow_mut().get_or_insert_with(value, hash, |value| {
-            let storage = self.allocator.put(TypeStorage::new(name, hash, value));
+            let storage = self.allocator.put(TypeStorage::new(name, hash, self.owner, value));
             // SAFETY: `storage` is an initialized `TypeStorage<T>` in the arena, which keeps it at
             // this address until the context's last `Rc<Blink>` is dropped and is never reset.
             // The `&mut` from `put` is converted to a pointer here and never used again, so
@@ -117,10 +119,29 @@ impl Context {
     #[inline]
     fn type_tables(&self) -> TypeTables<'_> {
         TypeTables {
+            owner: self.id,
             types: &self.types,
             allocator: &self.allocator,
             registered_dialects: &self.registered_dialects,
         }
+    }
+
+    /// Returns true if `ty` was interned by this context, and so may be used with it.
+    #[inline]
+    pub fn owns_type(&self, ty: crate::types::Type) -> bool {
+        ty.owner_id() == self.id
+    }
+
+    /// Panics, in debug builds, unless `ty` was interned by this context. `role` describes where
+    /// `ty` is being used, for the panic message.
+    #[inline]
+    #[track_caller]
+    pub(crate) fn debug_assert_owns_type(&self, ty: crate::types::Type, role: &str) {
+        debug_assert!(
+            self.owns_type(ty),
+            "{role} is `{ty}`, a type of another context: a type may only be used with the \
+             context that interned it"
+        );
     }
 
     /// Returns the type denoted by `value`, interning it on first use.
@@ -253,16 +274,23 @@ impl Context {
         pointee: Option<crate::types::Type>,
         addrspace: u32,
     ) -> crate::types::Type {
+        if let Some(pointee) = pointee {
+            self.debug_assert_owns_type(pointee, "the pointee of a pointer type");
+        }
         self.intern_type(PointerType::new(pointee, addrspace))
     }
 
     /// The array type `array<T; N>`.
     pub fn array_type(&self, element: crate::types::Type, len: u64) -> crate::types::Type {
+        self.debug_assert_owns_type(element, "the element of an array type");
         self.intern_type(ArrayType::new(element, len))
     }
 
     /// The struct type `ty`. Every struct is accepted; its layout is not checked here.
     pub fn struct_type(&self, ty: StructType) -> crate::types::Type {
+        for field in ty.fields() {
+            self.debug_assert_owns_type(field.ty, "a field of a struct type");
+        }
         self.intern_type(ty)
     }
 
@@ -272,6 +300,13 @@ impl Context {
         params: impl IntoIterator<Item = crate::types::Type>,
         results: impl IntoIterator<Item = crate::types::Type>,
     ) -> crate::types::Type {
-        self.intern_type(FunctionType::new(params, results))
+        let ty = FunctionType::new(params, results);
+        for param in ty.params() {
+            self.debug_assert_owns_type(*param, "a parameter of a function type");
+        }
+        for result in ty.results() {
+            self.debug_assert_owns_type(*result, "a result of a function type");
+        }
+        self.intern_type(ty)
     }
 }

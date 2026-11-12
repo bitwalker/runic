@@ -506,9 +506,58 @@ impl Operation {
     }
 
     /// Run any verifiers for this operation
+    ///
+    /// The first check, run for every operation, is that every type the operation holds was
+    /// interned by its context; see [Self::verify_type_ownership].
     pub fn verify(&self) -> Result<(), Report> {
+        self.verify_type_ownership()?;
         let dyn_op: &dyn Op = self.as_ref();
         dyn_op.verify(self.context())
+    }
+
+    /// Check that the types of this operation's results, of the arguments of the blocks in its
+    /// regions, and of its properties and attributes were all interned by its context.
+    ///
+    /// A type may only be used with the context that interned it. Debug builds check this where a
+    /// type is stored; this check is what catches a type of another context in every build.
+    pub fn verify_type_ownership(&self) -> Result<(), Report> {
+        let context = self.context();
+        let check = |role: &dyn fmt::Display, ty: Type| {
+            if context.owns_type(ty) {
+                return Ok(());
+            }
+            Err(crate::diagnostics::report!(
+                message: "invalid operation",
+                labels: [
+                    primary(
+                        self.span(),
+                        alloc::format!(
+                            "{role} of '{}' has type `{ty}`, which belongs to another context: a \
+                             type may only be used with the context that interned it",
+                            self.name()
+                        )
+                    ),
+                ],
+            ))
+        };
+        for (index, result) in self.results().iter().enumerate() {
+            check(&format_args!("result {index}"), result.borrow().ty())?;
+        }
+        for region in self.regions().iter() {
+            for block in region.body() {
+                for (index, arg) in block.arguments().iter().enumerate() {
+                    check(&format_args!("block argument {index}"), arg.borrow().ty())?;
+                }
+            }
+        }
+        for prop in self.properties() {
+            check(&format_args!("property '{}'", prop.name), prop.value().ty())?;
+        }
+        for attr in self.attributes() {
+            let attr = attr.as_named_attribute();
+            check(&format_args!("attribute '{}'", attr.name), attr.value().ty())?;
+        }
+        Ok(())
     }
 
     /// Run any verifiers for this operation, and all of its nested operations, recursively.

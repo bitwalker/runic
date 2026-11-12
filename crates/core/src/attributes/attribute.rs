@@ -219,6 +219,7 @@ impl Attr {
         offset: usize,
     ) -> Self {
         assert!(name.is::<T>());
+        context.debug_assert_owns_type(ty, "the type of an attribute");
 
         Self {
             context: unsafe { NonNull::new_unchecked(Rc::as_ptr(context).cast_mut()) },
@@ -380,6 +381,7 @@ impl Attr {
     /// Set the [Type] associated with this attribute
     #[inline]
     pub fn set_type(&mut self, ty: Type) {
+        self.context().debug_assert_owns_type(ty, "the type of an attribute");
         self.ty = ty;
     }
 }

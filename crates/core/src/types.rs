@@ -44,11 +44,18 @@ use crate::{
 pub trait TypeImpl: Any + Eq + Hash + fmt::Debug + 'static {}
 
 /// What every interned type starts with.
+///
+/// Every field is present in every build profile, so the layout of a type's storage does not
+/// depend on the profile.
 #[repr(C)]
 pub struct TypeHeader {
     name: TypeName,
     /// The hash this type is stored under in the context's uniquer.
     hash: u64,
+    /// The id of the context that interned this type; see [Type::owner_id].
+    owner: u32,
+    /// Reserved, and always zero for now.
+    flags: u32,
 }
 
 /// An interned type: its header followed by its value.
@@ -67,18 +74,24 @@ impl<T: TypeImpl> TypeStorage<T> {
     /// The offset of the value from the start of the storage, which depends on `T`'s alignment.
     pub(crate) const VALUE_OFFSET: usize = core::mem::offset_of!(Self, value);
 
-    /// Creates the storage of a type whose value is `value`.
+    /// Creates the storage of a type whose value is `value`, interned by the context whose id is
+    /// `owner`.
     ///
     /// Panics if `name` is not the registration record of `T`: [Type::downcast_ref] and
     /// [Type::as_trait] trust the name to describe the storage behind the header.
-    pub(crate) fn new(name: TypeName, hash: u64, value: T) -> Self {
+    pub(crate) fn new(name: TypeName, hash: u64, owner: u32, value: T) -> Self {
         assert!(
             name.is::<T>(),
             "type name `{name}` does not describe `{}`",
             core::any::type_name::<T>()
         );
         Self {
-            header: TypeHeader { name, hash },
+            header: TypeHeader {
+                name,
+                hash,
+                owner,
+                flags: 0,
+            },
             value,
         }
     }
@@ -87,7 +100,15 @@ impl<T: TypeImpl> TypeStorage<T> {
 /// A handle to a type interned in a [Context](crate::Context).
 ///
 /// Handles are cheap to copy, and two handles are equal exactly when they denote the same type.
-/// A handle must not be used after its context is dropped.
+///
+/// A handle belongs to the context that interned it, and may only be used with that context: a
+/// type of one context is never equal to a type of another, even one that prints the same. Code
+/// that puts a type into IR or into another type checks this with
+/// [Context::owns_type](crate::Context::owns_type) in debug builds, and the IR verifier checks it
+/// in every build.
+///
+/// A handle must not be used after its context is dropped. That cannot be detected: reading the
+/// owner from the handle is already a use of the dropped context's memory.
 #[derive(Copy, Clone)]
 #[repr(transparent)]
 pub struct Type(NonNull<TypeHeader>);
@@ -115,6 +136,12 @@ impl Type {
     #[inline]
     pub(crate) fn stored_hash(&self) -> u64 {
         self.header().hash
+    }
+
+    /// The id of the context that interned this type.
+    #[inline]
+    pub(crate) fn owner_id(&self) -> u32 {
+        self.header().owner
     }
 
     /// The registration record of this type: its dialect, name and interfaces.
@@ -467,6 +494,83 @@ mod tests {
         let b = second.intern_type(WideType { tag: 1, wide: 1 });
         assert_ne!(a, b);
         assert_eq!(a.downcast_ref::<WideType>(), b.downcast_ref::<WideType>());
+    }
+
+    #[test]
+    fn a_context_owns_exactly_the_types_it_interned() {
+        let first = Context::default();
+        let second = Context::default();
+        let a = first.ptr_type(first.i32());
+        let b = second.ptr_type(second.i32());
+        assert!(first.owns_type(a) && first.owns_type(first.i32()));
+        assert!(second.owns_type(b) && second.owns_type(second.unknown_type()));
+        assert!(!first.owns_type(b) && !second.owns_type(a));
+        assert!(!first.owns_type(second.i32()));
+        assert_ne!(a.owner_id(), b.owner_id());
+    }
+
+    #[test]
+    fn a_handle_is_one_word_and_stays_on_its_thread() {
+        assert_eq!(core::mem::size_of::<Type>(), 8);
+        assert_eq!(core::mem::size_of::<Option<Type>>(), 8);
+    }
+
+    // `Type` is neither `Send` nor `Sync`: either impl would make `some_item` ambiguous here.
+    const _: fn() = || {
+        trait AmbiguousIfImpl<A> {
+            fn some_item() {}
+        }
+        impl<T: ?Sized> AmbiguousIfImpl<()> for T {}
+        struct IfSend;
+        impl<T: ?Sized + Send> AmbiguousIfImpl<IfSend> for T {}
+        struct IfSync;
+        impl<T: ?Sized + Sync> AmbiguousIfImpl<IfSync> for T {}
+        let _ = <Type as AmbiguousIfImpl<_>>::some_item;
+    };
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "the pointee of a pointer type is `i32`, a type of another context")]
+    fn a_pointer_to_a_type_of_another_context_panics() {
+        let (first, second) = (Context::default(), Context::default());
+        first.ptr_type_in(Some(second.i32()), 1);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "the element of an array type is `i8`, a type of another context")]
+    fn an_array_of_a_type_of_another_context_panics() {
+        let (first, second) = (Context::default(), Context::default());
+        first.array_type(second.i8(), 4);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "a field of a struct type is `i64`, a type of another context")]
+    fn a_struct_with_a_field_of_another_context_panics() {
+        use crate::dialects::builtin::types::StructField;
+
+        let (first, second) = (Context::default(), Context::default());
+        first.struct_type(StructType::new([
+            StructField::new(first.i32()),
+            StructField::new(second.i64()),
+        ]));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "a parameter of a function type is `f32`, a type of another context")]
+    fn a_function_with_a_parameter_of_another_context_panics() {
+        let (first, second) = (Context::default(), Context::default());
+        first.function_type([second.f32_type()], []);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "a result of a function type is `never`, a type of another context")]
+    fn a_function_with_a_result_of_another_context_panics() {
+        let (first, second) = (Context::default(), Context::default());
+        first.function_type([first.i1()], [second.never_type()]);
     }
 
     #[derive(Debug)]

@@ -376,6 +376,13 @@ macro_rules! value_impl {
             }
 
             fn set_type(&mut self, ty: Type) {
+                // A value does not know its context, but its current type does.
+                debug_assert!(
+                    ty.owner_id() == self.ty.owner_id(),
+                    "the type of a value is `{ty}`, a type of another context than its current \
+                     type `{}`: a type may only be used with the context that interned it",
+                    self.ty
+                );
                 self.ty = ty;
             }
 
@@ -590,3 +597,48 @@ impl StorableEntity for OpResult {
 pub type OpResultStorage = crate::EntityStorage<OpResultRef, 1>;
 pub type OpResultRange<'a> = crate::EntityRange<'a, OpResultRef>;
 pub type OpResultRangeMut<'a> = crate::EntityRangeMut<'a, OpResultRef, 1>;
+
+#[cfg(test)]
+mod tests {
+    use alloc::rc::Rc;
+
+    use crate::{
+        BuilderExt, Context, Immediate, SourceSpan,
+        dialects::test::Constant,
+        testing::{Test, label_messages},
+    };
+
+    /// The verifier rejects a value whose type another context interned, in every build. Debug
+    /// builds stop such a type at the API that would store it, so the type is stored directly.
+    #[test]
+    fn the_verifier_rejects_values_typed_by_another_context() {
+        let other = Rc::new(Context::default());
+        let foreign = other.i32();
+
+        let mut test = Test::new("f", |cx| ([cx.i32()], []));
+        let constant = {
+            let mut builder = test.function_builder();
+            let create = builder.builder_mut().create::<Constant, _>(SourceSpan::UNKNOWN);
+            create(Immediate::I32(1)).unwrap()
+        };
+        let op = constant.as_operation_ref();
+        assert!(op.borrow().verify().is_ok());
+
+        let mut result = op.borrow().results()[0];
+        result.borrow_mut().ty = foreign;
+        let err = op.borrow().verify().expect_err("a result of another context's type");
+        let message = label_messages(err.as_diagnostic()).join("\n");
+        assert!(message.contains("result 0 of 'test.constant' has type `i32`"), "{message}");
+        assert!(message.contains("which belongs to another context"), "{message}");
+        result.borrow_mut().ty = test.context().i32();
+        assert!(op.borrow().verify().is_ok());
+
+        let function = test.function().as_operation_ref();
+        let mut arg = test.function().borrow().entry_block().borrow().arguments()[0];
+        arg.borrow_mut().ty = foreign;
+        let err = function.borrow().verify().expect_err("an argument of another context's type");
+        let message = label_messages(err.as_diagnostic()).join("\n");
+        assert!(message.contains("block argument 0 of 'builtin.function'"), "{message}");
+        assert!(message.contains("which belongs to another context"), "{message}");
+    }
+}

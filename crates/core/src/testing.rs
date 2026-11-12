@@ -302,6 +302,26 @@ pub(crate) fn label_ranges(
     labels.0
 }
 
+/// The message of every label attached to `diagnostic`, in visiting order.
+#[cfg(test)]
+pub(crate) fn label_messages(
+    diagnostic: &dyn crate::diagnostics::Diagnostic,
+) -> alloc::vec::Vec<alloc::string::String> {
+    use crate::diagnostics::{Label, VisitDiagnostic};
+
+    struct Labels(alloc::vec::Vec<alloc::string::String>);
+
+    impl VisitDiagnostic for Labels {
+        fn label(&mut self, label: Label<'_>) {
+            self.0.push(label.message.map(alloc::fmt::format).unwrap_or_default());
+        }
+    }
+
+    let mut labels = Labels(alloc::vec::Vec::new());
+    diagnostic.visit(&mut labels);
+    labels.0
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::vec::Vec;
