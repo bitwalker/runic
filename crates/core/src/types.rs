@@ -39,7 +39,8 @@ use crate::{
 /// late-filled child type could, for example, form a cycle that printing never leaves).
 ///
 /// A type's `Eq` and `Hash` must not intern types or otherwise use the context: `Eq` runs while
-/// the context's uniquer is borrowed.
+/// the context's uniquer is borrowed. They should not panic either: a panic while the uniquer is
+/// probing, combined with a `Drop` that interns, aborts.
 pub trait TypeImpl: Any + Eq + Hash + fmt::Debug + 'static {}
 
 /// What every interned type starts with.
