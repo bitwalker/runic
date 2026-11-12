@@ -406,6 +406,22 @@ fn parse_parenthesised_types<'input, P: Parser<'input>>(
     Ok(types)
 }
 
+/// How the builtin type registered as `name` is written, if there is such a type.
+pub(super) fn bare_builtin_spelling(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "int" => "`iN`, such as `i32`",
+        "isize" => "`isize`",
+        "float" => "`f32` or `f64`",
+        "ptr" => "`ptr`, `ptr<N>`, `ptr<T>` or `ptr<T, N>`",
+        "array" => "`array<T; N>`",
+        "struct" => "`struct<..>`",
+        "function" => "`(..) -> ..`",
+        "unknown" => "`?`",
+        "never" => "`never`",
+        _ => return None,
+    })
+}
+
 /// Parses `!id`, which names a type alias, or a dialect type if it contains a `.`.
 fn parse_alias_or_dialect_type<'input, P: Parser<'input>>(
     parser: &mut P,
@@ -426,6 +442,16 @@ fn parse_alias_or_dialect_type<'input, P: Parser<'input>>(
             .ok_or(ParserError::UndefinedTypeAlias { span, id: alias });
     };
 
+    if dialect
+        == <crate::dialects::builtin::BuiltinDialect as crate::DialectRegistration>::NAMESPACE
+    {
+        let mut reason = String::from("builtin types are written without the '!builtin.' prefix");
+        if let Some(spelling) = bare_builtin_spelling(name) {
+            reason.push_str(": write ");
+            reason.push_str(spelling);
+        }
+        return Err(ParserError::InvalidType { span, reason });
+    }
     let dialect = Symbol::intern(dialect);
     let Some(registered) = parser.context().find_registered_dialect(dialect) else {
         return Err(ParserError::UnknownDialect { span, dialect });

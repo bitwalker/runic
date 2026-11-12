@@ -1588,6 +1588,30 @@ fn every_builtin_type_round_trips_through_the_printer_and_parser() {
     }
 }
 
+/// A builtin type named as if it were a dialect type is an error that gives its bare spelling.
+#[test]
+fn builtin_types_are_written_without_a_dialect_prefix() {
+    let context = Rc::new(Context::default());
+    for (text, spelling) in [
+        ("!builtin.int<32>", "`iN`, such as `i32`"),
+        ("!builtin.isize", "`isize`"),
+        ("!builtin.ptr", "`ptr`"),
+        ("!builtin.unknown", "`?`"),
+        ("!builtin.nosuch", ""),
+    ] {
+        let message = type_error_text(&context, text);
+        assert!(
+            message.contains("builtin types are written without the '!builtin.' prefix"),
+            "`{text}`: {message}"
+        );
+        assert!(message.contains(spelling), "`{text}`: {message}");
+    }
+    let builtin = context.get_registered_dialect("builtin");
+    for ty in builtin.registered_types() {
+        assert!(super::types::bare_builtin_spelling(ty.name().as_str()).is_some(), "{ty}");
+    }
+}
+
 /// An array type is written `array<T; N>` only: `[`..`]` is left to list attributes.
 #[test]
 fn the_bracket_spelling_of_an_array_type_is_not_a_type() {
