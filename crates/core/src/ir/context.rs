@@ -16,7 +16,10 @@ use crate::{
     AttributeRef, AttributeRegistration, FxHashMap,
     attributes::{AttributeName, DerivableTypeAttribute, Marker},
     constants::{ConstantData, ConstantId, ConstantPool},
-    dialects::builtin::types::{FloatType, IntegerType, IsizeType, NeverType, UnknownType},
+    dialects::builtin::types::{
+        ArrayType, FloatType, FunctionType, IntegerType, IsizeType, NeverType, PointerType,
+        StructType, UnknownType,
+    },
     types::{TypeName, TypeRegistration, TypeStorage, TypeUniquer},
 };
 
@@ -131,6 +134,7 @@ struct BuiltinTypes {
     f64: crate::types::Type,
     unknown: crate::types::Type,
     never: crate::types::Type,
+    opaque_ptr: crate::types::Type,
 }
 
 impl BuiltinTypes {
@@ -149,6 +153,7 @@ impl BuiltinTypes {
             f64: tables.intern_type(FloatType::F64),
             unknown: tables.intern_type(UnknownType),
             never: tables.intern_type(NeverType),
+            opaque_ptr: tables.intern_type(PointerType::new(None, 0)),
         }
     }
 }
@@ -460,6 +465,45 @@ impl Context {
     #[inline]
     pub fn never_type(&self) -> crate::types::Type {
         self.builtin_types.never
+    }
+
+    /// The opaque pointer type `ptr`, in address space 0.
+    #[inline]
+    pub fn opaque_ptr_type(&self) -> crate::types::Type {
+        self.builtin_types.opaque_ptr
+    }
+
+    /// The pointer type `ptr<T>` to `pointee`, in address space 0.
+    pub fn ptr_type(&self, pointee: crate::types::Type) -> crate::types::Type {
+        self.ptr_type_in(Some(pointee), 0)
+    }
+
+    /// A pointer type in address space `addrspace`; opaque if `pointee` is `None`.
+    pub fn ptr_type_in(
+        &self,
+        pointee: Option<crate::types::Type>,
+        addrspace: u32,
+    ) -> crate::types::Type {
+        self.intern_type(PointerType::new(pointee, addrspace))
+    }
+
+    /// The array type `array<T; N>`.
+    pub fn array_type(&self, element: crate::types::Type, len: u64) -> crate::types::Type {
+        self.intern_type(ArrayType::new(element, len))
+    }
+
+    /// The struct type `ty`. Every struct is accepted; its layout is not checked here.
+    pub fn struct_type(&self, ty: StructType) -> crate::types::Type {
+        self.intern_type(ty)
+    }
+
+    /// The function type `(params) -> results`.
+    pub fn function_type(
+        &self,
+        params: impl IntoIterator<Item = crate::types::Type>,
+        results: impl IntoIterator<Item = crate::types::Type>,
+    ) -> crate::types::Type {
+        self.intern_type(FunctionType::new(params, results))
     }
 
     pub fn get_marker<T>(self: &Rc<Context>) -> UnsafeIntrusiveEntityRef<T>

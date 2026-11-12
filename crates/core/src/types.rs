@@ -23,7 +23,10 @@ use crate::{
     DialectRegistration,
     dialects::builtin::{
         BuiltinDialect,
-        types::{FloatType, IntegerType, IsizeType, NeverType, UnknownType},
+        types::{
+            ArrayType, FloatType, FunctionType, IntegerType, IsizeType, NeverType, PointerType,
+            StructType, UnknownType,
+        },
     },
 };
 
@@ -171,6 +174,31 @@ impl Type {
     /// Returns true if this type is the bottom type `never`.
     pub fn is_never(&self) -> bool {
         self.is::<NeverType>()
+    }
+
+    /// Returns true if this type is a pointer.
+    pub fn is_pointer(&self) -> bool {
+        self.is::<PointerType>()
+    }
+
+    /// The type this pointer points to; `None` for an opaque pointer and for non-pointers.
+    pub fn pointee(&self) -> Option<Type> {
+        self.downcast_ref::<PointerType>().and_then(PointerType::pointee)
+    }
+
+    /// Returns true if this type is an array.
+    pub fn is_array(&self) -> bool {
+        self.is::<ArrayType>()
+    }
+
+    /// Returns true if this type is a struct.
+    pub fn is_struct(&self) -> bool {
+        self.is::<StructType>()
+    }
+
+    /// Returns true if this type is a function type.
+    pub fn is_function(&self) -> bool {
+        self.is::<FunctionType>()
     }
 
     /// Returns this type as the interface `Trait`, if its registration declares it.
