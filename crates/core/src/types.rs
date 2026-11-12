@@ -1,5 +1,6 @@
 //! Uniqued, immutable types owned by a [Context](crate::Context).
 
+mod component;
 mod name;
 mod registration;
 mod uniquer;
@@ -13,6 +14,7 @@ use core::{
 
 pub(crate) use self::uniquer::TypeUniquer;
 pub use self::{
+    component::TypeComponent,
     name::TypeName,
     registration::{
         DefaultTypeFn, DialectTypeRegistrationInfo, ParseTypeFn, PrintTypeFn, TypeParser,
