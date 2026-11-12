@@ -783,7 +783,12 @@ pub trait Parser<'input> {
     }
 
     /// Parse an attribute dictionary.
+    ///
+    /// A key given twice in the dictionary is a [ParserError::DuplicateAttribute] at its second
+    /// occurrence.
     fn parse_attribute_dict(&mut self, attrs: &mut ParsedAttrs) -> ParseResult {
+        // The entries of this dictionary are the ones pushed after `start`
+        let start = attrs.len();
         self.parse_lbrace()?;
         self.parse_comma_separated_list_until(
             Token::Rbrace,
@@ -806,6 +811,12 @@ pub trait Parser<'input> {
                     name
                 };
                 let key = Span::new(span, interner::Symbol::intern(key));
+                if attrs[start..].iter().any(|attr| attr.name == *key) {
+                    return Err(ParserError::DuplicateAttribute {
+                        span: key.span(),
+                        name: key.into_inner(),
+                    });
+                }
 
                 parser.parse_equal()?;
 

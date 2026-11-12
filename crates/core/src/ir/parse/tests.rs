@@ -4588,3 +4588,38 @@ fn a_definition_without_a_body_is_an_error() {
     );
     assert_eq!(labels.first(), Some(&range_of(source, ";")), "{message}");
 }
+
+/// A key given twice in the dictionary of a parameter or a result is an error at its second
+/// occurrence, as in an operation's attribute dictionary.
+#[test]
+fn a_repeated_key_in_a_parameter_dictionary_is_an_error() {
+    let dict = "{ extend = #builtin.zext, extend = #builtin.sext }";
+    let second = |source: &str| {
+        let start = source.rfind("extend").unwrap();
+        (start, start + "extend".len())
+    };
+    for source in [
+        format!("builtin.function public extern(\"C\") @f(i8 {dict});"),
+        format!(
+            "builtin.function public extern(\"C\") @f(%0: i8 {dict}) {{\n    builtin.ret;\n}};"
+        ),
+        format!("builtin.function public extern(\"C\") @f() -> (i8 {dict});"),
+    ] {
+        let (message, labels) = parse_error_labels(&source);
+        assert!(
+            message.contains("attribute 'extend' occurs more than once in the attribute list"),
+            "{message}"
+        );
+        assert_eq!(labels.first(), Some(&second(&source)), "{message}");
+    }
+
+    let context = Rc::new(Context::default());
+    let text = format!("#builtin.signature<extern(\"C\") (i8 {dict})>");
+    let err = parse_attribute_text(&context, &text, context.unknown_type()).unwrap_err();
+    let crate::parse::ParserError::DuplicateAttribute { span, name } = err else {
+        panic!("{err:?}");
+    };
+    assert_eq!(name.as_str(), "extend");
+    let range = span.range();
+    assert_eq!((range.start() as usize, range.end() as usize), second(&text));
+}
