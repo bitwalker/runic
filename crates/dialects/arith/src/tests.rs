@@ -1277,6 +1277,10 @@ fn operand_requirements(
     [0, 1, 2].map(|index| operation_operand_range_requirement(&op, index))
 }
 
+fn i200(context: &Context) -> Type {
+    context.try_int_type(200).unwrap()
+}
+
 /// The shifts require of their amount (operand 1) the unsigned range `0 ..= width - 1`; at `i1`
 /// the amount must be `0`. The rotates take their amount modulo the width and require nothing.
 #[test]
@@ -1299,7 +1303,13 @@ fn a_shift_requires_an_amount_below_the_width() {
                 "{name} at width {width}"
             );
         }
-        assert_eq!(operand_requirements(Context::isize, build), [None; 3], "{name} at isize");
+        for (ty, what) in [(Context::isize as TypeFn, "isize"), (i200, "i200")] {
+            assert_eq!(
+                operand_requirements(ty, build),
+                [None, Some(ConstantIntRange::untracked()), None],
+                "{name} at {what}"
+            );
+        }
     }
     assert_eq!(
         operand_requirements(Context::i1, |b, l, r| b.shl(l, r, SPAN).unwrap())[1],
@@ -1313,7 +1323,8 @@ fn a_shift_requires_an_amount_below_the_width() {
 }
 
 /// The divisions require of their divisor (operand 1) every value but zero, the unsigned range
-/// `1 ..= 2^width - 1`; at `i1` the divisor must be `1`.
+/// `1 ..= 2^width - 1`; at `i1` the divisor must be `1`. For `isize` and `i200` the requirement is the
+/// untracked range.
 #[test]
 fn a_division_requires_a_nonzero_divisor() {
     use runic_core::ConstantIntRange;
@@ -1342,7 +1353,13 @@ fn a_division_requires_a_nonzero_divisor() {
                 "{name} at width {width}"
             );
         }
-        assert_eq!(operand_requirements(Context::isize, build), [None; 3], "{name} at isize");
+        for (ty, what) in [(Context::isize as TypeFn, "isize"), (i200, "i200")] {
+            assert_eq!(
+                operand_requirements(ty, build),
+                [None, Some(ConstantIntRange::untracked()), None],
+                "{name} at {what}"
+            );
+        }
     }
     assert_eq!(
         operand_requirements(Context::i1, |b, l, r| b.udiv(l, r, SPAN).unwrap())[1],

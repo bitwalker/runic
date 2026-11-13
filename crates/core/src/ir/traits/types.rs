@@ -25,6 +25,9 @@ pub trait OperandRangeRequirementOpInterface: Op {
     /// result, or `None` when every value of the operand's type is accepted. It is a condition on
     /// that operand alone: a requirement that relates two operands (a sum that must fit,
     /// `MIN / -1`) is not expressed here.
+    ///
+    /// A requirement on an operand whose ranges are not tracked (`isize`, an integer wider than 128
+    /// bits) is [ConstantIntRange::untracked], which no range is within: it is not `None`.
     fn operand_range_requirement(&self, index: usize) -> Option<ConstantIntRange>;
 }
 

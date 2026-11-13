@@ -170,6 +170,10 @@ pub fn value_range(solver: &DataFlowSolver, value: ValueRef) -> Option<IntegerVa
 /// ([runic_core::traits::OperandRangeRequirementOpInterface]): for each operand with a
 /// requirement, `solver` has an initialized range for it that [ConstantIntRange::is_within] the
 /// requirement. An operation that states no requirement trivially has them all proven.
+///
+/// A requirement on an operand whose ranges are not tracked (`isize`) is the untracked range, which
+/// no range is within, so this is false for such an operation. A range of either confidence is
+/// accepted: an assumed range is still a fact about a signless integer.
 pub fn operand_range_requirements_hold(solver: &DataFlowSolver, op: &Operation) -> bool {
     (0..op.num_operands()).all(|index| {
         let Some(requirement) = operation_operand_range_requirement(op, index) else {
