@@ -310,7 +310,8 @@ pub struct Urem {
 infer_return_ty_for_binary_op!(Urem);
 
 /// Signed integer remainder of the division rounding toward zero: the result has the sign of the
-/// dividend (`lhs`). Traps on a zero divisor and on dividing the minimum signed value by -1.
+/// dividend (`lhs`). Traps on a zero divisor only: the remainder of the minimum signed value by -1
+/// is `0`.
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
 #[operation(
     dialect = ArithDialect,
@@ -357,8 +358,9 @@ impl InferTypeOpInterface for Udivrem {
 }
 
 /// Signed integer division and remainder, as [Sdiv] and [Srem]: the first result is the quotient,
-/// the second the remainder, which has the sign of the dividend (`lhs`). Traps on a zero divisor and
-/// on dividing the minimum signed value by -1.
+/// the second the remainder, which has the sign of the dividend (`lhs`). Traps on a zero divisor,
+/// and on dividing the minimum signed value by -1, because the quotient does not fit (the remainder
+/// alone would be `0`).
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
 #[operation(
     dialect = ArithDialect,
@@ -666,19 +668,20 @@ fold_overflowing!(SubOverflowing, Int::overflowing_sub_signed, Int::overflowing_
 fold_overflowing!(MulOverflowing, Int::overflowing_mul_signed, Int::overflowing_mul_unsigned);
 
 // `div_*` and `rem_*` are `None` for a zero divisor, and `div_signed` for `MIN / -1`.
-// `rem_signed` gives 0 for `MIN % -1`, but `srem` traps there as `sdiv` does, so its fold asks
-// `div_signed` too.
+// `rem_signed` gives 0 for `MIN % -1`, which is what `srem` gives. `sdivrem` traps there because of
+// its quotient, so its remainder closure declines when the division does: each closure is right on
+// its own, whichever runs first.
 fold_one!(Udiv, |_op| |[a, b]| a.div_unsigned(b));
 fold_one!(Sdiv, |_op| |[a, b]| a.div_signed(b));
 fold_one!(Urem, |_op| |[a, b]| a.rem_unsigned(b));
-fold_one!(Srem, |_op| |[a, b]| a.div_signed(b).and(a.rem_signed(b)));
+fold_one!(Srem, |_op| |[a, b]| a.rem_signed(b));
 fold_two!(Udivrem, |_op| (
     |[a, b]: [Int; 2]| a.div_unsigned(b),
     |[a, b]: [Int; 2]| a.rem_unsigned(b)
 ));
 fold_two!(Sdivrem, |_op| (
     |[a, b]: [Int; 2]| a.div_signed(b),
-    |[a, b]: [Int; 2]| a.rem_signed(b)
+    |[a, b]: [Int; 2]| a.div_signed(b).and(a.rem_signed(b))
 ));
 
 fold_one!(Band, |_op| |[a, b]| Some(a & b));

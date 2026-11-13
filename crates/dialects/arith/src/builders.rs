@@ -231,7 +231,7 @@ pub trait ArithOpBuilder<'f, B: ?Sized + Builder> {
         Ok(op.borrow().result().as_value_ref())
     }
 
-    /// Signed remainder, with the sign of `lhs`. Traps on a zero divisor and on `MIN / -1`.
+    /// Signed remainder, with the sign of `lhs`. Traps on a zero divisor; `MIN % -1` is `0`.
     fn srem(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
         let op_builder = self.builder_mut().create::<Srem, _>(span);
         let op = op_builder(lhs, rhs)?;
@@ -253,7 +253,7 @@ pub trait ArithOpBuilder<'f, B: ?Sized + Builder> {
     }
 
     /// Signed division and remainder: returns the quotient, then the remainder, in the order of
-    /// the operation's results. Traps on a zero divisor and on `MIN / -1`.
+    /// the operation's results. Traps on a zero divisor, and on `MIN / -1` because of the quotient.
     fn sdivrem(
         &mut self,
         lhs: ValueRef,

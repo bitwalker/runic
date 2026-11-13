@@ -375,10 +375,8 @@ fn the_division_family_folds_except_on_a_zero_divisor_or_min_by_minus_one() {
         ("udiv", |b, l, r| b.udiv(l, r, SPAN), &|[a, b]| a.div_unsigned(b)),
         ("sdiv", |b, l, r| b.sdiv(l, r, SPAN), &|[a, b]| a.div_signed(b)),
         ("urem", |b, l, r| b.urem(l, r, SPAN), &|[a, b]| a.rem_unsigned(b)),
-        // `srem` traps where `sdiv` does.
-        ("srem", |b, l, r| b.srem(l, r, SPAN), &|[a, b]| {
-            a.div_signed(b).and(a.rem_signed(b))
-        }),
+        // `srem MIN, -1` is `0`, as `rem_signed` has it.
+        ("srem", |b, l, r| b.srem(l, r, SPAN), &|[a, b]| a.rem_signed(b)),
     ];
     for (name, build, compute) in single {
         check_folds(
@@ -399,7 +397,8 @@ fn the_division_family_folds_except_on_a_zero_divisor_or_min_by_minus_one() {
             "sdivrem",
             |b, l, r| b.sdivrem(l, r, SPAN),
             &|[a, b]| a.div_signed(b),
-            &|[a, b]| a.rem_signed(b),
+            // `sdivrem MIN, -1` traps because of the quotient: neither result folds.
+            &|[a, b]| a.div_signed(b).and(a.rem_signed(b)),
         ),
     ];
     for (name, build, quotient, remainder) in double {
@@ -436,7 +435,7 @@ fn the_division_family_folds_except_on_a_zero_divisor_or_min_by_minus_one() {
         );
         let min_by_minus_one =
             fold_at(Context::i32, [Int::from(i32::MIN), Int::from(-1i32)], build);
-        assert_eq!(min_by_minus_one.is_none(), name.starts_with('s'), "{name}");
+        assert_eq!(min_by_minus_one.is_none(), name.starts_with('s') && name != "srem", "{name}");
     }
     // The quotient comes first.
     let folded = fold_at(Context::i32, [Int::from(-7i32), Int::from(2i32)], ops[5].1).unwrap();
@@ -444,6 +443,39 @@ fn the_division_family_folds_except_on_a_zero_divisor_or_min_by_minus_one() {
         folded.iter().map(|(value, _)| *value).collect::<Vec<_>>(),
         [Int::from(-3i32), Int::from(-1i32)]
     );
+}
+
+#[test]
+fn the_signed_remainder_of_min_by_minus_one_is_zero() {
+    let srem: BuildOn<'_, 2> = &|b, [l, r]| vec![b.srem(l, r, SPAN).unwrap()];
+    let sdiv: BuildOn<'_, 2> = &|b, [l, r]| vec![b.sdiv(l, r, SPAN).unwrap()];
+    let sdivrem: BuildOn<'_, 2> = &|b, [l, r]| {
+        let (q, r) = b.sdivrem(l, r, SPAN).unwrap();
+        vec![q, r]
+    };
+    let types: [(u32, TypeFn); 5] = [
+        (1, Context::i1),
+        (8, Context::i8),
+        (32, Context::i32),
+        (64, Context::i64),
+        (128, Context::i128),
+    ];
+    for (width, ty) in types {
+        let operands = [Int::signed_min(width), Int::all_ones(width)];
+        assert_eq!(fold_one_at(ty, operands, srem), Some(Int::zero(width)), "srem i{width}");
+        assert_eq!(fold_at(ty, operands, sdivrem), None, "sdivrem i{width}");
+        assert_eq!(fold_at(ty, operands, sdiv), None, "sdiv i{width}");
+    }
+    // On `isize`, the 64-bit `MIN` is `0` on a 32-bit target, and `0 % -1` is `0` too; a 32-bit
+    // `MIN` held in an `isize` is `MIN % -1` on a 32-bit target and `2^31 % -1` on a 64-bit one,
+    // `0` on both.
+    let isize = Context::isize as TypeFn;
+    for min in [Int::from(i64::MIN), Int::from(0x8000_0000i64)] {
+        let operands = [min, Int::from(-1i64)];
+        assert_eq!(fold_one_at(isize, operands, srem), Some(Int::zero(64)), "srem {min:?}");
+        assert_eq!(fold_at(isize, operands, sdivrem), None, "sdivrem {min:?}");
+        assert_eq!(fold_at(isize, operands, sdiv), None, "sdiv {min:?}");
+    }
 }
 
 #[test]
