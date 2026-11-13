@@ -7,10 +7,11 @@ use runic_core::{
 
 use crate::*;
 
-/// This operation represents a value produced by undefined behavior, i.e. control reaching a
-/// program point that is not supposed to be reachable.
+/// A value of any type that stands for the result of undefined behaviour.
 ///
-/// Any operation performed on a poison value, itself produces poison, and can be folded as such.
+/// It is a constant, whose attribute is a [PoisonAttr] of the result type. It says nothing about
+/// control flow: a program point that is never reached is [Unreachable]. Folds do not treat poison
+/// specially: an `arith` operation with a poison operand is left as it is.
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
 #[operation(
     dialect = UndefinedBehaviorDialect,
