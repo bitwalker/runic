@@ -466,12 +466,26 @@ impl Context {
         self.intern_type(ArrayType::new(element, len))
     }
 
-    /// The struct type `ty`. Every struct is accepted; its layout is not checked here.
+    /// The struct type `ty`.
+    ///
+    /// Panics unless `ty` is valid; see [Self::try_struct_type].
     pub fn struct_type(&self, ty: StructType) -> crate::types::Type {
+        self.try_struct_type(ty)
+            .unwrap_or_else(|err| panic!("invalid struct type: {err}"))
+    }
+
+    /// The struct type `ty`, or the reason it is not valid: an alignment that is not a power of
+    /// two, or a `transparent` struct that has not exactly one field, or whose field states an
+    /// alignment (see [StructType::validate]).
+    pub fn try_struct_type(
+        &self,
+        ty: StructType,
+    ) -> Result<crate::types::Type, crate::InvalidStructType> {
+        ty.validate()?;
         for field in ty.fields() {
             self.debug_assert_owns_type(field.ty, "a field of a struct type");
         }
-        self.intern_type(ty)
+        Ok(self.intern_type(ty))
     }
 
     /// The enum type `ty`. Its discriminant and payload types must belong to this context.

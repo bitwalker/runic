@@ -1604,7 +1604,6 @@ fn every_builtin_type_round_trips_through_the_printer_and_parser() {
         "struct<packed(1); i8, i32 align(2)>",
         "struct<transparent; i32>",
         "struct<align(8); i64>",
-        "struct<transparent;>",
         "struct<align(2);>",
         "struct<x: i32 align(2)>",
         "struct \"not an identifier\"<\"field one\": i32>",
@@ -1809,6 +1808,39 @@ fn pointers_in_the_default_address_space_are_the_plain_pointer_types() {
     assert_eq!(context.opaque_ptr_type().pointee(), None);
     assert_eq!(context.i32().pointee(), None);
     assert_eq!(context.array_type(context.i8(), 4).pointee(), None);
+}
+
+/// A struct's alignments are powers of two and a `transparent` struct has one field without an
+/// alignment: the parser reports the alignment, or the `transparent` keyword, and builds nothing.
+#[test]
+fn an_invalid_struct_is_a_diagnostic_at_the_offending_token() {
+    let context = Rc::new(Context::default());
+    for (text, labelled, reason) in [
+        ("struct<align(3); i32>", "3", "power of two"),
+        ("struct<i32 align(6)>", "6", "power of two"),
+        ("struct<packed(12); i8>", "12", "power of two"),
+        ("struct<transparent; i32, i8>", "transparent", "exactly one field"),
+        ("struct<transparent;>", "transparent", "exactly one field"),
+        ("struct<transparent; i32 align(8)>", "transparent", "alignment of its own"),
+    ] {
+        let err = parse_type_text(&context, text).expect_err(text);
+        let message = type_error_text(&context, text);
+        assert!(message.contains(reason), "`{text}`: {message}");
+        let (start, end) = range_of(text, labelled);
+        let ranges = crate::testing::label_ranges(err.as_diagnostic());
+        assert_eq!(
+            ranges.first().map(|range| (range.start, range.end)),
+            Some((start, end)),
+            "`{text}`: {message}"
+        );
+    }
+    for text in [
+        "struct<transparent; i32>",
+        "struct<packed(1); i8, i32 align(2)>",
+        "struct<packed; i8>",
+    ] {
+        parse_type_text(&context, text).unwrap_or_else(|err| panic!("{text}: {err:?}"));
+    }
 }
 
 #[test]
@@ -2374,13 +2406,22 @@ fn random_type(rng: &mut Rng, context: &Context, depth: u32) -> Type {
             context.array_type(element, *rng.pick(&[0, 1, 16, u64::MAX]))
         }
         2 | 3 => {
-            let fields = (0..rng.below(4))
+            let repr = match rng.below(5) {
+                0 => StructRepr::Align(align(rng)),
+                1 => StructRepr::Packed(align(rng)),
+                2 => StructRepr::Transparent,
+                _ => StructRepr::Default,
+            };
+            // A transparent struct has one field, without an alignment of its own
+            let transparent = repr == StructRepr::Transparent;
+            let count = if transparent { 1 } else { rng.below(4) };
+            let fields = (0..count)
                 .map(|_| {
                     let mut field = StructField::new(child(rng));
                     if rng.below(2) == 0 {
                         field = field.named(name(rng));
                     }
-                    if rng.below(4) == 0 {
+                    if !transparent && rng.below(4) == 0 {
                         field = field.aligned(align(rng));
                     }
                     field
@@ -2390,12 +2431,6 @@ fn random_type(rng: &mut Rng, context: &Context, depth: u32) -> Type {
                 StructType::named(name(rng), fields)
             } else {
                 StructType::new(fields)
-            };
-            let repr = match rng.below(5) {
-                0 => StructRepr::Align(align(rng)),
-                1 => StructRepr::Packed(align(rng)),
-                2 => StructRepr::Transparent,
-                _ => StructRepr::Default,
             };
             context.struct_type(ty.with_repr(repr))
         }

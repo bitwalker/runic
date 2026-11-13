@@ -60,9 +60,27 @@ impl From<Type> for StructField {
     }
 }
 
+/// Why a [StructType] cannot be built into a type, see [StructType::validate].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum InvalidStructType {
+    #[error("an alignment is a power of two, and {0} is not")]
+    AlignmentNotPowerOfTwo(u16),
+    #[error("a `transparent` struct has exactly one field, and this one has {0}")]
+    TransparentFieldCount(usize),
+    #[error("the field of a `transparent` struct has no alignment of its own")]
+    TransparentFieldAligned,
+}
+
 /// An aggregate of fields, `struct name<repr; field, ...>`.
 ///
 /// The struct's name and its field names are part of its identity.
+///
+/// The alignments a struct states (`align(N)`, `packed(N)`, a field's `align(N)`) are powers of
+/// two, and a `transparent` struct has one field, without an alignment of its own. A value that
+/// breaks either rule is not a type: [Context::try_struct_type](crate::Context::try_struct_type)
+/// returns the reason, and `Context::struct_type` panics with it. `replace_subtypes` replaces only
+/// the types of the fields, never an alignment or the field count, so it does not run the check.
 #[derive(Debug, PartialEq, Eq, Hash, DialectType)]
 #[ty(dialect = BuiltinDialect, name = "struct")]
 pub struct StructType {
@@ -92,6 +110,36 @@ impl StructType {
     pub fn with_repr(mut self, repr: StructRepr) -> Self {
         self.repr = repr;
         self
+    }
+
+    /// Checks that `align` is a power of two.
+    pub fn check_alignment(align: NonZeroU16) -> Result<(), InvalidStructType> {
+        if align.is_power_of_two() {
+            Ok(())
+        } else {
+            Err(InvalidStructType::AlignmentNotPowerOfTwo(align.get()))
+        }
+    }
+
+    /// Checks that every alignment this struct states is a power of two, and that a `transparent`
+    /// struct has one field without an alignment.
+    pub fn validate(&self) -> Result<(), InvalidStructType> {
+        if let StructRepr::Align(align) | StructRepr::Packed(align) = self.repr {
+            Self::check_alignment(align)?;
+        }
+        for align in self.fields.iter().filter_map(|field| field.align) {
+            Self::check_alignment(align)?;
+        }
+        if self.repr == StructRepr::Transparent {
+            match &*self.fields {
+                [field] if field.align.is_some() => {
+                    return Err(InvalidStructType::TransparentFieldAligned);
+                }
+                [_] => (),
+                fields => return Err(InvalidStructType::TransparentFieldCount(fields.len())),
+            }
+        }
+        Ok(())
     }
 
     pub fn name(&self) -> Option<Symbol> {

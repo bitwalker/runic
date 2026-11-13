@@ -98,8 +98,8 @@ pub use self::{
 pub use crate::{
     dialects::builtin::types::{
         ArrayType, EnumType, EnumVariant, FloatType, FunctionType, IntegerType, InvalidEnumType,
-        IsizeType, NeverType, PointerType, RecVarType, StructField, StructRepr, StructType,
-        UnknownType,
+        InvalidStructType, IsizeType, NeverType, PointerType, RecVarType, StructField, StructRepr,
+        StructType, UnknownType,
     },
     types::{
         RecGroup, RecGroupError, Type, TypeAliasName, TypeComponent, TypeFormatter, TypeImpl,

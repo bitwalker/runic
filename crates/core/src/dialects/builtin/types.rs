@@ -21,7 +21,7 @@ pub use self::{
     pointer::PointerType,
     rec_var::RecVarType,
     special::{NeverType, UnknownType},
-    structure::{StructField, StructRepr, StructType},
+    structure::{InvalidStructType, StructField, StructRepr, StructType},
 };
 use crate::types::TypeFormatter;
 
@@ -122,8 +122,9 @@ mod tests {
                 "() -> ((i32) -> i32)",
             ),
             (
-                context.struct_type(StructType::new([]).with_repr(StructRepr::Transparent)),
-                "struct<transparent;>",
+                context
+                    .struct_type(StructType::new([i32.into()]).with_repr(StructRepr::Transparent)),
+                "struct<transparent; i32>",
             ),
             (
                 context.struct_type(StructType::new([]).with_repr(StructRepr::Align(two))),
@@ -140,6 +141,60 @@ mod tests {
         for (ty, text) in cases {
             assert_eq!(alloc::format!("{ty}"), text);
         }
+    }
+
+    #[test]
+    fn a_struct_with_an_invalid_alignment_or_transparency_is_not_a_type() {
+        use core::num::NonZeroU16;
+
+        use super::InvalidStructType::*;
+
+        let context = Context::default();
+        let i32 = context.i32();
+        let n = |n: u16| NonZeroU16::new(n).unwrap();
+        let rejected = [
+            (
+                StructType::new([]).with_repr(StructRepr::Align(n(3))),
+                AlignmentNotPowerOfTwo(3),
+            ),
+            (
+                StructType::new([]).with_repr(StructRepr::Packed(n(12))),
+                AlignmentNotPowerOfTwo(12),
+            ),
+            (
+                StructType::new([StructField::new(i32).aligned(n(6))]),
+                AlignmentNotPowerOfTwo(6),
+            ),
+            (StructType::new([]).with_repr(StructRepr::Transparent), TransparentFieldCount(0)),
+            (
+                StructType::new([i32.into(), i32.into()]).with_repr(StructRepr::Transparent),
+                TransparentFieldCount(2),
+            ),
+            (
+                StructType::new([StructField::new(i32).aligned(n(8))])
+                    .with_repr(StructRepr::Transparent),
+                TransparentFieldAligned,
+            ),
+        ];
+        for (ty, err) in rejected {
+            assert_eq!(context.try_struct_type(ty), Err(err));
+        }
+        for align in [1, 2, 4, 1 << 15] {
+            let ty = StructType::new([StructField::new(i32).aligned(n(align))])
+                .with_repr(StructRepr::Packed(n(align)));
+            assert!(context.try_struct_type(ty).is_ok(), "{align}");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid struct type")]
+    fn building_an_invalid_struct_panics() {
+        use core::num::NonZeroU16;
+
+        let context = Context::default();
+        context.struct_type(
+            StructType::new([]).with_repr(StructRepr::Align(NonZeroU16::new(3).unwrap())),
+        );
     }
 
     #[test]

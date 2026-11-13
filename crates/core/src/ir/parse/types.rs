@@ -207,6 +207,7 @@ fn parse_array_type<'input, P: Parser<'input>>(parser: &mut P) -> ParseResult<Ty
 
 /// Parses `struct`, an optional name, then the representation and fields in angle brackets.
 fn parse_struct_type<'input, P: Parser<'input>>(parser: &mut P) -> ParseResult<Type> {
+    let start = parser.token_stream_mut().peek()?.map_or(0, |(start, ..)| start);
     parser.token_stream_mut().next()?;
     let name = if parser.token_stream_mut().is_next(|tok| matches!(tok, Token::Langle)) {
         None
@@ -216,6 +217,11 @@ fn parse_struct_type<'input, P: Parser<'input>>(parser: &mut P) -> ParseResult<T
     parser.parse_langle()?;
 
     let repr = parse_optional_struct_repr(parser)?;
+    let transparent_span = match repr {
+        Some((StructRepr::Transparent, span)) => Some(span),
+        _ => None,
+    };
+    let repr = repr.map(|(repr, _)| repr);
     if repr.is_some() {
         parser.parse_semicolon()?;
     }
@@ -235,7 +241,15 @@ fn parse_struct_type<'input, P: Parser<'input>>(parser: &mut P) -> ParseResult<T
         Some(name) => StructType::named(name, fields),
         None => StructType::new(fields),
     };
-    Ok(parser.context().struct_type(ty.with_repr(repr.unwrap_or_default())))
+    // The alignments were checked as they were read, so what is left to report is a
+    // `transparent` struct, at its keyword.
+    let ty = ty.with_repr(repr.unwrap_or_default());
+    parser.context().try_struct_type(ty).map_err(|err| ParserError::InvalidType {
+        span: transparent_span.unwrap_or_else(|| {
+            span!(parser.source_id(), start, parser.token_stream().previous_end())
+        }),
+        reason: err.to_string(),
+    })
 }
 
 /// Parses `enum`, an optional name, then the discriminant type and variants in angle brackets.
@@ -306,7 +320,7 @@ fn parse_enum_variant<'input, P: Parser<'input>>(
 /// Parses a struct representation, if the next token starts one.
 fn parse_optional_struct_repr<'input, P: Parser<'input>>(
     parser: &mut P,
-) -> ParseResult<Option<StructRepr>> {
+) -> ParseResult<Option<(StructRepr, SourceSpan)>> {
     // `align: i32` is a field named `align`, not a representation.
     if is_next_token_followed_by_a_colon(parser) {
         return Ok(None);
@@ -318,14 +332,16 @@ fn parse_optional_struct_repr<'input, P: Parser<'input>>(
     else {
         return Ok(None);
     };
-    Ok(Some(match repr.into_inner() {
+    let (span, repr) = repr.into_parts();
+    let repr = match repr {
         "align" => StructRepr::Align(parse_alignment(parser)?),
         "packed" if parser.token_stream_mut().is_next(|tok| matches!(tok, Token::Lparen)) => {
             StructRepr::Packed(parse_alignment(parser)?)
         }
         "packed" => StructRepr::Packed(NonZeroU16::MIN),
         _ => StructRepr::Transparent,
-    }))
+    };
+    Ok(Some((repr, span)))
 }
 
 /// Parses a struct field: an optional name, its type and an optional alignment.
@@ -439,15 +455,20 @@ pub(crate) fn unescape(quoted: &str) -> Option<String> {
     Some(unescaped)
 }
 
-/// Parses `(N)`, a non-zero alignment.
+/// Parses `(N)`, a non-zero alignment that is a power of two.
 fn parse_alignment<'input, P: Parser<'input>>(parser: &mut P) -> ParseResult<NonZeroU16> {
     parser.parse_lparen()?;
     let (span, align) = parser.parse_decimal_integer::<u16>()?.into_parts();
     parser.parse_rparen()?;
-    NonZeroU16::new(align).ok_or(ParserError::InvalidIntegerLiteral {
+    let align = NonZeroU16::new(align).ok_or(ParserError::InvalidIntegerLiteral {
         span,
         reason: "expected a non-zero alignment".into(),
-    })
+    })?;
+    StructType::check_alignment(align).map_err(|err| ParserError::InvalidType {
+        span,
+        reason: err.to_string(),
+    })?;
+    Ok(align)
 }
 
 /// Parses a function type, `(params) -> results`.
