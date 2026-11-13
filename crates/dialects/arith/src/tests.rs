@@ -1259,3 +1259,102 @@ fn an_isize_constant_folds_to_its_own_attribute() {
     let value = test.function_builder().isize(-1, SPAN);
     assert_eq!(fold_value(value, None), Some((Int::from(-1i64), context.isize())));
 }
+
+/// What each operation of `build` requires of its operands, for every operand index from 0 to 2
+/// (index 2 is not an operand), with both operands of type `ty`.
+fn operand_requirements(
+    ty: TypeFn,
+    build: fn(Builder<'_, '_>, ValueRef, ValueRef) -> ValueRef,
+) -> [Option<runic_core::ConstantIntRange>; 3] {
+    use runic_core::traits::operation_operand_range_requirement;
+    let mut test = test_with(&[ty, ty]);
+    let [lhs, rhs] = params(&test)[..] else {
+        unreachable!()
+    };
+    let result = build(&mut test.function_builder(), lhs, rhs);
+    let op = result.borrow().get_defining_op().unwrap();
+    let op = op.borrow();
+    [0, 1, 2].map(|index| operation_operand_range_requirement(&op, index))
+}
+
+/// The shifts require of their amount (operand 1) the unsigned range `0 ..= width - 1`; at `i1`
+/// the amount must be `0`. The rotates take their amount modulo the width and require nothing.
+#[test]
+fn a_shift_requires_an_amount_below_the_width() {
+    use runic_core::ConstantIntRange;
+    type BuildFn = fn(Builder<'_, '_>, ValueRef, ValueRef) -> ValueRef;
+    let shifts: [(&str, BuildFn); 3] = [
+        ("shl", |b, l, r| b.shl(l, r, SPAN).unwrap()),
+        ("shr", |b, l, r| b.shr(l, r, SPAN).unwrap()),
+        ("ashr", |b, l, r| b.ashr(l, r, SPAN).unwrap()),
+    ];
+    let widths: [(TypeFn, u16); 4] =
+        [(Context::i1, 1), (Context::i8, 8), (Context::i64, 64), (Context::i128, 128)];
+    for (name, build) in shifts {
+        for (ty, width) in widths {
+            let expected = ConstantIntRange::from_unsigned(width, 0, u128::from(width) - 1);
+            assert_eq!(
+                operand_requirements(ty, build),
+                [None, Some(expected), None],
+                "{name} at width {width}"
+            );
+        }
+        assert_eq!(operand_requirements(Context::isize, build), [None; 3], "{name} at isize");
+    }
+    assert_eq!(
+        operand_requirements(Context::i1, |b, l, r| b.shl(l, r, SPAN).unwrap())[1],
+        Some(ConstantIntRange::constant(Int::from(false)))
+    );
+    for build in [(|b, l, r| b.rotl(l, r, SPAN).unwrap()) as BuildFn, |b, l, r| {
+        b.rotr(l, r, SPAN).unwrap()
+    }] {
+        assert_eq!(operand_requirements(Context::i8, build), [None; 3]);
+    }
+}
+
+/// The divisions require of their divisor (operand 1) every value but zero, the unsigned range
+/// `1 ..= 2^width - 1`; at `i1` the divisor must be `1`.
+#[test]
+fn a_division_requires_a_nonzero_divisor() {
+    use runic_core::ConstantIntRange;
+    type BuildFn = fn(Builder<'_, '_>, ValueRef, ValueRef) -> ValueRef;
+    let divisions: [(&str, BuildFn); 6] = [
+        ("udiv", |b, l, r| b.udiv(l, r, SPAN).unwrap()),
+        ("sdiv", |b, l, r| b.sdiv(l, r, SPAN).unwrap()),
+        ("urem", |b, l, r| b.urem(l, r, SPAN).unwrap()),
+        ("srem", |b, l, r| b.srem(l, r, SPAN).unwrap()),
+        ("udivrem", |b, l, r| b.udivrem(l, r, SPAN).unwrap().0),
+        ("sdivrem", |b, l, r| b.sdivrem(l, r, SPAN).unwrap().0),
+    ];
+    let widths: [(TypeFn, u16, u128); 4] = [
+        (Context::i1, 1, 1),
+        (Context::i8, 8, 255),
+        (Context::i64, 64, u128::from(u64::MAX)),
+        (Context::i128, 128, u128::MAX),
+    ];
+    for (name, build) in divisions {
+        for (ty, width, max) in widths {
+            let expected = ConstantIntRange::from_unsigned(width, 1, max);
+            assert_eq!(expected.umax(), max);
+            assert_eq!(
+                operand_requirements(ty, build),
+                [None, Some(expected), None],
+                "{name} at width {width}"
+            );
+        }
+        assert_eq!(operand_requirements(Context::isize, build), [None; 3], "{name} at isize");
+    }
+    assert_eq!(
+        operand_requirements(Context::i1, |b, l, r| b.udiv(l, r, SPAN).unwrap())[1],
+        Some(ConstantIntRange::constant(Int::from(true)))
+    );
+}
+
+/// An operation that does not implement `OperandRangeRequirementOpInterface` requires nothing.
+#[test]
+fn an_operation_without_the_interface_requires_nothing() {
+    assert_eq!(
+        operand_requirements(Context::i8, |b, l, r| b.band(l, r, SPAN).unwrap()),
+        [None; 3]
+    );
+}

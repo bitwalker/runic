@@ -64,6 +64,35 @@ macro_rules! infer_return_ty_for_binary_op {
     };
 }
 
+/// The unsigned range `0 ..= width - 1` of a shift amount of type `ty`, or `None` for a type whose
+/// range is not tracked (`isize`).
+fn shift_amount_requirement(ty: Type) -> Option<ConstantIntRange> {
+    let width = ConstantIntRange::max_for_type(ty).width();
+    (width != 0).then(|| ConstantIntRange::from_unsigned(width, 0, u128::from(width) - 1))
+}
+
+/// The unsigned range `1 ..= 2^width - 1` of a divisor of type `ty` (every value but zero), or
+/// `None` for a type whose range is not tracked (`isize`).
+fn divisor_requirement(ty: Type) -> Option<ConstantIntRange> {
+    let top = ConstantIntRange::max_for_type(ty);
+    (!top.is_untracked()).then(|| ConstantIntRange::from_unsigned(top.width(), 1, top.umax()))
+}
+
+/// Implements [OperandRangeRequirementOpInterface] for `$Op`, whose operand 1 (`$operand`) must
+/// lie in the range `$requirement` gives for its type; every other operand accepts every value.
+macro_rules! operand_one_requirement {
+    ($Op:ty, $operand:ident, $requirement:ident) => {
+        impl OperandRangeRequirementOpInterface for $Op {
+            fn operand_range_requirement(&self, index: usize) -> Option<ConstantIntRange> {
+                match index {
+                    1 => $requirement(self.$operand().ty()),
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
 /// Two's complement sum.
 ///
 /// `overflow` says what happens when the exact sum does not fit: the result wraps (the default),
@@ -263,7 +292,13 @@ infer_return_ty_for_binary_op!(MulOverflowing, overflowed);
 #[operation(
     dialect = ArithDialect,
     traits(BinaryOp, SameTypeOperands, SameOperandsAndResultType),
-    implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
+    implements(
+        InferTypeOpInterface,
+        MemoryEffectOpInterface,
+        OperandRangeRequirementOpInterface,
+        Foldable,
+        OpPrinter
+    )
 )]
 pub struct Udiv {
     #[operand]
@@ -275,6 +310,7 @@ pub struct Udiv {
 }
 
 infer_return_ty_for_binary_op!(Udiv);
+operand_one_requirement!(Udiv, rhs, divisor_requirement);
 
 /// Signed integer division, rounding toward zero. Traps on a zero divisor and on dividing the
 /// minimum signed value by -1.
@@ -282,7 +318,13 @@ infer_return_ty_for_binary_op!(Udiv);
 #[operation(
     dialect = ArithDialect,
     traits(BinaryOp, SameTypeOperands, SameOperandsAndResultType),
-    implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
+    implements(
+        InferTypeOpInterface,
+        MemoryEffectOpInterface,
+        OperandRangeRequirementOpInterface,
+        Foldable,
+        OpPrinter
+    )
 )]
 pub struct Sdiv {
     #[operand]
@@ -294,13 +336,20 @@ pub struct Sdiv {
 }
 
 infer_return_ty_for_binary_op!(Sdiv);
+operand_one_requirement!(Sdiv, rhs, divisor_requirement);
 
 /// Unsigned integer remainder. Traps on a zero divisor.
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
 #[operation(
     dialect = ArithDialect,
     traits(BinaryOp, SameTypeOperands, SameOperandsAndResultType),
-    implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
+    implements(
+        InferTypeOpInterface,
+        MemoryEffectOpInterface,
+        OperandRangeRequirementOpInterface,
+        Foldable,
+        OpPrinter
+    )
 )]
 pub struct Urem {
     #[operand]
@@ -312,6 +361,7 @@ pub struct Urem {
 }
 
 infer_return_ty_for_binary_op!(Urem);
+operand_one_requirement!(Urem, rhs, divisor_requirement);
 
 /// Signed integer remainder of the division rounding toward zero: the result has the sign of the
 /// dividend (`lhs`). Traps on a zero divisor only: the remainder of the minimum signed value by -1
@@ -320,7 +370,13 @@ infer_return_ty_for_binary_op!(Urem);
 #[operation(
     dialect = ArithDialect,
     traits(BinaryOp, SameTypeOperands, SameOperandsAndResultType),
-    implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
+    implements(
+        InferTypeOpInterface,
+        MemoryEffectOpInterface,
+        OperandRangeRequirementOpInterface,
+        Foldable,
+        OpPrinter
+    )
 )]
 pub struct Srem {
     #[operand]
@@ -332,6 +388,7 @@ pub struct Srem {
 }
 
 infer_return_ty_for_binary_op!(Srem);
+operand_one_requirement!(Srem, rhs, divisor_requirement);
 
 /// Unsigned integer division and remainder, as [Udiv] and [Urem]: the first result is the
 /// quotient, the second the remainder. Traps on a zero divisor.
@@ -339,7 +396,13 @@ infer_return_ty_for_binary_op!(Srem);
 #[operation(
     dialect = ArithDialect,
     traits(BinaryOp, SameTypeOperands, SameOperandsAndResultType),
-    implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
+    implements(
+        InferTypeOpInterface,
+        MemoryEffectOpInterface,
+        OperandRangeRequirementOpInterface,
+        Foldable,
+        OpPrinter
+    )
 )]
 pub struct Udivrem {
     #[operand]
@@ -351,6 +414,8 @@ pub struct Udivrem {
     #[result]
     remainder: AnyInteger,
 }
+
+operand_one_requirement!(Udivrem, rhs, divisor_requirement);
 
 impl InferTypeOpInterface for Udivrem {
     fn infer_return_types(&mut self, _context: &Context) -> Result<(), Report> {
@@ -369,7 +434,13 @@ impl InferTypeOpInterface for Udivrem {
 #[operation(
     dialect = ArithDialect,
     traits(BinaryOp, SameTypeOperands, SameOperandsAndResultType),
-    implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
+    implements(
+        InferTypeOpInterface,
+        MemoryEffectOpInterface,
+        OperandRangeRequirementOpInterface,
+        Foldable,
+        OpPrinter
+    )
 )]
 pub struct Sdivrem {
     #[operand]
@@ -381,6 +452,8 @@ pub struct Sdivrem {
     #[result]
     remainder: AnyInteger,
 }
+
+operand_one_requirement!(Sdivrem, rhs, divisor_requirement);
 
 impl InferTypeOpInterface for Sdivrem {
     fn infer_return_types(&mut self, _context: &Context) -> Result<(), Report> {
@@ -453,7 +526,13 @@ infer_return_ty_for_binary_op!(Bxor);
 #[operation(
     dialect = ArithDialect,
     traits(BinaryOp, SameTypeOperands, SameOperandsAndResultType),
-    implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
+    implements(
+        InferTypeOpInterface,
+        MemoryEffectOpInterface,
+        OperandRangeRequirementOpInterface,
+        Foldable,
+        OpPrinter
+    )
 )]
 pub struct Shl {
     #[operand]
@@ -465,6 +544,7 @@ pub struct Shl {
 }
 
 infer_return_ty_for_binary_op!(Shl);
+operand_one_requirement!(Shl, shift, shift_amount_requirement);
 
 /// Logical shift right, filling with zeros.
 ///
@@ -473,7 +553,13 @@ infer_return_ty_for_binary_op!(Shl);
 #[operation(
     dialect = ArithDialect,
     traits(BinaryOp, SameTypeOperands, SameOperandsAndResultType),
-    implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
+    implements(
+        InferTypeOpInterface,
+        MemoryEffectOpInterface,
+        OperandRangeRequirementOpInterface,
+        Foldable,
+        OpPrinter
+    )
 )]
 pub struct Shr {
     #[operand]
@@ -485,6 +571,7 @@ pub struct Shr {
 }
 
 infer_return_ty_for_binary_op!(Shr);
+operand_one_requirement!(Shr, shift, shift_amount_requirement);
 
 /// Arithmetic shift right, filling with copies of the sign bit.
 ///
@@ -493,7 +580,13 @@ infer_return_ty_for_binary_op!(Shr);
 #[operation(
     dialect = ArithDialect,
     traits(BinaryOp, SameTypeOperands, SameOperandsAndResultType),
-    implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
+    implements(
+        InferTypeOpInterface,
+        MemoryEffectOpInterface,
+        OperandRangeRequirementOpInterface,
+        Foldable,
+        OpPrinter
+    )
 )]
 pub struct Ashr {
     #[operand]
@@ -505,6 +598,7 @@ pub struct Ashr {
 }
 
 infer_return_ty_for_binary_op!(Ashr);
+operand_one_requirement!(Ashr, shift, shift_amount_requirement);
 
 /// Rotate left.
 ///
