@@ -201,4 +201,47 @@ mod tests {
         assert_eq!(replacement.borrow().iter_uses().count(), 1);
         assert_eq!(attr.borrow().path(), &replacement_path);
     }
+
+    /// An attribute that was never linked to a symbol is reported by the walker, skipped by the
+    /// walks over uses, and rejected by the verifier.
+    #[test]
+    fn an_unlinked_symbol_attribute_is_reported_not_panicked_on() {
+        use crate::{Op, Operation, SymbolName, SymbolNameComponent, SymbolPath, WalkResult};
+
+        let mut test = Test::named("an_unlinked_symbol_attribute").in_module("test");
+        let mut owner = test.define_function("owner", &[], &[]);
+        let context = test.context_rc();
+
+        let path =
+            SymbolPath::new([SymbolNameComponent::Leaf(SymbolName::intern("missing"))]).unwrap();
+        let attr = context.create_attribute::<SymbolRefAttr, _>(SymbolRef::new(path, None));
+        assert!(attr.borrow().try_user().is_none());
+        assert!(attr.borrow().resolve().is_none());
+        owner.borrow_mut().as_operation_mut().set_attribute("reference", attr);
+
+        let owner = owner.borrow();
+        let owner = owner.as_operation();
+        let mut linked = 0;
+        let mut unresolved = alloc::vec::Vec::new();
+        let _ = Operation::walk_symbol_refs(owner, |reference| {
+            match reference {
+                Ok(_) => linked += 1,
+                Err(attr) => unresolved.push(attr),
+            }
+            WalkResult::Continue(())
+        });
+        assert_eq!(linked, 0);
+        assert_eq!(unresolved, [attr]);
+
+        let mut visited = 0;
+        let _ = owner.walk_symbol_uses(|_| {
+            visited += 1;
+            WalkResult::Continue(())
+        });
+        assert_eq!(visited, 0);
+
+        let err = owner.verify().expect_err("an unlinked symbol attribute must not verify");
+        let message = alloc::format!("{err}");
+        assert!(message.contains("symbol '@missing' does not resolve"), "{message}");
+    }
 }

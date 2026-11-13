@@ -358,6 +358,19 @@ builtin.module public @test {
         assert!(format!("{err}").contains("does not resolve"), "{err}");
     }
 
+    /// A parsed alias whose target names nothing is reported by the alias's own verifier, not by
+    /// the check every operation's symbol uses get.
+    #[test]
+    fn alias_to_undeclared_target_is_the_alias_verifiers_error() {
+        let err = verify_alias_source(
+            "builtin.module public @test { builtin.function_alias public @bar -> @nowhere; };",
+        )
+        .expect_err("an alias of an undeclared symbol must not verify");
+        let message = format!("{err}");
+        assert!(message.contains("invalid builtin.function_alias 'bar'"), "{message}");
+        assert!(!message.contains("symbol '@nowhere' does not resolve"), "{message}");
+    }
+
     #[test]
     fn alias_to_non_callable_fails_verification() {
         let mut test = Test::default().in_module("test");

@@ -21,7 +21,10 @@ pub use self::{
     table::*,
 };
 use super::{Region, RegionRef, WalkResult};
-use crate::{Operation, OperationRef, UnsafeIntrusiveEntityRef, diagnostics::Diagnostic};
+use crate::{
+    Operation, OperationRef, UnsafeIntrusiveEntityRef, diagnostics::Diagnostic,
+    dialects::builtin::attributes::SymbolRefAttr,
+};
 
 #[derive(Debug, thiserror::Error, Diagnostic)]
 pub enum InvalidSymbolRefError {
@@ -258,20 +261,22 @@ impl Operation {
     /// Walk all of the uses, for any symbol, that are nested within this operation, invoking the
     /// provided callback for each use.
     ///
-    /// This does not traverse into any nested symbol tables.
+    /// Only references linked to a symbol are uses; a reference that does not resolve is skipped
+    /// (see [Self::walk_symbol_refs] to visit those too). This does not traverse into any nested
+    /// symbol tables.
     pub fn walk_symbol_uses<F>(&self, mut callback: F) -> WalkResult
     where
         F: FnMut(SymbolUseRef) -> WalkResult,
     {
         // Walk the uses on this operation.
-        Self::walk_symbol_refs(self, &mut callback)?;
+        Self::walk_linked_symbol_refs(self, &mut callback)?;
 
         // Only recurse if this operation is not a symbol table. A symbol table defines a new scope,
         // so we can't walk the attributes from within the symbol table op.
         if !self.implements::<dyn SymbolTable>() {
             for region in self.regions() {
                 Self::walk_symbol_table_region(&region, |op| {
-                    Self::walk_symbol_refs(op, &mut callback)
+                    Self::walk_linked_symbol_refs(op, &mut callback)
                 })?;
             }
         }
@@ -282,17 +287,19 @@ impl Operation {
     /// Walk all of the uses, for any symbol, that are nested within the given region, invoking the
     /// provided callback for each use.
     ///
+    /// Only references linked to a symbol are uses; a reference that does not resolve is skipped.
     /// This does not traverse into any nested symbol tables.
     pub fn walk_symbol_uses_in_region<F>(from: &Region, mut callback: F) -> WalkResult
     where
         F: FnMut(SymbolUseRef) -> WalkResult,
     {
-        Self::walk_symbol_table_region(from, |op| Self::walk_symbol_refs(op, &mut callback))
+        Self::walk_symbol_table_region(from, |op| Self::walk_linked_symbol_refs(op, &mut callback))
     }
 
     /// Get an iterator over all of the uses, for any symbol, that are nested within the current
     /// operation.
     ///
+    /// Only references linked to a symbol are uses; a reference that does not resolve is skipped.
     /// This does not traverse into any nested symbol tables, and will also only return uses on
     /// the current operation if it does not also define a symbol table. This is because we treat
     /// the region as the boundary of the symbol table, and not the op itself.
@@ -301,7 +308,7 @@ impl Operation {
         if self.implements::<dyn SymbolTable>() {
             return SymbolUseRefsIter::from(uses);
         }
-        let _ = Self::walk_symbol_refs(self, |symbol_use| {
+        let _ = Self::walk_linked_symbol_refs(self, |symbol_use| {
             uses.push_back(symbol_use);
             WalkResult::Continue(())
         });
@@ -317,6 +324,7 @@ impl Operation {
     /// Get an iterator over all of the uses, for any symbol, that are nested within the given
     /// region 'from'.
     ///
+    /// Only references linked to a symbol are uses; a reference that does not resolve is skipped.
     /// This does not traverse into any nested symbol tables.
     pub fn all_symbol_uses_in_region(from: &Region) -> SymbolUseRefsIter {
         let mut uses = VecDeque::new();
@@ -327,28 +335,42 @@ impl Operation {
         SymbolUseRefsIter::from(uses)
     }
 
-    /// Walk all of the symbol references within the given operation, invoking the provided callback
-    /// for each found use.
-    ///
-    /// The callbacks takes the symbol use.
-    pub fn walk_symbol_refs<F>(op: &Operation, mut callback: F) -> WalkResult
+    /// Walk the symbol references held directly by `op` that are linked to a symbol, skipping
+    /// those that are not.
+    fn walk_linked_symbol_refs<F>(op: &Operation, mut callback: F) -> WalkResult
     where
         F: FnMut(SymbolUseRef) -> WalkResult,
     {
-        use crate::dialects::builtin::attributes::SymbolRefAttr;
+        Self::walk_symbol_refs(op, |reference| match reference {
+            Ok(symbol_use) => callback(symbol_use),
+            Err(_) => WalkResult::Continue(()),
+        })
+    }
 
-        for attr in op.properties() {
-            let attr = attr.value();
-            if let Some(attr) = attr.downcast_ref::<SymbolRefAttr>() {
-                callback(attr.user())?;
+    /// Walk all of the symbol references held directly by the given operation (its properties and
+    /// attributes of type [SymbolRefAttr]), invoking the provided callback for each.
+    ///
+    /// The callback receives `Ok` with the use for a reference linked to a symbol, and `Err` with
+    /// the attribute for a reference that is not, such as one the parser could not resolve.
+    ///
+    /// References nested inside list or map attribute values are not visited.
+    pub fn walk_symbol_refs<F>(op: &Operation, mut callback: F) -> WalkResult
+    where
+        F: FnMut(Result<SymbolUseRef, UnsafeIntrusiveEntityRef<SymbolRefAttr>>) -> WalkResult,
+    {
+        let mut visit = |attr: crate::AttributeRef| match attr.try_downcast_attr::<SymbolRefAttr>()
+        {
+            Ok(attr) => {
+                let user = attr.borrow().try_user();
+                callback(user.filter(|user| user.is_linked()).ok_or(attr))
             }
+            Err(_) => WalkResult::Continue(()),
+        };
+        for prop in op.properties() {
+            visit(prop.value)?;
         }
         for attr in op.attributes() {
-            let attr = attr.as_named_attribute();
-            let attr = attr.value();
-            if let Some(attr) = attr.downcast_ref::<SymbolRefAttr>() {
-                callback(attr.user())?;
-            }
+            visit(attr.as_named_attribute().value)?;
         }
 
         WalkResult::Continue(())

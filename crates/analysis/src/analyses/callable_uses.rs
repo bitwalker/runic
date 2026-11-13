@@ -92,7 +92,10 @@ impl CallableUseInfo {
             for symbol_use in symbol.iter_uses() {
                 let owner = symbol_use.owner.borrow();
                 if let Some(alias) = owner.downcast_ref::<FunctionAlias>()
-                    && alias.target().user().borrow().attr == symbol_use.attr
+                    && alias
+                        .target()
+                        .try_user()
+                        .is_some_and(|user| user.borrow().attr == symbol_use.attr)
                 {
                     worklist.push(owner.as_symbol_ref().expect("aliases are symbols"));
                     continue;
@@ -147,9 +150,11 @@ impl CallableUseSnapshot {
                 analysis.uses.entry(callee.target()).or_default();
             }
 
-            let _ = Operation::walk_symbol_refs(op, |symbol_use| {
-                let symbol_use = symbol_use.borrow();
-                if let Ok(callee) = symbol_use.attr.borrow().resolve_callable() {
+            // A reference that does not resolve names no callable, and is skipped.
+            let _ = Operation::walk_symbol_refs(op, |reference| {
+                if let Ok(symbol_use) = reference
+                    && let Ok(callee) = symbol_use.borrow().attr.borrow().resolve_callable()
+                {
                     analysis.uses.entry(callee.target()).or_default();
                 }
                 WalkResult::Continue(())

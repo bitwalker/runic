@@ -364,6 +364,66 @@ fn parse_module_with_intra_function_symbol_references() -> TestResult {
     Ok(())
 }
 
+const UNRESOLVED_GLOBAL_SYMBOL: &str = "\
+builtin.module public @test {
+    builtin.function public extern(\"C\") @entrypoint() -> ptr<i8> {
+        %ptr = builtin.global_symbol @missing : ptr<i8>;
+        builtin.ret %ptr : (ptr<i8>);
+    };
+};";
+
+/// A symbol use that names nothing is a verification error at the operation holding it.
+#[test]
+fn an_unresolved_symbol_use_is_a_verification_error() {
+    let test = ParserTest::default();
+    let err = test
+        .parse_any("unresolved_symbol.runic", UNRESOLVED_GLOBAL_SYMBOL)
+        .expect_err("a reference to an undeclared global must not verify");
+    let message = err.to_string();
+    assert!(message.contains("symbol '@missing' does not resolve"), "{message}");
+    let rendered = format!("{}", err.display());
+    assert!(
+        rendered.contains("unresolved_symbol.runic")
+            && rendered.contains("builtin.global_symbol @missing"),
+        "the diagnostic must point at the reference: {rendered}"
+    );
+}
+
+/// Parsed without verification, the unresolved use stays unlinked, and the walker reports it
+/// rather than panicking.
+#[test]
+fn walking_an_unresolved_symbol_use_reports_it() -> TestResult {
+    use crate::{Operation, WalkResult, dialects::builtin::GlobalSymbol};
+
+    let test = ParserTest::default();
+    let parsed = test.parse_any_unverified("unresolved_symbol.runic", UNRESOLVED_GLOBAL_SYMBOL)?;
+    let mut global_symbol = None;
+    parsed.borrow().prewalk_all(|op: &Operation| {
+        if op.is::<GlobalSymbol>() {
+            global_symbol = Some(op.as_operation_ref());
+        }
+    });
+    let global_symbol = global_symbol.expect("the function holds a builtin.global_symbol");
+    let global_symbol = global_symbol.borrow();
+
+    let mut linked = 0;
+    let mut unresolved = Vec::new();
+    let _ = Operation::walk_symbol_refs(&global_symbol, |reference| {
+        match reference {
+            Ok(_) => linked += 1,
+            Err(attr) => unresolved.push(attr.borrow().path().to_string()),
+        }
+        WalkResult::Continue(())
+    });
+    assert_eq!(linked, 0);
+    assert_eq!(unresolved, ["missing"]);
+
+    // Walks over uses visit only linked uses.
+    assert!(global_symbol.all_symbol_uses().is_empty());
+    assert!(global_symbol.verify().is_err());
+    Ok(())
+}
+
 #[test]
 fn module_symbol_attribute_resolves_from_enclosing_table() -> TestResult {
     use crate::dialects::builtin::attributes::SymbolRefAttr;
@@ -399,7 +459,7 @@ builtin.world {
     assert!(uses.next().is_none(), "the sibling target must have exactly one use");
     assert_eq!(symbol_use.owner, reader);
     assert_eq!(symbol_use.attr, reference);
-    assert_eq!(reference.borrow().user().borrow().owner, reader);
+    assert_eq!(reference.borrow().try_user().unwrap().borrow().owner, reader);
     assert_eq!(
         reference.borrow().resolve().unwrap().borrow().as_operation_ref(),
         target.as_operation_ref()
@@ -457,7 +517,7 @@ builtin.module public @outer {
                 1
             );
             let reference = reference.borrow();
-            assert_eq!(reference.user().borrow().owner, owner);
+            assert_eq!(reference.try_user().unwrap().borrow().owner, owner);
             assert_eq!(
                 reference.resolve().unwrap().borrow().as_operation_ref(),
                 target.as_operation_ref()

@@ -56,9 +56,11 @@ impl SymbolRef {
         self.path = path;
     }
 
+    /// The use this reference was linked through, or `None` if it was never linked to a symbol,
+    /// as the parser leaves a reference that names no symbol.
     #[inline(always)]
-    pub fn user(&self) -> SymbolUseRef {
-        self.user.expect("user has not been initialized")
+    pub const fn try_user(&self) -> Option<SymbolUseRef> {
+        self.user
     }
 
     pub fn set_user(&mut self, user: SymbolUseRef) {
@@ -93,9 +95,11 @@ impl SymbolRefAttr {
         self.value.set_path(path);
     }
 
+    /// The use this reference was linked through, or `None` if it was never linked to a symbol,
+    /// as the parser leaves a reference that names no symbol.
     #[inline(always)]
-    pub fn user(&self) -> SymbolUseRef {
-        self.value.user()
+    pub const fn try_user(&self) -> Option<SymbolUseRef> {
+        self.value.try_user()
     }
 
     pub fn set_user(&mut self, user: SymbolUseRef) {
@@ -103,6 +107,8 @@ impl SymbolRefAttr {
     }
 
     /// Resolves this symbol reference relative to the operation that owns the tracked use.
+    ///
+    /// Returns `None` if the reference has no tracked use or does not resolve.
     ///
     /// This resolves the *named* symbol only, without following aliases: if the path names a
     /// [`FunctionAlias`], the alias itself is returned. Use [Self::resolve_callable] to obtain both
@@ -116,7 +122,7 @@ impl SymbolRefAttr {
     /// [`FunctionAlias`]: crate::dialects::builtin::FunctionAlias
     /// [`SymbolRef::resolve_canonical`]: crate::SymbolRef::resolve_canonical
     pub fn resolve(&self) -> Option<crate::SymbolRef> {
-        self.user().resolve_symbol(self.path())
+        self.try_user()?.resolve_symbol(self.path())
     }
 
     /// Resolve this reference as a callable, retaining its named symbol and canonical target.
@@ -125,7 +131,7 @@ impl SymbolRefAttr {
         &self,
     ) -> Result<crate::ResolvedSymbolCallee, crate::SymbolResolutionError> {
         let user =
-            self.value.user.ok_or_else(|| crate::SymbolResolutionError::UntrackedSymbol {
+            self.try_user().ok_or_else(|| crate::SymbolResolutionError::UntrackedSymbol {
                 path: self.path().clone(),
             })?;
         let owner = user.borrow().owner;
@@ -139,17 +145,30 @@ impl SymbolRefAttr {
             .resolve_callable(self.path())
     }
 
-    /// Unlinks the tracked use from its current symbol, if it is linked.
+    /// Unlinks the tracked use from its current symbol, if there is a use and it is linked.
     pub fn unlink(&mut self) {
-        self.user().unlink_from_symbol(self.path());
+        if let Some(user) = self.try_user() {
+            user.unlink_from_symbol(self.path());
+        }
     }
 
     /// Links the tracked use to `symbol` without modifying the stored path.
+    ///
+    /// # Panics
+    ///
+    /// Panics if this reference has no tracked use: a use records the operation that owns the
+    /// reference, which the attribute alone does not know.
     pub fn link(&mut self, symbol: crate::SymbolRef) {
-        self.user().link_to_symbol(symbol);
+        self.try_user()
+            .expect("a symbol reference without a tracked use cannot be linked")
+            .link_to_symbol(symbol);
     }
 
     /// Updates this symbol reference to point at `symbol`, mutating and relinking the existing use.
+    ///
+    /// # Panics
+    ///
+    /// Panics if this reference has no tracked use; see [Self::link].
     pub fn set_symbol(&mut self, symbol: crate::SymbolRef) {
         self.unlink();
         self.set_path(symbol.borrow().path());

@@ -139,8 +139,8 @@ builtin.module public @test {{
         let call = call.borrow();
         let call = call.downcast_ref::<runic_dialect_hir::Exec>().unwrap();
         assert_eq!(call.callee().path().to_string(), "alias");
-        assert_eq!(call.callee().user().borrow().owner, call.as_operation_ref());
-        assert_eq!(first.borrow().target().user().borrow().owner, first.as_operation_ref());
+        assert_eq!(call.callee().try_user().unwrap().borrow().owner, call.as_operation_ref());
+        assert_eq!(first.borrow().target().try_user().unwrap().borrow().owner, first.as_operation_ref());
         assert_eq!(
             call.resolve().map(|c| c.as_symbol_ref()),
             target.borrow().as_operation().as_symbol_ref()

@@ -511,13 +511,49 @@ impl Operation {
     /// integer constant among its properties and attributes is valid; see
     /// [Self::verify_int_attributes]. The third is that every signature among its properties and
     /// attributes is valid; see [Self::verify_signature_attributes]. The operation's own verifiers
-    /// run after these.
+    /// run after these. The last check, run for every operation, is that every symbol reference
+    /// among its properties and attributes is linked to a symbol; see
+    /// [Self::verify_symbol_refs]. It runs after the operation's own verifiers so that an
+    /// operation which diagnoses its own unresolved references (as `builtin.function_alias` does
+    /// its target) reports them in its own words.
     pub fn verify(&self) -> Result<(), Report> {
         self.verify_type_ownership()?;
         self.verify_int_attributes()?;
         self.verify_signature_attributes()?;
         let dyn_op: &dyn Op = self.as_ref();
-        dyn_op.verify(self.context())
+        dyn_op.verify(self.context())?;
+        self.verify_symbol_refs()
+    }
+
+    /// Check that every symbol reference among this operation's properties and attributes is
+    /// linked to a symbol.
+    ///
+    /// The parser links each reference to the symbol it names once the whole input is parsed, and
+    /// leaves one that names no symbol unlinked; the typed builders only accept a symbol that
+    /// exists. This check is what turns a reference to a missing symbol into a diagnostic.
+    ///
+    /// Only the properties and attributes of the operation itself are visited, as by
+    /// [Self::walk_symbol_refs]: a reference nested inside a list or map attribute value is not
+    /// checked.
+    pub fn verify_symbol_refs(&self) -> Result<(), Report> {
+        Self::walk_symbol_refs(self, |reference| match reference {
+            Ok(_) => WalkResult::Continue(()),
+            Err(attr) => {
+                let flags = crate::OpPrintingFlags::default();
+                let mut printer = crate::print::AsmPrinter::fragment(self.context_rc(), &flags);
+                printer.print_symbol_path(attr.borrow().path());
+                WalkResult::Break(crate::diagnostics::report!(
+                    message: (alloc::format!("symbol '{}' does not resolve", printer.finish())),
+                    labels: [
+                        primary(
+                            self.span(),
+                            alloc::format!("no symbol visible to '{}' has this path", self.name())
+                        ),
+                    ],
+                ))
+            }
+        })
+        .into_result()
     }
 
     /// Check that the types of this operation's results, of the arguments of the blocks in its

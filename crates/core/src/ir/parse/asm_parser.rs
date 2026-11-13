@@ -315,7 +315,11 @@ impl AsmParserState {
         Some(&self.type_aliases[index])
     }
 
-    /// Resolve any symbol table uses in the IR
+    /// Link each parsed symbol reference to the symbol it names, looked up in the nearest symbol
+    /// table of the operation holding it.
+    ///
+    /// A reference that names no symbol, or whose operation has no symbol table to look in, is
+    /// left unlinked; [Operation::verify](crate::Operation::verify) reports it.
     pub fn resolve_symbol_uses(&mut self) {
         for (user, uses) in self.symbol_uses.drain() {
             let (context, nearest_symbol_table) = {
@@ -342,6 +346,7 @@ impl AsmParserState {
                     .symbol_manager()
                     .lookup_symbol_ref(&path)
                 else {
+                    // Left unlinked for the verifier to report
                     continue;
                 };
 
