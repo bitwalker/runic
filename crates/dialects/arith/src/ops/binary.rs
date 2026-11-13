@@ -645,11 +645,11 @@ mod integer_range_tests {
         }
         // Read as unsigned, both sums overflow; an unchecked addition must not acquire the
         // wrapped result as a proof.
-        for lhs in [Int::from(u32::MAX), Int::from(-1i32)] {
+        for (lhs, rhs) in [(u32::MAX, 1u32), (u32::MAX - 1, 2)] {
             let result = infer_add_range(
                 i32,
-                &ConstantIntRange::constant(lhs),
-                &ConstantIntRange::constant(Int::from(1i32)),
+                &ConstantIntRange::constant(Int::from(lhs)),
+                &ConstantIntRange::constant(Int::from(rhs)),
                 Overflow::Unchecked(Signedness::Unsigned),
                 IntegerRangeConfidence::Proven,
             );

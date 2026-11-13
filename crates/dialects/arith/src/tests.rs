@@ -399,6 +399,29 @@ fn cmpi_prints_its_predicate_as_a_keyword() {
 }
 
 #[test]
+fn cmpi_of_operation_results_round_trips() {
+    for predicate in CmpPredicate::ALL {
+        let mut test = test_with(&[]);
+        {
+            let mut b = test.function_builder();
+            let (lhs, rhs) = (b.i32(1, SPAN), b.i32(2, SPAN));
+            b.cmpi(predicate, lhs, rhs, SPAN).unwrap();
+        }
+        let (text, context, ops) = finish(&mut test);
+        assert!(text.contains(&format!("arith.cmpi {predicate} %0, %1;")), "{text}");
+        let [lhs, rhs, compare, _ret] = ops[..] else {
+            panic!("expected two constants, a comparison and a return: {text}");
+        };
+        let compare = compare.borrow();
+        let cmpi = compare.downcast_ref::<Cmpi>().expect("an arith.cmpi");
+        assert_eq!(*cmpi.get_predicate(), predicate);
+        assert_eq!(cmpi.lhs().as_value_ref(), lhs.borrow().results()[0].borrow().as_value_ref());
+        assert_eq!(cmpi.rhs().as_value_ref(), rhs.borrow().results()[0].borrow().as_value_ref());
+        assert_eq!(cmpi.result().ty(), context.i1());
+    }
+}
+
+#[test]
 fn cmpi_parses_each_predicate() {
     for predicate in CmpPredicate::ALL {
         let context = Rc::new(Context::default());
@@ -891,14 +914,69 @@ fn bnot_folds_a_constant_boolean_and_a_double_negation() {
     let byte = b.i8(1, SPAN);
     let not_byte = b.bnot(byte, SPAN).unwrap();
     assert_eq!(fold_value(not_byte, None), None);
-    // `bnot (bnot x)` is `x`.
+    // `bnot (bnot x)` is `x`, at every width.
     let inner = b.bnot(param, SPAN).unwrap();
     let outer = b.bnot(inner, SPAN).unwrap();
+    assert_eq!(double_negation_fold(outer), Some(param));
+}
+
+/// The value the `bnot` defining `outer` folds to, if it folds to a value.
+fn double_negation_fold(outer: ValueRef) -> Option<ValueRef> {
     let op = outer.borrow().get_defining_op().unwrap();
     let op = op.borrow();
     let mut results = SmallVec::<[OpFoldResult; 1]>::new();
-    assert!(op.as_trait::<dyn Foldable>().unwrap().fold(&mut results).is_ok());
-    assert!(matches!(results.as_slice(), [OpFoldResult::Value(v)] if *v == param));
+    if !op.as_trait::<dyn Foldable>().unwrap().fold(&mut results).is_ok() {
+        return None;
+    }
+    match results.as_slice() {
+        [OpFoldResult::Value(value)] => Some(*value),
+        _ => None,
+    }
+}
+
+#[test]
+fn a_double_negation_folds_at_i1_and_isize() {
+    for ty in [Context::i1 as TypeFn, Context::isize] {
+        let mut test = test_with(&[ty]);
+        let [param] = params(&test)[..] else {
+            unreachable!()
+        };
+        let mut b = test.function_builder();
+        let inner = b.bnot(param, SPAN).unwrap();
+        let outer = b.bnot(inner, SPAN).unwrap();
+        assert_eq!(double_negation_fold(outer), Some(param));
+        // A single negation of a parameter does not fold.
+        assert_eq!(double_negation_fold(inner), None);
+    }
+}
+
+#[test]
+fn the_range_of_an_isize_constant_is_untracked() {
+    use runic_core::{ConstantIntRange, IntegerValueRange, traits::InferIntRangeInterface};
+    let mut test = test_with(&[]);
+    let context = test.context_rc();
+    let (wide, narrow) = {
+        let mut b = test.function_builder();
+        (b.isize(-1, SPAN), b.i32(-1, SPAN))
+    };
+    let range_of = |value: ValueRef| {
+        let op = value.borrow().get_defining_op().unwrap();
+        let op = op.borrow();
+        let infer = op.as_trait::<dyn InferIntRangeInterface>().expect("infers ranges");
+        let mut range = None;
+        infer.infer_result_ranges(&[], &mut |result, inferred| {
+            assert_eq!(result, value);
+            range = Some(inferred);
+        });
+        range.expect("a result range")
+    };
+    assert_eq!(range_of(wide), IntegerValueRange::max_for_type(context.isize()));
+    assert!(range_of(wide).range().unwrap().is_untracked());
+    // An `i32` constant is exact.
+    assert_eq!(
+        range_of(narrow),
+        IntegerValueRange::proven(ConstantIntRange::constant(Int::from(-1i32)))
+    );
 }
 
 #[test]

@@ -312,7 +312,7 @@ mod tests {
     use alloc::{format, rc::Rc};
 
     use runic_core::{
-        Context, Op, OperationRef, Report, SourceSpan, Type, ValueRef,
+        Context, Int, Op, OperationRef, Report, SourceSpan, Type, ValueRef,
         dialects::builtin::{BuiltinOpBuilder, Ret},
         patterns::{
             FrozenRewritePatternSet, GreedyRewriteConfig, RegionSimplificationLevel,
@@ -391,18 +391,37 @@ mod tests {
         bit: i32,
         constant_first: bool,
     ) -> Outcome {
+        simplify_bool_compare_at(extension, predicate, bit, constant_first, 32)
+    }
+
+    /// As [simplify_bool_compare], with the boolean widened to `iN`, `N` being `width`.
+    fn simplify_bool_compare_at(
+        extension: Extension,
+        predicate: CmpPredicate,
+        bit: i32,
+        constant_first: bool,
+        width: u32,
+    ) -> Outcome {
         let mut test = Test::new("f", |cx| ([cx.i1()], [cx.i1()]));
         test.context().get_or_register_dialect::<ArithDialect>();
         let flag = test.entry_block().borrow().arguments()[0].borrow().as_value_ref();
         {
             let mut b = test.function_builder();
-            let i32 = b.builder().context().i32();
+            let wide = b.builder().context().int_type(width);
             let widened = match extension {
-                Extension::Zero => b.zext(flag, i32, SPAN),
-                Extension::Sign => b.sext(flag, i32, SPAN),
+                Extension::Zero => b.zext(flag, wide, SPAN),
+                Extension::Sign => b.sext(flag, wide, SPAN),
             }
             .unwrap();
-            let constant = b.i32(bit, SPAN);
+            let constant = b.int(
+                if bit == 0 {
+                    Int::zero(width)
+                } else {
+                    Int::one(width)
+                },
+                wide,
+                SPAN,
+            );
             let (lhs, rhs) = if constant_first {
                 (constant, widened)
             } else {
@@ -444,6 +463,29 @@ mod tests {
             assert_eq!(check(CmpPredicate::Ne, 1), Outcome::NotBool);
             // Only equality is simplified.
             assert_eq!(check(CmpPredicate::Ult, 1), Outcome::Unchanged);
+        }
+    }
+
+    #[test]
+    fn a_boolean_widened_to_other_widths_is_simplified_the_same_way() {
+        for width in [2, 8] {
+            for constant_first in [false, true] {
+                let zero = |predicate, bit| {
+                    simplify_bool_compare_at(Extension::Zero, predicate, bit, constant_first, width)
+                };
+                assert_eq!(zero(CmpPredicate::Ne, 0), Outcome::Bool, "zext i{width}");
+                assert_eq!(zero(CmpPredicate::Eq, 1), Outcome::Bool, "zext i{width}");
+                assert_eq!(zero(CmpPredicate::Eq, 0), Outcome::NotBool, "zext i{width}");
+                assert_eq!(zero(CmpPredicate::Ne, 1), Outcome::NotBool, "zext i{width}");
+                assert_eq!(zero(CmpPredicate::Ult, 1), Outcome::Unchanged, "zext i{width}");
+                let sign = |predicate, bit| {
+                    simplify_bool_compare_at(Extension::Sign, predicate, bit, constant_first, width)
+                };
+                assert_eq!(sign(CmpPredicate::Ne, 0), Outcome::Bool, "sext i{width}");
+                assert_eq!(sign(CmpPredicate::Eq, 0), Outcome::NotBool, "sext i{width}");
+                assert_eq!(sign(CmpPredicate::Eq, 1), Outcome::Unchanged, "sext i{width}");
+                assert_eq!(sign(CmpPredicate::Ne, 1), Outcome::Unchanged, "sext i{width}");
+            }
         }
     }
 
@@ -515,24 +557,154 @@ mod tests {
 
     #[test]
     fn trunc_to_i1_of_a_widened_boolean_is_the_boolean() {
-        for extension in [Extension::Zero, Extension::Sign] {
+        for (extension, width) in [Extension::Zero, Extension::Sign]
+            .into_iter()
+            .flat_map(|extension| [2, 8, 64].map(|width| (extension, width)))
+        {
             let mut test = Test::new("f", |cx| ([cx.i1()], [cx.i1()]));
             test.context().get_or_register_dialect::<ArithDialect>();
             let flag = test.entry_block().borrow().arguments()[0].borrow().as_value_ref();
             {
                 let mut b = test.function_builder();
-                let (i1, i64) = (b.builder().context().i1(), b.builder().context().i64());
+                let (i1, wide) =
+                    (b.builder().context().i1(), b.builder().context().int_type(width));
                 let widened = match extension {
-                    Extension::Zero => b.zext(flag, i64, SPAN),
-                    Extension::Sign => b.sext(flag, i64, SPAN),
+                    Extension::Zero => b.zext(flag, wide, SPAN),
+                    Extension::Sign => b.sext(flag, wide, SPAN),
                 }
                 .unwrap();
                 let truncated = b.trunc(widened, i1, SPAN).unwrap();
                 b.ret(Some(truncated), SPAN).unwrap();
             }
             assert!(canonicalize(&test, Trunc::get_canonicalization_patterns));
-            assert_eq!(returned(&test), flag, "{extension:?}");
+            assert_eq!(returned(&test), flag, "{extension:?} i{width}");
         }
+    }
+
+    /// An inline call chain attribute of one frame named `name`.
+    fn chain(test: &Test, name: &'static str) -> runic_core::AttributeRef {
+        use runic_core::dialects::debuginfo::attributes::{
+            InlineCallChain, InlineCallChainAttr, InlineCallFrame,
+        };
+        test.context_rc()
+            .create_attribute::<InlineCallChainAttr, _>(InlineCallChain::new(alloc::vec![
+                InlineCallFrame {
+                    name: name.into(),
+                    linkage_name: None,
+                    file: "source.rs".into(),
+                    line: 1,
+                    column: 1,
+                    call_file: "source.rs".into(),
+                    call_line: 2,
+                    call_column: 1,
+                }
+            ]))
+            .as_attribute_ref()
+    }
+
+    /// The first `T` in `test`'s function.
+    fn find_op<T: Op>(test: &Test) -> Option<OperationRef> {
+        let mut found = None;
+        test.function()
+            .borrow()
+            .as_operation()
+            .prewalk_all(|op: &runic_core::Operation| {
+                if found.is_none() && op.is::<T>() {
+                    found = Some(op.as_operation_ref());
+                }
+            });
+        found
+    }
+
+    #[test]
+    fn inline_metadata_survives_a_rewrite_that_creates_an_operation() -> Result<(), Report> {
+        check_inline_metadata_on_created_operation(false)
+    }
+
+    #[test]
+    fn standalone_pattern_application_inherits_inline_metadata() -> Result<(), Report> {
+        check_inline_metadata_on_created_operation(true)
+    }
+
+    /// `eq (zext %b), 0` rewrites to `bnot %b`: the created `bnot` carries the inline call chain
+    /// of the comparison it replaces, whether the rewrite runs in the greedy driver or in a
+    /// standalone `PatternApplicator`.
+    fn check_inline_metadata_on_created_operation(standalone: bool) -> Result<(), Report> {
+        use runic_core::dialects::debuginfo::attributes::INLINE_CALL_CHAIN_ATTR_NAME;
+        let mut test = Test::new("f", |cx| ([cx.i1()], [cx.i1()]));
+        test.context().get_or_register_dialect::<ArithDialect>();
+        let flag = test.entry_block().borrow().arguments()[0].borrow().as_value_ref();
+        {
+            let mut b = test.function_builder();
+            let i32 = b.builder().context().i32();
+            let widened = b.zext(flag, i32, SPAN)?;
+            let zero = b.i32(0, SPAN);
+            let compared = b.cmpi(CmpPredicate::Eq, widened, zero, SPAN)?;
+            b.ret(Some(compared), SPAN)?;
+        }
+        let attr = chain(&test, "inline_compare");
+        let mut compare = find_op::<Cmpi>(&test).unwrap();
+        compare.borrow_mut().set_attribute(INLINE_CALL_CHAIN_ATTR_NAME, attr);
+        if standalone {
+            use runic_core::patterns::{NoopRewriterListener, PatternApplicator, RewriterImpl};
+            let context = test.context_rc();
+            let mut patterns = RewritePatternSet::new(context.clone());
+            Cmpi::get_canonicalization_patterns(&mut patterns, context.clone());
+            let mut applicator =
+                PatternApplicator::new(Rc::new(FrozenRewritePatternSet::new(patterns)));
+            applicator.apply_cost_model(|pattern| *pattern.benefit());
+            let mut rewriter = RewriterImpl::<NoopRewriterListener>::new(context);
+            assert!(
+                applicator
+                    .match_and_rewrite(compare, &mut rewriter, |_| true, |_| {}, |_| Ok(()))
+                    .is_ok()
+            );
+        } else {
+            assert!(canonicalize(&test, Cmpi::get_canonicalization_patterns));
+        }
+        let mut created = 0;
+        test.function()
+            .borrow()
+            .as_operation()
+            .prewalk_all(|op: &runic_core::Operation| {
+                if op.is::<Bnot>() {
+                    assert_eq!(op.get_attribute(INLINE_CALL_CHAIN_ATTR_NAME), Some(attr));
+                    created += 1;
+                }
+            });
+        assert_eq!(created, 1, "the rewrite must create a bnot with the comparison's frame");
+        Ok(())
+    }
+
+    /// `bnot (cmpi ..)` rewrites to a `cmpi` that belongs to the inline frame of the comparison it
+    /// replaces, not to that of the `bnot`.
+    #[test]
+    fn simplify_not_compare_creates_the_comparison_in_the_comparisons_frame() -> Result<(), Report>
+    {
+        use runic_core::dialects::debuginfo::attributes::INLINE_CALL_CHAIN_ATTR_NAME;
+        let mut test = Test::new("f", |cx| ([cx.i32(), cx.i32()], [cx.i1()]));
+        test.context().get_or_register_dialect::<ArithDialect>();
+        let args = test.entry_block().borrow().arguments().to_vec();
+        let (lhs, rhs) = (args[0].borrow().as_value_ref(), args[1].borrow().as_value_ref());
+        {
+            let mut b = test.function_builder();
+            let compared = b.cmpi(CmpPredicate::Slt, lhs, rhs, SPAN)?;
+            let negated = b.bnot(compared, SPAN)?;
+            b.ret(Some(negated), SPAN)?;
+        }
+        let compare_chain = chain(&test, "compare_frame");
+        let not_chain = chain(&test, "not_frame");
+        let mut compare = find_op::<Cmpi>(&test).unwrap();
+        compare.borrow_mut().set_attribute(INLINE_CALL_CHAIN_ATTR_NAME, compare_chain);
+        let mut negation = find_op::<Bnot>(&test).unwrap();
+        negation.borrow_mut().set_attribute(INLINE_CALL_CHAIN_ATTR_NAME, not_chain);
+        assert!(canonicalize(&test, Bnot::get_canonicalization_patterns));
+        let created = defining_op(returned(&test)).unwrap();
+        let created = created.borrow();
+        let cmpi = created.downcast_ref::<Cmpi>().expect("an arith.cmpi");
+        assert_eq!(*cmpi.get_predicate(), CmpPredicate::Sge);
+        assert_eq!(created.get_attribute(INLINE_CALL_CHAIN_ATTR_NAME), Some(compare_chain));
+        Ok(())
     }
 
     #[test]
