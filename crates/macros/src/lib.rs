@@ -145,6 +145,14 @@ pub fn operation_trait(
 
 /// Define an operation.
 ///
+/// ## Properties with a default
+///
+/// An `#[attr]` field marked `#[default]` has a default: the attribute's registered default
+/// (`AttributeRegistration::create_default`). The operation gets a builder form without that
+/// argument, a parsed operation that does not give the property gets the default, and the derived
+/// text format does not print the property while it has that value. A property without
+/// `#[default]` is required in every text form.
+///
 /// ## Examples
 ///
 /// ```text

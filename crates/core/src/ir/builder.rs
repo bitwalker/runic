@@ -161,13 +161,21 @@ pub trait Builder: Listener {
 
     /// Create an [super::Operation] from the provided [OperationState]
     fn create_operation(&mut self, state: &mut OperationState) -> Result<OperationRef, Report> {
-        let mut op = state.name.alloc_default(self.context_rc());
+        let context = self.context_rc();
+        let mut op = state.name.alloc_default(context.clone());
         op.borrow_mut().set_span(state.span);
 
         let mut builder = crate::GenericOperationBuilder::new(self, op);
 
+        // A property the state does not give takes its default; one without a default is required.
         for prop in op.name().properties() {
-            if !state.attrs.iter().any(|p| p.name == prop.name) {
+            if state.attrs.iter().any(|p| p.name == prop.name) {
+                continue;
+            }
+            if let Some(create_default) = prop.default {
+                let value = create_default(&context);
+                builder.with_property_boxed(prop.name, value)?;
+            } else {
                 return Err(report! {
                     message: "invalid operation",
                     labels: [

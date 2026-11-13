@@ -129,7 +129,7 @@ impl quote::ToTokens for DeriveOpParser {
         };
 
         let mut properties = quote! {};
-        if !format.properties.is_empty() {
+        if format.has_properties {
             properties.extend(quote! {
                 if parser.token_stream_mut().next_if_eq(Token::Langle)? {
                     let mut props = ::runic_core::SmallVec::default();

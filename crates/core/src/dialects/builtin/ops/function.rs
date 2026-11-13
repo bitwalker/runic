@@ -740,7 +740,7 @@ mod tests {
             builder.set_insertion_point_to_end(entry);
             let span = SourceSpan::UNKNOWN;
             if matches!(body, Body::Pure | Body::PureAndReturns) {
-                builder.create::<Add, _>(span)(value, value, Overflow::Wrapping).unwrap();
+                builder.create::<Add, (_, _, _)>(span)(value, value, Overflow::Wrapping).unwrap();
             }
             match body {
                 Body::Empty | Body::Pure => (),

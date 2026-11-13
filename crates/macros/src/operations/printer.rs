@@ -108,12 +108,19 @@ impl quote::ToTokens for DeriveOpPrinter {
             }
         };
 
+        // A property at its default is not printed, and the dictionary is left out when no
+        // property remains.
         let mut properties = quote! {};
-        if !format.properties.is_empty() {
+        if format.has_properties {
             properties.extend(quote! {
-                *printer += runic_core::formatter::const_text(" <");
-                printer.print_attribute_dictionary(op.properties());
-                *printer += runic_core::formatter::const_text(">");
+                {
+                    let mut properties = op.non_default_properties().peekable();
+                    if properties.peek().is_some() {
+                        *printer += ::runic_core::formatter::const_text(" <");
+                        printer.print_attribute_dictionary(properties);
+                        *printer += ::runic_core::formatter::const_text(">");
+                    }
+                }
             });
         }
 

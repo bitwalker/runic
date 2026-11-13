@@ -52,6 +52,10 @@ pub struct Context {
     registered_dialects: RefCell<FxHashMap<interner::Symbol, Rc<dyn Dialect>>>,
     constants: RefCell<ConstantPool>,
     uniqued_attr_cache: RefCell<FxHashMap<AttributeName, AttributeRef>>,
+    /// The registered default of each attribute kind a property default was compared with, keyed
+    /// by the attribute's type id. Created on first use and never handed out, so nothing can edit
+    /// it. See [Context::is_default_attribute].
+    default_attrs: RefCell<FxHashMap<core::any::TypeId, AttributeRef>>,
     next_block_id: Cell<u32>,
     next_value_id: Cell<u32>,
 }
@@ -174,6 +178,7 @@ impl Context {
             registered_dialects,
             constants: Default::default(),
             uniqued_attr_cache: Default::default(),
+            default_attrs: Default::default(),
             next_block_id: Cell::new(0),
             next_value_id: Cell::new(0),
         }
@@ -265,6 +270,31 @@ impl Context {
     {
         self.get_registered_dialect(T::dialect_name())
             .expect_registered_attribute_name::<T>()
+    }
+
+    /// Returns true if `value` equals the default that `create_default` creates for the attribute
+    /// kind `type_id`, its type included.
+    ///
+    /// The default is created on the first call for a kind and kept, so later calls compare
+    /// without allocating. `create_default` must create an attribute of kind `type_id`, and must
+    /// give the same value on every call (as [AttributeRegistration::create_default] does).
+    pub fn is_default_attribute(
+        self: &Rc<Context>,
+        type_id: core::any::TypeId,
+        create_default: fn(&Rc<Context>) -> AttributeRef,
+        value: &AttributeRef,
+    ) -> bool {
+        let cached = self.default_attrs.borrow().get(&type_id).cloned();
+        let default = match cached {
+            Some(default) => default,
+            None => {
+                // Created outside the borrow: creating an attribute may use other caches.
+                let default = create_default(self);
+                self.default_attrs.borrow_mut().insert(type_id, default);
+                default
+            }
+        };
+        *value == default
     }
 
     pub fn get_marker<T>(self: &Rc<Context>) -> UnsafeIntrusiveEntityRef<T>

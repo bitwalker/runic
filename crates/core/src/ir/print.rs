@@ -287,6 +287,11 @@
 //! * If an operation has properties or attributes, they must all be printed - or in the case of
 //!   the custom format, present in the printed output. If not, then it will not be possible to
 //!   round-trip the operation through the printed form and back.
+//! * The one exception is a property whose field is marked `#[default]`: an operation whose text
+//!   does not give it gets the attribute's registered default, so the derived custom format does
+//!   not print it while it has that value, and leaves out the `<{ .. }>` dictionary when no
+//!   property remains: `test.add %0, %1` is the wrapping addition. The generic form prints every
+//!   property.
 
 mod asm_printer;
 #[cfg(test)]

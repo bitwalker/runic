@@ -25,7 +25,7 @@ pub trait TestOpBuilder<'f, B: ?Sized + Builder> {
 
     /// Two's complement addition which traps on overflow
     fn add(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<Add, _>(span);
+        let op_builder = self.builder_mut().create::<Add, (_, _, _)>(span);
         let op = op_builder(lhs, rhs, crate::Overflow::Checked(crate::Signedness::Unsigned))?;
         Ok(op.borrow().result().as_value_ref())
     }
@@ -37,7 +37,7 @@ pub trait TestOpBuilder<'f, B: ?Sized + Builder> {
         rhs: ValueRef,
         span: SourceSpan,
     ) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<Add, _>(span);
+        let op_builder = self.builder_mut().create::<Add, (_, _, _)>(span);
         let op = op_builder(lhs, rhs, crate::Overflow::Unchecked(crate::Signedness::Unsigned))?;
         Ok(op.borrow().result().as_value_ref())
     }
@@ -49,14 +49,14 @@ pub trait TestOpBuilder<'f, B: ?Sized + Builder> {
         rhs: ValueRef,
         span: SourceSpan,
     ) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<Add, _>(span);
+        let op_builder = self.builder_mut().create::<Add, (_, _, _)>(span);
         let op = op_builder(lhs, rhs, crate::Overflow::Wrapping)?;
         Ok(op.borrow().result().as_value_ref())
     }
 
     /// Two's complement multiplication which traps on overflow
     fn mul(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<Mul, _>(span);
+        let op_builder = self.builder_mut().create::<Mul, (_, _, _)>(span);
         let op = op_builder(lhs, rhs, crate::Overflow::Checked(crate::Signedness::Unsigned))?;
         Ok(op.borrow().result().as_value_ref())
     }
@@ -68,7 +68,7 @@ pub trait TestOpBuilder<'f, B: ?Sized + Builder> {
         rhs: ValueRef,
         span: SourceSpan,
     ) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<Mul, _>(span);
+        let op_builder = self.builder_mut().create::<Mul, (_, _, _)>(span);
         let op = op_builder(lhs, rhs, crate::Overflow::Unchecked(crate::Signedness::Unsigned))?;
         Ok(op.borrow().result().as_value_ref())
     }
@@ -80,7 +80,7 @@ pub trait TestOpBuilder<'f, B: ?Sized + Builder> {
         rhs: ValueRef,
         span: SourceSpan,
     ) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<Mul, _>(span);
+        let op_builder = self.builder_mut().create::<Mul, (_, _, _)>(span);
         let op = op_builder(lhs, rhs, crate::Overflow::Wrapping)?;
         Ok(op.borrow().result().as_value_ref())
     }

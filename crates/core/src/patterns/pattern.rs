@@ -321,7 +321,7 @@ mod tests {
             let constant: UnsafeIntrusiveEntityRef<Constant> =
                 constant_builder(Int::from(2i32)).unwrap();
             let shift = constant.borrow().result().as_value_ref();
-            let mul_builder = rewriter.create::<Mul, _>(span);
+            let mul_builder = rewriter.create::<Mul, (_, _, _)>(span);
             let mul = mul_builder(lhs, shift, Overflow::Wrapping).unwrap();
             let mul = mul.as_operation_ref();
             log::trace!("replacing shl with mul");
@@ -369,7 +369,7 @@ mod tests {
         let expected = "\
 builtin.function public extern(\"C\") @rewrite_pattern_api_test(%0: i32) -> i32 {
     %3 = test.constant 2 : i32;
-    %4 = test.mul %0, %3 <{ overflow = #builtin.overflow<wrapping> }>;
+    %4 = test.mul %0, %3;
     builtin.ret %4 : (i32);
 };";
         assert_str_eq!(output.as_str(), expected);

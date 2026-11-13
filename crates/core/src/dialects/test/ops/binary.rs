@@ -42,6 +42,7 @@ pub struct Add {
     #[result]
     result: AnyInteger,
     #[attr]
+    #[default]
     overflow: OverflowAttr,
 }
 
@@ -62,6 +63,7 @@ pub struct Mul {
     #[result]
     result: AnyInteger,
     #[attr]
+    #[default]
     overflow: OverflowAttr,
 }
 

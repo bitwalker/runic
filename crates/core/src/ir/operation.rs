@@ -803,6 +803,26 @@ impl Operation {
         }
     }
 
+    /// Iterate over the properties of this operation that are not at their default: a property
+    /// without a default is always yielded, one with a default ([AttrInfo::default]) only when
+    /// its value differs from it.
+    ///
+    /// This is what the derived text format prints.
+    pub fn non_default_properties(&self) -> impl Iterator<Item = NamedAttribute> {
+        let context = self.context_rc();
+        self.name.properties().iter().filter_map(move |info| {
+            let value = unsafe { (info.get_raw)(self.container(), info) };
+            if info.is_default(&context, &value) {
+                None
+            } else {
+                Some(NamedAttribute {
+                    name: info.name,
+                    value,
+                })
+            }
+        })
+    }
+
     /// Returns true if this operation has property `name`
     #[inline]
     pub fn has_property(&self, name: impl Into<interner::Symbol>) -> bool {
@@ -1998,9 +2018,12 @@ mod tests {
             builder.set_insertion_point_to_end(entry);
             let store = builder.create::<Store, _>(SourceSpan::UNKNOWN)(addr, value).unwrap();
             let load = builder.create::<Load, _>(SourceSpan::UNKNOWN)(addr).unwrap();
-            let add =
-                builder.create::<Add, _>(SourceSpan::UNKNOWN)(value, value, Overflow::Wrapping)
-                    .unwrap();
+            let add = builder.create::<Add, (_, _, _)>(SourceSpan::UNKNOWN)(
+                value,
+                value,
+                Overflow::Wrapping,
+            )
+            .unwrap();
             (
                 store.borrow().as_operation().as_operation_ref(),
                 load.borrow().as_operation().as_operation_ref(),

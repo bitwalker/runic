@@ -63,6 +63,8 @@ type AttrValueGetMut = for<'a> unsafe fn(
 type TryFromAttr =
     unsafe fn(*mut (), &AttrInfo, AttributeRef) -> Result<(), crate::diagnostics::Report>;
 
+type CreateDefaultAttr = fn(&Rc<Context>) -> AttributeRef;
+
 /// This trait provides for type-erased writes to an attribute property of an [crate::Operation].
 ///
 /// Implementations must use the provided pointer, derive a pointer to the field holding the
@@ -142,6 +144,14 @@ pub struct AttrInfo {
     /// A function which attempts to convert the given [AttributeRef] to the concrete type of the
     /// field, or returns an error if the value is not valid.
     pub try_from: TryFromAttr,
+    /// Creates the value this property takes when an operation does not give it, or `None` when
+    /// the property is required.
+    ///
+    /// It is set for a field marked `#[default]`, and creates the attribute's registered default
+    /// ([AttributeRegistration::create_default]). A parsed operation that leaves the property out
+    /// gets this value, the builder form without the argument uses it, and the derived text
+    /// format does not print a property equal to it.
+    pub default: Option<CreateDefaultAttr>,
 }
 
 impl AttrInfo {
@@ -150,6 +160,7 @@ impl AttrInfo {
         name: interner::Symbol,
         offset: u16,
         hidden: bool,
+        has_default: bool,
     ) -> Self {
         let type_id = core::any::TypeId::of::<T>();
         let type_name = core::any::type_name::<T>();
@@ -163,6 +174,28 @@ impl AttrInfo {
             get_mut: Self::get_mut::<T>,
             get_raw: Self::get_raw::<T>,
             try_from: Self::try_from::<T>,
+            default: if has_default {
+                Some(Self::create_default::<T>)
+            } else {
+                None
+            },
+        }
+    }
+
+    fn create_default<T: AttributeRegistration>(context: &Rc<Context>) -> AttributeRef {
+        T::create_default(context).as_attribute_ref()
+    }
+
+    /// Returns true if this property has a default and `value` is equal to it, its type included.
+    ///
+    /// The default is created once per context and attribute kind
+    /// ([Context::is_default_attribute]), so asking this does not allocate an attribute each time.
+    pub fn is_default(&self, context: &Rc<Context>, value: &AttributeRef) -> bool {
+        match self.default {
+            Some(create_default) => {
+                context.is_default_attribute(self.type_id, create_default, value)
+            }
+            None => false,
         }
     }
 

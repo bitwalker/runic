@@ -81,7 +81,7 @@ mod tests {
             (lhs, rhs)
         };
         let builder = test.builder_mut();
-        let add_builder = builder.create::<Add, _>(SourceSpan::default());
+        let add_builder = builder.create::<Add, (_, _, _)>(SourceSpan::default());
         let op = add_builder(lhs, rhs, Overflow::Wrapping);
         let op = op.expect("failed to create AddOp");
         let op = op.borrow();
@@ -89,6 +89,26 @@ mod tests {
         assert!(core::hint::black_box(
             !<Add as crate::verifier::Verifier<dyn ArithmeticOp>>::VACUOUS
         ));
+    }
+
+    /// `test.add`'s `overflow` is `#[default]`, so it has a builder form without it, which uses
+    /// the attribute's registered default, as a parsed `test.add` without it does.
+    #[test]
+    fn the_short_builder_form_uses_the_registered_default() {
+        use crate::SourceSpan;
+
+        let mut test = Test::named("short_builder_form");
+        let i32 = test.context().i32();
+        test.with_function("short_builder_form", &[i32, i32], &[]);
+        let entry = test.entry_block();
+        let (lhs, rhs) = {
+            let block = entry.borrow();
+            (block.get_argument(0) as ValueRef, block.get_argument(1) as ValueRef)
+        };
+        let add = test.builder_mut().create::<Add, (_, _)>(SourceSpan::default())(lhs, rhs);
+        let add = add.expect("failed to create AddOp");
+        assert_eq!(*add.borrow().get_overflow(), Overflow::Wrapping);
+        assert_eq!(format!("{}", add.borrow().as_operation()), "%2 = test.add %0, %1;");
     }
 
     #[test]
@@ -109,7 +129,7 @@ mod tests {
         };
 
         // Try to create instance of AddOp with mismatched operand types
-        let add_builder = test.builder_mut().create::<Add, _>(SourceSpan::default());
+        let add_builder = test.builder_mut().create::<Add, (_, _, _)>(SourceSpan::default());
         let op = add_builder(lhs, invalid_rhs, Overflow::Wrapping);
         let op = op.unwrap();
 
@@ -138,7 +158,7 @@ mod tests {
             (lhs, rhs)
         };
 
-        let add_builder = test.builder_mut().create::<Add, _>(SourceSpan::default());
+        let add_builder = test.builder_mut().create::<Add, (_, _, _)>(SourceSpan::default());
         let op = add_builder(lhs, rhs, Overflow::Wrapping);
         let mut op = op.unwrap();
 

@@ -5420,3 +5420,135 @@ fn overflow_and_signedness_attributes_round_trip_through_text() -> TestResult {
     }
     Ok(())
 }
+
+/// Parses `source` as a function in `context` and returns it with its printed form, which must be
+/// a parse/print fixpoint.
+fn parse_function_text(
+    context: &Rc<Context>,
+    source: &str,
+) -> TestResult<(UnsafeIntrusiveEntityRef<Function>, String)> {
+    context.get_or_register_dialect::<TestDialect>();
+    crate::testing::parse_function_fixpoint(context, "defaults.hir", source)
+}
+
+/// The first operation of `function`'s entry block, as a `T`.
+fn first_op<T: crate::Op>(
+    function: UnsafeIntrusiveEntityRef<Function>,
+) -> crate::EntityRef<'static, T> {
+    let function = function.borrow();
+    let entry = function.entry_block();
+    let op = entry.borrow().front().expect("the entry block is not empty");
+    crate::EntityRef::map(op.borrow(), |op| {
+        op.downcast_ref::<T>().unwrap_or_else(|| panic!("expected '{}'", op.name()))
+    })
+}
+
+/// A function of two `i32` arguments whose body is `body` followed by a return of `%2`.
+fn binary_function(body: &str) -> String {
+    format!(
+        "builtin.function public extern(\"C\") @f(%0: i32, %1: i32) -> i32 {{\n    {body}\n    \
+         builtin.ret %2 : (i32);\n}};"
+    )
+}
+
+/// `test.add`'s `overflow` is `#[default]`: left out of the text, it is the attribute's registered
+/// default, `wrapping`, and at that value it is not printed.
+#[test]
+fn a_property_left_out_of_text_takes_its_default_and_is_not_printed() -> TestResult {
+    use crate::dialects::{builtin::attributes::Overflow, test::Add};
+
+    let context = Rc::new(Context::default());
+    let source = binary_function("%2 = test.add %0, %1;");
+    let (function, printed) = parse_function_text(&context, &source)?;
+    assert_eq!(printed, source);
+    assert_eq!(*first_op::<Add>(function).get_overflow(), Overflow::Wrapping);
+    Ok(())
+}
+
+/// A property with a default that is not at its default is printed, and parses back.
+#[test]
+fn a_property_away_from_its_default_is_printed() -> TestResult {
+    use crate::dialects::{
+        builtin::attributes::{Overflow, Signedness},
+        test::Add,
+    };
+
+    let context = Rc::new(Context::default());
+    let source =
+        binary_function("%2 = test.add %0, %1 <{ overflow = #builtin.overflow<checked signed> }>;");
+    let (function, printed) = parse_function_text(&context, &source)?;
+    assert_eq!(printed, source);
+    assert_eq!(*first_op::<Add>(function).get_overflow(), Overflow::Checked(Signedness::Signed));
+
+    // Writing the default explicitly is accepted, and prints without it
+    let explicit =
+        binary_function("%2 = test.add %0, %1 <{ overflow = #builtin.overflow<wrapping> }>;");
+    let context = Rc::new(Context::default());
+    let (function, printed) = parse_function_text(&context, &explicit)?;
+    assert_eq!(printed, binary_function("%2 = test.add %0, %1;"));
+    assert_eq!(*first_op::<Add>(function).get_overflow(), Overflow::Wrapping);
+    Ok(())
+}
+
+/// Parses `source` as a whole and returns the rendered error.
+fn parse_error(source: &str) -> String {
+    let test = ParserTest::default();
+    test.context().get_or_register_dialect::<TestDialect>();
+    match test.parse_any("missing.hir", source) {
+        Ok(_) => panic!("expected an error parsing:\n{source}"),
+        Err(err) => format!("{}", err.display()),
+    }
+}
+
+/// A property without `#[default]` is required in every form: a default would be a silent choice.
+#[test]
+fn a_property_without_a_default_is_required() {
+    let wrap = |body: &str| {
+        format!(
+            "builtin.module public @m {{\n    builtin.function public extern(\"C\") @f(%0: i32) \
+             {{\n        {body}\n        builtin.ret;\n    }};\n}};"
+        )
+    };
+
+    // `test.constant`'s value, in the generic form (its own form gives the value positionally)
+    let rendered = parse_error(&wrap("%1 = \"test.constant\"() : () -> i32;"));
+    assert!(rendered.contains("missing required property 'value'"), "{rendered}");
+
+    // A cast's target type
+    let rendered = parse_error(&wrap("%1 = builtin.unrealized_conversion_cast %0;"));
+    assert!(rendered.contains("missing required property 'ty'"), "{rendered}");
+}
+
+/// `builtin.segment` has two required properties and `readonly`, which defaults to `false`: at
+/// `false` only the other two are printed, at `true` all three.
+#[test]
+fn a_segment_prints_readonly_only_when_it_is_set() -> TestResult {
+    use crate::dialects::builtin::Segment;
+
+    for (readonly, written) in [(false, ""), (true, ", readonly = #builtin.bool<true>")] {
+        let source = format!(
+            "builtin.module public @m {{\n    builtin.segment <{{ offset = #builtin.i32<16>, data \
+             = #builtin.bytes<\"0201\">{written} }}>;\n}};"
+        );
+        let test = ParserTest::default();
+        let module = test.parse::<Module>("segment.hir", &source)?;
+        let printed = format!("{}", module.as_operation_ref().borrow());
+        assert_eq!(printed, source);
+
+        let module = module.borrow();
+        let segment = module.body().entry().front().unwrap();
+        let segment = segment.borrow();
+        let segment = segment.downcast_ref::<Segment>().unwrap();
+        assert_eq!(*segment.get_readonly(), readonly);
+        assert_eq!(segment.offset_in_bytes(), 16);
+        assert_eq!(segment.initializer().as_slice(), &[1u8, 2][..]);
+
+        // The explicit default parses, and is left out when printed
+        if !readonly {
+            let explicit = source.replace(" }>", ", readonly = #builtin.bool<false> }>");
+            let module = test.parse::<Module>("segment_explicit.hir", &explicit)?;
+            assert_eq!(format!("{}", module.as_operation_ref().borrow()), source);
+        }
+    }
+    Ok(())
+}

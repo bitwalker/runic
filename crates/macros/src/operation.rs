@@ -505,12 +505,14 @@ impl quote::ToTokens for WithAttrInfos<'_> {
                         syn::Lit::Str(syn::LitStr::new(&format!("{name}"), name.span()));
                     let hidden =
                         syn::Lit::Bool(syn::LitBool::new(matches!(kind, AttrKind::Hidden), span));
+                    let has_default = syn::Lit::Bool(syn::LitBool::new(param.default, span));
                     tokens.extend(quote_spanned! { span =>
                         unsafe {
                             ::runic_core::AttrInfo::new::<#ty>(
                                 #field_name.into(),
                                 ::core::mem::offset_of!(#op_ty, #name) as u16,
                                 #hidden,
+                                #has_default,
                             )
                         },
                     });
@@ -524,6 +526,7 @@ impl quote::ToTokens for WithAttrInfos<'_> {
                             ::runic_core::AttrInfo::new::<::runic_core::dialects::builtin::attributes::SymbolRefAttr>(
                                 #field_name.into(),
                                 ::core::mem::offset_of!(#op_ty, #name) as u16,
+                                false,
                                 false,
                             )
                         },
@@ -2145,26 +2148,34 @@ impl quote::ToTokens for OpBuilderFnOnceImpl {
             let required_param_names = self.params.iter().flat_map(|p| p.minimal_bindings());
             let required_param_types =
                 self.params.iter().flat_map(|p| p.minimal_binding_types(true));
-            let defaulted_param_names = self.params.iter().flat_map(|param| {
-                if param.default {
-                    param.all_bindings()
-                } else {
-                    vec![]
-                }
-            });
-            let defaulted_param_types = self.params.iter().flat_map(|param| {
-                if param.default {
-                    param.all_binding_types(false)
-                } else {
-                    vec![]
-                }
-            });
+            // A defaulted property takes the attribute's registered default, as a parsed
+            // operation that leaves it out does; any other defaulted parameter takes the
+            // `Default` of its type.
             let defaulted_param_stmts =
-                defaulted_param_names.zip(defaulted_param_types).map(|(name, ty)| {
-                    let stmt: syn::Stmt = parse_quote_spanned! { name.span() =>
-                        let #name: #ty = Default::default();
-                    };
-                    stmt
+                self.params.iter().filter(|param| param.default).flat_map(|param| {
+                    match &param.param_ty {
+                        OpCreateParamType::Attr(OpAttribute { name, ty, .. }) => {
+                            let stmt: syn::Stmt = parse_quote_spanned! { name.span() =>
+                                let #name = ::runic_core::ReadyAttr(
+                                    <#ty as ::runic_core::AttributeRegistration>::create_default(
+                                        &::runic_core::Builder::context_rc(&*self.builder),
+                                    ),
+                                );
+                            };
+                            vec![stmt]
+                        }
+                        _ => param
+                            .all_bindings()
+                            .into_iter()
+                            .zip(param.all_binding_types(false))
+                            .map(|(name, ty)| {
+                                let stmt: syn::Stmt = parse_quote_spanned! { name.span() =>
+                                    let #name: #ty = Default::default();
+                                };
+                                stmt
+                            })
+                            .collect::<Vec<_>>(),
+                    }
                 });
             let (min_impl_generics, _, min_where_clause) = min_generics.split_for_impl();
             let required_params_ty = syn::TypeTuple {
@@ -3153,16 +3164,6 @@ fn make_path<'a>(parts: impl IntoIterator<Item = &'a str>, style: PathStyle) -> 
 
 #[allow(unused)]
 #[derive(Debug, Clone)]
-pub struct PropertyInfo {
-    pub name: Ident,
-    pub ty: syn::Type,
-    pub symbol: Option<SymbolType>,
-    pub is_optional: bool,
-    pub hide: bool,
-}
-
-#[allow(unused)]
-#[derive(Debug, Clone)]
 pub struct UserdataFieldInfo {
     pub name: Ident,
     pub ty: syn::Type,
@@ -3324,7 +3325,8 @@ pub struct RegionInfo {
 #[derive(Default, Debug)]
 pub struct OperationFormat {
     pub signature: OpSignature,
-    pub properties: Vec<PropertyInfo>,
+    /// Whether the operation has any property (an `#[attr]` or `#[symbol]` field)
+    pub has_properties: bool,
     #[allow(unused)]
     pub fields: Vec<UserdataFieldInfo>,
     pub operand_groups: Vec<OperandGroupInfo>,
@@ -3354,25 +3356,8 @@ impl OperationFormat {
 
         for f in fields.iter() {
             let field_name = f.ident.clone().unwrap();
-            if let Some(kind) = f.attrs.attr.as_deref().cloned() {
-                let hide = matches!(kind, Some(AttrKind::Hidden));
-                let is_optional = f.attrs.default.is_present();
-                format.properties.push(PropertyInfo {
-                    name: f.ident.clone().unwrap(),
-                    ty: f.ty.clone(),
-                    symbol: None,
-                    is_optional,
-                    hide,
-                });
-            } else if let Some(symbol) = f.attrs.symbol.as_deref().cloned() {
-                let is_optional = f.attrs.default.is_present();
-                format.properties.push(PropertyInfo {
-                    name: f.ident.clone().unwrap(),
-                    ty: f.ty.clone(),
-                    symbol,
-                    is_optional,
-                    hide: false,
-                });
+            if f.attrs.attr.is_some() || f.attrs.symbol.is_some() {
+                format.has_properties = true;
             } else if f.attrs.operand.is_present() {
                 let mut param_operand_group_index = 0;
                 if let Some(prev_group) = format.operand_groups.last()
