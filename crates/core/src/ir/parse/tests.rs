@@ -3359,6 +3359,7 @@ fn i32_array_attributes_round_trip_through_text() -> TestResult {
         "#builtin.array_i32<4294967296>",
         "#builtin.array_i32<-2147483649>",
         "#builtin.array_i32<1, true>",
+        "#builtin.array_i32<true>",
         "#builtin.array_i32<\"1\">",
         "#builtin.array_i32<1,>",
     ] {

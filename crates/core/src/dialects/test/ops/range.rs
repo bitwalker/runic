@@ -74,7 +74,7 @@ impl Verify<dyn InferTypeOpInterface> for CheckRange {
             }
         }
         let (umin, umax) = (*self.get_umin(), *self.get_umax());
-        if umin.width() != umax.width() || umin.unsigned() > umax.unsigned() {
+        if umin.unsigned() > umax.unsigned() {
             return Err(crate::diagnostics::report!(
                 message: "invalid operation",
                 labels: [
@@ -264,7 +264,7 @@ mod tests {
              i8> }>;",
         );
         let (parsed, printed) =
-            crate::testing::parse_function_fixpoint(&context, "check_range.hir", &source).unwrap();
+            crate::testing::parse_function_fixpoint(&context, "check_range", &source).unwrap();
         assert!(printed.contains("test.check_range %0"), "{printed}");
         let entry = parsed.borrow().entry_block();
         let op = entry.borrow().front().unwrap();
@@ -272,8 +272,6 @@ mod tests {
         assert_eq!(checked, ConstantIntRange::from_unsigned(8, 1, 200));
 
         let source = function("%1 = test.check_range %0 <{ umin = #builtin.int<1 : i8> }>;");
-        assert!(
-            crate::testing::parse_function_fixpoint(&context, "check_range.hir", &source).is_err()
-        );
+        assert!(crate::testing::parse_function_fixpoint(&context, "check_range", &source).is_err());
     }
 }
