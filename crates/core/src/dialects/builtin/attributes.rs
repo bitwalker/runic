@@ -2,7 +2,7 @@ mod array;
 mod boolean;
 mod bytes;
 mod data_layout;
-mod effects;
+pub(crate) mod effects;
 mod integer;
 mod list;
 mod local_variable;
@@ -17,11 +17,11 @@ mod unit;
 mod visibility;
 
 pub use self::{
-    array::{Array, I32ArrayAttr, LocalVariableArrayAttr, MemoryEffectArrayAttr, TypeArrayAttr},
+    array::{Array, I32ArrayAttr, LocalVariableArrayAttr, TypeArrayAttr},
     boolean::BoolAttr,
     bytes::{Bytes, BytesAttr},
     data_layout::DataLayoutAttr,
-    effects::MemoryEffectDescriptor,
+    effects::{DeclaredEffects, DeclaredEffectsAttr, MemoryEffectDescriptor},
     integer::*,
     list::{List, ListAttr},
     local_variable::{LocalVariable, LocalVariableAttr},

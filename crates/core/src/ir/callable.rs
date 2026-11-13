@@ -6,7 +6,7 @@ pub use self::resolution::{CanonicalCallableRef, ResolvedSymbolCallee, SymbolRes
 use crate::{
     EntityRef, Op, OpOperandRange, OpOperandRangeMut, RegionRef, Symbol, SymbolPath, SymbolRef,
     UnsafeIntrusiveEntityRef, Value, ValueRef,
-    dialects::builtin::attributes::{Signature, SymbolRefAttr},
+    dialects::builtin::attributes::{DeclaredEffects, Signature, SymbolRefAttr},
 };
 
 /// A call-like operation is one that transfers control from one function to another.
@@ -116,6 +116,13 @@ pub trait CallableOpInterface: Op {
     fn get_callable_region(&self) -> Option<RegionRef>;
     /// Returns the signature of the callable
     fn signature(&self) -> Signature;
+    /// What this callable states about the effects of calling it. `Unknown` by default.
+    ///
+    /// Nothing is inferred from the callable's body: a callable that states nothing has unknown
+    /// effects.
+    fn declared_effects(&self) -> DeclaredEffects {
+        DeclaredEffects::Unknown
+    }
 }
 
 /// A marker trait for symbols that can be named by a call-like operation.

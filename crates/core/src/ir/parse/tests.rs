@@ -4647,6 +4647,187 @@ fn a_never_result_round_trips() {
     }
 }
 
+/// A function's declared effects and locals are written after its signature, each left out at its
+/// default: `effects()` declares no effects, `effects(..)` lists them, and no `effects` leaves them
+/// unknown. Each form round-trips on a declaration and on a definition.
+#[test]
+fn declared_effects_and_locals_round_trip_on_declarations_and_definitions() {
+    use crate::{
+        CallableOpInterface,
+        dialects::builtin::attributes::{DeclaredEffects, MemoryEffectDescriptor},
+        effects::MemoryEffect,
+    };
+
+    let read = MemoryEffectDescriptor::new(MemoryEffect::Read);
+    let write = MemoryEffectDescriptor::new(MemoryEffect::Write);
+    let read_arg_0 = MemoryEffectDescriptor::on_argument(MemoryEffect::Read, 0);
+    let header = "builtin.function public extern(\"C\")";
+    let cases = [
+        (
+            format!("{header} @pure(i32) -> i32 effects();"),
+            format!(
+                "{header} @pure(%0: i32) -> i32 effects() {{\n    builtin.ret %0 : (i32);\n}};"
+            ),
+            DeclaredEffects::none(),
+            0,
+        ),
+        (
+            format!("{header} @reads(ptr<i8>) -> i32 effects(read(arg 0));"),
+            format!(
+                "{header} @reads(%0: ptr<i8>) -> i32 effects(read(arg 0)) {{\n    builtin.ret_imm \
+                 0 : i32;\n}};"
+            ),
+            DeclaredEffects::from([read_arg_0]),
+            0,
+        ),
+        (
+            format!("{header} @f(i32) -> i32 effects(read, write) locals(i32, i64);"),
+            format!(
+                "{header} @f(%0: i32) -> i32 effects(read, write) locals(i32, i64) {{\n    \
+                 builtin.ret %0 : (i32);\n}};"
+            ),
+            DeclaredEffects::from([read, write]),
+            2,
+        ),
+        (
+            format!("{header} @anything(i32) -> i32;"),
+            format!("{header} @anything(%0: i32) -> i32 {{\n    builtin.ret %0 : (i32);\n}};"),
+            DeclaredEffects::Unknown,
+            0,
+        ),
+    ];
+    let test = ParserTest::default();
+    for (declaration, definition, effects, locals) in cases {
+        for (source, is_declaration) in [(declaration, true), (definition, false)] {
+            let function = assert_function_round_trips(&test, &source, &source);
+            let function = function.borrow();
+            assert_eq!(function.is_declaration(), is_declaration, "{source}");
+            assert_eq!(function.declared_effects(), effects, "{source}");
+            assert_eq!(function.num_locals(), locals, "{source}");
+        }
+    }
+
+    let function = test
+        .parse::<Function>(
+            "locals.hir",
+            "builtin.function public extern(\"C\") @f(i32) -> i32 locals(i32, i64);",
+        )
+        .unwrap();
+    let function = function.borrow();
+    let locals = function.get_locals();
+    assert_eq!(locals[..], [test.context().i32(), test.context().i64()]);
+}
+
+/// An effect that names an argument or a result the signature does not have is a verification
+/// error of the function.
+#[test]
+fn a_declared_effect_on_a_missing_argument_or_result_does_not_verify() {
+    let header = "builtin.function public extern(\"C\")";
+    for (source, reason) in [
+        (
+            format!("{header} @f(i32) effects(read(arg 3));"),
+            "the declared effect `read(arg 3)` names argument 3, but the function has 1 \
+             parameter(s)",
+        ),
+        (
+            format!("{header} @f(%0: i32) effects(read(arg 1)) {{\n    builtin.ret;\n}};"),
+            "the declared effect `read(arg 1)` names argument 1, but the function has 1 \
+             parameter(s)",
+        ),
+        (
+            format!("{header} @f(i32) -> i32 effects(allocate(result 1));"),
+            "the declared effect `allocate(result 1)` names result 1, but the function has 1 \
+             result(s)",
+        ),
+    ] {
+        let test = ParserTest::default();
+        let config = ParserConfig::new(test.context_rc()).verify_after_parse(false);
+        let function = parse::parse::<Function>(config, "effects.hir", &source)
+            .into_result()
+            .unwrap_or_else(|err| panic!("{source}\n{err:?}"));
+        let text = verify_error_text(function);
+        assert!(text.contains(reason), "{source}\n{text}");
+    }
+}
+
+/// `#builtin.declared_effects<..>` has three forms: unknown, no effects, and a list.
+#[test]
+fn declared_effects_attributes_round_trip_through_text() -> TestResult {
+    use crate::{
+        dialects::builtin::attributes::{
+            DeclaredEffects, DeclaredEffectsAttr, MemoryEffectDescriptor,
+        },
+        effects::MemoryEffect,
+    };
+
+    let context = Rc::new(Context::default());
+    let unknown = context.unknown_type();
+    for (text, expected) in [
+        ("#builtin.declared_effects<unknown>", DeclaredEffects::Unknown),
+        ("#builtin.declared_effects<>", DeclaredEffects::none()),
+        (
+            "#builtin.declared_effects<read, write(arg 0), allocate(result 0), free(arg 255)>",
+            DeclaredEffects::from([
+                MemoryEffectDescriptor::new(MemoryEffect::Read),
+                MemoryEffectDescriptor::on_argument(MemoryEffect::Write, 0),
+                MemoryEffectDescriptor::on_result(MemoryEffect::Allocate, 0),
+                MemoryEffectDescriptor::on_argument(MemoryEffect::Free, 255),
+            ]),
+        ),
+    ] {
+        let attr = parse_attribute_text(&context, text, unknown)?;
+        {
+            let attr = attr.borrow();
+            let effects = attr.downcast_ref::<DeclaredEffectsAttr>().expect("declared effects");
+            assert_eq!(*effects.as_value(), expected, "{text}");
+        }
+        assert_eq!(print_attribute_text(&context, &attr), text);
+    }
+
+    for text in [
+        "#builtin.declared_effects<read,>",
+        "#builtin.declared_effects<touch>",
+        "#builtin.declared_effects<read(arg)>",
+        "#builtin.declared_effects<read(arg 256)>",
+        "#builtin.declared_effects<read(param 0)>",
+        "#builtin.declared_effects<unknown, read>",
+    ] {
+        assert!(
+            parse_attribute_text(&context, text, unknown).is_err(),
+            "{text} should not parse"
+        );
+    }
+    Ok(())
+}
+
+/// The generic form of a function writes its declared effects and locals as properties, and
+/// reads them back. (A declaration: the generic print of a definition does not write the
+/// arguments of its entry block.)
+#[test]
+fn the_generic_form_of_a_function_reads_its_effects_and_locals() -> TestResult {
+    use crate::{CallableOpInterface, Op, dialects::builtin::attributes::DeclaredEffects};
+
+    let test = ParserTest::default();
+    let source =
+        "builtin.function public extern(\"C\") @f(i32) -> i32 effects(read(arg 0)) locals(i64);";
+    let function = test.parse::<Function>("generic_first.hir", source)?;
+    let generic = print_generic(function.borrow().as_operation());
+    assert!(
+        generic.contains("memory_effects = #builtin.declared_effects<read(arg 0)>"),
+        "{generic}"
+    );
+    assert!(generic.contains("locals = #builtin.type_array<i64>"), "{generic}");
+
+    let world = test.parse_generic("generic_second.hir", &generic)?;
+    let parsed = world.borrow().body().entry().front().unwrap();
+    let parsed = parsed.borrow();
+    let parsed = parsed.downcast_ref::<Function>().expect("a function");
+    assert_eq!(parsed.declared_effects(), function.borrow().declared_effects());
+    assert_ne!(parsed.declared_effects(), DeclaredEffects::Unknown);
+    assert_eq!(parsed.num_locals(), 1);
+    Ok(())
+}
+
 /// `#builtin.signature<..>` reads and writes parameter and result attributes and a `never` result.
 #[test]
 fn signature_attributes_round_trip() -> TestResult {

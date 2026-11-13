@@ -24,6 +24,7 @@ use crate::{
 #[allow(unused)]
 struct I32Array;
 
+/// An array of types, `#builtin.type_array<i32, ptr<i8>>` (`#builtin.type_array<>` when empty).
 #[derive(DialectAttribute)]
 #[attribute(
     dialect = BuiltinDialect,
@@ -32,15 +33,6 @@ struct I32Array;
 )]
 #[allow(unused)]
 struct TypeArray;
-
-#[derive(DialectAttribute)]
-#[attribute(
-    dialect = BuiltinDialect,
-    remote = "Array<super::MemoryEffectDescriptor>",
-    implements(AttrPrinter),
-)]
-#[allow(unused)]
-struct MemoryEffectArray;
 
 #[derive(DialectAttribute)]
 #[attribute(
@@ -296,6 +288,25 @@ impl crate::print::AttrPrinter for TypeArrayAttr {
     }
 }
 
+impl AttrParser for TypeArrayAttr {
+    fn parse(
+        parser: &mut dyn crate::parse::Parser<'_>,
+    ) -> crate::parse::ParseResult<crate::AttributeRef> {
+        use crate::parse::Token;
+
+        let mut types = Array::<crate::Type>::default();
+        if !parser.token_stream_mut().is_next(|tok| matches!(tok, Token::Rangle)) {
+            loop {
+                types.push(parser.parse_type()?.into_inner());
+                if !parser.parse_optional_comma()? {
+                    break;
+                }
+            }
+        }
+        Ok(parser.context_rc().create_attribute::<Self, _>(types).as_attribute_ref())
+    }
+}
+
 impl crate::print::AttrPrinter for LocalVariableArrayAttr {
     fn print(&self, printer: &mut AsmPrinter<'_>) {
         use crate::formatter::*;
@@ -305,35 +316,6 @@ impl crate::print::AttrPrinter for LocalVariableArrayAttr {
                 *printer += const_text(", ");
             }
             *printer += text(alloc::format!("{value}"));
-        }
-    }
-}
-
-impl crate::print::AttrPrinter for MemoryEffectArrayAttr {
-    fn print(&self, printer: &mut AsmPrinter<'_>) {
-        use crate::formatter::*;
-
-        for (i, value) in self.0.iter().enumerate() {
-            if i > 0 {
-                *printer += const_text(", ");
-            }
-            *printer += const_text("{");
-            printer.print_bare_identifier("effect".into());
-            *printer += const_text(" = ");
-            printer.print_string(value.effect);
-            if let Some(argument) = value.argument {
-                *printer += const_text(", ");
-                printer.print_bare_identifier("effect".into());
-                *printer += const_text(" = ");
-                printer.print_decimal_integer(argument);
-            }
-            if let Some(result) = value.result {
-                *printer += const_text(", ");
-                printer.print_bare_identifier("effect".into());
-                *printer += const_text(" = ");
-                printer.print_decimal_integer(result);
-            }
-            *printer += const_text("}");
         }
     }
 }

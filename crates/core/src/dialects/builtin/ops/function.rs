@@ -8,8 +8,9 @@ use crate::{
     dialects::builtin::{
         BuiltinDialect,
         attributes::{
-            AbiParam, IntAttr, LocalVariable, MemoryEffectArrayAttr, Signature, SignatureAttr,
-            TypeArrayAttr, VisibilityAttr,
+            AbiParam, DeclaredEffects, DeclaredEffectsAttr, IntAttr, LocalVariable, Signature,
+            SignatureAttr, TypeArrayAttr, VisibilityAttr,
+            effects::{parse_effect_list, print_effect_list},
             signature::{
                 SignatureWriter, invalid_parameter_list, next_token_span, parse_optional_results,
                 parse_params_after_lparen, print_optional_results, print_param_list,
@@ -52,9 +53,10 @@ pub struct Function {
     signature: SignatureAttr,
     #[region]
     body: RegionRef,
+    /// What the function states about the memory effects of calling it: unknown by default
     #[attr]
     #[default]
-    memory_effects: MemoryEffectArrayAttr,
+    memory_effects: DeclaredEffectsAttr,
     /// The set of local variables allocated within this function
     #[attr]
     #[default]
@@ -65,7 +67,8 @@ pub struct Function {
 }
 
 /// The effects a function declares for itself: those of its `memory_effects` property for a
-/// declaration, and none for a definition.
+/// declaration (unknown when the property is [DeclaredEffects::Unknown]), and none for a
+/// definition.
 ///
 /// A definition's effects are its body's. That is what [HasRecursiveMemoryEffects] says, and the
 /// recursive queries ([Operation::is_memory_effect_free], [Operation::get_effects_recursively],
@@ -74,14 +77,19 @@ pub struct Function {
 /// included, so reporting the body here would recurse without bound and count each effect twice.
 impl EffectOpInterface<MemoryEffect> for Function {
     fn effects(&self) -> EffectIterator<MemoryEffect> {
-        if self.is_declaration() {
-            let memory_effects = self.memory_effects();
-            EffectIterator::new(
-                memory_effects.as_value().iter().map(|desc| EffectInstance::new(desc.effect)),
-            )
-        } else {
-            EffectIterator::new([])
+        if !self.is_declaration() {
+            return EffectIterator::new([]);
         }
+        match self.get_memory_effects().known() {
+            Some(effects) => {
+                EffectIterator::new(effects.iter().map(|desc| EffectInstance::new(desc.effect)))
+            }
+            None => EffectIterator::new([]),
+        }
+    }
+
+    fn effects_are_known(&self) -> bool {
+        !self.is_declaration() || self.get_memory_effects().is_known()
     }
 }
 
@@ -171,6 +179,29 @@ impl OpParser for Function {
             && parser.token_stream().peek_second() != Some(Token::Lparen);
         let results = parse_optional_results(parser)?;
 
+        // `effects(..)` and `locals(..)`, each left out at its default
+        let memory_effects = if parser.parse_optional_custom_keyword("effects")?.is_some() {
+            parser.parse_lparen()?;
+            let effects = parse_effect_list(parser)?;
+            parser.parse_rparen()?;
+            DeclaredEffects::Known(effects)
+        } else {
+            DeclaredEffects::Unknown
+        };
+        let mut locals = Vec::new();
+        if parser.parse_optional_custom_keyword("locals")?.is_some() {
+            parser.parse_lparen()?;
+            if !parser.token_stream_mut().is_next(|tok| matches!(tok, Token::Rparen)) {
+                loop {
+                    locals.push(parser.parse_type()?.into_inner());
+                    if !parser.parse_optional_comma()? {
+                        break;
+                    }
+                }
+            }
+            parser.parse_rparen()?;
+        }
+
         let declaration = !named && !params.is_empty();
         let has_body = parser.token_stream_mut().is_next(|tok| matches!(tok, Token::Lbrace));
         if declaration && has_body {
@@ -206,10 +237,11 @@ impl OpParser for Function {
         let ty = parser.context_rc().create_attribute::<SignatureAttr, _>(sig);
         state.add_attribute("signature", ty);
 
-        let locals = parser.context_rc().create_attribute::<TypeArrayAttr, _>([]);
+        let locals = parser.context_rc().create_attribute::<TypeArrayAttr, _>(locals);
         state.add_attribute("locals", locals);
 
-        let memory_effects = parser.context_rc().create_attribute::<MemoryEffectArrayAttr, _>([]);
+        let memory_effects =
+            parser.context_rc().create_attribute::<DeclaredEffectsAttr, _>(memory_effects);
         state.add_attribute("memory_effects", memory_effects);
 
         // A declaration has one empty region
@@ -242,6 +274,7 @@ impl OpPrinter for Function {
         if self.is_declaration() {
             print_param_list(printer, sig.params());
             print_optional_results(printer, sig.declared_results());
+            self.print_effects_and_locals(printer);
         } else {
             let body = self.body();
             let entry = body.entry();
@@ -262,6 +295,7 @@ impl OpPrinter for Function {
             }
             printer.print_rparen();
             print_optional_results(printer, sig.declared_results());
+            self.print_effects_and_locals(printer);
             printer.print_space();
             printer.print_region(&body);
         }
@@ -272,6 +306,34 @@ impl OpPrinter for Function {
             printer.print_attribute_dictionary(
                 self.op.attributes().iter().map(|attr| *attr.as_named_attribute()),
             );
+        }
+    }
+}
+
+impl Function {
+    /// ` effects(..)` unless the effects are unknown, then ` locals(..)` unless there are none.
+    fn print_effects_and_locals(&self, printer: &mut AsmPrinter<'_>) {
+        use crate::formatter::const_text;
+
+        if let Some(effects) = self.get_memory_effects().known() {
+            printer.print_space();
+            printer.print_keyword("effects");
+            printer.print_lparen();
+            print_effect_list(printer, effects);
+            printer.print_rparen();
+        }
+        let locals = self.get_locals();
+        if !locals.is_empty() {
+            printer.print_space();
+            printer.print_keyword("locals");
+            printer.print_lparen();
+            for (i, ty) in locals.iter().enumerate() {
+                if i > 0 {
+                    *printer += const_text(", ");
+                }
+                printer.print_type(*ty);
+            }
+            printer.print_rparen();
         }
     }
 }
@@ -418,6 +480,11 @@ impl CallableOpInterface for Function {
     fn signature(&self) -> Signature {
         self.get_signature().clone()
     }
+
+    /// The function's `memory_effects` property, for a declaration and a definition alike
+    fn declared_effects(&self) -> DeclaredEffects {
+        self.get_memory_effects().clone()
+    }
 }
 
 impl CallableSymbol for Function {}
@@ -426,6 +493,9 @@ impl CallableSymbol for Function {}
 /// argument per parameter, of the parameter's type, and every `builtin.ret` and `builtin.ret_imm`
 /// in the body, outside nested callables, returns exactly the results of the signature (none may
 /// appear in a function that never returns).
+///
+/// Every effect in the function's declared effects names at most one of an argument and a result,
+/// and the one it names exists in the signature.
 ///
 /// The signature itself is checked before this runs, by
 /// [Operation::verify_signature_attributes], as for every operation that holds one.
@@ -442,6 +512,33 @@ impl crate::Verify<dyn CallableSymbol> for Function {
         };
 
         let signature = self.get_signature();
+        if let Some(effects) = self.get_memory_effects().known() {
+            for effect in effects {
+                let target = match (effect.argument, effect.result) {
+                    (Some(_), Some(_)) => Some(format!(
+                        "the declared effect `{effect}` names both an argument and a result"
+                    )),
+                    (Some(index), None) if usize::from(index) >= signature.params().len() => {
+                        Some(format!(
+                            "the declared effect `{effect}` names argument {index}, but the \
+                             function has {} parameter(s)",
+                            signature.params().len()
+                        ))
+                    }
+                    (None, Some(index)) if usize::from(index) >= signature.results().len() => {
+                        Some(format!(
+                            "the declared effect `{effect}` names result {index}, but the \
+                             function has {} result(s)",
+                            signature.results().len()
+                        ))
+                    }
+                    _ => None,
+                };
+                if let Some(reason) = target {
+                    return Err(invalid(reason));
+                }
+            }
+        }
         if self.is_declaration() {
             return Ok(());
         }
@@ -670,29 +767,59 @@ mod tests {
             .collect()
     }
 
-    fn descriptor(effect: MemoryEffect) -> MemoryEffectDescriptor {
-        MemoryEffectDescriptor {
-            effect,
-            argument: None,
-            result: None,
-        }
-    }
-
-    /// A declaration reports exactly the effects in its `memory_effects` property.
+    /// A declaration states its effects in its `memory_effects` property: unknown when it says
+    /// nothing, and exactly the listed effects otherwise, "none" included.
     #[test]
     fn a_declaration_reports_its_memory_effects_property() {
+        use crate::effects::EffectOpInterface as _;
+
         let mut test = Test::named("declaration_effects").in_module("test");
         let mut function = test.define_function("callee", &[], &[]);
         assert!(function.borrow().is_declaration());
-        assert!(effects_of(&function.borrow()).is_empty());
+        {
+            let function = function.borrow();
+            assert_eq!(function.declared_effects(), DeclaredEffects::Unknown);
+            assert!(!function.effects_are_known());
+            assert!(!function.as_operation().is_memory_effect_free());
+            assert!(function.as_operation().get_effects_recursively::<MemoryEffect>().is_none());
+        }
 
-        function
-            .borrow_mut()
-            .set_memory_effects([descriptor(MemoryEffect::Read), descriptor(MemoryEffect::Write)]);
+        function.borrow_mut().set_memory_effects(DeclaredEffects::none());
+        {
+            let function = function.borrow();
+            assert!(function.effects_are_known());
+            assert!(effects_of(&function).is_empty());
+            assert!(function.as_operation().is_memory_effect_free());
+        }
 
+        function.borrow_mut().set_memory_effects(DeclaredEffects::from([
+            MemoryEffectDescriptor::new(MemoryEffect::Read),
+            MemoryEffectDescriptor::new(MemoryEffect::Write),
+        ]));
         let function = function.borrow();
         assert_eq!(effects_of(&function), [MemoryEffect::Read, MemoryEffect::Write]);
         assert!(!function.as_operation().is_memory_effect_free());
+    }
+
+    /// A definition's declared effects are its property, as a declaration's are, but it reports
+    /// no effects of its own whatever it declares: its body's are found by the recursive walk.
+    #[test]
+    fn a_definition_declares_effects_without_reporting_them_as_its_own() {
+        use crate::effects::EffectOpInterface as _;
+
+        for declared in [
+            DeclaredEffects::Unknown,
+            DeclaredEffects::none(),
+            DeclaredEffects::from([MemoryEffectDescriptor::new(MemoryEffect::Write)]),
+        ] {
+            let (_test, mut function) = definition(Body::Pure);
+            function.borrow_mut().set_memory_effects(declared.clone());
+            let function = function.borrow();
+            assert_eq!(function.declared_effects(), declared);
+            assert!(function.effects_are_known());
+            assert!(effects_of(&function).is_empty());
+            assert!(function.as_operation().is_memory_effect_free());
+        }
     }
 
     /// What the body of a test function holds.

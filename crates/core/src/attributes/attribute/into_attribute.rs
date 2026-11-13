@@ -196,7 +196,7 @@ mod tests {
         }
         values!(
             LocalVariableArrayAttr,
-            MemoryEffectArrayAttr,
+            DeclaredEffectsAttr,
             TypeArrayAttr,
             I32ArrayAttr,
             BoolAttr,
