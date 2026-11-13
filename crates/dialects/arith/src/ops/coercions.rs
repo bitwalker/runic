@@ -101,8 +101,11 @@ impl CastRule {
 fn verify_cast(op: &Operation, rule: CastRule, ty: Type) -> Result<(), Report> {
     let from = op.operands()[0].borrow().as_value_ref().borrow().ty();
     let to = op.results()[0].borrow().ty();
-    let _ = ty;
-    let problem = rule.check(from, to);
+    let problem = if to != ty {
+        Some(format!("its result type `{to}` is not its `ty` attribute `{ty}`"))
+    } else {
+        rule.check(from, to)
+    };
     let Some(problem) = problem else {
         return Ok(());
     };

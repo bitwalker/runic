@@ -513,6 +513,90 @@ fn invalid_cast(
 }
 
 #[test]
+fn casts_verify_their_result_type_against_their_attribute() {
+    type CastBuilder = fn(Builder<'_, '_>, ValueRef, Type) -> Result<ValueRef, Report>;
+    let casts: [(&str, CastBuilder, TypeFn, TypeFn); 5] = [
+        ("trunc", |b, v, t| b.trunc(v, t, SPAN), Context::i32, Context::i8),
+        ("zext", |b, v, t| b.zext(v, t, SPAN), Context::i8, Context::i32),
+        ("sext", |b, v, t| b.sext(v, t, SPAN), Context::i8, Context::i32),
+        (
+            "sext_or_trunc",
+            |b, v, t| b.sext_or_trunc(v, t, SPAN),
+            Context::isize,
+            Context::i32,
+        ),
+        (
+            "zext_or_trunc",
+            |b, v, t| b.zext_or_trunc(v, t, SPAN),
+            Context::i32,
+            Context::isize,
+        ),
+    ];
+    for (name, build, from, to) in casts {
+        let mut test = test_with(&[from]);
+        let [value] = params(&test)[..] else {
+            unreachable!()
+        };
+        let context = test.context_rc();
+        let (to, other) = (to(&context), context.i16());
+        let result = build(&mut test.function_builder(), value, to).unwrap();
+        let mut op = result.borrow().get_defining_op().unwrap();
+        op.borrow().verify().expect("a valid cast");
+        {
+            let mut op = op.borrow_mut();
+            match name {
+                "trunc" => op.downcast_mut::<Trunc>().unwrap().set_ty(other),
+                "zext" => op.downcast_mut::<Zext>().unwrap().set_ty(other),
+                "sext" => op.downcast_mut::<Sext>().unwrap().set_ty(other),
+                "sext_or_trunc" => op.downcast_mut::<SextOrTrunc>().unwrap().set_ty(other),
+                _ => op.downcast_mut::<ZextOrTrunc>().unwrap().set_ty(other),
+            }
+        }
+        let err = op.borrow().verify().expect_err("the attribute and the result differ");
+        assert_eq!(err.to_string(), "invalid operation");
+        let messages = label_messages(err.as_diagnostic());
+        assert_eq!(messages.len(), 1);
+        assert!(
+            messages[0]
+                .contains(&format!("its result type `{to}` is not its `ty` attribute `{other}`")),
+            "{messages:?}"
+        );
+    }
+}
+
+#[test]
+fn overflowing_operations_verify_the_type_of_their_value_result() {
+    type OverflowBuilder =
+        fn(Builder<'_, '_>, ValueRef, ValueRef, Signedness) -> Result<(ValueRef, ValueRef), Report>;
+    let ops: [(&str, OverflowBuilder); 3] = [
+        ("arith.add_overflowing", |b, l, r, s| b.add_overflowing(l, r, s, SPAN)),
+        ("arith.sub_overflowing", |b, l, r, s| b.sub_overflowing(l, r, s, SPAN)),
+        ("arith.mul_overflowing", |b, l, r, s| b.mul_overflowing(l, r, s, SPAN)),
+    ];
+    for (name, build) in ops {
+        let mut test = test_with(&[Context::i32, Context::i32]);
+        let [lhs, rhs] = params(&test)[..] else {
+            unreachable!()
+        };
+        let context = test.context_rc();
+        let (_, mut value) =
+            build(&mut test.function_builder(), lhs, rhs, Signedness::Signed).unwrap();
+        let op = value.borrow().get_defining_op().unwrap();
+        op.borrow().verify().expect("a valid operation");
+        value.borrow_mut().set_type(context.i64());
+        let err = op.borrow().verify().expect_err("the value result has another type");
+        assert_eq!(err.to_string(), "invalid operation");
+        let messages = label_messages(err.as_diagnostic());
+        assert_eq!(messages.len(), 1);
+        assert!(
+            messages[0].contains("has type `i64`, but its operands have type `i32`")
+                && messages[0].contains(name),
+            "{messages:?}"
+        );
+    }
+}
+
+#[test]
 fn fixed_width_casts_check_the_width_order() {
     let messages = invalid_cast(|b, v, t| b.trunc(v, t, SPAN), Context::i32, Context::i64);
     assert_eq!(

@@ -1,3 +1,5 @@
+use alloc::format;
+
 use runic_core::{
     derive::{EffectOpInterface, OpParser, OpPrinter, operation},
     dialects::builtin::attributes::{OverflowAttr, SignednessAttr},
@@ -31,6 +33,31 @@ macro_rules! infer_return_ty_for_binary_op {
                         self.[<$flag _mut>]().set_type(context.i1());
                     )*
                     Ok(())
+                }
+            }
+
+            // The `Bool` constraint on the flags checks them; the value result has the type of
+            // the operands.
+            impl Verify<dyn InferTypeOpInterface> for $Op {
+                fn verify(&self, _context: &Context) -> Result<(), Report> {
+                    let expected = self.lhs().ty();
+                    let actual = self.result().ty();
+                    if actual == expected {
+                        return Ok(());
+                    }
+                    Err(runic_core::diagnostics::report!(
+                        message: "invalid operation",
+                        labels: [
+                            primary(
+                                self.as_operation().span(),
+                                format!(
+                                    "the value result of '{}' has type `{actual}`, but its \
+                                     operands have type `{expected}`",
+                                    self.as_operation().name()
+                                )
+                            ),
+                        ],
+                    ))
                 }
             }
         }
