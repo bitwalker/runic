@@ -9,6 +9,7 @@ use crate::{
     derive::{DialectType, TypeComponent},
     dialects::builtin::BuiltinDialect,
     interner::Symbol,
+    layout::{AggregateType, TypeLayout},
     types::{Type, TypeAliasName, TypeFormatter, TypePrinter},
 };
 
@@ -82,7 +83,7 @@ pub enum InvalidStructType {
 /// returns the reason, and `Context::struct_type` panics with it. `replace_subtypes` replaces only
 /// the types of the fields, never an alignment or the field count, so it does not run the check.
 #[derive(Debug, PartialEq, Eq, Hash, DialectType)]
-#[ty(dialect = BuiltinDialect, name = "struct")]
+#[ty(dialect = BuiltinDialect, name = "struct", implements(TypeLayout, AggregateType))]
 pub struct StructType {
     name: Option<Symbol>,
     repr: StructRepr,

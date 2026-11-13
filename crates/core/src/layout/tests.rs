@@ -11,8 +11,11 @@ use crate::{
     Context, OperationRef,
     dialects::builtin::{
         attributes::DataLayoutAttr,
-        types::{FloatType, IntegerType},
+        types::{
+            EnumType, EnumVariant, FloatType, IntegerType, StructField, StructRepr, StructType,
+        },
     },
+    interner::Symbol,
     parse::{self, ParserConfig},
     print::AsmPrinter,
     testing::text::{Rng, describe},
@@ -995,7 +998,7 @@ fn a_layout_error_names_the_type_as_it_prints() {
     );
     assert_eq!(
         LayoutError::InfiniteSize(cx.i8()).to_string(),
-        "type 'i8' has infinite size: it holds itself by value"
+        "type 'i8' has infinite size: it holds itself by value, or a type that does"
     );
     assert_eq!(
         LayoutError::NoSuchElement {
@@ -1064,8 +1067,9 @@ fn a_dialect_type_lays_itself_out_through_the_interface() {
     assert_eq!(layout.layout_of(looping), Err(LayoutError::InfiniteSize(looping)));
     assert!(layout.is_idle());
     assert_eq!(layout.layout_of(looping), Err(LayoutError::InfiniteSize(looping)));
+    // A type holding it by value is infinite too, and says so of itself
     let array = cx.array_type(looping, 3);
-    assert_eq!(layout.layout_of(array), Err(LayoutError::InfiniteSize(looping)));
+    assert_eq!(layout.layout_of(array), Err(LayoutError::InfiniteSize(array)));
     assert!(layout.is_idle());
     // A pointer to it is finite
     assert_eq!(size_align(&layout, cx.ptr_type(looping)), Ok((4, 4)));
@@ -1144,5 +1148,481 @@ fn random_integer_layouts_follow_the_rule() {
                 );
             }
         }
+    }
+
+    // The widest integer under the largest alignment, which also answers for every integer wider
+    // than 128 bits
+    let spec = little32().with_integer_align(IntegerType::MAX_WIDTH, align(32768)).unwrap();
+    let mut entries: alloc::collections::BTreeMap<u32, u64> =
+        [(8, 1), (16, 2), (32, 4), (64, 8), (128, 16)].into_iter().collect();
+    entries.insert(IntegerType::MAX_WIDTH, 32768);
+    let layout = DataLayout::new(&context, &spec);
+    for (width, expected) in [(IntegerType::MAX_WIDTH, (2_097_152, 32768)), (129, (32768, 32768))] {
+        let model_align = model_integer_align(&entries, width);
+        let model_size = u64::from(width).div_ceil(8).div_ceil(model_align) * model_align;
+        assert_eq!((model_size, model_align), expected, "i{width}");
+        assert_eq!(size_align(&layout, context.int_type(width)), Ok(expected), "i{width}");
+    }
+}
+
+// --- Task 5: aggregates --------------------------------------------------------------------------
+
+/// The type `text` writes.
+fn parse_ty(context: &Rc<Context>, text: &str) -> Type {
+    parse::parse_type(context, "type.runic", text)
+        .into_result()
+        .unwrap_or_else(|err| panic!("{text}\n{}", describe(&err)))
+}
+
+/// `(size, align, offsets)` of `ty` under `layout`, for a type whose elements lie at offsets.
+fn shape(layout: &DataLayout, ty: Type) -> Result<(u64, u64, Vec<u64>), LayoutError> {
+    let (size, align) = size_align(layout, ty)?;
+    let FieldsShape::Offsets(offsets) = layout.layout_of(ty)?.fields().clone() else {
+        panic!("{ty} has no offsets");
+    };
+    Ok((size, align, offsets.into_vec()))
+}
+
+fn sym(name: &str) -> Symbol {
+    Symbol::intern(name)
+}
+
+#[test]
+fn structs() {
+    let context = context();
+    let cx = &*context;
+    let layout = data_layout(&context, LITTLE_32);
+    let cases: [(&str, u64, u64, &[u64]); 15] = [
+        ("struct<i8, i32>", 8, 4, &[0, 4]),
+        ("struct<>", 0, 1, &[]),
+        ("struct<packed(1); i8, i32>", 5, 1, &[0, 1]),
+        ("struct<packed(2); i8, i32>", 6, 2, &[0, 2]),
+        ("struct<align(8); i8>", 8, 8, &[0]),
+        ("struct<i8, i8 align(4)>", 8, 4, &[0, 4]),
+        ("struct<packed(1); i8, i32 align(2)>", 6, 2, &[0, 2]),
+        ("struct<transparent; i64>", 8, 8, &[0]),
+        ("struct<x: i8, y: i16, z: i8>", 6, 2, &[0, 2, 4]),
+        // `packed` only caps: a field aligned below the cap keeps its alignment
+        ("struct<packed(4); i8, i16, i64>", 12, 4, &[0, 2, 4]),
+        // `align` below the fields' alignment changes nothing
+        ("struct<align(2); i8, i32>", 8, 4, &[0, 4]),
+        // A field's `align` below its natural alignment changes nothing either
+        ("struct<i8, i32 align(1)>", 8, 4, &[0, 4]),
+        ("struct<align(4);>", 0, 4, &[]),
+        (
+            "struct<i8, struct<i16, i8>, array<i32; 2>, struct<align(16); i8>>",
+            32,
+            16,
+            &[0, 2, 8, 16],
+        ),
+        ("struct<array<struct<i8, i32>; 3>, i8>", 28, 4, &[0, 24]),
+    ];
+    for (text, size, align, offsets) in cases {
+        let ty = parse_ty(&context, text);
+        assert_eq!(shape(&layout, ty), Ok((size, align, offsets.to_vec())), "{text}");
+    }
+
+    // `transparent` is laid out as its field, under any specification
+    for text in [LITTLE_32, BIG_64] {
+        let layout = data_layout(&context, text);
+        for field in ["i64", "struct<i8, i32>", "array<i16; 3>", "struct<>"] {
+            let transparent = parse_ty(&context, &format!("struct<transparent; {field}>"));
+            let (size, align) = size_align(&layout, parse_ty(&context, field)).unwrap();
+            assert_eq!(shape(&layout, transparent), Ok((size, align, alloc::vec![0])), "{field}");
+        }
+    }
+
+    // Too large: the struct's own arithmetic names the struct, a field's error is passed on
+    let largest = cx.array_type(cx.i64(), (1 << 61) - 1);
+    let over = cx.struct_type(StructType::new([largest.into(), cx.i64().into()]));
+    assert_eq!(layout.layout_of(over), Err(LayoutError::TooLarge(over)));
+    let bytes = cx.array_type(cx.i8(), u64::MAX);
+    let padded = cx.struct_type(StructType::new([bytes.into(), cx.i16().into()]));
+    assert_eq!(layout.layout_of(padded), Err(LayoutError::TooLarge(padded)));
+    let rounded = cx.struct_type(
+        StructType::new([bytes.into()]).with_repr(StructRepr::Align(2.try_into().unwrap())),
+    );
+    assert_eq!(layout.layout_of(rounded), Err(LayoutError::TooLarge(rounded)));
+    assert_eq!(
+        size_align(&layout, cx.struct_type(StructType::new([bytes.into()]))),
+        Ok((u64::MAX, 1))
+    );
+    let huge = cx.array_type(cx.i64(), 1 << 61);
+    let holder = cx.struct_type(StructType::new([cx.i8().into(), huge.into()]));
+    assert_eq!(layout.layout_of(holder), Err(LayoutError::TooLarge(huge)));
+    assert!(layout.is_idle());
+}
+
+#[test]
+fn enums() {
+    let context = context();
+    let layout = data_layout(&context, LITTLE_32);
+    let cases: [(&str, u64, u64, &[u64]); 8] = [
+        ("enum<i8; a, b>", 1, 1, &[0, 1, 1]),
+        ("enum<i8; a: i32, b: i8>", 8, 4, &[0, 4, 4]),
+        ("enum<i32; a: i8>", 8, 4, &[0, 4]),
+        ("enum<i8; a: struct<>>", 1, 1, &[0, 1]),
+        ("enum<i32>", 4, 4, &[0]),
+        ("enum<i16; a: struct<packed(1); i8, i32>>", 8, 2, &[0, 2]),
+        ("enum<i8; a, b: i64, c: array<i8; 3>>", 16, 8, &[0, 8, 8, 8]),
+        ("enum option<i64; none, some: struct<align(16); i8>>", 32, 16, &[0, 16, 16]),
+    ];
+    for (text, size, align, offsets) in cases {
+        let ty = parse_ty(&context, text);
+        assert_eq!(shape(&layout, ty), Ok((size, align, offsets.to_vec())), "{text}");
+    }
+
+    // An `isize` discriminant's values must fit the specification's `isize`
+    let wide = parse_ty(&context, "enum<isize; a = 1099511627776>");
+    assert_eq!(layout.layout_of(wide), Err(LayoutError::DiscriminantTooWide(wide)));
+    assert_eq!(shape(&data_layout(&context, LITTLE_64), wide), Ok((8, 8, alloc::vec![0, 8])));
+    let narrow_index = data_layout(&context, "little, ptr = 64 align 8 index 32");
+    assert_eq!(narrow_index.layout_of(wide), Err(LayoutError::DiscriminantTooWide(wide)));
+    let fits = parse_ty(&context, "enum<isize; a, b = 4294967295: i8>");
+    assert_eq!(shape(&layout, fits), Ok((8, 4, alloc::vec![0, 4, 4])));
+    let wider = parse_ty(&context, "enum<isize; a, b = 4294967296: i8>");
+    assert_eq!(layout.layout_of(wider), Err(LayoutError::DiscriminantTooWide(wider)));
+    // An integer discriminant is never checked again
+    let i64_enum = parse_ty(&context, "enum<i64; a = 1099511627776>");
+    assert_eq!(shape(&layout, i64_enum), Ok((8, 8, alloc::vec![0, 8])));
+}
+
+#[test]
+fn elements_of_aggregates() {
+    let context = context();
+    let cx = &*context;
+    let elements = |ty: Type, count: u32| -> Vec<Option<Type>> {
+        let aggregate = ty.as_trait::<dyn AggregateType>().expect("an aggregate");
+        (0..count).map(|index| aggregate.element_type(index)).collect()
+    };
+
+    let array = cx.array_type(cx.i16(), 2);
+    assert_eq!(elements(array, 3), [Some(cx.i16()), Some(cx.i16()), None]);
+    assert_eq!(elements(cx.array_type(cx.i8(), 0), 1), [None]);
+    let ty = parse_ty(&context, "struct<i8, f64>");
+    assert_eq!(elements(ty, 3), [Some(cx.i8()), Some(cx.f64()), None]);
+    let ty = parse_ty(&context, "enum<i8; a: i32, b, c: f32>");
+    assert_eq!(elements(ty, 5), [Some(cx.i8()), Some(cx.i32()), None, Some(cx.f32()), None]);
+    assert_eq!(
+        elements(array, 1)[0],
+        array.as_trait::<dyn AggregateType>().unwrap().element_type(0)
+    );
+    assert_eq!(
+        cx.array_type(cx.i8(), 3)
+            .as_trait::<dyn AggregateType>()
+            .unwrap()
+            .element_type(u32::MAX),
+        None
+    );
+
+    let fn_ty = cx.function_type([cx.i32()], [cx.i32()]);
+    for scalar in [cx.i32(), cx.isize(), cx.f32(), cx.opaque_ptr_type(), fn_ty, cx.never_type()] {
+        assert!(scalar.as_trait::<dyn AggregateType>().is_none(), "{scalar}");
+    }
+}
+
+#[test]
+fn a_type_holding_one_without_a_layout_names_it() {
+    let context = context();
+    let cx = &*context;
+    let layout = data_layout(&context, LITTLE_32);
+    let fn_ty = cx.function_type([cx.i32()], [cx.i32()]);
+    let cases = [
+        ("struct<i32, (i32) -> i32>", fn_ty),
+        ("struct<i8, struct<array<(i32) -> i32; 2>>>", fn_ty),
+        ("struct<transparent; never>", cx.never_type()),
+        ("enum<i8; a: i32, b: ?>", cx.unknown_type()),
+        ("struct<packed(1); i8, enum<i8; a: (i32) -> i32>>", fn_ty),
+    ];
+    for (text, missing) in cases {
+        let ty = parse_ty(&context, text);
+        assert_eq!(layout.layout_of(ty), Err(LayoutError::NoLayout(missing)), "{text}");
+    }
+    assert!(layout.is_idle());
+}
+
+/// `struct name<fields>`, made a group of its own, in which `rec.0` is the struct itself.
+fn self_group(cx: &Context, ty: Type) -> Type {
+    let members = cx.rec_group(&[ty]).expect("a valid group");
+    members[0]
+}
+
+#[test]
+fn recursion_through_a_pointer_is_finite() {
+    let context = context();
+    let cx = &*context;
+    let list = self_group(
+        cx,
+        cx.struct_type(StructType::named(
+            sym("list"),
+            [cx.i32().into(), cx.ptr_type(cx.rec_var(0)).into()],
+        )),
+    );
+    assert_eq!(shape(&data_layout(&context, LITTLE_32), list), Ok((8, 4, alloc::vec![0, 4])));
+    assert_eq!(shape(&data_layout(&context, LITTLE_64), list), Ok((16, 8, alloc::vec![0, 8])));
+
+    // Two structs pointing to each other, one also holding a pointer in an enum
+    let members = cx
+        .rec_group(&[
+            cx.struct_type(StructType::named(
+                sym("a"),
+                [cx.i8().into(), cx.ptr_type(cx.rec_var(1)).into()],
+            )),
+            cx.struct_type(StructType::named(
+                sym("b"),
+                [cx.enum_type(
+                    EnumType::new(
+                        None,
+                        cx.i8(),
+                        [
+                            EnumVariant::new(sym("none")),
+                            EnumVariant::new(sym("some")).with_payload(cx.ptr_type(cx.rec_var(0))),
+                        ],
+                    )
+                    .unwrap(),
+                )
+                .into()],
+            )),
+        ])
+        .unwrap();
+    let layout = data_layout(&context, LITTLE_32);
+    assert_eq!(shape(&layout, members[0]), Ok((8, 4, alloc::vec![0, 4])));
+    assert_eq!(shape(&layout, members[1]), Ok((8, 4, alloc::vec![0])));
+    assert!(layout.is_idle());
+}
+
+#[test]
+fn a_type_holding_itself_by_value_is_infinite() {
+    let context = context();
+    let cx = &*context;
+    let layout = data_layout(&context, LITTLE_32);
+    let itself = cx.rec_var(0);
+    let bodies = [
+        cx.struct_type(StructType::named(sym("s"), [cx.i32().into(), itself.into()])),
+        cx.struct_type(StructType::named(sym("t"), [cx.array_type(itself, 0).into()])),
+        cx.struct_type(
+            StructType::named(sym("u"), [itself.into()]).with_repr(StructRepr::Transparent),
+        ),
+        cx.enum_type(
+            EnumType::new(
+                Some(sym("e")),
+                cx.i8(),
+                [EnumVariant::new(sym("a")), EnumVariant::new(sym("b")).with_payload(itself)],
+            )
+            .unwrap(),
+        ),
+    ];
+    for body in bodies {
+        let ty = self_group(cx, body);
+        assert_eq!(layout.layout_of(ty), Err(LayoutError::InfiniteSize(ty)), "{ty}");
+        assert!(layout.is_idle());
+        assert_eq!(layout.layout_of(ty), Err(LayoutError::InfiniteSize(ty)), "{ty}");
+        // A type holding it by value is infinite too; a pointer to it is not
+        let array = cx.array_type(ty, 2);
+        assert_eq!(layout.layout_of(array), Err(LayoutError::InfiniteSize(array)), "{ty}");
+        assert_eq!(size_align(&layout, cx.ptr_type(ty)), Ok((4, 4)), "{ty}");
+    }
+}
+
+/// Two structs that hold each other through an array, and a third that holds the second by
+/// value.
+fn mutually_holding(cx: &Context) -> [Type; 3] {
+    let members = cx
+        .rec_group(&[
+            cx.struct_type(StructType::named(
+                sym("a"),
+                [cx.i8().into(), cx.array_type(cx.rec_var(1), 2).into()],
+            )),
+            cx.struct_type(StructType::named(
+                sym("b"),
+                [cx.i32().into(), cx.array_type(cx.rec_var(0), 1).into()],
+            )),
+        ])
+        .unwrap();
+    let c = cx
+        .struct_type(StructType::named(sym("c"), [cx.i64().into(), StructField::new(members[1])]));
+    [members[0], members[1], c]
+}
+
+#[test]
+fn by_value_recursion_is_infinite_whatever_is_asked_first() {
+    let orders = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
+    for order in orders {
+        let context = context();
+        let types = mutually_holding(&context);
+        let layout = data_layout(&context, LITTLE_32);
+        let mut answers: [Option<Result<Rc<Layout>, LayoutError>>; 3] = [None, None, None];
+        for index in order {
+            answers[index] = Some(layout.layout_of(types[index]));
+            assert!(layout.is_idle(), "{order:?}");
+        }
+        for (ty, answer) in types.iter().zip(answers) {
+            assert_eq!(answer, Some(Err(LayoutError::InfiniteSize(*ty))), "{ty}, asked {order:?}");
+            // Asked again, from the cache
+            assert_eq!(layout.layout_of(*ty), Err(LayoutError::InfiniteSize(*ty)), "{ty}");
+        }
+    }
+}
+
+/// A random type with a layout, for the struct generator: an integer, a float, a pointer,
+/// `isize`, or, while `depth` is above 0, an array or a struct. Every struct made is pushed onto
+/// `structs`.
+fn random_field_type(rng: &mut Rng, cx: &Context, depth: u32, structs: &mut Vec<Type>) -> Type {
+    let kinds = if depth == 0 { 4 } else { 7 };
+    match rng.below(kinds) {
+        0 => cx.int_type(match rng.below(2) {
+            0 => rng.pick(&SOME_WIDTHS),
+            _ => 1 + rng.below(300) as u32,
+        }),
+        1 => rng.pick(&[cx.f32(), cx.f64()]),
+        2 => cx.ptr_type_in(Some(cx.i8()), rng.pick(&[0, 1, 2])),
+        3 => cx.isize(),
+        4 => cx.array_type(random_field_type(rng, cx, depth - 1, structs), rng.below(4)),
+        _ => random_struct(rng, cx, depth - 1, structs),
+    }
+}
+
+/// A power of two from 1 to 2^(`log2_end` - 1), as a struct states an alignment.
+fn random_stated_align(rng: &mut Rng, log2_end: u64) -> core::num::NonZeroU16 {
+    core::num::NonZeroU16::new(1 << rng.below(log2_end)).unwrap()
+}
+
+/// A random struct of any representation, its fields from [random_field_type].
+fn random_struct(rng: &mut Rng, cx: &Context, depth: u32, structs: &mut Vec<Type>) -> Type {
+    let repr = match rng.below(8) {
+        0..=2 => StructRepr::Default,
+        3 | 4 => StructRepr::Align(random_stated_align(rng, 16)),
+        5 | 6 => StructRepr::Packed(random_stated_align(rng, 6)),
+        _ => StructRepr::Transparent,
+    };
+    let count = if repr == StructRepr::Transparent {
+        1
+    } else {
+        rng.below(6)
+    };
+    let aligned_fields = repr != StructRepr::Transparent && rng.below(3) == 0;
+    let fields: Vec<StructField> = (0..count)
+        .map(|_| {
+            let field = StructField::new(random_field_type(rng, cx, depth, structs));
+            if aligned_fields && rng.below(2) == 0 {
+                field.aligned(random_stated_align(rng, 8))
+            } else {
+                field
+            }
+        })
+        .collect();
+    let ty = cx.struct_type(StructType::new(fields).with_repr(repr));
+    structs.push(ty);
+    ty
+}
+
+/// Which rule [check_struct] checked a struct against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Checked {
+    Oracle,
+    Invariants,
+    Transparent,
+}
+
+/// Checks the layout of the struct `ty` under `layout`: against `core::alloc::Layout` for the
+/// default and `align(N)` representations without field alignments, else against the invariants
+/// of the rule. `case` says where the struct came from, for a failure.
+fn check_struct(layout: &DataLayout, ty: Type, case: &str) -> Checked {
+    let value = ty.as_struct().unwrap();
+    let (size, align, offsets) =
+        shape(layout, ty).unwrap_or_else(|err| panic!("{case}: {ty}: {err}"));
+    let fields: Vec<Rc<Layout>> =
+        value.fields().iter().map(|field| layout.layout_of(field.ty).unwrap()).collect();
+    assert_eq!(offsets.len(), fields.len(), "{case}: {ty}");
+
+    if value.repr() == StructRepr::Transparent {
+        assert_eq!(
+            (size, align, offsets),
+            (fields[0].size(), fields[0].align().bytes(), alloc::vec![0]),
+            "{case}: {ty}"
+        );
+        return Checked::Transparent;
+    }
+
+    let has_field_align = value.fields().iter().any(|field| field.align.is_some());
+    if !has_field_align && let StructRepr::Default | StructRepr::Align(_) = value.repr() {
+        let mut oracle = core::alloc::Layout::from_size_align(0, 1).unwrap();
+        let mut oracle_offsets = Vec::new();
+        for field in &fields {
+            let field = core::alloc::Layout::from_size_align(
+                usize::try_from(field.size()).unwrap(),
+                usize::try_from(field.align().bytes()).unwrap(),
+            )
+            .unwrap();
+            let (next, offset) = oracle.extend(field).unwrap();
+            oracle = next;
+            oracle_offsets.push(offset as u64);
+        }
+        if let StructRepr::Align(n) = value.repr() {
+            oracle = oracle.align_to(usize::from(n.get())).unwrap();
+        }
+        let oracle = oracle.pad_to_align();
+        assert_eq!(
+            (size, align, offsets),
+            (oracle.size() as u64, oracle.align() as u64, oracle_offsets),
+            "{case}: {ty}"
+        );
+        return Checked::Oracle;
+    }
+
+    // The effective alignment of a field: its own, capped by `packed(P)`, raised by its `align(F)`
+    let cap = match value.repr() {
+        StructRepr::Packed(cap) => u64::from(cap.get()),
+        _ => u64::MAX,
+    };
+    let mut end = 0;
+    let mut struct_align = 1;
+    for (index, (field, laid_out)) in value.fields().iter().zip(&fields).enumerate() {
+        let stated = field.align.map_or(1, |align| u64::from(align.get()));
+        let effective = laid_out.align().bytes().min(cap).max(stated);
+        let offset = offsets[index];
+        assert!(offset >= end, "{case}: {ty}: field {index} at {offset} overlaps the one before");
+        assert!(
+            offset.is_multiple_of(effective),
+            "{case}: {ty}: field {index} at {offset}, aligned to {effective}"
+        );
+        assert!(
+            offset < end + effective,
+            "{case}: {ty}: field {index} at {offset}, not the first multiple of {effective} from \
+             {end}"
+        );
+        end = offset + laid_out.size();
+        struct_align = struct_align.max(effective);
+    }
+    if let StructRepr::Align(n) = value.repr() {
+        struct_align = struct_align.max(u64::from(n.get()));
+    }
+    assert_eq!(align, struct_align, "{case}: {ty}");
+    assert_eq!(size, end.div_ceil(struct_align) * struct_align, "{case}: {ty}");
+    Checked::Invariants
+}
+
+#[test]
+fn random_structs_follow_the_rule() {
+    for seed in seeds() {
+        let context = context();
+        let mut rng = Rng(seed);
+        let mut counts = [0usize; 3];
+        for case in 0..2000 {
+            let spec = random_built(&mut rng).spec;
+            let layout = DataLayout::new(&context, &spec);
+            let mut structs = Vec::new();
+            random_struct(&mut rng, &context, 2, &mut structs);
+            let case = format!(
+                "seed {seed:#x} (LAYOUT_TEST_SEED={seed}), case {case}, under {}",
+                print_spec(&context, &spec)
+            );
+            for ty in structs {
+                let checked = check_struct(&layout, ty, &case);
+                counts[checked as usize] += 1;
+            }
+        }
+        // Each rule is checked often
+        assert!(counts.iter().all(|count| *count >= 200), "seed {seed:#x}: {counts:?}");
     }
 }

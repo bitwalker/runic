@@ -50,7 +50,7 @@ impl Layout {
     /// The layout of a value of `size` bytes aligned to `align` whose parts lie as `fields`
     /// says. `size` must be a multiple of `align`.
     pub fn new(size: u64, align: Align, fields: FieldsShape) -> Layout {
-        debug_assert!(
+        assert!(
             size.is_multiple_of(align.bytes()),
             "a size of {size} bytes is not a multiple of the alignment, {align}"
         );
@@ -66,6 +66,7 @@ impl Layout {
         self.size
     }
 
+    /// The alignment in bytes.
     pub fn align(&self) -> Align {
         self.align
     }
@@ -82,8 +83,8 @@ pub enum LayoutError {
     /// `?` or `never`, for instance. It names the innermost type without a layout.
     #[error("type '{0}' has no representation in memory")]
     NoLayout(Type),
-    /// The type holds itself by value.
-    #[error("type '{0}' has infinite size: it holds itself by value")]
+    /// The type holds itself by value, or holds by value a type that does.
+    #[error("type '{0}' has infinite size: it holds itself by value, or a type that does")]
     InfiniteSize(Type),
     /// The size of the type does not fit a `u64`.
     #[error("type '{0}' is too large: its size in bytes does not fit in 64 bits")]
@@ -110,4 +111,14 @@ pub trait TypeLayout {
     /// types by value asks `layout` for theirs with [DataLayout::layout_of] and returns their
     /// errors unchanged.
     fn layout(&self, ty: Type, layout: &DataLayout) -> Result<Layout, LayoutError>;
+}
+
+/// Implemented by a type whose values have numbered elements. Independent of any layout.
+///
+/// An array's elements are `0..len`; a struct's are its fields; an enum's element 0 is its
+/// discriminant and element `1 + v` is the payload of variant `v`. A type that also implements
+/// [TypeLayout] lays out each element at the offset its [Layout::fields] gives for that index.
+pub trait AggregateType {
+    /// The type of element `index`, or `None` if there is no such element.
+    fn element_type(&self, index: u32) -> Option<Type>;
 }

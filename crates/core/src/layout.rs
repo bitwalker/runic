@@ -29,5 +29,5 @@ pub(crate) use self::data_layout::LayoutCache;
 pub use self::{
     data_layout::{DATA_LAYOUT_ATTR, DataLayout, DataLayoutOpInterface, set_data_layout_spec},
     spec::{Align, DataLayoutSpec, Endianness, InvalidDataLayout, PointerSpec},
-    type_layout::{FieldsShape, Layout, LayoutError, TypeLayout},
+    type_layout::{AggregateType, FieldsShape, Layout, LayoutError, TypeLayout},
 };

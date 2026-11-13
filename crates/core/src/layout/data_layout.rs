@@ -162,9 +162,11 @@ impl DataLayout {
     /// The layout of `ty` under this specification.
     ///
     /// `ty` lays itself out through its [TypeLayout]; a type that does not implement it has no
-    /// layout ([LayoutError::NoLayout]), and one that holds itself by value has none either
-    /// ([LayoutError::InfiniteSize]). The answer, layout or error, is computed once per type and
-    /// shared by every `DataLayout` of an equal specification in the context.
+    /// layout ([LayoutError::NoLayout]). A type that holds itself by value, or holds by value a
+    /// type that does, has none either, and its error names itself, whichever type was asked
+    /// first ([LayoutError::InfiniteSize]). Any other error of a type it holds is passed on
+    /// unchanged. The answer, layout or error, is computed once per type and shared by every
+    /// `DataLayout` of an equal specification in the context.
     pub fn layout_of(&self, ty: Type) -> Result<Rc<Layout>, LayoutError> {
         if let Some(answer) = self.cache.layouts.borrow().get(&ty) {
             return answer.clone();
@@ -180,6 +182,12 @@ impl DataLayout {
             };
             type_layout.layout(ty, self).map(Rc::new)
         };
+        // A by-value cycle is reachable from `ty`, so `ty` is infinite itself. Naming `ty`, not
+        // the type the guard met, makes the answer the same whichever type was asked first
+        let answer = match answer {
+            Err(LayoutError::InfiniteSize(_)) => Err(LayoutError::InfiniteSize(ty)),
+            answer => answer,
+        };
         self.remember(ty, answer)
     }
 
@@ -188,6 +196,7 @@ impl DataLayout {
         self.layout_of(ty).map(|layout| layout.size())
     }
 
+    /// The alignment of `ty` in bytes: a value of `ty` lies at a multiple of it.
     pub fn align_of(&self, ty: Type) -> Result<Align, LayoutError> {
         self.layout_of(ty).map(|layout| layout.align())
     }

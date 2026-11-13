@@ -7,6 +7,7 @@ use crate::{
     derive::{DialectType, TypeComponent},
     dialects::builtin::BuiltinDialect,
     interner::Symbol,
+    layout::{AggregateType, TypeLayout},
     types::{Type, TypeAliasName, TypeFormatter, TypePrinter},
 };
 
@@ -82,8 +83,8 @@ pub enum InvalidEnumType {
 /// A tagged union, `enum name<discriminant; variant, ...>`.
 ///
 /// The discriminant is an `iN` of at most 128 bits, or `isize`, whose values are 64 bits wide.
-/// An `isize` discriminant's values are checked against 64 bits here; a target whose `isize` is
-/// narrower must check them again once a data layout is known.
+/// An `isize` discriminant's values are checked against 64 bits here; laying the enum out checks
+/// them again against the `isize` of the data layout.
 /// A variant's value is the raw bits of the discriminant: it is the one given explicitly, or else
 /// the previous variant's value plus one, or 0 for the first. Values are resolved when the enum
 /// is constructed, so `enum<i8; a, b>` and `enum<i8; a = 0, b = 1>` are one type. The enum's name
@@ -93,7 +94,7 @@ pub enum InvalidEnumType {
 /// are, with their resolved values; it does not run the checks of [Self::new], so the caller must
 /// replace the discriminant only with a valid one of the same width.
 #[derive(Debug, PartialEq, Eq, Hash, DialectType)]
-#[ty(dialect = BuiltinDialect, name = "enum")]
+#[ty(dialect = BuiltinDialect, name = "enum", implements(TypeLayout, AggregateType))]
 pub struct EnumType {
     name: Option<Symbol>,
     discriminant: Type,
@@ -108,6 +109,12 @@ impl EnumType {
         crate::Int::width_for_type(ty)
     }
 
+    /// True if the raw bits `bits` of a variant's value fit a discriminant of `width` bits: no bit
+    /// at or above `width` is set.
+    pub fn value_fits(bits: u128, width: u32) -> bool {
+        width >= u128::BITS || bits >> width == 0
+    }
+
     /// Creates an enum, checking that `discriminant` is a valid discriminant type, that every
     /// variant's value fits it, and that names and values are distinct.
     pub fn new(
@@ -117,7 +124,7 @@ impl EnumType {
     ) -> Result<Self, InvalidEnumType> {
         let width = Self::discriminant_width(discriminant)
             .ok_or(InvalidEnumType::InvalidDiscriminantType)?;
-        let fits = |bits: u128| width == 128 || bits >> width == 0;
+        let fits = |bits: u128| Self::value_fits(bits, width);
 
         let mut variants: Box<[EnumVariant]> = variants.into_iter().collect();
         let mut previous = None::<u128>;

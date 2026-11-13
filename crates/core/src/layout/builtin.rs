@@ -1,8 +1,12 @@
-//! The layouts of the builtin types that have one.
+//! The layouts of the builtin types that have one, and the elements of the builtin aggregates.
 
-use super::{DataLayout, FieldsShape, Layout, LayoutError, TypeLayout};
+use alloc::vec::Vec;
+
+use super::{AggregateType, Align, DataLayout, FieldsShape, Layout, LayoutError, TypeLayout};
 use crate::{
-    dialects::builtin::types::{ArrayType, FloatType, IntegerType, IsizeType, PointerType},
+    dialects::builtin::types::{
+        ArrayType, EnumType, FloatType, IntegerType, IsizeType, PointerType, StructRepr, StructType,
+    },
     types::Type,
 };
 
@@ -68,5 +72,114 @@ impl TypeLayout for ArrayType {
                 count: self.len(),
             },
         ))
+    }
+}
+
+/// An array's elements are `0..len`, all of its element type.
+impl AggregateType for ArrayType {
+    fn element_type(&self, index: u32) -> Option<Type> {
+        (u64::from(index) < self.len()).then(|| self.element())
+    }
+}
+
+/// A struct's elements are its fields.
+impl AggregateType for StructType {
+    fn element_type(&self, index: u32) -> Option<Type> {
+        let index = usize::try_from(index).ok()?;
+        self.fields().get(index).map(|field| field.ty)
+    }
+}
+
+/// An enum's element 0 is its discriminant, and element `1 + v` is the payload of variant `v`;
+/// a variant without a payload has no element.
+impl AggregateType for EnumType {
+    fn element_type(&self, index: u32) -> Option<Type> {
+        match index.checked_sub(1) {
+            None => Some(self.discriminant()),
+            Some(variant) => self.variants().get(usize::try_from(variant).ok()?)?.payload(),
+        }
+    }
+}
+
+/// An alignment a struct states. Construction checks that it is a power of two, and a `u16`
+/// power of two is at most [Align::MAX_BYTES].
+fn stated_align(bytes: core::num::NonZeroU16) -> Align {
+    Align::from_bytes(u64::from(bytes.get())).expect("a struct states powers of two")
+}
+
+/// A struct is laid out by C's rules: each field at the next multiple of its alignment after the
+/// field before it, and the size rounded up to the struct's alignment, the largest of its
+/// fields'.
+///
+/// A field's alignment is its type's, capped by `packed(P)` and then raised by the field's own
+/// `align(F)`; `align(N)` raises the struct's. A `transparent` struct is laid out as its one
+/// field.
+impl TypeLayout for StructType {
+    fn layout(&self, ty: Type, layout: &DataLayout) -> Result<Layout, LayoutError> {
+        if self.repr() == StructRepr::Transparent {
+            let field = layout.layout_of(self.fields()[0].ty)?;
+            return Ok(Layout::new(field.size(), field.align(), FieldsShape::Offsets([0].into())));
+        }
+        let cap = match self.repr() {
+            StructRepr::Packed(cap) => Some(stated_align(cap)),
+            _ => None,
+        };
+        let mut offsets = Vec::with_capacity(self.len());
+        let mut end = 0u64;
+        let mut align = Align::ONE;
+        for field in self.fields() {
+            let laid_out = layout.layout_of(field.ty)?;
+            let natural = laid_out.align();
+            let capped = cap.map_or(natural, |cap| natural.min(cap));
+            let effective = field.align.map_or(capped, |stated| capped.max(stated_align(stated)));
+            let offset = effective.align_up(end).ok_or(LayoutError::TooLarge(ty))?;
+            end = offset.checked_add(laid_out.size()).ok_or(LayoutError::TooLarge(ty))?;
+            offsets.push(offset);
+            align = align.max(effective);
+        }
+        if let StructRepr::Align(raised) = self.repr() {
+            align = align.max(stated_align(raised));
+        }
+        let size = align.align_up(end).ok_or(LayoutError::TooLarge(ty))?;
+        Ok(Layout::new(size, align, FieldsShape::Offsets(offsets.into())))
+    }
+}
+
+/// An enum is its discriminant followed by a union of the payloads: every payload starts at the
+/// size of the discriminant rounded up to the largest payload alignment, and the size is that
+/// offset plus the largest payload size, rounded up to the enum's alignment, the larger of the
+/// discriminant's and the payloads'. Without payloads that is the discriminant's layout.
+///
+/// Element 0 lies at offset 0, and the payload element of every variant, with a payload or not,
+/// at the payload offset. An `isize` discriminant's values must fit the `isize` of `layout`
+/// ([LayoutError::DiscriminantTooWide]).
+impl TypeLayout for EnumType {
+    fn layout(&self, ty: Type, layout: &DataLayout) -> Result<Layout, LayoutError> {
+        if self.discriminant().is_isize() {
+            let width = layout.isize_width();
+            if !self
+                .variants()
+                .iter()
+                .all(|variant| EnumType::value_fits(variant.value(), width))
+            {
+                return Err(LayoutError::DiscriminantTooWide(ty));
+            }
+        }
+        let tag = layout.layout_of(self.discriminant())?;
+        let mut payload_align = Align::ONE;
+        let mut payload_size = 0u64;
+        for payload in self.variants().iter().filter_map(|variant| variant.payload()) {
+            let payload = layout.layout_of(payload)?;
+            payload_align = payload_align.max(payload.align());
+            payload_size = payload_size.max(payload.size());
+        }
+        let offset = payload_align.align_up(tag.size()).ok_or(LayoutError::TooLarge(ty))?;
+        let align = tag.align().max(payload_align);
+        let size = offset
+            .checked_add(payload_size)
+            .and_then(|end| align.align_up(end))
+            .ok_or(LayoutError::TooLarge(ty))?;
+        let offsets = core::iter::once(0).chain(self.variants().iter().map(|_| offset)).collect();
+        Ok(Layout::new(size, align, FieldsShape::Offsets(offsets)))
     }
 }
