@@ -281,7 +281,7 @@ mod tests {
 
             let binder = MatchWith(|op: &UnsafeIntrusiveEntityRef<Shl>| {
                 log::trace!(
-                    "found matching 'hir.shl' operation, checking if `shift` operand is foldable"
+                    "found matching 'test.shl' operation, checking if `shift` operand is foldable"
                 );
                 let op = op.borrow();
                 let shift = op.shift().as_operand_ref();

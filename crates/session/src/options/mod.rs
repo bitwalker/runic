@@ -42,7 +42,7 @@ pub struct Options {
     /// Stop compilation after the named checkpoint, as `--stop-after` asked.
     ///
     /// An alias declared by the route being compiled — `parse`, `analyze`, `transform`,
-    /// `lower`, `assemble` — or a fully-qualified checkpoint id such as `hir.initial`. Which
+    /// `lower`, `assemble` — or a fully-qualified checkpoint id, `<dialect>.<name>`. Which
     /// names are valid depends on the frontend the input selects, so the value is carried
     /// uninterpreted and resolved against that route once it is known; an unrecognized one is
     /// reported there, listing the names that route does accept.

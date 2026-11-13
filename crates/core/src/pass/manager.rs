@@ -780,7 +780,7 @@ impl OpToOpPassAdaptor {
     /// This will try to append the pass managers of this adaptor into those within `rhs`, or return
     /// failure if merging isn't possible. The main situation in which merging is not possible is if
     /// one of the adaptors has an `any` pipeline that is not compatible with a pass manager in the
-    /// other adaptor. For example, if this adaptor has a `hir.function` pipeline and `rhs` has an
+    /// other adaptor. For example, if this adaptor has a `builtin.function` pipeline and `rhs` has an
     /// `any` pipeline that operates on a FunctionOpInterface. In this situation the pipelines have
     /// a conflict (they both want to run on the same operations), so we can't merge.
     pub fn try_merge_into(&mut self, rhs: &mut Self) -> bool {

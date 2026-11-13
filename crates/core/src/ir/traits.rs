@@ -335,8 +335,8 @@ pub trait SingleRegion {
 ///
 /// Codegen emits nothing for such an op itself: the stack slot that holds the operand becomes the
 /// result. Only an operand still live after the cast is copied first (`dup`), as for any other
-/// op, and the copy becomes the result. A cast that checks or changes a value, such as `hir.cast`
-/// between signednesses or any widening or narrowing, must not implement this.
+/// op, and the copy becomes the result. A cast that checks or changes a value, such as `arith.zext`
+/// or `arith.trunc`, or a cast between signednesses, must not implement this.
 ///
 /// The verifier admits one operand and one result of the same type, or that are both pointers in
 /// the same address space (the pointee may differ, and either may be opaque): a pointer in

@@ -470,7 +470,7 @@ pub fn parse_file_anchored(
 /// Both symbol-use linking and verification need the final operation hierarchy. While the
 /// parsed world is still nested under the temporary anchor, an absolute path like
 /// `::@ns:pkg@1.0.0::@m::@tbl` resolves against the anchor and cannot find its target. Linking
-/// would leave the use unresolved, and a verifier such as `hir.exec_indirect`'s would reject IR
+/// would leave the use unresolved, and a verifier that resolves a symbol use would reject IR
 /// that is valid once detached.
 ///
 /// After establishing the root, this function passes it to
