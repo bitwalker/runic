@@ -268,6 +268,30 @@ impl InferTypeOpInterface for Select {
     }
 }
 
+/// Both arms and the result have one type: a fold returns an arm, or an arm's constant, as the
+/// result.
+impl Verify<dyn InferTypeOpInterface> for Select {
+    fn verify(&self, _context: &Context) -> Result<(), Report> {
+        let (first, second, result) = (self.first().ty(), self.second().ty(), self.result().ty());
+        if first == second && first == result {
+            return Ok(());
+        }
+        Err(runic_core::diagnostics::report!(
+            message: "invalid operation",
+            labels: [
+                primary(
+                    self.as_operation().span(),
+                    alloc::format!(
+                        "the arms and the result of '{}' must have one type, but they have \
+                         `{first}`, `{second}` and `{result}`",
+                        self.as_operation().name()
+                    )
+                ),
+            ],
+        ))
+    }
+}
+
 impl Canonicalizable for Select {
     fn get_canonicalization_patterns(rewrites: &mut RewritePatternSet, context: Rc<Context>) {
         rewrites.push(crate::canonicalization::SimplifySelectOfBools::new(context));
@@ -1357,5 +1381,25 @@ builtin.function public extern(\"C\") @check(%c: i1) {
             };"#]]
         .assert_eq(&printed);
         Ok(())
+    }
+
+    /// A `cf.select` whose arms have two types does not verify, and the diagnostic names the
+    /// types. (A fold that chose the second arm would hand an `i64` to an `i32` result.)
+    #[test]
+    fn a_select_of_two_types_does_not_verify() {
+        use runic_core::{dialects::builtin::Function, testing::text::parse};
+
+        let text = "builtin.function public extern(\"C\") @f(%c: i1, %a: i32, %b: i64) -> i32 {
+    %s = cf.select %c, %a, %b;
+    builtin.ret %s : (i32);
+};";
+        let err = parse::<Function>(text).err().expect("a select of two types must not verify");
+        assert!(
+            err.contains(
+                "the arms and the result of 'cf.select' must have one type, but they have `i32`, \
+                 `i64` and `i32`"
+            ),
+            "{err}"
+        );
     }
 }

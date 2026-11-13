@@ -15,8 +15,8 @@ use crate::*;
 /// * `select(c, true, false)` becomes `c`
 /// * `select(c, false, true)` becomes `bnot c`
 ///
-/// Such selects are produced when control flow that merely forwards a flag is converted to
-/// selects, and each one costs more than the condition, which is already at hand.
+/// Such selects arise when control flow that only forwards a flag is converted to selects; the
+/// condition is already the value they choose, so using it directly is cheaper.
 pub struct SimplifySelectOfBools {
     info: PatternInfo,
 }
