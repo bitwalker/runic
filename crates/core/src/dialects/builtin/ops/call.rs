@@ -173,9 +173,8 @@ impl EffectOpInterface<MemoryEffect> for Call {
 /// A call's arguments and results agree with its signature; its callee resolves, through any chain
 /// of aliases, to a callable whose signature equals the call's.
 ///
-/// A callee that is not linked to a symbol is left to
-/// [Operation::verify_symbol_refs](crate::Operation::verify_symbol_refs), which reports that it does
-/// not resolve.
+/// A callee that is not linked to a symbol has already been reported by
+/// [Operation::verify_symbol_refs](crate::Operation::verify_symbol_refs), which runs before this.
 impl crate::Verify<dyn CallOpInterface> for Call {
     fn verify(&self, _context: &Context) -> Result<(), Report> {
         let signature = self.get_signature();
@@ -185,9 +184,6 @@ impl crate::Verify<dyn CallOpInterface> for Call {
         )?;
 
         let callee = self.callee();
-        if !callee.try_user().is_some_and(|user| user.is_linked()) {
-            return Ok(());
-        }
         let span = self.as_operation().span();
         let resolved = callee.resolve_callable().map_err(|err| {
             report!(
@@ -396,9 +392,8 @@ impl InferTypeOpInterface for FunctionReference {
 /// The result has the type `ty`, and the callee resolves, through any chain of aliases, to a
 /// callable whose signature has the parameter and result types of that function type.
 ///
-/// A callee that is not linked to a symbol is left to
-/// [Operation::verify_symbol_refs](crate::Operation::verify_symbol_refs), which reports that it does
-/// not resolve.
+/// A callee that is not linked to a symbol has already been reported by
+/// [Operation::verify_symbol_refs](crate::Operation::verify_symbol_refs), which runs before this.
 impl crate::Verify<dyn InferTypeOpInterface> for FunctionReference {
     fn verify(&self, context: &Context) -> Result<(), Report> {
         let span = self.as_operation().span();
@@ -415,9 +410,6 @@ impl crate::Verify<dyn InferTypeOpInterface> for FunctionReference {
         }
 
         let callee = self.callee();
-        if !callee.try_user().is_some_and(|user| user.is_linked()) {
-            return Ok(());
-        }
         let resolved = callee.resolve_callable().map_err(|err| {
             report!(
                 message: "invalid operation builtin.function_ref",

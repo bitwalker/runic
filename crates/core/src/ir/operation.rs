@@ -510,19 +510,17 @@ impl Operation {
     /// interned by its context; see [Self::verify_type_ownership]. The second is that every
     /// integer constant among its properties and attributes is valid; see
     /// [Self::verify_int_attributes]. The third is that every signature among its properties and
-    /// attributes is valid; see [Self::verify_signature_attributes]. The operation's own verifiers
-    /// run after these. The last check, run for every operation, is that every symbol reference
-    /// among its properties and attributes is linked to a symbol; see
-    /// [Self::verify_symbol_refs]. It runs after the operation's own verifiers so that an
-    /// operation which diagnoses its own unresolved references (as `builtin.function_alias` does
-    /// its target) reports them in its own words.
+    /// attributes is valid; see [Self::verify_signature_attributes]. The fourth is that every
+    /// symbol reference among its properties and attributes is linked to a symbol; see
+    /// [Self::verify_symbol_refs]. The operation's own verifiers run after these, so they may
+    /// assume the operation's symbol references are linked.
     pub fn verify(&self) -> Result<(), Report> {
         self.verify_type_ownership()?;
         self.verify_int_attributes()?;
         self.verify_signature_attributes()?;
+        self.verify_symbol_refs()?;
         let dyn_op: &dyn Op = self.as_ref();
-        dyn_op.verify(self.context())?;
-        self.verify_symbol_refs()
+        dyn_op.verify(self.context())
     }
 
     /// Check that every symbol reference among this operation's properties and attributes is

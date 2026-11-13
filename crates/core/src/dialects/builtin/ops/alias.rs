@@ -358,21 +358,35 @@ builtin.module public @test {
         assert!(format!("{err}").contains("does not resolve"), "{err}");
     }
 
-    /// A parsed alias whose target names nothing is reported by the alias's own verifier, not by
-    /// the check every operation's symbol uses get.
+    /// A parsed alias whose target names nothing is reported by the check every operation's
+    /// symbol uses get, which runs before the alias's own verifier.
     #[test]
-    fn alias_to_undeclared_target_is_the_alias_verifiers_error() {
+    fn alias_to_undeclared_target_is_the_symbol_use_check_error() {
         let err = verify_alias_source(
             "builtin.module public @test { builtin.function_alias public @bar -> @nowhere; };",
         )
         .expect_err("an alias of an undeclared symbol must not verify");
         let message = format!("{err}");
-        assert!(message.contains("invalid builtin.function_alias 'bar'"), "{message}");
-        assert!(!message.contains("symbol '@nowhere' does not resolve"), "{message}");
+        assert!(message.contains("symbol '@nowhere' does not resolve"), "{message}");
+        assert!(!message.contains("invalid builtin.function_alias 'bar'"), "{message}");
     }
 
+    /// An alias of a global variable: the target resolves, to a symbol that is not callable.
     #[test]
     fn alias_to_non_callable_fails_verification() {
+        let err = verify_alias_source(
+            "builtin.module public @test {\n    builtin.global_variable public @foo : i32;\n    \
+             builtin.function_alias public @bar -> @foo;\n};",
+        )
+        .expect_err("an alias of a global variable must not verify");
+        assert!(format!("{err}").contains("not callable"), "{err}");
+    }
+
+    /// Removing the target unlinks the alias's use of it; a symbol inserted later under the same
+    /// name does not relink it, so the target is reported as not resolving, before the alias's own
+    /// verifier would look the path up.
+    #[test]
+    fn alias_whose_target_is_removed_and_replaced_does_not_resolve() {
         let mut test = Test::default().in_module("test");
         let i32 = test.context().i32();
         let primary = test.define_function("foo", &[], &[i32]);
@@ -401,7 +415,7 @@ builtin.module public @test {
             assert!(mb.resolve_function("bar").is_none());
         }
         let err = module.borrow().as_operation().recursively_verify().unwrap_err();
-        assert!(format!("{err}").contains("not callable"), "{err}");
+        assert!(format!("{err}").contains("symbol '::@test::@foo' does not resolve"), "{err}");
     }
 
     #[test]
