@@ -988,11 +988,283 @@ where
 
 #[cfg(test)]
 mod tests {
-    use runic_core::{ProgramPoint, Signedness, SourceSpan, ValueRef, testing::Test};
+    use alloc::{format, string::ToString, vec::Vec};
+
+    use runic_core::{
+        Op, ProgramPoint, Signedness, SourceSpan, Symbol, Usable, ValueRef,
+        attributes::IntegerLikeAttr,
+        dialects::{
+            builtin::{Call, Function, FunctionAlias, Module, ModuleBuilder},
+            test::CallOneOf,
+        },
+        parse::{self, ParserConfig},
+        testing::Test,
+    };
     use runic_dialect_arith::ArithOpBuilder;
 
     use super::*;
-    use crate::DataFlowSolver;
+    use crate::{DataFlowConfig, DataFlowSolver, analyses::SparseConstantPropagation};
+
+    fn analyze(source: &str) -> (Test, OperationRef, DataFlowSolver) {
+        let test = Test::default();
+        test.context().get_or_register_dialect::<runic_dialect_arith::ArithDialect>();
+        let module =
+            parse::parse_any(ParserConfig::new(test.context_rc()), "function_alias.hir", source)
+                .expect("fixture must parse and verify");
+        let mut config = DataFlowConfig::default();
+        config.set_interprocedural(true);
+        let mut solver = DataFlowSolver::new(config);
+        solver.load::<DeadCodeAnalysis>();
+        solver.load::<SparseConstantPropagation>();
+        // Internal targets alone must not imply callers outside the analyzed graph.
+        let root = module.parent_op().unwrap_or(module);
+        solver
+            .initialize_and_run(&root.borrow(), AnalysisManager::new(root, None))
+            .expect("analysis must converge");
+        (test, module, solver)
+    }
+
+    fn alias_module(visibility: &str, extra_use: &str) -> alloc::string::String {
+        let target_visibility = if visibility == "private" {
+            "private"
+        } else {
+            "internal"
+        };
+        format!(
+            r#"
+builtin.module public @test {{
+    builtin.function {target_visibility} extern("C") @target(%x: i32) -> i32 {{
+        builtin.ret %x : (i32);
+    }};
+    builtin.function_alias private @first -> @target;
+    builtin.function_alias {visibility} @alias -> @first;
+    builtin.function public extern("C") @caller() -> i32 {{
+        {extra_use}
+        %arg = arith.constant 42 : i32;
+        %result = builtin.call @alias(%arg) : extern("C") (i32) -> i32;
+        builtin.ret %result : (i32);
+    }};
+}};
+"#
+        )
+    }
+
+    /// Get the constant-propagated value of `value` or `None` if it is not a known constant.
+    fn constant(solver: &DataFlowSolver, value: ValueRef) -> Option<u32> {
+        let lattice = solver.get::<Lattice<ConstantValue>, _>(&value).expect("value has a lattice");
+        assert!(!lattice.value().is_uninitialized(), "call flow must initialize the value");
+        lattice.value().constant_value().map(|attr| {
+            attr.borrow()
+                .as_attr()
+                .as_trait::<dyn IntegerLikeAttr>()
+                .expect("the constant is an integer")
+                .as_int()
+                .try_unsigned()
+                .unwrap()
+        })
+    }
+
+    /// A chain of private aliases is fully resolved by the analysis: call/return flow and constant
+    /// propagation work as if called directly, without rewriting any symbol references in the IR
+    #[test]
+    fn private_alias_chain_resolves_callsites_and_propagates_constants() {
+        let (_test, module, solver) = analyze(&alias_module("private", ""));
+        let mb = ModuleBuilder::new(module.try_downcast_op::<Module>().unwrap());
+        let target = mb.get_function("target").unwrap();
+        let alias = mb.get_function_alias("alias").unwrap();
+        let first = mb.get_function_alias("first").unwrap();
+        let caller = mb.get_function("caller").unwrap();
+        let call = caller
+            .borrow()
+            .entry_block()
+            .borrow()
+            .body()
+            .iter()
+            .find_map(|op| op.downcast_ref::<Call>().map(Op::as_operation_ref))
+            .unwrap();
+
+        let callsites = solver
+            .get::<PredecessorState, _>(&ProgramPoint::after(target.as_operation_ref()))
+            .unwrap();
+        assert!(callsites.all_predecessors_known(), "private aliases do not escape");
+        assert_eq!(callsites.known_predecessors(), &[call]);
+        let returns = solver.get::<PredecessorState, _>(&ProgramPoint::after(call)).unwrap();
+        assert_eq!(
+            returns.known_predecessors(),
+            &[target.borrow().entry_block().borrow().terminator().unwrap(),]
+        );
+        assert_eq!(
+            constant(&solver, target.borrow().entry_block().borrow().arguments()[0] as ValueRef),
+            Some(42)
+        );
+        assert_eq!(constant(&solver, call.borrow().results()[0] as ValueRef), Some(42));
+
+        // Analysis resolves identity without rewriting any of the alias symbol uses.
+        assert_eq!(alias.borrow().iter_uses().count(), 1);
+        assert_eq!(first.borrow().iter_uses().count(), 1);
+        assert_eq!(target.borrow().iter_uses().count(), 1);
+        assert!(alias.borrow().visibility().is_private());
+        let call = call.borrow();
+        let call = call.downcast_ref::<Call>().unwrap();
+        assert_eq!(call.callee().path().to_string(), "alias");
+        assert_eq!(call.callee().try_user().unwrap().borrow().owner, call.as_operation_ref());
+        assert_eq!(
+            first.borrow().target().try_user().unwrap().borrow().owner,
+            first.as_operation_ref()
+        );
+        assert_eq!(
+            call.resolve().map(|c| c.as_symbol_ref()),
+            target.borrow().as_operation().as_symbol_ref()
+        );
+    }
+
+    #[test]
+    fn public_alias_keeps_target_arguments_unknown() {
+        let (_test, module, solver) = analyze(&alias_module("public", ""));
+        let mb = ModuleBuilder::new(module.try_downcast_op::<Module>().unwrap());
+        let target = mb.get_function("target").unwrap();
+        let state = solver
+            .get::<PredecessorState, _>(&ProgramPoint::after(target.as_operation_ref()))
+            .unwrap();
+        assert!(!state.all_predecessors_known(), "external callers may use the public alias");
+        assert_eq!(state.known_predecessors().len(), 1, "retain the known call through the alias");
+        assert_eq!(
+            constant(&solver, target.borrow().entry_block().borrow().arguments()[0] as ValueRef),
+            None
+        );
+    }
+
+    #[test]
+    fn taking_alias_address_keeps_target_arguments_unknown() {
+        let (_test, module, solver) = analyze(&alias_module(
+            "private",
+            "%reference = builtin.function_ref @alias : (i32) -> i32;",
+        ));
+        let mb = ModuleBuilder::new(module.try_downcast_op::<Module>().unwrap());
+        let target = mb.get_function("target").unwrap();
+        let state = solver
+            .get::<PredecessorState, _>(&ProgramPoint::after(target.as_operation_ref()))
+            .unwrap();
+        assert!(
+            !state.all_predecessors_known(),
+            "address-taking through an alias escapes its target"
+        );
+        assert_eq!(
+            constant(&solver, target.borrow().entry_block().borrow().arguments()[0] as ValueRef),
+            None
+        );
+    }
+
+    /// `test.call_one_of` names two aliases of one function: it is the one known call site of the
+    /// function, and the function's return flows back to it.
+    #[test]
+    fn indirect_alias_calls_share_target_and_return_flow() {
+        let (_test, module, solver) = analyze(
+            r#"
+builtin.module public @test {
+    builtin.function private extern("C") @target() -> i32 {
+        %value = arith.constant 42 : i32;
+        builtin.ret %value : (i32);
+    };
+    builtin.function_alias private @first -> @target;
+    builtin.function_alias private @alias -> @first;
+    builtin.function public extern("C") @caller(%index: i32) -> i32 {
+        %result = test.call_one_of %index, @first, @alias() : extern("C") () -> i32;
+        builtin.ret %result : (i32);
+    };
+};
+"#,
+        );
+
+        let mut calls = Vec::new();
+        module.borrow().prewalk_all(|op| {
+            if let Some(call) = op.downcast_ref::<CallOneOf>() {
+                calls.push(call.as_operation_ref());
+            }
+        });
+        assert_eq!(calls.len(), 1, "the fixture contains a single indirect call");
+        let call_ref = calls[0];
+        let call = call_ref.borrow();
+        let call = call.downcast_ref::<CallOneOf>().unwrap();
+        let callees = call.possible_callees().unwrap();
+        assert_eq!(callees.len(), 1, "deduplicate after resolving aliases");
+
+        let target_ref = callees[0].as_operation_ref();
+        let target = target_ref.borrow();
+        assert!(target.is::<Function>());
+        assert!(!target.is::<FunctionAlias>());
+        let entry = target.downcast_ref::<Function>().unwrap().entry_block();
+        assert!(
+            solver
+                .get::<Executable, _>(&ProgramPoint::at_start_of(entry))
+                .unwrap()
+                .is_live()
+        );
+
+        let callsites =
+            solver.get::<PredecessorState, _>(&ProgramPoint::after(target_ref)).unwrap();
+        assert!(
+            !callsites.all_predecessors_known(),
+            "the call's symbols take the aliases' address"
+        );
+        assert_eq!(
+            callsites.known_predecessors(),
+            &[call_ref],
+            "the indirect call registers as the only known call site of the shared target"
+        );
+
+        let returns = solver.get::<PredecessorState, _>(&ProgramPoint::after(call_ref)).unwrap();
+        assert_eq!(
+            returns.known_predecessors(),
+            &[entry.borrow().terminator().unwrap()],
+            "the target's return flows back to the indirect call"
+        );
+        assert_eq!(
+            constant(&solver, call.results()[0] as ValueRef),
+            Some(42),
+            "constant is propagated"
+        );
+    }
+
+    /// The symbols of a `test.call_one_of` are not its callee, so they take the aliases' address:
+    /// the target may have callers the analysis cannot see, and its arguments stay unknown even
+    /// though the call site passes a constant.
+    #[test]
+    fn call_one_of_through_aliases_keeps_target_arguments_unknown() {
+        let (_test, module, solver) = analyze(
+            r#"
+builtin.module public @test {
+    builtin.function private extern("C") @target(%x: i32) -> i32 {
+        builtin.ret %x : (i32);
+    };
+    builtin.function_alias private @first -> @target;
+    builtin.function_alias private @alias -> @first;
+    builtin.function public extern("C") @caller(%index: i32) -> i32 {
+        %arg = arith.constant 42 : i32;
+        %result = test.call_one_of %index, @first, @alias(%arg) : extern("C") (i32) -> i32;
+        builtin.ret %result : (i32);
+    };
+};
+"#,
+        );
+
+        let mb = ModuleBuilder::new(module.try_downcast_op::<Module>().unwrap());
+        let target = mb.get_function("target").unwrap();
+        let state = solver
+            .get::<PredecessorState, _>(&ProgramPoint::after(target.as_operation_ref()))
+            .unwrap();
+        assert!(!state.all_predecessors_known(), "the call's symbols take the aliases' address");
+        assert_eq!(
+            state.known_predecessors().len(),
+            1,
+            "retain the known call through the call's symbols"
+        );
+        assert_eq!(
+            constant(&solver, target.borrow().entry_block().borrow().arguments()[0] as ValueRef),
+            None,
+            "unknown callers keep the target's arguments from becoming constant"
+        );
+    }
 
     #[test]
     fn predecessor_state_orders_known_predecessors_by_ir_position() {

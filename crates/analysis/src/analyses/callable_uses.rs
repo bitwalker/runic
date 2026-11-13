@@ -190,14 +190,235 @@ impl CallableUseSnapshot {
 
 #[cfg(test)]
 mod tests {
+    use alloc::{format, vec::Vec};
+
     use runic_core::{
         Op, SymbolName,
-        dialects::builtin::{Module, ModuleBuilder},
+        dialects::{
+            builtin::{Call, Module, ModuleBuilder, ModuleRef, attributes::SymbolRefAttr},
+            test::CallOneOf,
+        },
         parse::{ParserConfig, parse, parse_any},
         testing::Test,
     };
 
     use super::*;
+
+    fn fixture(visibility: &str, extra_use: &str) -> (Test, ModuleRef) {
+        let target_visibility = if visibility == "private" {
+            "private"
+        } else {
+            "internal"
+        };
+        let test = Test::default();
+        let source = format!(
+            r#"
+builtin.module public @test {{
+    builtin.function {target_visibility} extern("C") @body() {{ builtin.ret; }};
+    builtin.function_alias private @first -> @body;
+    builtin.function_alias {visibility} @api -> @first;
+    builtin.function public extern("C") @caller() {{
+        builtin.call @api() : extern("C") ();
+        builtin.call @body() : extern("C") ();
+        {extra_use}
+        builtin.ret;
+    }};
+}};
+"#
+        );
+        let module =
+            parse::<Module>(ParserConfig::new(test.context_rc()), "uses.hir", &source).unwrap();
+        (test, module)
+    }
+
+    fn call_callers(module: ModuleRef, function: &str) -> Vec<OperationRef> {
+        ModuleBuilder::new(module)
+            .get_function(function)
+            .unwrap()
+            .borrow()
+            .entry_block()
+            .borrow()
+            .body()
+            .iter()
+            .filter_map(|op| op.downcast_ref::<Call>().map(Op::as_operation_ref))
+            .collect()
+    }
+
+    fn assert_known_callers(info: &CallableUseInfo, expected: &[OperationRef]) {
+        assert_eq!(info.known_callers().len(), expected.len());
+        for caller in expected {
+            assert!(
+                info.known_callers().contains(caller),
+                "expected {caller} to be a known caller"
+            );
+        }
+    }
+
+    fn attach_extra_symbol_attribute(
+        mut owner: OperationRef,
+        referenced: SymbolRef,
+        path: runic_core::SymbolPath,
+    ) {
+        owner.borrow_mut().set_symbol_attribute("extra_address", referenced);
+
+        let mut attr = owner
+            .borrow()
+            .get_attribute("extra_address")
+            .unwrap()
+            .try_downcast_attr::<SymbolRefAttr>()
+            .unwrap();
+        attr.borrow_mut().set_path(path);
+    }
+
+    #[test]
+    fn alias_use_queries_separate_callers_exposure_and_address_taking() {
+        for (visibility, extra, exposed, address_taken) in [
+            ("private", "", false, false),
+            ("internal", "", false, false),
+            ("public", "", true, false),
+            ("private", "%a = builtin.function_ref @api : () -> ();", false, true),
+        ] {
+            let (_test, module) = fixture(visibility, extra);
+            let body = ModuleBuilder::new(module).resolve_callable("body").unwrap().target();
+            let world = module.borrow().as_operation().parent_op().unwrap();
+            let uses = CallableUseSnapshot::new(&world.borrow());
+            let body_uses = uses.get(body).unwrap();
+            let expected_callers = call_callers(module, "caller");
+            assert_eq!(expected_callers.len(), 2);
+            assert_known_callers(body_uses, &expected_callers);
+            assert_eq!(body_uses.has_external_name(), exposed);
+            assert_eq!(body_uses.is_address_taken(), address_taken);
+            assert!(!body_uses.has_out_of_scope_uses());
+            assert_eq!(body_uses.has_unknown_callers(), exposed || address_taken);
+
+            // The analysis does not rewrite the alias chain
+            let alias = ModuleBuilder::new(module).get_function_alias("api").unwrap();
+            assert_eq!(alias.borrow().target().path().name(), SymbolName::intern("first"));
+            let first = ModuleBuilder::new(module).get_function_alias("first").unwrap();
+            assert_eq!(first.borrow().target().path().name(), SymbolName::intern("body"));
+        }
+    }
+
+    /// Verifies that an extra symbol attribute on a call op is treated as an escaping use
+    /// (address taken) and does not change the direct-caller set.
+    #[test]
+    fn extra_symbol_attribute_on_call_op_is_escaping_use() {
+        let (_test, module) = fixture("private", "");
+        let mb = ModuleBuilder::new(module);
+        let target = mb.resolve_callable("body").unwrap().target();
+        let owner = mb
+            .get_function("caller")
+            .unwrap()
+            .borrow()
+            .entry_block()
+            .borrow()
+            .body()
+            .iter()
+            .find_map(|op| op.downcast_ref::<Call>().map(Op::as_operation_ref))
+            .unwrap();
+        let path = owner.borrow().downcast_ref::<Call>().unwrap().callee().path().clone();
+        let referenced = mb.resolve_callable("api").unwrap().named_symbol() as SymbolRef;
+        attach_extra_symbol_attribute(owner, referenced, path);
+
+        let uses = CallableUseSnapshot::new(module.borrow().as_operation());
+        let info = uses.get(target).unwrap();
+        assert_known_callers(info, &call_callers(module, "caller"));
+        assert!(info.is_address_taken());
+        assert!(info.has_unknown_callers());
+    }
+
+    /// Verifies that an extra symbol attribute on an alias op is treated as an escaping use
+    /// (address taken) and does not change the direct-caller set.
+    #[test]
+    fn extra_symbol_attribute_on_alias_op_is_escaping_use() {
+        let (_test, module) = fixture("private", "");
+        let mb = ModuleBuilder::new(module);
+        let target = mb.resolve_callable("body").unwrap().target();
+        let alias = mb.get_function_alias("api").unwrap();
+        let owner = alias.borrow().as_operation_ref();
+        let path = alias.borrow().target().path().clone();
+        let referenced = mb.resolve_callable("first").unwrap().named_symbol() as SymbolRef;
+        attach_extra_symbol_attribute(owner, referenced, path);
+
+        let uses = CallableUseSnapshot::new(module.borrow().as_operation());
+        let info = uses.get(target).unwrap();
+        assert_known_callers(info, &call_callers(module, "caller"));
+        assert!(info.is_address_taken());
+        assert!(info.has_unknown_callers());
+    }
+
+    /// A `test.call_one_of` of an alias and its target is one known caller of the target, and its
+    /// symbols, which are not its callee, take the target's address.
+    #[test]
+    fn indirect_alias_calls_are_known_but_their_symbols_still_escape() {
+        let test = Test::default();
+        let module = parse::<Module>(
+            ParserConfig::new(test.context_rc()),
+            "call_one_of_uses.hir",
+            r#"
+builtin.module public @test {
+    builtin.function private extern("C") @body() { builtin.ret; };
+    builtin.function_alias private @api -> @body;
+    builtin.function public extern("C") @caller(%index: i32) {
+        test.call_one_of %index, @api, @body() : extern("C") ();
+        builtin.ret;
+    };
+};
+"#,
+        )
+        .unwrap();
+        let target = ModuleBuilder::new(module).resolve_callable("body").unwrap().target();
+        let uses = CallableUseSnapshot::new(module.borrow().as_operation());
+        let info = uses.get(target).unwrap();
+        assert_eq!(info.known_callers().len(), 1, "should deduplicate canonical targets");
+        assert!(info.is_address_taken());
+        assert!(info.has_unknown_callers());
+        assert!(!info.has_external_name());
+    }
+
+    /// A `test.call_one_of` with a runtime index may reach either of its callables, and which one
+    /// is not known until runtime.
+    #[test]
+    fn ambiguous_call_one_of_index_is_known_caller_of_every_possible_target() {
+        let test = Test::default();
+        let module = parse::<Module>(
+            ParserConfig::new(test.context_rc()),
+            "call_one_of_two_targets.hir",
+            r#"
+builtin.module public @test {
+    builtin.function private extern("C") @left() { builtin.ret; };
+    builtin.function private extern("C") @right() { builtin.ret; };
+    builtin.function public extern("C") @caller(%index: i32) {
+        test.call_one_of %index, @left, @right() : extern("C") ();
+        builtin.ret;
+    };
+};
+"#,
+        )
+        .unwrap();
+        let mb = ModuleBuilder::new(module);
+        let call = mb
+            .get_function("caller")
+            .unwrap()
+            .borrow()
+            .entry_block()
+            .borrow()
+            .body()
+            .iter()
+            .find_map(|op| op.downcast_ref::<CallOneOf>().map(Op::as_operation_ref))
+            .unwrap();
+
+        let uses = CallableUseSnapshot::new(module.borrow().as_operation());
+        for function in ["left", "right"] {
+            let target = mb.resolve_callable(function).unwrap().target();
+            let info = uses.get(target).unwrap();
+            assert_known_callers(info, &[call]);
+            assert!(info.is_address_taken());
+            assert!(!info.has_external_name());
+            assert!(!info.has_out_of_scope_uses());
+            assert!(info.has_unknown_callers());
+        }
+    }
 
     #[test]
     fn internal_alias_visibility_depends_on_analysis_scope() {
