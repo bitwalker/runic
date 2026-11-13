@@ -83,29 +83,11 @@ fn erase_transparent_users(value: ValueRef) {
     }
 }
 
-/// This transformation sinks operations as close as possible to their uses, one of two ways:
+/// This transformation moves an effect-free operation into a region of a region operation when
+/// every user of its results is inside that region, and the region is executed at most once, so
+/// that the operation is not executed on paths that do not need its results.
 ///
-/// 1. If there exists only a single use of the operation, move it before it's use so that it is
-///    in an ideal position for code generation.
-///
-/// 2. If there exist multiple uses, materialize a duplicate operation for all but one of the uses,
-///    placing them before the use. The last use will receive the original operation.
-///
-/// To make this rewrite even more useful, we take care to place the operation at a position before
-/// the using op, such that when generating code, the operation value will be placed on the stack
-/// at the appropriate place relative to the other operands of the using op. This makes the operand
-/// stack scheduling optimizer's job easier.
-///
-/// The purpose of this rewrite is to improve the quality of generated code by reducing the live
-/// ranges of values that are trivial to materialize on-demand.
-///
-/// # Restrictions
-///
-/// This transform will not sink operations under the following conditions:
-///
-/// * The operation has side effects
-/// * The operation is a block terminator
-/// * The operation has regions
+/// Operations with memory effects are never moved.
 ///
 /// # Implementation
 ///
@@ -217,21 +199,24 @@ impl Pass for ControlFlowSink {
     }
 }
 
-/// This transformation sinks constants as close as possible to their uses, one of two ways:
+/// This transformation moves the definitions of an operation's operands next to their use:
 ///
-/// 1. If there exists only a single use of the constant, move it before it's use so that it is
-///    in an ideal position for code generation.
+/// 1. A constant used by the operation is moved directly before it if this is its only use;
+///    otherwise a fresh copy of the constant is materialized there, and the original stays for its
+///    other uses.
 ///
-/// 2. If there exist multiple uses, materialize a duplicate constant for all but one of the uses,
-///    placing them before the use. The last use will receive the original constant.
+/// 2. An effect-free operation with a single result, whose only use is this operation, is moved
+///    directly before it, and the definitions of its own operands are then moved the same way.
 ///
-/// To make this rewrite even more useful, we take care to place the constant at a position before
-/// the using op, such that when generating code, the constant value will be placed on the stack
-/// at the appropriate place relative to the other operands of the using op. This makes the operand
-/// stack scheduling optimizer's job easier.
+/// The definitions are placed in a chosen operand order (see `OpOperandSink::operand_index`), so
+/// that a stack-machine backend such as Wasm finds the operand values in the order the using
+/// operation consumes them, with fewer locals and less reordering. Values that cannot be moved
+/// (block arguments, operations with memory effects, values with other uses) stay where they are.
 ///
-/// The purpose of this rewrite is to improve the quality of generated code by reducing the live
-/// ranges of values that are trivial to materialize on-demand.
+/// An operation left without uses by this rewrite is erased when it is trivially dead.
+///
+/// The purpose of this rewrite is to shorten the live ranges of values that are cheap to
+/// materialize where they are needed.
 #[derive(Default)]
 pub struct SinkOperandDefs;
 
@@ -286,13 +271,12 @@ impl Pass for SinkOperandDefs {
             // If 1, then we either materialize a fresh copy of the constant, or move the original
             // if there are no more uses.
             //
-            // In both cases, to the extent possible, we order operand dependencies such that the
-            // values will be on the Miden operand stack in the correct order. This means that we
-            // visit operands in the order the lowering expects them on the stack (see
-            // `OpOperandSink::operand_index`), and move defining ops directly before `op` when
-            // possible. Some values may be block arguments, or refer to op's we're unable to move,
-            // and thus those values be out of position on the operand stack, but the overall
-            // result will reduce the amount of unnecessary stack movement.
+            // In both cases, to the extent possible, we order operand definitions so that their
+            // values are produced in the order the using operation consumes them. This means that
+            // we visit operands in the order given by `OpOperandSink::operand_index`, and move
+            // defining ops directly before `op` when possible. Some values may be block
+            // arguments, or be defined by operations we are unable to move, and those stay out
+            // of order.
             let op = operation.borrow();
 
             log::trace!(target: Self::NAME, "visiting {op}");
@@ -399,9 +383,8 @@ impl Pass for SinkOperandDefs {
             let mut builder = OpBuilder::new(op.context_rc());
             builder.set_insertion_point(sink_state.ip);
             // Each definition is placed directly before `op`, after the ones placed earlier, so
-            // the operand visited last is materialized last and ends up on top of the operand
-            // stack. Operands are visited in the order that leaves them where the lowering
-            // expects them: see `OpOperandSink::operand_index`.
+            // the operand visited last is materialized last, immediately before `op`. Operands
+            // are visited in the order given by `OpOperandSink::operand_index`.
             'next_operand: while sink_state.visited_operands < op.num_operands() {
                 let next_operand_index = sink_state.operand_index(&op);
                 log::debug!(target: Self::NAME, "  sinking next operand def for {op} at index {next_operand_index}");
@@ -497,8 +480,8 @@ impl Pass for SinkOperandDefs {
                     //
                     // 1. If the use is inside a loop, and the def is outside a loop, do not
                     //    move the defining op into the loop unless it is profitable to do so,
-                    //    i.e. a cost model indicates it is more efficient than the equivalent
-                    //    operand stack movement instructions
+                    //    i.e. a cost model indicates it is cheaper than keeping the value live
+                    //    across the loop
                     //
                     // 2.
                     drop(def);
@@ -569,14 +552,10 @@ impl OpOperandSink {
     /// Returns the index of the operand to visit next.
     ///
     /// Each definition is moved directly before the operation, after the definitions moved
-    /// earlier, so the operand visited last is materialized last and ends up on top of the operand
-    /// stack. The lowering expects the first operand on top of the stack, except for binary
-    /// operations, whose right-hand operand is on top in their selected input layout,
-    /// so operands are visited in reverse order in general, and in operand order for
-    /// binary operations. Lowerings with their own operand order (`arith.ext_2_add`,
-    /// `arith.ext_2_sub`, `arith.ext_2_mul`, `arith.ext_2_div`, `arith.join` and `hir.dyncall`)
-    /// are not mirrored here; their operands are visited in reverse order like any other
-    /// non-binary operation.
+    /// earlier, so the operand visited last is materialized last, immediately before the
+    /// operation. Operands of a binary operation are visited in operand order, so the definition
+    /// of the right-hand operand is closest to the operation; the operands of any other operation
+    /// are visited in reverse order, so the definition of the first operand is closest.
     fn operand_index(&self, op: &Operation) -> usize {
         if op.implements::<dyn BinaryOp>() {
             self.visited_operands
