@@ -1547,6 +1547,10 @@ impl Operation {
     ///
     /// Returns false if the op has unknown effects, no effects, or does not have `expected_effect`
     /// amongst its effects.
+    ///
+    /// Only the operation's own effects are consulted, not those of the operations in its
+    /// regions: for an operation with `HasRecursiveMemoryEffects`, use
+    /// [Self::get_effects_recursively].
     pub fn has_memory_effect(&self, expected_effect: MemoryEffect) -> bool {
         let Some(mem_interface) = self.as_trait::<dyn MemoryEffectOpInterface>() else {
             return false;
@@ -1558,6 +1562,10 @@ impl Operation {
     /// Returns true if this operation has `expected_effect` and _only_ `expected_effect`.
     ///
     /// Returns false if the op has no effects, or has any effect other than `expected_effect`.
+    ///
+    /// Only the operation's own effects are consulted, not those of the operations in its
+    /// regions: for an operation with `HasRecursiveMemoryEffects`, use
+    /// [Self::get_effects_recursively].
     pub fn has_single_memory_effect(&self, expected_effect: MemoryEffect) -> bool {
         let Some(mem_interface) = self.as_trait::<dyn MemoryEffectOpInterface>() else {
             return false;

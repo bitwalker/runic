@@ -411,7 +411,14 @@ pub fn fold_isize<const N: usize>(
     }
     let (wide_width, narrow_width) = match result {
         IsizeFold::PointerWidth => (64, 32),
-        IsizeFold::Fixed(width) => (width, width),
+        IsizeFold::Fixed(width) => {
+            assert!(
+                (1..=Int::MAX_WIDTH).contains(&width),
+                "invalid result width {width}: an integer value is 1 to {} bits wide",
+                Int::MAX_WIDTH
+            );
+            (width, width)
+        }
     };
     // Both calls are made, whatever the first returns, so that a wrong width is caught on every
     // operand
@@ -974,6 +981,18 @@ mod tests {
     }
 
     /// The width is checked on the call that returns a value even when the other returns `None`.
+    #[test]
+    #[should_panic(expected = "invalid result width 0")]
+    fn fold_isize_rejects_a_fixed_width_of_zero() {
+        let _ = fold_isize([Int::from(1u64)], IsizeFold::Fixed(0), |_| None);
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid result width 200")]
+    fn fold_isize_rejects_a_fixed_width_above_the_maximum() {
+        let _ = fold_isize([Int::from(1u64)], IsizeFold::Fixed(200), |_| None);
+    }
+
     #[test]
     #[should_panic(expected = "must return a 1-bit value, but it returned a 64-bit value")]
     fn fold_isize_checks_the_width_when_the_other_call_does_not_fold() {

@@ -11,8 +11,8 @@ use crate::{Context, UnsafeIntrusiveEntityRef};
 /// `isize` integer constant holds a 64-bit value, which would be typed `i64`) is created first and
 /// passed as a [ReadyAttr].
 ///
-/// The type of an argument must be known where the call is written. Two shapes that inferred it
-/// from a single `From` impl of the attribute's value no longer do:
+/// The type of an argument must be known where the call is written; it is not inferred from the
+/// attribute's value having a single `From` impl. Two shapes are affected:
 ///
 /// - An argument whose type is left to the bound, such as `Default::default()` or `x.into()`, is
 ///   ambiguous (E0283), even for an attribute whose value converts from one type only. Name the
@@ -110,11 +110,16 @@ impl<A: AttributeRegistration> IntoAttribute<A> for ReadyAttr<A> {
     #[inline]
     #[track_caller]
     fn into_attribute(self, context: &Rc<Context>) -> UnsafeIntrusiveEntityRef<A> {
-        debug_assert!(
-            core::ptr::eq(self.0.borrow().context(), &**context),
-            "the attribute passed as a `ReadyAttr` belongs to another context: an attribute may \
-             only be used with the context that created it"
-        );
+        // An attribute its caller is still editing cannot be inspected; the check is skipped.
+        if cfg!(debug_assertions)
+            && let Some(attr) = self.0.try_borrow()
+        {
+            assert!(
+                core::ptr::eq(attr.context(), &**context),
+                "the attribute passed as a `ReadyAttr` belongs to another context: an attribute \
+                 may only be used with the context that created it"
+            );
+        }
         self.0
     }
 }

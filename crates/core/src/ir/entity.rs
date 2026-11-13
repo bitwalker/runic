@@ -135,7 +135,7 @@ impl fmt::Display for AliasingViolationError {
 
     #[cfg(not(debug_assertions))]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", &self.kind)
+        write!(f, "{}", self.kind)
     }
 }
 
