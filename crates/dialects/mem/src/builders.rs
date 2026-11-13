@@ -124,6 +124,69 @@ pub trait MemOpBuilder<'f, B: ?Sized + Builder> {
         Ok(op.borrow().result().as_value_ref())
     }
 
+    /// A `mem.memcpy` of `len` bytes (an `isize`) from `src` to `dst`, regions that do not overlap.
+    fn memcpy(
+        &mut self,
+        dst: ValueRef,
+        src: ValueRef,
+        len: ValueRef,
+        span: SourceSpan,
+    ) -> Result<UnsafeIntrusiveEntityRef<MemCpy>, Report> {
+        let op_builder = self.builder_mut().create::<MemCpy, (_, _, _)>(span);
+        op_builder(dst, src, len)
+    }
+
+    /// A `mem.memmove` of `len` bytes (an `isize`) from `src` to `dst`, regions that may overlap.
+    fn memmove(
+        &mut self,
+        dst: ValueRef,
+        src: ValueRef,
+        len: ValueRef,
+        span: SourceSpan,
+    ) -> Result<UnsafeIntrusiveEntityRef<MemMove>, Report> {
+        let op_builder = self.builder_mut().create::<MemMove, (_, _, _)>(span);
+        op_builder(dst, src, len)
+    }
+
+    /// A `mem.memset` of `len` bytes (an `isize`) at `dst` to `byte` (an `i8`).
+    fn memset(
+        &mut self,
+        dst: ValueRef,
+        byte: ValueRef,
+        len: ValueRef,
+        span: SourceSpan,
+    ) -> Result<UnsafeIntrusiveEntityRef<MemSet>, Report> {
+        let op_builder = self.builder_mut().create::<MemSet, (_, _, _)>(span);
+        op_builder(dst, byte, len)
+    }
+
+    /// A `mem.ptrtoint` of `addr`; returns the `isize` address.
+    fn ptrtoint(&mut self, addr: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<PtrToInt, (_,)>(span);
+        let op = op_builder(addr)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// A `mem.inttoptr` of the `isize` `value` to the pointer type `ty`; returns the pointer.
+    fn inttoptr(
+        &mut self,
+        value: ValueRef,
+        ty: Type,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<IntToPtr, (_, _)>(span);
+        let op = op_builder(value, ty)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// A `mem.ptrcast` of `addr` to the pointer type `ty`, in `addr`'s address space; returns the
+    /// pointer.
+    fn ptrcast(&mut self, addr: ValueRef, ty: Type, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<PtrCast, (_, _)>(span);
+        let op = op_builder(addr, ty)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
     fn builder(&self) -> &B;
     fn builder_mut(&mut self) -> &mut B;
 }

@@ -1,17 +1,37 @@
 //! The `mem` dialect: byte-addressed memory.
 //!
-//! `mem.load` reads a value through a pointer, `mem.store` writes one, and `mem.alloca` allocates
-//! storage that lives until the enclosing function returns. Pointers are typed (`ptr<T, a>`) or
-//! opaque (`ptr`); a load through an opaque pointer states the type it reads. `mem.gep` computes
-//! the address of an element; `mem.sizeof`, `mem.alignof` and `mem.offsetof` give the size,
-//! alignment and element offsets of a type as `isize` values.
+//! Pointers are typed (`ptr<T, a>`) or opaque (`ptr`), in an integer address space; lengths,
+//! sizes, offsets and indices are `isize`. The operations:
 //!
-//! No operation needs a data layout to be built, printed, parsed or type-checked. When a layout is
-//! in scope ([DataLayout::closest](runic_core::DataLayout::closest)), the verifiers check that the
-//! accessed or measured type has one, and a size, alignment or offset folds to a constant. Loads
-//! and stores read and write [MemoryResource]; an invalid address is undefined behaviour of the
-//! access, so an unused load is removed like any other read. `mem.gep` computes an address and
-//! accesses nothing.
+//! - [`mem.load`](Load) reads a value through a pointer (through an opaque one it states the type).
+//! - [`mem.store`](Store) writes a value through a pointer.
+//! - [`mem.alloca`](Alloca) allocates storage that lives until the enclosing function returns.
+//! - [`mem.gep`](Gep) computes the address of an element from a typed pointer, an optional index and
+//!   a constant path.
+//! - [`mem.sizeof`](Sizeof), [`mem.alignof`](Alignof) and [`mem.offsetof`](Offsetof) give the
+//!   size, alignment and element offset of a type.
+//! - [`mem.memcpy`](MemCpy) copies bytes between regions that must not overlap.
+//! - [`mem.memmove`](MemMove) copies bytes between regions that may overlap.
+//! - [`mem.memset`](MemSet) fills bytes with an `i8`.
+//! - [`mem.ptrtoint`](PtrToInt) and [`mem.inttoptr`](IntToPtr) convert between a pointer and an
+//!   `isize`.
+//! - [`mem.ptrcast`](PtrCast) changes a pointer's type within its address space.
+//!
+//! **Resources and aliases.** Every access reads or writes [MemoryResource], a child of the
+//! default resource: an access is ordered against every effect on the default resource (a call
+//! with unknown effects) and against no effect on another of its children (a `cf.assert`). Nothing
+//! reasons about which addresses may alias: a write to memory blocks the merging of reads of
+//! memory whatever the addresses, and two loads merge only when they have the same operands, so a
+//! load through `mem.ptrcast %p` and a load through `%p` are two loads. An invalid address is
+//! undefined behaviour of the access, so an unused load is removed like any other read; a store,
+//! copy or fill is never removed, except a copy or fill of the constant length 0. `mem.gep`, the
+//! size operations and the casts access nothing and have no effects.
+//!
+//! **Layouts.** No operation needs a data layout to be built, printed, parsed or type-checked. A
+//! layout is read only through [DataLayout::closest](runic_core::DataLayout::closest), and only by
+//! verifiers and folds: when one is in scope, the verifiers check that the accessed or measured
+//! type has a layout under it, and a size, alignment or offset folds to a constant; when none is,
+//! the checks are skipped and nothing folds.
 
 #![no_std]
 #![feature(specialization)]

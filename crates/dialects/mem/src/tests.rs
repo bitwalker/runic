@@ -1123,3 +1123,423 @@ fn a_gep_has_at_most_one_index() {
     let err = runic_core::testing::text::describe(&err);
     assert!(err.contains("a gep has at most one index, but this one has 2"), "{err}");
 }
+
+// --- memcpy, memmove, memset and the pointer casts ----------------------------------------------
+
+/// Every form of the bulk operations and the casts in text.
+const BULK_AND_CAST_FORMS: &str = "\
+builtin.function public extern(\"C\") @f(%p: ptr<i32>, %q: ptr, %r: ptr<i8, 1>, %n: isize, %b: i8) \
+                                   {
+    mem.memcpy %p, %q, %n;
+    mem.memmove %q, %r, %n;
+    mem.memset %r, %b, %n;
+    mem.memcpy %p, %p, %n attributes { note = \"kept\" };
+    %0 = mem.ptrtoint %p;
+    %1 = mem.ptrtoint %r;
+    %2 = mem.inttoptr %n : ptr<i32>;
+    %3 = mem.inttoptr %0 : ptr<i64, 2>;
+    %4 = mem.inttoptr %0 : ptr;
+    %5 = mem.ptrcast %p : ptr<i8>;
+    %6 = mem.ptrcast %p : ptr;
+    %7 = mem.ptrcast %q : ptr<i32>;
+    %8 = mem.ptrcast %r : ptr<1>;
+    %9 = mem.ptrcast %r : ptr<i16, 1> attributes { note = \"kept\" };
+    builtin.ret;
+};";
+
+/// Every form prints as it was written and round trips through text, with each operation also
+/// written in the generic form: each has one operand group.
+#[test]
+fn bulk_and_cast_forms_round_trip() {
+    let (_context, function) = parse_function(BULK_AND_CAST_FORMS).expect("valid ir");
+    let printed = format!("{}", function.borrow().as_operation());
+    expect![[r#"
+        builtin.function public extern("C") @f(%0: ptr<i32>, %1: ptr, %2: ptr<i8, 1>, %3: isize, %4: i8) {
+            mem.memcpy %0, %1, %3;
+            mem.memmove %1, %2, %3;
+            mem.memset %2, %4, %3;
+            mem.memcpy %0, %0, %3 attributes { note = #builtin.string<"kept"> };
+            %5 = mem.ptrtoint %0;
+            %6 = mem.ptrtoint %2;
+            %7 = mem.inttoptr %3 : ptr<i32>;
+            %8 = mem.inttoptr %5 : ptr<i64, 2>;
+            %9 = mem.inttoptr %5 : ptr;
+            %10 = mem.ptrcast %0 : ptr<i8>;
+            %11 = mem.ptrcast %0 : ptr;
+            %12 = mem.ptrcast %1 : ptr<i32>;
+            %13 = mem.ptrcast %2 : ptr<1>;
+            %14 = mem.ptrcast %2 : ptr<i16, 1> attributes { note = #builtin.string<"kept"> };
+            builtin.ret;
+        };"#]]
+    .assert_eq(&printed);
+
+    let mut skipped = Vec::new();
+    let failures = round_trip::<Function>(function.as_operation_ref(), true, &mut skipped);
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    assert!(skipped.is_empty(), "{skipped:?}");
+}
+
+/// The generic forms: a cast's type is the property `ty`.
+#[test]
+fn the_generic_forms_of_bulk_and_cast_operations() {
+    let (_context, parsed) = parse_function(BULK_AND_CAST_FORMS).expect("valid ir");
+    let generic = body_ops(parsed)
+        .into_iter()
+        .map(|op| runic_core::testing::text::print_generic(&op.borrow()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    expect![[r#"
+        "mem.memcpy"(%0, %1, %3) : (ptr<i32>, ptr, isize) -> ();
+        "mem.memmove"(%1, %2, %3) : (ptr, ptr<i8, 1>, isize) -> ();
+        "mem.memset"(%2, %4, %3) : (ptr<i8, 1>, i8, isize) -> ();
+        "mem.memcpy"(%0, %0, %3) { note = #builtin.string<"kept"> } : (ptr<i32>, ptr<i32>, isize) -> ();
+        %5 = "mem.ptrtoint"(%0) : ptr<i32> -> isize;
+        %6 = "mem.ptrtoint"(%2) : ptr<i8, 1> -> isize;
+        %7 = "mem.inttoptr"(%3) <{ ty = #builtin.type<ptr<i32>> }> : isize -> ptr<i32>;
+        %8 = "mem.inttoptr"(%5) <{ ty = #builtin.type<ptr<i64, 2>> }> : isize -> ptr<i64, 2>;
+        %9 = "mem.inttoptr"(%5) <{ ty = #builtin.type<ptr> }> : isize -> ptr;
+        %10 = "mem.ptrcast"(%0) <{ ty = #builtin.type<ptr<i8>> }> : ptr<i32> -> ptr<i8>;
+        %11 = "mem.ptrcast"(%0) <{ ty = #builtin.type<ptr> }> : ptr<i32> -> ptr;
+        %12 = "mem.ptrcast"(%1) <{ ty = #builtin.type<ptr<i32>> }> : ptr -> ptr<i32>;
+        %13 = "mem.ptrcast"(%2) <{ ty = #builtin.type<ptr<1>> }> : ptr<i8, 1> -> ptr<1>;
+        %14 = "mem.ptrcast"(%2) <{ ty = #builtin.type<ptr<i16, 1>> }> { note = #builtin.string<"kept"> } : ptr<i8, 1> -> ptr<i16, 1>;"#]]
+    .assert_eq(&generic);
+}
+
+/// The parameters the verifier tests use.
+const CAST_PARAMS: &str = "%p: ptr<i32>, %q: ptr, %r: ptr<i8, 1>, %n: isize, %b: i8, %v: i32";
+
+/// A cast to a type that is not a pointer, a `ptrcast` to another address space, and a result
+/// that is not the stated type (in the generic form) are diagnostics.
+#[test]
+fn the_verifier_rejects_invalid_casts() {
+    let cases = [
+        (
+            "    %1 = mem.inttoptr %n : i32;",
+            "the result type of a cast to a pointer is a pointer type, not `i32`",
+        ),
+        (
+            "    %1 = mem.ptrcast %p : isize;",
+            "the result type of a cast to a pointer is a pointer type, not `isize`",
+        ),
+        (
+            "    %1 = mem.ptrcast %p : ptr<i8, 1>;",
+            "the operand `ptr<i32>` is in address space 0, but the cast to `ptr<i8, 1>` is in \
+             address space 1: a cast keeps the address space",
+        ),
+        ("    %1 = mem.ptrcast %r : ptr;", "is in address space 1, but the cast to `ptr`"),
+        ("    %1 = mem.ptrcast %q : ptr<i8, 3>;", "a cast keeps the address space"),
+        (
+            "    %1 = \"mem.inttoptr\"(%n) <{ ty = #builtin.type<ptr<i32>> }> : isize -> ptr<i8>;",
+            "the result has type `ptr<i8>`, but the cast is to `ptr<i32>`",
+        ),
+        (
+            "    %1 = \"mem.ptrcast\"(%p) <{ ty = #builtin.type<ptr> }> : ptr<i32> -> ptr<i8>;",
+            "the result has type `ptr<i8>`, but the cast is to `ptr`",
+        ),
+    ];
+    for (body, expected) in cases {
+        let err = parse_function(&function(CAST_PARAMS, body))
+            .err()
+            .unwrap_or_else(|| panic!("`{body}` verified"));
+        assert!(err.contains(expected), "{body}: {err}");
+        assert!(err.contains("invalid operation mem."), "{body}: {err}");
+    }
+    let err =
+        parse_function(&function(CAST_PARAMS, "    %1 = \"mem.ptrcast\"(%p) : ptr<i32> -> ptr;"))
+            .err()
+            .expect("a cast states its type");
+    assert!(err.contains("missing required property 'ty'"), "{err}");
+}
+
+/// A length that is not an `isize`, a fill byte that is not an `i8`, a pointer operand that is not
+/// a pointer, a `ptrtoint` result or `inttoptr` operand that is not an `isize`: the constraints of
+/// the operands and results reject them.
+#[test]
+fn the_operand_constraints_reject_mistyped_operands() {
+    for body in [
+        "    mem.memcpy %p, %q, %v;",
+        "    mem.memmove %p, %q, %b;",
+        "    mem.memset %p, %b, %v;",
+        "    mem.memset %p, %v, %n;",
+        "    mem.memset %p, %n, %n;",
+        "    mem.memcpy %n, %q, %n;",
+        "    mem.memmove %p, %v, %n;",
+        "    %1 = mem.ptrtoint %n;",
+        "    %1 = mem.inttoptr %v : ptr<i32>;",
+        "    %1 = mem.inttoptr %p : ptr<i32>;",
+        "    %1 = mem.ptrcast %n : ptr<i32>;",
+        "    %1 = \"mem.ptrtoint\"(%p) : ptr<i32> -> i64;",
+    ] {
+        let err = parse_function(&function(CAST_PARAMS, body))
+            .err()
+            .unwrap_or_else(|| panic!("`{body}` parsed"));
+        assert!(
+            err.contains("invalid operand") || err.contains("invalid result"),
+            "{body}: {err}"
+        );
+    }
+}
+
+/// `memcpy` and `memmove` write [MemoryResource] at `dst` and read it at `src`; `memset` writes it
+/// at `dst`; the casts have no effects. The pointers are `Unexpressed`, the length and byte have no
+/// requirement.
+#[test]
+fn bulk_operations_write_memory_and_casts_are_pure() {
+    let (_context, parsed) = parse_function(BULK_AND_CAST_FORMS).expect("valid ir");
+    let [p, q, r] = {
+        let entry = parsed.borrow().entry_block();
+        let entry = entry.borrow();
+        [0, 1, 2].map(|i| entry.arguments()[i] as ValueRef)
+    };
+    let ops = body_ops(parsed);
+    let effects_of = |op: OperationRef| {
+        let op = op.borrow();
+        assert!(op.implements::<dyn MemoryEffectOpInterface>());
+        op.get_effects_recursively::<MemoryEffect>()
+            .unwrap()
+            .into_iter()
+            .map(|effect| {
+                assert!(effect.resource().dyn_eq(&MemoryResource), "{}", op.name());
+                (*effect.effect(), effect.value())
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut copy = effects_of(ops[0]);
+    copy.sort_by_key(|(effect, _)| *effect == MemoryEffect::Read);
+    assert_eq!(copy, [(MemoryEffect::Write, Some(p)), (MemoryEffect::Read, Some(q))]);
+    let mut moved = effects_of(ops[1]);
+    moved.sort_by_key(|(effect, _)| *effect == MemoryEffect::Read);
+    assert_eq!(moved, [(MemoryEffect::Write, Some(q)), (MemoryEffect::Read, Some(r))]);
+    assert_eq!(effects_of(ops[2]), [(MemoryEffect::Write, Some(r))]);
+
+    for op in &ops[..4] {
+        let op = op.borrow();
+        assert!(!op.would_be_trivially_dead(), "{}", op.name());
+        let pointers = if op.is::<MemSet>() { 1 } else { 2 };
+        for index in 0..3 {
+            let expected = if index < pointers {
+                OperandRangeRequirement::Unexpressed
+            } else {
+                OperandRangeRequirement::None
+            };
+            assert_eq!(
+                operation_operand_range_requirement(&op, index),
+                expected,
+                "{} {index}",
+                op.name()
+            );
+        }
+    }
+    for op in &ops[4..] {
+        let op = op.borrow();
+        assert!(op.is_memory_effect_free(), "{}", op.name());
+        assert!(op.would_be_trivially_dead(), "{}", op.name());
+    }
+}
+
+/// The function `@f(params) -> (results)` with `body`, after `pass` ran on it with verification,
+/// as text.
+fn run_pass_on(
+    pass: Box<dyn runic_core::pass::OperationPass>,
+    params: &str,
+    results: &str,
+    body: &str,
+) -> Result<String, Report> {
+    let context = Rc::new(Context::default());
+    let text = format!(
+        "builtin.module public @m {{\nbuiltin.function public extern(\"C\") @f({params}) -> \
+         ({results}) {{\n{body}\n}};\n}};"
+    );
+    let module =
+        parse::parse::<Module>(ParserConfig::new(context.clone()), "mem", text).into_result()?;
+    let function = module.borrow().symbol_manager().lookup_op("f").unwrap();
+    let mut passes = PassManager::on::<Function>(context, Nesting::Implicit);
+    passes.add_pass(pass);
+    passes.enable_verifier(true);
+    passes.run(function)?;
+    Ok(function.borrow().to_string())
+}
+
+/// Bulk operations of an unknown length and of a non-zero constant length, which no pass removes.
+const KEPT_BULK_OPERATIONS: &str = r#"    %k = arith.constant 4 : isize;
+    %b = arith.constant 7 : i8;
+    mem.memcpy %p, %q, %n;
+    mem.memmove %q, %p, %n;
+    mem.memset %p, %b, %n;
+    mem.memcpy %p, %q, %k;
+    mem.memmove %q, %p, %k;
+    mem.memset %q, %b, %k;
+    builtin.ret;"#;
+
+/// Neither dead-code elimination nor the canonicalizer removes a `memcpy`, `memmove` or `memset`
+/// whose length is unknown or a non-zero constant.
+#[test]
+fn bulk_operations_are_kept_unless_their_length_is_zero() -> Result<(), Report> {
+    let params = "%p: ptr<i32>, %q: ptr, %n: isize";
+    for pass in [
+        Box::<DeadCodeElimination>::default() as Box<dyn runic_core::pass::OperationPass>,
+        Box::<Canonicalizer>::default(),
+    ] {
+        let text = run_pass_on(pass, params, "", KEPT_BULK_OPERATIONS)?;
+        for op in ["mem.memcpy", "mem.memmove", "mem.memset"] {
+            assert_eq!(text.matches(op).count(), 2, "{op}: {text}");
+        }
+    }
+    Ok(())
+}
+
+/// A `memcpy`, `memmove` or `memset` of the constant length 0 is erased by the canonicalizer.
+#[test]
+fn bulk_operations_of_length_zero_are_erased() -> Result<(), Report> {
+    let text = run_pass_on(
+        Box::<Canonicalizer>::default(),
+        "%p: ptr<i32>, %q: ptr, %n: isize",
+        "",
+        r#"    %z = arith.constant 0 : isize;
+    %k = arith.constant 4 : isize;
+    %b = arith.constant 7 : i8;
+    mem.memcpy %p, %q, %z;
+    mem.memmove %q, %p, %z;
+    mem.memset %p, %b, %z;
+    mem.memcpy %p, %q, %k;
+    mem.memmove %q, %p, %n;
+    mem.memset %q, %b, %k;
+    builtin.ret;"#,
+    )?;
+    expect![[r#"
+        builtin.function public extern("C") @f(%0: ptr<i32>, %1: ptr, %2: isize) {
+            %4 = arith.constant 4 : isize;
+            %5 = arith.constant 7 : i8;
+            mem.memcpy %0, %1, %4;
+            mem.memmove %1, %0, %2;
+            mem.memset %1, %5, %4;
+            builtin.ret;
+        };"#]]
+    .assert_eq(&text);
+    Ok(())
+}
+
+/// `memcpy`, `memmove` and `memset` write memory, so each blocks the merging of two loads, whatever
+/// address it writes: a write to memory blocks the merging of reads of memory.
+#[test]
+fn bulk_operations_block_the_merging_of_loads() -> Result<(), Report> {
+    let n = "%n = mem.ptrtoint %p;";
+    let b = "%b = arith.constant 0 : i8;";
+    let other = "%a = mem.alloca i64;";
+    for between in [
+        format!("{n}\nmem.memcpy %p, %p, %n;"),
+        format!("{n}\nmem.memmove %p, %p, %n;"),
+        format!("{n}\n{b}\nmem.memset %p, %b, %n;"),
+        format!("{n}\n{other}\nmem.memcpy %a, %p, %n;"),
+        format!("{n}\n{other}\nmem.memmove %a, %p, %n;"),
+        format!("{n}\n{b}\n{other}\nmem.memset %a, %b, %n;"),
+    ] {
+        assert_eq!(loads_left_with_between(&between)?, 2, "{between}");
+    }
+    Ok(())
+}
+
+/// The casts are pure: two loads merge across them. A load through a cast of `%p` and a load
+/// through `%p` are loads of two operands, and are not merged.
+#[test]
+fn loads_merge_across_casts_but_not_through_them() -> Result<(), Report> {
+    for between in [
+        "%c = mem.ptrcast %p : ptr<i8>;",
+        "%a = mem.ptrtoint %p;",
+        "%a = mem.ptrtoint %p;\n%c = mem.inttoptr %a : ptr<i64>;",
+    ] {
+        assert_eq!(loads_left_with_between(between)?, 1, "{between}");
+    }
+    let text = cse(r#"
+    %c = mem.ptrcast %p : ptr;
+    %1 = mem.load %p;
+    %2 = mem.load %c : i32;
+    builtin.ret %1, %2 : (i32, i32);"#)?;
+    assert_eq!(text.matches("mem.load").count(), 2, "{text}");
+    Ok(())
+}
+
+/// `ptrtoint (inttoptr %a)` is `%a`; `inttoptr (ptrtoint %p)` is `%p` when the result has `%p`'s
+/// type and is left alone otherwise; a `ptrcast` to its operand's type is the operand; a cast of a
+/// cast becomes one cast, and then folds away when it casts back to the original type.
+#[test]
+fn casts_fold_and_canonicalize() -> Result<(), Report> {
+    let text = canonicalize(
+        None,
+        "%p: ptr<i32>, %a: isize, %r: ptr<i8, 1>",
+        "isize, ptr<i32>, ptr<i8>, ptr<i32>, ptr<i16>, ptr<i32>, isize, ptr<i16, 1>",
+        r#"    %1 = mem.inttoptr %a : ptr<i64, 2>;
+    %2 = mem.ptrtoint %1;
+    %3 = mem.ptrtoint %p;
+    %4 = mem.inttoptr %3 : ptr<i32>;
+    %5 = mem.ptrtoint %p;
+    %6 = mem.inttoptr %5 : ptr<i8>;
+    %7 = mem.ptrcast %p : ptr<i32>;
+    %8 = mem.ptrcast %p : ptr;
+    %9 = mem.ptrcast %8 : ptr<i16>;
+    %10 = mem.ptrcast %p : ptr<i8>;
+    %11 = mem.ptrcast %10 : ptr;
+    %12 = mem.ptrcast %11 : ptr<i32>;
+    %13 = mem.inttoptr %a : ptr<i32>;
+    %14 = mem.ptrtoint %13;
+    %15 = mem.ptrcast %r : ptr<1>;
+    %16 = mem.ptrcast %15 : ptr<i16, 1>;
+    builtin.ret %2, %4, %6, %7, %9, %12, %14, %16 : (isize, ptr<i32>, ptr<i8>, ptr<i32>, ptr<i16>, ptr<i32>, isize, ptr<i16, 1>);"#,
+    )?;
+    expect![[r#"
+        builtin.function public extern("C") @f(%0: ptr<i32>, %1: isize, %2: ptr<i8, 1>) -> (isize, ptr<i32>, ptr<i8>, ptr<i32>, ptr<i16>, ptr<i32>, isize, ptr<i16, 1>) {
+            %7 = mem.ptrtoint %0;
+            %8 = mem.inttoptr %7 : ptr<i8>;
+            %11 = mem.ptrcast %0 : ptr<i16>;
+            %18 = mem.ptrcast %2 : ptr<i16, 1>;
+            builtin.ret %1, %0, %8, %0, %11, %0, %1, %18 : (isize, ptr<i32>, ptr<i8>, ptr<i32>, ptr<i16>, ptr<i32>, isize, ptr<i16, 1>);
+        };"#]]
+    .assert_eq(&text);
+    Ok(())
+}
+
+/// The builder makes every bulk operation and cast, with the text the parser reads.
+#[test]
+fn the_builder_makes_bulk_and_cast_operations() -> Result<(), Report> {
+    let mut test = Test::new("f", |cx| {
+        ([cx.ptr_type(cx.i32()), cx.opaque_ptr_type(), cx.isize(), cx.i8()], [])
+    });
+    let context = test.context_rc();
+    let [p, q, n, b] = {
+        let entry = test.entry_block();
+        let entry = entry.borrow();
+        [0, 1, 2, 3].map(|i| entry.arguments()[i] as ValueRef)
+    };
+    {
+        let mut builder = test.function_builder();
+        builder.memcpy(p, q, n, SourceSpan::UNKNOWN)?;
+        builder.memmove(q, p, n, SourceSpan::UNKNOWN)?;
+        builder.memset(p, b, n, SourceSpan::UNKNOWN)?;
+        let a = builder.ptrtoint(p, SourceSpan::UNKNOWN)?;
+        assert_eq!(a.borrow().ty(), context.isize());
+        let r =
+            builder.inttoptr(a, context.ptr_type_in(Some(context.i8()), 1), SourceSpan::UNKNOWN)?;
+        assert_eq!(r.borrow().ty(), context.ptr_type_in(Some(context.i8()), 1));
+        let c = builder.ptrcast(q, context.ptr_type(context.i64()), SourceSpan::UNKNOWN)?;
+        assert_eq!(c.borrow().ty(), context.ptr_type(context.i64()));
+        builder.ret([], SourceSpan::UNKNOWN)?;
+    }
+    let function = test.function();
+    function.borrow().as_operation().recursively_verify()?;
+    expect![[r#"
+        builtin.function public extern("C") @f(%0: ptr<i32>, %1: ptr, %2: isize, %3: i8) {
+            mem.memcpy %0, %1, %2;
+            mem.memmove %1, %0, %2;
+            mem.memset %0, %3, %2;
+            %4 = mem.ptrtoint %0;
+            %5 = mem.inttoptr %4 : ptr<i8, 1>;
+            %6 = mem.ptrcast %1 : ptr<i64>;
+            builtin.ret;
+        };"#]]
+    .assert_eq(&format!("{}", function.borrow().as_operation()));
+    let mut skipped = Vec::new();
+    let failures = round_trip::<Function>(function.as_operation_ref(), true, &mut skipped);
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    Ok(())
+}
