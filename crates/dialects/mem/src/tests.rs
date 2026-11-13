@@ -7,7 +7,7 @@ use alloc::{
 };
 
 use runic_core::{
-    Align, Context, Int, Op, OperationRef, Report, SourceSpan, SymbolTable, ValueRef,
+    Align, Context, Int, Op, OperationRef, Report, SmallVec, SourceSpan, SymbolTable, ValueRef,
     dialects::builtin::{BuiltinOpBuilder, Function, Module, attributes::StringAttr},
     effects::{
         AutomaticAllocationScopeResource, DefaultResource, MemoryEffect, MemoryEffectOpInterface,
@@ -23,7 +23,7 @@ use runic_core::{
 };
 use runic_dialect_arith::Constant;
 use runic_expect_test::expect;
-use runic_transform::{CommonSubexpressionElimination, DeadCodeElimination};
+use runic_transform::{Canonicalizer, CommonSubexpressionElimination, DeadCodeElimination};
 
 use crate::*;
 
@@ -594,4 +594,532 @@ fn stores_and_allocas_are_never_merged() -> Result<(), Report> {
     assert_eq!(text.matches("mem.alloca").count(), 2, "{text}");
     assert_eq!(text.matches("mem.store").count(), 4, "{text}");
     Ok(())
+}
+
+// --- gep, sizeof, alignof, offsetof --------------------------------------------------------------
+
+/// Every form of `gep`, `sizeof`, `alignof` and `offsetof` in text.
+const ADDRESS_FORMS: &str = "\
+builtin.function public extern(\"C\") @f(%p: ptr<struct<i32, array<i8; 4>>>, %i: isize, %q: \
+                             ptr<i64, 1>) {
+    %0 = mem.gep %p, %i, [1, 2];
+    %1 = mem.gep %p, [1];
+    %2 = mem.gep %p, %i;
+    %3 = mem.gep %p;
+    %4 = mem.gep %q, %i;
+    %5 = mem.gep %p, %i attributes { note = \"kept\" };
+    %6 = mem.gep %p, [];
+    %7 = mem.sizeof struct<i32, i8>;
+    %8 = mem.alignof i64;
+    %9 = mem.offsetof struct<i32, i8>, [1];
+    %10 = mem.offsetof struct<i32, i8>;
+    %11 = mem.offsetof struct<i32, struct<i8, i16>>, [1, 1] attributes { note = \"kept\" };
+    builtin.ret;
+};";
+
+/// Every form prints as it was written (an empty path is left out) and round trips through text.
+/// The size operations also round trip with their generic form substituted; a gep's does not
+/// parse back (see [the_generic_form_of_a_gep_does_not_parse_back]).
+#[test]
+fn address_and_size_forms_round_trip() {
+    let (_context, function) = parse_function(ADDRESS_FORMS).expect("valid ir");
+    let printed = format!("{}", function.borrow().as_operation());
+    expect![[r#"
+        builtin.function public extern("C") @f(%0: ptr<struct<i32, array<i8; 4>>>, %1: isize, %2: ptr<i64, 1>) {
+            %3 = mem.gep %0, %1, [1, 2];
+            %4 = mem.gep %0, [1];
+            %5 = mem.gep %0, %1;
+            %6 = mem.gep %0;
+            %7 = mem.gep %2, %1;
+            %8 = mem.gep %0, %1 attributes { note = #builtin.string<"kept"> };
+            %9 = mem.gep %0;
+            %10 = mem.sizeof struct<i32, i8>;
+            %11 = mem.alignof i64;
+            %12 = mem.offsetof struct<i32, i8>, [1];
+            %13 = mem.offsetof struct<i32, i8>;
+            %14 = mem.offsetof struct<i32, struct<i8, i16>>, [1, 1] attributes { note = #builtin.string<"kept"> };
+            builtin.ret;
+        };"#]]
+    .assert_eq(&printed);
+
+    let mut skipped = Vec::new();
+    let failures = round_trip::<Function>(function.as_operation_ref(), false, &mut skipped);
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+
+    let sizes = ADDRESS_FORMS
+        .lines()
+        .filter(|line| !line.contains("mem.gep"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (_context, function) = parse_function(&sizes).expect("valid ir");
+    let failures = round_trip::<Function>(function.as_operation_ref(), true, &mut skipped);
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    assert!(skipped.is_empty(), "{skipped:?}");
+}
+
+/// A gep has two operand groups, the base and the optional index, and the generic parser puts
+/// every operand in one group, so the generic form of a gep, with or without an index, does not
+/// parse back. The custom form is the one that round trips.
+#[test]
+fn the_generic_form_of_a_gep_does_not_parse_back() {
+    for (body, expected) in [
+        (
+            r#"    %1 = "mem.gep"(%p) <{ path = #builtin.array_i32<1> }> : ptr<struct<i32, i8>> -> ptr<i8>;"#,
+            "requires operand group 1",
+        ),
+        (
+            r#"    %1 = "mem.gep"(%p, %i) : (ptr<struct<i32, i8>>, isize) -> ptr<struct<i32, i8>>;"#,
+            "operand group 0 of 'mem.gep' expects 1 operands, but has 2",
+        ),
+    ] {
+        let err = parse_function(&function("%p: ptr<struct<i32, i8>>, %i: isize", body))
+            .err()
+            .unwrap_or_else(|| panic!("`{body}` parsed"));
+        assert!(err.contains(expected), "{body}: {err}");
+    }
+}
+
+/// The generic forms: a gep's path and the measured type are properties.
+#[test]
+fn the_generic_forms_of_address_and_size_operations() {
+    let (_context, parsed) = parse_function(ADDRESS_FORMS).expect("valid ir");
+    let generic = body_ops(parsed)
+        .into_iter()
+        .map(|op| runic_core::testing::text::print_generic(&op.borrow()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    expect![[r#"
+        %3 = "mem.gep"(%0, %1) <{ path = #builtin.array_i32<1, 2> }> : (ptr<struct<i32, array<i8; 4>>>, isize) -> ptr<i8>;
+        %4 = "mem.gep"(%0) <{ path = #builtin.array_i32<1> }> : ptr<struct<i32, array<i8; 4>>> -> ptr<array<i8; 4>>;
+        %5 = "mem.gep"(%0, %1) <{ path = #builtin.array_i32<> }> : (ptr<struct<i32, array<i8; 4>>>, isize) -> ptr<struct<i32, array<i8; 4>>>;
+        %6 = "mem.gep"(%0) <{ path = #builtin.array_i32<> }> : ptr<struct<i32, array<i8; 4>>> -> ptr<struct<i32, array<i8; 4>>>;
+        %7 = "mem.gep"(%2, %1) <{ path = #builtin.array_i32<> }> : (ptr<i64, 1>, isize) -> ptr<i64, 1>;
+        %8 = "mem.gep"(%0, %1) <{ path = #builtin.array_i32<> }> { note = #builtin.string<"kept"> } : (ptr<struct<i32, array<i8; 4>>>, isize) -> ptr<struct<i32, array<i8; 4>>>;
+        %9 = "mem.gep"(%0) <{ path = #builtin.array_i32<> }> : ptr<struct<i32, array<i8; 4>>> -> ptr<struct<i32, array<i8; 4>>>;
+        %10 = "mem.sizeof"() <{ ty = #builtin.type<struct<i32, i8>> }> : () -> isize;
+        %11 = "mem.alignof"() <{ ty = #builtin.type<i64> }> : () -> isize;
+        %12 = "mem.offsetof"() <{ ty = #builtin.type<struct<i32, i8>>, path = #builtin.array_i32<1> }> : () -> isize;
+        %13 = "mem.offsetof"() <{ ty = #builtin.type<struct<i32, i8>>, path = #builtin.array_i32<> }> : () -> isize;
+        %14 = "mem.offsetof"() <{ ty = #builtin.type<struct<i32, struct<i8, i16>>>, path = #builtin.array_i32<1, 1> }> { note = #builtin.string<"kept"> } : () -> isize;"#]]
+    .assert_eq(&generic);
+
+    // The generic form of a size operation parses, and may leave out an empty path
+    let text = function(
+        "",
+        r#"    %1 = "mem.sizeof"() <{ ty = #builtin.type<i8> }> : () -> isize;
+    %2 = "mem.alignof"() <{ ty = #builtin.type<i16> }> : () -> isize;
+    %3 = "mem.offsetof"() <{ ty = #builtin.type<struct<i32, i8>> }> : () -> isize;
+    %4 = "mem.offsetof"() <{ ty = #builtin.type<struct<i32, i8>>, path = #builtin.array_i32<1> }> : () -> isize;"#,
+    );
+    let (_context, parsed) = parse_function(&text).expect("valid ir");
+    expect![[r#"
+        builtin.function public extern("C") @f() {
+            %0 = mem.sizeof i8;
+            %1 = mem.alignof i16;
+            %2 = mem.offsetof struct<i32, i8>;
+            %3 = mem.offsetof struct<i32, i8>, [1];
+            builtin.ret;
+        };"#]]
+    .assert_eq(&format!("{}", parsed.borrow().as_operation()));
+}
+
+/// The parameters the gep tests use: a struct holding an array of structs, an enum in address
+/// space 2, an index and an opaque pointer.
+const GEP_PARAMS: &str = "%s: ptr<struct<i8, array<struct<i16, i32>; 4>>>, %e: ptr<enum<i8; a: \
+                          i32, b, c: struct<i8, i16>>, 2>, %i: isize, %o: ptr, %v: i32";
+
+/// The result of a gep is a pointer to the element its path selects, in the address space of the
+/// base; the index does not change it.
+#[test]
+fn a_gep_points_to_the_element_its_path_selects() {
+    let cases = [
+        ("%s, [0]", "ptr<i8>"),
+        ("%s, %i, [1]", "ptr<array<struct<i16, i32>; 4>>"),
+        ("%s, [1, 3]", "ptr<struct<i16, i32>>"),
+        ("%s, %i, [1, 2, 1]", "ptr<i32>"),
+        ("%s, %i", "ptr<struct<i8, array<struct<i16, i32>; 4>>>"),
+        ("%s", "ptr<struct<i8, array<struct<i16, i32>; 4>>>"),
+        ("%e, [0]", "ptr<i8, 2>"),
+        ("%e, %i, [1]", "ptr<i32, 2>"),
+        ("%e, [3, 1]", "ptr<i16, 2>"),
+        ("%e, %i", "ptr<enum<i8; a: i32, b, c: struct<i8, i16>>, 2>"),
+    ];
+    let body = cases
+        .iter()
+        .enumerate()
+        .map(|(n, (operands, _))| format!("    %r{n} = mem.gep {operands};"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (_context, parsed) = parse_function(&function(GEP_PARAMS, &body)).expect("valid ir");
+    for (op, (operands, expected)) in body_ops(parsed).into_iter().zip(cases) {
+        let ty = runic_core::Value::ty(&*op.borrow().results()[0].borrow());
+        assert_eq!(ty.to_string(), expected, "mem.gep {operands}");
+    }
+}
+
+/// A path into a scalar, past the end, into a variant without a payload, or with a negative step,
+/// and a gep through an opaque pointer, are diagnostics; so is an index that is not an `isize`.
+#[test]
+fn the_verifier_rejects_invalid_geps() {
+    let cases = [
+        (
+            "    %1 = mem.gep %s, [0, 0];",
+            "the path [0, 0] selects no element of `struct<i8, array<struct<i16, i32>; 4>>`: type \
+             'i8' has no element 0",
+        ),
+        (
+            "    %1 = mem.gep %s, %i, [2];",
+            "the path [2] selects no element of `struct<i8, array<struct<i16, i32>; 4>>`: type \
+             'struct<i8, array<struct<i16, i32>; 4>>' has no element 2",
+        ),
+        ("    %1 = mem.gep %s, [1, 4];", "has no element 4"),
+        (
+            "    %1 = mem.gep %e, [2];",
+            "type 'enum<i8; a: i32, b, c: struct<i8, i16>>' has no element 2",
+        ),
+        ("    %1 = mem.gep %e, [4];", "has no element 4"),
+        ("    %1 = mem.gep %s, [1, -1];", "the path [1, -1] has the negative step -1"),
+        (
+            "    %1 = mem.gep %o, %i;",
+            "the base has the opaque pointer type `ptr`, but a gep steps through a typed pointer: \
+             cast the base to one first",
+        ),
+    ];
+    for (body, expected) in cases {
+        let err = parse_function(&function(GEP_PARAMS, body))
+            .err()
+            .unwrap_or_else(|| panic!("`{body}` verified"));
+        assert!(err.contains(expected), "{body}: {err}");
+        assert!(err.contains("invalid operation mem.gep"), "{body}: {err}");
+    }
+    for body in ["    %1 = mem.gep %s, %v;", "    %1 = mem.gep %v;"] {
+        let err = parse_function(&function(GEP_PARAMS, body))
+            .err()
+            .unwrap_or_else(|| panic!("`{body}` parsed"));
+        assert!(err.contains("invalid operand"), "{body}: {err}");
+    }
+}
+
+/// An `offsetof` path is checked without a data layout; an unknown measured type is a
+/// diagnostic.
+#[test]
+fn the_verifier_rejects_invalid_offsetof_paths() {
+    let cases = [
+        ("    %1 = mem.offsetof struct<i8, i32>, [2];", "the path [2] selects no element"),
+        ("    %1 = mem.offsetof i32, [0];", "type 'i32' has no element 0"),
+        ("    %1 = mem.offsetof enum<i8; a, b: i8>, [1];", "has no element 1"),
+        (
+            "    %1 = mem.offsetof struct<i8, i32>, [-1];",
+            "the path [-1] has the negative step -1",
+        ),
+        (
+            "    %1 = \"mem.sizeof\"() <{ ty = #builtin.type<?> }> : () -> isize;",
+            "the type measured is not known",
+        ),
+        (
+            "    %1 = \"mem.alignof\"() <{ ty = #builtin.type<?> }> : () -> isize;",
+            "the type measured is not known",
+        ),
+    ];
+    for (body, expected) in cases {
+        for layout in [false, true] {
+            let text = module_with_layout(layout, "", "", body);
+            let err = parse::<Module>(&text).err().unwrap_or_else(|| panic!("`{body}` verified"));
+            assert!(err.contains(expected), "{body}: {err}");
+            assert!(err.contains("invalid operation mem."), "{body}: {err}");
+        }
+    }
+    // The result is an `isize`
+    let body = "    %1 = \"mem.sizeof\"() <{ ty = #builtin.type<i8> }> : () -> i64;";
+    assert!(parse_function(&function("", body)).is_err(), "{body}");
+}
+
+/// Under a data layout, the measured type must have one; without one in scope, it need not.
+#[test]
+fn the_measured_type_needs_a_layout_when_one_is_in_scope() {
+    let cases = [
+        (
+            "    %1 = mem.sizeof (i32) -> i32;",
+            "the type measured, `(i32) -> i32`, has no layout under the data layout in scope",
+        ),
+        (
+            "    %1 = mem.alignof (i32) -> i32;",
+            "the type measured, `(i32) -> i32`, has no layout",
+        ),
+        (
+            "    %1 = mem.offsetof struct<i32, (i32) -> i32>, [0];",
+            "the type the element is selected in, `struct<i32, (i32) -> i32>`, has no layout",
+        ),
+    ];
+    for (body, expected) in cases {
+        let with = module_with_layout(true, "", "", body);
+        let err = parse::<Module>(&with).err().unwrap_or_else(|| panic!("`{body}` verified"));
+        assert!(err.contains(expected), "{body}: {err}");
+        let without = module_with_layout(false, "", "", body);
+        parse::<Module>(&without).unwrap_or_else(|err| panic!("`{body}`: {err}"));
+    }
+}
+
+/// The address and size operations have no effects: an unused one is removed, and two equal ones
+/// are one value.
+#[test]
+fn address_and_size_operations_are_pure() -> Result<(), Report> {
+    let (_context, parsed) = parse_function(ADDRESS_FORMS).expect("valid ir");
+    for op in body_ops(parsed) {
+        let op = op.borrow();
+        assert!(op.is_memory_effect_free(), "{}", op.name());
+        assert!(op.would_be_trivially_dead(), "{}", op.name());
+    }
+    let text = cse(r#"
+    %k = mem.sizeof i32;
+    %l = mem.sizeof i32;
+    %1 = mem.gep %p, %k;
+    %2 = mem.gep %p, %l;
+    %3 = mem.load %1;
+    %4 = mem.load %2;
+    builtin.ret %3, %4 : (i32, i32);"#)?;
+    assert_eq!(text.matches("mem.sizeof").count(), 1, "{text}");
+    assert_eq!(text.matches("mem.gep").count(), 1, "{text}");
+    assert_eq!(text.matches("mem.load").count(), 1, "{text}");
+    Ok(())
+}
+
+/// The function `@f(params) -> (results)` with `body`, in a module stating the data layout
+/// `#builtin.data_layout<layout>` when `layout` is given, after the canonicalizer ran on it with
+/// verification, as text.
+fn canonicalize(
+    layout: Option<&str>,
+    params: &str,
+    results: &str,
+    body: &str,
+) -> Result<String, Report> {
+    let context = Rc::new(Context::default());
+    let attributes = layout
+        .map(|layout| format!(" attributes {{ data_layout = #builtin.data_layout<{layout}> }}"))
+        .unwrap_or_default();
+    let text = format!(
+        "builtin.module public @m{attributes} {{\nbuiltin.function public extern(\"C\") \
+         @f({params}) -> ({results}) {{\n{body}\n}};\n}};"
+    );
+    let module =
+        parse::parse::<Module>(ParserConfig::new(context.clone()), "mem", text).into_result()?;
+    let function = module.borrow().symbol_manager().lookup_op("f").unwrap();
+    let mut passes = PassManager::on::<Function>(context, Nesting::Implicit);
+    passes.add_pass(Box::<Canonicalizer>::default());
+    passes.enable_verifier(true);
+    passes.run(function)?;
+    Ok(function.borrow().to_string())
+}
+
+/// The sizes the brief names, under `layout`, after canonicalization.
+fn folded_sizes(layout: Option<&str>) -> Result<String, Report> {
+    canonicalize(
+        layout,
+        "",
+        "isize, isize, isize, isize",
+        r#"    %1 = mem.sizeof struct<i32, i8>;
+    %2 = mem.alignof i64;
+    %3 = mem.offsetof struct<i8, i32>, [1];
+    %4 = mem.sizeof ptr<i8>;
+    builtin.ret %1, %2, %3, %4 : (isize, isize, isize, isize);"#,
+    )
+}
+
+/// Under a data layout, a size, an alignment and an offset fold to `isize` constants, which the
+/// dialect materializes as `arith.constant`.
+#[test]
+fn sizes_fold_under_a_data_layout() -> Result<(), Report> {
+    expect![[r#"
+        builtin.function public extern("C") @f() -> (isize, isize, isize, isize) {
+            %4 = arith.constant 8 : isize;
+            %6 = arith.constant 4 : isize;
+            builtin.ret %4, %4, %6, %6 : (isize, isize, isize, isize);
+        };"#]]
+    .assert_eq(&folded_sizes(Some("little, ptr = 32"))?);
+    expect![[r#"
+        builtin.function public extern("C") @f() -> (isize, isize, isize, isize) {
+            %4 = arith.constant 8 : isize;
+            %6 = arith.constant 4 : isize;
+            builtin.ret %4, %4, %6, %4 : (isize, isize, isize, isize);
+        };"#]]
+    .assert_eq(&folded_sizes(Some("little, ptr = 64"))?);
+    Ok(())
+}
+
+/// With no data layout in scope nothing folds.
+#[test]
+fn sizes_do_not_fold_without_a_data_layout() -> Result<(), Report> {
+    expect![[r#"
+        builtin.function public extern("C") @f() -> (isize, isize, isize, isize) {
+            %0 = mem.sizeof struct<i32, i8>;
+            %1 = mem.alignof i64;
+            %2 = mem.offsetof struct<i8, i32>, [1];
+            %3 = mem.sizeof ptr<i8>;
+            builtin.ret %0, %1, %2, %3 : (isize, isize, isize, isize);
+        };"#]]
+    .assert_eq(&folded_sizes(None)?);
+    Ok(())
+}
+
+/// A size that does not fit in the `isize` of the layout does not fold.
+#[test]
+fn a_size_folds_only_when_it_fits_in_an_isize() -> Result<(), Report> {
+    let huge = |layout| {
+        canonicalize(
+            Some(layout),
+            "",
+            "isize",
+            "    %1 = mem.sizeof array<i8; 1099511627776>;\n    builtin.ret %1 : (isize);",
+        )
+    };
+    let narrow = huge("little, ptr = 32")?;
+    assert!(narrow.contains("mem.sizeof array<i8; 1099511627776>"), "{narrow}");
+    assert!(!narrow.contains("arith.constant"), "{narrow}");
+    let wide = huge("little, ptr = 64")?;
+    assert!(wide.contains("arith.constant 1099511627776 : isize"), "{wide}");
+    assert!(!wide.contains("mem.sizeof"), "{wide}");
+    Ok(())
+}
+
+/// A measured type without a layout, or an invalid path, does not fold and does not fail the
+/// fold: the verifier reports it.
+#[test]
+fn an_unmeasurable_type_does_not_fold() {
+    use runic_core::{OpFoldResult, traits::Foldable};
+
+    let context = Rc::new(Context::default());
+    let body = "    %1 = mem.sizeof (i32) -> i32;
+    %2 = mem.alignof !s;
+    %3 = mem.offsetof struct<i32, (i32) -> i32>, [1];
+    %4 = mem.offsetof struct<i32, i8>, [2];
+    %5 = mem.offsetof struct<i32, i8>, [-1];";
+    let text = module_with_layout(true, "rec { type !s = struct s<i32, !s>; }", "", body);
+    let module = parse::parse::<Module>(
+        ParserConfig::new(context.clone()).verify_after_parse(false),
+        "mem",
+        text,
+    )
+    .into_result()
+    .expect("parses");
+    assert!(module.borrow().as_operation().recursively_verify().is_err());
+    let function = module.borrow().symbol_manager().lookup_op("f").unwrap();
+    let function = function.borrow();
+    let function = function.downcast_ref::<Function>().unwrap();
+    let ops = body_ops(function.as_function_ref());
+    assert_eq!(ops.len(), 5);
+    for op in ops {
+        let mut results = SmallVec::<[OpFoldResult; 1]>::default();
+        let op = op.borrow();
+        assert!(op.fold(&mut results).is_failed(), "{}", *op);
+        assert!(results.is_empty());
+    }
+}
+
+/// A gep with no index and an empty path is its base; a gep with no index whose base is another
+/// gep becomes one gep on the inner base, with the inner index and both paths; a gep with an
+/// index is not merged into the gep that defines its base.
+#[test]
+fn geps_canonicalize() -> Result<(), Report> {
+    let text = canonicalize(
+        None,
+        "%s: ptr<struct<i8, array<struct<i16, i32>; 4>>>, %i: isize",
+        "ptr<i32>, ptr<struct<i16, i32>>, ptr<struct<i8, array<struct<i16, i32>; 4>>>, ptr<i16>",
+        r#"    %1 = mem.gep %s, %i, [1];
+    %2 = mem.gep %1, [2];
+    %3 = mem.gep %2, [1];
+    %4 = mem.gep %s, [1];
+    %5 = mem.gep %4, %i, [0];
+    %6 = mem.gep %3;
+    %7 = mem.gep %s;
+    %8 = mem.gep %s, [1];
+    %9 = mem.gep %8, [0, 0];
+    builtin.ret %6, %5, %7, %9 : (ptr<i32>, ptr<struct<i16, i32>>, ptr<struct<i8, array<struct<i16, i32>; 4>>>, ptr<i16>);"#,
+    )?;
+    expect![[r#"
+        builtin.function public extern("C") @f(%0: ptr<struct<i8, array<struct<i16, i32>; 4>>>, %1: isize) -> (ptr<i32>, ptr<struct<i16, i32>>, ptr<struct<i8, array<struct<i16, i32>; 4>>>, ptr<i16>) {
+            %4 = mem.gep %0, %1, [1, 2, 1];
+            %5 = mem.gep %0, [1];
+            %6 = mem.gep %5, %1, [0];
+            %10 = mem.gep %0, [1, 0, 0];
+            builtin.ret %4, %6, %0, %10 : (ptr<i32>, ptr<struct<i16, i32>>, ptr<struct<i8, array<struct<i16, i32>; 4>>>, ptr<i16>);
+        };"#]]
+    .assert_eq(&text);
+    Ok(())
+}
+
+/// The builder makes every form of the address and size operations.
+#[test]
+fn the_builder_makes_address_and_size_operations() -> Result<(), Report> {
+    let mut test = Test::new("f", |cx| {
+        let inner = cx.struct_type(runic_core::dialects::builtin::types::StructType::new([
+            cx.i16().into(),
+            cx.i32().into(),
+        ]));
+        ([cx.ptr_type_in(Some(cx.array_type(inner, 4)), 3), cx.isize()], [])
+    });
+    let context = test.context_rc();
+    let [p, i] = {
+        let entry = test.entry_block();
+        let entry = entry.borrow();
+        [0, 1].map(|n| entry.arguments()[n] as ValueRef)
+    };
+    {
+        let mut b = test.function_builder();
+        let q = b.gep(p, Some(i), &[1, 1], SourceSpan::UNKNOWN)?;
+        assert_eq!(q.borrow().ty(), context.ptr_type_in(Some(context.i32()), 3));
+        b.gep(p, None, &[2], SourceSpan::UNKNOWN)?;
+        b.gep(p, Some(i), &[], SourceSpan::UNKNOWN)?;
+        b.gep(p, None, &[], SourceSpan::UNKNOWN)?;
+        let n = b.sizeof(context.i64(), SourceSpan::UNKNOWN)?;
+        assert_eq!(n.borrow().ty(), context.isize());
+        b.alignof(context.i64(), SourceSpan::UNKNOWN)?;
+        b.offsetof(context.i64(), &[], SourceSpan::UNKNOWN)?;
+        let element = context.array_type(context.i8(), 2);
+        b.offsetof(element, &[1], SourceSpan::UNKNOWN)?;
+        assert!(b.gep(p, None, &[u32::MAX], SourceSpan::UNKNOWN).is_err());
+        b.ret([], SourceSpan::UNKNOWN)?;
+    }
+    let function = test.function();
+    function.borrow().as_operation().recursively_verify()?;
+    expect![[r#"
+        builtin.function public extern("C") @f(%0: ptr<array<struct<i16, i32>; 4>, 3>, %1: isize) {
+            %2 = mem.gep %0, %1, [1, 1];
+            %3 = mem.gep %0, [2];
+            %4 = mem.gep %0, %1;
+            %5 = mem.gep %0;
+            %6 = mem.sizeof i64;
+            %7 = mem.alignof i64;
+            %8 = mem.offsetof i64;
+            %9 = mem.offsetof array<i8; 2>, [1];
+            builtin.ret;
+        };"#]]
+    .assert_eq(&format!("{}", function.borrow().as_operation()));
+    let mut skipped = Vec::new();
+    let failures = round_trip::<Function>(function.as_operation_ref(), false, &mut skipped);
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    Ok(())
+}
+
+/// A gep built with two indices is a diagnostic: the index group holds at most one.
+#[test]
+fn a_gep_has_at_most_one_index() {
+    let mut test = Test::new("f", |cx| ([cx.ptr_type(cx.i32()), cx.isize()], []));
+    let [p, i] = {
+        let entry = test.entry_block();
+        let entry = entry.borrow();
+        [0, 1].map(|n| entry.arguments()[n] as ValueRef)
+    };
+    let built = {
+        let op_builder = runic_core::BuilderExt::create::<Gep, (_, [ValueRef; 2], _)>(
+            test.builder_mut(),
+            SourceSpan::UNKNOWN,
+        );
+        op_builder(p, [i, i], runic_core::dialects::builtin::attributes::Array::default())
+    };
+    let err = match built {
+        Ok(gep) => gep.borrow().as_operation().verify().expect_err("two indices verified"),
+        Err(err) => err,
+    };
+    let err = runic_core::testing::text::describe(&err);
+    assert!(err.contains("a gep has at most one index, but this one has 2"), "{err}");
 }

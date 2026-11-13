@@ -367,7 +367,7 @@ impl OpParser for Alloca {
 }
 
 /// The diagnostic of an invalid `op`, with `problem` as the label of the operation.
-fn invalid(op: &Operation, problem: String) -> Report {
+pub(crate) fn invalid(op: &Operation, problem: String) -> Report {
     report!(
         message: (format!("invalid operation {}", op.name())),
         labels: [primary(op.span(), problem)],
@@ -375,7 +375,7 @@ fn invalid(op: &Operation, problem: String) -> Report {
 }
 
 /// When a data layout is in scope at `op`, `ty` (described as `what`) has a layout under it.
-fn verify_layout(op: &Operation, ty: Type, what: &str) -> Result<(), Report> {
+pub(crate) fn verify_layout(op: &Operation, ty: Type, what: &str) -> Result<(), Report> {
     let Some(layout) = DataLayout::closest(op) else {
         return Ok(());
     };
@@ -398,7 +398,7 @@ fn print_alignment(printer: &mut print::AsmPrinter<'_>, align: Alignment) {
 }
 
 /// ` attributes {..}` when `op` has attributes that are not properties.
-fn print_attributes(printer: &mut print::AsmPrinter<'_>, op: &Operation) {
+pub(crate) fn print_attributes(printer: &mut print::AsmPrinter<'_>, op: &Operation) {
     if op.has_attributes() {
         printer.print_space();
         printer.print_keyword("attributes");

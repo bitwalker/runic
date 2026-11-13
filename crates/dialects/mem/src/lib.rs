@@ -2,14 +2,19 @@
 //!
 //! `mem.load` reads a value through a pointer, `mem.store` writes one, and `mem.alloca` allocates
 //! storage that lives until the enclosing function returns. Pointers are typed (`ptr<T, a>`) or
-//! opaque (`ptr`); a load through an opaque pointer states the type it reads.
+//! opaque (`ptr`); a load through an opaque pointer states the type it reads. `mem.gep` computes
+//! the address of an element; `mem.sizeof`, `mem.alignof` and `mem.offsetof` give the size,
+//! alignment and element offsets of a type as `isize` values.
 //!
 //! No operation needs a data layout to be built, printed, parsed or type-checked. When a layout is
 //! in scope ([DataLayout::closest](runic_core::DataLayout::closest)), the verifiers check that the
-//! accessed type has one. Loads and stores read and write [MemoryResource]; an invalid address is
-//! undefined behaviour of the access, so an unused load is removed like any other read.
+//! accessed or measured type has one, and a size, alignment or offset folds to a constant. Loads
+//! and stores read and write [MemoryResource]; an invalid address is undefined behaviour of the
+//! access, so an unused load is removed like any other read. `mem.gep` computes an address and
+//! accesses nothing.
 
 #![no_std]
+#![feature(specialization)]
 #![feature(unboxed_closures)]
 #![feature(fn_traits)]
 #![allow(incomplete_features)]
@@ -22,6 +27,7 @@ extern crate std;
 
 mod attributes;
 mod builders;
+pub mod canonicalization;
 mod ops;
 #[cfg(test)]
 mod tests;

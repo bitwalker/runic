@@ -1,6 +1,6 @@
 use runic_core::{
     Builder, BuilderExt, OpBuilder, Report, SourceSpan, Type, UnsafeIntrusiveEntityRef, ValueRef,
-    dialects::builtin::FunctionBuilder,
+    dialects::builtin::{FunctionBuilder, attributes::Array},
 };
 
 use crate::*;
@@ -75,6 +75,52 @@ pub trait MemOpBuilder<'f, B: ?Sized + Builder> {
     ) -> Result<ValueRef, Report> {
         let op_builder = self.builder_mut().create::<Alloca, (_, _)>(span);
         let op = op_builder(ty, align)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// A `mem.gep` from the typed pointer `base`: `index` (an `isize`, if given) steps over whole
+    /// pointees, then `path` selects an element inside the value reached; returns the address of
+    /// the element.
+    fn gep(
+        &mut self,
+        base: ValueRef,
+        index: Option<ValueRef>,
+        path: &[u32],
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        let path = path
+            .iter()
+            .map(|step| i32::try_from(*step))
+            .collect::<Result<Array<i32>, _>>()
+            .map_err(|_| Report::msg("a gep path step is at most i32::MAX"))?;
+        let op_builder = self.builder_mut().create::<Gep, (_, Option<ValueRef>, _)>(span);
+        let op = op_builder(base, index, path)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// A `mem.sizeof` of `ty`; returns the `isize` size.
+    fn sizeof(&mut self, ty: Type, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Sizeof, (_,)>(span);
+        let op = op_builder(ty)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// A `mem.alignof` of `ty`; returns the `isize` alignment.
+    fn alignof(&mut self, ty: Type, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Alignof, (_,)>(span);
+        let op = op_builder(ty)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// A `mem.offsetof` of the element `path` selects in `ty`; returns the `isize` offset.
+    fn offsetof(&mut self, ty: Type, path: &[u32], span: SourceSpan) -> Result<ValueRef, Report> {
+        let path = path
+            .iter()
+            .map(|step| i32::try_from(*step))
+            .collect::<Result<Array<i32>, _>>()
+            .map_err(|_| Report::msg("an offsetof path step is at most i32::MAX"))?;
+        let op_builder = self.builder_mut().create::<Offsetof, (_, _)>(span);
+        let op = op_builder(ty, path)?;
         Ok(op.borrow().result().as_value_ref())
     }
 
