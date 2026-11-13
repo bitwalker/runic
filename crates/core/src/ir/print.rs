@@ -17,6 +17,10 @@
 //! generic-op-signature := generic-op-types '->' generic-op-types
 //! generic-op-types     := type-list-parens | type
 //!
+//! A generic operation's properties are written in `properties`, every one of them, a property at
+//! its default included. A parser also takes a property from the trailing `attributes`
+//! dictionary; a property given in both is an error.
+//!
 //! A generic operation's signature lists its operand types and its result types. It is not
 //! itself a type: a lone operand or result type may be written bare (`i32 -> ()`), and `(i32)`
 //! alone is not a type at all, since tuples are not a type form.

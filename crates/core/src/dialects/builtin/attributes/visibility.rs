@@ -39,7 +39,7 @@ impl AttrPrinter for VisibilityAttr {
     }
 }
 
-impl AttrParser for Visibility {
+impl AttrParser for VisibilityAttr {
     fn parse(
         parser: &mut dyn crate::parse::Parser<'_>,
     ) -> crate::parse::ParseResult<crate::AttributeRef> {

@@ -1040,6 +1040,15 @@ where
         // successor. These groups must exist even when they have no operands.
         result.operands.resize_with(result.successors.len() + 1, Default::default);
 
+        // Parse the properties, `<{ .. }>`, where the printer writes them. A property may also
+        // be given in the trailing attribute dictionary, but not in both.
+        let properties_start = result.attrs.len();
+        if self.token_stream_mut().next_if_eq(Token::Langle)? {
+            self.parse_attribute_dict(&mut result.attrs)?;
+            self.parser.parse_rangle()?;
+        }
+        let properties_end = result.attrs.len();
+
         // Parse the region list, if not explicitly provided.
         if let Some(provided_regions) = parsed_regions {
             result.regions.extend_from_slice(provided_regions);
@@ -1061,7 +1070,19 @@ where
         if let Some(provided_attrs) = parsed_attributes {
             result.attrs.extend(provided_attrs);
         } else if self.token_stream_mut().is_next(|tok| matches!(tok, Token::Lbrace)) {
+            let start = self.parser.token_stream_mut().peek()?.map(|(start, ..)| start);
             self.parse_attribute_dict(&mut result.attrs)?;
+            let end = self.parser.token_stream().previous_end();
+            let (properties, attributes) = result.attrs.split_at(properties_end);
+            let properties = &properties[properties_start..];
+            if let Some(duplicate) =
+                attributes.iter().find(|attr| properties.iter().any(|p| p.name == attr.name))
+            {
+                return Err(ParserError::DuplicateAttribute {
+                    span: span!(self.parser.source_id(), start.unwrap_or(end), end),
+                    name: duplicate.name,
+                });
+            }
         }
 
         // Parse the operation type, if not explicitly provided.
@@ -2070,7 +2091,10 @@ where
 
         let mut op_parser = OperationParser::new(parser, top_level_op);
         loop {
-            let Some((start, next_token, end)) = op_parser.token_stream_mut().peek()? else {
+            let next = op_parser.token_stream_mut().peek()?;
+            let Some((start, next_token, end)) =
+                next.filter(|(_, token, _)| !matches!(token, Token::Eof))
+            else {
                 // If we got to the end of the file, then we're done.
                 op_parser.finalize()?;
                 break Ok(top_level_op);

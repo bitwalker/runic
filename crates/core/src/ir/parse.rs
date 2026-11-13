@@ -286,8 +286,7 @@ pub fn parse_file_generic(
 /// `builtin.world` as the root rather than nesting it in the world it created to parse into. A
 /// generic-format source that is itself a world therefore still yields a world within a world,
 /// which is invalid IR — see [`parse_anchored_source`] for why. Left as it is because these entry
-/// points have no callers outside this module's tests, and the one test covering them is
-/// `#[ignore]`d; revive the generic format and this needs fixing first.
+/// points have no callers outside this module's tests, none of which parses a world.
 fn parse_source_generic(config: ParserConfig, source_id: SourceId) -> Outcome<WorldRef> {
     let context = config.context.clone();
     let scope = context.diagnostic_scope();

@@ -299,17 +299,19 @@ builtin.function public extern(\"C\") @entrypoint(%a: i32) -> i32 {
     Ok(())
 }
 
+/// A function in the generic form: its properties in `<{ .. }>`, those with a default (its memory
+/// effects and locals) left out.
 #[test]
-#[ignore]
 fn parse_simple_function_generic() -> TestResult {
-    let mut test = ParserTest::default();
+    let test = ParserTest::default();
 
     let source = r#""builtin.function"() <{
-        name = @entrypoint,
-        signature: #builtin.signature<"public extern(\"C\") (i32) -> i32">,
+        name = #builtin.ident<@entrypoint>,
+        linkage = #builtin.visibility<public>,
+        signature = #builtin.signature<extern("C") (i32) -> i32>
     }> ({
 ^entry(%a: i32):
-    "builtin.ret" %a : (i32) -> ();
+    "builtin.ret"(%a) : (i32) -> ();
 }) : () -> ();"#;
 
     let world = test.parse_generic("parse_simple_function_generic.hir", source)?;
@@ -5551,4 +5553,88 @@ fn a_segment_prints_readonly_only_when_it_is_set() -> TestResult {
         }
     }
     Ok(())
+}
+
+/// Prints `op` in the generic form.
+fn print_generic(op: &crate::Operation) -> String {
+    let flags = Default::default();
+    let mut printer = AsmPrinter::fragment(op.context_rc(), &flags);
+    printer.print_operation_generic(op);
+    printer.finish().to_string()
+}
+
+/// The generic form prints every property, a default included, as `<{ .. }>` after the operands
+/// and successors, and parses it back from there.
+#[test]
+fn the_generic_form_reads_properties_where_it_prints_them() -> TestResult {
+    use crate::dialects::{
+        builtin::attributes::{Overflow, Signedness},
+        test::Add,
+    };
+
+    for (overflow, written) in [
+        (Overflow::Wrapping, "wrapping"),
+        (Overflow::Checked(Signedness::Unsigned), "checked unsigned"),
+    ] {
+        let context = Rc::new(Context::default());
+        let custom = if overflow == Overflow::Wrapping {
+            "%2 = test.add %0, %1;".to_string()
+        } else {
+            format!("%2 = test.add %0, %1 <{{ overflow = #builtin.overflow<{written}> }}>;")
+        };
+        let (function, _) = parse_function_text(&context, &binary_function(&custom))?;
+        let generic = {
+            let add = first_op::<Add>(function);
+            print_generic(crate::Op::as_operation(&*add))
+        };
+        let expected = format!(
+            "%2 = \"test.add\"(%0, %1) <{{ overflow = #builtin.overflow<{written}> }}> : (i32, \
+             i32) -> i32;"
+        );
+        assert_eq!(generic, expected);
+
+        let context = Rc::new(Context::default());
+        let (function, printed) = parse_function_text(&context, &binary_function(&generic))?;
+        assert_eq!(printed, binary_function(&custom));
+        assert_eq!(*first_op::<Add>(function).get_overflow(), overflow);
+    }
+    Ok(())
+}
+
+/// A property given in the generic form's trailing attribute dictionary is still a property.
+#[test]
+fn the_generic_form_takes_a_property_from_the_attribute_dictionary() -> TestResult {
+    use crate::dialects::{
+        builtin::attributes::{Overflow, Signedness},
+        test::Add,
+    };
+
+    let context = Rc::new(Context::default());
+    let source = binary_function(
+        "%2 = \"test.add\"(%0, %1) { overflow = #builtin.overflow<checked signed> } : (i32, i32) \
+         -> i32;",
+    );
+    let (function, printed) = parse_function_text(&context, &source)?;
+    assert_eq!(
+        printed,
+        binary_function("%2 = test.add %0, %1 <{ overflow = #builtin.overflow<checked signed> }>;")
+    );
+    let add = first_op::<Add>(function);
+    assert_eq!(*add.get_overflow(), Overflow::Checked(Signedness::Signed));
+    assert!(!crate::Op::as_operation(&*add).has_attributes());
+    Ok(())
+}
+
+/// A property given both in `<{ .. }>` and in the trailing dictionary is a duplicate.
+#[test]
+fn the_generic_form_rejects_a_property_given_twice() {
+    let source = format!(
+        "builtin.module public @m {{\n    {}\n}};",
+        binary_function(
+            "%2 = \"test.add\"(%0, %1) <{ overflow = #builtin.overflow<wrapping> }> { overflow = \
+             #builtin.overflow<checked signed> } : (i32, i32) -> i32;"
+        )
+    );
+    let rendered = parse_error(&source);
+    assert!(rendered.contains("attribute 'overflow' occurs more than once"), "{rendered}");
 }

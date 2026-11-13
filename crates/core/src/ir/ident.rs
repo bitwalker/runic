@@ -107,6 +107,16 @@ impl AttrPrinter for IdentAttr {
     }
 }
 
+/// Reads the `@name` that [IdentAttr]'s printer writes.
+impl crate::attributes::AttrParser for IdentAttr {
+    fn parse(
+        parser: &mut dyn crate::parse::Parser<'_>,
+    ) -> crate::parse::ParseResult<crate::AttributeRef> {
+        let ident = parser.parse_symbol_name()?;
+        Ok(parser.context_rc().create_attribute::<IdentAttr, _>(ident))
+    }
+}
+
 impl Default for Ident {
     fn default() -> Self {
         Self {
