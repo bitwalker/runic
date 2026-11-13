@@ -177,9 +177,11 @@ type IntegerTable = SmallVec<[(u32, Align); 8]>;
 ///   `i8 = 1, i16 = 2, i32 = 4, i64 = 8, i128 = 16` (bytes);
 /// * `f32` and `f64` are aligned to 4 and 8 bytes.
 ///
-/// Two specifications are equal, and hash alike, when they answer every query alike, whatever
-/// entries were given to build them: an entry equal to what the specification answers without it
-/// makes no difference.
+/// Two specifications are equal, and hash alike, exactly when they answer every query alike: the
+/// endianness, both float alignments, the pointer of every address space and the alignment of
+/// every integer width. Which entries were given to build them makes no difference. The integer
+/// alignments are compared as a step function of the width: the last width and alignment of each
+/// run of widths with one alignment, except the last run, and the alignment of the last run.
 #[derive(Clone, Debug)]
 pub struct DataLayoutSpec {
     endianness: Endianness,
@@ -294,38 +296,47 @@ impl DataLayoutSpec {
             .map(|(_, entry)| entry)
     }
 
-    /// The fewest integer entries that answer as this specification does.
-    ///
-    /// Of a run of neighbouring entries with one alignment, the widest answers for the run; the
-    /// last run also answers for every wider width, so its narrowest entry is enough.
-    fn canonical_integers(&self) -> IntegerTable {
-        let mut canonical = IntegerTable::new();
+    /// The integer alignments as a step function of the width: its runs of neighbouring widths
+    /// with one alignment, which depend only on the answers of [Self::integer_align].
+    fn integer_steps(&self) -> IntegerSteps {
+        // A run of neighbouring entries with one alignment answers for the widths above the
+        // entry before it up to its widest entry, and the next entry has another alignment: so
+        // the run's widest entry is the last width of a run of answers. The last run also
+        // answers for every wider width.
+        let mut ends = IntegerTable::new();
         let mut runs = self.integers.chunk_by(|(_, a), (_, b)| a == b).peekable();
         while let Some(run) = runs.next() {
-            let entry = if runs.peek().is_some() {
-                run[run.len() - 1]
-            } else {
-                run[0]
-            };
-            canonical.push(entry);
+            let (width, align) = run[run.len() - 1];
+            if runs.peek().is_none() {
+                return IntegerSteps { ends, last: align };
+            }
+            ends.push((width, align));
         }
-        canonical
+        unreachable!("the integer table is never empty")
     }
 
     /// The integer entries the text of this specification lists, by ascending width: this
-    /// specification's alignment at each width of its canonical table and of the defaults,
+    /// specification's alignment at the last width of each run but the last, at each default
+    /// width, and, when no default width is in the last run, at the first width of the last run;
     /// leaving out an entry equal to the default for its width.
     ///
-    /// Parsing them over the defaults gives a specification equal to this one: each entry answers
-    /// as this specification does at its width, and an entry agreeing with a table changes none
-    /// of its answers. They depend only on the answers, so equal specifications list the same.
+    /// The text's entries are added to the defaults, so the parsed table has an entry at each of
+    /// these widths, each with this specification's alignment at its width. That table answers
+    /// as this one: every run but the last ends at one of its entries, and the last run holds one
+    /// of them. The entries depend only on the runs, so equal specifications list the same.
     pub(crate) fn printed_integers(&self) -> IntegerTable {
-        let mut widths: SmallVec<[u32; 16]> = self
-            .canonical_integers()
+        let steps = self.integer_steps();
+        let mut widths: SmallVec<[u32; 16]> = steps
+            .ends
             .iter()
             .chain(DEFAULT_INTEGER_ALIGNS.iter())
             .map(|(width, _)| *width)
             .collect();
+        let last_end = steps.ends.last().map_or(0, |(width, _)| *width);
+        if widths.iter().all(|width| *width <= last_end) {
+            // The last run starts after the widest default width: state its first width
+            widths.push(last_end + 1);
+        }
         widths.sort_unstable();
         widths.dedup();
         widths
@@ -346,6 +357,18 @@ impl DataLayoutSpec {
         .filter(|(_, align, default)| align != default)
         .map(|(float, align, _)| (float, align))
     }
+}
+
+/// The integer alignments of a specification as a step function of the width: the width ranges
+/// `1..=w0`, `w0+1..=w1`, .. of `ends` with their alignments, then every wider width with `last`.
+/// Neighbouring runs have different alignments, so specifications that answer every width alike
+/// have the same steps.
+#[derive(PartialEq, Eq, Hash)]
+struct IntegerSteps {
+    /// The last width and the alignment of every run but the last, by ascending width.
+    ends: IntegerTable,
+    /// The alignment of the last run.
+    last: Align,
 }
 
 /// Checks the size and index width of the pointer of `addrspace`.
@@ -377,7 +400,7 @@ impl PartialEq for DataLayoutSpec {
             && self.f32_align == other.f32_align
             && self.f64_align == other.f64_align
             && self.distinct_pointers().eq(other.distinct_pointers())
-            && self.canonical_integers() == other.canonical_integers()
+            && self.integer_steps() == other.integer_steps()
     }
 }
 
@@ -391,6 +414,6 @@ impl Hash for DataLayoutSpec {
         for entry in self.distinct_pointers() {
             entry.hash(state);
         }
-        self.canonical_integers().hash(state);
+        self.integer_steps().hash(state);
     }
 }

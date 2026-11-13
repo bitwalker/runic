@@ -151,6 +151,32 @@ fn equality_ignores_an_entry_equal_to_its_default() {
 }
 
 #[test]
+fn entries_inside_the_last_run_make_no_difference() {
+    let context = context();
+    let base = little32();
+    let wide16 = base
+        .clone()
+        .with_integer_align(64, align(16))
+        .unwrap()
+        .with_integer_align(128, align(16))
+        .unwrap();
+    let all_one = [8, 16, 32, 64, 128]
+        .into_iter()
+        .fold(base.clone(), |spec, width| spec.with_integer_align(width, Align::ONE).unwrap());
+    let pairs = [
+        // `i96` lies in the last run, which `i128 = 16` already answers for
+        (base.clone(), base.clone().with_integer_align(96, align(16)).unwrap()),
+        (wide16.clone(), wide16.clone().with_integer_align(48, align(16)).unwrap()),
+        // A table with a single run
+        (all_one.clone(), all_one.clone().with_integer_align(4, Align::ONE).unwrap()),
+    ];
+    for (a, b) in pairs {
+        assert_same(&a, &b);
+        assert_eq!(print_spec(&context, &a), print_spec(&context, &b));
+    }
+}
+
+#[test]
 fn an_invalid_pointer_or_integer_width_is_rejected() {
     let pointer = |size_bits, index_bits| PointerSpec {
         size_bits,
@@ -275,6 +301,14 @@ fn printing_is_canonical() {
         ),
         // An entry keeping a width that would otherwise take a neighbour's alignment
         ("little, ptr = 32, i32 = 8", "little, ptr = 32, i32 = 8"),
+        // Entries in the last run, which `i128 = 16` answers for, are left out
+        ("little, ptr = 32, i96 = 16, i300 = 16", "little, ptr = 32"),
+        // A last run past every default width is stated at its first width
+        ("little, ptr = 32, i256 = 32", "little, ptr = 32, i129 = 32"),
+        (
+            "little, ptr = 32, i300 = 32, i256 = 16",
+            "little, ptr = 32, i256 = 16, i257 = 32",
+        ),
         ("little, ptr = 24 align 4", "little, ptr = 24 align 4"),
         ("little, ptr = 64 align 8 index 64", "little, ptr = 64"),
         ("little, ptr = 32 align 4 index 16", "little, ptr = 32 index 16"),
@@ -294,46 +328,117 @@ fn seeds() -> Vec<u64> {
     alloc::vec![0x1a70_0001]
 }
 
-/// A valid specification from `rng`.
-fn random_spec(rng: &mut Rng) -> DataLayoutSpec {
-    let random_align = |rng: &mut Rng| Align::from_bytes(1 << rng.below(16)).unwrap();
-    let random_pointer = |rng: &mut Rng| {
-        let size_bits = 8 * (1 + rng.below(8) as u32);
-        let align = match PointerSpec::sized(size_bits) {
-            Some(sized) if rng.below(2) == 0 => sized.align,
-            _ => random_align(rng),
-        };
-        let index_bits = if rng.below(2) == 0 {
-            size_bits
-        } else {
-            1 + rng.below(u64::from(size_bits)) as u32
-        };
-        PointerSpec {
-            size_bits,
-            align,
-            index_bits,
+/// A random specification, with the address spaces and integer widths its tables list.
+struct Built {
+    spec: DataLayoutSpec,
+    /// The address spaces with an entry, 0 included.
+    spaces: Vec<u32>,
+    /// The integer widths with an entry, the defaults included.
+    widths: Vec<u32>,
+    /// Entries for an address space other than 0 that restate the pointer of address space 0.
+    restated_pointers: usize,
+    /// Integer entries that answer as the table already did.
+    redundant_integers: usize,
+}
+
+impl Built {
+    fn new(spec: DataLayoutSpec) -> Self {
+        Self {
+            spec,
+            spaces: alloc::vec![0],
+            widths: alloc::vec![8, 16, 32, 64, 128],
+            restated_pointers: 0,
+            redundant_integers: 0,
         }
+    }
+
+    fn with_pointer(&mut self, addrspace: u32, pointer: PointerSpec) {
+        self.spec = self.spec.clone().with_pointer(addrspace, pointer).unwrap();
+        self.spaces.push(addrspace);
+    }
+
+    fn with_integer_align(&mut self, width: u32, align: Align) {
+        self.spec = self.spec.clone().with_integer_align(width, align).unwrap();
+        self.widths.push(width);
+    }
+
+    /// Adds entries that change no answer: a pointer restating address space 0 (or an address
+    /// space restating itself) and integer entries equal to what the table answers.
+    fn add_redundant(&mut self, rng: &mut Rng, widths: &[u32]) {
+        let addrspace = rng.pick(&[1, 2, 5, 7, u32::MAX]);
+        let pointer = if rng.below(2) == 0 {
+            self.restated_pointers += 1;
+            self.spec.pointer(0)
+        } else {
+            self.spec.pointer(addrspace)
+        };
+        self.with_pointer(addrspace, pointer);
+        for _ in 0..1 + rng.below(3) {
+            let width = random_width(rng, widths);
+            let align = self.spec.integer_align(width);
+            self.with_integer_align(width, align);
+            self.redundant_integers += 1;
+        }
+    }
+}
+
+/// A random alignment of 1 to 2^(`log2_end` - 1) bytes.
+fn random_align(rng: &mut Rng, log2_end: u64) -> Align {
+    Align::from_bytes(1 << rng.below(log2_end)).unwrap()
+}
+
+/// A random valid pointer.
+fn random_pointer(rng: &mut Rng) -> PointerSpec {
+    let size_bits = 8 * (1 + rng.below(8) as u32);
+    let align = match PointerSpec::sized(size_bits) {
+        Some(sized) if rng.below(2) == 0 => sized.align,
+        _ => random_align(rng, 16),
     };
+    let index_bits = if rng.below(2) == 0 {
+        size_bits
+    } else {
+        1 + rng.below(u64::from(size_bits)) as u32
+    };
+    PointerSpec {
+        size_bits,
+        align,
+        index_bits,
+    }
+}
+
+/// A random integer width, often one of `widths`.
+fn random_width(rng: &mut Rng, widths: &[u32]) -> u32 {
+    match rng.below(4) {
+        0 | 1 => rng.pick(widths),
+        2 => 1 + rng.below(300) as u32,
+        _ => 1 + rng.below(u64::from(IntegerType::MAX_WIDTH)) as u32,
+    }
+}
+
+const SOME_WIDTHS: [u32; 12] =
+    [1, 8, 16, 24, 32, 48, 64, 96, 128, 200, 256, IntegerType::MAX_WIDTH];
+
+/// A random valid specification. Some of its entries may be redundant.
+fn random_built(rng: &mut Rng) -> Built {
     let endianness = rng.pick(&[Endianness::Little, Endianness::Big]);
-    let mut spec = DataLayoutSpec::new(endianness, random_pointer(rng)).unwrap();
+    let mut built = Built::new(DataLayoutSpec::new(endianness, random_pointer(rng)).unwrap());
     for _ in 0..rng.below(4) {
         let addrspace = rng.pick(&[0, 1, 2, 7, u32::MAX]);
-        spec = spec.with_pointer(addrspace, random_pointer(rng)).unwrap();
+        built.with_pointer(addrspace, random_pointer(rng));
     }
     for _ in 0..rng.below(8) {
-        let width = match rng.below(3) {
-            0 => rng.pick(&[1, 8, 16, 24, 32, 64, 128, 256]),
-            1 => 1 + rng.below(300) as u32,
-            _ => 1 + rng.below(u64::from(IntegerType::MAX_WIDTH)) as u32,
-        };
-        spec = spec.with_integer_align(width, random_align(rng)).unwrap();
+        let width = random_width(rng, &SOME_WIDTHS);
+        built.with_integer_align(width, random_align(rng, 16));
     }
     for float in [FloatType::F32, FloatType::F64] {
         if rng.below(3) == 0 {
-            spec = spec.with_float_align(float, random_align(rng));
+            built.spec = built.spec.clone().with_float_align(float, random_align(rng, 16));
         }
     }
-    spec
+    if rng.below(3) == 0 {
+        built.add_redundant(rng, &SOME_WIDTHS);
+    }
+    built
 }
 
 #[test]
@@ -341,8 +446,12 @@ fn random_specifications_round_trip() {
     let context = context();
     for seed in seeds() {
         let mut rng = Rng(seed);
+        let (mut restated_pointers, mut redundant_integers) = (0, 0);
         for case in 0..500 {
-            let spec = random_spec(&mut rng);
+            let built = random_built(&mut rng);
+            restated_pointers += built.restated_pointers;
+            redundant_integers += built.redundant_integers;
+            let spec = built.spec;
             let printed = print_spec(&context, &spec);
             let parsed = parse_spec(&context, &printed).unwrap_or_else(|err| {
                 panic!("seed {seed:#x} (LAYOUT_TEST_SEED={seed}), case {case}: {printed}: {err}")
@@ -354,6 +463,117 @@ fn random_specifications_round_trip() {
             );
             assert_eq!(print_spec(&context, &parsed), printed, "seed {seed:#x}, case {case}");
         }
+        assert!(
+            restated_pointers > 0 && redundant_integers > 0,
+            "seed {seed:#x} (LAYOUT_TEST_SEED={seed}): the generator made {restated_pointers} \
+             restated pointers and {redundant_integers} redundant integer entries"
+        );
+    }
+}
+
+/// A random specification from few choices, so that independent ones are often answer-equal:
+/// alignments of 1 to 4 bytes, few widths and address spaces.
+fn random_narrow(rng: &mut Rng) -> Built {
+    const WIDTHS: [u32; 6] = [1, 8, 16, 32, 64, 128];
+    let pointer = PointerSpec::sized(rng.pick(&[32, 64])).unwrap();
+    let mut built = Built::new(DataLayoutSpec::new(Endianness::Little, pointer).unwrap());
+    for _ in 0..rng.below(2) {
+        let addrspace = rng.pick(&[1, 2]);
+        built.with_pointer(addrspace, PointerSpec::sized(rng.pick(&[32, 64])).unwrap());
+    }
+    for _ in 0..rng.below(6) {
+        let width = random_width(rng, &WIDTHS);
+        built.with_integer_align(width, random_align(rng, 3));
+    }
+    if rng.below(4) == 0 {
+        built.spec = built.spec.clone().with_float_align(FloatType::F64, align(4));
+    }
+    built
+}
+
+/// True if `a` and `b` answer alike at every probe: every width either lists, one above and
+/// one below each, 1 and the widest; every address space either lists and one neither does.
+/// Compared through the queries, not through `Eq`.
+fn answer_alike(a: &Built, b: &Built) -> bool {
+    let mut widths: Vec<u32> = alloc::vec![1, IntegerType::MAX_WIDTH];
+    for width in a.widths.iter().chain(&b.widths) {
+        widths.extend([width - 1, *width, width + 1]);
+    }
+    widths.retain(|width| (1..=IntegerType::MAX_WIDTH).contains(width));
+    let mut spaces: Vec<u32> = a.spaces.iter().chain(&b.spaces).copied().collect();
+    spaces.push((0..).find(|space| !spaces.contains(space)).unwrap());
+    let (a, b) = (&a.spec, &b.spec);
+    a.endianness() == b.endianness()
+        && [FloatType::F32, FloatType::F64]
+            .into_iter()
+            .all(|float| a.float_align(float) == b.float_align(float))
+        && spaces.iter().all(|space| a.pointer(*space) == b.pointer(*space))
+        && widths.iter().all(|width| a.integer_align(*width) == b.integer_align(*width))
+}
+
+#[test]
+fn specifications_are_equal_exactly_when_they_answer_alike() {
+    let context = context();
+    for seed in seeds() {
+        let mut rng = Rng(seed);
+        let (mut equal, mut unequal) = (0, 0);
+        for case in 0..2000 {
+            let (a, b) = match case % 4 {
+                // Independent, from a wide range of specifications
+                0 => (random_built(&mut rng), random_built(&mut rng)),
+                // Independent, from few choices
+                1 => (random_narrow(&mut rng), random_narrow(&mut rng)),
+                // One specification, and it with redundant entries
+                2 => {
+                    let a = random_built(&mut rng);
+                    let mut b = Built {
+                        spec: a.spec.clone(),
+                        spaces: a.spaces.clone(),
+                        widths: a.widths.clone(),
+                        restated_pointers: 0,
+                        redundant_integers: 0,
+                    };
+                    b.add_redundant(&mut rng, &SOME_WIDTHS);
+                    (a, b)
+                }
+                // One specification, and it with redundant entries and one entry more
+                _ => {
+                    let a = random_narrow(&mut rng);
+                    let mut b = Built {
+                        spec: a.spec.clone(),
+                        spaces: a.spaces.clone(),
+                        widths: a.widths.clone(),
+                        restated_pointers: 0,
+                        redundant_integers: 0,
+                    };
+                    b.add_redundant(&mut rng, &[1, 8, 16, 32, 64, 128]);
+                    let width = random_width(&mut rng, &[1, 8, 16, 32, 64, 128]);
+                    b.with_integer_align(width, random_align(&mut rng, 3));
+                    (a, b)
+                }
+            };
+            let alike = answer_alike(&a, &b);
+            let (a, b) = (&a.spec, &b.spec);
+            let context_of = || {
+                format!(
+                    "seed {seed:#x} (LAYOUT_TEST_SEED={seed}), case {case}:\n{a:?}\n{b:?}\n{}\n{}",
+                    print_spec(&context, a),
+                    print_spec(&context, b)
+                )
+            };
+            assert_eq!(a == b, alike, "{}", context_of());
+            if alike {
+                equal += 1;
+                assert_eq!(hash_of(a), hash_of(b), "{}", context_of());
+                assert_eq!(print_spec(&context, a), print_spec(&context, b), "{}", context_of());
+            } else {
+                unequal += 1;
+            }
+        }
+        assert!(
+            equal >= 200 && unequal >= 200,
+            "seed {seed:#x}: {equal} equal, {unequal} unequal"
+        );
     }
 }
 
@@ -573,6 +793,40 @@ fn a_world_states_a_specification_through_text() {
         .unwrap_or_else(|err| panic!("{printed}\n{}", describe(&err)));
     let module = first_child(world);
     assert_eq!(closest_spec(module), Some(little32()));
+}
+
+/// The specification `op` states in its attribute, if it states one.
+fn stated_spec(op: OperationRef) -> Option<DataLayoutSpec> {
+    let op = op.borrow();
+    let attr = op.get_typed_attribute::<DataLayoutAttr>(DATA_LAYOUT_ATTR)?;
+    Some(attr.borrow().as_value().clone())
+}
+
+#[test]
+fn a_component_and_a_module_state_a_specification_through_text() {
+    let context = context();
+    let stated = "attributes { data_layout = #builtin.data_layout<little, ptr = 32> }";
+    for on_component in [true, false] {
+        let (component, module) = if on_component {
+            (stated, "")
+        } else {
+            ("", stated)
+        };
+        let [component, module, _] = nested(&context, component, module);
+        let on_component = on_component.then(little32);
+        let on_module = on_component.is_none().then(little32);
+        assert_eq!(stated_spec(component), on_component);
+        assert_eq!(stated_spec(module), on_module);
+
+        let printed = format!("{}", component.borrow());
+        assert!(printed.contains(stated), "{printed}");
+        let config = ParserConfig::new(context.clone());
+        let reparsed = parse::parse_any(config, "reparsed.hir", printed.clone())
+            .into_result()
+            .unwrap_or_else(|err| panic!("{printed}\n{}", describe(&err)));
+        assert_eq!(stated_spec(reparsed), on_component, "{printed}");
+        assert_eq!(stated_spec(first_child(reparsed)), on_module, "{printed}");
+    }
 }
 
 // --- Task 4: the layout of a type ----------------------------------------------------------------

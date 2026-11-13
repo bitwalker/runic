@@ -34,10 +34,15 @@ use crate::{
 ///   and the index width. The pointer of address space 0 is required.
 /// * `iN = A` aligns integers of `N` bits to `A` bytes; `f32 = A` and `f64 = A` align the floats.
 ///
-/// The printed text is canonical: endianness, the pointers by address space (leaving out an
-/// address space other than 0 that has the pointer of 0, and an `align` or `index` equal to what
-/// the size implies), the integer entries that differ from the defaults by ascending width, then
-/// `f32` and `f64` if they differ from theirs.
+/// The printed text is canonical: specifications that answer every query alike (and so are
+/// equal) print the same text, and the text parses back to an equal specification. It lists the
+/// endianness; the pointers by address space (leaving out an address space other than 0 that has
+/// the pointer of 0, and an `align` or `index` equal to what the size implies); integer entries by
+/// ascending width; then `f32` and `f64` if they differ from their defaults. The integer entries
+/// are the specification's alignment at the last width of each run of widths with one alignment
+/// but the last run, at each default width, and at the first width of the last run when no
+/// default width lies in it, leaving out every entry equal to the default for its width. Parsed,
+/// they are added to the defaults and give the same alignment at every width.
 ///
 /// The attribute has no default: `#builtin.data_layout` without a body is an error.
 #[derive(DialectAttribute)]
@@ -48,6 +53,8 @@ use crate::{
     implements(AttrPrinter)
 )]
 #[allow(dead_code)]
+// Exists only to drive the derive, which names the attribute `<marker>Attr` and its text after the
+// marker: it is not `crate::layout::DataLayout`, and is never used as a value.
 struct DataLayout;
 
 impl AttrPrinter for DataLayoutAttr {
