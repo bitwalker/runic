@@ -62,7 +62,7 @@ pub trait ArithOpBuilder<'f, B: ?Sized + Builder> {
 
     /// The wrapping two's complement sum.
     fn add(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<Add, _>(span);
+        let op_builder = self.builder_mut().create::<Add, (_, _, _)>(span);
         let op = op_builder(lhs, rhs, Overflow::Wrapping)?;
         Ok(op.borrow().result().as_value_ref())
     }
@@ -76,7 +76,7 @@ pub trait ArithOpBuilder<'f, B: ?Sized + Builder> {
         signedness: Signedness,
         span: SourceSpan,
     ) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<Add, _>(span);
+        let op_builder = self.builder_mut().create::<Add, (_, _, _)>(span);
         let op = op_builder(lhs, rhs, Overflow::Checked(signedness))?;
         Ok(op.borrow().result().as_value_ref())
     }
@@ -90,7 +90,7 @@ pub trait ArithOpBuilder<'f, B: ?Sized + Builder> {
         signedness: Signedness,
         span: SourceSpan,
     ) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<Add, _>(span);
+        let op_builder = self.builder_mut().create::<Add, (_, _, _)>(span);
         let op = op_builder(lhs, rhs, Overflow::Unchecked(signedness))?;
         Ok(op.borrow().result().as_value_ref())
     }
@@ -112,7 +112,7 @@ pub trait ArithOpBuilder<'f, B: ?Sized + Builder> {
 
     /// The wrapping two's complement difference.
     fn sub(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<Sub, _>(span);
+        let op_builder = self.builder_mut().create::<Sub, (_, _, _)>(span);
         let op = op_builder(lhs, rhs, Overflow::Wrapping)?;
         Ok(op.borrow().result().as_value_ref())
     }
@@ -126,7 +126,7 @@ pub trait ArithOpBuilder<'f, B: ?Sized + Builder> {
         signedness: Signedness,
         span: SourceSpan,
     ) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<Sub, _>(span);
+        let op_builder = self.builder_mut().create::<Sub, (_, _, _)>(span);
         let op = op_builder(lhs, rhs, Overflow::Checked(signedness))?;
         Ok(op.borrow().result().as_value_ref())
     }
@@ -140,7 +140,7 @@ pub trait ArithOpBuilder<'f, B: ?Sized + Builder> {
         signedness: Signedness,
         span: SourceSpan,
     ) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<Sub, _>(span);
+        let op_builder = self.builder_mut().create::<Sub, (_, _, _)>(span);
         let op = op_builder(lhs, rhs, Overflow::Unchecked(signedness))?;
         Ok(op.borrow().result().as_value_ref())
     }
@@ -162,7 +162,7 @@ pub trait ArithOpBuilder<'f, B: ?Sized + Builder> {
 
     /// The wrapping two's complement product.
     fn mul(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<Mul, _>(span);
+        let op_builder = self.builder_mut().create::<Mul, (_, _, _)>(span);
         let op = op_builder(lhs, rhs, Overflow::Wrapping)?;
         Ok(op.borrow().result().as_value_ref())
     }
@@ -176,7 +176,7 @@ pub trait ArithOpBuilder<'f, B: ?Sized + Builder> {
         signedness: Signedness,
         span: SourceSpan,
     ) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<Mul, _>(span);
+        let op_builder = self.builder_mut().create::<Mul, (_, _, _)>(span);
         let op = op_builder(lhs, rhs, Overflow::Checked(signedness))?;
         Ok(op.borrow().result().as_value_ref())
     }
@@ -190,7 +190,7 @@ pub trait ArithOpBuilder<'f, B: ?Sized + Builder> {
         signedness: Signedness,
         span: SourceSpan,
     ) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<Mul, _>(span);
+        let op_builder = self.builder_mut().create::<Mul, (_, _, _)>(span);
         let op = op_builder(lhs, rhs, Overflow::Unchecked(signedness))?;
         Ok(op.borrow().result().as_value_ref())
     }

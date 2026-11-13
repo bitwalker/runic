@@ -77,7 +77,8 @@ macro_rules! infer_return_ty_for_binary_op {
 ///
 /// `overflow` says what happens when the exact sum does not fit: the result wraps (the default),
 /// the operation traps, or the result is undefined, with the operands read as signed or as unsigned
-/// numbers for the latter two.
+/// numbers for the latter two. The text leaves the default out: `arith.add %0, %1` wraps, and
+/// `arith.add %0, %1 <{ overflow = #builtin.overflow<checked signed> }>` traps.
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
 #[operation(
     dialect = ArithDialect,
@@ -92,6 +93,7 @@ pub struct Add {
     #[result]
     result: AnyInteger,
     #[attr]
+    #[default]
     overflow: OverflowAttr,
 }
 
@@ -194,6 +196,7 @@ pub struct Sub {
     #[result]
     result: AnyInteger,
     #[attr]
+    #[default]
     overflow: OverflowAttr,
 }
 
@@ -236,6 +239,7 @@ pub struct Mul {
     #[result]
     result: AnyInteger,
     #[attr]
+    #[default]
     overflow: OverflowAttr,
 }
 

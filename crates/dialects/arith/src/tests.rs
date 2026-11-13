@@ -238,12 +238,13 @@ fn add_round_trips_with_each_overflow_mode() {
     for (ty, _) in TYPES {
         for (mode, build) in modes {
             let text = binary_round_trip(ty, |b, l, r| vec![build(b, l, r).unwrap()], same);
-            assert!(
-                text.contains(&format!(
-                    "arith.add %0, %1 <{{ overflow = #builtin.overflow<{mode}> }}>"
-                )),
-                "{text}"
-            );
+            // The default, wrapping, is not printed
+            let expected = if mode == "wrapping" {
+                "arith.add %0, %1;".to_string()
+            } else {
+                format!("arith.add %0, %1 <{{ overflow = #builtin.overflow<{mode}> }}>;")
+            };
+            assert!(text.contains(&expected), "{text}");
         }
     }
 }
@@ -252,9 +253,7 @@ fn add_round_trips_with_each_overflow_mode() {
 fn sub_and_mul_build_each_overflow_mode() {
     use Signedness::*;
     let modes: [(&str, BinaryBuilder); 6] = [
-        ("arith.sub %0, %1 <{ overflow = #builtin.overflow<wrapping> }>", |b, l, r| {
-            b.sub(l, r, SPAN)
-        }),
+        ("arith.sub %0, %1;", |b, l, r| b.sub(l, r, SPAN)),
         (
             "arith.sub %0, %1 <{ overflow = #builtin.overflow<checked signed> }>",
             |b, l, r| b.sub_checked(l, r, Signed, SPAN),
@@ -263,9 +262,7 @@ fn sub_and_mul_build_each_overflow_mode() {
             "arith.sub %0, %1 <{ overflow = #builtin.overflow<unchecked unsigned> }>",
             |b, l, r| b.sub_unchecked(l, r, Unsigned, SPAN),
         ),
-        ("arith.mul %0, %1 <{ overflow = #builtin.overflow<wrapping> }>", |b, l, r| {
-            b.mul(l, r, SPAN)
-        }),
+        ("arith.mul %0, %1;", |b, l, r| b.mul(l, r, SPAN)),
         (
             "arith.mul %0, %1 <{ overflow = #builtin.overflow<checked unsigned> }>",
             |b, l, r| b.mul_checked(l, r, Unsigned, SPAN),

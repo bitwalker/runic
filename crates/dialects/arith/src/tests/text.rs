@@ -51,6 +51,10 @@ fn every_operation_round_trips_at_every_kind_of_type() {
             b.add(x, y, SPAN).unwrap();
             b.sub(x, y, SPAN).unwrap();
             b.mul(x, y, SPAN).unwrap();
+            // The wrapping operations: `overflow` at its default is not printed
+            for op in ["add", "sub", "mul"] {
+                expect.push(format!("= arith.{op} %0, %1;"));
+            }
             for sign in signs {
                 b.add_checked(x, y, sign, SPAN).unwrap();
                 b.add_unchecked(x, y, sign, SPAN).unwrap();
@@ -190,5 +194,40 @@ fn the_predicate_attribute_parses_through_an_attribute_dictionary() {
         let body =
             format!("    %2 = arith.band %0, %1 attributes {{ p = #arith.cmp_predicate<{bad}> }};");
         assert!(parse_body("%0: i32, %1: i32", &body).is_err(), "`{bad}` parsed");
+    }
+}
+
+/// `overflow` on `add`/`sub`/`mul` defaults to wrapping: left out of the text, the operation
+/// wraps, and the written default is not printed back. A `signedness` has no default and stays
+/// required.
+#[test]
+fn overflow_defaults_to_wrapping_and_signedness_is_required() {
+    for op in ["add", "sub", "mul"] {
+        let body = format!("    %2 = arith.{op} %0, %1;");
+        let printed = parse_body("%0: i32, %1: i32", &body).expect("parses");
+        assert!(printed.contains(body.trim()), "{printed}");
+
+        let explicit =
+            format!("    %2 = arith.{op} %0, %1 <{{ overflow = #builtin.overflow<wrapping> }}>;");
+        let printed = parse_body("%0: i32, %1: i32", &explicit).expect("parses");
+        assert!(printed.contains(body.trim()), "{printed}");
+    }
+
+    let context = Rc::new(Context::default());
+    context.get_or_register_dialect::<ArithDialect>();
+    let text = "builtin.function public extern(\"C\") @f(%0: i32, %1: i32) {\n    %2 = arith.add \
+                %0, %1;\n    builtin.ret;\n};";
+    let (function, _) = parse_function_fixpoint(&context, "f", text).expect("parses");
+    let op = ops_of(function)[0];
+    let op = op.borrow();
+    assert_eq!(
+        *op.downcast_ref::<Add>().unwrap().get_overflow(),
+        runic_core::Overflow::Wrapping
+    );
+
+    for op in ["min", "max", "add_overflowing"] {
+        let err = parse_body("%0: i32, %1: i32", &format!("    %2 = arith.{op} %0, %1;"))
+            .expect_err("a missing signedness is an error");
+        assert!(err.contains("missing required property 'signedness'"), "{err}");
     }
 }
