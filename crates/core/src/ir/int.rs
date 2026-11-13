@@ -1,8 +1,10 @@
 use core::{cmp::Ordering, fmt};
 
 mod arith;
+#[cfg(test)]
+mod differential;
 
-pub use self::arith::fold_isize;
+pub use self::arith::{IsizeFold, fold_isize};
 
 /// An integer of a fixed width between 1 and 128 bits.
 ///
@@ -29,7 +31,7 @@ pub use self::arith::fold_isize;
 ///
 /// There is no `Add`, `Sub` or `Mul` operator: `a + b` would hide the choice between wrapping and
 /// overflow. [fold_isize] folds an operation on pointer-width constants when 32- and 64-bit targets
-/// agree.
+/// agree; [IsizeFold] tells it what kind of result the operation has.
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Int {
     bits: u128,

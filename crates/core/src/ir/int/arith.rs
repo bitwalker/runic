@@ -28,8 +28,8 @@ impl Int {
     /// The value as an amount for `<<`, [Self::lshr] or [Self::ashr]: the unsigned value, clamped
     /// to `u32::MAX`. Any amount of `width` or more behaves alike for these, so the clamp is exact.
     ///
-    /// Not for a rotation: see [Self::rotate_amount].
-    pub const fn shift_amount(self) -> u32 {
+    /// Not for a rotation: see [Self::rotate_amount_unsigned].
+    pub const fn shift_amount_unsigned(self) -> u32 {
         if self.bits > u32::MAX as u128 {
             u32::MAX
         } else {
@@ -41,7 +41,7 @@ impl Int {
     /// unsigned value modulo `width`.
     ///
     /// Panics if `width` is 0.
-    pub const fn rotate_amount(self, width: u32) -> u32 {
+    pub const fn rotate_amount_unsigned(self, width: u32) -> u32 {
         assert!(width != 0, "cannot rotate a zero-width integer");
         (self.bits % width as u128) as u32
     }
@@ -220,7 +220,7 @@ impl Int {
     /// Rotates left by `amount` modulo the width.
     ///
     /// A rotation depends on the amount modulo the width, so an amount held as an `Int` must not be
-    /// clamped with [Self::shift_amount]: use [Self::rotate_amount].
+    /// clamped with [Self::shift_amount_unsigned]: use [Self::rotate_amount_unsigned].
     pub fn rotl(self, amount: u32) -> Self {
         let width = self.width();
         let amount = amount % width;
@@ -233,7 +233,7 @@ impl Int {
     /// Rotates right by `amount` modulo the width.
     ///
     /// A rotation depends on the amount modulo the width, so an amount held as an `Int` must not be
-    /// clamped with [Self::shift_amount]: use [Self::rotate_amount].
+    /// clamped with [Self::shift_amount_unsigned]: use [Self::rotate_amount_unsigned].
     pub fn rotr(self, amount: u32) -> Self {
         let width = self.width();
         self.rotl(width - amount % width)
@@ -357,31 +357,81 @@ impl Not for Int {
     }
 }
 
+/// What kind of result an operation on `isize` operands has, for [fold_isize].
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum IsizeFold {
+    /// The result is an `isize`: 64 bits wide on a 64-bit target, 32 on a 32-bit one.
+    PointerWidth,
+    /// The result has a fixed width, in bits, that does not change with the target: a
+    /// comparison's `i1`, an overflow flag, or a conversion to `i64`, `i48` or `i128`.
+    Fixed(u32),
+}
+
 /// Folds an operation whose operands are `isize` constants (64-bit values) so that the result is
 /// right on a 32-bit target as well as a 64-bit one.
 ///
 /// `f` is called with the operands as they are, and again with each truncated to 32 bits. The fold
-/// succeeds when both calls do and agree. Whether the result is an `isize` is decided by both
-/// result widths: if the first is 64 bits wide and the second 32, the result is pointer-width and
-/// the first, truncated to 32 bits, must equal the second. Otherwise the two results must have the
-/// same width and be equal (a comparison's `i1`, or an extension to `i64` or `i128`, whose result
-/// does not change width with the target). Results of any other pair of widths do not fold. It
-/// returns the first call's result.
+/// succeeds when both calls do and agree; `None` from either call is no fold. `result` says what
+/// the operation's result is, and is checked against what `f` returns:
+///
+/// - [IsizeFold::PointerWidth]: the first call must return a 64-bit value and the second a 32-bit
+///   one. They agree when the first, truncated to 32 bits, equals the second.
+/// - [IsizeFold::Fixed(w)](IsizeFold::Fixed): both calls must return a `w`-bit value. They agree
+///   when they are equal.
+///
+/// It returns the first call's result.
+///
+/// A closure that returns another width is a bug in the fold, not a value that does not fold: it
+/// panics, naming the expected and the actual width, whatever the operands, so the first test that
+/// reaches a wrong fold fails.
+///
+/// `f` sees operands of 64 bits on the first call and of 32 on the second, so a fixed-width result
+/// is computed for both. A conversion to a width between 32 and 64 bits is a truncation on the
+/// first call and an extension on the second: `|[a]| Some(a.trunc(48))` panics on the second call
+/// (`Int::trunc` cannot widen). It is written as a resize in whichever direction the operand's
+/// width calls for, with the extension the operation means (`sext` or `zext`):
+///
+/// ```
+/// # use runic_core::{Int, IsizeFold, fold_isize};
+/// let to_i48 = |[a]: [Int; 1]| Some(if a.width() >= 48 { a.trunc(48) } else { a.sext(48) });
+/// assert_eq!(fold_isize([Int::from(-1i64)], IsizeFold::Fixed(48), to_i48), Some(Int::all_ones(48)));
+/// // Bit 40 is kept by a 64-bit target and was never there on a 32-bit one
+/// assert_eq!(fold_isize([Int::from(1i64 << 40)], IsizeFold::Fixed(48), to_i48), None);
+/// ```
 ///
 /// Panics if an operand is not 64 bits wide.
+#[track_caller]
 pub fn fold_isize<const N: usize>(
     operands: [Int; N],
+    result: IsizeFold,
     f: impl Fn([Int; N]) -> Option<Int>,
 ) -> Option<Int> {
     for operand in operands {
         assert_eq!(operand.width(), 64, "isize constants are 64 bits wide");
     }
-    let wide = f(operands)?;
-    let narrow = f(operands.map(|operand| operand.trunc(32)))?;
-    let agree = if wide.width() == 64 && narrow.width() == 32 {
-        wide.trunc(32) == narrow
-    } else {
-        wide == narrow
+    let (wide_width, narrow_width) = match result {
+        IsizeFold::PointerWidth => (64, 32),
+        IsizeFold::Fixed(width) => (width, width),
+    };
+    // Both calls are made, whatever the first returns, so that a wrong width is caught on every
+    // operand
+    let wide = f(operands);
+    let narrow = f(operands.map(|operand| operand.trunc(32)));
+    for (value, expected, target) in [(wide, wide_width, 64), (narrow, narrow_width, 32)] {
+        if let Some(value) = value {
+            assert_eq!(
+                value.width(),
+                expected,
+                "fold_isize: the result is {result:?}, so the call for a {target}-bit target must \
+                 return a {expected}-bit value, but it returned a {}-bit value",
+                value.width()
+            );
+        }
+    }
+    let (wide, narrow) = (wide?, narrow?);
+    let agree = match result {
+        IsizeFold::PointerWidth => wide.trunc(32) == narrow,
+        IsizeFold::Fixed(_) => wide == narrow,
     };
     agree.then_some(wide)
 }
@@ -754,6 +804,8 @@ mod tests {
 
     // fold_isize
 
+    use super::{IsizeFold, fold_isize};
+
     fn isize_const(v: i64) -> Int {
         Int::from(v)
     }
@@ -778,8 +830,9 @@ mod tests {
         for &a in &values {
             for &b in &values {
                 let (x, y) = (isize_const(a), isize_const(b));
-                let fold =
-                    |f: fn(Int, Int) -> Int| super::fold_isize([x, y], |[p, q]| Some(f(p, q)));
+                let fold = |f: fn(Int, Int) -> Int| {
+                    fold_isize([x, y], IsizeFold::PointerWidth, |[p, q]| Some(f(p, q)))
+                };
                 assert_eq!(fold(Int::wrapping_add), Some(isize_const(a.wrapping_add(b))));
                 assert_eq!(fold(Int::wrapping_sub), Some(isize_const(a.wrapping_sub(b))));
                 assert_eq!(fold(Int::wrapping_mul), Some(isize_const(a.wrapping_mul(b))));
@@ -793,7 +846,7 @@ mod tests {
     #[test]
     fn fold_isize_shl() {
         let shl = |a: i64, amount: i64| {
-            super::fold_isize([isize_const(a), isize_const(amount)], |[p, q]| {
+            fold_isize([isize_const(a), isize_const(amount)], IsizeFold::PointerWidth, |[p, q]| {
                 Some(p.shl(shl_amount(q)))
             })
         };
@@ -809,13 +862,15 @@ mod tests {
     #[test]
     fn fold_isize_operations_that_depend_on_the_width() {
         let div = |a: i64, b: i64| {
-            super::fold_isize([isize_const(a), isize_const(b)], |[p, q]| p.div_unsigned(q))
+            fold_isize([isize_const(a), isize_const(b)], IsizeFold::PointerWidth, |[p, q]| {
+                p.div_unsigned(q)
+            })
         };
         assert_eq!(div(1 << 32, 2), None);
         assert_eq!(div(100, 7), Some(isize_const(14)));
 
         let ult = |a: i64, b: i64| {
-            super::fold_isize([isize_const(a), isize_const(b)], |[p, q]| {
+            fold_isize([isize_const(a), isize_const(b)], IsizeFold::Fixed(1), |[p, q]| {
                 Some(Int::from(p.cmp_unsigned(q) == Ordering::Less))
             })
         };
@@ -824,7 +879,7 @@ mod tests {
         assert_eq!(ult(7, 5), Some(Int::from(false)));
 
         let lshr = |a: i64, n: i64| {
-            super::fold_isize([isize_const(a), isize_const(n)], |[p, q]| {
+            fold_isize([isize_const(a), isize_const(n)], IsizeFold::PointerWidth, |[p, q]| {
                 Some(p.lshr(shl_amount(q)))
             })
         };
@@ -834,9 +889,9 @@ mod tests {
 
     #[test]
     fn fold_isize_propagates_none() {
-        assert_eq!(super::fold_isize([isize_const(1)], |_| None), None);
+        assert_eq!(fold_isize([isize_const(1)], IsizeFold::PointerWidth, |_| None), None);
         // Fails only on the 32-bit call: the operand is 2^32, which truncates to zero.
-        let div = super::fold_isize([isize_const(1 << 32)], |[p]| {
+        let div = fold_isize([isize_const(1 << 32)], IsizeFold::PointerWidth, |[p]| {
             Int::from_bits(p.width(), 1).div_unsigned(p)
         });
         assert_eq!(div, None);
@@ -844,51 +899,106 @@ mod tests {
 
     #[test]
     fn fold_isize_extensions() {
-        let sext = |a: i64| super::fold_isize([isize_const(a)], |[p]| Some(p.sext(64)));
+        let sext =
+            |a: i64| fold_isize([isize_const(a)], IsizeFold::Fixed(64), |[p]| Some(p.sext(64)));
         assert_eq!(sext(5), Some(isize_const(5)));
         assert_eq!(sext(1 << 32), None);
         assert_eq!(sext(-1), Some(isize_const(-1)));
-        let zext = |a: i64| super::fold_isize([isize_const(a)], |[p]| Some(p.zext(64)));
+        let zext =
+            |a: i64| fold_isize([isize_const(a)], IsizeFold::Fixed(64), |[p]| Some(p.zext(64)));
         assert_eq!(zext(5), Some(isize_const(5)));
         assert_eq!(zext(1 << 32), None);
         assert_eq!(zext(-1), None);
-        let wide = super::fold_isize([isize_const(-1)], |[p]| Some(p.sext(128)));
+        let wide = fold_isize([isize_const(-1)], IsizeFold::Fixed(128), |[p]| Some(p.sext(128)));
         assert_eq!(wide, Some(Int::from(-1i128)));
         // Models `sext isize -> i64` as written in terms of the operand's own width.
-        let modeled = super::fold_isize([isize_const(7)], |[p]| Some(p.trunc(p.width()).sext(64)));
+        let modeled = fold_isize([isize_const(7)], IsizeFold::Fixed(64), |[p]| {
+            Some(p.trunc(p.width()).sext(64))
+        });
         assert_eq!(modeled, Some(isize_const(7)));
     }
 
     #[test]
     fn fold_isize_other_result_widths() {
-        let same32 = super::fold_isize([isize_const(1 << 40)], |_| Some(Int::from(7u32)));
+        let same32 =
+            fold_isize([isize_const(1 << 40)], IsizeFold::Fixed(32), |_| Some(Int::from(7u32)));
         assert_eq!(same32, Some(Int::from(7u32)));
-        let same_width_32 =
-            super::fold_isize([isize_const(1)], |[p]| Some(Int::from_bits(32, p.unsigned())));
-        assert_eq!(same_width_32, Some(Int::from(1u32)));
-        let odd = super::fold_isize([isize_const(1)], |[p]| {
-            Some(Int::zero(if p.width() == 64 { 16 } else { 8 }))
+        let same_width_32 = fold_isize([isize_const(1)], IsizeFold::Fixed(32), |[p]| {
+            Some(Int::from_bits(32, p.unsigned()))
         });
-        assert_eq!(odd, None);
+        assert_eq!(same_width_32, Some(Int::from(1u32)));
+    }
+
+    /// A conversion to 48 bits is a truncation on a 64-bit target and an extension on a 32-bit
+    /// one, so the closure resizes in whichever direction the operand's width calls for. It folds
+    /// exactly when both pointer widths agree.
+    #[test]
+    fn fold_isize_of_a_conversion_to_48_bits() {
+        let to_i48 = |[a]: [Int; 1]| {
+            Some(if a.width() >= 48 {
+                a.trunc(48)
+            } else {
+                a.sext(48)
+            })
+        };
+        let fold = |x: i64| fold_isize([isize_const(x)], IsizeFold::Fixed(48), to_i48);
+        assert_eq!(fold(5), Some(Int::from_bits(48, 5)));
+        assert_eq!(fold(-1), Some(Int::all_ones(48)));
+        // Bit 40 is set: the 64-bit target keeps it, the 32-bit target never had it
+        assert_eq!(fold(1 << 40), None);
+    }
+
+    /// Written as the truncation the operation names, the conversion to 48 bits cannot be made
+    /// on the 32-bit call: `Int::trunc` does not widen.
+    #[test]
+    #[should_panic(expected = "cannot truncate to a wider width")]
+    fn fold_isize_of_a_plain_truncation_to_48_bits_panics_on_the_narrow_call() {
+        let _ = fold_isize([isize_const(5)], IsizeFold::Fixed(48), |[a]| Some(a.trunc(48)));
+    }
+
+    /// A fixed-width result computed at the operand's width (an `isize -> i64` conversion
+    /// written as the identity) is a misdeclared fold: it panics on the 32-bit call, whatever the
+    /// value, where it would otherwise fold a value that differs between targets.
+    #[test]
+    #[should_panic(expected = "must return a 64-bit value, but it returned a 32-bit value")]
+    fn fold_isize_of_a_fixed_result_of_the_wrong_width_panics() {
+        let _ = fold_isize([isize_const(0x1_0000_0001)], IsizeFold::Fixed(64), |[a]| Some(a));
+    }
+
+    /// A pointer-width result must be 64 and 32 bits wide on the two calls: a closure that
+    /// returns a fixed width for it panics, whatever the value.
+    #[test]
+    #[should_panic(expected = "must return a 32-bit value, but it returned a 64-bit value")]
+    fn fold_isize_of_a_pointer_width_result_of_the_wrong_width_panics() {
+        let _ = fold_isize([isize_const(1)], IsizeFold::PointerWidth, |[a]| Some(a.zext(64)));
+    }
+
+    /// The width is checked on the call that returns a value even when the other returns `None`.
+    #[test]
+    #[should_panic(expected = "must return a 1-bit value, but it returned a 64-bit value")]
+    fn fold_isize_checks_the_width_when_the_other_call_does_not_fold() {
+        let _ = fold_isize([isize_const(1 << 32)], IsizeFold::Fixed(1), |[a]| {
+            (a.width() == 64).then_some(a)
+        });
     }
 
     #[test]
-    fn shift_and_rotate_amounts() {
+    fn shift_and_rotate_amounts_read_the_bits_as_unsigned() {
         let big = Int::from((1u64 << 32) + 1);
-        assert_eq!(big.shift_amount(), u32::MAX);
-        assert_eq!(big.rotate_amount(64), 1);
-        assert_eq!(big.rotate_amount(7), (((1u64 << 32) + 1) % 7) as u32);
-        assert_eq!(Int::from(5u64).shift_amount(), 5);
-        assert_eq!(Int::from(u32::MAX as u64).shift_amount(), u32::MAX);
-        assert_eq!(Int::from(u128::MAX).shift_amount(), u32::MAX);
-        assert_eq!(Int::from(70u8).rotate_amount(64), 6);
-        assert_eq!(Int::from_bits(3, 7).shift_amount(), 7);
+        assert_eq!(big.shift_amount_unsigned(), u32::MAX);
+        assert_eq!(big.rotate_amount_unsigned(64), 1);
+        assert_eq!(big.rotate_amount_unsigned(7), (((1u64 << 32) + 1) % 7) as u32);
+        assert_eq!(Int::from(5u64).shift_amount_unsigned(), 5);
+        assert_eq!(Int::from(u32::MAX as u64).shift_amount_unsigned(), u32::MAX);
+        assert_eq!(Int::from(u128::MAX).shift_amount_unsigned(), u32::MAX);
+        assert_eq!(Int::from(70u8).rotate_amount_unsigned(64), 6);
+        assert_eq!(Int::from_bits(3, 7).shift_amount_unsigned(), 7);
     }
 
     #[test]
     #[should_panic]
-    fn rotate_amount_of_width_zero_panics() {
-        Int::from(1u8).rotate_amount(0);
+    fn rotate_amount_unsigned_of_width_zero_panics() {
+        Int::from(1u8).rotate_amount_unsigned(0);
     }
 
     #[test]
@@ -961,6 +1071,6 @@ mod tests {
     #[test]
     #[should_panic]
     fn fold_isize_requires_64_bit_operands() {
-        let _ = super::fold_isize([Int::from(1u32)], |[p]| Some(p));
+        let _ = fold_isize([Int::from(1u32)], IsizeFold::PointerWidth, |[p]| Some(p));
     }
 }

@@ -53,7 +53,7 @@ pub use self::{
         UnsafeIntrusiveMapEntityRef,
     },
     ident::{FunctionIdent, Ident, IdentAttr},
-    int::{Int, fold_isize},
+    int::{Int, IsizeFold, fold_isize},
     int_range::{ConstantIntRange, IntegerRangeConfidence, IntegerValueRange},
     op::{BuildableOp, GenericSuccessorLayout, Op, OpExt, OpRegistration},
     operands::{
