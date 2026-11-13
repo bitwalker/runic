@@ -45,10 +45,9 @@ pub const LOOP_EXIT_DISTANCE: u32 = 100_000;
 /// 2. If the block has any successors, take the `meet` of the `live_in` sets across all successors,
 ///    after incrementing the next-use distances in each set by 1 (for normal blocks) or by
 ///    [LOOP_EXIT_DISTANCE] (if the edge from the current block to the successor is exiting a
-///    loop). Additionally, all
-///    block parameters of each successor are removed from its `live_in` set (since by definition
-///    those values cannot be live before they are defined). The `meet` of these sets then becomes
-///    the initial `live_out` set for the current block.
+///    loop). Additionally, all block parameters of each successor are removed from its `live_in`
+///    set (since by definition those values cannot be live before they are defined). The `meet`
+///    of these sets then becomes the initial `live_out` set for the current block.
 /// 3. Start visiting ops in the block bottom-up. The `live_out` set for the block terminator
 ///    inherits the `live_out` set computed in steps 1 and 2.
 /// 4. At the block terminator, the `live_out` set is inherited from the block `live_out` set. The

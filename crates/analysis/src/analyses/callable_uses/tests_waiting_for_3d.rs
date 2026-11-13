@@ -1,6 +1,6 @@
 // Tests of `CallableUseSnapshot` that wait for stage 3d or later, moved here unchanged from the
-// test module of `analyses/callable_uses.rs`. This file is not declared as a module and is not compiled. Each
-// needs:
+// test module of `analyses/callable_uses.rs`. This file is not declared as a module and is not
+// compiled. Each needs:
 //
 // - `alias_use_queries_separate_callers_exposure_and_address_taking`: `builtin.call` (written with
 //   `hir.exec`), and an operation that takes a function's address (written with

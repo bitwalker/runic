@@ -1,5 +1,6 @@
 // Tests of `DeadCodeAnalysis` that wait for stage 3d or later, moved here unchanged from the test
-// module of `analyses/dce.rs`. This file is not declared as a module and is not compiled. Each needs:
+// module of `analyses/dce.rs`. This file is not declared as a module and is not compiled. Each
+// needs:
 //
 // - `private_alias_chain_resolves_callsites_and_propagates_constants`: `builtin.call` (written with
 //   `hir.exec`).

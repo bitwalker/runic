@@ -1093,13 +1093,42 @@ mod tests {
         ("ashr", |b, x, y| b.ashr(x, y, SPAN)),
     ];
 
-    const UNSIGNED_DIVISIONS: [(&str, Build); 3] = [
+    const UNSIGNED_DIVISIONS: [(&str, Build); 4] = [
         ("udiv", |b, x, y| b.udiv(x, y, SPAN)),
         ("urem", |b, x, y| b.urem(x, y, SPAN)),
         ("srem", |b, x, y| b.srem(x, y, SPAN)),
+        ("udivrem", |b, x, y| Ok(b.udivrem(x, y, SPAN)?.0)),
     ];
 
-    const SIGNED_DIVISIONS: [(&str, Build); 1] = [("sdiv", |b, x, y| b.sdiv(x, y, SPAN))];
+    const SIGNED_DIVISIONS: [(&str, Build); 2] = [
+        ("sdiv", |b, x, y| b.sdiv(x, y, SPAN)),
+        ("sdivrem", |b, x, y| Ok(b.sdivrem(x, y, SPAN)?.0)),
+    ];
+
+    /// `add`, `sub` and `mul` in the wrapping mode, which accept every value.
+    const WRAPPING: [(&str, Build); 3] = [
+        ("add", |b, x, y| ArithOpBuilder::add(b, x, y, SPAN)),
+        ("sub", |b, x, y| ArithOpBuilder::sub(b, x, y, SPAN)),
+        ("mul", |b, x, y| ArithOpBuilder::mul(b, x, y, SPAN)),
+    ];
+
+    /// `add`, `sub` and `mul` in a checked or unchecked mode, whose requirement is unexpressed.
+    const NOT_WRAPPING: [(&str, Build); 6] = [
+        ("add checked signed", |b, x, y| b.add_checked(x, y, Signedness::Signed, SPAN)),
+        ("add unchecked unsigned", |b, x, y| {
+            ArithOpBuilder::add_unchecked(b, x, y, Signedness::Unsigned, SPAN)
+        }),
+        ("sub checked unsigned", |b, x, y| {
+            b.sub_checked(x, y, Signedness::Unsigned, SPAN)
+        }),
+        ("sub unchecked signed", |b, x, y| {
+            ArithOpBuilder::sub_unchecked(b, x, y, Signedness::Signed, SPAN)
+        }),
+        ("mul checked signed", |b, x, y| b.mul_checked(x, y, Signedness::Signed, SPAN)),
+        ("mul unchecked unsigned", |b, x, y| {
+            ArithOpBuilder::mul_unchecked(b, x, y, Signedness::Unsigned, SPAN)
+        }),
+    ];
 
     /// The type of width `width`, or `isize` for 0.
     fn ty_of(context: &Context, width: u32) -> Type {
@@ -1155,15 +1184,18 @@ mod tests {
         (holds, folds)
     }
 
-    /// For the shifts and the divisions whose only requirement is on the divisor, at widths 1 to
-    /// 128 with constant operands on the edges: the requirements hold exactly when the operation
-    /// folds, that is, when it neither traps nor is undefined. A signed division never holds.
+    /// For the shifts, the divisions whose only requirement is on the divisor and the wrapping
+    /// `add`, `sub` and `mul`, at widths 1 to 128 with constant operands on the edges: the
+    /// requirements hold exactly when the operation folds, that is, when it neither traps nor is
+    /// undefined. A signed division, and an `add`, `sub` or `mul` that does not wrap, never holds.
     #[test]
     fn requirements_on_constants_hold_exactly_when_the_operation_is_defined() {
         let mut rng = Rng(0x00b3_5eed);
         let mut disagreements = Vec::new();
         for width in [1u32, 2, 7, 8, 32, 64, 127, 128] {
-            for (name, build) in SHIFTS.iter().chain(UNSIGNED_DIVISIONS.iter()) {
+            for (name, build) in
+                SHIFTS.iter().chain(UNSIGNED_DIVISIONS.iter()).chain(WRAPPING.iter())
+            {
                 for _ in 0..40 {
                     let lhs = edge(&mut rng, width);
                     let rhs = edge(&mut rng, width);
@@ -1175,7 +1207,7 @@ mod tests {
                     }
                 }
             }
-            for (name, build) in SIGNED_DIVISIONS {
+            for (name, build) in SIGNED_DIVISIONS.into_iter().chain(NOT_WRAPPING) {
                 for _ in 0..40 {
                     let lhs = edge(&mut rng, width);
                     let rhs = edge(&mut rng, width);
@@ -1238,8 +1270,8 @@ mod tests {
 
     /// Each requirement on an operand that `arith` states as a range, read against a brute-force
     /// model at small widths: every divisor or amount inside the range is one the operation folds
-    /// for with every dividend (except `MIN / -1` for `sdiv`, whose requirement on the dividend
-    /// is unexpressed), and every value outside is one it never folds for.
+    /// for with every dividend (except `MIN / -1` for `sdiv` and `sdivrem`, whose requirement on the
+    /// dividend is unexpressed), and every value outside is one it never folds for.
     #[test]
     fn stated_requirements_match_execution_at_small_widths() {
         for width in [1u32, 2, 3, 5, 8] {
@@ -1259,7 +1291,7 @@ mod tests {
                 };
                 let op = result.borrow().get_defining_op().unwrap();
                 let op = op.borrow();
-                let expected_lhs = if *name == "sdiv" {
+                let expected_lhs = if name.starts_with("sdiv") {
                     OperandRangeRequirement::Unexpressed
                 } else {
                     OperandRangeRequirement::None
@@ -1289,7 +1321,7 @@ mod tests {
                             !folds_for_some,
                             "{name} i{width} rhs={rhs} is outside but defined"
                         );
-                    } else if *name != "sdiv" || rhs != n - 1 {
+                    } else if !name.starts_with("sdiv") || rhs != n - 1 {
                         assert!(folds_for_all, "{name} i{width} rhs={rhs} is inside but traps");
                     } else {
                         // -1 divides every dividend but the minimum (at `i1`, -1 itself)
