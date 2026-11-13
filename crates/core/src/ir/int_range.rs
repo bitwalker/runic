@@ -418,23 +418,15 @@ impl IntegerValueRange {
     }
 
     /// Refine with an explicit runtime-checked range in the result's representation.
-    /// Cross-width refinement does not model sign extension.
     ///
-    /// The widths differ only for a value that went through an unrealized conversion cast, whose
-    /// result keeps its source's range. The operand is then taken to keep its unsigned value
-    /// across the width change, and its unsigned bounds are intersected with the checked range.
+    /// A range of another width says nothing about the value being checked, so the answer is
+    /// then the checked range.
     pub fn refined_by(&self, range: &ConstantIntRange) -> Self {
         let Some(current) = self.value else {
             return Self::uninitialized();
         };
         let narrowed = if current.width == range.width {
             current.intersection(range)
-        } else if !current.is_untracked() && !range.is_untracked() {
-            let umin = current.umin.max(range.umin);
-            let umax = current.umax.min(range.umax);
-            (umin <= umax)
-                .then(|| ConstantIntRange::from_unsigned(range.width, umin, umax))
-                .and_then(|current| current.intersection(range))
         } else {
             None
         };
@@ -632,12 +624,14 @@ mod tests {
         }
     }
 
+    /// A range of another width says nothing about the value being checked: the full range of
+    /// `i8` refined by the full range of `i32` is the full range of `i32`.
     #[test]
-    fn a_full_width_range_is_narrowed_by_a_wider_checked_range() {
+    fn a_full_width_range_says_nothing_about_a_wider_checked_range() {
         let context = Context::default();
         let full = IntegerValueRange::max_for_type(context.i8());
-        let refined = full.refined_by(&ConstantIntRange::max_for_type(context.i32()));
-        assert_eq!(refined.range(), Some(&ConstantIntRange::from_unsigned(32, 0, 255)));
+        let checked = ConstantIntRange::max_for_type(context.i32());
+        assert_eq!(full.refined_by(&checked).range(), Some(&checked));
     }
 
     #[test]
@@ -694,16 +688,20 @@ mod tests {
         assert_eq!(lhs.intersection(&rhs), None);
     }
 
+    /// Refinement waits for its input, keeps the bounds of an input of the checked width, and
+    /// gives the checked range for an input of another width, however precise.
     #[test]
-    fn refinement_waits_for_input_and_preserves_bounds() {
+    fn refinement_waits_for_input_and_preserves_bounds_of_its_width() {
         let context = Context::default();
         let range = ConstantIntRange::max_for_type(context.i32());
         assert!(IntegerValueRange::uninitialized().refined_by(&range).is_uninitialized());
-        let precise = IntegerValueRange::new(ConstantIntRange::from_unsigned(64, 0, 10));
+        let precise = IntegerValueRange::new(ConstantIntRange::from_unsigned(32, 0, 10));
         assert_eq!(
             precise.refined_by(&range).range(),
             Some(&ConstantIntRange::from_unsigned(32, 0, 10))
         );
+        let wider = IntegerValueRange::new(ConstantIntRange::from_unsigned(64, 0, 10));
+        assert_eq!(wider.refined_by(&range).range(), Some(&range));
         let disjoint = IntegerValueRange::constant(Int::from(u64::MAX));
         assert_eq!(
             disjoint.refined_by(&range),
@@ -711,33 +709,41 @@ mod tests {
         );
     }
 
+    /// An input of the checked width keeps its bounds; an input of another width, narrower or
+    /// wider, gives the checked range.
     #[test]
-    fn explicit_refinement_keeps_the_input_bounds_at_any_width() {
+    fn explicit_refinement_keeps_the_input_bounds_only_at_the_checked_width() {
         let checked = ConstantIntRange::from_unsigned(32, 0, 2_147_483_647);
-        for input in [
-            ConstantIntRange::from_unsigned(8, 0, 3),
-            ConstantIntRange::from_unsigned(32, 0, 3),
-            ConstantIntRange::from_unsigned(64, 0, 3),
+        for (input, expected) in [
+            (ConstantIntRange::from_unsigned(8, 0, 3), checked),
+            (
+                ConstantIntRange::from_unsigned(32, 0, 3),
+                ConstantIntRange::from_unsigned(32, 0, 3),
+            ),
+            (ConstantIntRange::from_unsigned(64, 0, 3), checked),
         ] {
             assert_eq!(
                 IntegerValueRange::new(input).refined_by(&checked),
-                IntegerValueRange::new(ConstantIntRange::from_unsigned(32, 0, 3))
+                IntegerValueRange::new(expected)
             );
         }
         assert!(IntegerValueRange::uninitialized().refined_by(&checked).is_uninitialized());
     }
 
     #[test]
-    fn cross_width_refinement_preserves_declared_signed_bounds() {
+    fn refinement_preserves_declared_signed_bounds() {
         // The declared raw interval spans all eight-bit values, but its signed bounds exclude
-        // 6..=250. A wider input must not erase that part of the runtime check.
+        // 6..=250. Refinement must not erase that part of the runtime check: an input of the
+        // checked width is narrowed by both, and an input of another width gives the check.
         let checked = ConstantIntRange::from_signed(8, -5, 5);
         for (min, max, expected) in [
             (0, 200, ConstantIntRange::from_unsigned(8, 0, 5)),
             (128, 255, ConstantIntRange::from_signed(8, -5, -1)),
         ] {
-            let input = IntegerValueRange::new(ConstantIntRange::from_unsigned(64, min, max));
+            let input = IntegerValueRange::new(ConstantIntRange::from_unsigned(8, min, max));
             assert_eq!(input.refined_by(&checked), IntegerValueRange::new(expected));
+            let wider = IntegerValueRange::new(ConstantIntRange::from_unsigned(64, min, max));
+            assert_eq!(wider.refined_by(&checked), IntegerValueRange::new(checked));
         }
     }
 

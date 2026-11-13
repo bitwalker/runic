@@ -408,23 +408,46 @@ mod tests {
         Ok(())
     }
 
+    /// An unrealized cast to an integer type of the same width keeps its source's range.
     #[test]
-    fn unrealized_conversion_cast_preserves_input_range() -> Result<(), Report> {
-        let mut test =
-            Test::new("unrealized_conversion_cast_preserves_input_range", |cx| ([], [cx.i32()]));
+    fn an_unrealized_cast_to_the_same_width_keeps_the_range() -> Result<(), Report> {
+        let mut test = Test::new("cast_same_width", |cx| ([], [cx.i32()]));
         let cast = {
             let i32 = test.context().i32();
             let mut builder = test.function_builder();
-            let raw = builder.i64(1 << 32, SPAN);
+            let raw = builder.i32(7, SPAN);
             let cast = builder.unrealized_conversion_cast(raw, i32, SPAN)?;
             builder.ret([cast], SPAN)?;
             cast
         };
 
         let solver = run_integer_range_analysis(&test)?;
-        let range = range_for(&solver, cast);
-        assert_eq!(range.umin(), 1 << 32);
-        assert_eq!(range.umax(), 1 << 32);
+        assert_eq!(range_for(&solver, cast), ConstantIntRange::from_unsigned(32, 7, 7));
+
+        Ok(())
+    }
+
+    /// An unrealized cast says nothing about how a value of one width becomes a value of another,
+    /// so its result has the range of its own type: `1 << 32` cast from `i64` to `i32`, and `5`
+    /// cast from `i8` to `i32`.
+    #[test]
+    fn an_unrealized_cast_to_another_width_has_the_range_of_its_type() -> Result<(), Report> {
+        let mut test = Test::new("cast_other_width", |cx| ([], [cx.i32(), cx.i32()]));
+        let (narrowed, widened) = {
+            let i32 = test.context().i32();
+            let mut builder = test.function_builder();
+            let wide = builder.i64(1 << 32, SPAN);
+            let narrowed = builder.unrealized_conversion_cast(wide, i32, SPAN)?;
+            let narrow = builder.i8(5, SPAN);
+            let widened = builder.unrealized_conversion_cast(narrow, i32, SPAN)?;
+            builder.ret([narrowed, widened], SPAN)?;
+            (narrowed, widened)
+        };
+
+        let solver = run_integer_range_analysis(&test)?;
+        let top = ConstantIntRange::max_for_type(test.context().i32());
+        assert_eq!(range_for(&solver, narrowed), top);
+        assert_eq!(range_for(&solver, widened), top);
 
         Ok(())
     }
@@ -673,9 +696,10 @@ mod tests {
         Ok(())
     }
 
-    /// An unrealized cast hands an `i32` value the range of its `i64` source, whose signed bounds
-    /// are those of a 64-bit number. A signed comparison of the `i32` values must not order them
-    /// by those bounds.
+    /// `u32::MAX` and `1` as `i64`, each cast to `i32`. The casts give their results the range of
+    /// `i32`, since nothing says how the conversion is realized, so the signed comparison of the
+    /// `i32` values stays undecided: ordering them by the `i64` bounds would say `false`, though
+    /// `0xffffffff` is `-1` as an `i32`.
     #[test]
     fn regression_signed_comparison_does_not_reuse_wider_signed_bounds() -> Result<(), Report> {
         let mut test = Test::new("signed_cast_comparison", |cx| ([], [cx.i1()]));
@@ -691,8 +715,94 @@ mod tests {
             comparison
         };
         let solver = run_integer_range_analysis(&test)?;
-        // In i32, 0xffffffff is -1, so a false-only range is unsound.
         assert_eq!(range_for(&solver, comparison).umax(), 1);
+        Ok(())
+    }
+
+    /// `%x: i8` through an unrealized cast to `i32`, joined with the `i32` constant 5 as the
+    /// result of an `scf.if`, compared `ult 256` and checked into `0 ..= u32::MAX`.
+    fn cast_joined_with_a_constant() -> Result<(Test, ValueRef, ValueRef, ValueRef), Report> {
+        let mut test = Test::new("cast_join", |cx| ([cx.i1(), cx.i8()], [cx.i1()]));
+        let (joined, comparison, checked) = {
+            let cond = argument(&test, 0);
+            let narrow = argument(&test, 1);
+            let i32 = test.context().i32();
+            let mut builder = test.function_builder();
+            let entry = builder.current_block();
+            let cast = builder.unrealized_conversion_cast(narrow, i32, SPAN)?;
+            let if_op = builder.r#if(cond, &[i32], SPAN)?;
+            let joined = if_op.as_operation_ref().borrow().results()[0] as ValueRef;
+            let (then_region, else_region) = {
+                let if_op = if_op.borrow();
+                (if_op.then_body().as_region_ref(), if_op.else_body().as_region_ref())
+            };
+            let then_block = builder.create_block_in_region(then_region);
+            builder.switch_to_block(then_block);
+            builder.r#yield([cast], SPAN)?;
+            let else_block = builder.create_block_in_region(else_region);
+            builder.switch_to_block(else_block);
+            let five = builder.i32(5, SPAN);
+            builder.r#yield([five], SPAN)?;
+            builder.switch_to_block(entry);
+            let limit = builder.i32(256, SPAN);
+            let comparison = builder.ult(joined, limit, SPAN)?;
+            let checked = check_range(&mut builder, cast, 0, u32::MAX as u128)?;
+            builder.ret([comparison], SPAN)?;
+            (joined, comparison, checked)
+        };
+        Ok((test, joined, comparison, checked))
+    }
+
+    /// The cast's result has the range of `i32`, not the `i8` range of its source: joined with a
+    /// constant it stays the full range, the comparison is not decided, and the check gives the
+    /// checked range. Any of these taken from the source's range would be wrong if the cast were
+    /// realized as a sign extension.
+    #[test]
+    fn a_cast_to_another_width_has_the_range_of_its_type() -> Result<(), Report> {
+        let (test, joined, comparison, checked) = cast_joined_with_a_constant()?;
+        let solver = run_integer_range_analysis(&test)?;
+        let top = ConstantIntRange::max_for_type(test.context().i32());
+        assert_eq!(range_for(&solver, joined), top);
+        let comparison = range_for(&solver, comparison);
+        assert_eq!((comparison.umin(), comparison.umax()), (0, 1));
+        assert_eq!(range_for(&solver, checked), top);
+        Ok(())
+    }
+
+    /// `%y: i32` cast from an `i8` argument, joined with the `i32` constant 5 through a block
+    /// argument `%j`: `arith.cmpi ult %j, 256` is not decided, since nothing says how the cast
+    /// turns an `i8` into an `i32`.
+    #[test]
+    fn a_cast_joined_through_a_block_argument_does_not_decide_a_comparison() -> Result<(), Report> {
+        let mut test = Test::new("cast_block_join", |cx| ([cx.i1(), cx.i8()], [cx.i1()]));
+        let (joined, comparison) = {
+            let cond = argument(&test, 0);
+            let narrow = argument(&test, 1);
+            let i32 = test.context().i32();
+            let mut builder = test.function_builder();
+            let cast = builder.unrealized_conversion_cast(narrow, i32, SPAN)?;
+            let from_cast = builder.create_block();
+            let from_constant = builder.create_block();
+            let join = builder.create_block();
+            let joined = builder.append_block_param(join, i32, SPAN);
+            builder.cond_br(cond, from_cast, [], from_constant, [], SPAN)?;
+            builder.switch_to_block(from_cast);
+            builder.br(join, [cast], SPAN)?;
+            builder.switch_to_block(from_constant);
+            let five = builder.i32(5, SPAN);
+            builder.br(join, [five], SPAN)?;
+            builder.switch_to_block(join);
+            let limit = builder.i32(256, SPAN);
+            let comparison = builder.ult(joined, limit, SPAN)?;
+            builder.ret([comparison], SPAN)?;
+            (joined, comparison)
+        };
+
+        let solver = run_integer_range_analysis(&test)?;
+        let top = ConstantIntRange::max_for_type(test.context().i32());
+        assert_eq!(range_for(&solver, joined), top);
+        let comparison = range_for(&solver, comparison);
+        assert_eq!((comparison.umin(), comparison.umax()), (0, 1));
         Ok(())
     }
 

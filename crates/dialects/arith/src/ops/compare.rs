@@ -135,8 +135,7 @@ pub(crate) fn infer_comparison_range(
     }
 
     if lhs.width() != ConstantIntRange::max_for_type(operand_ty).width() {
-        // Unrealized casts preserve the source's bounds. Those signed bounds
-        // cannot be used to order values interpreted at a different width.
+        // Bounds at a width other than the operand type's cannot order values of that type.
         return top();
     }
 

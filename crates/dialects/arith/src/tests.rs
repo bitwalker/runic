@@ -26,6 +26,7 @@ mod folds;
 mod model;
 mod patterns;
 mod random;
+mod range_soundness;
 mod text;
 
 type TypeFn = fn(&Context) -> Type;

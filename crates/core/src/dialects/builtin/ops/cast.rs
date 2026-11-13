@@ -43,6 +43,17 @@ impl InferIntRangeInterface for UnrealizedConversionCast {
         let Some(range) = operands.first() else {
             return;
         };
-        set_result_range(self.result().as_value_ref(), range.clone());
+        // The cast says nothing about how a value of one type becomes a value of another (a
+        // zero extension, a sign extension, a truncation or anything else), so the source's
+        // range is a fact about the result only when both are integers of one width. Otherwise
+        // the result has the range of its type, untracked for a type the analysis does not
+        // track.
+        let top = crate::ConstantIntRange::max_for_type(self.result().ty());
+        let range = match range.range() {
+            None => range.clone(),
+            Some(source) if !top.is_untracked() && source.width() == top.width() => range.clone(),
+            Some(_) => crate::IntegerValueRange::new(top),
+        };
+        set_result_range(self.result().as_value_ref(), range);
     }
 }
