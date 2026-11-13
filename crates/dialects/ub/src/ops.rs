@@ -48,6 +48,35 @@ impl InferTypeOpInterface for Poison {
     }
 }
 
+/// A poison value has the type its attribute names. The generated setters do not maintain this:
+/// `set_value` replaces the attribute and leaves the result as it was.
+///
+/// The check hangs on [InferTypeOpInterface] because [ConstantLike] cannot carry it: the
+/// `#[operation_trait]` macro gives every such trait a blanket `Verify` impl that an operation
+/// cannot specialize.
+impl Verify<dyn InferTypeOpInterface> for Poison {
+    fn verify(&self, _context: &Context) -> Result<(), Report> {
+        let attr_ty = *self.get_value();
+        let result_ty = self.result().ty();
+        if attr_ty == result_ty {
+            return Ok(());
+        }
+        Err(runic_core::diagnostics::report!(
+            message: "invalid operation",
+            labels: [
+                primary(
+                    self.as_operation().span(),
+                    alloc::format!(
+                        "the result of '{}' has type `{result_ty}`, but its value has type \
+                         `{attr_ty}`",
+                        self.as_operation().name()
+                    )
+                ),
+            ],
+        ))
+    }
+}
+
 /// This operation represents an assertion that a specific program point should never be dynamically
 /// reachable.
 ///

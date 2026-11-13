@@ -55,13 +55,16 @@ impl Dialect for UndefinedBehaviorDialect {
 #[cfg(test)]
 mod tests {
     use alloc::{
+        fmt::format,
         format,
         rc::Rc,
         string::{String, ToString},
+        vec::Vec,
     };
 
     use runic_core::{
         Context, Int, Op, OpFoldResult, OperationRef, SmallVec, SourceSpan, Type, Value,
+        diagnostics::{Diagnostic, Label, VisitDiagnostic},
         dialects::builtin::BuiltinOpBuilder,
         effects::MemoryEffect,
         print::AsmPrinter,
@@ -81,6 +84,21 @@ mod tests {
             .front()
             .as_pointer()
             .expect("a first operation")
+    }
+
+    /// The message of every label attached to `diagnostic`.
+    fn label_messages(diagnostic: &dyn Diagnostic) -> Vec<String> {
+        struct Labels(Vec<String>);
+
+        impl VisitDiagnostic for Labels {
+            fn label(&mut self, label: Label<'_>) {
+                self.0.push(label.message.map(format).unwrap_or_default());
+            }
+        }
+
+        let mut labels = Labels(Vec::new());
+        diagnostic.visit(&mut labels);
+        labels.0
     }
 
     /// Builds `f`, which returns poison of the type `ty` makes, verifies it and returns its text.
@@ -132,16 +150,53 @@ mod tests {
     }
 
     #[test]
-    fn poison_result_is_the_attribute_type() {
-        let (test, _) = build(|cx| cx.ptr_type(cx.i32()));
+    fn poison_verifies_its_result_against_its_attribute() {
+        let (test, _) = build(Context::i32);
         let context = test.context_rc();
-        let op = first_op(&test);
+        let mut op = first_op(&test);
+        {
+            let mut op = op.borrow_mut();
+            let poison = op.downcast_mut::<Poison>().unwrap();
+            poison.set_value(context.i64());
+            assert_eq!(*poison.get_value(), context.i64());
+            assert_eq!(poison.result().ty(), context.i32());
+        }
+        let err = op.borrow().verify().expect_err("the types differ");
+        assert_eq!(err.to_string(), "invalid operation");
+        assert_eq!(
+            label_messages(err.as_diagnostic()),
+            ["the result of 'ub.poison' has type `i32`, but its value has type `i64`"]
+        );
+
+        // Restoring the attribute's type makes the operation valid again.
+        {
+            let mut op = op.borrow_mut();
+            op.downcast_mut::<Poison>().unwrap().set_value(context.i32());
+        }
+        op.borrow().verify().expect("valid again");
+    }
+
+    #[test]
+    fn the_default_poison_attribute_has_the_unknown_type() {
+        let context = Rc::new(Context::default());
+        context.get_or_register_dialect::<UndefinedBehaviorDialect>();
+        let attr = context.get_registered_attribute_name::<PoisonAttr>().create_default(&context);
+        let attr = attr.borrow();
+        assert_eq!(*attr.downcast_ref::<PoisonAttr>().unwrap().as_value(), context.unknown_type());
+    }
+
+    #[test]
+    fn a_body_less_poison_attribute_is_poison_of_the_unknown_type() {
+        let context = Rc::new(Context::default());
+        context.get_or_register_dialect::<UndefinedBehaviorDialect>();
+        let text = "builtin.function public extern(\"C\") @f() {\n    %0 = ub.poison <{ value = \
+                    #ub.poison }>;\n    builtin.ret;\n};";
+        let (function, _) = parse_function_fixpoint(&context, "f", text).expect("parses");
+        let op = function.borrow().body().entry().body().front().as_pointer().unwrap();
         let op = op.borrow();
-        let poison = op.downcast_ref::<Poison>().unwrap();
-        let expected = context.ptr_type(context.i32());
-        assert_eq!(*poison.get_value(), expected);
-        assert_eq!(poison.result().ty(), expected);
-        assert!(op.implements::<dyn ConstantLike>());
+        let poison = op.downcast_ref::<Poison>().expect("a ub.poison");
+        assert_eq!(*poison.get_value(), context.unknown_type());
+        assert_eq!(poison.result().ty(), context.unknown_type());
     }
 
     #[test]
@@ -153,6 +208,7 @@ mod tests {
         let attr = {
             let op = first_op(&test);
             let op = op.borrow();
+            assert!(op.implements::<dyn ConstantLike>());
             let poison = op.downcast_ref::<Poison>().unwrap();
             let mut results = SmallVec::<[OpFoldResult; 1]>::new();
             assert!(poison.fold(&mut results).is_ok());
