@@ -77,6 +77,10 @@ impl TypeLayout for ArrayType {
 
 /// An array's elements are `0..len`, all of its element type.
 impl AggregateType for ArrayType {
+    fn element_count(&self) -> u64 {
+        self.len()
+    }
+
     fn element_type(&self, index: u32) -> Option<Type> {
         (u64::from(index) < self.len()).then(|| self.element())
     }
@@ -84,6 +88,10 @@ impl AggregateType for ArrayType {
 
 /// A struct's elements are its fields.
 impl AggregateType for StructType {
+    fn element_count(&self) -> u64 {
+        self.fields().len() as u64
+    }
+
     fn element_type(&self, index: u32) -> Option<Type> {
         let index = usize::try_from(index).ok()?;
         self.fields().get(index).map(|field| field.ty)
@@ -93,6 +101,10 @@ impl AggregateType for StructType {
 /// An enum's element 0 is its discriminant, and element `1 + v` is the payload of variant `v`;
 /// a variant without a payload has no element.
 impl AggregateType for EnumType {
+    fn element_count(&self) -> u64 {
+        1 + self.variants().len() as u64
+    }
+
     fn element_type(&self, index: u32) -> Option<Type> {
         match index.checked_sub(1) {
             None => Some(self.discriminant()),
@@ -114,8 +126,14 @@ fn stated_align(bytes: core::num::NonZeroU16) -> Align {
 /// A field's alignment is its type's, capped by `packed(P)` and then raised by the field's own
 /// `align(F)`; `align(N)` raises the struct's. A `transparent` struct is laid out as its one
 /// field.
+///
+/// Panics if the struct fails [StructType::validate], which only a struct interned without its
+/// check can (through `Context::intern_type`).
 impl TypeLayout for StructType {
     fn layout(&self, ty: Type, layout: &DataLayout) -> Result<Layout, LayoutError> {
+        if let Err(error) = self.validate() {
+            panic!("type '{ty}' is not a valid struct and has no layout: {error}");
+        }
         if self.repr() == StructRepr::Transparent {
             let field = layout.layout_of(self.fields()[0].ty)?;
             return Ok(Layout::new(field.size(), field.align(), FieldsShape::Offsets([0].into())));

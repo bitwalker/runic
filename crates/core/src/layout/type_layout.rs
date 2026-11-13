@@ -116,8 +116,12 @@ impl From<LayoutError> for Report {
 /// [DataLayout::layout_of] asks it for its layout once per specification and keeps the answer.
 pub trait TypeLayout {
     /// The layout of `ty`, the type whose value `self` is, under `layout`. A type holding other
-    /// types by value asks `layout` for theirs with [DataLayout::layout_of] and returns their
-    /// errors unchanged.
+    /// types by value asks `layout` for theirs with [DataLayout::layout_of].
+    ///
+    /// An implementation must return the error of a type it asks about unchanged, and must not
+    /// recover from one (with a fallback layout, say): while a type is being laid out, a query
+    /// that reaches it again answers [LayoutError::InfiniteSize], and an answer built on that
+    /// error would be cached differently depending on which type was asked first.
     fn layout(&self, ty: Type, layout: &DataLayout) -> Result<Layout, LayoutError>;
 }
 
@@ -125,8 +129,14 @@ pub trait TypeLayout {
 ///
 /// An array's elements are `0..len`; a struct's are its fields; an enum's element 0 is its
 /// discriminant and element `1 + v` is the payload of variant `v`. A type that also implements
-/// [TypeLayout] lays out each element at the offset its [Layout::fields] gives for that index.
+/// [TypeLayout] lays out each element at the offset its [Layout::fields] gives for that index,
+/// and its [FieldsShape] must give an offset for every index below [Self::element_count].
 pub trait AggregateType {
-    /// The type of element `index`, or `None` if there is no such element.
+    /// The number of element indices: an array's length, a struct's field count, an enum's
+    /// `1 + variants`. An array longer than `u32::MAX` has elements that no index names.
+    fn element_count(&self) -> u64;
+
+    /// The type of element `index`. `None` for every `index` at or above [Self::element_count],
+    /// and possibly below it: an enum variant without a payload has an index but no element.
     fn element_type(&self, index: u32) -> Option<Type>;
 }

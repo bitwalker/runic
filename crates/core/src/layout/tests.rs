@@ -1407,6 +1407,62 @@ fn elements_of_aggregates() {
     }
 }
 
+/// An array's length, a struct's field count, an enum's `1 + variants`; an array longer than
+/// `u32::MAX` answers for every index, and has elements that no index names.
+#[test]
+fn the_element_count_of_aggregates() {
+    let context = context();
+    let cx = &*context;
+    let count = |ty: Type| ty.as_trait::<dyn AggregateType>().unwrap().element_count();
+    assert_eq!(count(cx.array_type(cx.i16(), 2)), 2);
+    assert_eq!(count(cx.array_type(cx.i16(), 0)), 0);
+    assert_eq!(count(parse_ty(&context, "struct<i8, f64>")), 2);
+    assert_eq!(count(parse_ty(&context, "struct<>")), 0);
+    assert_eq!(count(parse_ty(&context, "enum<i8; a: i32, b, c: f32>")), 4);
+    assert_eq!(count(parse_ty(&context, "enum<i32>")), 1);
+
+    let long = cx.array_type(cx.i8(), 1 << 33);
+    assert_eq!(count(long), 1 << 33);
+    let aggregate = long.as_trait::<dyn AggregateType>().unwrap();
+    assert_eq!(aggregate.element_type(u32::MAX), Some(cx.i8()));
+}
+
+/// A struct interned through `Context::intern_type` skips the check `validate` makes; its layout
+/// is a panic that says so, never a layout.
+#[test]
+fn the_layout_of_a_struct_that_skipped_its_check_panics() {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    let context = context();
+    let cx = &*context;
+    let layout = data_layout(&context, LITTLE_32);
+    let three = core::num::NonZeroU16::new(3).unwrap();
+    let invalid = [
+        StructType::new([]).with_repr(StructRepr::Transparent),
+        StructType::new([cx.i8().into(), cx.i8().into()]).with_repr(StructRepr::Transparent),
+        StructType::new([cx.i8().into()]).with_repr(StructRepr::Align(three)),
+        StructType::new([cx.i8().into()]).with_repr(StructRepr::Packed(three)),
+        StructType::new([StructField::new(cx.i8()).aligned(three)]),
+    ];
+    for ty in invalid {
+        let error = ty.validate().expect_err("the check refuses it");
+        let ty = cx.intern_type(ty);
+        let panic =
+            catch_unwind(AssertUnwindSafe(|| layout.layout_of(ty))).expect_err("the layout panics");
+        let message = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied())
+            .unwrap_or_default();
+        assert_eq!(
+            message,
+            format!("type '{ty}' is not a valid struct and has no layout: {error}"),
+            "{ty}"
+        );
+        assert!(layout.is_idle());
+    }
+}
+
 #[test]
 fn offsets_of_elements() {
     let context = context();

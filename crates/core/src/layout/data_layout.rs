@@ -190,6 +190,16 @@ impl DataLayout {
             Err(LayoutError::InfiniteSize(_)) => Err(LayoutError::InfiniteSize(ty)),
             answer => answer,
         };
+        #[cfg(debug_assertions)]
+        if let (Ok(laid_out), Some(aggregate)) = (&answer, ty.as_trait::<dyn AggregateType>()) {
+            let count = aggregate.element_count();
+            assert!(
+                count == 0 || laid_out.fields().offset(count - 1).is_some(),
+                "the layout of '{ty}' has no offset for its element {}, though it has {count} \
+                 elements",
+                count - 1
+            );
+        }
         self.remember(ty, answer)
     }
 
@@ -221,7 +231,9 @@ impl DataLayout {
             let at = laid_out.fields().offset(u64::from(index)).unwrap_or_else(|| {
                 panic!("the layout of '{current}' has no offset for its element {index}")
             });
-            // The element lies within `current`, which lies within `ty`, whose size is a `u64`
+            // Every element ends within its container (its offset plus its size is at most the
+            // container's size), so the offsets along a path add up to less than the size of
+            // `ty`, which is a `u64`: the sum cannot overflow
             offset += at;
             laid_out = self.layout_of(element)?;
             current = element;
