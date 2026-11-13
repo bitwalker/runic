@@ -10,8 +10,8 @@ use runic_core::{
 
 use crate::*;
 
-/// Folds a resize of the constant operand of `op` to the value `resize` maps it and the result
-/// width to, at the result type.
+/// Folds a resize of the constant operand of `op` to the value `resize` maps it and the width of
+/// a constant of the result type to, at the result type.
 ///
 /// Only a cast that satisfies `rule`, the rule its verifier checks, folds: a cast that does not
 /// verify (an `isize` operand of `trunc`, the wrong width order) is left alone.
@@ -20,13 +20,20 @@ fn fold_resize(
     operands: &[Option<AttributeRef>],
     results: &mut SmallVec<[OpFoldResult; 1]>,
     rule: CastRule,
-    resize: impl Fn(Int, u32) -> Int,
+    resize: fn(Int, u32) -> Int,
 ) -> FoldResult {
     let operand_ty = crate::fold::operand_type(op);
     let result_ty = crate::fold::result_type(op, 0);
     if rule.check(operand_ty, result_ty).is_some() {
         return FoldResult::Failed;
     }
+    // The width of a constant of the result type: 64 for `isize`. A conversion from `isize` to a
+    // fixed width `W` folds through `fold_isize` (the result is `W` bits on both targets, and they
+    // must agree). A conversion from a fixed width to `isize` has no `isize` operand, so it
+    // computes once: the operand extended or truncated to the 64 bits an `isize` constant holds.
+    // That is right for a 32-bit target as well, whose value is the truncation of the 64-bit
+    // one: extending to 64 bits and truncating to 32 gives what resizing to 32 bits directly
+    // gives, for a sign or a zero extension alike.
     let Some(width) = Int::width_for_type(result_ty) else {
         return FoldResult::Failed;
     };
@@ -35,6 +42,26 @@ fn fold_resize(
             Some(resize(a, width))
         });
     crate::fold::push_folded(results, folded.map(|attr| [attr]))
+}
+
+/// Implements [Foldable] for the cast `$Op` by [fold_resize] under `$rule` with `$resize`.
+macro_rules! fold_cast {
+    ($Op:ty, $rule:expr, $resize:expr) => {
+        impl Foldable for $Op {
+            fn fold(&self, results: &mut SmallVec<[OpFoldResult; 1]>) -> FoldResult {
+                let operands = crate::fold::operand_constants(self.as_operation());
+                self.fold_with(&operands, results)
+            }
+
+            fn fold_with(
+                &self,
+                operands: &[Option<AttributeRef>],
+                results: &mut SmallVec<[OpFoldResult; 1]>,
+            ) -> FoldResult {
+                fold_resize(self.as_operation(), operands, results, $rule, $resize)
+            }
+        }
+    };
 }
 
 /// What a cast operation requires of its operand type and its result type.
@@ -145,6 +172,7 @@ pub struct Trunc {
 }
 
 cast_type_rules!(Trunc, CastRule::Narrower);
+fold_cast!(Trunc, CastRule::Narrower, Int::trunc);
 
 impl Canonicalizable for Trunc {
     fn get_canonicalization_patterns(
@@ -152,23 +180,6 @@ impl Canonicalizable for Trunc {
         context: Rc<Context>,
     ) {
         rewrites.push(crate::canonicalization::SimplifyTruncToBool::new(context));
-    }
-}
-
-impl Foldable for Trunc {
-    fn fold(&self, results: &mut SmallVec<[OpFoldResult; 1]>) -> FoldResult {
-        let operands = crate::fold::operand_constants(self.as_operation());
-        self.fold_with(&operands, results)
-    }
-
-    fn fold_with(
-        &self,
-        operands: &[Option<AttributeRef>],
-        results: &mut SmallVec<[OpFoldResult; 1]>,
-    ) -> FoldResult {
-        fold_resize(self.as_operation(), operands, results, CastRule::Narrower, |value, width| {
-            value.trunc(width)
-        })
     }
 }
 
@@ -189,23 +200,7 @@ pub struct Zext {
 }
 
 cast_type_rules!(Zext, CastRule::Wider);
-
-impl Foldable for Zext {
-    fn fold(&self, results: &mut SmallVec<[OpFoldResult; 1]>) -> FoldResult {
-        let operands = crate::fold::operand_constants(self.as_operation());
-        self.fold_with(&operands, results)
-    }
-
-    fn fold_with(
-        &self,
-        operands: &[Option<AttributeRef>],
-        results: &mut SmallVec<[OpFoldResult; 1]>,
-    ) -> FoldResult {
-        fold_resize(self.as_operation(), operands, results, CastRule::Wider, |value, width| {
-            value.zext(width)
-        })
-    }
-}
+fold_cast!(Zext, CastRule::Wider, Int::zext);
 
 /// Sign extension to a wider fixed-width integer type `ty`: the new high bits are copies of the
 /// sign bit.
@@ -225,23 +220,7 @@ pub struct Sext {
 }
 
 cast_type_rules!(Sext, CastRule::Wider);
-
-impl Foldable for Sext {
-    fn fold(&self, results: &mut SmallVec<[OpFoldResult; 1]>) -> FoldResult {
-        let operands = crate::fold::operand_constants(self.as_operation());
-        self.fold_with(&operands, results)
-    }
-
-    fn fold_with(
-        &self,
-        operands: &[Option<AttributeRef>],
-        results: &mut SmallVec<[OpFoldResult; 1]>,
-    ) -> FoldResult {
-        fold_resize(self.as_operation(), operands, results, CastRule::Wider, |value, width| {
-            value.sext(width)
-        })
-    }
-}
+fold_cast!(Sext, CastRule::Wider, Int::sext);
 
 /// Conversion between `isize` and a fixed-width integer type `ty`, in either direction: the value
 /// is sign-extended if the target is wider than the source on the target machine, and truncated if
@@ -252,7 +231,7 @@ impl Foldable for Sext {
 #[operation(
     dialect = ArithDialect,
     traits(UnaryOp),
-    implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
+    implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
 )]
 pub struct SextOrTrunc {
     #[operand]
@@ -264,6 +243,7 @@ pub struct SextOrTrunc {
 }
 
 cast_type_rules!(SextOrTrunc, CastRule::OneIsize);
+fold_cast!(SextOrTrunc, CastRule::OneIsize, Int::sext_or_trunc);
 
 /// Conversion between `isize` and a fixed-width integer type `ty`, in either direction: the value
 /// is zero-extended if the target is wider than the source on the target machine, and truncated if
@@ -274,7 +254,7 @@ cast_type_rules!(SextOrTrunc, CastRule::OneIsize);
 #[operation(
     dialect = ArithDialect,
     traits(UnaryOp),
-    implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
+    implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
 )]
 pub struct ZextOrTrunc {
     #[operand]
@@ -286,3 +266,4 @@ pub struct ZextOrTrunc {
 }
 
 cast_type_rules!(ZextOrTrunc, CastRule::OneIsize);
+fold_cast!(ZextOrTrunc, CastRule::OneIsize, Int::zext_or_trunc);

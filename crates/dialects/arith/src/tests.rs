@@ -20,6 +20,8 @@ use runic_core::{
 
 use crate::*;
 
+mod folds;
+
 type TypeFn = fn(&Context) -> Type;
 type Builder<'a, 'f> = &'a mut FunctionBuilder<'f, OpBuilder>;
 
@@ -794,8 +796,15 @@ fn materialize_constant_installs_an_int_attr_as_it_is() {
     );
 }
 
-/// Folds the operation defining `value` and returns the integer attribute it folds to.
-fn fold_value(value: ValueRef, operands: Option<&[Option<AttributeRef>]>) -> Option<(Int, Type)> {
+/// Folds the operation defining `value`, with `operands` as the operand constants or, for `None`,
+/// through `fold`, and returns the value and type of the integer attribute each result folds to.
+///
+/// Checks that a fold that fails pushes nothing, and that one that succeeds folds every result to
+/// an attribute.
+fn fold_values(
+    value: ValueRef,
+    operands: Option<&[Option<AttributeRef>]>,
+) -> Option<Vec<(Int, Type)>> {
     let op = value.borrow().get_defining_op().unwrap();
     let op = op.borrow();
     let foldable = op.as_trait::<dyn Foldable>().unwrap();
@@ -805,17 +814,34 @@ fn fold_value(value: ValueRef, operands: Option<&[Option<AttributeRef>]>) -> Opt
         None => foldable.fold(&mut results),
     };
     if !outcome.is_ok() {
+        assert!(results.is_empty(), "a failed fold pushed {} results", results.len());
         return None;
     }
-    let [OpFoldResult::Attribute(folded)] = results.as_slice() else {
+    assert_eq!(results.len(), op.num_results(), "a result of every result");
+    let folded = results
+        .iter()
+        .map(|result| {
+            let OpFoldResult::Attribute(folded) = result else {
+                panic!("expected a folded attribute, got {result}");
+            };
+            let folded = folded.borrow();
+            let int = folded
+                .as_attr()
+                .as_trait::<dyn runic_core::attributes::IntegerLikeAttr>()
+                .unwrap();
+            (int.as_int(), int.ty())
+        })
+        .collect();
+    Some(folded)
+}
+
+/// As [fold_values], for an operation of one result.
+fn fold_value(value: ValueRef, operands: Option<&[Option<AttributeRef>]>) -> Option<(Int, Type)> {
+    let folded = fold_values(value, operands)?;
+    let [folded] = folded[..] else {
         panic!("expected a single folded attribute");
     };
-    let folded = folded.borrow();
-    let int = folded
-        .as_attr()
-        .as_trait::<dyn runic_core::attributes::IntegerLikeAttr>()
-        .unwrap();
-    Some((int.as_int(), int.ty()))
+    Some(folded)
 }
 
 #[test]
@@ -901,7 +927,7 @@ fn a_cast_that_does_not_verify_does_not_fold() {
 }
 
 #[test]
-fn bnot_folds_a_constant_boolean_and_a_double_negation() {
+fn bnot_folds_a_constant_and_a_double_negation() {
     let mut test = test_with(&[Context::i8]);
     let [param] = params(&test)[..] else {
         unreachable!()
@@ -910,10 +936,9 @@ fn bnot_folds_a_constant_boolean_and_a_double_negation() {
     let t = b.i1(true, SPAN);
     let not_t = b.bnot(t, SPAN).unwrap();
     assert_eq!(fold_value(not_t, None), Some((Int::from(false), b.builder().context().i1())));
-    // Only `i1` constants fold in this stage.
     let byte = b.i8(1, SPAN);
     let not_byte = b.bnot(byte, SPAN).unwrap();
-    assert_eq!(fold_value(not_byte, None), None);
+    assert_eq!(fold_value(not_byte, None), Some((Int::from(-2i8), b.builder().context().i8())));
     // `bnot (bnot x)` is `x`, at every width.
     let inner = b.bnot(param, SPAN).unwrap();
     let outer = b.bnot(inner, SPAN).unwrap();

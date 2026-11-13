@@ -18,7 +18,7 @@ use crate::{ArithDialect, CmpPredicate, CmpPredicateAttr};
 #[operation(
     dialect = ArithDialect,
     traits(BinaryOp, SameTypeOperands),
-    implements(InferTypeOpInterface, InferIntRangeInterface, MemoryEffectOpInterface, OpPrinter)
+    implements(InferTypeOpInterface, InferIntRangeInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
 )]
 pub struct Cmpi {
     #[operand]
@@ -64,6 +64,11 @@ impl InferIntRangeInterface for Cmpi {
         set_result_range(self.result().as_value_ref(), range);
     }
 }
+
+fold_one!(Cmpi, |op| {
+    let predicate = *op.get_predicate();
+    move |[a, b]| Some(Int::from(predicate.evaluate(a, b)))
+});
 
 impl Canonicalizable for Cmpi {
     fn get_canonicalization_patterns(

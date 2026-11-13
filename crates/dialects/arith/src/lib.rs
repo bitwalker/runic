@@ -13,6 +13,7 @@ extern crate std;
 mod attributes;
 mod builders;
 mod canonicalization;
+#[macro_use]
 mod fold;
 mod ops;
 #[cfg(test)]

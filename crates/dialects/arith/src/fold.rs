@@ -1,7 +1,8 @@
 //! Constant folding of integer operations.
 //!
-//! Every fold of an `arith` operation on constants goes through [fold_ints]. It reads the operand
-//! constants, computes the result with a closure over [Int]s, and creates a new
+//! Every fold of an `arith` operation on constants goes through [fold_ints] (one result) or
+//! [fold_int_pair] (two results). They read the operand constants, compute the result with a
+//! closure over [Int]s, and create a new
 //! [IntAttr](runic_core::dialects::builtin::attributes::IntAttr) for it. For `isize` operands the computation goes through [fold_isize], with the result kind
 //! that the result type gives, so no fold chooses it for itself and no fold computes on the 64-bit
 //! value of an `isize` constant directly.
@@ -106,6 +107,27 @@ pub(crate) fn fold_ints<const N: usize>(
     Some(context.int_attr(value, result_ty).as_attribute_ref())
 }
 
+/// As [fold_ints], for an operation of two results: `first` computes the first, of type
+/// `result_tys[0]`, and `second` the second.
+///
+/// The two fold together or not at all: no attribute is created unless both do.
+pub(crate) fn fold_int_pair<const N: usize>(
+    context: &Rc<Context>,
+    operands: &[Option<AttributeRef>],
+    operand_ty: Type,
+    result_tys: [Type; 2],
+    first: impl Fn([Int; N]) -> Option<Int>,
+    second: impl Fn([Int; N]) -> Option<Int>,
+) -> Option<[AttributeRef; 2]> {
+    let values = constant_operands(operands, operand_ty)?;
+    let first = compute(values, operand_ty, result_tys[0], first)?;
+    let second = compute(values, operand_ty, result_tys[1], second)?;
+    Some([
+        context.int_attr(first, result_tys[0]).as_attribute_ref(),
+        context.int_attr(second, result_tys[1]).as_attribute_ref(),
+    ])
+}
+
 /// Pushes the attributes of a fold onto `results`: [FoldResult::Ok] if there are any, and
 /// [FoldResult::Failed], with nothing pushed, for `None`.
 pub(crate) fn push_folded<const K: usize>(
@@ -119,6 +141,77 @@ pub(crate) fn push_folded<const K: usize>(
         }
         None => FoldResult::Failed,
     }
+}
+
+/// Implements [Foldable](runic_core::traits::Foldable) for an operation of one result.
+///
+/// `$f` is an expression, which may read the operation through `$op`, giving the closure
+/// [fold_ints] computes the result with; the operand type is the first operand's. `fold` folds
+/// with the operands' constants.
+macro_rules! fold_one {
+    ($Op:ty, |$op:ident| $f:expr) => {
+        impl runic_core::traits::Foldable for $Op {
+            fn fold(
+                &self,
+                results: &mut runic_core::SmallVec<[runic_core::OpFoldResult; 1]>,
+            ) -> runic_core::FoldResult {
+                let operands = $crate::fold::operand_constants(self.as_operation());
+                self.fold_with(&operands, results)
+            }
+
+            fn fold_with(
+                &self,
+                operands: &[Option<runic_core::AttributeRef>],
+                results: &mut runic_core::SmallVec<[runic_core::OpFoldResult; 1]>,
+            ) -> runic_core::FoldResult {
+                let $op = self;
+                let op = self.as_operation();
+                let folded = $crate::fold::fold_ints(
+                    &op.context_rc(),
+                    operands,
+                    $crate::fold::operand_type(op),
+                    $crate::fold::result_type(op, 0),
+                    $f,
+                );
+                $crate::fold::push_folded(results, folded.map(|attr| [attr]))
+            }
+        }
+    };
+}
+
+/// As [fold_one], for an operation of two results: `$f` gives a pair of closures, for the first
+/// result and the second, which fold together or not at all (see [fold_int_pair]).
+macro_rules! fold_two {
+    ($Op:ty, |$op:ident| $f:expr) => {
+        impl runic_core::traits::Foldable for $Op {
+            fn fold(
+                &self,
+                results: &mut runic_core::SmallVec<[runic_core::OpFoldResult; 1]>,
+            ) -> runic_core::FoldResult {
+                let operands = $crate::fold::operand_constants(self.as_operation());
+                self.fold_with(&operands, results)
+            }
+
+            fn fold_with(
+                &self,
+                operands: &[Option<runic_core::AttributeRef>],
+                results: &mut runic_core::SmallVec<[runic_core::OpFoldResult; 1]>,
+            ) -> runic_core::FoldResult {
+                let $op = self;
+                let op = self.as_operation();
+                let (first, second) = $f;
+                let folded = $crate::fold::fold_int_pair(
+                    &op.context_rc(),
+                    operands,
+                    $crate::fold::operand_type(op),
+                    [$crate::fold::result_type(op, 0), $crate::fold::result_type(op, 1)],
+                    first,
+                    second,
+                );
+                $crate::fold::push_folded(results, folded)
+            }
+        }
+    };
 }
 
 #[cfg(test)]

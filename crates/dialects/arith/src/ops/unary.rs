@@ -22,12 +22,17 @@ macro_rules! infer_return_ty_for_unary_op {
     };
 }
 
+/// `count` of `value`, as a value of its width. A count is at most the width, which fits.
+fn count(value: Int, count: fn(Int) -> u32) -> Option<Int> {
+    Int::from_unsigned(value.width(), u128::from(count(value)))
+}
+
 /// Two's complement negation: `0 - operand`, wrapping.
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
 #[operation (
         dialect = ArithDialect,
         traits(UnaryOp, SameTypeOperands, SameOperandsAndResultType),
-        implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
+        implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
     )]
 pub struct Neg {
     #[operand]
@@ -37,6 +42,8 @@ pub struct Neg {
 }
 
 infer_return_ty_for_unary_op!(Neg);
+
+fold_one!(Neg, |_op| |[a]| Some(a.wrapping_neg()));
 
 /// Bitwise NOT. On `i1`, logical NOT.
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
@@ -55,7 +62,7 @@ pub struct Bnot {
 infer_return_ty_for_unary_op!(Bnot);
 
 impl Foldable for Bnot {
-    /// Folds `bnot (bnot x)` to `x`, and the negation of a constant `i1`.
+    /// Folds `bnot (bnot x)` to `x`, and the complement of a constant.
     fn fold(&self, results: &mut SmallVec<[OpFoldResult; 1]>) -> FoldResult {
         let operand = self.operand().as_value_ref();
         if let Some(inner) = operand.borrow().get_defining_op()
@@ -74,9 +81,6 @@ impl Foldable for Bnot {
         results: &mut SmallVec<[OpFoldResult; 1]>,
     ) -> FoldResult {
         let ty = self.result().ty();
-        if ty.integer_width() != Some(1) {
-            return FoldResult::Failed;
-        }
         let context = self.as_operation().context_rc();
         let folded = crate::fold::fold_ints(&context, operands, ty, ty, |[a]| Some(!a));
         crate::fold::push_folded(results, folded.map(|attr| [attr]))
@@ -97,7 +101,7 @@ impl Canonicalizable for Bnot {
 #[operation (
         dialect = ArithDialect,
         traits(UnaryOp, SameTypeOperands, SameOperandsAndResultType),
-        implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
+        implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
     )]
 pub struct Popcnt {
     #[operand]
@@ -108,12 +112,14 @@ pub struct Popcnt {
 
 infer_return_ty_for_unary_op!(Popcnt);
 
+fold_one!(Popcnt, |_op| |[a]| count(a, Int::count_ones));
+
 /// The number of leading (most significant) zero bits, as a value of the operand's type.
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
 #[operation (
         dialect = ArithDialect,
         traits(UnaryOp, SameTypeOperands, SameOperandsAndResultType),
-        implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
+        implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
     )]
 pub struct Clz {
     #[operand]
@@ -124,12 +130,14 @@ pub struct Clz {
 
 infer_return_ty_for_unary_op!(Clz);
 
+fold_one!(Clz, |_op| |[a]| count(a, Int::leading_zeros));
+
 /// The number of trailing (least significant) zero bits, as a value of the operand's type.
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
 #[operation (
         dialect = ArithDialect,
         traits(UnaryOp, SameTypeOperands, SameOperandsAndResultType),
-        implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
+        implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
     )]
 pub struct Ctz {
     #[operand]
@@ -140,12 +148,14 @@ pub struct Ctz {
 
 infer_return_ty_for_unary_op!(Ctz);
 
+fold_one!(Ctz, |_op| |[a]| count(a, Int::trailing_zeros));
+
 /// The number of leading (most significant) one bits, as a value of the operand's type.
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
 #[operation (
         dialect = ArithDialect,
         traits(UnaryOp, SameTypeOperands, SameOperandsAndResultType),
-        implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
+        implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
     )]
 pub struct Clo {
     #[operand]
@@ -156,12 +166,14 @@ pub struct Clo {
 
 infer_return_ty_for_unary_op!(Clo);
 
+fold_one!(Clo, |_op| |[a]| count(a, Int::leading_ones));
+
 /// The number of trailing (least significant) one bits, as a value of the operand's type.
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
 #[operation (
         dialect = ArithDialect,
         traits(UnaryOp, SameTypeOperands, SameOperandsAndResultType),
-        implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
+        implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
     )]
 pub struct Cto {
     #[operand]
@@ -171,3 +183,5 @@ pub struct Cto {
 }
 
 infer_return_ty_for_unary_op!(Cto);
+
+fold_one!(Cto, |_op| |[a]| count(a, Int::trailing_ones));

@@ -25,3 +25,4 @@ paste.workspace = true
 [dev-dependencies]
 # Use local paths for dev-only dependency to avoid relying on crates.io during packaging
 runic-core = { path = "../../core", features = ["logging"] }
+runic-dialect-ub = { path = "../ub" }

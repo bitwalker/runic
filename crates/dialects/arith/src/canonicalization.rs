@@ -312,7 +312,7 @@ mod tests {
     use alloc::{format, rc::Rc};
 
     use runic_core::{
-        Context, Int, Op, OperationRef, Report, SourceSpan, Type, ValueRef,
+        Context, Int, Op, OperationRef, Report, SourceSpan, Type, Value, ValueRef,
         dialects::builtin::{BuiltinOpBuilder, Ret},
         patterns::{
             FrozenRewritePatternSet, GreedyRewriteConfig, RegionSimplificationLevel,
@@ -737,6 +737,41 @@ mod tests {
         assert!(constant.borrow().implements::<dyn ConstantLike>());
         assert_eq!(constant.borrow().get_attribute(INLINE_CALL_CHAIN_ATTR_NAME), Some(chain));
         assert_eq!(returned(&test).borrow().ty(), test.context().i32());
+        Ok(())
+    }
+
+    #[test]
+    fn the_folder_replaces_an_addition_of_constants_with_a_constant() -> Result<(), Report> {
+        let mut test = Test::new("f", |cx| ([], [cx.i32()]));
+        test.context().get_or_register_dialect::<ArithDialect>();
+        {
+            let mut builder = test.function_builder();
+            let (lhs, rhs) = (builder.i32(1, SPAN), builder.i32(2, SPAN));
+            let sum = builder.add(lhs, rhs, SPAN)?;
+            builder.ret(Some(sum), SPAN)?;
+        }
+        assert!(canonicalize(&test, |_, _| {}));
+        test.function().borrow().as_operation().verify().expect("valid after folding");
+
+        let function = test.function();
+        let function = function.borrow();
+        let body = function.body();
+        let entry = body.entry();
+        let ops = entry
+            .body()
+            .iter()
+            .map(|op| op.as_operation_ref())
+            .collect::<alloc::vec::Vec<_>>();
+        let [constant, ret] = ops[..] else {
+            panic!("expected a constant and a return: {}", function.as_operation());
+        };
+        let constant = constant.borrow();
+        let constant = constant.downcast_ref::<Constant>().expect("an arith.constant");
+        assert_eq!(*constant.get_value(), Int::from(3i32));
+        assert_eq!(constant.result().ty(), test.context().i32());
+        assert!(ret.borrow().is::<Ret>());
+        assert_eq!(returned(&test), constant.result().as_value_ref());
+        assert!(format!("{}", function.as_operation()).contains("arith.constant 3 : i32"));
         Ok(())
     }
 }

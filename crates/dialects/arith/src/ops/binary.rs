@@ -73,7 +73,7 @@ macro_rules! infer_return_ty_for_binary_op {
 #[operation(
     dialect = ArithDialect,
     traits(BinaryOp, Commutative, SameTypeOperands, SameOperandsAndResultType),
-    implements(InferTypeOpInterface, InferIntRangeInterface, MemoryEffectOpInterface, OpPrinter)
+    implements(InferTypeOpInterface, InferIntRangeInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
 )]
 pub struct Add {
     #[operand]
@@ -153,7 +153,7 @@ fn infer_add_range(
 #[operation(
     dialect = ArithDialect,
     traits(BinaryOp, Commutative, SameTypeOperands),
-    implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
+    implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
 )]
 pub struct AddOverflowing {
     #[operand]
@@ -175,7 +175,7 @@ infer_return_ty_for_binary_op!(AddOverflowing, overflowed);
 #[operation(
     dialect = ArithDialect,
     traits(BinaryOp, SameTypeOperands, SameOperandsAndResultType),
-    implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
+    implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
 )]
 pub struct Sub {
     #[operand]
@@ -195,7 +195,7 @@ infer_return_ty_for_binary_op!(Sub);
 #[operation(
     dialect = ArithDialect,
     traits(BinaryOp, SameTypeOperands),
-    implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
+    implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
 )]
 pub struct SubOverflowing {
     #[operand]
@@ -217,7 +217,7 @@ infer_return_ty_for_binary_op!(SubOverflowing, overflowed);
 #[operation(
     dialect = ArithDialect,
     traits(BinaryOp, Commutative, SameTypeOperands, SameOperandsAndResultType),
-    implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
+    implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
 )]
 pub struct Mul {
     #[operand]
@@ -237,7 +237,7 @@ infer_return_ty_for_binary_op!(Mul);
 #[operation(
     dialect = ArithDialect,
     traits(BinaryOp, Commutative, SameTypeOperands),
-    implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
+    implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
 )]
 pub struct MulOverflowing {
     #[operand]
@@ -259,7 +259,7 @@ infer_return_ty_for_binary_op!(MulOverflowing, overflowed);
 #[operation(
     dialect = ArithDialect,
     traits(BinaryOp, SameTypeOperands, SameOperandsAndResultType),
-    implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
+    implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
 )]
 pub struct Udiv {
     #[operand]
@@ -278,7 +278,7 @@ infer_return_ty_for_binary_op!(Udiv);
 #[operation(
     dialect = ArithDialect,
     traits(BinaryOp, SameTypeOperands, SameOperandsAndResultType),
-    implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
+    implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
 )]
 pub struct Sdiv {
     #[operand]
@@ -296,7 +296,7 @@ infer_return_ty_for_binary_op!(Sdiv);
 #[operation(
     dialect = ArithDialect,
     traits(BinaryOp, SameTypeOperands, SameOperandsAndResultType),
-    implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
+    implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
 )]
 pub struct Urem {
     #[operand]
@@ -315,7 +315,7 @@ infer_return_ty_for_binary_op!(Urem);
 #[operation(
     dialect = ArithDialect,
     traits(BinaryOp, SameTypeOperands, SameOperandsAndResultType),
-    implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
+    implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
 )]
 pub struct Srem {
     #[operand]
@@ -334,7 +334,7 @@ infer_return_ty_for_binary_op!(Srem);
 #[operation(
     dialect = ArithDialect,
     traits(BinaryOp, SameTypeOperands, SameOperandsAndResultType),
-    implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
+    implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
 )]
 pub struct Udivrem {
     #[operand]
@@ -363,7 +363,7 @@ impl InferTypeOpInterface for Udivrem {
 #[operation(
     dialect = ArithDialect,
     traits(BinaryOp, SameTypeOperands, SameOperandsAndResultType),
-    implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
+    implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
 )]
 pub struct Sdivrem {
     #[operand]
@@ -390,7 +390,7 @@ impl InferTypeOpInterface for Sdivrem {
 #[operation(
     dialect = ArithDialect,
     traits(BinaryOp, Commutative, SameTypeOperands, SameOperandsAndResultType),
-    implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
+    implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
 )]
 pub struct Band {
     #[operand]
@@ -408,7 +408,7 @@ infer_return_ty_for_binary_op!(Band);
 #[operation(
     dialect = ArithDialect,
     traits(BinaryOp, Commutative, SameTypeOperands, SameOperandsAndResultType),
-    implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
+    implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
 )]
 pub struct Bor {
     #[operand]
@@ -426,7 +426,7 @@ infer_return_ty_for_binary_op!(Bor);
 #[operation(
     dialect = ArithDialect,
     traits(BinaryOp, Commutative, SameTypeOperands, SameOperandsAndResultType),
-    implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
+    implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
 )]
 pub struct Bxor {
     #[operand]
@@ -447,7 +447,7 @@ infer_return_ty_for_binary_op!(Bxor);
 #[operation(
     dialect = ArithDialect,
     traits(BinaryOp, SameTypeOperands, SameOperandsAndResultType),
-    implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
+    implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
 )]
 pub struct Shl {
     #[operand]
@@ -467,7 +467,7 @@ infer_return_ty_for_binary_op!(Shl);
 #[operation(
     dialect = ArithDialect,
     traits(BinaryOp, SameTypeOperands, SameOperandsAndResultType),
-    implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
+    implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
 )]
 pub struct Shr {
     #[operand]
@@ -487,7 +487,7 @@ infer_return_ty_for_binary_op!(Shr);
 #[operation(
     dialect = ArithDialect,
     traits(BinaryOp, SameTypeOperands, SameOperandsAndResultType),
-    implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
+    implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
 )]
 pub struct Ashr {
     #[operand]
@@ -508,7 +508,7 @@ infer_return_ty_for_binary_op!(Ashr);
 #[operation(
     dialect = ArithDialect,
     traits(BinaryOp, SameTypeOperands, SameOperandsAndResultType),
-    implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
+    implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
 )]
 pub struct Rotl {
     #[operand]
@@ -528,7 +528,7 @@ infer_return_ty_for_binary_op!(Rotl);
 #[operation(
     dialect = ArithDialect,
     traits(BinaryOp, SameTypeOperands, SameOperandsAndResultType),
-    implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
+    implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
 )]
 pub struct Rotr {
     #[operand]
@@ -546,7 +546,7 @@ infer_return_ty_for_binary_op!(Rotr);
 #[operation(
     dialect = ArithDialect,
     traits(BinaryOp, Commutative, SameTypeOperands, SameOperandsAndResultType),
-    implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
+    implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
 )]
 pub struct Min {
     #[operand]
@@ -566,7 +566,7 @@ infer_return_ty_for_binary_op!(Min);
 #[operation(
     dialect = ArithDialect,
     traits(BinaryOp, Commutative, SameTypeOperands, SameOperandsAndResultType),
-    implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
+    implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
 )]
 pub struct Max {
     #[operand]
@@ -580,6 +580,139 @@ pub struct Max {
 }
 
 infer_return_ty_for_binary_op!(Max);
+
+// Constant folds. Each closure is written against the width of the operands it is given; see
+// `crate::fold` for how `isize` operands are folded.
+
+/// The exact result of an operation in the overflow mode `overflow`: the wrapped one for
+/// [Overflow::Wrapping], and for a checked or unchecked mode the result if it fits read with the
+/// mode's signedness, `None` (no fold: a trap or an undefined result) if it does not.
+fn with_overflow(
+    overflow: Overflow,
+    lhs: Int,
+    rhs: Int,
+    wrapping: fn(Int, Int) -> Int,
+    signed: fn(Int, Int) -> Option<Int>,
+    unsigned: fn(Int, Int) -> Option<Int>,
+) -> Option<Int> {
+    match overflow.signedness() {
+        None => Some(wrapping(lhs, rhs)),
+        Some(Signedness::Signed) => signed(lhs, rhs),
+        Some(Signedness::Unsigned) => unsigned(lhs, rhs),
+    }
+}
+
+fold_one!(Add, |op| {
+    let overflow = *op.get_overflow();
+    move |[a, b]| {
+        with_overflow(
+            overflow,
+            a,
+            b,
+            Int::wrapping_add,
+            Int::checked_add_signed,
+            Int::checked_add_unsigned,
+        )
+    }
+});
+
+fold_one!(Sub, |op| {
+    let overflow = *op.get_overflow();
+    move |[a, b]| {
+        with_overflow(
+            overflow,
+            a,
+            b,
+            Int::wrapping_sub,
+            Int::checked_sub_signed,
+            Int::checked_sub_unsigned,
+        )
+    }
+});
+
+fold_one!(Mul, |op| {
+    let overflow = *op.get_overflow();
+    move |[a, b]| {
+        with_overflow(
+            overflow,
+            a,
+            b,
+            Int::wrapping_mul,
+            Int::checked_mul_signed,
+            Int::checked_mul_unsigned,
+        )
+    }
+});
+
+/// Implements [Foldable] for the overflowing operation `$Op`: the flag, as an `i1`, and the
+/// wrapped value, from `$signed` or `$unsigned` as the operation's `signedness` says.
+macro_rules! fold_overflowing {
+    ($Op:ty, $signed:expr, $unsigned:expr) => {
+        fold_two!($Op, |op| {
+            let compute: fn(Int, Int) -> (Int, bool) = match *op.get_signedness() {
+                Signedness::Signed => $signed,
+                Signedness::Unsigned => $unsigned,
+            };
+            (
+                move |[a, b]: [Int; 2]| Some(Int::from(compute(a, b).1)),
+                move |[a, b]: [Int; 2]| Some(compute(a, b).0),
+            )
+        });
+    };
+}
+
+fold_overflowing!(AddOverflowing, Int::overflowing_add_signed, Int::overflowing_add_unsigned);
+fold_overflowing!(SubOverflowing, Int::overflowing_sub_signed, Int::overflowing_sub_unsigned);
+fold_overflowing!(MulOverflowing, Int::overflowing_mul_signed, Int::overflowing_mul_unsigned);
+
+// `div_*` and `rem_*` are `None` for a zero divisor, and `div_signed` for `MIN / -1`.
+// `rem_signed` gives 0 for `MIN % -1`, but `srem` traps there as `sdiv` does, so its fold asks
+// `div_signed` too.
+fold_one!(Udiv, |_op| |[a, b]| a.div_unsigned(b));
+fold_one!(Sdiv, |_op| |[a, b]| a.div_signed(b));
+fold_one!(Urem, |_op| |[a, b]| a.rem_unsigned(b));
+fold_one!(Srem, |_op| |[a, b]| a.div_signed(b).and(a.rem_signed(b)));
+fold_two!(Udivrem, |_op| (
+    |[a, b]: [Int; 2]| a.div_unsigned(b),
+    |[a, b]: [Int; 2]| a.rem_unsigned(b)
+));
+fold_two!(Sdivrem, |_op| (
+    |[a, b]: [Int; 2]| a.div_signed(b),
+    |[a, b]: [Int; 2]| a.rem_signed(b)
+));
+
+fold_one!(Band, |_op| |[a, b]| Some(a & b));
+fold_one!(Bor, |_op| |[a, b]| Some(a | b));
+fold_one!(Bxor, |_op| |[a, b]| Some(a ^ b));
+
+/// `shift` on `value` by the unsigned value of `amount`, or `None` (no fold: the result is
+/// undefined) if the amount is the width or more.
+fn shift(value: Int, amount: Int, shift: fn(Int, u32) -> Int) -> Option<Int> {
+    let amount = amount.shift_amount_unsigned();
+    (amount < value.width()).then(|| shift(value, amount))
+}
+
+fold_one!(Shl, |_op| |[a, b]| shift(a, b, |value, amount| value << amount));
+fold_one!(Shr, |_op| |[a, b]| shift(a, b, Int::lshr));
+fold_one!(Ashr, |_op| |[a, b]| shift(a, b, Int::ashr));
+fold_one!(Rotl, |_op| |[a, b]| Some(a.rotl(b.rotate_amount_unsigned(a.width()))));
+fold_one!(Rotr, |_op| |[a, b]| Some(a.rotr(b.rotate_amount_unsigned(a.width()))));
+
+fold_one!(Min, |op| {
+    let min = match *op.get_signedness() {
+        Signedness::Signed => Int::min_signed,
+        Signedness::Unsigned => Int::min_unsigned,
+    };
+    move |[a, b]| Some(min(a, b))
+});
+
+fold_one!(Max, |op| {
+    let max = match *op.get_signedness() {
+        Signedness::Signed => Int::max_signed,
+        Signedness::Unsigned => Int::max_unsigned,
+    };
+    move |[a, b]| Some(max(a, b))
+});
 
 #[cfg(test)]
 mod integer_range_tests {
