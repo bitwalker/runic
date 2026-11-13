@@ -974,6 +974,41 @@ mod tests {
         Ok(())
     }
 
+    /// A value checked into `0 ..= signed max` is proven non-negative: its range has the signed
+    /// bounds `0 ..= signed max`, and `cmpi slt %checked, 0` is exactly false, at every width.
+    #[test]
+    fn a_value_checked_into_the_non_negative_half_is_never_signed_negative() -> Result<(), Report> {
+        let widths: [(u32, TypeOf); 5] = [
+            (8, Context::i8),
+            (16, Context::i16),
+            (32, Context::i32),
+            (64, Context::i64),
+            (128, Context::i128),
+        ];
+        for (width, ty) in widths {
+            let signed_max = (1u128 << (width - 1)) - 1;
+            let mut test = Test::new("non_negative", move |cx| ([ty(cx)], []));
+            let param = argument(&test, 0);
+            let int_ty = ty(&test.context_rc());
+            let (checked, negative) = {
+                let mut builder = test.function_builder();
+                let checked = check_range(&mut builder, param, 0, signed_max)?;
+                let zero = builder.int(Int::from_bits(width, 0), int_ty, SPAN);
+                let negative = builder.slt(checked, zero, SPAN)?;
+                builder.ret([], SPAN)?;
+                (checked, negative)
+            };
+            let solver = run_integer_range_analysis(&test)?;
+            let range = value_range(&solver, checked).expect("a range for the checked value");
+            assert!(range.is_proven(), "i{width}");
+            let range = range.range().copied().unwrap();
+            assert_eq!((range.umin(), range.umax()), (0, signed_max), "i{width}");
+            assert_eq!((range.smin(), range.smax()), (0, signed_max as i128), "i{width}");
+            assert_bool_range(&solver, negative, false);
+        }
+        Ok(())
+    }
+
     /// A signed division of the minimum value by -1 traps; its divisor is not zero, but the
     /// requirement on the dividend is unexpressed, so the operation is not reported as safe. The
     /// same holds for `sdivrem`.

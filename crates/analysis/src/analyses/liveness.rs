@@ -31,8 +31,9 @@ pub const LOOP_EXIT_DISTANCE: u32 = 100_000;
 /// This analysis is a bit different than "standard" liveness analysis, in a few ways:
 ///
 /// * It is not sparse, i.e. it attaches liveness information to program points, rather than values
-/// * Liveness is not just a boolean state: for each live value it also records the distance, in
-///   operations, from the program point to the value's next use.
+/// * Liveness is not just a boolean state: for each live value it also records the distance from
+///   the program point to the value's next use: one per operation, plus [LOOP_EXIT_DISTANCE] for
+///   each edge on the way that exits a loop.
 ///
 /// The design for this is based on the description in _Register Spilling and Live-Range Splitting
 /// for SSA-form Programs_, by Mattias Braun and Sebastian Hack. The paper also is used in our
@@ -42,8 +43,9 @@ pub const LOOP_EXIT_DISTANCE: u32 = 100_000;
 ///
 /// 1. Start at the end of a block, with an empty `live_out` set
 /// 2. If the block has any successors, take the `meet` of the `live_in` sets across all successors,
-///    after incrementing the next-use distances in each set by 1 (for normal blocks) or by 10,000
-///    (if the edge from the current block to the successor is exiting a loop). Additionally, all
+///    after incrementing the next-use distances in each set by 1 (for normal blocks) or by
+///    [LOOP_EXIT_DISTANCE] (if the edge from the current block to the successor is exiting a
+///    loop). Additionally, all
 ///    block parameters of each successor are removed from its `live_in` set (since by definition
 ///    those values cannot be live before they are defined). The `meet` of these sets then becomes
 ///    the initial `live_out` set for the current block.

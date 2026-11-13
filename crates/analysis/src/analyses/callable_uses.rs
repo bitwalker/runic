@@ -188,7 +188,7 @@ mod tests {
     use runic_core::{
         Op, SymbolName,
         dialects::builtin::{Module, ModuleBuilder},
-        parse::{ParserConfig, parse_any},
+        parse::{ParserConfig, parse, parse_any},
         testing::Test,
     };
 
@@ -228,6 +228,41 @@ builtin.world {
         let info = module_only.get(target).unwrap();
         // The internal alias permits callers elsewhere in the world, outside the analyzed module.
         assert!(info.has_external_name());
+        assert!(info.has_unknown_callers());
+    }
+
+    /// The analysis scope is `@body` alone, and the aliases that name it lie outside: `@first`
+    /// is a use outside the scope, and the public `@api` exposes the target, so it may have
+    /// callers that are not known.
+    #[test]
+    fn alias_names_outside_analysis_scope_still_expose_the_target() {
+        let test = Test::default();
+        let module = parse::<Module>(
+            ParserConfig::new(test.context_rc()),
+            "outside_scope.hir",
+            r#"
+builtin.module public @test {
+    builtin.function internal extern("C") @body() { builtin.ret; };
+    builtin.function_alias private @first -> @body;
+    builtin.function_alias public @api -> @first;
+    builtin.function public extern("C") @caller() { builtin.ret; };
+};
+"#,
+        )
+        .unwrap();
+        let target = ModuleBuilder::new(module).resolve_callable("body").unwrap().target();
+        let body = target.as_operation_ref();
+        let uses = CallableUseSnapshot::new(&body.borrow());
+        let info = uses.get(target).unwrap();
+        assert!(
+            info.known_callers().is_empty(),
+            "callers outside the scope are not known local callers"
+        );
+        assert!(
+            info.has_external_name(),
+            "the public alias is outside the walked operation tree"
+        );
+        assert!(info.has_out_of_scope_uses());
         assert!(info.has_unknown_callers());
     }
 }

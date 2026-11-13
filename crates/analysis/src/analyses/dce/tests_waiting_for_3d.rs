@@ -1,14 +1,15 @@
-// Tests of `DeadCodeAnalysis` that wait for stage 3d, moved here unchanged from the test module of
-// `analyses/dce.rs`. This file is not declared as a module and is not compiled. Each needs:
+// Tests of `DeadCodeAnalysis` that wait for stage 3d or later, moved here unchanged from the test
+// module of `analyses/dce.rs`. This file is not declared as a module and is not compiled. Each needs:
 //
 // - `private_alias_chain_resolves_callsites_and_propagates_constants`: `builtin.call` (written with
 //   `hir.exec`).
 // - `public_alias_keeps_target_arguments_unknown`: `builtin.call`.
 // - `taking_alias_address_keeps_target_arguments_unknown`: `builtin.call`, and an operation that
 //   takes a function's address (written with `hir.procedure_root`, which no longer exists).
-// - `indirect_alias_calls_share_target_and_return_flow`: `builtin.call_indirect` with a statically
-//   known dispatch set (written with `builtin.function_table` and `hir.exec_indirect ... tag 1`,
-//   which no longer exist; the fixture must be restated).
+// - `indirect_alias_calls_share_target_and_return_flow`: a call operation with a statically known
+//   set of callees, which 3d's `builtin.call_indirect` (callee by value) is not: a test-dialect
+//   call, or table dispatch in the `wasm` dialect (written with `builtin.function_table` and
+//   `hir.exec_indirect ... tag 1`, which no longer exist; the fixture must be restated).
 // - `table_dispatch_through_alias_keeps_target_arguments_unknown`: as the previous test.
 //
 // The helpers `analyze`, `alias_module` and `constant` are used only by these tests. `analyze`

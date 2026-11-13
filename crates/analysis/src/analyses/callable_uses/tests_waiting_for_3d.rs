@@ -1,5 +1,5 @@
-// Tests of `CallableUseSnapshot` that wait for stage 3d, moved here unchanged from the test module
-// of `analyses/callable_uses.rs`. This file is not declared as a module and is not compiled. Each
+// Tests of `CallableUseSnapshot` that wait for stage 3d or later, moved here unchanged from the
+// test module of `analyses/callable_uses.rs`. This file is not declared as a module and is not compiled. Each
 // needs:
 //
 // - `alias_use_queries_separate_callers_exposure_and_address_taking`: `builtin.call` (written with
@@ -7,11 +7,11 @@
 //   `hir.procedure_root`, which no longer exists).
 // - `extra_symbol_attribute_on_call_op_is_escaping_use`: `builtin.call`.
 // - `extra_symbol_attribute_on_alias_op_is_escaping_use`: `builtin.call` (the fixture's callers).
-// - `alias_names_outside_analysis_scope_still_expose_the_target`: `builtin.call` (the fixture's
-//   callers).
-// - `indirect_alias_calls_are_known_but_table_uses_still_escape`: `builtin.call_indirect` with a
-//   statically known dispatch set (written with `builtin.function_table` and
-//   `hir.exec_indirect ... tag 1`, which no longer exist; the fixture must be restated).
+// - `indirect_alias_calls_are_known_but_table_uses_still_escape`: a call operation with a
+//   statically known set of callees, which 3d's `builtin.call_indirect` (callee by value) is not:
+//   a test-dialect call, or table dispatch in the `wasm` dialect (written with
+//   `builtin.function_table` and `hir.exec_indirect ... tag 1`, which no longer exist; the fixture
+//   must be restated).
 // - `ambiguous_table_index_is_known_caller_of_every_dispatchable_target`: as the previous test.
 //
 // The helpers `fixture`, `exec_callers`, `assert_known_callers` and `attach_extra_symbol_attribute`
@@ -177,25 +177,6 @@ builtin.module public @test {{
         let info = uses.get(target).unwrap();
         assert_known_callers(info, &exec_callers(module, "caller"));
         assert!(info.is_address_taken());
-        assert!(info.has_unknown_callers());
-    }
-
-    #[test]
-    fn alias_names_outside_analysis_scope_still_expose_the_target() {
-        let (_test, module) = fixture("public", "");
-        let target = ModuleBuilder::new(module).resolve_callable("body").unwrap().target();
-        let body = target.as_operation_ref();
-        let uses = CallableUseSnapshot::new(&body.borrow());
-        let info = uses.get(target).unwrap();
-        assert!(
-            info.known_callers().is_empty(),
-            "callers outside the scope are not known local callers"
-        );
-        assert!(
-            info.has_external_name(),
-            "the public alias is outside the walked operation tree"
-        );
-        assert!(info.has_out_of_scope_uses());
         assert!(info.has_unknown_callers());
     }
 

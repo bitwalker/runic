@@ -67,9 +67,9 @@ impl Ord for NextUse {
 ///   succeeding the current operation.
 /// * Distances are incremented by 1 at each program point preceding a use. The exception to this
 ///   is when a loop exit is reached, in which case all next-use distances across that edge are
-///   incremented by a large constant value, 10,000, to ensure that next-use distances reflect the
-///   fact that a use may actually be much further away than it appears, depending on how many
-///   iterations of the loop occur before exiting the loop.
+///   incremented by a large constant, [LOOP_EXIT_DISTANCE](super::LOOP_EXIT_DISTANCE), so that
+///   next-use distances reflect the fact that a use may actually be much further away than it
+///   appears, depending on how many iterations of the loop occur before exiting the loop.
 ///
 /// This lattice lets us answer the following questions:
 ///
