@@ -175,10 +175,12 @@ pub fn value_range(solver: &DataFlowSolver, value: ValueRef) -> Option<IntegerVa
 /// requirement. An operation that states no requirement trivially has them all proven.
 ///
 /// This is a sound and conservative answer to "this operation cannot trap or be undefined": when it
-/// is true, the operation neither traps nor has an undefined result, provided the operation states
-/// every requirement it has; when it is false, it may. It is never true for an operation with a
-/// requirement on an operand whose ranges are not tracked (`isize`). A range of either confidence
-/// is accepted: an assumed range is still a fact about a signless integer.
+/// is true, the operation neither traps nor has an undefined result; when it is false, it may. It
+/// is never true for a signed division (`MIN / -1` relates the two operands) or for a checked or
+/// unchecked addition, subtraction or multiplication (whether the result fits depends on both),
+/// nor for an operation with a requirement on an operand whose ranges are not tracked (`isize`). A
+/// range of either confidence is accepted: an assumed range is still a fact about a signless
+/// integer.
 pub fn operand_range_requirements_hold(solver: &DataFlowSolver, op: &Operation) -> bool {
     (0..op.num_operands()).all(|index| match operation_operand_range_requirement(op, index) {
         OperandRangeRequirement::None => true,
@@ -224,14 +226,17 @@ fn integer_constant_range(attr: AttributeRef) -> Option<IntegerValueRange> {
 
 #[cfg(test)]
 mod tests {
+    use alloc::{format, vec::Vec};
+
     use runic_core::{
-        Context, Int, Op, OpBuilder, Signedness, SourceSpan, Type,
+        Context, Int, Op, OpBuilder, OpFoldResult, Signedness, SourceSpan, Type,
         dialects::{
             builtin::{BuiltinOpBuilder, FunctionBuilder},
             test::TestOpBuilder,
         },
         pass::AnalysisManager,
-        testing::Test,
+        testing::{Test, text::Rng},
+        traits::Foldable,
     };
     use runic_dialect_arith::ArithOpBuilder;
     use runic_dialect_scf::StructuredControlFlowOpBuilder;
@@ -967,6 +972,262 @@ mod tests {
         assert!(!isize, "an isize operand, whose requirement is unexpressed");
 
         Ok(())
+    }
+
+    /// A signed division of the minimum value by -1 traps; its divisor is not zero, but the
+    /// requirement on the dividend is unexpressed, so the operation is not reported as safe. The
+    /// same holds for `sdivrem`.
+    #[test]
+    fn a_trapping_signed_division_is_not_reported_as_safe() {
+        for width in [8u32, 64, 128] {
+            let (holds, folds) =
+                holds_and_folds(width, Int::signed_min(width), Int::all_ones(width), |b, x, y| {
+                    b.sdiv(x, y, SPAN)
+                });
+            assert!(!folds, "MIN / -1 traps at i{width}");
+            assert!(!holds, "MIN / -1 at i{width}");
+        }
+        let (holds, folds) = holds_and_folds(8, Int::signed_min(8), Int::all_ones(8), |b, x, y| {
+            Ok(b.sdivrem(x, y, SPAN)?.0)
+        });
+        assert!(!folds && !holds, "sdivrem: holds={holds} folds={folds}");
+    }
+
+    /// A checked addition of `127 : i8` and `1 : i8` traps and an unchecked unsigned one of
+    /// `-1` and `1` is undefined: neither holds. The wrapping addition of the same operands is
+    /// defined, and holds.
+    #[test]
+    fn an_addition_holds_only_when_it_wraps() {
+        let (holds, folds) = holds_and_folds(8, Int::from(127i8), Int::from(1i8), |b, x, y| {
+            b.add_checked(x, y, Signedness::Signed, SPAN)
+        });
+        assert!(!holds && !folds, "checked: holds={holds} folds={folds}");
+        let (holds, folds) = holds_and_folds(8, Int::from(-1i8), Int::from(1i8), |b, x, y| {
+            ArithOpBuilder::add_unchecked(b, x, y, Signedness::Unsigned, SPAN)
+        });
+        assert!(!holds && !folds, "unchecked: holds={holds} folds={folds}");
+        let (holds, folds) = holds_and_folds(8, Int::from(127i8), Int::from(1i8), |b, x, y| {
+            ArithOpBuilder::add(b, x, y, SPAN)
+        });
+        assert!(holds && folds, "wrapping: holds={holds} folds={folds}");
+    }
+
+    /// A builder of a binary `arith` operation, for the execution comparisons below.
+    type Build =
+        fn(&mut FunctionBuilder<'_, OpBuilder>, ValueRef, ValueRef) -> Result<ValueRef, Report>;
+
+    const SHIFTS: [(&str, Build); 3] = [
+        ("shl", |b, x, y| ArithOpBuilder::shl(b, x, y, SPAN)),
+        ("shr", |b, x, y| b.shr(x, y, SPAN)),
+        ("ashr", |b, x, y| b.ashr(x, y, SPAN)),
+    ];
+
+    const UNSIGNED_DIVISIONS: [(&str, Build); 3] = [
+        ("udiv", |b, x, y| b.udiv(x, y, SPAN)),
+        ("urem", |b, x, y| b.urem(x, y, SPAN)),
+        ("srem", |b, x, y| b.srem(x, y, SPAN)),
+    ];
+
+    const SIGNED_DIVISIONS: [(&str, Build); 1] = [("sdiv", |b, x, y| b.sdiv(x, y, SPAN))];
+
+    /// The type of width `width`, or `isize` for 0.
+    fn ty_of(context: &Context, width: u32) -> Type {
+        if width == 0 {
+            context.isize()
+        } else {
+            context.int_type(width)
+        }
+    }
+
+    /// A value of width `width` that is likely to sit on an edge for a shift or a division: 0, 1,
+    /// all ones, the sign bit, the width and its neighbours, the largest signed value, or random.
+    fn edge(rng: &mut Rng, width: u32) -> Int {
+        let mask = if width == 128 {
+            u128::MAX
+        } else {
+            (1u128 << width) - 1
+        };
+        let bits = match rng.below(10) {
+            0 => 0,
+            1 => 1,
+            2 => mask,
+            3 => 1u128 << (width - 1),
+            4 => u128::from(width),
+            5 => u128::from(width).wrapping_sub(1),
+            6 => u128::from(width) + 1,
+            7 => (1u128 << (width - 1)).wrapping_sub(1),
+            _ => rng.next_u128(),
+        };
+        Int::from_bits(width, bits & mask)
+    }
+
+    /// Builds `f() { %a = const lhs; %b = const rhs; %r = op %a, %b; }` at `width` (0 for `isize`)
+    /// and returns (the operation's requirements hold, the operation folds). `arith`'s folds
+    /// decline exactly when the operation traps or is undefined.
+    fn holds_and_folds(width: u32, lhs: Int, rhs: Int, build: Build) -> (bool, bool) {
+        let mut test = Test::new("f", move |cx| ([], [ty_of(cx, width)]));
+        let ty = ty_of(&test.context_rc(), width);
+        let result = {
+            let mut b = test.function_builder();
+            let a = b.int(lhs, ty, SPAN);
+            let c = b.int(rhs, ty, SPAN);
+            let result = build(&mut b, a, c).unwrap();
+            b.ret([result], SPAN).unwrap();
+            result
+        };
+        let solver = run_integer_range_analysis(&test).unwrap();
+        let op = result.borrow().get_defining_op().unwrap();
+        let op = op.borrow();
+        let holds = operand_range_requirements_hold(&solver, &op);
+        let mut results = SmallVec::<[OpFoldResult; 1]>::default();
+        let folds = op.fold(&mut results).is_ok();
+        (holds, folds)
+    }
+
+    /// For the shifts and the divisions whose only requirement is on the divisor, at widths 1 to
+    /// 128 with constant operands on the edges: the requirements hold exactly when the operation
+    /// folds, that is, when it neither traps nor is undefined. A signed division never holds.
+    #[test]
+    fn requirements_on_constants_hold_exactly_when_the_operation_is_defined() {
+        let mut rng = Rng(0x00b3_5eed);
+        let mut disagreements = Vec::new();
+        for width in [1u32, 2, 7, 8, 32, 64, 127, 128] {
+            for (name, build) in SHIFTS.iter().chain(UNSIGNED_DIVISIONS.iter()) {
+                for _ in 0..40 {
+                    let lhs = edge(&mut rng, width);
+                    let rhs = edge(&mut rng, width);
+                    let (holds, folds) = holds_and_folds(width, lhs, rhs, *build);
+                    if holds != folds {
+                        disagreements.push(format!(
+                            "{name} i{width} {lhs}, {rhs}: holds={holds} folds={folds}"
+                        ));
+                    }
+                }
+            }
+            for (name, build) in SIGNED_DIVISIONS {
+                for _ in 0..40 {
+                    let lhs = edge(&mut rng, width);
+                    let rhs = edge(&mut rng, width);
+                    let (holds, _) = holds_and_folds(width, lhs, rhs, build);
+                    if holds {
+                        disagreements.push(format!("{name} i{width} {lhs}, {rhs}: holds"));
+                    }
+                }
+            }
+        }
+        assert!(disagreements.is_empty(), "{disagreements:#?}");
+    }
+
+    /// For `isize` a requirement is unexpressed, so it never holds, whatever the constants.
+    #[test]
+    fn requirements_on_isize_constants_never_hold() {
+        let mut rng = Rng(0x0001_512e);
+        for (name, build) in
+            SHIFTS.iter().chain(UNSIGNED_DIVISIONS.iter()).chain(SIGNED_DIVISIONS.iter())
+        {
+            for _ in 0..20 {
+                let lhs = Int::from(rng.below(100) as i64);
+                let rhs = Int::from(1 + rng.below(20) as i64);
+                let (holds, _) = holds_and_folds(0, lhs, rhs, *build);
+                assert!(!holds, "{name} isize {lhs}, {rhs}");
+            }
+        }
+    }
+
+    /// With a divisor or amount bounded by `test.check_range`, at each width: a shift or an
+    /// unsigned division holds exactly when the checked range excludes the trapping values; a
+    /// signed division never holds.
+    #[test]
+    fn requirements_on_checked_operands_hold_exactly_when_the_range_is_safe() {
+        let mut rng = Rng(0x0c4e_c4ed);
+        let widths: [(u32, TypeOf); 4] =
+            [(1, Context::i1), (8, Context::i8), (64, Context::i64), (128, Context::i128)];
+        for (width, ty) in widths {
+            for _ in 0..60 {
+                let a = edge(&mut rng, width).unsigned();
+                let c = edge(&mut rng, width).unsigned();
+                let (lo, hi) = if a <= c { (a, c) } else { (c, a) };
+                for (kind, safe) in
+                    [("shl", hi < u128::from(width)), ("udiv", lo >= 1), ("sdiv", false)]
+                {
+                    let holds = requirements_hold(ty, |b, x, unknown| {
+                        let checked = check_range(b, unknown, lo, hi)?;
+                        match kind {
+                            "shl" => ArithOpBuilder::shl(b, x, checked, SPAN),
+                            "udiv" => b.udiv(x, checked, SPAN),
+                            _ => b.sdiv(x, checked, SPAN),
+                        }
+                    })
+                    .unwrap();
+                    assert_eq!(holds, safe, "{kind} i{width} checked into {lo} ..= {hi}");
+                }
+            }
+        }
+    }
+
+    /// Each requirement on an operand that `arith` states as a range, read against a brute-force
+    /// model at small widths: every divisor or amount inside the range is one the operation folds
+    /// for with every dividend (except `MIN / -1` for `sdiv`, whose requirement on the dividend
+    /// is unexpressed), and every value outside is one it never folds for.
+    #[test]
+    fn stated_requirements_match_execution_at_small_widths() {
+        for width in [1u32, 2, 3, 5, 8] {
+            let n = 1u128 << width;
+            for (name, build) in
+                SHIFTS.iter().chain(UNSIGNED_DIVISIONS.iter()).chain(SIGNED_DIVISIONS.iter())
+            {
+                let mut test =
+                    Test::new("f", move |cx| ([cx.int_type(width), cx.int_type(width)], []));
+                let context = test.context_rc();
+                let (x, y) = (argument(&test, 0), argument(&test, 1));
+                let result = {
+                    let mut b = test.function_builder();
+                    let r = build(&mut b, x, y).unwrap();
+                    b.ret([], SPAN).unwrap();
+                    r
+                };
+                let op = result.borrow().get_defining_op().unwrap();
+                let op = op.borrow();
+                let expected_lhs = if *name == "sdiv" {
+                    OperandRangeRequirement::Unexpressed
+                } else {
+                    OperandRangeRequirement::None
+                };
+                assert_eq!(operation_operand_range_requirement(&op, 0), expected_lhs, "{name}");
+                let OperandRangeRequirement::Range(requirement) =
+                    operation_operand_range_requirement(&op, 1)
+                else {
+                    panic!("{name} i{width}: operand 1 has no range requirement");
+                };
+                // Whether the operation folds, that is, is defined, for constant operands
+                let folds = |lhs: u128, rhs: u128| {
+                    let ty = context.int_type(width);
+                    let operands = [lhs, rhs].map(|bits| {
+                        Some(context.int_attr(Int::from_bits(width, bits), ty).as_attribute_ref())
+                    });
+                    let mut results = SmallVec::<[OpFoldResult; 1]>::default();
+                    op.fold_with(&operands, &mut results).is_ok()
+                };
+                for rhs in 0..n {
+                    let inside = ConstantIntRange::constant(Int::from_bits(width, rhs))
+                        .is_within(&requirement);
+                    let folds_for_all = (0..n).all(|lhs| folds(lhs, rhs));
+                    let folds_for_some = (0..n).any(|lhs| folds(lhs, rhs));
+                    if !inside {
+                        assert!(
+                            !folds_for_some,
+                            "{name} i{width} rhs={rhs} is outside but defined"
+                        );
+                    } else if *name != "sdiv" || rhs != n - 1 {
+                        assert!(folds_for_all, "{name} i{width} rhs={rhs} is inside but traps");
+                    } else {
+                        // -1 divides every dividend but the minimum (at `i1`, -1 itself)
+                        assert!(!folds(1 << (width - 1), rhs), "{name} i{width}: MIN / -1");
+                        assert!(folds_for_some, "{name} i{width} rhs={rhs}");
+                    }
+                }
+            }
+        }
     }
 
     fn run_integer_range_analysis(test: &Test) -> Result<DataFlowSolver, Report> {

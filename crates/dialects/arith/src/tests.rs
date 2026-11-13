@@ -1326,7 +1326,8 @@ fn a_shift_requires_an_amount_below_the_width() {
 
 /// The divisions require of their divisor (operand 1) every value but zero, the unsigned range
 /// `1 ..= 2^width - 1`; at `i1` the divisor must be `1`. For `isize` and `i200` the requirement is
-/// unexpressed. The dividend has no requirement.
+/// unexpressed. The signed divisions (`sdiv`, `sdivrem`) also have a requirement on the dividend
+/// that no range expresses (`MIN / -1`); the remainders and the unsigned divisions have none.
 #[test]
 fn a_division_requires_a_nonzero_divisor() {
     use OperandRangeRequirement::{None as Any, Range, Unexpressed};
@@ -1334,11 +1335,11 @@ fn a_division_requires_a_nonzero_divisor() {
     type BuildFn = fn(Builder<'_, '_>, ValueRef, ValueRef) -> ValueRef;
     let divisions: [(&str, BuildFn, OperandRangeRequirement); 6] = [
         ("udiv", |b, l, r| b.udiv(l, r, SPAN).unwrap(), Any),
-        ("sdiv", |b, l, r| b.sdiv(l, r, SPAN).unwrap(), Any),
+        ("sdiv", |b, l, r| b.sdiv(l, r, SPAN).unwrap(), Unexpressed),
         ("urem", |b, l, r| b.urem(l, r, SPAN).unwrap(), Any),
         ("srem", |b, l, r| b.srem(l, r, SPAN).unwrap(), Any),
         ("udivrem", |b, l, r| b.udivrem(l, r, SPAN).unwrap().0, Any),
-        ("sdivrem", |b, l, r| b.sdivrem(l, r, SPAN).unwrap().0, Any),
+        ("sdivrem", |b, l, r| b.sdivrem(l, r, SPAN).unwrap().0, Unexpressed),
     ];
     let widths: [(TypeFn, u16, u128); 4] = [
         (Context::i1, 1, 1),
@@ -1368,6 +1369,63 @@ fn a_division_requires_a_nonzero_divisor() {
         operand_requirements(Context::i1, |b, l, r| b.udiv(l, r, SPAN).unwrap())[1],
         Range(ConstantIntRange::constant(Int::from(true)))
     );
+}
+
+/// `add`, `sub` and `mul` require nothing in the wrapping mode; in a checked or unchecked mode
+/// whether the exact result fits depends on both operands, so both requirements are unexpressed,
+/// at every type.
+#[test]
+fn an_overflowing_operation_has_an_unexpressed_requirement_unless_it_wraps() {
+    use OperandRangeRequirement::{None as Any, Unexpressed};
+    use runic_core::{BuilderExt, Overflow};
+    type BuildFn = fn(Builder<'_, '_>, ValueRef, ValueRef, Overflow) -> ValueRef;
+    let operations: [(&str, BuildFn); 3] = [
+        ("add", |b, l, r, o| {
+            b.builder_mut().create::<Add, (_, _, _)>(SPAN)(l, r, o)
+                .unwrap()
+                .borrow()
+                .result()
+                .as_value_ref()
+        }),
+        ("sub", |b, l, r, o| {
+            b.builder_mut().create::<Sub, (_, _, _)>(SPAN)(l, r, o)
+                .unwrap()
+                .borrow()
+                .result()
+                .as_value_ref()
+        }),
+        ("mul", |b, l, r, o| {
+            b.builder_mut().create::<Mul, (_, _, _)>(SPAN)(l, r, o)
+                .unwrap()
+                .borrow()
+                .result()
+                .as_value_ref()
+        }),
+    ];
+    let overflows = [
+        (Overflow::Wrapping, Any),
+        (Overflow::Checked(Signedness::Signed), Unexpressed),
+        (Overflow::Checked(Signedness::Unsigned), Unexpressed),
+        (Overflow::Unchecked(Signedness::Signed), Unexpressed),
+        (Overflow::Unchecked(Signedness::Unsigned), Unexpressed),
+    ];
+    for (name, build) in operations {
+        for (overflow, expected) in overflows {
+            for ty in [Context::i8 as TypeFn, Context::i64, Context::isize] {
+                let mut test = test_with(&[ty, ty]);
+                let [lhs, rhs] = params(&test)[..] else {
+                    unreachable!()
+                };
+                let result = build(&mut test.function_builder(), lhs, rhs, overflow);
+                let op = result.borrow().get_defining_op().unwrap();
+                let op = op.borrow();
+                let requirements = [0, 1, 2].map(|index| {
+                    runic_core::traits::operation_operand_range_requirement(&op, index)
+                });
+                assert_eq!(requirements, [expected, expected, Any], "{name} {overflow}");
+            }
+        }
+    }
 }
 
 /// An operation that does not implement `OperandRangeRequirementOpInterface` requires nothing,

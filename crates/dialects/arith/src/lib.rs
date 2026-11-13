@@ -11,7 +11,9 @@
 //!
 //! An operation that is defined only for some values of an operand (a divisor that is not zero, a
 //! shift amount below the width) says so through
-//! [runic_core::traits::OperandRangeRequirementOpInterface].
+//! [runic_core::traits::OperandRangeRequirementOpInterface]; one whose requirement relates two
+//! operands (a signed division, a checked or unchecked `add`/`sub`/`mul`) reports it there as
+//! unexpressed.
 
 #![no_std]
 #![feature(unboxed_closures)]

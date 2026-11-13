@@ -92,14 +92,49 @@ fn divisor_requirement(ty: Type) -> OperandRangeRequirement {
     }
 }
 
+/// The requirement of a signed division on its dividend: `MIN / -1` traps, a condition on both
+/// operands that no range of the dividend expresses.
+fn signed_dividend_requirement(_ty: Type) -> OperandRangeRequirement {
+    OperandRangeRequirement::Unexpressed
+}
+
+/// The requirement of nothing: every value is accepted.
+fn no_requirement(_ty: Type) -> OperandRangeRequirement {
+    OperandRangeRequirement::None
+}
+
 /// Implements [OperandRangeRequirementOpInterface] for `$Op`, whose operand 1 (`$operand`) must
-/// lie in the range `$requirement` gives for its type; every other operand accepts every value.
+/// lie in the range `$requirement` gives for its type, and whose operand 0 (`$lhs`) has the
+/// requirement `$lhs_requirement` gives (none, unless given).
 macro_rules! operand_one_requirement {
     ($Op:ty, $operand:ident, $requirement:ident) => {
+        operand_one_requirement!($Op, $operand, $requirement, lhs, no_requirement);
+    };
+    ($Op:ty, $operand:ident, $requirement:ident, $lhs:ident, $lhs_requirement:ident) => {
         impl OperandRangeRequirementOpInterface for $Op {
             fn operand_range_requirement(&self, index: usize) -> OperandRangeRequirement {
                 match index {
+                    0 => $lhs_requirement(self.$lhs().ty()),
                     1 => $requirement(self.$operand().ty()),
+                    _ => OperandRangeRequirement::None,
+                }
+            }
+        }
+    };
+}
+
+/// Implements [OperandRangeRequirementOpInterface] for `$Op`, an operation with an `overflow`
+/// property: in the wrapping mode every value is accepted; in a checked or unchecked mode the
+/// operation traps or is undefined unless the exact result fits, a condition on both operands that
+/// no range of one expresses, so both are [OperandRangeRequirement::Unexpressed].
+macro_rules! overflow_requirement {
+    ($Op:ty) => {
+        impl OperandRangeRequirementOpInterface for $Op {
+            fn operand_range_requirement(&self, index: usize) -> OperandRangeRequirement {
+                match (index, *self.get_overflow()) {
+                    (0 | 1, Overflow::Checked(_) | Overflow::Unchecked(_)) => {
+                        OperandRangeRequirement::Unexpressed
+                    }
                     _ => OperandRangeRequirement::None,
                 }
             }
@@ -113,11 +148,15 @@ macro_rules! operand_one_requirement {
 /// the operation traps, or the result is undefined, with the operands read as signed or as unsigned
 /// numbers for the latter two. The text leaves the default out: `arith.add %0, %1` wraps, and
 /// `arith.add %0, %1 <{ overflow = #builtin.overflow<checked signed> }>` traps.
+///
+/// Whether the exact sum fits depends on both operands, so in a checked or unchecked mode the
+/// requirement on each operand is unexpressed ([OperandRangeRequirementOpInterface]); in the
+/// wrapping mode there is none.
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
 #[operation(
     dialect = ArithDialect,
     traits(BinaryOp, Commutative, SameTypeOperands, SameOperandsAndResultType),
-    implements(InferTypeOpInterface, InferIntRangeInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
+    implements(InferTypeOpInterface, InferIntRangeInterface, MemoryEffectOpInterface, OperandRangeRequirementOpInterface, Foldable, OpPrinter)
 )]
 pub struct Add {
     #[operand]
@@ -132,6 +171,7 @@ pub struct Add {
 }
 
 infer_return_ty_for_binary_op!(Add);
+overflow_requirement!(Add);
 
 impl InferIntRangeInterface for Add {
     fn infer_result_ranges(
@@ -220,7 +260,7 @@ infer_return_ty_for_binary_op!(AddOverflowing, overflowed);
 #[operation(
     dialect = ArithDialect,
     traits(BinaryOp, SameTypeOperands, SameOperandsAndResultType),
-    implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
+    implements(InferTypeOpInterface, MemoryEffectOpInterface, OperandRangeRequirementOpInterface, Foldable, OpPrinter)
 )]
 pub struct Sub {
     #[operand]
@@ -235,6 +275,7 @@ pub struct Sub {
 }
 
 infer_return_ty_for_binary_op!(Sub);
+overflow_requirement!(Sub);
 
 /// Two's complement difference with an overflow flag, as for [AddOverflowing].
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
@@ -263,7 +304,7 @@ infer_return_ty_for_binary_op!(SubOverflowing, overflowed);
 #[operation(
     dialect = ArithDialect,
     traits(BinaryOp, Commutative, SameTypeOperands, SameOperandsAndResultType),
-    implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
+    implements(InferTypeOpInterface, MemoryEffectOpInterface, OperandRangeRequirementOpInterface, Foldable, OpPrinter)
 )]
 pub struct Mul {
     #[operand]
@@ -278,6 +319,7 @@ pub struct Mul {
 }
 
 infer_return_ty_for_binary_op!(Mul);
+overflow_requirement!(Mul);
 
 /// Two's complement product with an overflow flag, as for [AddOverflowing].
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
@@ -335,7 +377,8 @@ operand_one_requirement!(Udiv, rhs, divisor_requirement);
 ///
 /// A trap is not an effect: an unused division may be removed with its trap, and a division is
 /// never moved to where it would execute more often (see the crate documentation). The divisor's
-/// requirement is stated through [OperandRangeRequirementOpInterface].
+/// requirement is stated through [OperandRangeRequirementOpInterface]; the dividend's is
+/// unexpressed, since `MIN / -1` relates the two operands.
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
 #[operation(
     dialect = ArithDialect,
@@ -358,7 +401,7 @@ pub struct Sdiv {
 }
 
 infer_return_ty_for_binary_op!(Sdiv);
-operand_one_requirement!(Sdiv, rhs, divisor_requirement);
+operand_one_requirement!(Sdiv, rhs, divisor_requirement, lhs, signed_dividend_requirement);
 
 /// Unsigned integer remainder. Traps on a zero divisor.
 ///
@@ -467,7 +510,8 @@ impl InferTypeOpInterface for Udivrem {
 ///
 /// A trap is not an effect: an unused division may be removed with its trap, and a division is
 /// never moved to where it would execute more often (see the crate documentation). The divisor's
-/// requirement is stated through [OperandRangeRequirementOpInterface].
+/// requirement is stated through [OperandRangeRequirementOpInterface]; the dividend's is
+/// unexpressed, since `MIN / -1` relates the two operands.
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
 #[operation(
     dialect = ArithDialect,
@@ -491,7 +535,7 @@ pub struct Sdivrem {
     remainder: AnyInteger,
 }
 
-operand_one_requirement!(Sdivrem, rhs, divisor_requirement);
+operand_one_requirement!(Sdivrem, rhs, divisor_requirement, lhs, signed_dividend_requirement);
 
 impl InferTypeOpInterface for Sdivrem {
     fn infer_return_types(&mut self, _context: &Context) -> Result<(), Report> {
