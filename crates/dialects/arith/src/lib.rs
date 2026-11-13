@@ -1,3 +1,18 @@
+//! The `arith` dialect: constants, arithmetic, bitwise operations, comparisons and casts on
+//! signless integers.
+//!
+//! # Traps
+//!
+//! Some operations trap: a division by zero, a checked operation whose exact result does not fit
+//! (`Overflow::Checked`). A trap is not an effect, and every `arith` operation is free of effects;
+//! none claims to be speculatable. An operation that would trap may be removed, together with its
+//! trap, when its result is unused; a trap is never introduced, and an operation that can trap is
+//! never moved to where it would execute more often. A check that must happen is a `cf.assert`.
+//!
+//! An operation that is defined only for some values of an operand (a divisor that is not zero, a
+//! shift amount below the width) says so through
+//! [runic_core::traits::OperandRangeRequirementOpInterface].
+
 #![no_std]
 #![feature(unboxed_closures)]
 #![feature(fn_traits)]

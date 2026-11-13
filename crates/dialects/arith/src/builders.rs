@@ -211,6 +211,9 @@ pub trait ArithOpBuilder<'f, B: ?Sized + Builder> {
     }
 
     /// Unsigned division, rounding toward zero. Traps on a zero divisor.
+    ///
+    /// A trap is not an effect: the operation may be removed with its trap when its result is
+    /// unused, and is never moved to where it would execute more often (see the crate docs).
     fn udiv(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
         let op_builder = self.builder_mut().create::<Udiv, _>(span);
         let op = op_builder(lhs, rhs)?;
@@ -218,6 +221,9 @@ pub trait ArithOpBuilder<'f, B: ?Sized + Builder> {
     }
 
     /// Signed division, rounding toward zero. Traps on a zero divisor and on `MIN / -1`.
+    ///
+    /// A trap is not an effect: the operation may be removed with its trap when its result is
+    /// unused, and is never moved to where it would execute more often (see the crate docs).
     fn sdiv(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
         let op_builder = self.builder_mut().create::<Sdiv, _>(span);
         let op = op_builder(lhs, rhs)?;
@@ -225,6 +231,9 @@ pub trait ArithOpBuilder<'f, B: ?Sized + Builder> {
     }
 
     /// Unsigned remainder. Traps on a zero divisor.
+    ///
+    /// A trap is not an effect: the operation may be removed with its trap when its result is
+    /// unused, and is never moved to where it would execute more often (see the crate docs).
     fn urem(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
         let op_builder = self.builder_mut().create::<Urem, _>(span);
         let op = op_builder(lhs, rhs)?;
@@ -232,6 +241,9 @@ pub trait ArithOpBuilder<'f, B: ?Sized + Builder> {
     }
 
     /// Signed remainder, with the sign of `lhs`. Traps on a zero divisor; `MIN % -1` is `0`.
+    ///
+    /// A trap is not an effect: the operation may be removed with its trap when its result is
+    /// unused, and is never moved to where it would execute more often (see the crate docs).
     fn srem(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
         let op_builder = self.builder_mut().create::<Srem, _>(span);
         let op = op_builder(lhs, rhs)?;
@@ -240,6 +252,9 @@ pub trait ArithOpBuilder<'f, B: ?Sized + Builder> {
 
     /// Unsigned division and remainder: returns the quotient, then the remainder, in the order of
     /// the operation's results. Traps on a zero divisor.
+    ///
+    /// A trap is not an effect: the operation may be removed with its trap when its result is
+    /// unused, and is never moved to where it would execute more often (see the crate docs).
     fn udivrem(
         &mut self,
         lhs: ValueRef,
@@ -254,6 +269,9 @@ pub trait ArithOpBuilder<'f, B: ?Sized + Builder> {
 
     /// Signed division and remainder: returns the quotient, then the remainder, in the order of
     /// the operation's results. Traps on a zero divisor, and on `MIN / -1` because of the quotient.
+    ///
+    /// A trap is not an effect: the operation may be removed with its trap when its result is
+    /// unused, and is never moved to where it would execute more often (see the crate docs).
     fn sdivrem(
         &mut self,
         lhs: ValueRef,

@@ -288,6 +288,10 @@ pub struct MulOverflowing {
 infer_return_ty_for_binary_op!(MulOverflowing, overflowed);
 
 /// Unsigned integer division, rounding toward zero. Traps on a zero divisor.
+///
+/// A trap is not an effect: an unused division may be removed with its trap, and a division is
+/// never moved to where it would execute more often (see the crate documentation). The divisor's
+/// requirement is stated through [OperandRangeRequirementOpInterface].
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
 #[operation(
     dialect = ArithDialect,
@@ -314,6 +318,10 @@ operand_one_requirement!(Udiv, rhs, divisor_requirement);
 
 /// Signed integer division, rounding toward zero. Traps on a zero divisor and on dividing the
 /// minimum signed value by -1.
+///
+/// A trap is not an effect: an unused division may be removed with its trap, and a division is
+/// never moved to where it would execute more often (see the crate documentation). The divisor's
+/// requirement is stated through [OperandRangeRequirementOpInterface].
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
 #[operation(
     dialect = ArithDialect,
@@ -339,6 +347,10 @@ infer_return_ty_for_binary_op!(Sdiv);
 operand_one_requirement!(Sdiv, rhs, divisor_requirement);
 
 /// Unsigned integer remainder. Traps on a zero divisor.
+///
+/// A trap is not an effect: an unused division may be removed with its trap, and a division is
+/// never moved to where it would execute more often (see the crate documentation). The divisor's
+/// requirement is stated through [OperandRangeRequirementOpInterface].
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
 #[operation(
     dialect = ArithDialect,
@@ -366,6 +378,10 @@ operand_one_requirement!(Urem, rhs, divisor_requirement);
 /// Signed integer remainder of the division rounding toward zero: the result has the sign of the
 /// dividend (`lhs`). Traps on a zero divisor only: the remainder of the minimum signed value by -1
 /// is `0`.
+///
+/// A trap is not an effect: an unused division may be removed with its trap, and a division is
+/// never moved to where it would execute more often (see the crate documentation). The divisor's
+/// requirement is stated through [OperandRangeRequirementOpInterface].
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
 #[operation(
     dialect = ArithDialect,
@@ -392,6 +408,10 @@ operand_one_requirement!(Srem, rhs, divisor_requirement);
 
 /// Unsigned integer division and remainder, as [Udiv] and [Urem]: the first result is the
 /// quotient, the second the remainder. Traps on a zero divisor.
+///
+/// A trap is not an effect: an unused division may be removed with its trap, and a division is
+/// never moved to where it would execute more often (see the crate documentation). The divisor's
+/// requirement is stated through [OperandRangeRequirementOpInterface].
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
 #[operation(
     dialect = ArithDialect,
@@ -430,6 +450,10 @@ impl InferTypeOpInterface for Udivrem {
 /// the second the remainder, which has the sign of the dividend (`lhs`). Traps on a zero divisor,
 /// and on dividing the minimum signed value by -1, because the quotient does not fit (the remainder
 /// alone would be `0`).
+///
+/// A trap is not an effect: an unused division may be removed with its trap, and a division is
+/// never moved to where it would execute more often (see the crate documentation). The divisor's
+/// requirement is stated through [OperandRangeRequirementOpInterface].
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
 #[operation(
     dialect = ArithDialect,

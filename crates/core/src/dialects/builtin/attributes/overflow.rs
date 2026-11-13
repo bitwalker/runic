@@ -23,6 +23,11 @@ pub enum Overflow {
     Wrapping,
     /// The operation traps if the exact result does not fit the type, with the operands and the
     /// result read as signed or as unsigned numbers.
+    ///
+    /// A trap is not an effect. An operation that would trap may be removed, together with its
+    /// trap, when its result is unused; a trap is never introduced, and an operation that can trap
+    /// is never moved to where it would execute more often. A check that must happen is a
+    /// `cf.assert`.
     Checked(Signedness),
     /// The result is undefined if the exact result does not fit the type, with the operands and the
     /// result read as signed or as unsigned numbers (LLVM's `nsw` and `nuw`).
