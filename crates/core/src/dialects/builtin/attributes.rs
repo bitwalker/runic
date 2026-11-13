@@ -16,7 +16,7 @@ mod unit;
 mod visibility;
 
 pub use self::{
-    array::{Array, LocalVariableArrayAttr, MemoryEffectArrayAttr, TypeArrayAttr, U32ArrayAttr},
+    array::{Array, I32ArrayAttr, LocalVariableArrayAttr, MemoryEffectArrayAttr, TypeArrayAttr},
     boolean::BoolAttr,
     bytes::{Bytes, BytesAttr},
     effects::MemoryEffectDescriptor,

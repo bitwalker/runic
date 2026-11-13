@@ -3324,6 +3324,52 @@ fn print_attribute_text(context: &Rc<Context>, attr: &crate::AttributeRef) -> St
     printer.finish().to_string()
 }
 
+/// `#builtin.array_i32<..>` prints signed decimal elements and reads each element as an `i32`
+/// constant is read: a literal in `[-2^31, 2^32 - 1]` stands for its 32-bit pattern. An element
+/// outside that range, or one that is not an integer literal, is a diagnostic.
+#[test]
+fn i32_array_attributes_round_trip_through_text() -> TestResult {
+    use crate::dialects::builtin::attributes::I32ArrayAttr;
+
+    let context = Rc::new(Context::default());
+    let unknown = context.unknown_type();
+    for (text, expected) in [
+        ("#builtin.array_i32<>", &[][..]),
+        ("#builtin.array_i32<0>", &[0][..]),
+        (
+            "#builtin.array_i32<-1, 2, 2147483647, -2147483648>",
+            &[-1, 2, i32::MAX, i32::MIN][..],
+        ),
+    ] {
+        let attr = parse_attribute_text(&context, text, unknown)?;
+        {
+            let attr = attr.borrow();
+            let array = attr.downcast_ref::<I32ArrayAttr>().expect("an i32 array");
+            assert_eq!(array.as_value().iter().copied().collect::<Vec<_>>(), expected, "{text}");
+        }
+        assert_eq!(print_attribute_text(&context, &attr), text);
+    }
+
+    // The literal is signless: `4294967295` is the pattern of `-1`.
+    let attr =
+        parse_attribute_text(&context, "#builtin.array_i32<4294967295, 0x80000000>", unknown)?;
+    assert_eq!(print_attribute_text(&context, &attr), "#builtin.array_i32<-1, -2147483648>");
+
+    for text in [
+        "#builtin.array_i32<4294967296>",
+        "#builtin.array_i32<-2147483649>",
+        "#builtin.array_i32<1, true>",
+        "#builtin.array_i32<\"1\">",
+        "#builtin.array_i32<1,>",
+    ] {
+        assert!(
+            parse_attribute_text(&context, text, unknown).is_err(),
+            "{text} should not parse"
+        );
+    }
+    Ok(())
+}
+
 /// The value and type of an integer attribute.
 fn int_and_type_of(attr: &crate::AttributeRef) -> (Int, Type) {
     let attr = attr.borrow();

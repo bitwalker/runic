@@ -12,15 +12,17 @@ use crate::{
     print::AsmPrinter,
 };
 
+/// An array of `i32` values, `#builtin.array_i32<-1, 2, 3>` (`#builtin.array_i32<>` when empty).
+/// Each element is written as an `i32` constant is and printed as a signed decimal.
 #[derive(DialectAttribute)]
 #[attribute(
-    name = "array_u32",
+    name = "array_i32",
     dialect = BuiltinDialect,
-    remote = "Array<u32>",
+    remote = "Array<i32>",
     implements(AttrPrinter),
 )]
 #[allow(unused)]
-struct U32Array;
+struct I32Array;
 
 #[derive(DialectAttribute)]
 #[attribute(
@@ -244,22 +246,31 @@ impl<T: Clone + InferAttributeValueType> InferAttributeValueType for Array<T> {
     }
 }
 
-impl AttrParser for U32ArrayAttr {
+impl AttrParser for I32ArrayAttr {
     fn parse(
         parser: &mut dyn crate::parse::Parser<'_>,
     ) -> crate::parse::ParseResult<crate::AttributeRef> {
-        let mut indices = Array::from_iter([]);
-        if let Some(index) = parser.parse_optional_decimal_integer::<u32>()? {
-            indices.push(index.into_inner());
-            while parser.parse_optional_comma()? {
-                indices.push(parser.parse_decimal_integer::<u32>()?.into_inner());
+        use crate::parse::Token;
+
+        let ty = parser.context().i32();
+        let mut values = Array::from_iter([]);
+        let starts_element = |tok: Token<'_>| {
+            matches!(tok, Token::Minus | Token::Int(_) | Token::Hex(_) | Token::Binary(_))
+        };
+        if parser.token_stream_mut().is_next(starts_element) {
+            loop {
+                let (span, literal) = parser.parse_integer_literal()?.into_parts();
+                values.push(literal.to_int(ty, span)?.signed() as i32);
+                if !parser.parse_optional_comma()? {
+                    break;
+                }
             }
         }
-        Ok(parser.context_rc().create_attribute::<Self, _>(indices).as_attribute_ref())
+        Ok(parser.context_rc().create_attribute::<Self, _>(values).as_attribute_ref())
     }
 }
 
-impl crate::print::AttrPrinter for U32ArrayAttr {
+impl crate::print::AttrPrinter for I32ArrayAttr {
     fn print(&self, printer: &mut AsmPrinter<'_>) {
         use crate::formatter::*;
 
@@ -267,7 +278,7 @@ impl crate::print::AttrPrinter for U32ArrayAttr {
             if i > 0 {
                 *printer += const_text(", ");
             }
-            *printer += value.render();
+            printer.print_int(crate::Int::from(*value));
         }
     }
 }

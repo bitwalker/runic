@@ -198,7 +198,7 @@ mod tests {
             LocalVariableArrayAttr,
             MemoryEffectArrayAttr,
             TypeArrayAttr,
-            U32ArrayAttr,
+            I32ArrayAttr,
             BoolAttr,
             BytesAttr,
             I8Attr,
