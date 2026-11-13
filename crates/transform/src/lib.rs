@@ -13,6 +13,8 @@ mod dce;
 //mod inliner;
 mod sccp;
 mod sink;
+#[cfg(test)]
+mod tests;
 
 pub use self::dce::DeadCodeElimination;
 //pub use self::inliner::Inliner;
