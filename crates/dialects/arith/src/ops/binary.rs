@@ -302,7 +302,7 @@ pub struct Srem {
 infer_return_ty_for_binary_op!(Srem);
 
 /// Unsigned integer division and remainder, as [Udiv] and [Urem]: the first result is the
-/// remainder, the second the quotient. Traps on a zero divisor.
+/// quotient, the second the remainder. Traps on a zero divisor.
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
 #[operation(
     dialect = ArithDialect,
@@ -315,22 +315,22 @@ pub struct Udivrem {
     #[operand]
     rhs: AnyInteger,
     #[result]
-    remainder: AnyInteger,
-    #[result]
     quotient: AnyInteger,
+    #[result]
+    remainder: AnyInteger,
 }
 
 impl InferTypeOpInterface for Udivrem {
     fn infer_return_types(&mut self, _context: &Context) -> Result<(), Report> {
         let lhs = self.lhs().ty();
-        self.remainder_mut().set_type(lhs);
         self.quotient_mut().set_type(lhs);
+        self.remainder_mut().set_type(lhs);
         Ok(())
     }
 }
 
-/// Signed integer division and remainder, as [Sdiv] and [Srem]: the first result is the remainder,
-/// which has the sign of the dividend (`lhs`), the second the quotient. Traps on a zero divisor and
+/// Signed integer division and remainder, as [Sdiv] and [Srem]: the first result is the quotient,
+/// the second the remainder, which has the sign of the dividend (`lhs`). Traps on a zero divisor and
 /// on dividing the minimum signed value by -1.
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
 #[operation(
@@ -344,16 +344,16 @@ pub struct Sdivrem {
     #[operand]
     rhs: AnyInteger,
     #[result]
-    remainder: AnyInteger,
-    #[result]
     quotient: AnyInteger,
+    #[result]
+    remainder: AnyInteger,
 }
 
 impl InferTypeOpInterface for Sdivrem {
     fn infer_return_types(&mut self, _context: &Context) -> Result<(), Report> {
         let lhs = self.lhs().ty();
-        self.remainder_mut().set_type(lhs);
         self.quotient_mut().set_type(lhs);
+        self.remainder_mut().set_type(lhs);
         Ok(())
     }
 }

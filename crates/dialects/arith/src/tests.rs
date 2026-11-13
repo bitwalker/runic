@@ -279,7 +279,7 @@ fn overflowing_signedness_is_the_parsed_property() {
 }
 
 #[test]
-fn division_with_remainder_returns_the_remainder_then_the_quotient() {
+fn division_with_remainder_returns_the_quotient_then_the_remainder() {
     type PairBuilder =
         fn(Builder<'_, '_>, ValueRef, ValueRef) -> Result<(ValueRef, ValueRef), Report>;
     let ops: [(&str, PairBuilder); 2] = [
@@ -292,12 +292,20 @@ fn division_with_remainder_returns_the_remainder_then_the_quotient() {
             let [lhs, rhs] = params(&test)[..] else {
                 unreachable!()
             };
-            let (remainder, quotient) = build(&mut test.function_builder(), lhs, rhs).unwrap();
-            let op = remainder.borrow().get_defining_op().unwrap();
+            let (quotient, remainder) = build(&mut test.function_builder(), lhs, rhs).unwrap();
+            let op = quotient.borrow().get_defining_op().unwrap();
             {
                 let op = op.borrow();
-                assert_eq!(op.results()[0].borrow().as_value_ref(), remainder);
-                assert_eq!(op.results()[1].borrow().as_value_ref(), quotient);
+                assert_eq!(op.results()[0].borrow().as_value_ref(), quotient);
+                assert_eq!(op.results()[1].borrow().as_value_ref(), remainder);
+                let (q, r) = if name == "arith.udivrem" {
+                    let op = op.downcast_ref::<Udivrem>().unwrap();
+                    (op.quotient().as_value_ref(), op.remainder().as_value_ref())
+                } else {
+                    let op = op.downcast_ref::<Sdivrem>().unwrap();
+                    (op.quotient().as_value_ref(), op.remainder().as_value_ref())
+                };
+                assert_eq!((q, r), (quotient, remainder));
             }
             let operand_ty = ty(test.context());
             assert_eq!(result_types(op), [operand_ty, operand_ty]);

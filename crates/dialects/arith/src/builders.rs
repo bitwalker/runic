@@ -238,7 +238,7 @@ pub trait ArithOpBuilder<'f, B: ?Sized + Builder> {
         Ok(op.borrow().result().as_value_ref())
     }
 
-    /// Unsigned division and remainder: returns the remainder, then the quotient, in the order of
+    /// Unsigned division and remainder: returns the quotient, then the remainder, in the order of
     /// the operation's results. Traps on a zero divisor.
     fn udivrem(
         &mut self,
@@ -249,10 +249,10 @@ pub trait ArithOpBuilder<'f, B: ?Sized + Builder> {
         let op_builder = self.builder_mut().create::<Udivrem, _>(span);
         let op = op_builder(lhs, rhs)?;
         let op = op.borrow();
-        Ok((op.remainder().as_value_ref(), op.quotient().as_value_ref()))
+        Ok((op.quotient().as_value_ref(), op.remainder().as_value_ref()))
     }
 
-    /// Signed division and remainder: returns the remainder, then the quotient, in the order of
+    /// Signed division and remainder: returns the quotient, then the remainder, in the order of
     /// the operation's results. Traps on a zero divisor and on `MIN / -1`.
     fn sdivrem(
         &mut self,
@@ -263,7 +263,7 @@ pub trait ArithOpBuilder<'f, B: ?Sized + Builder> {
         let op_builder = self.builder_mut().create::<Sdivrem, _>(span);
         let op = op_builder(lhs, rhs)?;
         let op = op.borrow();
-        Ok((op.remainder().as_value_ref(), op.quotient().as_value_ref()))
+        Ok((op.quotient().as_value_ref(), op.remainder().as_value_ref()))
     }
 
     /// Bitwise AND.
