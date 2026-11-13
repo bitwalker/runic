@@ -31,9 +31,8 @@ pub const LOOP_EXIT_DISTANCE: u32 = 100_000;
 /// This analysis is a bit different than "standard" liveness analysis, in a few ways:
 ///
 /// * It is not sparse, i.e. it attaches liveness information to program points, rather than values
-/// * Liveness is not just a boolean state, it also represents how long the value must live until
-///   its next use. This is invaluable for instruction scheduling and resource allocation (registers,
-///   operand stack space).
+/// * Liveness is not just a boolean state: for each live value it also records the distance, in
+///   operations, from the program point to the value's next use.
 ///
 /// The design for this is based on the description in _Register Spilling and Live-Range Splitting
 /// for SSA-form Programs_, by Mattias Braun and Sebastian Hack. The paper also is used in our
@@ -534,7 +533,7 @@ impl DenseBackwardDataFlowAnalysis for Liveness {
                 }
 
                 // Join the before/after lattices to ensure we propagate liveness from multi-exit
-                // regions, e.g. `hir.if`
+                // regions, e.g. `scf.if`
                 let before_live_in = before.value().join(&live_in);
 
                 // Determine if the state has changed, if so, then overwrite `before` with what

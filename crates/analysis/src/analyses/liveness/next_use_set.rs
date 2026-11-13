@@ -77,10 +77,8 @@ impl Ord for NextUse {
 /// 2. Given the set of live values at the current program point, which values have the closest
 ///    (or furthest) next use?
 ///
-/// The second question is of primary importance for spills analysis, register allocation and (in
-/// the case of Miden) operand stack management. If we're going to choose what values to spill, so
-/// as to keep the most important values available in registers (or the operand stack), then we
-/// want to know when those values are needed.
+/// The second question orders the live values by how soon each is needed, which is what a client
+/// that must choose some live values over others (which to spill, for example) asks.
 #[derive(Default, Debug, Clone)]
 pub struct NextUseSet(SmallVec<[NextUse; 4]>);
 
