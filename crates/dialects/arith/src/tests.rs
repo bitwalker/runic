@@ -20,7 +20,13 @@ use runic_core::{
 
 use crate::*;
 
+mod differential;
+mod driver;
 mod folds;
+mod model;
+mod patterns;
+mod random;
+mod text;
 
 type TypeFn = fn(&Context) -> Type;
 type Builder<'a, 'f> = &'a mut FunctionBuilder<'f, OpBuilder>;
@@ -49,6 +55,48 @@ fn test_with(params: &[TypeFn]) -> Test {
     let test = Test::new("f", move |cx| (params.iter().map(|ty| ty(cx)).collect::<Vec<_>>(), []));
     test.context().get_or_register_dialect::<ArithDialect>();
     test
+}
+
+/// A test of a function `f` with the parameter and result types `params` and `results` make, in
+/// a context with the arithmetic dialect.
+fn test_fn(
+    params: impl Fn(&Context) -> Vec<Type> + 'static,
+    results: impl Fn(&Context) -> Vec<Type> + 'static,
+) -> Test {
+    let test = Test::new("f", move |cx| (params(cx), results(cx)));
+    test.context().get_or_register_dialect::<ArithDialect>();
+    test
+}
+
+/// The text of `test`'s function.
+fn text_of(test: &Test) -> String {
+    format!("{}", test.function().borrow().as_operation())
+}
+
+/// Canonicalizes `test`'s function with every `arith` canonicalization pattern and folding.
+/// Returns whether anything changed.
+fn canonicalize(test: &Test) -> bool {
+    use runic_core::{
+        patterns::{
+            FrozenRewritePatternSet, GreedyRewriteConfig, RegionSimplificationLevel,
+            RewritePatternSet, apply_patterns_and_fold_greedily,
+        },
+        traits::Canonicalizable,
+    };
+
+    let context = test.context_rc();
+    let mut patterns = RewritePatternSet::new(context.clone());
+    Cmpi::get_canonicalization_patterns(&mut patterns, context.clone());
+    Bnot::get_canonicalization_patterns(&mut patterns, context.clone());
+    Trunc::get_canonicalization_patterns(&mut patterns, context);
+    let patterns = Rc::new(FrozenRewritePatternSet::new(patterns));
+    let mut config = GreedyRewriteConfig::default();
+    config.with_region_simplification_level(RegionSimplificationLevel::None);
+    let function = test.function().as_operation_ref();
+    match apply_patterns_and_fold_greedily(function, patterns, config) {
+        Ok(changed) => changed,
+        Err(changed) => panic!("canonicalization did not converge (changed={changed})"),
+    }
 }
 
 /// The parameters of `test`'s function.

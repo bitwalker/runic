@@ -1,6 +1,9 @@
 //! Tests of the constant folds: each operation, built on constants of every tested type, folds to
 //! what `Int`'s methods compute on the operand values, and does not fold what traps or is
 //! undefined.
+//!
+//! These tables check which method, type and `isize` kind each fold uses; `super::differential`
+//! checks the arithmetic itself against a model that shares none of it.
 
 use runic_core::{IsizeFold, fold_isize};
 
@@ -548,11 +551,28 @@ fn counts_fold_to_a_value_of_the_operand_type() {
 }
 
 /// The shift amounts checked at `width`: 0, 1, `width - 1`, `width`, `width + 1`, and for a
-/// rotation `2 * width + 3`, plus 31 and 32 (which decide an `isize` shift).
+/// rotation `2 * width + 3`, plus 31 and 32 (which decide an `isize` shift), and amounts above
+/// `u32::MAX`: `2^32 + 1` at width 64 (`i64` and `isize`), `2^32` and `2^64 + 1` at width 128.
 fn amounts(width: u32) -> Vec<[Int; 2]> {
+    let width_amount = u128::from(width);
+    let mut candidates = vec![
+        0,
+        1,
+        width_amount - 1,
+        width_amount,
+        width_amount + 1,
+        2 * width_amount + 3,
+        31,
+        32,
+    ];
+    match width {
+        64 => candidates.push((1 << 32) + 1),
+        128 => candidates.extend([1 << 32, (1 << 64) + 1]),
+        _ => {}
+    }
     let mut amounts: Vec<Int> = Vec::new();
-    for amount in [0, 1, width - 1, width, width + 1, 2 * width + 3, 31, 32] {
-        let amount = Int::from(u128::from(amount)).trunc(width);
+    for amount in candidates {
+        let amount = Int::from(amount).trunc(width);
         if !amounts.contains(&amount) {
             amounts.push(amount);
         }
