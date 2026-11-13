@@ -366,13 +366,20 @@ fn parse_type_source(context: &Rc<Context>, source_id: SourceId) -> Outcome<Type
 }
 
 /// Parse an operation of type `T` from `source`, registered with the context under `name`
+///
+/// The parsed operation is owned by the context: the caller keeps a handle to it for as long as
+/// it uses the operation. This function holds one of its own until the operation is downcast, as
+/// `config` may hold the only one.
 pub fn parse<T: OpParser + OpRegistration>(
     config: ParserConfig,
     name: impl Into<String>,
     source: impl Into<String>,
 ) -> Outcome<UnsafeIntrusiveEntityRef<T>> {
-    let anchor = config.context.get_registered_name::<T>();
-    parse_anchored(anchor, config, name, source).map(downcast_anchored::<T>)
+    let context = config.context.clone();
+    let anchor = context.get_registered_name::<T>();
+    let outcome = parse_anchored(anchor, config, name, source).map(downcast_anchored::<T>);
+    drop(context);
+    outcome
 }
 
 /// Parse an operation of type `T` from the file at `path`
@@ -381,8 +388,12 @@ pub fn parse_file<T: OpParser + OpRegistration>(
     config: ParserConfig,
     path: impl AsRef<std::path::Path>,
 ) -> Outcome<UnsafeIntrusiveEntityRef<T>> {
-    let anchor = config.context.get_registered_name::<T>();
-    parse_file_anchored(anchor, config, path).map(downcast_anchored::<T>)
+    // As in `parse`, the context lives until the operation is downcast
+    let context = config.context.clone();
+    let anchor = context.get_registered_name::<T>();
+    let outcome = parse_file_anchored(anchor, config, path).map(downcast_anchored::<T>);
+    drop(context);
+    outcome
 }
 
 fn downcast_anchored<T: OpRegistration>(op: OperationRef) -> UnsafeIntrusiveEntityRef<T> {

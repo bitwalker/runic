@@ -6478,3 +6478,18 @@ fn references_and_callees_that_are_not_of_the_function_type_do_not_parse() {
         assert!(!error.contains("invalid operation"), "{body}: {error}");
     }
 }
+
+/// `parse::parse` holds the context until it has downcast the parsed operation, so a caller may
+/// move its only handle into the configuration. (The operation must then not be used: the context
+/// that owns it is gone once the call returns.) Freed memory is not always overwritten, so a
+/// regression shows as an occasional "wrong operation type" panic; the parse is repeated to make
+/// one likelier.
+#[test]
+fn parse_holds_the_context_until_the_operation_is_downcast() {
+    for _ in 0..64 {
+        let config = ParserConfig::new(Rc::new(Context::default()));
+        let outcome =
+            parse::parse::<Module>(config, "only-handle", "builtin.module public @m { };");
+        assert!(outcome.into_result().is_ok());
+    }
+}
