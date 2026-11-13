@@ -730,11 +730,10 @@ fn parsing_verifies_what_it_parsed() {
     let test = ParserTest::default();
     test.context().get_or_register_dialect::<TestDialect>();
 
-    // Verification used to run inside `OperationParser::finalize`, and moving it out to
-    // `parse_anchored_source` left nothing pinning that it still runs at all: the tests that
-    // exercise invalid IR reach the verifier by calling `recursively_verify` themselves, and the
-    // one fixture that is deliberately malformed is parsed with verification turned off. Deleting
-    // the call would have kept every one of them green. This is the test that would not be.
+    // Parsing verifies what it parsed, in `parse_anchored_source`. Only this test pins that: the
+    // tests that exercise invalid IR reach the verifier by calling `recursively_verify`
+    // themselves, and the one fixture that is deliberately malformed is parsed with verification
+    // turned off.
     let result = test.parse_any("parse_unverifiable.hir", UNVERIFIABLE_SOURCE);
 
     let err = result.err().map(|err| err.to_string()).unwrap_or_else(|| {

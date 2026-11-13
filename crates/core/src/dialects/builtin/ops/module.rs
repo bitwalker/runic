@@ -17,8 +17,8 @@ use crate::{
 
 pub type ModuleRef = UnsafeIntrusiveEntityRef<Module>;
 
-/// A [Module] is a namespaced container for [super::Function] definitions, and represents the most
-/// atomic translation unit that supports compilation to Miden Assembly.
+/// A [Module] is a namespaced container for [super::Function] definitions, and the smallest unit
+/// of translation.
 ///
 /// [Module] operations may be nested under a [super::World], [super::Component], or another
 /// [Module] to represent source-level namespace hierarchy.

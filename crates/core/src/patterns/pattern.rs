@@ -245,7 +245,8 @@ mod tests {
         *,
     };
 
-    /// In Miden, `n << 1` is vastly inferior to `n * 2` in cost, so reverse it
+    /// Rewrites `n << 1` as `n * 2`, as for a target where a multiplication is cheaper than a
+    /// shift
     ///
     /// NOTE: These two ops have slightly different semantics, a real implementation would have
     /// to handle the edge cases.

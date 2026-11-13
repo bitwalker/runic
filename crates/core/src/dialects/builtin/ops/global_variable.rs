@@ -26,8 +26,7 @@ pub type GlobalVariableRef = UnsafeIntrusiveEntityRef<GlobalVariable>;
 /// to ensure that an initializer is specified if necessary.
 ///
 /// Global variables, like functions, may also be assigned a visibility. This is only used when
-/// resolving symbol uses, and does not impose any access restrictions once lowered to Miden
-/// Assembly.
+/// resolving symbol uses, and imposes no access restrictions on the code generated from them.
 #[operation(
     dialect = BuiltinDialect,
     traits(

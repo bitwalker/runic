@@ -452,8 +452,7 @@ pub fn parse_file_anchored(
 /// to anchor the operation it is reading — `OperationParser` takes a
 /// [World](crate::dialects::builtin::World) and parses into its body. For a source whose top-level
 /// operation is a module, a component or anything else, that world is a genuine addition: the
-/// operation had none, and callers rely on getting one (see `runic_compile`'s
-/// `extract_miden_component_or_bail`).
+/// operation had none, and callers rely on getting one.
 ///
 /// For a source that *is* a `builtin.world`, it is not. Leaving the parsed world nested inside
 /// the anchor produces a world within a world, which is not merely redundant — it is invalid
