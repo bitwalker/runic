@@ -98,6 +98,17 @@ impl OpPrinter for Constant {
         printer.print_int(*self.get_value());
         printer.print_space();
         printer.print_colon_type(self.result().ty());
+        // The attributes that are not properties, such as the inline call chain of a folded
+        // constant, as `arith.cmpi` prints them.
+        let op = self.as_operation();
+        if op.has_attributes() {
+            printer.print_space();
+            printer.print_keyword("attributes");
+            printer.print_space();
+            printer.print_attribute_dictionary(
+                op.attributes().iter().map(|attr| *attr.as_named_attribute()),
+            );
+        }
     }
 }
 
@@ -109,6 +120,8 @@ impl OpParser for Constant {
 
         let (literal_span, literal) = parser.parse_integer_literal()?.into_parts();
         let (ty_span, ty) = parser.parse_colon_type()?.into_parts();
+        let mut attrs = SmallVec::default();
+        parser.parse_optional_attribute_dict_with_keyword(&mut attrs)?;
         let span = SourceSpan::session(
             literal_span.source().id(),
             runic_core::diagnostics::TextRange::new(
@@ -129,6 +142,7 @@ impl OpParser for Constant {
         let attr = parser.context_rc().int_attr(value, ty);
 
         state.add_attribute("value", attr);
+        state.attrs.extend(attrs);
         state.results.push(ty);
 
         Ok(())

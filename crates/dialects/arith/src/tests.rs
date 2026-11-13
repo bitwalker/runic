@@ -719,6 +719,29 @@ fn constants_parse_print_and_parse_again() {
 }
 
 #[test]
+fn constant_text_keeps_non_property_attributes() {
+    use runic_core::dialects::builtin::attributes::TypeAttr;
+
+    let mut test = test_with(&[]);
+    let context = test.context_rc();
+    let value = test.function_builder().i32(5, SPAN);
+    // An attribute outside the properties, as the inline call chain the folder keeps on a folded
+    // constant.
+    let note = context.create_attribute::<TypeAttr, _>(context.i64()).as_attribute_ref();
+    let mut op = value.borrow().get_defining_op().unwrap();
+    op.borrow_mut().set_attribute("note", note);
+    let (text, context, ops) = finish(&mut test);
+    assert!(text.contains("arith.constant 5 : i32 attributes { note = "), "{text}");
+    let op = ops[0].borrow();
+    let note = op.get_attribute("note").unwrap_or_else(|| panic!("dropped by:\n{text}"));
+    let note = note.borrow();
+    assert_eq!(
+        *note.downcast_ref::<TypeAttr>().expect("a type attribute").as_value(),
+        context.i64()
+    );
+}
+
+#[test]
 fn constant_builders_type_their_constants() {
     let mut test = test_with(&[]);
     let context = test.context_rc();
