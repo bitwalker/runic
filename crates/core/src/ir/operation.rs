@@ -1646,13 +1646,62 @@ impl Operation {
 /// Movement
 impl Operation {
     /// Remove this operation (and its descendants) from its containing block, and delete them
-    #[inline]
+    ///
+    /// The symbol references of this operation and of every operation nested in it are unlinked
+    /// from the symbols they name, so an erased operation is no longer a use of any symbol.
     pub fn erase(&mut self) {
+        self.unlink_symbol_uses();
+
         // We don't delete entities currently, so for now this is just an alias for `remove`
         self.remove();
 
         self.successors.clear();
         self.operands.clear();
+    }
+
+    /// Unlinks every symbol reference held by this operation or an operation nested in it from
+    /// the symbol it is linked to.
+    ///
+    /// The uses are collected first, so no operation is borrowed by the walk when a symbol's use
+    /// list is changed. A use of this operation itself (a recursive call inside a function being
+    /// erased) is removed through `self`, which the caller already borrows mutably; every other
+    /// symbol is borrowed mutably in turn, so the caller must not hold a borrow of one.
+    fn unlink_symbol_uses(&mut self) {
+        let mut uses = SmallVec::<[crate::SymbolUseRef; 4]>::default();
+        let mut collect = |op: &Operation| {
+            let _ = Operation::walk_symbol_refs(op, |reference| {
+                if let Ok(symbol_use) = reference {
+                    uses.push(symbol_use);
+                }
+                WalkResult::Continue(())
+            });
+        };
+        // `self` is visited directly: the walkers borrow the operations they visit, and `self` is
+        // already borrowed mutably
+        collect(self);
+        for region in self.regions() {
+            region.prewalk_all(&mut collect);
+        }
+        if uses.is_empty() {
+            return;
+        }
+
+        for symbol_use in uses {
+            let Some(symbol) = symbol_use.linked_symbol() else {
+                continue;
+            };
+            // Compared by address, without borrowing `symbol`, which may be `self`
+            let (data_ptr, _) = SymbolRef::as_ptr(&symbol).to_raw_parts();
+            if core::ptr::addr_eq(data_ptr, self.container()) {
+                let symbol = self
+                    .as_trait_mut::<dyn crate::Symbol>()
+                    .expect("an operation that is a symbol implements Symbol");
+                // SAFETY: the use is linked to this operation, so it is in its use list
+                unsafe { symbol_use.unlink_from(symbol.uses_mut()) };
+            } else {
+                symbol_use.unlink_from_symbol();
+            }
+        }
     }
 
     /// Remove the operation from its parent block, but don't delete it.

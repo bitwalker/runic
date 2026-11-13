@@ -14,18 +14,27 @@ pub type SymbolUseCursor<'a> = crate::EntityListCursor<'a, SymbolUse>;
 pub type SymbolUseCursorMut<'a> = crate::EntityListCursorMut<'a, SymbolUse>;
 
 /// A [SymbolUse] represents a use of a [super::Symbol] by an [crate::Operation]
+///
+/// A use is linked when it is in the use list of a symbol; it then records that symbol, so that
+/// unlinking it, and resolving the reference that holds it, need no lookup of its path.
 #[derive(Copy, Clone)]
 pub struct SymbolUse {
     /// The user of the symbol
     pub owner: OperationRef,
     /// The symbol attribute of the op that stores the symbol
     pub attr: UnsafeIntrusiveEntityRef<SymbolRefAttr>,
+    /// The symbol in whose use list this use was last put; meaningful only while it is linked
+    linked_to: Option<SymbolRef>,
 }
 
 impl SymbolUse {
     #[inline]
     pub fn new(owner: OperationRef, attr: UnsafeIntrusiveEntityRef<SymbolRefAttr>) -> Self {
-        Self { owner, attr }
+        Self {
+            owner,
+            attr,
+            linked_to: None,
+        }
     }
 
     /// Returns the symbol attribute that owns this use.
@@ -35,7 +44,8 @@ impl SymbolUse {
 }
 
 impl UnsafeIntrusiveEntityRef<SymbolUse> {
-    /// Resolves the referenced symbol relative to the owning operation of this use.
+    /// Resolves `path` relative to the owning operation of this use, by looking it up in the
+    /// nearest symbol table. Unlike [Self::linked_symbol], this does not consult the link.
     #[inline]
     pub fn resolve_symbol(self, path: &SymbolPath) -> Option<SymbolRef> {
         let owner = self.borrow().owner;
@@ -46,26 +56,48 @@ impl UnsafeIntrusiveEntityRef<SymbolUse> {
         symbol_table.as_symbol_table()?.resolve(path)
     }
 
-    /// Unlinks this use from its current symbol, if any.
-    pub fn unlink_from_symbol(self, path: &SymbolPath) {
+    /// The symbol this use is linked to, or `None` if it is not in the use list of any symbol.
+    pub fn linked_symbol(self) -> Option<SymbolRef> {
         if !self.is_linked() {
-            return;
+            return None;
         }
+        self.borrow().linked_to
+    }
 
-        let mut symbol =
-            self.resolve_symbol(path).expect("linked symbol uses must resolve to a symbol");
+    /// Unlinks this use from the symbol it is linked to, if any.
+    ///
+    /// This mutably borrows that symbol: the caller must not hold a borrow of it.
+    pub fn unlink_from_symbol(mut self) {
+        let Some(mut symbol) = self.linked_symbol() else {
+            return;
+        };
         unsafe {
             symbol.borrow_mut().uses_mut().cursor_mut_from_ptr(self).remove();
         }
+        self.borrow_mut().linked_to = None;
     }
 
     /// Links this use to `symbol`.
-    pub fn link_to_symbol(self, mut symbol: SymbolRef) {
+    pub fn link_to_symbol(mut self, mut symbol: SymbolRef) {
         debug_assert!(
             !self.is_linked(),
             "symbol use must be unlinked before it can be linked again"
         );
+        self.borrow_mut().linked_to = Some(symbol);
         symbol.borrow_mut().insert_use(self);
+    }
+
+    /// Removes this use from the use list `uses`, which must be the use list of the symbol it is
+    /// linked to, held by the caller: used where that symbol is already borrowed.
+    ///
+    /// # Safety
+    ///
+    /// `uses` must be the use list this use is linked into.
+    pub(crate) unsafe fn unlink_from(mut self, uses: &mut super::SymbolUseList) {
+        unsafe {
+            uses.cursor_mut_from_ptr(self).remove();
+        }
+        self.borrow_mut().linked_to = None;
     }
 }
 
@@ -243,5 +275,106 @@ mod tests {
         let err = owner.verify().expect_err("an unlinked symbol attribute must not verify");
         let message = alloc::format!("{err}");
         assert!(message.contains("symbol '@missing' does not resolve"), "{message}");
+    }
+
+    /// A module whose `@f` calls `@g` and itself, and whose `@h` calls `@f`; `@g` is also named by
+    /// a function reference in `@h`.
+    const CALLS: &str = r#"builtin.module public @m {
+    builtin.function public extern("C") @g(%x: i32) -> i32 {
+        builtin.ret %x : (i32);
+    };
+    builtin.function public extern("C") @f(%a: i32) -> i32 {
+        %r = builtin.call @g(%a) : extern("C") (i32) -> i32;
+        %s = builtin.call @f(%r) : extern("C") (i32) -> i32;
+        builtin.ret %s : (i32);
+    };
+    builtin.function public extern("C") @h(%a: i32) -> i32 {
+        %r = builtin.call @f(%a) : extern("C") (i32) -> i32;
+        %p = builtin.function_ref @g : (i32) -> i32;
+        builtin.ret %r : (i32);
+    };
+};"#;
+
+    /// [CALLS], parsed, with `@g`, `@f` and `@h`, and the context that owns them.
+    fn calls() -> (alloc::rc::Rc<crate::Context>, crate::OperationRef, [crate::OperationRef; 3]) {
+        use crate::{
+            SymbolTable,
+            dialects::builtin::Module,
+            parse::{ParserConfig, parse},
+        };
+
+        let test = Test::default();
+        let module = parse::<Module>(ParserConfig::new(test.context_rc()), "calls", CALLS)
+            .into_result()
+            .unwrap_or_else(|err| panic!("{}", crate::testing::text::describe(&err)));
+        let functions =
+            ["g", "f", "h"].map(|name| module.borrow().symbol_manager().lookup_op(name).unwrap());
+        (test.context_rc(), module.as_operation_ref(), functions)
+    }
+
+    /// The number of uses in the use list of the symbol `op`.
+    fn uses(op: crate::OperationRef) -> usize {
+        op.borrow().as_symbol_ref().unwrap().borrow().iter_uses().count()
+    }
+
+    /// The operations in the body of `function` named `name`.
+    fn ops_named(
+        function: crate::OperationRef,
+        name: &str,
+    ) -> alloc::vec::Vec<crate::OperationRef> {
+        use alloc::string::ToString;
+
+        let mut found = alloc::vec::Vec::new();
+        function.borrow().prewalk_all(|op: &crate::Operation| {
+            if op.name().to_string() == name {
+                found.push(op.as_operation_ref());
+            }
+        });
+        found
+    }
+
+    /// Erasing a call or a reference removes its use from the use list of the symbol it names,
+    /// and the reference no longer resolves.
+    #[test]
+    fn an_erased_operation_leaves_the_use_list_of_its_symbol() {
+        use crate::dialects::builtin::FunctionReference;
+
+        let resolves = |op: crate::OperationRef| {
+            let op = op.borrow();
+            op.downcast_ref::<FunctionReference>().unwrap().callee().resolve().is_some()
+        };
+
+        let (_context, _module, [g, f, h]) = calls();
+        assert_eq!((uses(g), uses(f), uses(h)), (2, 2, 0));
+
+        let mut reference = ops_named(h, "builtin.function_ref")[0];
+        assert!(resolves(reference));
+        reference.borrow_mut().erase();
+        assert_eq!((uses(g), uses(f)), (1, 2));
+        assert!(!resolves(reference), "an erased reference resolves to nothing");
+
+        let mut call = ops_named(h, "builtin.call")[0];
+        call.borrow_mut().erase();
+        assert_eq!((uses(g), uses(f)), (1, 1));
+    }
+
+    /// Erasing a function unlinks the references inside it, among them a call of the function
+    /// itself, without borrowing it twice; references to it from outside stay.
+    #[test]
+    fn erasing_a_function_unlinks_the_calls_inside_it_including_one_of_itself() {
+        let (_context, _module, [g, mut f, h]) = calls();
+        f.borrow_mut().erase();
+        assert_eq!(uses(g), 1, "the reference in @h remains");
+        assert_eq!(uses(f), 1, "the recursive call is gone; the call in @h remains");
+        assert_eq!(uses(h), 0);
+    }
+
+    /// Erasing a module unlinks every reference in it, those between its functions and the
+    /// recursive call among them.
+    #[test]
+    fn erasing_a_module_unlinks_every_reference_inside_it() {
+        let (_context, mut module, [g, f, h]) = calls();
+        module.borrow_mut().erase();
+        assert_eq!((uses(g), uses(f), uses(h)), (0, 0, 0));
     }
 }

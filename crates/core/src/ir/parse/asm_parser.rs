@@ -363,11 +363,9 @@ impl AsmParserState {
                 continue;
             }
 
-            let mut op = definition.op;
-            let mut op_mut = op.borrow_mut();
-            let mut symbol = op_mut.as_trait_mut::<dyn Symbol>().unwrap();
+            let symbol = definition.op.borrow().as_symbol_ref().unwrap();
             for user in definition.symbol_uses.iter().copied() {
-                symbol.insert_use(user);
+                user.link_to_symbol(symbol);
             }
         }
     }
