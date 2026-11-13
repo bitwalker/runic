@@ -805,10 +805,9 @@ builtin.function public extern("C") @ssa_memory_reads(%0: ptr<i8>) -> (i8, i8) {
 
     /// Commutative operations are equal under [OpKey] regardless of operand order, and the key
     /// hashes operands in the same canonical order equality compares them in, so both the
-    /// identical and the operand-swapped duplicates must always be deduplicated. Previously the
-    /// swapped pair compared equal but hashed differently, so whether CSE fired for it depended
-    /// on hash-bucket coincidences, i.e. on allocation addresses, making compilation output
-    /// non-deterministic.
+    /// identical and the operand-swapped duplicates are always deduplicated. A pair that compared
+    /// equal but hashed differently would be deduplicated or not depending on hash-bucket
+    /// coincidences, that is, on allocation addresses.
     #[test]
     fn cse_commutative_operand_order() {
         let mut test =
@@ -913,9 +912,9 @@ builtin.function public extern("C") @commutative(%0: i32, %1: i32) -> (i32, i32,
         assert_ne!(opkey_hash_stream(OpKey(ab)), opkey_hash_stream(OpKey(aa)));
     }
 
-    /// [DefaultValueHasher] must hash a value by its thin address only. Hashing the fat pointer instead (data address plus the
-    /// vtable pointer, which can differ for the same value across codegen units) makes equal CSE
-    /// keys hash differently, which is what made deduplication non-deterministic.
+    /// [DefaultValueHasher] hashes a value by its thin address only. The fat pointer (data address
+    /// plus the vtable pointer, which can differ for the same value across codegen units) would
+    /// make equal CSE keys hash differently, and deduplication depend on where values live.
     #[test]
     fn default_value_hasher_hashes_thin_address_only() {
         use core::hash::Hash;

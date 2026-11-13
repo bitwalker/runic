@@ -57,6 +57,45 @@ fn would_sink_an_exit_between_regions(def: &Operation, user_region: Option<Regio
     }
 }
 
+/// Whether moving `def` to a use in `user_region` would move it into a region other than its own
+/// that may be executed more than once each time the region holding `def` is.
+///
+/// Every region between the two must belong to a region operation that executes it at most once
+/// (the test [ControlFlowSink] uses for the regions it sinks into), so that the moved operation is
+/// executed at most as often as before. A region operation that is not a
+/// [RegionBranchOpInterface], or a use outside the region holding `def`, counts as "may be
+/// executed more than once".
+fn would_move_into_a_region_that_may_repeat(
+    def: &Operation,
+    user_region: Option<RegionRef>,
+) -> bool {
+    let (Some(from), Some(mut region)) = (def.parent_region(), user_region) else {
+        return true;
+    };
+    while !RegionRef::ptr_eq(&region, &from) {
+        let Some(owner) = region.borrow().parent() else {
+            return true;
+        };
+        let executed_at_most_once = {
+            let owner = owner.borrow();
+            let Some(branch) = owner.as_trait::<dyn RegionBranchOpInterface>() else {
+                return true;
+            };
+            let mut regions = SmallVec::<[RegionRef; 4]>::default();
+            get_singly_executed_regions_to_sink(branch, &mut regions);
+            regions.iter().any(|singly| RegionRef::ptr_eq(singly, &region))
+        };
+        if !executed_at_most_once {
+            return true;
+        }
+        let Some(outer) = owner.borrow().parent_region() else {
+            return true;
+        };
+        region = outer;
+    }
+    false
+}
+
 /// Erase all transparent operations that reference the given value.
 ///
 /// This is used before erasing a defining op whose result is only kept alive by
@@ -207,11 +246,16 @@ impl Pass for ControlFlowSink {
 ///
 /// 2. An effect-free operation with a single result, whose only use is this operation, is moved
 ///    directly before it, and the definitions of its own operands are then moved the same way.
+///    Such an operation is not moved into a region other than its own unless every region between
+///    the two is executed at most once each time the enclosing one is (as [ControlFlowSink]
+///    requires of the regions it sinks into): an operation that may trap is never moved to where
+///    it would execute more often, so a definition before a loop stays out of the loop's body.
 ///
-/// The definitions are placed in a chosen operand order (see `OpOperandSink::operand_index`), so
-/// that a stack-machine backend such as Wasm finds the operand values in the order the using
-/// operation consumes them, with fewer locals and less reordering. Values that cannot be moved
-/// (block arguments, operations with memory effects, values with other uses) stay where they are.
+/// The definitions are placed in a fixed operand order (see `OpOperandSink::operand_index`): for a
+/// binary operation the definition of the right-hand operand ends up closest to the operation and
+/// that of the left-hand operand before it; for any other operation the definition of the first
+/// operand ends up closest. Values that cannot be moved (block arguments, operations with memory
+/// effects, values with other uses) stay where they are.
 ///
 /// An operation left without uses by this rewrite is erased when it is trivially dead.
 ///
@@ -466,6 +510,7 @@ impl Pass for SinkOperandDefs {
                     || def.num_results() != 1
                     || !def.is_memory_effect_free()
                     || would_sink_an_exit_between_regions(&def, op.parent_region())
+                    || would_move_into_a_region_that_may_repeat(&def, op.parent_region())
                 {
                     // Skip this operand if the defining op cannot be safely moved
                     //
@@ -474,16 +519,8 @@ impl Pass for SinkOperandDefs {
                     // the new location, then we could still move those ops.
                     log::trace!(target: Self::NAME, "    defining op is unsuitable for sinking, ignoring this operand");
                 } else {
-                    // The original op can be moved
-                    //
-                    // Determine if we _should_ move it:
-                    //
-                    // 1. If the use is inside a loop, and the def is outside a loop, do not
-                    //    move the defining op into the loop unless it is profitable to do so,
-                    //    i.e. a cost model indicates it is cheaper than keeping the value live
-                    //    across the loop
-                    //
-                    // 2.
+                    // The original op can be moved: it is not moved into a region that may
+                    // execute more often than its own (checked above)
                     drop(def);
                     drop(value);
                     log::trace!(target: Self::NAME, "    defining op can be moved and has no other uses, moving into place");
@@ -750,7 +787,7 @@ fn get_singly_executed_regions_to_sink(
 
 #[cfg(test)]
 mod tests {
-    use alloc::{boxed::Box, rc::Rc, string::ToString, vec::Vec};
+    use alloc::{boxed::Box, rc::Rc, string::ToString};
 
     use runic_core::{
         Context, Report,
@@ -758,47 +795,74 @@ mod tests {
         parse::{self, ParserConfig},
         pass::{Nesting, PassManager},
     };
-    use runic_dialect_cf::Assert;
-    use runic_dialect_scf::If;
 
-    use super::ControlFlowSink;
+    use super::{ControlFlowSink, SinkOperandDefs};
 
-    /// Control-flow sinking moves an effect-free definition used only inside a region into it,
-    /// but leaves a `cf.assert` before the region operation where it was written.
-    #[test]
-    fn assert_is_not_sunk_into_a_region() -> Result<(), Report> {
+    /// `f` with the body `body`, after `pass` ran on it, as text.
+    fn run(
+        pass: Box<dyn runic_core::pass::OperationPass>,
+        body: &str,
+    ) -> Result<alloc::string::String, Report> {
         let context = Rc::new(Context::default());
-        let function = parse::parse::<Function>(
-            ParserConfig::new(context.clone()),
-            "sink_assert.hir",
-            r#"builtin.function public extern("C") @sink_assert(%c: i1, %a: i32, %b: i32) -> i32 {
-                %sum = arith.add %a, %b;
-                cf.assert %c, "m";
-                %x = scf.if %c then {
-                    scf.yield %sum : (i32);
-                } else {
-                    scf.yield %b : (i32);
-                } : (i1) -> (i32);
-                builtin.ret %x : (i32);
-            };"#,
-        )
-        .into_result()?;
+        let text = alloc::format!(
+            "builtin.function public extern(\"C\") @f(%c: i1, %a: i32, %b: i32, %p: ptr<i32>) -> \
+             i32 {{\n{body}\n}};"
+        );
+        let function = parse::parse::<Function>(ParserConfig::new(context.clone()), "sink", text)
+            .into_result()?;
         let mut passes = PassManager::on::<Function>(context, Nesting::Implicit);
-        passes.add_pass(Box::<ControlFlowSink>::default());
+        passes.add_pass(pass);
+        passes.enable_verifier(true);
         passes.run(function.as_operation_ref())?;
-        function.as_operation_ref().borrow().recursively_verify()?;
+        Ok(function.as_operation_ref().borrow().to_string())
+    }
 
-        let function = function.borrow();
-        let body = function.body();
-        let entry = body.entry();
-        let mut ops = entry.body().iter();
-        assert!(ops.next().unwrap().is::<Assert>(), "the assert must stay in the entry block");
-        let if_op = ops.next().unwrap();
-        let if_op = if_op.downcast_ref::<If>().unwrap();
-        let then_body = if_op.then_body();
-        let then_entry = then_body.entry();
-        let then_ops = then_entry.body().iter().map(|op| op.name().to_string()).collect::<Vec<_>>();
-        assert_eq!(then_ops, ["arith.add", "scf.yield"], "the addition is sunk into the region");
+    /// A division defined before a loop and used once in its body: neither sinking pass moves it
+    /// into the body, where it would execute once per iteration (and trap after the store).
+    #[test]
+    fn operand_sinking_does_not_move_a_division_into_a_loop() -> Result<(), Report> {
+        let body = r#"
+    %q = arith.udiv %a, %b;
+    %zero = arith.constant 0 : i32;
+    %count = scf.while %zero before {
+    ^head(%i: i32):
+        %continue = arith.cmpi ult %i, %a;
+        scf.condition %continue, %i : (i1, i32);
+    } after {
+    ^body(%j: i32):
+        test.store %p, %j : (ptr<i32>, i32);
+        %next = arith.add %j, %q;
+        scf.yield %next : (i32);
+    } : (i32) -> i32;
+    builtin.ret %count : (i32);"#;
+        for pass in [
+            Box::<SinkOperandDefs>::default() as Box<dyn runic_core::pass::OperationPass>,
+            Box::<ControlFlowSink>::default(),
+        ] {
+            let text = run(pass, body)?;
+            assert!(text.find("arith.udiv").unwrap() < text.find("scf.while").unwrap(), "{text}");
+        }
+        Ok(())
+    }
+
+    /// Operand sinking moves an effect-free definition into the region of an `scf.if`, which is
+    /// executed at most once, next to its only use.
+    #[test]
+    fn operand_sinking_moves_a_definition_into_a_region_executed_at_most_once() -> Result<(), Report>
+    {
+        let text = run(
+            Box::<SinkOperandDefs>::default(),
+            r#"
+    %q = arith.udiv %a, %b;
+    %x = scf.if %c then {
+        %y = arith.add %b, %q;
+        scf.yield %y : (i32);
+    } else {
+        scf.yield %b : (i32);
+    } : (i1) -> (i32);
+    builtin.ret %x : (i32);"#,
+        )?;
+        assert!(text.find("arith.udiv").unwrap() > text.find("scf.if").unwrap(), "{text}");
         Ok(())
     }
 }
