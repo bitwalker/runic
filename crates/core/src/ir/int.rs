@@ -103,6 +103,13 @@ impl Int {
         Self::from_bits(width, 0)
     }
 
+    /// The `width`-bit integer with value one: only the lowest bit set.
+    ///
+    /// Panics if `width` is 0 or more than [Self::MAX_WIDTH].
+    pub const fn one(width: u32) -> Self {
+        Self::from_bits(width, 1)
+    }
+
     /// The `width`-bit integer with every bit set.
     ///
     /// Panics if `width` is 0 or more than [Self::MAX_WIDTH].
@@ -215,6 +222,30 @@ impl Int {
         check_width(width);
         assert!(width <= self.width as u32, "cannot truncate to a wider width");
         Self::from_bits(width, self.bits)
+    }
+
+    /// This value sign-extended to `width` bits if `width` is larger than its width, truncated to
+    /// its low `width` bits if smaller, and unchanged if equal.
+    ///
+    /// Panics if `width` is 0 or more than [Self::MAX_WIDTH].
+    pub const fn sext_or_trunc(self, width: u32) -> Self {
+        if width > self.width as u32 {
+            self.sext(width)
+        } else {
+            self.trunc(width)
+        }
+    }
+
+    /// This value zero-extended to `width` bits if `width` is larger than its width, truncated to
+    /// its low `width` bits if smaller, and unchanged if equal.
+    ///
+    /// Panics if `width` is 0 or more than [Self::MAX_WIDTH].
+    pub const fn zext_or_trunc(self, width: u32) -> Self {
+        if width > self.width as u32 {
+            self.zext(width)
+        } else {
+            self.trunc(width)
+        }
     }
 
     /// Compares the values as unsigned numbers. Panics if the widths differ.
@@ -389,6 +420,35 @@ mod tests {
         let x = Int::from_bits(128, u128::MAX);
         assert_eq!(x.sext(128), x);
         assert_eq!(x.trunc(1), Int::from_bits(1, 1));
+    }
+
+    #[test]
+    fn one_is_the_lowest_bit() {
+        for w in 1..=128 {
+            let one = Int::one(w);
+            assert_eq!(one.width(), w);
+            assert_eq!(one.unsigned(), 1);
+        }
+    }
+
+    #[test]
+    fn extend_or_truncate_agrees_with_its_parts() {
+        for from in 1..=9u32 {
+            for bits in 0..(1u128 << from) {
+                let x = Int::from_bits(from, bits);
+                for to in 1..=9u32 {
+                    let (sext, zext) = if to > from {
+                        (x.sext(to), x.zext(to))
+                    } else {
+                        (x.trunc(to), x.trunc(to))
+                    };
+                    assert_eq!(x.sext_or_trunc(to), sext, "sext_or_trunc {x:?} to {to}");
+                    assert_eq!(x.zext_or_trunc(to), zext, "zext_or_trunc {x:?} to {to}");
+                }
+                assert_eq!(x.sext_or_trunc(from), x);
+                assert_eq!(x.zext_or_trunc(from), x);
+            }
+        }
     }
 
     #[test]
