@@ -1469,6 +1469,30 @@ builtin.function public extern("C") @down_propagate_while() {
         }
         Ok(())
     }
+
+    /// Two equal indirect calls have unknown effects and are never merged, even through one
+    /// reference to a function that only reads; two equal references are merged.
+    #[test]
+    fn indirect_calls_are_never_merged() -> Result<(), runic_core::Report> {
+        let text = cse_in_module(
+            r#"
+    %f = builtin.function_ref @reads : (ptr<i32>) -> i32;
+    %g = builtin.function_ref @reads : (ptr<i32>) -> i32;
+    %1 = builtin.call_indirect %f(%p) : extern("C") (ptr<i32>) -> i32;
+    %2 = builtin.call_indirect %g(%p) : extern("C") (ptr<i32>) -> i32;
+    builtin.ret %1, %2 : (i32, i32);"#,
+        )?;
+        filecheck!(
+            text,
+            r#"
+// CHECK: [[F:%\d+]] = builtin.function_ref @reads : (ptr<i32>) -> i32;
+// CHECK-NEXT: [[R1:%\d+]] = builtin.call_indirect [[F]](%0) : extern("C") (ptr<i32>) -> i32;
+// CHECK-NEXT: [[R2:%\d+]] = builtin.call_indirect [[F]](%0) : extern("C") (ptr<i32>) -> i32;
+// CHECK-NEXT: builtin.ret [[R1]], [[R2]] : (i32, i32);
+            "#
+        );
+        Ok(())
+    }
 }
 
 //------------ TESTS TO FINISH TRANSLATING

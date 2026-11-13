@@ -8,12 +8,11 @@ mod module;
 mod segment;
 mod world;
 
-pub(crate) use self::world::shadowing_error;
 // The op builders of components and modules are not exported: they would create ops
 // with names that skip the spelling and the checks of the builtin builders
 pub use self::{
     alias::{FunctionAlias, FunctionAliasRef},
-    call::{Call, CallRef},
+    call::{Call, CallIndirect, CallIndirectRef, CallRef, FunctionReference, FunctionReferenceRef},
     cast::UnrealizedConversionCast,
     component::{Component, ComponentRef},
     function::{Function, FunctionBuilder as PrimFunctionBuilder, FunctionRef, Ret, RetImm},
@@ -22,6 +21,7 @@ pub use self::{
     segment::*,
     world::{World, WorldRef},
 };
+pub(crate) use self::{call::function_type_of, world::shadowing_error};
 
 /// Parses the raw segment naming a module, a symbol table of `kind`, and adds its
 /// canonical spelling (see [crate::SymbolPath::segments_of]) to `state` as the `name`

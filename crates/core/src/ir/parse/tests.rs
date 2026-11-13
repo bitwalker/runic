@@ -6339,3 +6339,142 @@ fn a_call_through_an_alias_of_an_alias_resolves_to_the_function() -> TestResult 
     assert_eq!(named.borrow().name().as_str(), "second");
     Ok(())
 }
+
+const INDIRECT_CALLS: &str = r#"builtin.module public @calls {
+    builtin.function public extern("C") @callee(i32, i32) -> i32;
+    builtin.function public extern("C") @unit();
+    builtin.function_alias public @alias -> @callee;
+    builtin.function public extern("C") @caller(%0: i32, %1: i32) -> i32 {
+        %2 = builtin.function_ref @callee : (i32, i32) -> i32;
+        %3 = builtin.call_indirect %2(%0, %1) : extern("C") (i32, i32) -> i32;
+        %4 = builtin.function_ref @unit : () -> ();
+        builtin.call_indirect %4() : extern("C") ();
+        %5 = builtin.function_ref @alias : (i32, i32) -> i32;
+        %6 = builtin.call_indirect %5(%3, %1) : extern("C") (i32, i32) -> i32;
+        builtin.ret %6 : (i32);
+    };
+};"#;
+
+/// Function references and indirect calls print as they were written and parse back to the same
+/// text. A reference has the function type written; an indirect call's callee has the function type
+/// of its signature, its arguments the types of the signature's parameters, and its results those
+/// of the signature.
+#[test]
+fn function_refs_and_indirect_calls_round_trip_through_text() -> TestResult {
+    use crate::{
+        CallOpInterface, Callable, Op, Value,
+        dialects::builtin::{CallIndirect, FunctionReference},
+    };
+
+    let test = ParserTest::default();
+    let parsed = test.parse_any("indirect_calls.runic", INDIRECT_CALLS)?;
+    let printed = format!("{}", parsed.borrow());
+    for line in INDIRECT_CALLS.lines().skip(4).take(7) {
+        assert!(printed.contains(line.trim()), "{line}\n{printed}");
+    }
+    let fresh = ParserTest::default();
+    let reparsed = fresh.parse_any("indirect_calls2.runic", &printed)?;
+    assert_eq!(format!("{}", reparsed.borrow()), printed);
+
+    let module = parsed.try_downcast_op::<Module>().unwrap();
+    let caller = module.borrow().symbol_manager().lookup_op("caller").unwrap();
+    let caller = caller.try_downcast_op::<Function>().unwrap();
+    let entry = caller.borrow().entry_block();
+    let entry = entry.borrow();
+    let references = entry
+        .body()
+        .iter()
+        .filter_map(|op| op.as_operation_ref().try_downcast_op::<FunctionReference>().ok())
+        .collect::<Vec<_>>();
+    let calls = entry
+        .body()
+        .iter()
+        .filter_map(|op| op.as_operation_ref().try_downcast_op::<CallIndirect>().ok())
+        .collect::<Vec<_>>();
+    assert_eq!((references.len(), calls.len()), (3, 3));
+
+    let i32 = test.context().i32();
+    let fn_ty = test.context().function_type([i32, i32], [i32]);
+    let reference = references[0].borrow();
+    assert_eq!(reference.function().ty(), fn_ty);
+    let callee = reference.callee().resolve_callable().unwrap().target().as_function().unwrap();
+    assert_eq!(callee.borrow().name().as_str(), "callee");
+    let through_alias = references[2].borrow();
+    let resolved = through_alias.callee().resolve_callable().unwrap();
+    assert_eq!(resolved.named_symbol().borrow().name().as_str(), "alias");
+    assert_eq!(resolved.target().as_function().unwrap().borrow().name().as_str(), "callee");
+
+    let call = calls[0].borrow();
+    let value = reference.function().as_value_ref();
+    assert!(matches!(call.callable_for_callee(), Callable::Value(callee) if callee == value));
+    let types = CallOpInterface::arguments(&*call)
+        .iter()
+        .map(|arg| arg.borrow().ty())
+        .collect::<Vec<_>>();
+    assert_eq!(types, [i32, i32]);
+    assert_eq!((call.returns()[0] as ValueRef).borrow().ty(), i32);
+    assert!(call.possible_callees().is_none());
+    assert_eq!(calls[1].borrow().as_operation().num_results(), 0);
+    Ok(())
+}
+
+#[test]
+fn a_function_ref_whose_type_disagrees_with_its_callee_does_not_verify() {
+    let error = call_error(
+        r#"builtin.function public extern("C") @f(i64) -> i32;"#,
+        "%1 = builtin.function_ref @f : (i32) -> i32;",
+    );
+    assert!(error.contains("invalid operation builtin.function_ref"), "{error}");
+    assert!(
+        error.contains(
+            "the reference has type `(i32) -> i32`, but its callee has type `(i64) -> i32`"
+        ),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_function_ref_of_a_symbol_that_is_not_callable_does_not_verify() {
+    let error = call_error(
+        "builtin.global_variable public @g : i32;",
+        "%1 = builtin.function_ref @g : (i32) -> i32;",
+    );
+    assert!(error.contains("invalid operation builtin.function_ref"), "{error}");
+    assert!(
+        error.contains("the callee does not resolve to a callable: symbol 'g' is not callable"),
+        "{error}"
+    );
+}
+
+/// A reference that names nothing is reported by the check every symbol use gets, not by the
+/// reference's verifier.
+#[test]
+fn a_function_ref_of_an_undeclared_symbol_is_the_symbol_use_error() {
+    let error = call_error("", "%1 = builtin.function_ref @missing : (i32) -> i32;");
+    assert!(error.contains("symbol '@missing' does not resolve"), "{error}");
+    assert!(!error.contains("invalid operation builtin.function_ref"), "{error}");
+}
+
+/// A reference's type must be a function type. An indirect call's callee takes the function type
+/// of its signature, so a callee of another type, or of a function type the signature does not
+/// give, is an error of the parse.
+#[test]
+fn references_and_callees_that_are_not_of_the_function_type_do_not_parse() {
+    let declaration = r#"builtin.function public extern("C") @f(i32);"#;
+    for (body, expected) in [
+        ("%1 = builtin.function_ref @f : i32;", "expected a function type, got 'i32'"),
+        (
+            r#"builtin.call_indirect %0(%0) : extern("C") (i32);"#,
+            "use here expects (i32) -> ()",
+        ),
+        (
+            "%1 = builtin.function_ref @f : (i32) -> ();\nbuiltin.call_indirect %1(%0) : \
+             extern(\"C\") (i32) -> i32;",
+            "use here expects (i32) -> i32",
+        ),
+    ] {
+        let error = call_error(declaration, body);
+        assert!(error.contains(expected), "{body}: {error}");
+        assert!(!error.contains("invalid operation"), "{body}: {error}");
+    }
+}

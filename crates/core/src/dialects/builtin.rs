@@ -1,5 +1,6 @@
 pub mod attributes;
 mod builders;
+pub mod canonicalization;
 mod ops;
 pub mod types;
 

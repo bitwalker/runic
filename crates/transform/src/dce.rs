@@ -203,4 +203,25 @@ mod tests {
         assert!(text.contains("builtin.call @allocates_elsewhere()"), "{text}");
         Ok(())
     }
+
+    /// An unused indirect call has unknown effects and is kept, with the reference it calls, even
+    /// when the reference names a function that declares no effects; an unused reference is
+    /// erased.
+    #[test]
+    fn unused_indirect_calls_are_never_erased() -> Result<(), Report> {
+        let declarations = r#"
+    builtin.function public extern("C") @pure(i32) -> i32 effects();"#;
+        let body = r#"
+    %f = builtin.function_ref @pure : (i32) -> i32;
+    %1 = builtin.call_indirect %f(%a) : extern("C") (i32) -> i32;
+    %g = builtin.function_ref @pure : (i32) -> i32;
+    builtin.ret;"#;
+        let text = run_in_module(declarations, body)?;
+        assert!(
+            text.contains(r#"builtin.call_indirect %1(%0) : extern("C") (i32) -> i32;"#),
+            "{text}"
+        );
+        assert_eq!(text.matches("builtin.function_ref").count(), 1, "{text}");
+        Ok(())
+    }
 }

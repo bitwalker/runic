@@ -110,6 +110,46 @@ pub trait BuiltinOpBuilder<'f, B: ?Sized + Builder> {
         op_builder(callee, signature, args)
     }
 
+    /// Create a [FunctionReference] to `callee`, a value of the function type of the signature of
+    /// the callable `callee` resolves to.
+    ///
+    /// Returns an error when `callee` does not resolve to a callable.
+    fn function_ref<C>(
+        &mut self,
+        callee: C,
+        span: SourceSpan,
+    ) -> Result<FunctionReferenceRef, Report>
+    where
+        C: AsCallableSymbolRef,
+    {
+        let signature = callee
+            .as_callable_symbol_ref()
+            .resolve_callable()
+            .map_err(|err| Report::msg(alloc::format!("cannot reference the callee: {err}")))?
+            .signature();
+        let ty = super::ops::function_type_of(self.builder().context(), &signature);
+        let op_builder = self.builder_mut().create::<FunctionReference, (C, Type)>(span);
+        op_builder(callee, ty)
+    }
+
+    /// Create a [CallIndirect] of the function value `callee` with `signature`, passing `args`.
+    ///
+    /// The call has one result per result of `signature`. Nothing checks here that `callee` and
+    /// `args` agree with `signature`: the call's verifier does.
+    fn call_indirect<A>(
+        &mut self,
+        callee: ValueRef,
+        signature: Signature,
+        args: A,
+        span: SourceSpan,
+    ) -> Result<CallIndirectRef, Report>
+    where
+        A: IntoIterator<Item = ValueRef>,
+    {
+        let op_builder = self.builder_mut().create::<CallIndirect, (_, A, _)>(span);
+        op_builder(callee, args, signature)
+    }
+
     fn ret<I>(
         &mut self,
         returning: I,

@@ -270,4 +270,43 @@ builtin.module public @test {
         assert!(info.has_out_of_scope_uses());
         assert!(info.has_unknown_callers());
     }
+
+    /// A private function named by a `builtin.function_ref` has its address taken, so it may have
+    /// callers that are not known, although nothing outside the module names it; an indirect call
+    /// through the reference is not a known caller.
+    #[test]
+    fn a_function_named_by_a_function_ref_is_address_taken() {
+        let test = Test::default();
+        let module = parse::<Module>(
+            ParserConfig::new(test.context_rc()),
+            "function_ref.hir",
+            r#"
+builtin.module public @test {
+    builtin.function private extern("C") @body(i32) -> i32;
+    builtin.function private extern("C") @called(i32) -> i32;
+    builtin.function public extern("C") @caller(%a: i32) -> i32 {
+        %f = builtin.function_ref @body : (i32) -> i32;
+        %r = builtin.call_indirect %f(%a) : extern("C") (i32) -> i32;
+        %s = builtin.call @called(%r) : extern("C") (i32) -> i32;
+        builtin.ret %s : (i32);
+    };
+};
+"#,
+        )
+        .unwrap();
+        let body = ModuleBuilder::new(module).resolve_callable("body").unwrap().target();
+        let called = ModuleBuilder::new(module).resolve_callable("called").unwrap().target();
+        let uses = CallableUseSnapshot::new(module.borrow().as_operation());
+
+        let info = uses.get(body).unwrap();
+        assert!(info.is_address_taken());
+        assert!(!info.has_external_name());
+        assert!(info.has_unknown_callers());
+        assert!(info.known_callers().is_empty());
+
+        let info = uses.get(called).unwrap();
+        assert!(!info.is_address_taken());
+        assert!(!info.has_unknown_callers());
+        assert_eq!(info.known_callers().len(), 1);
+    }
 }

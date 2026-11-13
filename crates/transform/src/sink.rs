@@ -893,6 +893,32 @@ mod tests {
         Ok(())
     }
 
+    /// An indirect call whose only use is in the then-region of an `scf.if` has unknown effects,
+    /// and neither pass moves it, even when it calls a function that declares no effects.
+    #[test]
+    fn sinking_never_moves_an_indirect_call() -> Result<(), Report> {
+        let body = r#"
+    %f = builtin.function_ref @pure : (i32) -> i32;
+    %s = builtin.call_indirect %f(%a) : extern("C") (i32) -> i32;
+    %x = scf.if %c then {
+        %y = arith.add %b, %s;
+        scf.yield %y : (i32);
+    } else {
+        scf.yield %b : (i32);
+    } : (i1) -> (i32);
+    builtin.ret %x : (i32);"#;
+        for pass in [
+            Box::<SinkOperandDefs>::default() as Box<dyn runic_core::pass::OperationPass>,
+            Box::<ControlFlowSink>::default(),
+        ] {
+            let name = pass.name();
+            let text = run_with_callees(pass, body)?;
+            let call = text.find("builtin.call_indirect").unwrap();
+            assert!(call < text.find("scf.if").unwrap(), "{name}: {text}");
+        }
+        Ok(())
+    }
+
     /// A division defined before a loop and used once in its body: neither sinking pass moves it
     /// into the body, where it would execute once per iteration (and trap after the store).
     #[test]

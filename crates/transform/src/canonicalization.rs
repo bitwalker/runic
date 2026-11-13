@@ -369,4 +369,63 @@ mod tests {
         assert_eq!(messages, ["unknown", "false"]);
         Ok(())
     }
+
+    /// `@caller` after the canonicalizer ran on it, in a module that also holds `declaration` of
+    /// `@callee`; the caller calls `@callee` through a reference with `signature`.
+    fn canonicalize_indirect_call(declaration: &str, signature: &str) -> Result<String, Report> {
+        use runic_core::{
+            SymbolTable,
+            dialects::builtin::{Function, Module},
+            parse::{self, ParserConfig},
+            pass::{Nesting, PassManager},
+        };
+
+        let context = Rc::new(Context::default());
+        let source = format!(
+            "builtin.module public @m {{
+    {declaration}
+    builtin.function public extern(\"C\") @caller(%a: i32) -> i32 {{
+        %f = builtin.function_ref @callee : (i32) -> i32;
+        %r = builtin.call_indirect %f(%a) : {signature};
+        builtin.ret %r : (i32);
+    }};
+}};"
+        );
+        let module = parse::parse::<Module>(ParserConfig::new(context.clone()), "indirect", source)
+            .into_result()?;
+        let caller = module.borrow().symbol_manager().lookup_op("caller").unwrap();
+        let mut passes = PassManager::on::<Function>(context, Nesting::Implicit);
+        passes.add_pass(Box::<Canonicalizer>::default());
+        passes.enable_verifier(true);
+        passes.run(caller)?;
+        Ok(caller.borrow().to_string())
+    }
+
+    /// The canonicalizer turns an indirect call of a reference into a direct call when the
+    /// signatures agree, and the reference, now unused, is erased as a dead operation; a callee
+    /// whose calling convention differs keeps the indirect call and its reference.
+    #[test]
+    fn canonicalizer_turns_an_indirect_call_of_a_function_ref_into_a_call() -> Result<(), Report> {
+        let text = canonicalize_indirect_call(
+            r#"builtin.function public extern("C") @callee(i32) -> i32;"#,
+            r#"extern("C") (i32) -> i32"#,
+        )?;
+        assert!(!text.contains("builtin.call_indirect"), "{text}");
+        assert!(!text.contains("builtin.function_ref"), "{text}");
+        assert!(
+            text.contains(r#"builtin.call @callee(%0) : extern("C") (i32) -> i32;"#),
+            "{text}"
+        );
+
+        let text = canonicalize_indirect_call(
+            r#"builtin.function public extern("fast") @callee(i32) -> i32;"#,
+            r#"extern("C") (i32) -> i32"#,
+        )?;
+        assert!(
+            text.contains(r#"builtin.call_indirect %1(%0) : extern("C") (i32) -> i32;"#),
+            "{text}"
+        );
+        assert!(text.contains("builtin.function_ref @callee : (i32) -> i32;"), "{text}");
+        Ok(())
+    }
 }
