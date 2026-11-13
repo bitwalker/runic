@@ -311,8 +311,9 @@ impl HasBreakingControlFlowOpInterface for While {
 ///   the `after` region terminates with [Yield] — or either with an exit that leaves the region:
 ///   a return-like terminator that is neither of the two ([Break] or [Continue], addressing this
 ///   loop or an enclosing one, or a function return). Such an exit's operands belong to what it
-///   addresses, so they are not compared with this loop's lists. `ub.unreachable` is not an exit: the loop
-///   asks a region's terminator for the operands of its edge, which an unreachable cannot answer.
+///   addresses, so they are not compared with this loop's lists. `ub.unreachable` is not an
+///   exit: the loop asks a region's terminator for the operands of its edge, which an unreachable
+///   cannot answer.
 /// * The init operands and the `before` block arguments agree in number and, position by
 ///   position, in type, and so do the [Yield] operands, when the body yields.
 /// * The operands forwarded by [Condition], when the header has one, the `after` block arguments
@@ -703,8 +704,8 @@ pub(crate) fn constant_selector(attr: &AttributeRef) -> Option<i32> {
     (value.width() == 32).then(|| value.unsigned() as u32 as i32)
 }
 
-/// Parses an `i32` written as an `i32` constant's literal is: a signed decimal, or a hex or binary
-/// literal standing for its 32-bit pattern.
+/// Parses an `i32` written the way an `i32` constant's literal is written: a signed decimal, or a
+/// hex or binary literal standing for its 32-bit pattern.
 fn parse_i32(
     parser: &mut dyn OpAsmParser<'_>,
 ) -> Result<(SourceSpan, i32), runic_core::parse::ParserError> {
@@ -1072,8 +1073,8 @@ fn exit_target(op: &Operation, levels: i32, kind: RegionExitKind) -> Option<Oper
 /// [Break] transfers control out of the `levels`-th enclosing loop, past every intermediate op.
 ///
 /// `levels` is 1-based and counts enclosing ops which receive breaking control flow (i.e.
-/// [While]): `levels = 1` names the innermost enclosing loop, `levels = 2` the one outside it. It is
-/// an `i32`; zero and negative values are rejected by the verifier.
+/// [While]): `levels = 1` names the innermost enclosing loop, `levels = 2` the one outside it. It
+/// is an `i32`; zero and negative values are rejected by the verifier.
 ///
 /// The operands become the target loop's **results**, so their types must equal the target's
 /// result types.
@@ -1157,8 +1158,8 @@ fn print_exit(op: &Operation, levels: i32, printer: &mut AsmPrinter<'_>) {
 }
 
 /// Parse `<levels> [<operands>] : (<types>)` into `state`, the inverse of [print_exit]. `levels`
-/// is read as an `i32` constant's literal is (see [parse_i32]); the verifier rejects a value below
-/// 1.
+/// is written the way an `i32` constant's literal is written (see [parse_i32]); the verifier
+/// rejects a value below 1.
 fn parse_exit(state: &mut OperationState, parser: &mut dyn OpAsmParser<'_>) -> ParseResult {
     let (_, levels) = parse_i32(parser)?;
     state.add_attribute("levels", parser.context_rc().create_attribute::<I32Attr, _>(levels));
@@ -1455,9 +1456,9 @@ builtin.function public extern("C") @exit(%flag: i1, %value: i32) -> i32 {
     /// An exit whose target and originating region are **right**, and whose `callable` is wrong:
     /// it names the receiver it found instead of the callable it lives in.
     ///
-    /// This is the witness that the verifier checks `ResolvedExit::callable`. [BlindExit] in the identical
-    /// program position reports the identical target and `from_region` with `callable: None` and
-    /// is ACCEPTED — so the two resolutions differ in exactly one field, and that field is what
+    /// This is the witness that the verifier checks `ResolvedExit::callable`. [BlindExit] in the
+    /// identical program position reports the identical target and `from_region` with
+    /// `callable: None` and is ACCEPTED — so the two resolutions differ in exactly one field, and that field is what
     /// the verifier is reacting to.
     #[derive(OpPrinter, OpParser, EffectOpInterface)]
     #[effects(MemoryEffect())]
@@ -2476,8 +2477,8 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
     ///
     /// [BlindExit] never asks whether it crossed a transparent op, so on the reject side it
     /// returns a confident `Resolved` naming the loop. The rejection therefore cannot come from
-    /// the implementor, and it does not: it comes from the interface verifier's own re-derivation, in the same
-    /// words rule 3 has always used.
+    /// the implementor, and it does not: it comes from the interface verifier's own
+    /// re-derivation, in the same words rule 3 has always used.
     ///
     /// **The accept side is what makes this a test of the CHECK.** The same op, one region
     /// shallower, resolves correctly and is accepted — so the verifier is discriminating between
@@ -2671,7 +2672,7 @@ builtin.function public extern(\"C\") @dispatch(%sel: i32, %a: i32, %b: i32) -> 
         Ok(())
     }
 
-    /// A case value may appear once; the second `case 1` is rejected as before.
+    /// A case value may appear once; the second `case 1` is rejected.
     #[test]
     fn index_switch_rejects_a_duplicate_case() {
         let err = rejection(
@@ -2846,5 +2847,204 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
             assert!(err.contains("invalid operation scf.index_switch"), "{cases}: {err}");
             assert!(err.contains(expected), "{cases}: {err}");
         }
+    }
+
+    /// One case value written twice in different spellings is a duplicate, and a value outside
+    /// the 32-bit range is rejected in either direction.
+    #[test]
+    fn a_case_spelled_two_ways_is_a_duplicate() {
+        use runic_core::testing::text::parse;
+
+        for pair in [
+            ["-1", "0xffffffff"],
+            ["-1", "4294967295"],
+            ["0x80000000", "-2147483648"],
+            ["1", "0b1"],
+        ] {
+            let err = parse::<Function>(&switch_text(&pair))
+                .err()
+                .unwrap_or_else(|| panic!("{pair:?} parsed"));
+            assert!(err.contains("this case selector has already been used"), "{pair:?}: {err}");
+        }
+        for case in ["4294967296", "-2147483649"] {
+            assert!(parse::<Function>(&switch_text(&[case])).is_err(), "{case}");
+        }
+    }
+
+    /// Two nested loops whose inner body ends in an `scf.if` with `first` in its then region and
+    /// `second` in its else region, each passing `%m`.
+    fn loops_text(first: &str, second: &str) -> String {
+        format!(
+            "builtin.function public extern(\"C\") @f(%n: i32) -> i32 {{
+    %zero = arith.constant 0 : i32;
+    %r = scf.while %zero before {{
+    ^outer_head(%i: i32):
+        %more = arith.cmpi ult %i, %n;
+        scf.condition %more, %i : (i1, i32);
+    }} after {{
+    ^outer_body(%j: i32):
+        %inner = scf.while %j before {{
+        ^inner_head(%k: i32):
+            %go = arith.cmpi ult %k, %n;
+            scf.condition %go, %k : (i1, i32);
+        }} after {{
+        ^inner_body(%m: i32):
+            %stop = arith.cmpi ugt %m, %n;
+            %p = scf.if %stop then {{
+                {first} %m : (i32);
+            }} else {{
+                {second} %m : (i32);
+            }} : (i1) -> (i32);
+            scf.yield %p : (i32);
+        }} : (i32) -> (i32);
+        scf.yield %inner : (i32);
+    }} : (i32) -> (i32);
+    builtin.ret %r : (i32);
+}};"
+        )
+    }
+
+    /// Levels in every spelling of an `i32` (signed decimal, hex, binary) parse to their value and
+    /// round-trip, in the hand-written form and with each exit in the generic form; a level below
+    /// 1, beyond the nesting, out of range or missing is rejected, in both forms.
+    #[test]
+    fn exit_levels_round_trip_in_every_spelling_and_both_forms() {
+        use runic_core::testing::text::{parse, round_trip};
+
+        for (first, second, expected) in [
+            ("scf.break 2", "scf.continue 1", [2, 1]),
+            ("scf.break 1", "scf.continue 2", [1, 2]),
+            ("scf.break 0x2", "scf.continue 0b1", [2, 1]),
+            ("scf.continue 0x00000001", "scf.break 0b10", [1, 2]),
+        ] {
+            let text = loops_text(first, second);
+            let (_cx, function) =
+                parse::<Function>(&text).unwrap_or_else(|err| panic!("{err}\n{text}"));
+            let mut levels = Vec::new();
+            function.as_operation_ref().borrow().prewalk_all(|op: &Operation| {
+                if let Some(exit) = op.downcast_ref::<Break>() {
+                    levels.push(*exit.get_levels());
+                } else if let Some(exit) = op.downcast_ref::<Continue>() {
+                    levels.push(*exit.get_levels());
+                }
+            });
+            assert_eq!(levels, expected, "{first} / {second}");
+            let mut skipped = Vec::new();
+            // The generic form of an operation with two operand groups (`scf.condition`) does
+            // not parse back: the generic printer writes one operand list
+            let failures = round_trip::<Function>(function.as_operation_ref(), true, &mut skipped)
+                .into_iter()
+                .filter(|failure| {
+                    !failure.starts_with("generic form of 'scf.condition' does not parse")
+                })
+                .collect::<Vec<_>>();
+            assert!(failures.is_empty(), "{}", failures[0]);
+            assert!(skipped.is_empty(), "{skipped:?}");
+        }
+        for (first, second) in [
+            ("scf.break 0", "scf.continue 1"),
+            ("scf.break -1", "scf.continue 1"),
+            ("scf.break 0xffffffff", "scf.continue 1"),
+            ("scf.break 3", "scf.continue 1"),
+            ("scf.break 1", "scf.continue 3"),
+            ("scf.break 4294967296", "scf.continue 1"),
+            ("scf.break", "scf.continue 1"),
+        ] {
+            assert!(parse::<Function>(&loops_text(first, second)).is_err(), "{first} / {second}");
+        }
+        // The generic form without `levels` (the rest of the line is commented out)
+        let text = loops_text("\"scf.break\"(%m) : (i32) -> ();\n//", "scf.continue 1");
+        let err = parse::<Function>(&text).err().expect("levels is required");
+        assert!(err.contains("missing required property 'levels'"), "{err}");
+    }
+
+    /// The memory effects of `scf` operations: a region operation has the effects of its regions
+    /// and none of its own; the terminators have none. (No region operation is trivially dead,
+    /// effect-free ones included, because `Operation::carries_a_nested_exit` counts any nested
+    /// terminator, `scf.yield` included.)
+    #[test]
+    fn memory_effect_answers_of_scf_operations() {
+        use alloc::string::ToString;
+
+        use runic_core::testing::text::parse;
+
+        let text = "builtin.function public extern(\"C\") @f(%c: i1, %n: i32, %p: ptr<i32>) -> \
+                    i32 {
+    %pure = scf.if %c then {
+        scf.yield %n : (i32);
+    } else {
+        scf.yield %n : (i32);
+    } : (i1) -> (i32);
+    %reads = scf.if %c then {
+        %x = test.load %p;
+        scf.yield %x : (i32);
+    } else {
+        scf.yield %n : (i32);
+    } : (i1) -> (i32);
+    %writes = scf.if %c then {
+        test.store %p, %n : (ptr<i32>, i32);
+        scf.yield %n : (i32);
+    } else {
+        scf.yield %n : (i32);
+    } : (i1) -> (i32);
+    %asserts = scf.index_switch %n
+    case 1 {
+        cf.assert %c, \"m\";
+        scf.yield %n : (i32);
+    }
+    default {
+        scf.yield %n : (i32);
+    } : (i32);
+    %loop = scf.while %n before {
+    ^head(%i: i32):
+        %more = arith.cmpi ult %i, %n;
+        scf.condition %more, %i : (i1, i32);
+    } after {
+    ^body(%j: i32):
+        %stop = arith.cmpi ugt %j, %n;
+        %q = scf.if %stop then {
+            scf.break 1 %j : (i32);
+        } else {
+            scf.continue 1 %j : (i32);
+        } : (i1) -> (i32);
+        scf.yield %q : (i32);
+    } : (i32) -> (i32);
+    builtin.ret %n : (i32);
+};";
+        let (_cx, function) = parse::<Function>(text).unwrap_or_else(|err| panic!("{err}"));
+        let mut answers = Vec::new();
+        function.as_operation_ref().borrow().prewalk_all(|op: &Operation| {
+            if op.name().to_string().starts_with("scf.") {
+                let effects = op.get_effects_recursively::<MemoryEffect>().map(|effects| {
+                    effects.iter().map(|effect| effect.effect().to_string()).collect::<Vec<_>>()
+                });
+                answers.push(format!(
+                    "{} effects={effects:?} free={} dead_if_unused={}",
+                    op.name(),
+                    op.is_memory_effect_free(),
+                    op.would_be_trivially_dead(),
+                ));
+            }
+        });
+        expect![[r#"
+            scf.if effects=Some([]) free=true dead_if_unused=false
+            scf.yield effects=Some([]) free=true dead_if_unused=false
+            scf.yield effects=Some([]) free=true dead_if_unused=false
+            scf.if effects=Some(["read"]) free=false dead_if_unused=false
+            scf.yield effects=Some([]) free=true dead_if_unused=false
+            scf.yield effects=Some([]) free=true dead_if_unused=false
+            scf.if effects=Some(["write"]) free=false dead_if_unused=false
+            scf.yield effects=Some([]) free=true dead_if_unused=false
+            scf.yield effects=Some([]) free=true dead_if_unused=false
+            scf.index_switch effects=Some(["write"]) free=false dead_if_unused=false
+            scf.yield effects=Some([]) free=true dead_if_unused=false
+            scf.yield effects=Some([]) free=true dead_if_unused=false
+            scf.while effects=Some([]) free=true dead_if_unused=false
+            scf.condition effects=Some([]) free=true dead_if_unused=false
+            scf.if effects=Some([]) free=true dead_if_unused=false
+            scf.break effects=Some([]) free=true dead_if_unused=false
+            scf.continue effects=Some([]) free=true dead_if_unused=false
+            scf.yield effects=Some([]) free=true dead_if_unused=false"#]]
+        .assert_eq(&answers.join("\n"));
     }
 }

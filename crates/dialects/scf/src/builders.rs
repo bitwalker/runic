@@ -130,9 +130,9 @@ pub trait StructuredControlFlowOpBuilder<'f, B: ?Sized + Builder> {
     /// Build an `scf.break` exiting the `levels`-th enclosing loop, carrying `args` as that
     /// loop's results.
     ///
-    /// `levels` is 1-based; 1 names the innermost enclosing loop. The value is not validated
-    /// here (zero and negative values are rejected by the verifier) — the op's verifier is what resolves it, so that a break built against a tree still
-    /// under construction is rejected once, at verification, with the enclosing ops in place.
+    /// `levels` is 1-based; 1 names the innermost enclosing loop. It is not checked here: the
+    /// verifier resolves it (and rejects a value below 1), so a break built in a tree still under
+    /// construction is checked once, at verification, with the enclosing operations in place.
     fn r#break<T>(
         &mut self,
         levels: i32,

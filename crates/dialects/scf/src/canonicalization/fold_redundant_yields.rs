@@ -891,67 +891,6 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
         assert!(changed, "an `scf.if` yielding the same value from both branches is redundant");
         assert_eq!((before, after), (0, 0), "the control shape has no loop exit to lose");
     }
-
-    /* A `while` test which initially showed that this rewriter probably isn't suited for them. {{{
-
-    #[test]
-    fn fold_redundant_yields_subset_while() -> Result<(), Report> {
-        let context = Rc::new(Context::default());
-        let mut builder = OpBuilder::new(context.clone());
-
-        let span = SourceSpan::default();
-        let function = {
-            let builder = builder.create::<builtin::Function, (_, _)>(span);
-            let name = Ident::new("test".into(), span);
-            let signature = Signature::new([AbiParam::new(Type::U32)], [AbiParam::new(Type::U32)]);
-            builder(name, signature).unwrap()
-        };
-
-        let mut builder = FunctionBuilder::new(function, &mut builder);
-
-        let input = builder.current_block().borrow().arguments()[0].upcast();
-        let redundant_val = builder.u32(11, span)?;
-
-        // Create a while op, pass zero.
-        let zero = builder.u32(0, span)?;
-        let while_op = builder.r#while([zero], &[Type::U32], span)?;
-        let while_before_block = while_op.borrow().before().entry().as_block_ref();
-        let while_after_block = while_op.borrow().after().entry().as_block_ref();
-
-        // Check the passed arg against the function arg.
-        builder.switch_to_block(while_before_block);
-        let while_cond_arg = while_before_block.borrow().arguments()[0].upcast();
-        let finished = builder.eq(while_cond_arg, input, span)?;
-        let next_iter = builder.incr(while_cond_arg, span)?;
-        builder.condition(finished, [next_iter], span)?;
-
-        // Just yield the final results from the while op.
-        builder.switch_to_block(while_after_block);
-        let yield_values = while_after_block
-            .borrow()
-            .arguments()
-            .iter()
-            .map(|a| a.borrow().as_value_ref())
-            .collect::<SmallVec<[_; 4]>>();
-        builder.r#yield(yield_values, span)?;
-
-        // Add all the results together along with the redundant value to give them all users.
-        builder.switch_to_block(builder.entry_block());
-        let summed_while_results =
-            while_op.borrow().results().iter().try_fold(zero, |acc, res| {
-                let res_val_ref = res.borrow().as_value_ref();
-                builder.add(acc, res_val_ref, span)
-            })?;
-        let final_sum = builder.add(summed_while_results, redundant_val, span)?;
-        builder.ret(Some(final_sum), span)?;
-
-        run_single_canonicalizer(
-            context,
-            function.as_operation_ref(),
-            "fold_redundant_yields_subset_while",
-        )
-    }
-    }}} */
 }
 
 #[cfg(test)]

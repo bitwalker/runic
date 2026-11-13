@@ -818,7 +818,7 @@ mod tests {
         //             col_offset += 1;
         //             let (sum_p, overflowed) = sum.add_overflowing(cell);
         //             if overflowed {
-        //                 return i32::MAX;
+        //                 return -1;
         //             }
         //             sum += cell;
         //         }
