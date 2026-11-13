@@ -54,7 +54,7 @@ pub use self::{
     },
     ident::{FunctionIdent, Ident, IdentAttr},
     int::{Int, IsizeFold, fold_isize},
-    int_range::{ConstantIntRange, IntegerRangeConfidence, IntegerValueRange},
+    int_range::{ConstantIntRange, IntegerValueRange},
     op::{BuildableOp, GenericSuccessorLayout, Op, OpExt, OpRegistration},
     operands::{
         OpOperand, OpOperandImpl, OpOperandList, OpOperandRange, OpOperandRangeMut,

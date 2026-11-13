@@ -353,30 +353,10 @@ impl fmt::Display for ConstantIntRange {
     }
 }
 
-/// Whether an integer range is a proven fact or only an assumption derived from type fallback.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum IntegerRangeConfidence {
-    /// The range is derived from operation semantics or a checked runtime refinement.
-    /// It contains every possible value, but may also contain unreachable values after widening.
-    Proven,
-    /// The range is only the conservative range of the value's static type.
-    Assumed,
-}
-
-impl IntegerRangeConfidence {
-    #[inline]
-    pub const fn join(self, other: Self) -> Self {
-        match (self, other) {
-            (Self::Proven, Self::Proven) => Self::Proven,
-            _ => Self::Assumed,
-        }
-    }
-}
-
 /// The integer range lattice value attached to an SSA value.
 #[derive(Default, Clone, PartialEq, Eq)]
 pub struct IntegerValueRange {
-    value: Option<(ConstantIntRange, IntegerRangeConfidence)>,
+    value: Option<ConstantIntRange>,
 }
 
 impl IntegerValueRange {
@@ -386,45 +366,28 @@ impl IntegerValueRange {
         Self { value: None }
     }
 
-    /// Create a proven initialized lattice value from `range`.
+    /// Create an initialized lattice value from `range`.
     #[inline]
-    pub const fn proven(range: ConstantIntRange) -> Self {
-        Self::with_confidence(range, IntegerRangeConfidence::Proven)
+    pub const fn new(range: ConstantIntRange) -> Self {
+        Self { value: Some(range) }
     }
 
-    /// Create an assumed initialized lattice value from `range`.
-    #[inline]
-    pub const fn assumed(range: ConstantIntRange) -> Self {
-        Self::with_confidence(range, IntegerRangeConfidence::Assumed)
-    }
-
-    /// Create an initialized lattice value from `range` and `confidence`.
-    #[inline]
-    pub const fn with_confidence(
-        range: ConstantIntRange,
-        confidence: IntegerRangeConfidence,
-    ) -> Self {
-        Self {
-            value: Some((range, confidence)),
-        }
-    }
-
-    /// Create an assumed top value for the range of `ty`.
+    /// Create the top value for the range of `ty`.
     #[inline]
     pub fn max_for_type(ty: Type) -> Self {
-        Self::assumed(ConstantIntRange::max_for_type(ty))
+        Self::new(ConstantIntRange::max_for_type(ty))
     }
 
-    /// Create a proven exact range for `value`.
+    /// Create an exact range for `value`.
     ///
     /// This is for a value of a fixed-width type, `iN`. A constant read from an attribute goes
     /// through [Self::for_constant] with the attribute's type.
     #[inline]
     pub fn constant(value: Int) -> Self {
-        Self::proven(ConstantIntRange::constant(value))
+        Self::new(ConstantIntRange::constant(value))
     }
 
-    /// Create the range of a constant `value` of type `ty`: a proven exact range, or, for an
+    /// Create the range of a constant `value` of type `ty`: an exact range, or, for an
     /// `isize` constant (or one of a type that is not an integer type of at most 128 bits), the
     /// untracked range of every value of the type, as [Self::max_for_type] gives it. See
     /// [ConstantIntRange::for_constant].
@@ -433,7 +396,7 @@ impl IntegerValueRange {
         if range.is_untracked() {
             Self::max_for_type(ty)
         } else {
-            Self::proven(range)
+            Self::new(range)
         }
     }
 
@@ -443,64 +406,36 @@ impl IntegerValueRange {
         self.value.is_none()
     }
 
-    /// Return the confidence for this range, if initialized.
-    #[inline]
-    pub const fn confidence(&self) -> Option<IntegerRangeConfidence> {
-        match self.value {
-            Some((_, confidence)) => Some(confidence),
-            None => None,
-        }
-    }
-
-    /// Join operand confidence, waiting until both operands have initialized facts.
-    #[inline]
-    pub fn join_confidence(&self, other: &Self) -> Option<IntegerRangeConfidence> {
-        Some(self.confidence()?.join(other.confidence()?))
-    }
-
-    /// Return true if this lattice value is a proven range fact.
-    #[inline]
-    pub const fn is_proven(&self) -> bool {
-        matches!(self.confidence(), Some(IntegerRangeConfidence::Proven))
-    }
-
     /// Return the underlying range if initialized.
     #[inline]
     pub const fn range(&self) -> Option<&ConstantIntRange> {
-        match &self.value {
-            Some((range, _)) => Some(range),
-            None => None,
-        }
+        self.value.as_ref()
     }
 
-    /// Create a proven exact boolean in the raw representation of `ty`.
+    /// Create an exact boolean in the raw representation of `ty`.
     pub fn exact_bool(ty: Type, value: bool) -> Self {
-        Self::proven(ConstantIntRange::exact_bool(ty, value))
+        Self::new(ConstantIntRange::exact_bool(ty, value))
     }
 
     /// Refine with an explicit runtime-checked range in the result's representation.
     /// Cross-width refinement does not model sign extension.
     pub fn refined_by(&self, range: &ConstantIntRange) -> Self {
-        let Some((current, confidence)) = self.value else {
+        let Some(current) = self.value else {
             return Self::uninitialized();
         };
-        // A runtime check proves its own range, not assumptions inherited from the type.
-        let narrowed = match confidence {
-            IntegerRangeConfidence::Assumed => None,
-            IntegerRangeConfidence::Proven if current.width == range.width => {
-                current.intersection(range)
-            }
-            IntegerRangeConfidence::Proven if !current.is_untracked() && !range.is_untracked() => {
-                let umin = current.umin.max(range.umin);
-                let umax = current.umax.min(range.umax);
-                (umin <= umax)
-                    .then(|| ConstantIntRange::from_unsigned(range.width, umin, umax))
-                    .and_then(|current| current.intersection(range))
-            }
-            IntegerRangeConfidence::Proven => None,
+        let narrowed = if current.width == range.width {
+            current.intersection(range)
+        } else if !current.is_untracked() && !range.is_untracked() {
+            let umin = current.umin.max(range.umin);
+            let umax = current.umax.min(range.umax);
+            (umin <= umax)
+                .then(|| ConstantIntRange::from_unsigned(range.width, umin, umax))
+                .and_then(|current| current.intersection(range))
+        } else {
+            None
         };
-        // Disjoint proven inputs trap. Any result that exists still satisfies the checked range.
-        Self::proven(narrowed.unwrap_or(*range))
+        // Disjoint inputs trap. Any result that exists still satisfies the checked range.
+        Self::new(narrowed.unwrap_or(*range))
     }
 }
 
@@ -514,13 +449,7 @@ impl fmt::Display for IntegerValueRange {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.value {
             None => f.write_str("uninitialized"),
-            Some((range, confidence)) => {
-                fmt::Display::fmt(&range, f)?;
-                match confidence {
-                    IntegerRangeConfidence::Proven => f.write_str(" proven"),
-                    IntegerRangeConfidence::Assumed => f.write_str(" assumed"),
-                }
-            }
+            Some(range) => fmt::Display::fmt(&range, f),
         }
     }
 }
@@ -700,12 +629,11 @@ mod tests {
     }
 
     #[test]
-    fn regression_checked_refinement_does_not_prove_assumed_bounds() {
+    fn a_full_width_range_is_narrowed_by_a_wider_checked_range() {
         let context = Context::default();
-        let assumed = IntegerValueRange::max_for_type(context.i8());
-        let refined = assumed.refined_by(&ConstantIntRange::max_for_type(context.i32()));
-        assert!(refined.is_proven());
-        assert_eq!(refined.range().unwrap().umax(), u32::MAX as u128);
+        let full = IntegerValueRange::max_for_type(context.i8());
+        let refined = full.refined_by(&ConstantIntRange::max_for_type(context.i32()));
+        assert_eq!(refined.range(), Some(&ConstantIntRange::from_unsigned(32, 0, 255)));
     }
 
     #[test]
@@ -763,11 +691,11 @@ mod tests {
     }
 
     #[test]
-    fn refinement_waits_for_input_and_preserves_proven_bounds() {
+    fn refinement_waits_for_input_and_preserves_bounds() {
         let context = Context::default();
         let range = ConstantIntRange::max_for_type(context.i32());
         assert!(IntegerValueRange::uninitialized().refined_by(&range).is_uninitialized());
-        let precise = IntegerValueRange::proven(ConstantIntRange::from_unsigned(64, 0, 10));
+        let precise = IntegerValueRange::new(ConstantIntRange::from_unsigned(64, 0, 10));
         assert_eq!(
             precise.refined_by(&range).range(),
             Some(&ConstantIntRange::from_unsigned(32, 0, 10))
@@ -775,12 +703,12 @@ mod tests {
         let disjoint = IntegerValueRange::constant(Int::from(u64::MAX));
         assert_eq!(
             disjoint.refined_by(&range),
-            IntegerValueRange::proven(ConstantIntRange::max_for_type(context.i32()))
+            IntegerValueRange::new(ConstantIntRange::max_for_type(context.i32()))
         );
     }
 
     #[test]
-    fn explicit_refinement_discards_assumed_bounds() {
+    fn explicit_refinement_keeps_the_input_bounds_at_any_width() {
         let checked = ConstantIntRange::from_unsigned(32, 0, 2_147_483_647);
         for input in [
             ConstantIntRange::from_unsigned(8, 0, 3),
@@ -788,8 +716,8 @@ mod tests {
             ConstantIntRange::from_unsigned(64, 0, 3),
         ] {
             assert_eq!(
-                IntegerValueRange::assumed(input).refined_by(&checked),
-                IntegerValueRange::proven(checked)
+                IntegerValueRange::new(input).refined_by(&checked),
+                IntegerValueRange::new(ConstantIntRange::from_unsigned(32, 0, 3))
             );
         }
         assert!(IntegerValueRange::uninitialized().refined_by(&checked).is_uninitialized());
@@ -804,8 +732,8 @@ mod tests {
             (0, 200, ConstantIntRange::from_unsigned(8, 0, 5)),
             (128, 255, ConstantIntRange::from_signed(8, -5, -1)),
         ] {
-            let input = IntegerValueRange::proven(ConstantIntRange::from_unsigned(64, min, max));
-            assert_eq!(input.refined_by(&checked), IntegerValueRange::proven(expected));
+            let input = IntegerValueRange::new(ConstantIntRange::from_unsigned(64, min, max));
+            assert_eq!(input.refined_by(&checked), IntegerValueRange::new(expected));
         }
     }
 
@@ -856,18 +784,6 @@ mod tests {
         assert!(ConstantIntRange::from_signed(8, -5, -1).is_within(&signed));
         assert!(!ConstantIntRange::from_unsigned(8, 0, 6).is_within(&signed));
         assert!(!ConstantIntRange::max_for_type(Context::default().i8()).is_within(&signed));
-    }
-
-    #[test]
-    fn confidence_join_waits_and_never_upgrades_assumptions() {
-        let context = Context::default();
-        let proven = IntegerValueRange::exact_bool(context.i1(), true);
-        let assumed = IntegerValueRange::max_for_type(context.i1());
-        assert_eq!(proven.join_confidence(&proven), Some(IntegerRangeConfidence::Proven));
-        assert_eq!(proven.join_confidence(&assumed), Some(IntegerRangeConfidence::Assumed));
-        assert_eq!(assumed.join_confidence(&proven), Some(IntegerRangeConfidence::Assumed));
-        assert_eq!(proven.join_confidence(&IntegerValueRange::uninitialized()), None);
-        assert_eq!(proven.range(), Some(&ConstantIntRange::constant(Int::from(true))));
     }
 
     #[test]
@@ -943,10 +859,8 @@ mod tests {
         assert_eq!(isize, ConstantIntRange::max_for_type(context.isize()));
 
         let proven = IntegerValueRange::for_constant(Int::from(7u32), context.i32());
-        assert!(proven.is_proven());
         assert_eq!(proven, IntegerValueRange::constant(Int::from(7u32)));
         let isize = IntegerValueRange::for_constant(Int::from(1u64 << 32), context.isize());
-        assert!(!isize.is_proven());
         assert!(isize.range().unwrap().is_untracked());
         assert_eq!(isize, IntegerValueRange::max_for_type(context.isize()));
     }

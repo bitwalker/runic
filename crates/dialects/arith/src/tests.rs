@@ -1248,7 +1248,7 @@ fn the_range_of_an_isize_constant_is_untracked() {
     // An `i32` constant is exact.
     assert_eq!(
         range_of(narrow),
-        IntegerValueRange::proven(ConstantIntRange::constant(Int::from(-1i32)))
+        IntegerValueRange::new(ConstantIntRange::constant(Int::from(-1i32)))
     );
 }
 

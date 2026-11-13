@@ -175,22 +175,22 @@ mod tests {
     }
 
     #[test]
-    fn a_proven_operand_range_is_intersected_with_the_checked_range() {
+    fn an_operand_range_is_intersected_with_the_checked_range() {
         let (_test, result) = check_range(crate::Context::i32, 10, 100);
-        let operand = IntegerValueRange::proven(ConstantIntRange::from_unsigned(32, 0, 50));
+        let operand = IntegerValueRange::new(ConstantIntRange::from_unsigned(32, 0, 50));
         assert_eq!(
             infer(result, operand),
-            IntegerValueRange::proven(ConstantIntRange::from_unsigned(32, 10, 50))
+            IntegerValueRange::new(ConstantIntRange::from_unsigned(32, 10, 50))
         );
     }
 
     #[test]
-    fn an_assumed_operand_range_is_replaced_by_the_checked_range() {
+    fn a_full_width_operand_range_gives_the_checked_range() {
         let (test, result) = check_range(crate::Context::i32, 10, 100);
         let operand = IntegerValueRange::max_for_type(test.context().i32());
         assert_eq!(
             infer(result, operand),
-            IntegerValueRange::proven(ConstantIntRange::from_unsigned(32, 10, 100))
+            IntegerValueRange::new(ConstantIntRange::from_unsigned(32, 10, 100))
         );
     }
 
@@ -201,26 +201,26 @@ mod tests {
     }
 
     #[test]
-    fn a_disjoint_proven_operand_range_gives_the_checked_range() {
+    fn a_disjoint_operand_range_gives_the_checked_range() {
         let (_test, result) = check_range(crate::Context::i8, 10, 20);
-        let operand = IntegerValueRange::proven(ConstantIntRange::from_unsigned(8, 30, 40));
+        let operand = IntegerValueRange::new(ConstantIntRange::from_unsigned(8, 30, 40));
         assert_eq!(
             infer(result, operand),
-            IntegerValueRange::proven(ConstantIntRange::from_unsigned(8, 10, 20))
+            IntegerValueRange::new(ConstantIntRange::from_unsigned(8, 10, 20))
         );
     }
 
     #[test]
     fn a_check_of_one_value_gives_an_exact_result() {
         let (test, result) = check_range(crate::Context::i64, 7, 7);
-        let exact = IntegerValueRange::proven(ConstantIntRange::constant(Int::from(7i64)));
+        let exact = IntegerValueRange::new(ConstantIntRange::constant(Int::from(7i64)));
         assert_eq!(infer(result, IntegerValueRange::max_for_type(test.context().i64())), exact);
-        let operand = IntegerValueRange::proven(ConstantIntRange::from_unsigned(64, 0, 100));
+        let operand = IntegerValueRange::new(ConstantIntRange::from_unsigned(64, 0, 100));
         assert_eq!(infer(result, operand), exact);
     }
 
     /// The range of an `isize` value is not tracked, so the checked range is untracked too: an
-    /// assumed (untracked) operand gives a proven untracked result, which says nothing about its
+    /// untracked operand gives an untracked result, which says nothing about its
     /// values; an uninitialized one stays uninitialized.
     #[test]
     fn an_isize_check_refines_by_an_untracked_range() {
@@ -229,10 +229,7 @@ mod tests {
         let checked = op.borrow().downcast_ref::<CheckRange>().unwrap().checked_range();
         assert!(checked.is_untracked());
         let operand = IntegerValueRange::max_for_type(test.context().isize());
-        assert_eq!(
-            infer(result, operand),
-            IntegerValueRange::proven(ConstantIntRange::untracked())
-        );
+        assert_eq!(infer(result, operand), IntegerValueRange::new(ConstantIntRange::untracked()));
         assert!(infer(result, IntegerValueRange::uninitialized()).is_uninitialized());
     }
 

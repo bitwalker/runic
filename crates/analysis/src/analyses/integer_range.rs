@@ -7,7 +7,7 @@ use runic_core::{
         InferIntRangeInterface, OperandRangeRequirement, operation_operand_range_requirement,
     },
 };
-pub use runic_core::{ConstantIntRange, IntegerRangeConfidence, IntegerValueRange};
+pub use runic_core::{ConstantIntRange, IntegerValueRange};
 
 pub use self::lattice::IntegerRangeLattice;
 use super::{DeadCodeAnalysis, SparseConstantPropagation, constant_propagation::ConstantValue};
@@ -22,10 +22,7 @@ impl LatticeLike for IntegerValueRange {
         match (self.range().copied(), other.range().copied()) {
             (None, None) | (Some(_), None) => self.clone(),
             (None, Some(_)) => other.clone(),
-            (Some(lhs), Some(rhs)) => Self::with_confidence(
-                lhs.union(&rhs),
-                self.join_confidence(other).expect("initialized ranges have confidence"),
-            ),
+            (Some(lhs), Some(rhs)) => Self::new(lhs.union(&rhs)),
         }
     }
 
@@ -181,9 +178,7 @@ pub fn value_range(solver: &DataFlowSolver, value: ValueRef) -> Option<IntegerVa
 /// value (an invalid pointer in a load, `ub.unreachable`) is outside what it answers. It is never
 /// true for a signed division (`MIN / -1` relates the two operands) or for a checked or
 /// unchecked addition, subtraction or multiplication (whether the result fits depends on both),
-/// nor for an operation with a requirement on an operand whose ranges are not tracked (`isize`). A
-/// range of either confidence is accepted: an assumed range is still a fact about a signless
-/// integer.
+/// nor for an operation with a requirement on an operand whose ranges are not tracked (`isize`).
 pub fn operand_range_requirements_hold(solver: &DataFlowSolver, op: &Operation) -> bool {
     (0..op.num_operands()).all(|index| match operation_operand_range_requirement(op, index) {
         OperandRangeRequirement::None => true,
@@ -288,16 +283,15 @@ mod tests {
         assert_eq!(range.umax(), 42);
         assert_eq!(range.smin(), 42);
         assert_eq!(range.smax(), 42);
-        assert!(value_range(&solver, value).expect("expected integer range").is_proven());
 
         Ok(())
     }
 
-    /// A check of a value whose range is only its type's (assumed) proves the checked range, at the
-    /// operand's width, in place of the assumed one.
+    /// A check of a value whose range is its type's gives the checked range, at the operand's
+    /// width.
     #[test]
-    fn a_check_replaces_an_assumed_range_with_its_own() -> Result<(), Report> {
-        let mut test = Test::new("check_replaces_assumed", |cx| ([cx.i64()], [cx.i64()]));
+    fn a_check_of_a_full_range_gives_its_own() -> Result<(), Report> {
+        let mut test = Test::new("check_of_full_range", |cx| ([cx.i64()], [cx.i64()]));
         let checked = {
             let raw = argument(&test, 0);
             let mut builder = test.function_builder();
@@ -313,12 +307,11 @@ mod tests {
         assert_eq!(range.umax(), u32::MAX as u128);
         assert_eq!(range.smin(), 0);
         assert_eq!(range.smax(), u32::MAX as i128);
-        assert!(value_range(&solver, checked).expect("expected integer range").is_proven());
 
         Ok(())
     }
 
-    /// A check of a value with a proven range gives the intersection of the two.
+    /// A check of a value with a narrower range gives the intersection of the two.
     #[test]
     fn a_check_narrows_a_proven_range() -> Result<(), Report> {
         let mut test = Test::new("check_narrows_proven", |cx| ([cx.i1()], [cx.i32()]));
@@ -347,7 +340,7 @@ mod tests {
 
         let solver = run_integer_range_analysis(&test)?;
         let range = value_range(&solver, checked).expect("expected integer range");
-        assert_eq!(range, IntegerValueRange::proven(ConstantIntRange::from_unsigned(32, 3, 5)));
+        assert_eq!(range, IntegerValueRange::new(ConstantIntRange::from_unsigned(32, 3, 5)));
 
         Ok(())
     }
@@ -373,7 +366,6 @@ mod tests {
             let solver = run_integer_range_analysis(&test)?;
             for (result, expected) in [(one, 1), (zero, 0)] {
                 let range = value_range(&solver, result).expect("checked result range");
-                assert!(range.is_proven());
                 let range = range.range().unwrap();
                 assert_eq!(
                     (range.width(), range.umin(), range.umax()),
@@ -554,6 +546,25 @@ mod tests {
         Ok(())
     }
 
+    /// The range of a function argument is its type's: every `i32` is `uge 0`.
+    #[test]
+    fn a_comparison_decided_by_the_type_is_exact() -> Result<(), Report> {
+        let mut test = Test::new("comparison_decided_by_type", |cx| ([cx.i32()], [cx.i1()]));
+        let comparison = {
+            let arg = argument(&test, 0);
+            let mut builder = test.function_builder();
+            let zero = builder.i32(0, SPAN);
+            let comparison = builder.uge(arg, zero, SPAN)?;
+            builder.ret([comparison], SPAN)?;
+            comparison
+        };
+
+        let solver = run_integer_range_analysis(&test)?;
+        assert_bool_range(&solver, comparison, true);
+
+        Ok(())
+    }
+
     #[test]
     fn comparisons_remain_unknown_when_ranges_overlap() -> Result<(), Report> {
         let mut test = Test::new("comparisons_remain_unknown_when_ranges_overlap", |cx| {
@@ -572,12 +583,11 @@ mod tests {
         let range = range_for(&solver, comparison);
         assert_eq!(range.umin(), 0);
         assert_eq!(range.umax(), 1);
-        assert!(value_range(&solver, comparison).expect("expected integer range").is_proven());
 
         Ok(())
     }
 
-    /// An operation that neither infers ranges nor folds gives its result the assumed range of its
+    /// An operation that neither infers ranges nor folds gives its result the range of its
     /// type, even when its operands are constants: `test.mul` has neither.
     #[test]
     fn unknown_ops_fall_back_to_type_range() -> Result<(), Report> {
@@ -595,7 +605,6 @@ mod tests {
         let range = range_for(&solver, value);
         assert_eq!(range.umin(), 0);
         assert_eq!(range.umax(), u32::MAX as u128);
-        assert!(!value_range(&solver, value).expect("expected integer range").is_proven());
 
         Ok(())
     }
@@ -642,7 +651,7 @@ mod tests {
     }
 
     /// An `unchecked` addition whose operands are known to overflow has an undefined result, so
-    /// the analysis gives it no proven range: only the assumed range of its type.
+    /// the analysis gives it only the range of its type.
     #[test]
     fn regression_unchecked_overflow_does_not_prove_the_result_type() -> Result<(), Report> {
         let mut test = Test::new("unchecked_overflow", |cx| ([], [cx.i32()]));
@@ -657,7 +666,6 @@ mod tests {
         };
         let solver = run_integer_range_analysis(&test)?;
         let range = value_range(&solver, sum).expect("expected integer range");
-        assert!(!range.is_proven());
         assert_eq!(
             range.range().copied(),
             Some(ConstantIntRange::from_unsigned(32, 0, u32::MAX as u128))
@@ -1036,7 +1044,6 @@ mod tests {
             };
             let solver = run_integer_range_analysis(&test)?;
             let range = value_range(&solver, checked).expect("a range for the checked value");
-            assert!(range.is_proven(), "i{width}");
             let range = range.range().copied().unwrap();
             assert_eq!((range.umin(), range.umax()), (0, signed_max), "i{width}");
             assert_eq!((range.smin(), range.smax()), (0, signed_max as i128), "i{width}");
@@ -1353,7 +1360,6 @@ mod tests {
 
     fn assert_bool_range(solver: &DataFlowSolver, value: ValueRef, expected: bool) {
         let value_range = value_range(solver, value).expect("expected integer range");
-        assert!(value_range.is_proven());
         let range = value_range.range().copied().expect("expected integer range");
         let expected = u128::from(expected);
         assert_eq!(range.umin(), expected);

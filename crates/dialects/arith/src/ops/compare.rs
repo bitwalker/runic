@@ -47,9 +47,6 @@ impl InferIntRangeInterface for Cmpi {
         let [lhs, rhs] = operands else {
             return;
         };
-        let Some(confidence) = lhs.join_confidence(rhs) else {
-            return;
-        };
         let (Some(lhs), Some(rhs)) = (lhs.range(), rhs.range()) else {
             return;
         };
@@ -59,7 +56,6 @@ impl InferIntRangeInterface for Cmpi {
             rhs,
             *self.get_predicate(),
             self.result().ty(),
-            confidence,
         );
         set_result_range(self.result().as_value_ref(), range);
     }
@@ -132,14 +128,9 @@ pub(crate) fn infer_comparison_range(
     rhs: &ConstantIntRange,
     predicate: CmpPredicate,
     result_ty: Type,
-    confidence: IntegerRangeConfidence,
 ) -> IntegerValueRange {
-    let top = || IntegerValueRange::proven(ConstantIntRange::max_for_type(result_ty));
-    if confidence != IntegerRangeConfidence::Proven
-        || lhs.is_untracked()
-        || rhs.is_untracked()
-        || lhs.width() != rhs.width()
-    {
+    let top = || IntegerValueRange::new(ConstantIntRange::max_for_type(result_ty));
+    if lhs.is_untracked() || rhs.is_untracked() || lhs.width() != rhs.width() {
         return top();
     }
 
@@ -218,42 +209,23 @@ mod tests {
     ];
 
     #[test]
-    fn comparison_always_proves_boolean_domain_without_proving_assumptions() {
+    fn an_untracked_or_mismatched_operand_leaves_the_boolean_domain() {
         let context = Context::default();
         let (i1, i32) = (context.i1(), context.i32());
         let top = ConstantIntRange::max_for_type(i32);
         let zero = ConstantIntRange::constant(Int::from(0i32));
-        for (lhs, rhs, confidence) in [
-            (top, zero, IntegerRangeConfidence::Assumed),
-            (ConstantIntRange::untracked(), zero, IntegerRangeConfidence::Proven),
-            (
-                ConstantIntRange::max_for_type(context.i64()),
-                zero,
-                IntegerRangeConfidence::Proven,
-            ),
+        for (lhs, rhs) in [
+            (ConstantIntRange::untracked(), zero),
+            (ConstantIntRange::max_for_type(context.i64()), zero),
         ] {
-            let result = infer_comparison_range(i32, &lhs, &rhs, CmpPredicate::Uge, i1, confidence);
-            assert_eq!(result, IntegerValueRange::proven(ConstantIntRange::max_for_type(i1)));
+            let result = infer_comparison_range(i32, &lhs, &rhs, CmpPredicate::Uge, i1);
+            assert_eq!(result, IntegerValueRange::new(ConstantIntRange::max_for_type(i1)));
         }
-        let result = infer_comparison_range(
-            i32,
-            &top,
-            &zero,
-            CmpPredicate::Uge,
-            i1,
-            IntegerRangeConfidence::Proven,
-        );
+        let result = infer_comparison_range(i32, &top, &zero, CmpPredicate::Uge, i1);
         assert_eq!(result, IntegerValueRange::exact_bool(i1, true));
         // Read as signed, the full domain is not decided against zero.
-        let result = infer_comparison_range(
-            i32,
-            &top,
-            &zero,
-            CmpPredicate::Sge,
-            i1,
-            IntegerRangeConfidence::Proven,
-        );
-        assert_eq!(result, IntegerValueRange::proven(ConstantIntRange::max_for_type(i1)));
+        let result = infer_comparison_range(i32, &top, &zero, CmpPredicate::Sge, i1);
+        assert_eq!(result, IntegerValueRange::new(ConstantIntRange::max_for_type(i1)));
     }
 
     #[test]
@@ -263,14 +235,7 @@ mod tests {
         let minus_one = ConstantIntRange::constant(Int::from(-1i8));
         let one = ConstantIntRange::constant(Int::from(1i8));
         for (predicate, expected) in [(CmpPredicate::Slt, true), (CmpPredicate::Ult, false)] {
-            let result = infer_comparison_range(
-                i8,
-                &minus_one,
-                &one,
-                predicate,
-                i1,
-                IntegerRangeConfidence::Proven,
-            );
+            let result = infer_comparison_range(i8, &minus_one, &one, predicate, i1);
             assert_eq!(result, IntegerValueRange::exact_bool(i1, expected), "{predicate}");
         }
     }
@@ -280,15 +245,9 @@ mod tests {
         let context = Context::default();
         let raw = ConstantIntRange::constant(Int::from(u32::MAX as u64));
         let zero = ConstantIntRange::constant(Int::from(0u64));
-        let result = infer_comparison_range(
-            context.i32(),
-            &raw,
-            &zero,
-            CmpPredicate::Slt,
-            context.i1(),
-            IntegerRangeConfidence::Proven,
-        );
-        assert_eq!(result, IntegerValueRange::proven(ConstantIntRange::max_for_type(context.i1())));
+        let result =
+            infer_comparison_range(context.i32(), &raw, &zero, CmpPredicate::Slt, context.i1());
+        assert_eq!(result, IntegerValueRange::new(ConstantIntRange::max_for_type(context.i1())));
     }
 
     #[test]

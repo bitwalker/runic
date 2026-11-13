@@ -182,13 +182,10 @@ impl InferIntRangeInterface for Add {
         let [lhs, rhs] = operands else {
             return;
         };
-        let Some(confidence) = lhs.join_confidence(rhs) else {
-            return;
-        };
         let (Some(lhs), Some(rhs)) = (lhs.range(), rhs.range()) else {
             return;
         };
-        let range = infer_add_range(self.result().ty(), lhs, rhs, *self.get_overflow(), confidence);
+        let range = infer_add_range(self.result().ty(), lhs, rhs, *self.get_overflow());
         set_result_range(self.result().as_value_ref(), range);
     }
 }
@@ -199,14 +196,8 @@ fn infer_add_range(
     lhs: &ConstantIntRange,
     rhs: &ConstantIntRange,
     overflow: Overflow,
-    confidence: IntegerRangeConfidence,
 ) -> IntegerValueRange {
     let result_top = ConstantIntRange::max_for_type(ty);
-    // Checked and wrapping operations establish the result domain independently of their
-    // operands. Assumptions cannot prove a narrower bound, but must not hide that guarantee.
-    if confidence == IntegerRangeConfidence::Assumed && !overflow.is_unchecked() {
-        return IntegerValueRange::proven(result_top);
-    }
     let precise = if lhs.width() != result_top.width() || rhs.width() != result_top.width() {
         None
     } else {
@@ -222,14 +213,8 @@ fn infer_add_range(
     };
     precise
         .filter(|range| result_top.union(range) == result_top)
-        .map(|range| IntegerValueRange::with_confidence(range, confidence))
-        .unwrap_or_else(|| {
-            if overflow.is_unchecked() {
-                IntegerValueRange::assumed(result_top)
-            } else {
-                IntegerValueRange::proven(result_top)
-            }
-        })
+        .map(IntegerValueRange::new)
+        .unwrap_or_else(|| IntegerValueRange::new(result_top))
 }
 
 /// Two's complement sum with an overflow flag: the first result says whether the exact sum does not
@@ -910,26 +895,14 @@ mod integer_range_tests {
     ];
 
     #[test]
-    fn checked_and_wrapping_add_prove_the_domain_without_proving_assumptions() {
+    fn adding_zero_to_a_full_width_range_keeps_the_domain() {
         let context = Context::default();
         let i32 = context.i32();
-        for lhs in [ConstantIntRange::max_for_type(i32), ConstantIntRange::from_unsigned(32, 0, 10)]
-        {
-            for rhs in [0i32, 1] {
-                for overflow in ALL_MODES.into_iter().filter(|mode| !mode.is_unchecked()) {
-                    let result = infer_add_range(
-                        i32,
-                        &lhs,
-                        &ConstantIntRange::constant(Int::from(rhs)),
-                        overflow,
-                        IntegerRangeConfidence::Assumed,
-                    );
-                    assert_eq!(
-                        result,
-                        IntegerValueRange::proven(ConstantIntRange::max_for_type(i32))
-                    );
-                }
-            }
+        let top = ConstantIntRange::max_for_type(i32);
+        for overflow in ALL_MODES {
+            let result =
+                infer_add_range(i32, &top, &ConstantIntRange::constant(Int::from(0i32)), overflow);
+            assert_eq!(result, IntegerValueRange::new(top), "{overflow}");
         }
     }
 
@@ -949,14 +922,12 @@ mod integer_range_tests {
                     &ConstantIntRange::constant(lhs),
                     &ConstantIntRange::constant(rhs),
                     overflow,
-                    IntegerRangeConfidence::Proven,
                 );
                 assert_eq!(
                     result.range().map(|r| (r.umin(), r.umax())),
                     Some((expected, expected)),
                     "{overflow}"
                 );
-                assert!(result.is_proven());
             }
         }
         // Read as unsigned, both sums overflow; an unchecked addition must not acquire the
@@ -967,9 +938,12 @@ mod integer_range_tests {
                 &ConstantIntRange::constant(Int::from(lhs)),
                 &ConstantIntRange::constant(Int::from(rhs)),
                 Overflow::Unchecked(Signedness::Unsigned),
-                IntegerRangeConfidence::Proven,
             );
-            assert!(!result.is_proven(), "unchecked overflow must not acquire a wrapped proof");
+            assert_eq!(
+                result,
+                IntegerValueRange::max_for_type(i32),
+                "unchecked overflow must not acquire a wrapped result"
+            );
         }
         // Read as signed, `-1 + 1` fits, so an unchecked signed addition has the exact sum.
         let result = infer_add_range(
@@ -977,9 +951,8 @@ mod integer_range_tests {
             &ConstantIntRange::constant(Int::from(-1i32)),
             &ConstantIntRange::constant(Int::from(1i32)),
             Overflow::Unchecked(Signedness::Signed),
-            IntegerRangeConfidence::Proven,
         );
-        assert_eq!(result, IntegerValueRange::proven(ConstantIntRange::constant(Int::from(0i32))));
+        assert_eq!(result, IntegerValueRange::new(ConstantIntRange::constant(Int::from(0i32))));
         // `true + true` overflows an `i1` read either way.
         for signedness in [Signedness::Signed, Signedness::Unsigned] {
             let boolean_overflow = infer_add_range(
@@ -987,9 +960,8 @@ mod integer_range_tests {
                 &ConstantIntRange::constant(Int::from(true)),
                 &ConstantIntRange::constant(Int::from(true)),
                 Overflow::Unchecked(signedness),
-                IntegerRangeConfidence::Proven,
             );
-            assert!(!boolean_overflow.is_proven());
+            assert_eq!(boolean_overflow, IntegerValueRange::max_for_type(context.i1()));
         }
     }
 
@@ -1003,7 +975,6 @@ mod integer_range_tests {
                 &ConstantIntRange::constant(Int::from(1i64)),
                 &ConstantIntRange::constant(Int::from(2i64)),
                 overflow,
-                IntegerRangeConfidence::Proven,
             );
             assert!(result.range().is_some_and(ConstantIntRange::is_untracked), "{overflow}");
         }

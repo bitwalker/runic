@@ -60,10 +60,7 @@ impl SparseLattice for IntegerRangeLattice {
             if self.expansions < MAX_PRECISE_EXPANSIONS {
                 self.expansions += 1;
             } else {
-                joined = IntegerValueRange::with_confidence(
-                    previous.widen(next),
-                    joined.confidence().expect("initialized range has confidence"),
-                );
+                joined = IntegerValueRange::new(previous.widen(next));
             }
         }
         self.inner.join(&joined)

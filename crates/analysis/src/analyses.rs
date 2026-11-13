@@ -10,8 +10,8 @@ pub use self::{
     constant_propagation::SparseConstantPropagation,
     dce::DeadCodeAnalysis,
     integer_range::{
-        ConstantIntRange, IntegerRangeAnalysis, IntegerRangeConfidence, IntegerValueRange,
-        operand_range_requirements_hold, value_range,
+        ConstantIntRange, IntegerRangeAnalysis, IntegerValueRange, operand_range_requirements_hold,
+        value_range,
     },
     liveness::LivenessAnalysis,
     loops::{LoopAction, LoopState},
