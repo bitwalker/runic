@@ -6,13 +6,32 @@ use crate::{
     print::AsmPrinter,
 };
 
-#[derive(DialectAttribute, Debug, Clone, PartialEq, Eq, Hash)]
+/// A reference to a symbol by its path.
+///
+/// Two references are equal, and hash alike, when their paths are: the use that links a reference
+/// to its symbol belongs to the operation holding the reference, so two operations that name the
+/// same symbol hold equal references (and may be merged, as CSE merges equal operations).
+#[derive(DialectAttribute, Debug, Clone)]
 #[attribute(name = "symbol", dialect = BuiltinDialect, implements(AttrPrinter))]
 pub struct SymbolRef {
     /// The referenced path
     path: SymbolPath,
     /// The SymbolUse reference, established when we've linked the referenced operation to this use
     user: Option<SymbolUseRef>,
+}
+
+impl PartialEq for SymbolRef {
+    fn eq(&self, other: &Self) -> bool {
+        self.path == other.path
+    }
+}
+
+impl Eq for SymbolRef {}
+
+impl core::hash::Hash for SymbolRef {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.path.hash(state);
+    }
 }
 
 impl Default for SymbolRef {

@@ -91,6 +91,25 @@ pub trait BuiltinOpBuilder<'f, B: ?Sized + Builder> {
         Ok(op.borrow().result().as_value_ref())
     }
 
+    /// Create a [Call] of `callee` with `signature`, passing `args`.
+    ///
+    /// The call has one result per result of `signature`. Nothing checks here that `args` agree
+    /// with `signature`, or that `signature` is the callee's: the call's verifier does.
+    fn call<C, A>(
+        &mut self,
+        callee: C,
+        signature: Signature,
+        args: A,
+        span: SourceSpan,
+    ) -> Result<CallRef, Report>
+    where
+        C: AsCallableSymbolRef,
+        A: IntoIterator<Item = ValueRef>,
+    {
+        let op_builder = self.builder_mut().create::<Call, (C, _, A)>(span);
+        op_builder(callee, signature, args)
+    }
+
     fn ret<I>(
         &mut self,
         returning: I,

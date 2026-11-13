@@ -1,4 +1,5 @@
 mod alias;
+mod call;
 mod cast;
 mod component;
 mod function;
@@ -12,6 +13,7 @@ pub(crate) use self::world::shadowing_error;
 // with names that skip the spelling and the checks of the builtin builders
 pub use self::{
     alias::{FunctionAlias, FunctionAliasRef},
+    call::{Call, CallRef},
     cast::UnrealizedConversionCast,
     component::{Component, ComponentRef},
     function::{Function, FunctionBuilder as PrimFunctionBuilder, FunctionRef, Ret, RetImm},

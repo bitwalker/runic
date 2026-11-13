@@ -6180,3 +6180,162 @@ fn a_segment_offset_written_unsigned_above_the_signed_range_parses() {
         assert_eq!(offset_of(parse("unsigned.runic", respelled)), offset);
     }
 }
+
+const CALLS: &str = r#"builtin.module public @calls {
+    builtin.function public extern("C") @callee(i32, i32) -> i32 effects();
+    builtin.function public extern("C") @unit();
+    builtin.function public extern("C") @caller(%0: i32, %1: i32) -> i32 {
+        %2 = builtin.call @callee(%0, %1) : extern("C") (i32, i32) -> i32;
+        builtin.call @unit() : extern("C") ();
+        builtin.ret %2 : (i32);
+    };
+};"#;
+
+/// Both forms of a call print as they were written and parse back to the same text; the arguments
+/// take their types from the signature, and the results are those of the signature. `-> ()` reads
+/// as no results, which prints as nothing.
+#[test]
+fn calls_round_trip_through_text() -> TestResult {
+    use crate::{CallOpInterface, Op, dialects::builtin::Call};
+
+    let test = ParserTest::default();
+    let written = CALLS.replace(r#"extern("C") ();"#, r#"extern("C") () -> ();"#);
+    assert_ne!(written, CALLS);
+    let parsed = test.parse_any("calls.runic", &written)?;
+    let printed = format!("{}", parsed.borrow());
+    assert!(printed.contains(CALLS.lines().nth(4).unwrap().trim()), "{printed}");
+    assert!(printed.contains(r#"builtin.call @unit() : extern("C") ();"#), "{printed}");
+    let fresh = ParserTest::default();
+    let reparsed = fresh.parse_any("calls2.runic", &printed)?;
+    assert_eq!(format!("{}", reparsed.borrow()), printed);
+
+    let module = parsed.try_downcast_op::<Module>().unwrap();
+    let caller = module.borrow().symbol_manager().lookup_op("caller").unwrap();
+    let caller = caller.try_downcast_op::<Function>().unwrap();
+    let entry = caller.borrow().entry_block();
+    let entry = entry.borrow();
+    let calls = entry
+        .body()
+        .iter()
+        .filter_map(|op| op.as_operation_ref().try_downcast_op::<Call>().ok())
+        .collect::<Vec<_>>();
+    assert_eq!(calls.len(), 2);
+    let i32 = test.context().i32();
+    let call = calls[0].borrow();
+    let types = call.arguments().iter().map(|arg| arg.borrow().ty()).collect::<Vec<_>>();
+    assert_eq!(types, [i32, i32]);
+    assert_eq!(call.as_operation().num_results(), 1);
+    assert_eq!((call.returns()[0] as ValueRef).borrow().ty(), i32);
+    let callee = call.resolve().and_then(|target| target.as_function()).unwrap();
+    assert_eq!(callee.borrow().name().as_str(), "callee");
+    assert_eq!(calls[1].borrow().as_operation().num_results(), 0);
+    Ok(())
+}
+
+/// Parses `body` as the body of `@caller() -> i32` in a module that also holds `declarations`, and
+/// returns why it does not verify, message and labels.
+fn call_error(declarations: &str, body: &str) -> String {
+    let source = format!(
+        "builtin.module public @calls {{\n{declarations}\nbuiltin.function public extern(\"C\") \
+         @caller(%0: i32) {{\n{body}\nbuiltin.ret;\n}};\n}};"
+    );
+    let test = ParserTest::default();
+    let err = test.parse_any("call_error.runic", &source).expect_err(&source);
+    crate::testing::text::describe(&err)
+}
+
+#[test]
+fn a_call_whose_callee_is_not_callable_does_not_verify() {
+    let error = call_error(
+        "builtin.global_variable public @g : i32;",
+        r#"builtin.call @g(%0) : extern("C") (i32);"#,
+    );
+    assert!(error.contains("invalid operation builtin.call"), "{error}");
+    assert!(
+        error.contains("the callee does not resolve to a callable: symbol 'g' is not callable"),
+        "{error}"
+    );
+}
+
+/// The call's signature must equal its callee's in parameter types, calling convention and
+/// parameter attributes.
+#[test]
+fn a_call_whose_signature_differs_from_its_callees_does_not_verify() {
+    let cases = [
+        (
+            r#"builtin.function public extern("C") @f(i64);"#,
+            r#"builtin.call @f(%0) : extern("C") (i32);"#,
+            "parameter 0 has type `i32` in the call, `i64` in the callee",
+        ),
+        (
+            r#"builtin.function public extern("fast") @f(i32);"#,
+            r#"builtin.call @f(%0) : extern("C") (i32);"#,
+            // The labels are quoted as `Debug` quotes them
+            r#"the call uses the calling convention \"C\", the callee \"fast\""#,
+        ),
+        (
+            r#"builtin.function public extern("C") @f(i32 { extend = #builtin.zext });"#,
+            r#"builtin.call @f(%0) : extern("C") (i32);"#,
+            "parameter 0 is `i32` in the call, `i32 { extend = #builtin.zext }` in the callee: \
+             their attributes differ",
+        ),
+    ];
+    for (declaration, call, expected) in cases {
+        let error = call_error(declaration, call);
+        assert!(error.contains("the call's signature differs from its callee's"), "{error}");
+        assert!(error.contains(expected), "{error}");
+    }
+}
+
+/// A call's callee that names nothing is reported by the check every symbol use gets, not by the
+/// call's verifier.
+#[test]
+fn a_call_of_an_undeclared_callee_is_the_symbol_use_error() {
+    let error = call_error("", r#"builtin.call @missing(%0) : extern("C") (i32);"#);
+    assert!(error.contains("symbol '@missing' does not resolve"), "{error}");
+    assert!(!error.contains("invalid operation builtin.call"), "{error}");
+}
+
+/// The text gives the arguments the types of the signature's parameters, so an argument of another
+/// type, or a count that differs, is an error of the parse.
+#[test]
+fn call_arguments_that_disagree_with_the_written_signature_do_not_parse() {
+    for call in [
+        r#"builtin.call @f(%0) : extern("C") (i64);"#,
+        r#"builtin.call @f(%0, %0) : extern("C") (i32);"#,
+    ] {
+        call_error(r#"builtin.function public extern("C") @f(i32);"#, call);
+    }
+}
+
+/// A call through an alias of an alias verifies against the function at the end of the chain, and
+/// resolves to it.
+#[test]
+fn a_call_through_an_alias_of_an_alias_resolves_to_the_function() -> TestResult {
+    use crate::{CallOpInterface, Operation, dialects::builtin::Call};
+
+    let source = r#"builtin.module public @calls {
+    builtin.function public extern("C") @target(i32) -> i32;
+    builtin.function_alias private @first -> @target;
+    builtin.function_alias public @second -> @first;
+    builtin.function public extern("C") @caller(%0: i32) -> i32 {
+        %1 = builtin.call @second(%0) : extern("C") (i32) -> i32;
+        builtin.ret %1 : (i32);
+    };
+};"#;
+    let test = ParserTest::default();
+    let parsed = test.parse_any("alias_call.runic", source)?;
+    let mut call = None;
+    parsed.borrow().prewalk_all(|op: &Operation| {
+        if op.is::<Call>() {
+            call = Some(op.as_operation_ref());
+        }
+    });
+    let call = call.unwrap().try_downcast_op::<Call>().unwrap();
+    let call = call.borrow();
+    let target = call.resolve().unwrap().as_function().unwrap();
+    assert_eq!(target.borrow().name().as_str(), "target");
+    let named = call.resolve_stored_callee().unwrap();
+    assert_eq!(named.borrow().name().as_str(), "second");
+    Ok(())
+}

@@ -4,10 +4,10 @@ use smallvec::SmallVec;
 
 use super::TypeConverter;
 use crate::{
-    BlockRef, CallOpInterface, CallableOpInterface, Context, OperationRef, RegionBranchOpInterface,
-    RegionBranchTerminatorOpInterface, RegionSuccessorInfo, Report, SuccessorOperand,
-    SuccessorOperands, Type, Value, ValueRef, dialects::builtin::attributes::Signature,
-    traits::BranchOpInterface,
+    BlockRef, CallOpInterface, CallableOpInterface, Context, Operation, OperationRef,
+    RegionBranchOpInterface, RegionBranchTerminatorOpInterface, RegionSuccessorInfo, Report,
+    SuccessorOperand, SuccessorOperands, Type, Value, ValueRef,
+    dialects::builtin::attributes::Signature, traits::BranchOpInterface,
 };
 
 /// Describes how a block/callable signature maps original inputs to converted inputs.
@@ -246,23 +246,31 @@ pub fn converted_resolved_call_signature_1_to_1(
     convert_signature_1_to_1(op.context(), &signature, type_converter).map(Some)
 }
 
-/// Verify that a call-like operation's operands/results match its resolved callable signature.
+/// Verify that the arguments and results of `op`, a call-like operation, agree with `signature`
+/// in count and type: the signature the call carries, or the one of its resolved callee.
 ///
-/// Non-call operations are accepted. This helper is intended for conversion patterns or post-pass
-/// checks that need interface-level validation without knowing the concrete call dialect.
-pub fn verify_call_signature_operands_and_results(op: OperationRef) -> Result<(), Report> {
-    let op = op.borrow();
+/// An operation that does not implement [CallOpInterface] is accepted.
+pub fn verify_call_signature_operands_and_results(
+    op: &Operation,
+    signature: &Signature,
+) -> Result<(), Report> {
+    use crate::{Spanned, diagnostics::report};
+
     let Some(call) = op.as_trait::<dyn CallOpInterface>() else {
         return Ok(());
     };
-
-    let op_name = op.name().to_string();
-    let signature = resolve_call_signature(op_name.clone(), call)?;
+    let span = op.span();
+    let invalid = |label: alloc::string::String| {
+        report!(
+            message: (format!("invalid operation {}", op.name())),
+            labels: [primary(span, label)],
+        )
+    };
 
     let arguments = call.arguments();
     if arguments.len() != signature.params().len() {
-        return Err(Report::msg(format!(
-            "operation '{op_name}' has {} call operands, but the resolved callee expects {}",
+        return Err(invalid(format!(
+            "the call passes {} argument(s), but its signature has {} parameter(s)",
             arguments.len(),
             signature.params().len()
         )));
@@ -270,9 +278,9 @@ pub fn verify_call_signature_operands_and_results(op: OperationRef) -> Result<()
     for (index, (argument, param)) in arguments.iter().zip(signature.params()).enumerate() {
         let argument_ty = argument.borrow().ty();
         if argument_ty != param.ty {
-            return Err(Report::msg(format!(
-                "operation '{op_name}' passes operand {index} of type '{argument_ty}', but the \
-                 resolved callee expects '{}'",
+            return Err(invalid(format!(
+                "argument {index} has type `{argument_ty}`, but parameter {index} of the \
+                 signature has type `{}`",
                 param.ty
             )));
         }
@@ -280,8 +288,8 @@ pub fn verify_call_signature_operands_and_results(op: OperationRef) -> Result<()
 
     let results = signature.results();
     if op.num_results() != results.len() {
-        return Err(Report::msg(format!(
-            "operation '{op_name}' has {} results, but the resolved callee returns {}",
+        return Err(invalid(format!(
+            "the call has {} result(s), but its signature has {}",
             op.num_results(),
             results.len()
         )));
@@ -289,9 +297,9 @@ pub fn verify_call_signature_operands_and_results(op: OperationRef) -> Result<()
     for (index, (result, expected)) in op.results().iter().zip(results.iter()).enumerate() {
         let result_ty = result.borrow().ty();
         if result_ty != expected.ty {
-            return Err(Report::msg(format!(
-                "operation '{op_name}' result {index} has type '{result_ty}', but the resolved \
-                 callee returns '{}'",
+            return Err(invalid(format!(
+                "result {index} has type `{result_ty}`, but result {index} of the signature has \
+                 type `{}`",
                 expected.ty
             )));
         }
