@@ -548,6 +548,35 @@ pub struct IndexSwitch {
     default_region: Region,
 }
 
+/// The case values are distinct, and there is one region for each after the default region.
+impl Verify<dyn RegionBranchOpInterface> for IndexSwitch {
+    fn verify(&self, _context: &Context) -> Result<(), Report> {
+        let op = self.as_operation();
+        let invalid = |label: String| {
+            runic_core::diagnostics::report!(
+                message: (format!("invalid operation {}", op.name())),
+                labels: [primary(op.span(), label)],
+            )
+        };
+        let cases = self.cases();
+        let case_regions = op.num_regions().saturating_sub(1);
+        if case_regions != cases.len() {
+            return Err(invalid(format!(
+                "{} case value(s) need {} region(s) after the default region, but there are \
+                 {case_regions}",
+                cases.len(),
+                cases.len(),
+            )));
+        }
+        for (index, case) in cases.iter().enumerate() {
+            if cases.iter().take(index).any(|earlier| earlier == case) {
+                return Err(invalid(format!("the case value {case} is used more than once")));
+            }
+        }
+        Ok(())
+    }
+}
+
 impl OpPrinter for IndexSwitch {
     fn print(&self, printer: &mut AsmPrinter<'_>) {
         use formatter::*;
@@ -2756,5 +2785,66 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
         assert_eq!(*exit.borrow().get_levels(), -2);
 
         Ok(())
+    }
+
+    /// The text of `f(%s: i32) -> i32` returning an `scf.index_switch` on `%s` with one case per
+    /// element of `cases`, written as given.
+    fn switch_text(cases: &[&str]) -> String {
+        let mut text = String::from(
+            "builtin.function public extern(\"C\") @f(%s: i32) -> i32 {\n    %r = \
+             scf.index_switch %s\n",
+        );
+        for (index, case) in cases.iter().enumerate() {
+            text.push_str(&format!(
+                "    case {case} {{\n        %c{index} = arith.constant {index} : i32;\n        \
+                 scf.yield %c{index} : (i32);\n    }}\n"
+            ));
+        }
+        text.push_str(
+            "    default {\n        %d = arith.constant -7 : i32;\n        scf.yield %d : \
+             (i32);\n    } : (i32);\n    builtin.ret %r : (i32);\n};",
+        );
+        text
+    }
+
+    /// In the generic form the `cases` property and the regions are written separately, so they
+    /// can disagree: a repeated case value, fewer case values than case regions and more are each
+    /// rejected by the verifier, with a diagnostic that names the repeated value or the counts.
+    #[test]
+    fn index_switch_verifies_its_cases_in_the_generic_form() {
+        use runic_core::testing::text::{parse, print_generic};
+
+        let (_cx, function) = parse::<Function>(&switch_text(&["-1", "5"])).unwrap();
+        let switch = find_op::<IndexSwitch>(&function.borrow());
+        let generic = print_generic(switch.borrow().as_operation());
+        // The generic printer separates regions with a newline, the generic parser wants a comma
+        let generic = generic.replace("} \n{", "},\n{");
+        let text = format!(
+            "builtin.function public extern(\"C\") @f(%0: i32) -> i32 {{\n{generic}\n    \
+             builtin.ret %4 : (i32);\n}};"
+        );
+        parse::<Function>(&text).unwrap_or_else(|err| panic!("{err}\n{text}"));
+
+        for (cases, expected) in [
+            ("-1, -1", "the case value -1 is used more than once"),
+            (
+                "-1",
+                "1 case value(s) need 1 region(s) after the default region, but there are 2",
+            ),
+            (
+                "-1, 5, 6",
+                "3 case value(s) need 3 region(s) after the default region, but there are 2",
+            ),
+        ] {
+            let broken = text.replacen(
+                "#builtin.array_i32<-1, 5>",
+                &format!("#builtin.array_i32<{cases}>"),
+                1,
+            );
+            assert_ne!(broken, text);
+            let err = parse::<Function>(&broken).err().unwrap_or_else(|| panic!("{cases} parsed"));
+            assert!(err.contains("invalid operation scf.index_switch"), "{cases}: {err}");
+            assert!(err.contains(expected), "{cases}: {err}");
+        }
     }
 }
