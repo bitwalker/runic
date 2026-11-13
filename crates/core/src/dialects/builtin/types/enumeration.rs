@@ -84,7 +84,9 @@ pub enum InvalidEnumType {
 ///
 /// The discriminant is an `iN` of at most 128 bits, or `isize`, whose values are 64 bits wide.
 /// An `isize` discriminant's values are checked against 64 bits here; laying the enum out checks
-/// them again against the `isize` of the data layout.
+/// them again against the `isize` of the data layout, of `W` bits: a value stands for its low `W`
+/// bits and fits when it is their zero extension or their sign extension (an unsigned or a signed
+/// number of `W` bits, so `-1` fits any width), and no two values may have the same low `W` bits.
 /// A variant's value is the raw bits of the discriminant: it is the one given explicitly, or else
 /// the previous variant's value plus one, or 0 for the first. Values are resolved when the enum
 /// is constructed, so `enum<i8; a, b>` and `enum<i8; a = 0, b = 1>` are one type. The enum's name

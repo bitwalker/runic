@@ -151,19 +151,17 @@ impl TypeLayout for StructType {
 /// discriminant's and the payloads'. Without payloads that is the discriminant's layout.
 ///
 /// Element 0 lies at offset 0, and the payload element of every variant, with a payload or not,
-/// at the payload offset. An `isize` discriminant's values must fit the `isize` of `layout`
-/// ([LayoutError::DiscriminantTooWide]).
+/// at the payload offset.
+///
+/// An `isize` discriminant's values are held at 64 bits and stand for their low `W` bits, `W` the
+/// width of the `isize` of `layout`. A value fits when it is the zero extension or the sign
+/// extension of its low `W` bits, that is, an unsigned or a signed number of `W` bits
+/// ([LayoutError::DiscriminantTooWide] otherwise), and the low `W` bits of the values must be
+/// distinct ([LayoutError::DiscriminantsCollide] otherwise).
 impl TypeLayout for EnumType {
     fn layout(&self, ty: Type, layout: &DataLayout) -> Result<Layout, LayoutError> {
         if self.discriminant().is_isize() {
-            let width = layout.isize_width();
-            if !self
-                .variants()
-                .iter()
-                .all(|variant| EnumType::value_fits(variant.value(), width))
-            {
-                return Err(LayoutError::DiscriminantTooWide(ty));
-            }
+            check_isize_discriminants(self, ty, layout.isize_width())?;
         }
         let tag = layout.layout_of(self.discriminant())?;
         let mut payload_align = Align::ONE;
@@ -182,4 +180,36 @@ impl TypeLayout for EnumType {
         let offsets = core::iter::once(0).chain(self.variants().iter().map(|_| offset)).collect();
         Ok(Layout::new(size, align, FieldsShape::Offsets(offsets)))
     }
+}
+
+/// Checks the values of `enum_ty`, the value of `ty`, against an `isize` of `width` bits, 1 to 64.
+///
+/// A value is held at 64 bits; it fits when it equals its low `width` bits zero-extended or
+/// sign-extended to 64 bits. The low `width` bits of the values must then be distinct. At 64 bits
+/// the low bits are the values themselves, which [EnumType::new] keeps distinct.
+fn check_isize_discriminants(enum_ty: &EnumType, ty: Type, width: u32) -> Result<(), LayoutError> {
+    debug_assert!((1..=64).contains(&width), "an isize of {width} bits");
+    let low_mask = u128::from(u64::MAX >> (64 - width));
+    let high_mask = u128::from(u64::MAX) & !low_mask;
+    let mut patterns = Vec::with_capacity(enum_ty.variants().len());
+    for variant in enum_ty.variants() {
+        let bits = variant.value();
+        let low = bits & low_mask;
+        let sign_extended = if low >> (width - 1) == 1 {
+            low | high_mask
+        } else {
+            low
+        };
+        if bits != low && bits != sign_extended {
+            return Err(LayoutError::DiscriminantTooWide(ty));
+        }
+        patterns.push(low);
+    }
+    if width < 64 {
+        patterns.sort_unstable();
+        if patterns.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(LayoutError::DiscriminantsCollide(ty));
+        }
+    }
+    Ok(())
 }

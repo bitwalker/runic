@@ -1012,6 +1012,10 @@ fn a_layout_error_names_the_type_as_it_prints() {
         LayoutError::DiscriminantTooWide(cx.i8()).to_string(),
         "type 'i8' has a discriminant that does not fit the 'isize' of the data layout"
     );
+    assert_eq!(
+        LayoutError::DiscriminantsCollide(cx.i8()).to_string(),
+        "type 'i8' has two discriminants that are one value in the 'isize' of the data layout"
+    );
 }
 
 mod test_types {
@@ -1285,6 +1289,88 @@ fn enums() {
     // An integer discriminant is never checked again
     let i64_enum = parse_ty(&context, "enum<i64; a = 1099511627776>");
     assert_eq!(shape(&layout, i64_enum), Ok((8, 8, alloc::vec![0, 8])));
+}
+
+/// Under an `isize` of 32 bits, a discriminant fits when it is an unsigned or a signed 32-bit
+/// number, and no two discriminants may be one 32-bit value.
+#[test]
+fn an_isize_discriminant_fits_a_narrower_isize_when_it_extends_its_low_bits() {
+    let context = context();
+    let narrow = data_layout(&context, LITTLE_32);
+    let wide = data_layout(&context, LITTLE_64);
+    let minus_one = parse_ty(&context, "enum<isize; a = -1>");
+    assert_eq!(size_align(&narrow, minus_one), Ok((4, 4)));
+    let extremes = parse_ty(&context, "enum<isize; a = -2147483648, b = 2147483647>");
+    assert_eq!(size_align(&narrow, extremes), Ok((4, 4)));
+    let collide = parse_ty(&context, "enum<isize; a = -1, b = 4294967295>");
+    assert_eq!(narrow.layout_of(collide), Err(LayoutError::DiscriminantsCollide(collide)));
+    assert_eq!(size_align(&wide, collide), Ok((8, 8)));
+    let too_wide = parse_ty(&context, "enum<isize; a = 4294967296>");
+    assert_eq!(narrow.layout_of(too_wide), Err(LayoutError::DiscriminantTooWide(too_wide)));
+}
+
+/// A stored 64-bit value is accepted under an `isize` of W bits when it is the zero extension or
+/// the sign extension of its low W bits, and the values must stay distinct after truncation to W
+/// bits.
+#[test]
+fn a_sign_extended_isize_discriminant_fits_a_narrower_isize() {
+    let context = context();
+    let layout = data_layout(&context, LITTLE_32);
+    for text in [
+        "enum<isize; a = -1>",
+        "enum<isize; a = -2147483648, b = 2147483647>",
+        "enum<isize; a = -1, b = 0, c = 1>",
+        "enum<isize; a = 4294967295>",
+    ] {
+        let ty = parse_ty(&context, text);
+        assert!(layout.layout_of(ty).is_ok(), "{text}: {:?}", layout.layout_of(ty));
+    }
+    for text in [
+        // Neither extension of its low 32 bits
+        "enum<isize; a = 4294967296>",
+        "enum<isize; a = -2147483649>",
+        // Distinct at 64 bits, the same 32-bit pattern
+        "enum<isize; a = -1, b = 4294967295>",
+    ] {
+        let ty = parse_ty(&context, text);
+        assert!(layout.layout_of(ty).is_err(), "{text}");
+    }
+}
+
+/// An `isize` discriminant is checked against the `isize` of the specification, whatever the
+/// pointer size: the index width decides.
+#[test]
+fn an_isize_discriminant_is_checked_against_the_index_width() {
+    let context = context();
+    for (text, width) in [
+        ("little, ptr = 64", 64),
+        ("little, ptr = 64 index 32", 32),
+        ("little, ptr = 32", 32),
+        ("little, ptr = 32 index 16", 16),
+        ("little, ptr = 16 index 9", 9),
+        ("little, ptr = 8 index 1", 1),
+    ] {
+        let layout = data_layout(&context, text);
+        assert_eq!(layout.isize_width(), width);
+        for bit in 0..64u32 {
+            let value = 1u128 << bit;
+            let ty = parse_ty(&context, &format!("enum<isize; a = {value}>"));
+            let answer = layout.layout_of(ty);
+            if bit < width {
+                assert!(answer.is_ok(), "{text}: 2^{bit}: {answer:?}");
+            } else {
+                assert_eq!(answer, Err(LayoutError::DiscriminantTooWide(ty)), "{text}: 2^{bit}");
+            }
+        }
+        // The largest value that fits, and implicit values counting up from it
+        if width < 64 {
+            let max = (1u128 << width) - 1;
+            let fits = parse_ty(&context, &format!("enum<isize; a = {max}>"));
+            assert!(layout.layout_of(fits).is_ok(), "{text}");
+            let over = parse_ty(&context, &format!("enum<isize; a = {max}, b>"));
+            assert_eq!(layout.layout_of(over), Err(LayoutError::DiscriminantTooWide(over)));
+        }
+    }
 }
 
 #[test]

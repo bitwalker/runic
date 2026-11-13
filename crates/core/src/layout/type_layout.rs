@@ -78,6 +78,7 @@ impl Layout {
 
 /// Why a type has no layout under a [DataLayout].
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum LayoutError {
     /// The type, or a type it holds by value, does not implement [TypeLayout]: a function type,
     /// `?` or `never`, for instance. It names the innermost type without a layout.
@@ -92,9 +93,16 @@ pub enum LayoutError {
     /// The type has no element `index`.
     #[error("type '{ty}' has no element {index}")]
     NoSuchElement { ty: Type, index: u32 },
-    /// A discriminant of the enum type does not fit the `isize` of the specification.
+    /// A discriminant of the enum type does not fit the `isize` of the specification: it is
+    /// neither an unsigned nor a signed number of that width.
     #[error("type '{0}' has a discriminant that does not fit the 'isize' of the data layout")]
     DiscriminantTooWide(Type),
+    /// Two discriminants of the enum type are one value at the width of the `isize` of the
+    /// specification, such as `-1` and `4294967295` under a 32-bit `isize`.
+    #[error(
+        "type '{0}' has two discriminants that are one value in the 'isize' of the data layout"
+    )]
+    DiscriminantsCollide(Type),
 }
 
 impl From<LayoutError> for Report {
