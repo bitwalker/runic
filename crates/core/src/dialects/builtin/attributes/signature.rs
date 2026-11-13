@@ -121,29 +121,40 @@ impl AbiParam {
     pub fn new_with_attrs(ty: Type, attributes: impl IntoIterator<Item = NamedAttribute>) -> Self {
         let mut param = Self::new(ty);
         for attr in attributes {
-            attr.value
-                .borrow()
-                .context_rc()
-                .debug_assert_ir_type(ty, "the type of a parameter");
             param.set_attribute(attr.name, attr.value);
         }
         param
     }
 
     /// The attributes of the parameter, sorted by name.
+    ///
+    /// The handles are shared with every copy of the parameter: replace an attribute with
+    /// [Self::set_attribute], do not mutate it.
     #[inline]
     pub fn attributes(&self) -> &[NamedAttribute] {
         self.attrs.as_slice()
     }
 
     /// The attribute `name`, if the parameter has it.
+    ///
+    /// The handle is shared with every copy of the parameter: replace the attribute with
+    /// [Self::set_attribute], do not mutate it.
     pub fn attribute(&self, name: impl Into<interner::Symbol>) -> Option<AttributeRef> {
         let name = name.into();
         self.find(name).ok().map(|index| self.attrs[index].value)
     }
 
     /// Sets the attribute `name` to `value`, replacing any value it already has.
+    ///
+    /// Panics, in debug builds, if the parameter's type belongs to another context than `value`.
+    #[track_caller]
     pub fn set_attribute(&mut self, name: impl Into<interner::Symbol>, value: AttributeRef) {
+        if cfg!(debug_assertions) {
+            value
+                .borrow()
+                .context()
+                .debug_assert_ir_type(self.ty, "the type of a parameter");
+        }
         let name = name.into();
         match self.find(name) {
             Ok(index) => self.attrs[index].value = value,
@@ -679,6 +690,18 @@ mod tests {
     fn an_open_parameter_type_panics() {
         let context = crate::Context::default();
         let _ = AbiParam::new(context.ptr_type(context.rec_var(0)));
+    }
+
+    /// In a debug build, `set_attribute` checks the attribute's context as `new_with_attrs` does.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "a type of another context")]
+    fn set_attribute_of_another_context_panics_in_a_debug_build() {
+        let context = Rc::new(crate::Context::default());
+        let other = Rc::new(crate::Context::default());
+        let foreign = other.create_attribute::<ZextAttr, _>(()).as_attribute_ref();
+        let mut param = AbiParam::new(context.i8());
+        param.set_attribute(interner::symbols::Extend, foreign);
     }
 
     /// The hash of `value` under one fixed hasher.

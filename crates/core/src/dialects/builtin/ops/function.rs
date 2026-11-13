@@ -350,11 +350,6 @@ impl Function {
     pub fn as_function_ref(&self) -> FunctionRef {
         unsafe { FunctionRef::from_raw(self) }
     }
-
-    #[inline(always)]
-    pub const fn signature_ref(&self) -> UnsafeIntrusiveEntityRef<SignatureAttr> {
-        self.signature
-    }
 }
 
 impl RegionKindInterface for Function {

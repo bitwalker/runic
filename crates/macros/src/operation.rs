@@ -1411,7 +1411,13 @@ impl quote::ToTokens for OpAttrFns<'_> {
                 attr.span(),
             ));
             let attr_mut_doc = syn::Lit::Str(syn::LitStr::new(
-                &format!(" Get a mutable reference to the `{attr}` attribute."),
+                &format!(
+                    " Get a mutable reference to the `{attr}` attribute.\n\n An edit through it \
+                     edits the attribute for every holder of its handle, not only this operation. \
+                     Use it only on an attribute this operation created from a value; an \
+                     attribute installed with [::runic_core::ReadyAttr], or one used as a \
+                     constant, is changed by replacing it with `set_{attr}`."
+                ),
                 attr.span(),
             ));
             let get_attr_doc = syn::Lit::Str(syn::LitStr::new(
@@ -1419,7 +1425,13 @@ impl quote::ToTokens for OpAttrFns<'_> {
                 attr.span(),
             ));
             let get_attr_mut_doc = syn::Lit::Str(syn::LitStr::new(
-                &format!(" Get a mutable reference to the value of the `{attr}` attribute."),
+                &format!(
+                    " Get a mutable reference to the value of the `{attr}` attribute.\n\n An edit \
+                     through it edits the attribute for every holder of its handle, not only this \
+                     operation. Use it only on an attribute this operation created from a value; \
+                     an attribute installed with [::runic_core::ReadyAttr], or one used as a \
+                     constant, is changed by replacing it with `set_{attr}`."
+                ),
                 attr.span(),
             ));
             let set_attr_doc = syn::Lit::Str(syn::LitStr::new(

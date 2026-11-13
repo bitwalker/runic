@@ -48,6 +48,13 @@ pub trait Dialect {
     /// zero operands, no side effects, etc.
     ///
     /// Returns `None` if a constant cannot be materialized for the given attribute.
+    ///
+    /// The operation may install `attr` as it is (with [ReadyAttr](crate::ReadyAttr)) rather than
+    /// copy it: the folder may hand the same attribute for every use of a constant, and it is the
+    /// key under which the folder knows the constant. That is safe because of the rule for every
+    /// attribute that has been used as a constant (returned from a fold, handed to
+    /// `materialize_constant`, held by a `ConstantLike` operation, or known to a folder): it is
+    /// never edited in place. A constant's value is changed by replacing the attribute.
     #[allow(unused_variables)]
     #[inline]
     fn materialize_constant(

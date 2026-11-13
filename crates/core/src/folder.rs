@@ -12,6 +12,10 @@ use crate::{
 };
 
 /// Represents a constant value uniqued by dialect, value, and type.
+///
+/// The key holds the attribute handle and compares and hashes through it, so a constant known to
+/// a folder is never edited in place: the edit would change a key of the map. A constant's value
+/// is changed by replacing the attribute.
 struct UniquedConstant {
     dialect: Rc<dyn Dialect>,
     value: AttributeRef,

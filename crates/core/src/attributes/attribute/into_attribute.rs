@@ -10,6 +10,17 @@ use crate::{Context, UnsafeIntrusiveEntityRef};
 /// type derived from that value. An attribute whose type is not a function of its value (an
 /// `isize` integer constant holds a 64-bit value, which would be typed `i64`) is created first and
 /// passed as a [ReadyAttr].
+///
+/// The type of an argument must be known where the call is written. Two shapes that inferred it
+/// from a single `From` impl of the attribute's value no longer do:
+///
+/// - An argument whose type is left to the bound, such as `Default::default()` or `x.into()`, is
+///   ambiguous (E0283), even for an attribute whose value converts from one type only. Name the
+///   type: `Overflow::default()`, `Int::from(x)`.
+/// - A helper generic over the value and bounded only by `From`
+///   (`fn f<V>(v: V) where Int: From<V>`) cannot forward `v` to a builder or setter (E0277): a type
+///   parameter is not known to be an attribute value argument. Bound the helper by what the
+///   parameter accepts instead, `v: impl IntoAttribute<IntAttr>`, which takes a [ReadyAttr] too.
 pub trait IntoAttribute<A: AttributeRegistration>: Sized {
     /// Returns the attribute this argument stands for, creating it in `context` if it is a value.
     fn into_attribute(self, context: &Rc<Context>) -> UnsafeIntrusiveEntityRef<A>;
@@ -19,10 +30,22 @@ pub trait IntoAttribute<A: AttributeRegistration>: Sized {
 ///
 /// The attribute is used as it is: its type is not derived again from its value.
 ///
+/// The operation takes the handle as it is and shares it with every other holder of it: the
+/// caller, other operations built from the same handle, a folder that knows it as a constant, a
+/// signature. From then on the attribute is changed by replacing it (the generated
+/// `set_<attr>`), never in place: an edit through `<attr>_mut()`, `get_<attr>_mut()`,
+/// `Attribute::set_type` or the handle would change every holder.
+///
+/// The attribute must belong to the operation's context; a debug build checks it.
+///
+/// Only a `ReadyAttr` passed as the argument itself takes this path. A `ReadyAttr` behind a
+/// pointer or inside a `Vec` or a `Box` is treated as a value, which the attribute's value type
+/// would have to convert from.
+///
 /// The attribute must be of the kind the parameter expects: `test.constant`'s `value` is an
 /// `IntAttr`, so a `BoolAttr` is not accepted.
 ///
-/// ```compile_fail
+/// ```compile_fail,E0277
 /// use runic_core::{ReadyAttr, UnsafeIntrusiveEntityRef};
 /// use runic_core::dialects::{builtin::attributes::BoolAttr, test::Constant};
 ///
@@ -83,8 +106,15 @@ where
 }
 
 impl<A: AttributeRegistration> IntoAttribute<A> for ReadyAttr<A> {
-    #[inline(always)]
-    fn into_attribute(self, _context: &Rc<Context>) -> UnsafeIntrusiveEntityRef<A> {
+    /// Panics, in debug builds, if the attribute belongs to another context than `context`.
+    #[inline]
+    #[track_caller]
+    fn into_attribute(self, context: &Rc<Context>) -> UnsafeIntrusiveEntityRef<A> {
+        debug_assert!(
+            core::ptr::eq(self.0.borrow().context(), &**context),
+            "the attribute passed as a `ReadyAttr` belongs to another context: an attribute may \
+             only be used with the context that created it"
+        );
         self.0
     }
 }
@@ -130,6 +160,21 @@ mod tests {
         let attr = into::<IntAttr>(&context, ReadyAttr(ready));
         assert!(UnsafeIntrusiveEntityRef::ptr_eq(&attr, &ready));
         assert_eq!(attr.borrow().ty(), context.isize());
+    }
+
+    /// In a debug build, installing an attribute of another context panics, naming the attribute.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "the attribute passed as a `ReadyAttr` belongs to another context")]
+    fn a_ready_attribute_of_another_context_panics_in_a_debug_build() {
+        use crate::{BuilderExt, SourceSpan, dialects::test::Constant, testing::Test};
+
+        let mut test = Test::new("f", |cx| ([cx.i32()], [cx.i32()]));
+        let other = Rc::new(Context::default());
+        let foreign = other.int_attr(Int::from(5i32), other.i32());
+        let mut builder = test.function_builder();
+        let create = builder.builder_mut().create::<Constant, _>(SourceSpan::UNKNOWN);
+        let _ = create(ReadyAttr(foreign));
     }
 
     fn assert_value_arg<T: AttributeValueArg + ?Sized>() {}

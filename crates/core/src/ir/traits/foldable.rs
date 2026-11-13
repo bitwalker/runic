@@ -165,6 +165,11 @@ impl core::fmt::Display for OpFoldResult {
 /// A fold must not mutate an attribute it was handed, whether an operand's constant or one of
 /// the operation's own: attribute handles are shared, so the change would reach every holder. It
 /// creates a new attribute for its result instead.
+///
+/// More generally, an attribute that has been used as a constant (returned from a fold, handed
+/// to [Dialect::materialize_constant](crate::Dialect::materialize_constant), held by a
+/// `ConstantLike` operation, or known to a folder) is never edited in place: a constant's value is
+/// changed by replacing the attribute.
 pub trait Foldable {
     /// Attempt to fold this operation using its current operand values.
     ///
