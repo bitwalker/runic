@@ -21,7 +21,10 @@ pub use self::{
     segment::*,
     world::{World, WorldRef},
 };
-pub(crate) use self::{call::function_type_of, world::shadowing_error};
+pub(crate) use self::{
+    call::{function_type_of, parse_signature},
+    world::shadowing_error,
+};
 
 /// Parses the raw segment naming a module, a symbol table of `kind`, and adds its
 /// canonical spelling (see [crate::SymbolPath::segments_of]) to `state` as the `name`

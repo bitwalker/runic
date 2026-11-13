@@ -118,6 +118,26 @@ pub trait TestOpBuilder<'f, B: ?Sized + Builder> {
         Ok(op.borrow().result().as_value_ref())
     }
 
+    /// A `test.call_one_of`: a call with `signature` of `first` or `second`, as `index` chooses at
+    /// runtime.
+    fn call_one_of<C1, C2, A>(
+        &mut self,
+        index: ValueRef,
+        first: C1,
+        second: C2,
+        signature: crate::dialects::builtin::attributes::Signature,
+        args: A,
+        span: SourceSpan,
+    ) -> Result<UnsafeIntrusiveEntityRef<CallOneOf>, Report>
+    where
+        C1: crate::AsCallableSymbolRef,
+        C2: crate::AsCallableSymbolRef,
+        A: IntoIterator<Item = ValueRef>,
+    {
+        let op_builder = self.builder_mut().create::<CallOneOf, (_, A, C1, C2, _)>(span);
+        op_builder(index, args, first, second, signature)
+    }
+
     /// Loads a value of the type pointed to by the given pointer
     ///
     /// NOTE: This function will panic if `ptr` is not a pointer typed value

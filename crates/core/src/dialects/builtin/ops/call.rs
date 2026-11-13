@@ -305,7 +305,7 @@ impl OpParser for Call {
 
 /// Reads the signature of a call, as [SignatureAttr] prints it, and returns it with the types of
 /// its parameters, which its arguments take.
-fn parse_signature(
+pub(crate) fn parse_signature(
     parser: &mut dyn crate::OpAsmParser<'_>,
 ) -> ParseResult<(Signature, SmallVec<[Type; 2]>)> {
     use crate::attributes::AttrParser;
