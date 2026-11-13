@@ -791,80 +791,88 @@ impl quote::ToTokens for BuildOp<'_> {
                     op_builder.build()
                 });
             }
-            Some(group) => {
-                let verify_result_constraints = match group {
-                    OpResultGroup::Unnamed(results) => {
-                        let verify_result = results.iter().map(|result| {
-                            let result_name = &result.name;
-                            let result_span = result_name.span();
-                            let result_constraint = &result.constraint;
-                            let constraint_violation = syn::Lit::Str(syn::LitStr::new(
-                                &format!("type constraint violation for result '{result_name}'"),
-                                result_name.span(),
-                            ));
-                            quote_spanned! { result_span =>
-                                {
-                                    let op_result = op.#result_name();
-                                    let value_ty = op_result.ty();
-                                    let constraint = <#result_constraint as ::runic_core::traits::TypeConstraint>::get();
-                                    if !<#result_constraint as ::runic_core::traits::TypeConstraint>::matches(&constraint, value_ty) {
-                                        let expected = <#result_constraint as ::runic_core::traits::TypeConstraint>::description(&constraint);
-                                        return Err(::runic_core::diagnostics::report!(
-                                            message: (::alloc::format!("invalid operation {}", op.name())),
-                                            labels: [
-                                                primary(span, #constraint_violation),
-                                                context(op_result.span(), ::alloc::format!("this value has type '{value_ty}', but expected '{expected}'")),
-                                            ],
-                                        ));
-                                    }
-                                }
-                            }
-                        });
-                        quote! {
-                            #(
-                                #verify_result
-                            )*
-                        }
-                    }
-                    OpResultGroup::Named(name, constraint) => {
-                        let span = name.span();
-                        let constraint_violation = syn::Lit::Str(syn::LitStr::new(
-                            &format!("type constraint violation for result in '{name}'"),
-                            span,
-                        ));
-                        quote_spanned! { span =>
-                            {
-                                let results = op.#name();
-                                for result in results.iter() {
-                                    let value = result.borrow();
-                                    let value_ty = value.ty();
-                                    let constraint = <#constraint as ::runic_core::traits::TypeConstraint>::get();
-                                    if !<#constraint as ::runic_core::traits::TypeConstraint>::matches(&constraint, value_ty) {
-                                        let expected = <#constraint as ::runic_core::traits::TypeConstraint>::description(&constraint);
-                                        return Err(::runic_core::diagnostics::report!(
-                                            message: "invalid operation",
-                                            labels: [
-                                                primary(span, #constraint_violation),
-                                                context(value.span(), ::alloc::format!("this value has type '{value_ty}', but expected '{expected}'")),
-                                            ],
-                                        ));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                };
-
+            Some(_) => {
+                // The results' types are known once the operation is built (inferred or given),
+                // and are checked against their constraints as the verifier does.
                 tokens.extend(quote! {
                     let op = op_builder.build()?;
-
-                    {
-                        let op = op.borrow();
-                        #verify_result_constraints
-                    }
-
+                    <Self as ::runic_core::Op>::verify_result_types(&*op.borrow())?;
                     Ok(op)
                 })
+            }
+        }
+    }
+}
+
+/// The body of `Op::verify_result_types`: each result's type against the constraint its field
+/// declares.
+struct VerifyResultTypes<'a>(&'a OpDefinition);
+impl quote::ToTokens for VerifyResultTypes<'_> {
+    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+        match self.0.results.as_ref() {
+            None => {}
+            Some(OpResultGroup::Unnamed(results)) => {
+                for result in results {
+                    let result_name = &result.name;
+                    let result_span = result_name.span();
+                    let result_constraint = &result.constraint;
+                    let label = syn::Lit::Str(syn::LitStr::new(
+                        &format!("type constraint violation for result '{result_name}'"),
+                        result_span,
+                    ));
+                    let name =
+                        syn::Lit::Str(syn::LitStr::new(&result_name.to_string(), result_span));
+                    tokens.extend(quote_spanned! { result_span =>
+                        {
+                            let op_result = self.#result_name();
+                            let value_ty = ::runic_core::Value::ty(&*op_result);
+                            let constraint = <#result_constraint as ::runic_core::traits::TypeConstraint>::get();
+                            if !<#result_constraint as ::runic_core::traits::TypeConstraint>::matches(&constraint, value_ty) {
+                                let expected = <#result_constraint as ::runic_core::traits::TypeConstraint>::description(&constraint);
+                                return Err(::runic_core::diagnostics::report!(
+                                    message: (::alloc::format!(
+                                        "invalid result '{}' of '{}': expected {expected}, got {value_ty}",
+                                        #name,
+                                        self.op.name(),
+                                    )),
+                                    labels: [
+                                        primary(::runic_core::diagnostics::Spanned::span(&self.op), #label),
+                                        context(::runic_core::diagnostics::Spanned::span(&*op_result), ::alloc::format!("this value has type '{value_ty}', but expected '{expected}'")),
+                                    ],
+                                ));
+                            }
+                        }
+                    });
+                }
+            }
+            Some(OpResultGroup::Named(name, constraint)) => {
+                let span = name.span();
+                let label = syn::Lit::Str(syn::LitStr::new(
+                    &format!("type constraint violation for result in '{name}'"),
+                    span,
+                ));
+                let group_name = syn::Lit::Str(syn::LitStr::new(&name.to_string(), span));
+                tokens.extend(quote_spanned! { span =>
+                    for result in self.#name().iter() {
+                        let value = result.borrow();
+                        let value_ty = ::runic_core::Value::ty(&*value);
+                        let constraint = <#constraint as ::runic_core::traits::TypeConstraint>::get();
+                        if !<#constraint as ::runic_core::traits::TypeConstraint>::matches(&constraint, value_ty) {
+                            let expected = <#constraint as ::runic_core::traits::TypeConstraint>::description(&constraint);
+                            return Err(::runic_core::diagnostics::report!(
+                                message: (::alloc::format!(
+                                    "invalid result in '{}' of '{}': expected {expected}, got {value_ty}",
+                                    #group_name,
+                                    self.op.name(),
+                                )),
+                                labels: [
+                                    primary(::runic_core::diagnostics::Spanned::span(&self.op), #label),
+                                    context(::runic_core::diagnostics::Spanned::span(&*value), ::alloc::format!("this value has type '{value_ty}', but expected '{expected}'")),
+                                ],
+                            ));
+                        }
+                    }
+                });
             }
         }
     }
@@ -1055,6 +1063,7 @@ impl quote::ToTokens for OpDefinition {
         let implements = &self.implements;
         let attrs = WithAttrInfos(self);
         let verify_operand_types = VerifyOperandTypes(self);
+        let verify_result_types = VerifyResultTypes(self);
         let operand_group_sizes = self.operands.iter().map(|group| match group {
             OpOperandGroup::Unnamed(operands) => {
                 let count = operands.len();
@@ -1090,6 +1099,11 @@ impl quote::ToTokens for OpDefinition {
 
                 fn verify_operand_types(&self) -> Result<(), ::runic_core::diagnostics::Report> {
                     #verify_operand_types
+                    Ok(())
+                }
+
+                fn verify_result_types(&self) -> Result<(), ::runic_core::diagnostics::Report> {
+                    #verify_result_types
                     Ok(())
                 }
             }
@@ -2280,7 +2294,8 @@ impl quote::ToTokens for OpVerifierImpl {
                     #[inline(always)]
                     fn verify(&self, _context: &::runic_core::Context) -> Result<(), ::runic_core::diagnostics::Report> {
                         self.op.verify_operand_cardinality()?;
-                        <Self as ::runic_core::Op>::verify_operand_types(self)
+                        <Self as ::runic_core::Op>::verify_operand_types(self)?;
+                        <Self as ::runic_core::Op>::verify_result_types(self)
                     }
                 }
             });
@@ -2328,6 +2343,7 @@ impl quote::ToTokens for OpVerifierImpl {
                 fn verify(&self, context: &::runic_core::Context) -> Result<(), ::runic_core::diagnostics::Report> {
                     self.op.verify_operand_cardinality()?;
                     <Self as ::runic_core::Op>::verify_operand_types(self)?;
+                    <Self as ::runic_core::Op>::verify_result_types(self)?;
                     /// This type represents the concrete set of derived traits for some op `T`, paired with a
                     /// type-erased [::runic_core::Operation] reference for an instance of that op.
                     ///

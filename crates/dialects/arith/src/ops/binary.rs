@@ -36,11 +36,10 @@ macro_rules! infer_return_ty_for_binary_op {
                 }
             }
 
-            // The value result has the type of the operands, and each flag is an `i1`. The
-            // `Bool` constraint on a flag is checked only when the operation is built, so the
-            // flags are checked here too.
+            // The value result has the type of the operands. Each flag's `Bool` constraint is
+            // checked by the generated verifier.
             impl Verify<dyn InferTypeOpInterface> for $Op {
-                fn verify(&self, context: &Context) -> Result<(), Report> {
+                fn verify(&self, _context: &Context) -> Result<(), Report> {
                     let expected = self.lhs().ty();
                     let actual = self.result().ty();
                     if actual != expected {
@@ -58,14 +57,6 @@ macro_rules! infer_return_ty_for_binary_op {
                             ],
                         ));
                     }
-                    $(
-                        crate::ops::verify_bool_result(
-                            self.as_operation(),
-                            stringify!($flag),
-                            self.$flag().ty(),
-                            context,
-                        )?;
-                    )*
                     Ok(())
                 }
             }

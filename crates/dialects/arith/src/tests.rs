@@ -1043,19 +1043,19 @@ fn a_fold_declines_when_the_result_type_is_not_the_operations() {
 #[test]
 fn a_retyped_i1_result_does_not_verify() {
     type Build = fn(Builder<'_, '_>, ValueRef, ValueRef) -> ValueRef;
-    let builds: [(&str, Build); 4] = [
-        ("arith.cmpi", |b, l, r| b.cmpi(CmpPredicate::Slt, l, r, SPAN).unwrap()),
-        ("arith.add_overflowing", |b, l, r| {
+    let builds: [(&str, &str, Build); 4] = [
+        ("arith.cmpi", "result", |b, l, r| b.cmpi(CmpPredicate::Slt, l, r, SPAN).unwrap()),
+        ("arith.add_overflowing", "overflowed", |b, l, r| {
             b.add_overflowing(l, r, Signedness::Signed, SPAN).unwrap().0
         }),
-        ("arith.sub_overflowing", |b, l, r| {
+        ("arith.sub_overflowing", "overflowed", |b, l, r| {
             b.sub_overflowing(l, r, Signedness::Signed, SPAN).unwrap().0
         }),
-        ("arith.mul_overflowing", |b, l, r| {
+        ("arith.mul_overflowing", "overflowed", |b, l, r| {
             b.mul_overflowing(l, r, Signedness::Signed, SPAN).unwrap().0
         }),
     ];
-    for (name, build) in builds {
+    for (name, result, build) in builds {
         let mut test = test_with(&[Context::i32, Context::i32]);
         let context = test.context_rc();
         let [x, y] = params(&test)[..] else {
@@ -1066,13 +1066,19 @@ fn a_retyped_i1_result_does_not_verify() {
         op.borrow().verify().expect("valid");
         assert_eq!(flag.borrow().ty(), context.i1());
         flag.borrow_mut().set_type(context.i8());
+        // The result's `Bool` constraint is checked by the generated verifier
         let err = op.borrow().verify().expect_err("a retyped flag");
-        assert_eq!(err.to_string(), "invalid operation");
+        assert_eq!(
+            err.to_string(),
+            format!("invalid result '{result}' of '{name}': expected 1-bit integral type, got i8")
+        );
         let messages = label_messages(err.as_diagnostic());
-        assert_eq!(messages.len(), 1);
-        assert!(
-            messages[0].contains(&format!("of '{name}' has type `i8`, not `i1`")),
-            "{messages:?}"
+        assert_eq!(
+            messages,
+            [
+                format!("type constraint violation for result '{result}'"),
+                "this value has type 'i8', but expected '1-bit integral type'".to_string(),
+            ]
         );
     }
 }

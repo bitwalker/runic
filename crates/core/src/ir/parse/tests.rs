@@ -5638,3 +5638,69 @@ fn the_generic_form_rejects_a_property_given_twice() {
     let rendered = parse_error(&source);
     assert!(rendered.contains("attribute 'overflow' occurs more than once"), "{rendered}");
 }
+
+/// An operation with a constrained result and no type inference, so a parsed result type is kept
+/// as written.
+#[crate::derive::operation(dialect = TestDialect)]
+pub struct FlagResult {
+    #[operand]
+    input: crate::traits::AnyInteger,
+    #[result]
+    flag: crate::traits::Bool,
+}
+
+/// A result whose type its constraint rejects fails verification, with a diagnostic naming the
+/// result, the type it has and the one expected; changing a result's type after building does
+/// too.
+#[test]
+fn the_verifier_checks_result_type_constraints() -> TestResult {
+    use crate::{Op, OpVerifier, Value, dialects::test::Add};
+
+    // Parsed in the generic form, which keeps the result type as written
+    let wrap = |ty: &str| {
+        format!(
+            "builtin.module public @m {{\n    builtin.function public extern(\"C\") @f(%0: i32) \
+             {{\n        %1 = \"test.flag_result\"(%0) : i32 -> {ty};\n        builtin.ret;\n    \
+             }};\n}};"
+        )
+    };
+    let test = ParserTest::default();
+    test.context().get_or_register_dialect::<TestDialect>();
+    test.parse_any("flag_ok.hir", &wrap("i1"))?;
+    let rendered = parse_error(&wrap("i32"));
+    assert!(
+        rendered.contains(
+            "invalid result 'flag' of 'test.flag_result': expected 1-bit integral type, got i32"
+        ),
+        "{rendered}"
+    );
+    assert!(rendered.contains("type constraint violation for result 'flag'"), "{rendered}");
+
+    // Built, then retyped: `test.add`'s result must be an integer
+    let mut test = Test::named("retyped_result");
+    let i32 = test.context().i32();
+    test.with_function("retyped_result", &[i32, i32], &[]);
+    let (lhs, rhs) = {
+        let entry = test.entry_block();
+        let block = entry.borrow();
+        (block.get_argument(0) as ValueRef, block.get_argument(1) as ValueRef)
+    };
+    let context = test.context_rc();
+    let mut add = test.builder_mut().create::<Add, (_, _)>(SourceSpan::UNKNOWN)(lhs, rhs)?;
+    add.borrow().verify(&context)?;
+    let ptr = context.ptr_type(context.i8());
+    add.borrow_mut().result_mut().set_type(ptr);
+    let err = add.borrow().verify(&context).expect_err("a result that is not an integer");
+    assert_eq!(
+        err.to_string(),
+        format!("invalid result 'result' of 'test.add': expected an integral type, got {ptr}")
+    );
+    assert_eq!(
+        crate::testing::label_messages(err.as_diagnostic()),
+        [
+            "type constraint violation for result 'result'".to_string(),
+            format!("this value has type '{ptr}', but expected 'an integral type'"),
+        ]
+    );
+    Ok(())
+}

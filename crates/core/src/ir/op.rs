@@ -77,6 +77,15 @@ pub trait Op: AsAny + OpVerifier {
         Ok(())
     }
 
+    /// Check result types against this operation's declared constraints.
+    ///
+    /// The operation derive supplies this check for declared results. The verifier runs it after
+    /// [Op::verify_operand_types], and the typed builder runs it once the operation is built, so
+    /// a result whose type was inferred, parsed or changed later is checked too.
+    fn verify_result_types(&self) -> Result<(), crate::Report> {
+        Ok(())
+    }
+
     /// Prints this operation with `flags`, by the rule of
     /// [PrettyPrint for Operation](crate::formatter::PrettyPrint): an operation without a parent
     /// is a root, preceded by the declarations of the recursion groups it refers to, and one with

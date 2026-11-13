@@ -1,5 +1,5 @@
 use crate::{
-    Context, OpPrinter, Report, Spanned, Value,
+    Context, OpPrinter, Report, Value,
     derive::{EffectOpInterface, OpParser, OpPrinter, operation},
     dialects::builtin::{BuiltinDialect, attributes::TypeAttr},
     effects::MemoryEffectOpInterface,
