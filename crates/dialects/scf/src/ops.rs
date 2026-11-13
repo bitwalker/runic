@@ -1458,8 +1458,8 @@ builtin.function public extern("C") @exit(%flag: i1, %value: i32) -> i32 {
     ///
     /// This is the witness that the verifier checks `ResolvedExit::callable`. [BlindExit] in the
     /// identical program position reports the identical target and `from_region` with
-    /// `callable: None` and is ACCEPTED — so the two resolutions differ in exactly one field, and that field is what
-    /// the verifier is reacting to.
+    /// `callable: None` and is ACCEPTED — so the two resolutions differ in exactly one field, and
+    /// that field is what the verifier is reacting to.
     #[derive(OpPrinter, OpParser, EffectOpInterface)]
     #[effects(MemoryEffect())]
     #[operation(
