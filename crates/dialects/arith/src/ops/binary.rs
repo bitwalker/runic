@@ -36,28 +36,37 @@ macro_rules! infer_return_ty_for_binary_op {
                 }
             }
 
-            // The `Bool` constraint on the flags checks them; the value result has the type of
-            // the operands.
+            // The value result has the type of the operands, and each flag is an `i1`. The
+            // `Bool` constraint on a flag is checked only when the operation is built, so the
+            // flags are checked here too.
             impl Verify<dyn InferTypeOpInterface> for $Op {
-                fn verify(&self, _context: &Context) -> Result<(), Report> {
+                fn verify(&self, context: &Context) -> Result<(), Report> {
                     let expected = self.lhs().ty();
                     let actual = self.result().ty();
-                    if actual == expected {
-                        return Ok(());
+                    if actual != expected {
+                        return Err(runic_core::diagnostics::report!(
+                            message: "invalid operation",
+                            labels: [
+                                primary(
+                                    self.as_operation().span(),
+                                    format!(
+                                        "the value result of '{}' has type `{actual}`, but its \
+                                         operands have type `{expected}`",
+                                        self.as_operation().name()
+                                    )
+                                ),
+                            ],
+                        ));
                     }
-                    Err(runic_core::diagnostics::report!(
-                        message: "invalid operation",
-                        labels: [
-                            primary(
-                                self.as_operation().span(),
-                                format!(
-                                    "the value result of '{}' has type `{actual}`, but its \
-                                     operands have type `{expected}`",
-                                    self.as_operation().name()
-                                )
-                            ),
-                        ],
-                    ))
+                    $(
+                        crate::ops::verify_bool_result(
+                            self.as_operation(),
+                            stringify!($flag),
+                            self.$flag().ty(),
+                            context,
+                        )?;
+                    )*
+                    Ok(())
                 }
             }
         }
@@ -604,7 +613,7 @@ fn with_overflow(
     }
 }
 
-fold_one!(Add, |op| {
+fold_one!(Add, Operand, |op| {
     let overflow = *op.get_overflow();
     move |[a, b]| {
         with_overflow(
@@ -618,7 +627,7 @@ fold_one!(Add, |op| {
     }
 });
 
-fold_one!(Sub, |op| {
+fold_one!(Sub, Operand, |op| {
     let overflow = *op.get_overflow();
     move |[a, b]| {
         with_overflow(
@@ -632,7 +641,7 @@ fold_one!(Sub, |op| {
     }
 });
 
-fold_one!(Mul, |op| {
+fold_one!(Mul, Operand, |op| {
     let overflow = *op.get_overflow();
     move |[a, b]| {
         with_overflow(
@@ -650,7 +659,7 @@ fold_one!(Mul, |op| {
 /// wrapped value, from `$signed` or `$unsigned` as the operation's `signedness` says.
 macro_rules! fold_overflowing {
     ($Op:ty, $signed:expr, $unsigned:expr) => {
-        fold_two!($Op, |op| {
+        fold_two!($Op, [Bool, Operand], |op| {
             let compute: fn(Int, Int) -> (Int, bool) = match *op.get_signedness() {
                 Signedness::Signed => $signed,
                 Signedness::Unsigned => $unsigned,
@@ -671,22 +680,22 @@ fold_overflowing!(MulOverflowing, Int::overflowing_mul_signed, Int::overflowing_
 // `rem_signed` gives 0 for `MIN % -1`, which is what `srem` gives. `sdivrem` traps there because of
 // its quotient, so its remainder closure declines when the division does: each closure is right on
 // its own, whichever runs first.
-fold_one!(Udiv, |_op| |[a, b]| a.div_unsigned(b));
-fold_one!(Sdiv, |_op| |[a, b]| a.div_signed(b));
-fold_one!(Urem, |_op| |[a, b]| a.rem_unsigned(b));
-fold_one!(Srem, |_op| |[a, b]| a.rem_signed(b));
-fold_two!(Udivrem, |_op| (
+fold_one!(Udiv, Operand, |_op| |[a, b]| a.div_unsigned(b));
+fold_one!(Sdiv, Operand, |_op| |[a, b]| a.div_signed(b));
+fold_one!(Urem, Operand, |_op| |[a, b]| a.rem_unsigned(b));
+fold_one!(Srem, Operand, |_op| |[a, b]| a.rem_signed(b));
+fold_two!(Udivrem, [Operand, Operand], |_op| (
     |[a, b]: [Int; 2]| a.div_unsigned(b),
     |[a, b]: [Int; 2]| a.rem_unsigned(b)
 ));
-fold_two!(Sdivrem, |_op| (
+fold_two!(Sdivrem, [Operand, Operand], |_op| (
     |[a, b]: [Int; 2]| a.div_signed(b),
     |[a, b]: [Int; 2]| a.div_signed(b).and(a.rem_signed(b))
 ));
 
-fold_one!(Band, |_op| |[a, b]| Some(a & b));
-fold_one!(Bor, |_op| |[a, b]| Some(a | b));
-fold_one!(Bxor, |_op| |[a, b]| Some(a ^ b));
+fold_one!(Band, Operand, |_op| |[a, b]| Some(a & b));
+fold_one!(Bor, Operand, |_op| |[a, b]| Some(a | b));
+fold_one!(Bxor, Operand, |_op| |[a, b]| Some(a ^ b));
 
 /// `shift` on `value` by the unsigned value of `amount`, or `None` (no fold: the result is
 /// undefined) if the amount is the width or more.
@@ -695,13 +704,13 @@ fn shift(value: Int, amount: Int, shift: fn(Int, u32) -> Int) -> Option<Int> {
     (amount < value.width()).then(|| shift(value, amount))
 }
 
-fold_one!(Shl, |_op| |[a, b]| shift(a, b, |value, amount| value << amount));
-fold_one!(Shr, |_op| |[a, b]| shift(a, b, Int::lshr));
-fold_one!(Ashr, |_op| |[a, b]| shift(a, b, Int::ashr));
-fold_one!(Rotl, |_op| |[a, b]| Some(a.rotl(b.rotate_amount_unsigned(a.width()))));
-fold_one!(Rotr, |_op| |[a, b]| Some(a.rotr(b.rotate_amount_unsigned(a.width()))));
+fold_one!(Shl, Operand, |_op| |[a, b]| shift(a, b, |value, amount| value << amount));
+fold_one!(Shr, Operand, |_op| |[a, b]| shift(a, b, Int::lshr));
+fold_one!(Ashr, Operand, |_op| |[a, b]| shift(a, b, Int::ashr));
+fold_one!(Rotl, Operand, |_op| |[a, b]| Some(a.rotl(b.rotate_amount_unsigned(a.width()))));
+fold_one!(Rotr, Operand, |_op| |[a, b]| Some(a.rotr(b.rotate_amount_unsigned(a.width()))));
 
-fold_one!(Min, |op| {
+fold_one!(Min, Operand, |op| {
     let min = match *op.get_signedness() {
         Signedness::Signed => Int::min_signed,
         Signedness::Unsigned => Int::min_unsigned,
@@ -709,7 +718,7 @@ fold_one!(Min, |op| {
     move |[a, b]| Some(min(a, b))
 });
 
-fold_one!(Max, |op| {
+fold_one!(Max, Operand, |op| {
     let max = match *op.get_signedness() {
         Signedness::Signed => Int::max_signed,
         Signedness::Unsigned => Int::max_unsigned,

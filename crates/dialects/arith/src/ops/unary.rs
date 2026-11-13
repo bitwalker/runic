@@ -43,7 +43,7 @@ pub struct Neg {
 
 infer_return_ty_for_unary_op!(Neg);
 
-fold_one!(Neg, |_op| |[a]| Some(a.wrapping_neg()));
+fold_one!(Neg, Operand, |_op| |[a]| Some(a.wrapping_neg()));
 
 /// Bitwise NOT. On `i1`, logical NOT.
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
@@ -67,6 +67,7 @@ impl Foldable for Bnot {
         let operand = self.operand().as_value_ref();
         if let Some(inner) = operand.borrow().get_defining_op()
             && let Some(inner) = inner.borrow().downcast_ref::<Bnot>()
+            && inner.operand().ty() == self.result().ty()
         {
             results.push(OpFoldResult::Value(inner.operand().as_value_ref()));
             return FoldResult::Ok(());
@@ -80,9 +81,15 @@ impl Foldable for Bnot {
         operands: &[Option<AttributeRef>],
         results: &mut SmallVec<[OpFoldResult; 1]>,
     ) -> FoldResult {
-        let ty = self.result().ty();
-        let context = self.as_operation().context_rc();
-        let folded = crate::fold::fold_ints(&context, operands, ty, ty, |[a]| Some(!a));
+        let op = self.as_operation();
+        let folded = crate::fold::fold_ints(
+            &op.context_rc(),
+            operands,
+            crate::fold::operand_type(op),
+            crate::fold::result_type(op, 0),
+            crate::fold::FoldsTo::Operand,
+            |[a]| Some(!a),
+        );
         crate::fold::push_folded(results, folded.map(|attr| [attr]))
     }
 }
@@ -112,7 +119,7 @@ pub struct Popcnt {
 
 infer_return_ty_for_unary_op!(Popcnt);
 
-fold_one!(Popcnt, |_op| |[a]| count(a, Int::count_ones));
+fold_one!(Popcnt, Operand, |_op| |[a]| count(a, Int::count_ones));
 
 /// The number of leading (most significant) zero bits, as a value of the operand's type.
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
@@ -130,7 +137,7 @@ pub struct Clz {
 
 infer_return_ty_for_unary_op!(Clz);
 
-fold_one!(Clz, |_op| |[a]| count(a, Int::leading_zeros));
+fold_one!(Clz, Operand, |_op| |[a]| count(a, Int::leading_zeros));
 
 /// The number of trailing (least significant) zero bits, as a value of the operand's type.
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
@@ -148,7 +155,7 @@ pub struct Ctz {
 
 infer_return_ty_for_unary_op!(Ctz);
 
-fold_one!(Ctz, |_op| |[a]| count(a, Int::trailing_zeros));
+fold_one!(Ctz, Operand, |_op| |[a]| count(a, Int::trailing_zeros));
 
 /// The number of leading (most significant) one bits, as a value of the operand's type.
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
@@ -166,7 +173,7 @@ pub struct Clo {
 
 infer_return_ty_for_unary_op!(Clo);
 
-fold_one!(Clo, |_op| |[a]| count(a, Int::leading_ones));
+fold_one!(Clo, Operand, |_op| |[a]| count(a, Int::leading_ones));
 
 /// The number of trailing (least significant) one bits, as a value of the operand's type.
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
@@ -184,4 +191,4 @@ pub struct Cto {
 
 infer_return_ty_for_unary_op!(Cto);
 
-fold_one!(Cto, |_op| |[a]| count(a, Int::trailing_ones));
+fold_one!(Cto, Operand, |_op| |[a]| count(a, Int::trailing_ones));

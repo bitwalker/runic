@@ -927,6 +927,180 @@ fn a_cast_that_does_not_verify_does_not_fold() {
 }
 
 #[test]
+fn a_fold_declines_when_the_result_type_is_not_the_operations() {
+    type Build = fn(Builder<'_, '_>, ValueRef, ValueRef) -> ValueRef;
+    let builds: [(&str, Build); 9] = [
+        ("add", |b, l, r| b.add(l, r, SPAN).unwrap()),
+        ("shl", |b, l, r| b.shl(l, r, SPAN).unwrap()),
+        ("udiv", |b, l, r| b.udiv(l, r, SPAN).unwrap()),
+        ("popcnt", |b, l, _| b.popcnt(l, SPAN).unwrap()),
+        ("bnot", |b, l, _| b.bnot(l, SPAN).unwrap()),
+        ("cmpi", |b, l, r| b.ult(l, r, SPAN).unwrap()),
+        ("add_overflowing value", |b, l, r| {
+            b.add_overflowing(l, r, Signedness::Signed, SPAN).unwrap().1
+        }),
+        ("add_overflowing flag", |b, l, r| {
+            b.add_overflowing(l, r, Signedness::Signed, SPAN).unwrap().0
+        }),
+        ("udivrem remainder", |b, l, r| b.udivrem(l, r, SPAN).unwrap().1),
+    ];
+    for (name, build) in builds {
+        for isize_operands in [false, true] {
+            let mut test = test_with(&[]);
+            let context = test.context_rc();
+            let mut b = test.function_builder();
+            let (lhs, rhs) = if isize_operands {
+                (b.isize(3, SPAN), b.isize(1, SPAN))
+            } else {
+                (b.i32(3, SPAN), b.i32(1, SPAN))
+            };
+            let mut result = build(&mut b, lhs, rhs);
+            let op = result.borrow().get_defining_op().unwrap();
+            assert!(fold_values(result, None).is_some(), "{name} folds before");
+            result.borrow_mut().set_type(context.i16());
+            assert!(op.borrow().verify().is_err(), "{name} with a retyped result verifies");
+            assert_eq!(fold_values(result, None), None, "{name} on isize={isize_operands}");
+        }
+    }
+    // A cast whose result is not its `ty` attribute.
+    let mut test = test_with(&[]);
+    let context = test.context_rc();
+    let mut b = test.function_builder();
+    let source = b.i32(5, SPAN);
+    let mut result = b.trunc(source, context.i8(), SPAN).unwrap();
+    result.borrow_mut().set_type(context.i16());
+    assert_eq!(fold_value(result, None), None);
+}
+
+#[test]
+fn a_retyped_i1_result_does_not_verify() {
+    type Build = fn(Builder<'_, '_>, ValueRef, ValueRef) -> ValueRef;
+    let builds: [(&str, Build); 4] = [
+        ("arith.cmpi", |b, l, r| b.cmpi(CmpPredicate::Slt, l, r, SPAN).unwrap()),
+        ("arith.add_overflowing", |b, l, r| {
+            b.add_overflowing(l, r, Signedness::Signed, SPAN).unwrap().0
+        }),
+        ("arith.sub_overflowing", |b, l, r| {
+            b.sub_overflowing(l, r, Signedness::Signed, SPAN).unwrap().0
+        }),
+        ("arith.mul_overflowing", |b, l, r| {
+            b.mul_overflowing(l, r, Signedness::Signed, SPAN).unwrap().0
+        }),
+    ];
+    for (name, build) in builds {
+        let mut test = test_with(&[Context::i32, Context::i32]);
+        let context = test.context_rc();
+        let [x, y] = params(&test)[..] else {
+            unreachable!()
+        };
+        let mut flag = build(&mut test.function_builder(), x, y);
+        let op = flag.borrow().get_defining_op().unwrap();
+        op.borrow().verify().expect("valid");
+        assert_eq!(flag.borrow().ty(), context.i1());
+        flag.borrow_mut().set_type(context.i8());
+        let err = op.borrow().verify().expect_err("a retyped flag");
+        assert_eq!(err.to_string(), "invalid operation");
+        let messages = label_messages(err.as_diagnostic());
+        assert_eq!(messages.len(), 1);
+        assert!(
+            messages[0].contains(&format!("of '{name}' has type `i8`, not `i1`")),
+            "{messages:?}"
+        );
+    }
+}
+
+#[test]
+fn a_fold_of_mixed_operand_types_declines() {
+    type Build = fn(Builder<'_, '_>, ValueRef, ValueRef) -> ValueRef;
+    let builds: [(&str, Build); 8] = [
+        ("add", |b, l, r| b.add(l, r, SPAN).unwrap()),
+        ("udiv", |b, l, r| b.udiv(l, r, SPAN).unwrap()),
+        ("shl", |b, l, r| b.shl(l, r, SPAN).unwrap()),
+        ("rotl", |b, l, r| b.rotl(l, r, SPAN).unwrap()),
+        ("cmpi", |b, l, r| b.cmpi(CmpPredicate::Ult, l, r, SPAN).unwrap()),
+        ("min", |b, l, r| b.min(l, r, Signedness::Signed, SPAN).unwrap()),
+        ("band", |b, l, r| b.band(l, r, SPAN).unwrap()),
+        ("add_overflowing", |b, l, r| {
+            b.add_overflowing(l, r, Signedness::Signed, SPAN).unwrap().1
+        }),
+    ];
+    for (name, build) in builds {
+        for (lhs_isize, rhs_isize) in [(false, false), (true, false), (false, true)] {
+            let mut test = test_with(&[]);
+            let mut b = test.function_builder();
+            let lhs = if lhs_isize {
+                b.isize(3, SPAN)
+            } else {
+                b.i64(3, SPAN)
+            };
+            let rhs = if rhs_isize {
+                b.isize(1, SPAN)
+            } else {
+                b.i32(1, SPAN)
+            };
+            let result = build(&mut b, lhs, rhs);
+            let op = result.borrow().get_defining_op().unwrap();
+            assert!(op.borrow().verify().is_err(), "{name} of mixed types verifies");
+            assert_eq!(fold_values(result, None), None, "{name} of mixed types folded");
+        }
+    }
+}
+
+#[test]
+fn casts_verify_exactly_the_pairs_the_design_allows() {
+    type CastBuilder = fn(Builder<'_, '_>, ValueRef, Type) -> Result<ValueRef, Report>;
+    let casts: [(&str, CastBuilder); 5] = [
+        ("trunc", |b, v, t| b.trunc(v, t, SPAN)),
+        ("zext", |b, v, t| b.zext(v, t, SPAN)),
+        ("sext", |b, v, t| b.sext(v, t, SPAN)),
+        ("sext_or_trunc", |b, v, t| b.sext_or_trunc(v, t, SPAN)),
+        ("zext_or_trunc", |b, v, t| b.zext_or_trunc(v, t, SPAN)),
+    ];
+    // Each type by its width, `None` for `isize`.
+    let types: [(Option<u32>, TypeFn); 8] = [
+        (Some(1), Context::i1),
+        (Some(7), |cx| cx.int_type(7)),
+        (Some(8), Context::i8),
+        (Some(32), Context::i32),
+        (Some(64), Context::i64),
+        (Some(128), Context::i128),
+        (Some(256), |cx| cx.int_type(256)),
+        (None, Context::isize),
+    ];
+    let mut wrong = Vec::new();
+    for (name, build) in casts {
+        for (from, from_ty) in types {
+            for (to, to_ty) in types {
+                let valid = match (name, from, to) {
+                    ("trunc", Some(from), Some(to)) => to < from,
+                    ("zext" | "sext", Some(from), Some(to)) => to > from,
+                    ("trunc" | "zext" | "sext", ..) => false,
+                    (_, None, Some(_)) | (_, Some(_), None) => true,
+                    _ => false,
+                };
+                let mut test = test_with(&[from_ty]);
+                let [value] = params(&test)[..] else {
+                    unreachable!()
+                };
+                let (from_ty, to_ty) = (from_ty(test.context()), to_ty(test.context()));
+                let result = build(&mut test.function_builder(), value, to_ty).unwrap();
+                let op = result.borrow().get_defining_op().unwrap();
+                let verified = op.borrow().verify();
+                if verified.is_ok() != valid {
+                    wrong.push(format!(
+                        "{name} {from_ty} -> {to_ty}: verifies={}, the design says {valid}",
+                        verified.is_ok()
+                    ));
+                }
+                // The result type is the requested one either way.
+                assert_eq!(result.borrow().ty(), to_ty);
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+#[test]
 fn bnot_folds_a_constant_and_a_double_negation() {
     let mut test = test_with(&[Context::i8]);
     let [param] = params(&test)[..] else {

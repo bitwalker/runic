@@ -13,34 +13,51 @@ use crate::*;
 /// Folds a resize of the constant operand of `op` to the value `resize` maps it and the width of
 /// a constant of the result type to, at the result type.
 ///
-/// Only a cast that satisfies `rule`, the rule its verifier checks, folds: a cast that does not
-/// verify (an `isize` operand of `trunc`, the wrong width order) is left alone.
+/// Only a cast that verifies folds: its result type is its `ty` attribute and satisfies `rule`,
+/// the rule its verifier checks. A cast that does not verify (an `isize` operand of `trunc`, the
+/// wrong width order, a retyped result) is left alone.
 fn fold_resize(
     op: &Operation,
     operands: &[Option<AttributeRef>],
     results: &mut SmallVec<[OpFoldResult; 1]>,
+    ty: Type,
     rule: CastRule,
     resize: fn(Int, u32) -> Int,
 ) -> FoldResult {
     let operand_ty = crate::fold::operand_type(op);
     let result_ty = crate::fold::result_type(op, 0);
-    if rule.check(operand_ty, result_ty).is_some() {
+    if result_ty != ty || rule.check(operand_ty, result_ty).is_some() {
         return FoldResult::Failed;
     }
-    // The width of a constant of the result type: 64 for `isize`. A conversion from `isize` to a
-    // fixed width `W` folds through `fold_isize` (the result is `W` bits on both targets, and they
-    // must agree). A conversion from a fixed width to `isize` has no `isize` operand, so it
-    // computes once: the operand extended or truncated to the 64 bits an `isize` constant holds.
-    // That is right for a 32-bit target as well, whose value is the truncation of the 64-bit
-    // one: extending to 64 bits and truncating to 32 gives what resizing to 32 bits directly
-    // gives, for a sign or a zero extension alike.
+    // The width of a constant of the result type: 64 for `isize`.
     let Some(width) = Int::width_for_type(result_ty) else {
         return FoldResult::Failed;
     };
-    let folded =
-        crate::fold::fold_ints(&op.context_rc(), operands, operand_ty, result_ty, |[a]| {
-            Some(resize(a, width))
-        });
+    let context = op.context_rc();
+    let folded = if !operand_ty.is_isize() && result_ty.is_isize() {
+        // A conversion from a fixed width to `isize` has no `isize` operand, so it computes once:
+        // the operand extended or truncated to the 64 bits an `isize` constant holds. That is
+        // right for a 32-bit target as well, whose value is the truncation of the 64-bit one:
+        // extending to 64 bits and truncating to 32 gives what resizing to 32 bits directly gives,
+        // for a sign or a zero extension alike. It holds for a resize only, so this is the one
+        // fold that computes it; the general helper refuses it.
+        match operands {
+            [operand] => crate::fold::constant_operand(operand, operand_ty)
+                .map(|a| context.int_attr(resize(a, width), result_ty).as_attribute_ref()),
+            _ => None,
+        }
+    } else {
+        // Between fixed widths, or from `isize` to a fixed width `W`, which folds through
+        // `fold_isize` (the result is `W` bits on both targets, and they must agree).
+        crate::fold::fold_ints(
+            &context,
+            operands,
+            operand_ty,
+            result_ty,
+            crate::fold::FoldsTo::Type(ty),
+            |[a]| Some(resize(a, width)),
+        )
+    };
     crate::fold::push_folded(results, folded.map(|attr| [attr]))
 }
 
@@ -58,7 +75,8 @@ macro_rules! fold_cast {
                 operands: &[Option<AttributeRef>],
                 results: &mut SmallVec<[OpFoldResult; 1]>,
             ) -> FoldResult {
-                fold_resize(self.as_operation(), operands, results, $rule, $resize)
+                let ty = *self.get_ty();
+                fold_resize(self.as_operation(), operands, results, ty, $rule, $resize)
             }
         }
     };

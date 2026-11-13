@@ -38,6 +38,14 @@ impl InferTypeOpInterface for Cmpi {
     }
 }
 
+/// The result is an `i1`. Its `Bool` constraint is checked only when the operation is built, so
+/// it is checked here too.
+impl Verify<dyn InferTypeOpInterface> for Cmpi {
+    fn verify(&self, context: &Context) -> Result<(), Report> {
+        crate::ops::verify_bool_result(self.as_operation(), "result", self.result().ty(), context)
+    }
+}
+
 impl InferIntRangeInterface for Cmpi {
     fn infer_result_ranges(
         &self,
@@ -65,7 +73,7 @@ impl InferIntRangeInterface for Cmpi {
     }
 }
 
-fold_one!(Cmpi, |op| {
+fold_one!(Cmpi, Bool, |op| {
     let predicate = *op.get_predicate();
     move |[a, b]| Some(Int::from(predicate.evaluate(a, b)))
 });
