@@ -42,7 +42,7 @@ impl Foldable for Poison {
 
 impl InferTypeOpInterface for Poison {
     fn infer_return_types(&mut self, _context: &Context) -> Result<(), Report> {
-        let poison_ty = self.get_value().clone();
+        let poison_ty = *self.get_value();
         self.result_mut().set_type(poison_ty);
         Ok(())
     }
