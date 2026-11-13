@@ -126,7 +126,11 @@ fn erase_transparent_users(value: ValueRef) {
 /// every user of its results is inside that region, and the region is executed at most once, so
 /// that the operation is not executed on paths that do not need its results.
 ///
-/// Operations with memory effects are never moved.
+/// Operations with memory effects are never moved. An operation other than a constant is not moved
+/// into the region unless every region between the two, not only the target, is executed at most
+/// once each time the region holding the operation is: an operation that may trap is never moved to
+/// where it would execute more often, so a definition before a loop stays out of an `scf.if` in the
+/// loop's body.
 ///
 /// # Implementation
 ///
@@ -221,7 +225,14 @@ impl Pass for ControlFlowSink {
             sunk = control_flow_sink(
                 &regions_to_sink,
                 &dominfo,
-                |op: &Operation, _region: &Region| op.is_memory_effect_free(),
+                |op: &Operation, region: &Region| {
+                    op.is_memory_effect_free()
+                        && (op.implements::<dyn ConstantLike>()
+                            || !would_move_into_a_region_that_may_repeat(
+                                op,
+                                Some(region.as_region_ref()),
+                            ))
+                },
                 |mut op: OperationRef, region: RegionRef| {
                     // Move the operation to the beginning of the region's entry block.
                     // This guarantees the preservation of SSA dominance of all of the
@@ -845,24 +856,109 @@ mod tests {
         Ok(())
     }
 
-    /// Operand sinking moves an effect-free definition into the region of an `scf.if`, which is
-    /// executed at most once, next to its only use.
-    #[test]
-    fn operand_sinking_moves_a_definition_into_a_region_executed_at_most_once() -> Result<(), Report>
-    {
-        let text = run(
-            Box::<SinkOperandDefs>::default(),
-            r#"
+    /// The body of a function with a division `%q` before a loop whose body holds an `scf.if`
+    /// whose then-region is the only user of `%q`.
+    fn division_before_a_loop_used_in_an_if_in_its_body() -> &'static str {
+        r#"
     %q = arith.udiv %a, %b;
+    %zero = arith.constant 0 : i32;
+    %count = scf.while %zero before {
+    ^head(%i: i32):
+        %continue = arith.cmpi ult %i, %a;
+        scf.condition %continue, %i : (i1, i32);
+    } after {
+    ^body(%j: i32):
+        test.store %p, %j : (ptr<i32>, i32);
+        %next = scf.if %c then {
+            %y = arith.add %b, %q;
+            scf.yield %y : (i32);
+        } else {
+            scf.yield %j : (i32);
+        } : (i1) -> (i32);
+        scf.yield %next : (i32);
+    } : (i32) -> i32;
+    builtin.ret %count : (i32);"#
+    }
+
+    /// A division defined before a loop whose only use is in the then-region of an `scf.if` in
+    /// the loop's body: the `if` runs its region at most once, but the loop runs the `if` once per
+    /// iteration, so neither sinking pass moves the division into it.
+    #[test]
+    fn sinking_does_not_move_a_division_into_an_if_inside_a_loop() -> Result<(), Report> {
+        for pass in [
+            Box::<SinkOperandDefs>::default() as Box<dyn runic_core::pass::OperationPass>,
+            Box::<ControlFlowSink>::default(),
+        ] {
+            let name = pass.name();
+            let text = run(pass, division_before_a_loop_used_in_an_if_in_its_body())?;
+            let (udiv, start) = (text.find("arith.udiv").unwrap(), text.find("scf.while").unwrap());
+            assert!(udiv < start, "{name}: {text}");
+        }
+        Ok(())
+    }
+
+    /// Both sinking passes move effect-free definitions (an addition, and the division that reads
+    /// it) into the region of an `scf.if`, which is executed at most once, when that region holds
+    /// their only uses.
+    #[test]
+    fn sinking_moves_a_definition_into_a_region_executed_at_most_once() -> Result<(), Report> {
+        let body = r#"
+    %s = arith.add %a, %b;
+    %q = arith.udiv %s, %b;
     %x = scf.if %c then {
         %y = arith.add %b, %q;
         scf.yield %y : (i32);
     } else {
         scf.yield %b : (i32);
     } : (i1) -> (i32);
-    builtin.ret %x : (i32);"#,
-        )?;
-        assert!(text.find("arith.udiv").unwrap() > text.find("scf.if").unwrap(), "{text}");
+    builtin.ret %x : (i32);"#;
+        for pass in [
+            Box::<SinkOperandDefs>::default() as Box<dyn runic_core::pass::OperationPass>,
+            Box::<ControlFlowSink>::default(),
+        ] {
+            let name = pass.name();
+            let text = run(pass, body)?;
+            let start = text.find("scf.if").unwrap();
+            assert!(text.find("arith.add").unwrap() > start, "{name}: {text}");
+            assert!(text.find("arith.udiv").unwrap() > start, "{name}: {text}");
+        }
+        Ok(())
+    }
+
+    /// A division defined inside a loop's body and used only in the then-region of an `scf.if` in
+    /// the same body is moved into that region by both passes: it runs at most once per iteration
+    /// there, as it did before.
+    #[test]
+    fn sinking_moves_a_definition_in_a_loop_body_into_an_if_in_that_body() -> Result<(), Report> {
+        let body = r#"
+    %zero = arith.constant 0 : i32;
+    %count = scf.while %zero before {
+    ^head(%i: i32):
+        %continue = arith.cmpi ult %i, %a;
+        scf.condition %continue, %i : (i1, i32);
+    } after {
+    ^body(%j: i32):
+        %q = arith.udiv %a, %j;
+        test.store %p, %j : (ptr<i32>, i32);
+        %next = scf.if %c then {
+            %y = arith.add %b, %q;
+            scf.yield %y : (i32);
+        } else {
+            scf.yield %j : (i32);
+        } : (i1) -> (i32);
+        scf.yield %next : (i32);
+    } : (i32) -> i32;
+    builtin.ret %count : (i32);"#;
+        for pass in [
+            Box::<SinkOperandDefs>::default() as Box<dyn runic_core::pass::OperationPass>,
+            Box::<ControlFlowSink>::default(),
+        ] {
+            let name = pass.name();
+            let text = run(pass, body)?;
+            let udiv = text.find("arith.udiv").unwrap();
+            assert!(udiv > text.find("scf.if").unwrap(), "{name}: {text}");
+            assert!(udiv < text.find("} else {").unwrap(), "{name}: {text}");
+        }
         Ok(())
     }
 }
