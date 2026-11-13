@@ -5884,3 +5884,59 @@ fn an_empty_radix_literal_is_a_diagnostic() {
         assert!(message.contains(reason), "{layout}: {message}");
     }
 }
+
+/// A data segment's offset is a `u64`, printed as a signed 64-bit integer: an offset at or above
+/// `2^63` prints negative, and parses back from that text and from its unsigned spelling.
+#[test]
+fn a_segment_offset_written_unsigned_above_the_signed_range_parses() {
+    use crate::{
+        dialects::builtin::{ModuleBuilder, Segment},
+        testing::text::describe,
+    };
+
+    let context = Rc::new(Context::default());
+    let parse = |name: &str, source: String| {
+        let config = ParserConfig::new(context.clone());
+        parse::parse_any(config, name, source.clone())
+            .into_result()
+            .unwrap_or_else(|err| panic!("{source}\n{}", describe(&err)))
+    };
+    let offset_of = |module: OperationRef| -> u64 {
+        let module = module.try_downcast_op::<Module>().unwrap();
+        let body = module.borrow().body().as_region_ref();
+        let body = body.borrow();
+        body.entry()
+            .body()
+            .iter()
+            .find_map(|op| op.downcast_ref::<Segment>().map(|segment| segment.offset_in_bytes()))
+            .expect("a segment")
+    };
+    let module = parse("segment.runic", "builtin.module public @m {};".into());
+    let typed = module.try_downcast_op::<Module>().unwrap();
+    let mut builder = ModuleBuilder::new(typed);
+    for offset in [1u64 << 63, u64::MAX] {
+        builder
+            .define_data_segment(offset, [1u8, 2].as_slice(), true, SourceSpan::UNKNOWN)
+            .unwrap();
+    }
+    let printed = format!("{}", module.borrow());
+    let reparsed = parse("segment2.runic", printed.clone());
+    assert_eq!(format!("{}", reparsed.borrow()), printed);
+
+    // The offset as the signed text prints it, and as an unsigned number
+    for (signed, unsigned, offset) in [
+        ("-9223372036854775808", "9223372036854775808", 1u64 << 63),
+        ("-1", "18446744073709551615", u64::MAX),
+    ] {
+        let single = printed
+            .lines()
+            .filter(|line| !line.contains("builtin.segment") || line.contains(signed))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(single.matches("builtin.segment").count(), 1, "{single}");
+        assert_eq!(offset_of(parse("signed.runic", single.clone())), offset);
+        let respelled = single.replace(&format!("<{signed}>"), &format!("<{unsigned}>"));
+        assert_ne!(respelled, single);
+        assert_eq!(offset_of(parse("unsigned.runic", respelled)), offset);
+    }
+}

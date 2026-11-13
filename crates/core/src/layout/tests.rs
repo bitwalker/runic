@@ -1,3 +1,6 @@
+#[cfg(feature = "std")]
+mod conformance;
+
 use alloc::{
     format,
     rc::Rc,
@@ -231,7 +234,7 @@ fn module_source(layout: &str) -> String {
 /// Parses a module stating `layout`; the error is described with its labels.
 fn parse_module(context: &Rc<Context>, layout: &str) -> Result<OperationRef, String> {
     let config = ParserConfig::new(context.clone());
-    parse::parse_any(config, "layout.hir", module_source(layout))
+    parse::parse_any(config, "layout.runic", module_source(layout))
         .into_result()
         .map_err(|err| describe(&err))
 }
@@ -641,7 +644,7 @@ fn an_entry_diagnostic_is_labelled_at_the_entry() {
     let layout = "#builtin.data_layout<little, ptr = 32, ptr<1> = 64 index 72>";
     let source = module_source(layout);
     let config = ParserConfig::new(context());
-    let err = parse::parse_any(config, "layout.hir", source.clone())
+    let err = parse::parse_any(config, "layout.runic", source.clone())
         .into_result()
         .unwrap_err();
     let ranges = crate::testing::label_ranges(err.as_diagnostic());
@@ -668,7 +671,7 @@ fn nested(context: &Rc<Context>, component: &str, module: &str) -> [OperationRef
              builtin.ret;\n        }};\n    }};\n}};"
         );
     let config = ParserConfig::new(context.clone());
-    let component = parse::parse_any(config, "nested.hir", source)
+    let component = parse::parse_any(config, "nested.runic", source)
         .into_result()
         .unwrap_or_else(|err| panic!("{}", describe(&err)));
     let module = first_child(component);
@@ -782,7 +785,7 @@ fn a_world_states_a_specification_through_text() {
     let context = context();
     let source = "builtin.world {\n    builtin.module public @m {\n    };\n};";
     let config = ParserConfig::new(context.clone());
-    let mut world = parse::parse_any(config, "world.hir", source).into_result().unwrap();
+    let mut world = parse::parse_any(config, "world.runic", source).into_result().unwrap();
     set_data_layout_spec(&mut world.borrow_mut(), little32());
     let printed = format!("{}", world.borrow());
     assert!(
@@ -791,7 +794,7 @@ fn a_world_states_a_specification_through_text() {
     );
 
     let config = ParserConfig::new(context.clone());
-    let world = parse::parse_any(config, "world2.hir", printed.clone())
+    let world = parse::parse_any(config, "world2.runic", printed.clone())
         .into_result()
         .unwrap_or_else(|err| panic!("{printed}\n{}", describe(&err)));
     let module = first_child(world);
@@ -824,7 +827,7 @@ fn a_component_and_a_module_state_a_specification_through_text() {
         let printed = format!("{}", component.borrow());
         assert!(printed.contains(stated), "{printed}");
         let config = ParserConfig::new(context.clone());
-        let reparsed = parse::parse_any(config, "reparsed.hir", printed.clone())
+        let reparsed = parse::parse_any(config, "reparsed.runic", printed.clone())
             .into_result()
             .unwrap_or_else(|err| panic!("{printed}\n{}", describe(&err)));
         assert_eq!(stated_spec(reparsed), on_component, "{printed}");
@@ -1430,6 +1433,7 @@ fn the_element_count_of_aggregates() {
 /// A struct interned through `Context::intern_type` skips the check `validate` makes; its layout
 /// is a panic that says so, never a layout.
 #[test]
+#[cfg(feature = "std")]
 fn the_layout_of_a_struct_that_skipped_its_check_panics() {
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
