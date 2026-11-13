@@ -18,7 +18,6 @@ doctest = false
 log.workspace = true
 runic-core.workspace = true
 runic-analysis.workspace = true
-runic-session.workspace = true
 
 [dev-dependencies]
 # NOTE: Use local paths for dev-only dependency to avoid relying on crates.io during packaging

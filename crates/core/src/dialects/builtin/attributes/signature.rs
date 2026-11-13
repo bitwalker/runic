@@ -809,6 +809,28 @@ mod tests {
         assert!(param.is_sret_param());
     }
 
+    /// Names given to `new_with_attrs` in reverse order come out of `attributes()` sorted.
+    #[test]
+    fn a_parameter_built_from_names_in_reverse_order_lists_them_sorted() {
+        let context = Rc::new(crate::Context::default());
+        let zext = context.create_attribute::<ZextAttr, _>(()).as_attribute_ref();
+        let sret = context.create_attribute::<SretAttr, _>(()).as_attribute_ref();
+        let param = AbiParam::new_with_attrs(
+            context.ptr_type(context.i8()),
+            [
+                NamedAttribute::new(interner::symbols::Sret, sret),
+                NamedAttribute::new(interner::symbols::Extend, zext),
+            ],
+        );
+        let names = param.attributes().iter().map(|attr| attr.name.as_str()).collect::<Vec<_>>();
+        assert_eq!(names, ["extend", "sret"]);
+        assert!(AttributeRef::ptr_eq(
+            &param.attribute(interner::symbols::Extend).unwrap(),
+            &zext
+        ));
+        assert!(AttributeRef::ptr_eq(&param.attribute(interner::symbols::Sret).unwrap(), &sret));
+    }
+
     /// `from_parts` holds what it is given; the `_mut` accessors and `set_calling_convention`
     /// change the signature in place.
     #[test]

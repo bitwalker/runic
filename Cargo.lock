@@ -1477,7 +1477,6 @@ dependencies = [
  "runic-dialect-arith",
  "runic-dialect-hir",
  "runic-dialect-scf",
- "runic-session",
 ]
 
 [[package]]

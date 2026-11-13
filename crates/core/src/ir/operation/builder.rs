@@ -4,7 +4,7 @@ use super::state::PendingSuccessorInfo;
 use crate::{
     AsCallableSymbolRef, AsSymbolRef, AttributeRef, AttributeRegistration, BlockRef, Builder,
     KeyedSuccessor, Op, OpBuilder, OperationRef, Report, Spanned, SuccessorInfo, Type,
-    UnsafeIntrusiveEntityRef, ValueRef, attributes::IntoAttributeRef, interner, traits::Terminator,
+    UnsafeIntrusiveEntityRef, ValueRef, interner, traits::Terminator,
 };
 
 /// This is the type-erased version of [OperationBuilder].
@@ -57,21 +57,6 @@ where
     #[inline]
     pub fn with_attr_boxed(&mut self, name: impl Into<interner::Symbol>, attr: AttributeRef) {
         self.op.borrow_mut().set_attribute(name.into(), attr)
-    }
-
-    /// Set attribute `name` on this op to `value`
-    #[inline]
-    pub fn with_property<A, V>(
-        &mut self,
-        name: impl Into<interner::Symbol>,
-        value: V,
-    ) -> Result<(), Report>
-    where
-        A: AttributeRegistration,
-        <A as AttributeRegistration>::Value: From<V>,
-    {
-        let attr = self.context_rc().create_attribute::<A, V>(value);
-        self.op.borrow_mut().set_property(name.into(), attr.into_attribute_ref())
     }
 
     /// Set attribute `name` on this op to `value`

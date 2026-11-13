@@ -1963,7 +1963,7 @@ mod tests {
     }
 
     /// The memory-effect queries on `Operation` for an op that reads, one that writes and one with
-    /// no effect. Pinned before the advice effects were removed, and unchanged by it.
+    /// no effect.
     #[test]
     fn memory_effect_queries_distinguish_read_write_and_no_effect() {
         use crate::{
