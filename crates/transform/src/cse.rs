@@ -1387,6 +1387,88 @@ builtin.function public extern("C") @down_propagate_while() {
             "#
         );
     }
+
+    /// Callees for the call tests: `@reads` and `@reads_too` declare a read of their argument,
+    /// `@unknown` states no effects.
+    const CALLEES: &str = r#"
+    builtin.function public extern("C") @reads(ptr<i32>) -> i32 effects(read(arg 0));
+    builtin.function public extern("C") @reads_too(ptr<i32>) -> i32 effects(read(arg 0));
+    builtin.function public extern("C") @unknown(ptr<i32>) -> i32;"#;
+
+    /// The function `@f(%p: ptr<i32>, %v: i32) -> (i32, i32)` with the body `body`, in a module
+    /// that also holds [CALLEES], after CSE ran on it, as text.
+    fn cse_in_module(body: &str) -> Result<alloc::string::String, runic_core::Report> {
+        use runic_core::{
+            SymbolTable,
+            dialects::builtin::Function,
+            parse::{self, ParserConfig},
+        };
+
+        let context = Rc::new(runic_core::Context::default());
+        let text = format!(
+            "builtin.module public @m {{\n{CALLEES}\nbuiltin.function public extern(\"C\") @f(%p: \
+             ptr<i32>, %v: i32) -> (i32, i32) {{\n{body}\n}};\n}};"
+        );
+        let module = parse::parse::<Module>(ParserConfig::new(context.clone()), "cse", text)
+            .into_result()?;
+        let function = module.borrow().symbol_manager().lookup_op("f").unwrap();
+        let mut passes = PassManager::on::<Function>(context, Nesting::Implicit);
+        passes.add_pass(Box::<CommonSubexpressionElimination>::default());
+        passes.enable_verifier(true);
+        passes.run(function)?;
+        Ok(function.borrow().to_string())
+    }
+
+    /// Two equal calls of a callee that only reads merge into the first.
+    #[test]
+    fn equal_calls_that_only_read_are_merged() -> Result<(), runic_core::Report> {
+        let text = cse_in_module(
+            r#"
+    %1 = builtin.call @reads(%p) : extern("C") (ptr<i32>) -> i32;
+    %2 = builtin.call @reads(%p) : extern("C") (ptr<i32>) -> i32;
+    builtin.ret %1, %2 : (i32, i32);"#,
+        )?;
+        filecheck!(
+            text,
+            r#"
+// CHECK: [[R:%\d+]] = builtin.call @reads(%0) : extern("C") (ptr<i32>) -> i32;
+// CHECK-NEXT: builtin.ret [[R]], [[R]] : (i32, i32);
+            "#
+        );
+        Ok(())
+    }
+
+    /// Calls that read are not merged across a write, across a call with unknown effects, or when
+    /// their callees differ; calls with unknown effects are never merged.
+    #[test]
+    fn calls_are_not_merged_across_writes_unknown_effects_or_other_callees()
+    -> Result<(), runic_core::Report> {
+        let read = r#"builtin.call @reads(%p) : extern("C") (ptr<i32>) -> i32"#;
+        let unknown = r#"builtin.call @unknown(%p) : extern("C") (ptr<i32>) -> i32"#;
+        let read_too = r#"builtin.call @reads_too(%p) : extern("C") (ptr<i32>) -> i32"#;
+        let cases = [
+            (read, "test.store %p, %v : (ptr<i32>, i32);", read),
+            (read, "%3 = builtin.call @unknown(%p) : extern(\"C\") (ptr<i32>) -> i32;", read),
+            (unknown, "", unknown),
+            (read, "", read_too),
+        ];
+        for (first, between, second) in cases {
+            let body = format!(
+                "%1 = {first};\n{between}\n%2 = {second};\nbuiltin.ret %1, %2 : (i32, i32);"
+            );
+            let text = cse_in_module(&body)?;
+            assert_eq!(
+                text.matches("builtin.call").count(),
+                body.matches("builtin.call").count(),
+                "{text}"
+            );
+            assert!(
+                !text.contains("builtin.ret %1, %1") && !text.contains("builtin.ret %2, %2"),
+                "{text}"
+            );
+        }
+        Ok(())
+    }
 }
 
 //------------ TESTS TO FINISH TRANSLATING

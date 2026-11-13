@@ -828,6 +828,71 @@ mod tests {
         Ok(function.as_operation_ref().borrow().to_string())
     }
 
+    /// `run`, for a function `@f` (with the same parameters) in a module that also holds
+    /// `@pure(i32) -> i32 effects()`, `@unknown(i32) -> i32` and
+    /// `@writes(ptr<i32>, i32) -> i32 effects(write(arg 0))`; the text is that of `@f`.
+    fn run_with_callees(
+        pass: Box<dyn runic_core::pass::OperationPass>,
+        body: &str,
+    ) -> Result<alloc::string::String, Report> {
+        use runic_core::{SymbolTable, dialects::builtin::Module};
+
+        let context = Rc::new(Context::default());
+        let text = alloc::format!(
+            "builtin.module public @m {{
+    builtin.function public extern(\"C\") @pure(i32) -> i32 effects();
+    builtin.function public extern(\"C\") @unknown(i32) -> i32;
+    builtin.function public extern(\"C\") @writes(ptr<i32>, i32) -> i32 effects(write(arg 0));
+    builtin.function public extern(\"C\") @f(%c: i1, %a: i32, %b: i32, %p: ptr<i32>) -> i32 {{
+{body}
+    }};
+}};"
+        );
+        let module = parse::parse::<Module>(ParserConfig::new(context.clone()), "sink", text)
+            .into_result()?;
+        let function = module.borrow().symbol_manager().lookup_op("f").unwrap();
+        let mut passes = PassManager::on::<Function>(context, Nesting::Implicit);
+        passes.add_pass(pass);
+        passes.enable_verifier(true);
+        passes.run(function)?;
+        Ok(function.borrow().to_string())
+    }
+
+    /// A call whose only use is in the then-region of an `scf.if` is moved there by both passes
+    /// when its callee declares no effects, and stays where it is when its callee states no
+    /// effects or writes.
+    #[test]
+    fn sinking_moves_a_call_only_when_its_callee_declares_no_effects() -> Result<(), Report> {
+        let calls = [
+            (r#"builtin.call @pure(%a) : extern("C") (i32) -> i32"#, true),
+            (r#"builtin.call @unknown(%a) : extern("C") (i32) -> i32"#, false),
+            (r#"builtin.call @writes(%p, %a) : extern("C") (ptr<i32>, i32) -> i32"#, false),
+        ];
+        for (call, moves) in calls {
+            let body = alloc::format!(
+                r#"
+    %s = {call};
+    %x = scf.if %c then {{
+        %y = arith.add %b, %s;
+        scf.yield %y : (i32);
+    }} else {{
+        scf.yield %b : (i32);
+    }} : (i1) -> (i32);
+    builtin.ret %x : (i32);"#
+            );
+            for pass in [
+                Box::<SinkOperandDefs>::default() as Box<dyn runic_core::pass::OperationPass>,
+                Box::<ControlFlowSink>::default(),
+            ] {
+                let name = pass.name();
+                let text = run_with_callees(pass, &body)?;
+                let moved = text.find("builtin.call").unwrap() > text.find("scf.if").unwrap();
+                assert_eq!(moved, moves, "{name}: {text}");
+            }
+        }
+        Ok(())
+    }
+
     /// A division defined before a loop and used once in its body: neither sinking pass moves it
     /// into the body, where it would execute once per iteration (and trap after the store).
     #[test]

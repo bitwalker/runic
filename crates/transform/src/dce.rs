@@ -113,9 +113,21 @@ impl DeadCodeElimination {
 
 #[cfg(test)]
 mod tests {
-    use alloc::{string::ToString, vec::Vec};
+    use alloc::{
+        boxed::Box,
+        format,
+        rc::Rc,
+        string::{String, ToString},
+        vec::Vec,
+    };
 
-    use runic_core::{SourceSpan, ValueRef, dialects::builtin::BuiltinOpBuilder, testing::Test};
+    use runic_core::{
+        Context, Report, SourceSpan, SymbolTable, ValueRef,
+        dialects::builtin::{BuiltinOpBuilder, Function, Module},
+        parse::{self, ParserConfig},
+        pass::{Nesting, PassManager},
+        testing::Test,
+    };
     use runic_dialect_arith::ArithOpBuilder;
     use runic_dialect_cf::{Assert, ControlFlowOpBuilder};
 
@@ -145,5 +157,50 @@ mod tests {
         let assert = entry.body().iter().find(|op| op.is::<Assert>()).unwrap();
         let assert = assert.downcast_ref::<Assert>().unwrap();
         assert_eq!(assert.message().as_str(), "m");
+    }
+
+    /// The function `@f` with the body `body`, in a module that also holds `declarations`, after
+    /// dead-code elimination ran on it, as text.
+    fn run_in_module(declarations: &str, body: &str) -> Result<String, Report> {
+        let context = Rc::new(Context::default());
+        let text = format!(
+            "builtin.module public @m {{\n{declarations}\nbuiltin.function public extern(\"C\") \
+             @f(%a: i32) {{\n{body}\n}};\n}};"
+        );
+        let module = parse::parse::<Module>(ParserConfig::new(context.clone()), "dce", text)
+            .into_result()?;
+        let function = module.borrow().symbol_manager().lookup_op("f").unwrap();
+        let mut passes = PassManager::on::<Function>(context, Nesting::Implicit);
+        passes.add_pass(Box::<DeadCodeElimination>::default());
+        passes.enable_verifier(true);
+        passes.run(function)?;
+        Ok(function.borrow().to_string())
+    }
+
+    /// An unused call is erased when its callee declares no effects, or only the allocation of
+    /// the call's own result. It is kept, its result unused, when its callee states no effects, and
+    /// when the allocation is not of a value the call defines.
+    #[test]
+    fn unused_calls_are_erased_only_when_their_callees_effects_allow_it() -> Result<(), Report> {
+        let declarations = r#"
+    builtin.function public extern("C") @pure(i32) -> i32 effects();
+    builtin.function public extern("C") @unknown(i32) -> i32;
+    builtin.function public extern("C") @allocates() -> ptr<i8> effects(allocate(result 0));
+    builtin.function public extern("C") @allocates_elsewhere() effects(allocate);"#;
+        let body = r#"
+    %1 = builtin.call @pure(%a) : extern("C") (i32) -> i32;
+    %2 = builtin.call @unknown(%a) : extern("C") (i32) -> i32;
+    %3 = builtin.call @allocates() : extern("C") () -> ptr<i8>;
+    builtin.call @allocates_elsewhere() : extern("C") ();
+    builtin.ret;"#;
+        let text = run_in_module(declarations, body)?;
+        assert!(!text.contains("@pure"), "{text}");
+        assert!(!text.contains("@allocates()"), "{text}");
+        assert!(
+            text.contains("builtin.call @unknown(%0) : extern(\"C\") (i32) -> i32;"),
+            "{text}"
+        );
+        assert!(text.contains("builtin.call @allocates_elsewhere()"), "{text}");
+        Ok(())
     }
 }
