@@ -8,7 +8,7 @@ pub use self::type_component::derive_type_component;
 use self::{attribute::Attribute, ty::DialectType};
 
 pub fn derive_attribute(input: &syn::DeriveInput) -> darling::Result<Attribute> {
-    Attribute::from_derive_input(input)
+    Attribute::from_derive_input(input)?.validate()
 }
 
 pub fn derive_type(input: &syn::DeriveInput) -> darling::Result<DialectType> {

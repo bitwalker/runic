@@ -444,3 +444,48 @@ fn effect_derive_rejects_malformed_fields_before_expansion() {
     };
     assert!(crate::operations::derive_effect_op_interface(&input).is_err());
 }
+
+#[test]
+fn an_attribute_cannot_both_have_no_default_and_give_one() {
+    let input: syn::DeriveInput = syn::parse_quote! {
+        #[attribute(dialect = TestDialect, no_default, default = make_default)]
+        struct Contradictory(bool);
+    };
+    let Err(err) = crate::dialect::derive_attribute(&input) else {
+        panic!("a contradiction is an error");
+    };
+    assert!(err.to_string().contains("`no_default` cannot also give a `default`"), "{err}");
+
+    // Either alone is accepted
+    for input in [
+        syn::parse_quote! { #[attribute(dialect = TestDialect, no_default)] struct A(bool); },
+        syn::parse_quote! { #[attribute(dialect = TestDialect, default = make_default)] struct B(bool); },
+    ] {
+        assert!(crate::dialect::derive_attribute(&input).is_ok());
+    }
+}
+
+#[test]
+fn a_defaulted_property_asserts_that_its_attribute_has_a_default() {
+    let input = syn::parse_quote! {
+        #[operation(dialect = TestDialect)]
+        pub struct Add {
+            #[operand]
+            lhs: AnyInteger,
+            #[attr]
+            #[default]
+            overflow: OverflowAttr,
+            #[attr]
+            required: OverflowAttr,
+        }
+    };
+    let output = crate::operation::derive_operation(input).unwrap().to_string();
+    // One check, for the defaulted property, as an item so that it is always evaluated
+    let condition = quote::quote! {
+        <OverflowAttr as ::runic_core::AttributeRegistration>::HAS_DEFAULT
+    };
+    let check = format!("{} ({condition} ,", quote::quote! { const _: () = assert! });
+    assert_eq!(output.matches("HAS_DEFAULT").count(), 1, "{output}");
+    assert!(output.contains(&check), "{check}\n{output}");
+    assert!(output.contains("the property `overflow` is marked `#[default]`"), "{output}");
+}

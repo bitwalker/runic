@@ -27,8 +27,9 @@ pub struct Attribute {
     /// A function `fn(&Context) -> Value` giving the attribute's default value.
     #[darling(default)]
     default: Option<syn::Path>,
-    /// The attribute has no default value: it is always written with a body, and its
-    /// `create_default` panics.
+    /// The attribute has no default value: it is always written with a body, its
+    /// `create_default` panics, and it cannot be a `#[default]` operation property. It cannot be
+    /// given together with `default`.
     #[darling(default)]
     no_default: bool,
     #[darling(default)]
@@ -40,6 +41,17 @@ pub struct Attribute {
 }
 
 impl Attribute {
+    /// Rejects options that contradict each other: `no_default` with a `default`.
+    pub fn validate(self) -> darling::Result<Self> {
+        if let (true, Some(default)) = (self.no_default, self.default.as_ref()) {
+            return Err(darling::Error::custom(
+                "an attribute marked `no_default` cannot also give a `default`",
+            )
+            .with_span(default));
+        }
+        Ok(self)
+    }
+
     #[allow(unused)]
     pub fn value_type(&self) -> syn::Type {
         syn::Type::Path(syn::TypePath {

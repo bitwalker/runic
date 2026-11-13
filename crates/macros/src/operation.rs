@@ -2169,6 +2169,23 @@ impl quote::ToTokens for OpBuilderFnOnceImpl {
                 self.params.iter().filter(|param| param.default).flat_map(|param| {
                     match &param.param_ty {
                         OpCreateParamType::Attr(OpAttribute { name, ty, .. }) => {
+                            // A property without a default value cannot be defaulted: say so
+                            // when the operation is compiled. An item, not a `const { .. }`
+                            // block, so that it is evaluated whether or not this generic
+                            // builder is ever instantiated.
+                            let message = syn::LitStr::new(
+                                &format!(
+                                    "the property `{name}` is marked `#[default]`, but its \
+                                     attribute has no default value (`no_default`)"
+                                ),
+                                name.span(),
+                            );
+                            let check: syn::Stmt = parse_quote_spanned! { ty.span() =>
+                                const _: () = assert!(
+                                    <#ty as ::runic_core::AttributeRegistration>::HAS_DEFAULT,
+                                    #message
+                                );
+                            };
                             let stmt: syn::Stmt = parse_quote_spanned! { name.span() =>
                                 let #name = ::runic_core::ReadyAttr(
                                     <#ty as ::runic_core::AttributeRegistration>::create_default(
@@ -2176,7 +2193,7 @@ impl quote::ToTokens for OpBuilderFnOnceImpl {
                                     ),
                                 );
                             };
-                            vec![stmt]
+                            vec![check, stmt]
                         }
                         _ => param
                             .all_bindings()

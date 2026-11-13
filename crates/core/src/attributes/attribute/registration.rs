@@ -11,7 +11,8 @@ pub trait AttributeRegistration: Attribute {
     type Value: AttributeValue;
 
     /// False for an attribute kind without a default value, which is always written with a body
-    /// (`#[attribute(.., no_default)]`); its [Self::create_default] panics.
+    /// (`#[attribute(.., no_default)]`); its [Self::create_default] panics. An operation property
+    /// marked `#[default]` whose attribute kind has none fails to compile.
     const HAS_DEFAULT: bool = true;
 
     /// The name of the dialect this attribute is declared part of
