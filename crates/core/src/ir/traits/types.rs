@@ -113,58 +113,21 @@ pub trait OperandRangeRequirementOpInterface: Op {
     fn operand_range_requirement(&self, operand_index: usize) -> OperandRangeRequirement;
 }
 
-/// Describes an operation result whose value range was refined from an input value.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ValueRangeRefinement {
-    pub input: ValueRef,
-    pub result: ValueRef,
-    /// The range checked at runtime, expressed at the result's storage width.
-    pub range: ConstantIntRange,
-}
-
-/// OpInterface for checked cast operations.
-///
-/// Implementing this interface indicates that the operation result is produced by checking the
-/// input value against the output range before materializing the cast result.
-pub trait CheckedCastOpInterface: Op {
-    /// Return a [ValueRangeRefinement], if possible, for `result`
-    fn checked_cast_refinement(&self, result: ValueRef) -> Option<ValueRangeRefinement>;
-}
-
-/// OpInterface for assertion operations that refine a value's range.
-///
-/// Implementing this interface indicates that the operation result is a checked/refined version of
-/// one of the operation's input values.
-pub trait ValueRangeAssertionOpInterface: Op {
-    /// Return a [ValueRangeRefinement], if possible, for `result`
-    fn value_range_assertion(&self, result: ValueRef) -> Option<ValueRangeRefinement>;
-}
-
 /// OpInterface for operations that can infer integer ranges for their results.
 ///
-/// This is the HIR equivalent of MLIR's `InferIntRangeInterface`. Implementations receive the
-/// current operand lattice values and may call `set_result_range` for any result whose range can
-/// be inferred. The sparse dataflow analysis owns joining those inferred ranges into the result
-/// lattices.
+/// This is MLIR's `InferIntRangeInterface`. Implementations receive the current operand lattice
+/// values and may call `set_result_range` for any result whose range can be inferred. The sparse
+/// dataflow analysis owns joining those inferred ranges into the result lattices.
+///
+/// An operation whose result is an operand checked against a range (one that traps unless the
+/// operand lies in it) reports the operand's range refined by the checked one,
+/// [IntegerValueRange::refined_by].
 pub trait InferIntRangeInterface: Op {
     fn infer_result_ranges(
         &self,
         operands: &[IntegerValueRange],
         set_result_range: &mut dyn FnMut(ValueRef, IntegerValueRange),
     );
-}
-
-/// Return the value-range refinement that produces `result`, if `op` has one.
-pub fn operation_result_value_range_refinement(
-    op: &Operation,
-    result: ValueRef,
-) -> Option<ValueRangeRefinement> {
-    op.as_trait::<dyn ValueRangeAssertionOpInterface>()
-        .and_then(|interface| interface.value_range_assertion(result))
-        .or_else(|| {
-            op.as_trait::<dyn CheckedCastOpInterface>()
-                .and_then(|interface| interface.checked_cast_refinement(result))
-        })
 }
 
 /// Op expects all operands to be of the same type

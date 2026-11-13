@@ -91,6 +91,25 @@ pub trait TestOpBuilder<'f, B: ?Sized + Builder> {
         Ok(op.borrow().result().as_value_ref())
     }
 
+    /// `value`, having trapped unless it lies in `umin ..= umax` read as unsigned numbers: a
+    /// `test.check_range` whose bounds are `IntAttr`s of `value`'s type. Each bound is an [Int] as
+    /// wide as a constant of that type.
+    fn check_range(
+        &mut self,
+        value: ValueRef,
+        umin: Int,
+        umax: Int,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        let ty = value.borrow().ty();
+        let context = self.builder().context_rc();
+        let umin = crate::ReadyAttr(context.int_attr(umin, ty));
+        let umax = crate::ReadyAttr(context.int_attr(umax, ty));
+        let op_builder = self.builder_mut().create::<CheckRange, _>(span);
+        let op = op_builder(value, umin, umax)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
     /// Loads a value of the type pointed to by the given pointer
     ///
     /// NOTE: This function will panic if `ptr` is not a pointer typed value

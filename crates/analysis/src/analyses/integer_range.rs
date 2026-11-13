@@ -2,8 +2,7 @@ mod lattice;
 
 use runic_core::{
     AttributeRef, Forward, Operation, ProgramPoint, Report, SmallVec, ValueRef,
-    attributes::IntegerLikeAttr,
-    traits::{InferIntRangeInterface, operation_result_value_range_refinement},
+    attributes::IntegerLikeAttr, traits::InferIntRangeInterface,
 };
 pub use runic_core::{ConstantIntRange, IntegerRangeConfidence, IntegerValueRange};
 
@@ -79,11 +78,6 @@ impl SparseForwardDataFlowAnalysis for IntegerRangeAnalysis {
                     continue;
                 }
                 ConstantRange::NotConstant => {}
-            }
-
-            if let Some(refined_range) = refined_result_range(op, result, operands) {
-                result_lattice.join(&refined_range);
-                continue;
             }
 
             self.set_to_entry_state(result_lattice);
@@ -199,23 +193,6 @@ fn integer_constant_range(attr: AttributeRef) -> Option<IntegerValueRange> {
     let attr = attr.borrow();
     let value = attr.as_attr().as_trait::<dyn IntegerLikeAttr>()?.as_int();
     Some(IntegerValueRange::for_constant(value, attr.ty()))
-}
-
-fn refined_result_range(
-    op: &Operation,
-    result: ValueRef,
-    operands: &[AnalysisStateGuard<'_, IntegerRangeLattice>],
-) -> Option<IntegerValueRange> {
-    let refinement = operation_result_value_range_refinement(op, result)?;
-    let operand_range = op
-        .operands()
-        .iter()
-        .position(|operand| operand.borrow().as_value_ref() == refinement.input)
-        .and_then(|index| operands.get(index))
-        .map(|range| range.value().clone())
-        .unwrap_or_else(IntegerValueRange::uninitialized);
-
-    Some(operand_range.refined_by(&refinement.range))
 }
 
 #[cfg(test)]
