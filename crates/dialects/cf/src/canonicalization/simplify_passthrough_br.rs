@@ -185,7 +185,6 @@ mod tests {
     use core::cell::Cell;
 
     use runic_core::{
-        diagnostics::Uri,
         dialects::builtin::{Function, FunctionRef},
         parse::{self, ParserConfig},
         patterns::{RegionSimplificationLevel, RewriterImpl, RewriterListener},
@@ -229,11 +228,8 @@ mod tests {
     }
 
     fn parse(context: &Rc<Context>, source: &str) -> Result<FunctionRef, Report> {
-        parse::parse::<Function>(
-            ParserConfig::new(context.clone()),
-            Uri::new("passthrough.hir"),
-            source,
-        )
+        parse::parse::<Function>(ParserConfig::new(context.clone()), "passthrough.hir", source)
+            .into_result()
     }
 
     fn rewrite(context: &Rc<Context>, branch: OperationRef) -> Result<bool, Report> {
@@ -261,18 +257,18 @@ mod tests {
         for mixed in [false, true] {
             let context = Rc::new(Context::default());
             let source = if mixed {
-                r#"builtin.function public extern("C") @chain(%c: i1, %a: u32, %b: u64, %d: u32) -> (u32, u64, u32) {
-                cf.cond_br %c ^exit, ^forward(%a, %b, %d : u32, u64, u32) : (i1);
-            ^forward(%x: u32, %y: u64, %z: u32): cf.br ^join(%z, %y, %x : u32, u64, u32);
-            ^exit: builtin.ret %a, %b, %d : (u32, u64, u32);
-            ^join(%p: u32, %q: u64, %r: u32): builtin.ret %p, %q, %r : (u32, u64, u32);
+                r#"builtin.function public extern("C") @chain(%c: i1, %a: i32, %b: i64, %d: i32) -> (i32, i64, i32) {
+                cf.cond_br %c ^exit, ^forward(%a, %b, %d : i32, i64, i32) : (i1);
+            ^forward(%x: i32, %y: i64, %z: i32): cf.br ^join(%z, %y, %x : i32, i64, i32);
+            ^exit: builtin.ret %a, %b, %d : (i32, i64, i32);
+            ^join(%p: i32, %q: i64, %r: i32): builtin.ret %p, %q, %r : (i32, i64, i32);
             };"#
             } else {
-                r#"builtin.function public extern("C") @chain(%c: i1, %a: u32, %b: u64) -> (u32, u64) {
+                r#"builtin.function public extern("C") @chain(%c: i1, %a: i32, %b: i64) -> (i32, i64) {
                 cf.cond_br %c ^exit, ^forward : (i1);
             ^forward: cf.br ^join;
-            ^exit: builtin.ret %a, %b : (u32, u64);
-            ^join: builtin.ret %a, %b : (u32, u64);
+            ^exit: builtin.ret %a, %b : (i32, i64);
+            ^join: builtin.ret %a, %b : (i32, i64);
             };"#
             };
             let function = parse(&context, source)?;
@@ -326,22 +322,22 @@ mod tests {
     fn passthrough_conditional_refuses_shared_duplicate_and_converging_forwarders()
     -> Result<(), Report> {
         let sources = [
-            r#"builtin.function public extern("C") @shared(%c: i1, %a: u32, %b: u64, %d: u32) -> (u32, u64) {
-                cf.cond_br %c ^forward(%a, %b : u32, u64), ^other : (i1);
-            ^other: cf.br ^forward(%d, %b : u32, u64);
-            ^forward(%x: u32, %y: u64): cf.br ^join(%x, %y : u32, u64);
-            ^join(%p: u32, %q: u64): builtin.ret %p, %q : (u32, u64);
+            r#"builtin.function public extern("C") @shared(%c: i1, %a: i32, %b: i64, %d: i32) -> (i32, i64) {
+                cf.cond_br %c ^forward(%a, %b : i32, i64), ^other : (i1);
+            ^other: cf.br ^forward(%d, %b : i32, i64);
+            ^forward(%x: i32, %y: i64): cf.br ^join(%x, %y : i32, i64);
+            ^join(%p: i32, %q: i64): builtin.ret %p, %q : (i32, i64);
             };"#,
-            r#"builtin.function public extern("C") @duplicate(%c: i1, %a: u32, %b: u64, %d: u32) -> (u32, u64) {
-                cf.cond_br %c ^forward(%a, %b : u32, u64), ^forward(%d, %b : u32, u64) : (i1);
-            ^forward(%x: u32, %y: u64): cf.br ^join(%x, %y : u32, u64);
-            ^join(%p: u32, %q: u64): builtin.ret %p, %q : (u32, u64);
+            r#"builtin.function public extern("C") @duplicate(%c: i1, %a: i32, %b: i64, %d: i32) -> (i32, i64) {
+                cf.cond_br %c ^forward(%a, %b : i32, i64), ^forward(%d, %b : i32, i64) : (i1);
+            ^forward(%x: i32, %y: i64): cf.br ^join(%x, %y : i32, i64);
+            ^join(%p: i32, %q: i64): builtin.ret %p, %q : (i32, i64);
             };"#,
-            r#"builtin.function public extern("C") @converging(%c: i1, %a: u32, %b: u64, %d: u32) -> (u32, u64) {
+            r#"builtin.function public extern("C") @converging(%c: i1, %a: i32, %b: i64, %d: i32) -> (i32, i64) {
                 cf.cond_br %c ^left, ^right : (i1);
-            ^left: cf.br ^join(%a, %b : u32, u64);
-            ^right: cf.br ^join(%d, %b : u32, u64);
-            ^join(%p: u32, %q: u64): builtin.ret %p, %q : (u32, u64);
+            ^left: cf.br ^join(%a, %b : i32, i64);
+            ^right: cf.br ^join(%d, %b : i32, i64);
+            ^join(%p: i32, %q: i64): builtin.ret %p, %q : (i32, i64);
             };"#,
         ];
         for source in sources {
@@ -392,12 +388,12 @@ mod tests {
         let context = Rc::new(Context::default());
         let function = parse(
             &context,
-            r#"builtin.function public extern("C") @shared(%c: i1, %a: u32, %b: u64, %d: u32) -> (u64, u32) {
+            r#"builtin.function public extern("C") @shared(%c: i1, %a: i32, %b: i64, %d: i32) -> (i64, i32) {
             cf.cond_br %c ^left, ^right : (i1);
-        ^left: cf.br ^forward(%a, %b : u32, u64);
-        ^right: cf.br ^forward(%d, %b : u32, u64);
-        ^forward(%x: u32, %y: u64): cf.br ^join(%y, %x : u64, u32);
-        ^join(%p: u64, %q: u32): builtin.ret %p, %q : (u64, u32);
+        ^left: cf.br ^forward(%a, %b : i32, i64);
+        ^right: cf.br ^forward(%d, %b : i32, i64);
+        ^forward(%x: i32, %y: i64): cf.br ^join(%y, %x : i64, i32);
+        ^join(%p: i64, %q: i32): builtin.ret %p, %q : (i64, i32);
         };"#,
         )?;
         let entry = function.borrow().body().entry_block_ref().unwrap();
@@ -459,10 +455,10 @@ mod tests {
         let context = Rc::new(Context::default());
         let function = parse(
             &context,
-            r#"builtin.function public extern("C") @chain(%a: u32, %b: u64) -> (u64, u32) {
-            cf.br ^forward(%a, %b : u32, u64);
-        ^forward(%x: u32, %y: u64): cf.br ^join(%y, %x : u64, u32);
-        ^join(%p: u64, %q: u32): builtin.ret %p, %q : (u64, u32);
+            r#"builtin.function public extern("C") @chain(%a: i32, %b: i64) -> (i64, i32) {
+            cf.br ^forward(%a, %b : i32, i64);
+        ^forward(%x: i32, %y: i64): cf.br ^join(%y, %x : i64, i32);
+        ^join(%p: i64, %q: i32): builtin.ret %p, %q : (i64, i32);
         };"#,
         )?;
         let entry = function.borrow().body().entry_block_ref().unwrap();
@@ -478,21 +474,21 @@ mod tests {
     fn passthrough_never_retires_initial_entry() -> Result<(), Report> {
         for conditional in [false, true] {
             let context = Rc::new(Context::default());
-            let source = r#"builtin.function public extern("C") @entry(%a: u32, %b: u64) -> (u32, u64) {
-                cf.br ^join(%a, %b : u32, u64);
-            ^join(%x: u32, %y: u64): builtin.ret %x, %y : (u32, u64);
+            let source = r#"builtin.function public extern("C") @entry(%a: i32, %b: i64) -> (i32, i64) {
+                cf.br ^join(%a, %b : i32, i64);
+            ^join(%x: i32, %y: i64): builtin.ret %x, %y : (i32, i64);
             ^source:
                 %cond = arith.constant 1 : i1;
-                %a2 = arith.constant 13 : u32;
-                %b2 = arith.constant 29 : u64;
-                cf.br ^placeholder(%a2, %b2 : u32, u64);
-            ^placeholder(%p: u32, %q: u64): builtin.ret %p, %q : (u32, u64);
+                %a2 = arith.constant 13 : i32;
+                %b2 = arith.constant 29 : i64;
+                cf.br ^placeholder(%a2, %b2 : i32, i64);
+            ^placeholder(%p: i32, %q: i64): builtin.ret %p, %q : (i32, i64);
             };"#;
             let source = if conditional {
                 source.replace(
-                    "cf.br ^placeholder(%a2, %b2 : u32, u64);",
-                    "cf.cond_br %cond ^placeholder(%a2, %b2 : u32, u64), ^exit : (i1);
-^exit: builtin.ret %a2, %b2 : (u32, u64);",
+                    "cf.br ^placeholder(%a2, %b2 : i32, i64);",
+                    "cf.cond_br %cond ^placeholder(%a2, %b2 : i32, i64), ^exit : (i1);
+^exit: builtin.ret %a2, %b2 : (i32, i64);",
                 )
             } else {
                 source.into()

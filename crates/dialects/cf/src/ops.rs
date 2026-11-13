@@ -3,7 +3,7 @@ use alloc::{rc::Rc, vec::Vec};
 use runic_core::{
     attributes::IntegerLikeAttr,
     derive::{EffectOpInterface, OpParser, OpPrinter, operation},
-    dialects::builtin::attributes::{BoolAttr, U32Attr},
+    dialects::builtin::attributes::I32Attr,
     effects::*,
     matchers::Matcher,
     patterns::RewritePatternSet,
@@ -22,19 +22,12 @@ use crate::ControlFlowDialect;
     implements(
         BranchOpInterface,
         MemoryEffectOpInterface,
-        OperandRangeRequirementOpInterface,
         OpPrinter,
     )
 )]
 pub struct Br {
     #[successor]
     target: Successor,
-}
-
-impl OperandRangeRequirementOpInterface for Br {
-    fn operand_range_requirement(&self, _operand_index: usize) -> OperandRangeRequirement {
-        OperandRangeRequirement::None
-    }
 }
 
 impl Canonicalizable for Br {
@@ -56,8 +49,16 @@ impl BranchOpInterface for Br {
     }
 }
 
+/// The value of a constant `i1` condition: any integer-like attribute (an `IntAttr` or a
+/// `BoolAttr`) read with [IntegerLikeAttr::as_int], or `None` for any other attribute (poison, say).
+fn constant_condition(attr: &AttributeRef) -> Option<bool> {
+    let attr = attr.borrow();
+    let value = attr.as_attr().as_trait::<dyn IntegerLikeAttr>()?.as_int();
+    Some(!value.is_zero())
+}
+
 /// An unstructured control flow primitive representing a conditional branch to either `then_dest`
-/// or `else_dest` depending on the value of `condition`, a boolean value.
+/// or `else_dest` depending on the value of `condition`, an `i1`.
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
 #[operation(
     dialect = ControlFlowDialect,
@@ -65,7 +66,6 @@ impl BranchOpInterface for Br {
     implements(
         BranchOpInterface,
         MemoryEffectOpInterface,
-        OperandRangeRequirementOpInterface,
         OpPrinter,
     )
 )]
@@ -76,15 +76,6 @@ pub struct CondBr {
     then_dest: Successor,
     #[successor]
     else_dest: Successor,
-}
-
-impl OperandRangeRequirementOpInterface for CondBr {
-    fn operand_range_requirement(&self, operand_index: usize) -> OperandRangeRequirement {
-        match operand_index {
-            0 => OperandRangeRequirement::Required(ValueRangeConstraint::Type(Type::I1)),
-            _ => OperandRangeRequirement::None,
-        }
-    }
 }
 
 impl Canonicalizable for CondBr {
@@ -103,11 +94,7 @@ impl BranchOpInterface for CondBr {
         &self,
         operands: &[Option<AttributeRef>],
     ) -> Option<SuccessorInfo> {
-        let value = operands[0].as_ref()?.borrow();
-        let cond = value.value().downcast_ref::<bool>().copied().unwrap_or_else(|| {
-            panic!("expected boolean for '{}' condition, got: {:?}", self.name(), value)
-        });
-
+        let cond = constant_condition(operands[0].as_ref()?)?;
         Some(if cond {
             self.successors()[0]
         } else {
@@ -131,26 +118,16 @@ impl BranchOpInterface for CondBr {
     implements(
         BranchOpInterface,
         MemoryEffectOpInterface,
-        OperandRangeRequirementOpInterface,
         OpPrinter,
     )
 )]
 pub struct Switch {
     #[operand]
-    selector: UInt32,
+    selector: Int32,
     #[successors(keyed)]
     cases: SwitchCase,
     #[successor]
     fallback: Successor,
-}
-
-impl OperandRangeRequirementOpInterface for Switch {
-    fn operand_range_requirement(&self, operand_index: usize) -> OperandRangeRequirement {
-        match operand_index {
-            0 => OperandRangeRequirement::Required(ValueRangeConstraint::Type(Type::U32)),
-            _ => OperandRangeRequirement::None,
-        }
-    }
 }
 
 impl Canonicalizable for Switch {
@@ -170,21 +147,20 @@ impl BranchOpInterface for Switch {
         &self,
         operands: &[Option<AttributeRef>],
     ) -> Option<SuccessorInfo> {
-        let attr = operands[0].as_ref()?.borrow();
-        let selector = if let Some(selector) = attr.downcast_ref::<U32Attr>() {
-            *selector.as_value()
-        } else if let Some(selector) = attr.as_attr().as_trait::<dyn IntegerLikeAttr>() {
-            selector
-                .as_immediate()
-                .as_u32()
-                .expect("invalid selector value for 'cf.switch'")
-        } else {
-            panic!("unsupported selector value type for '{}', got: {:?}", self.name(), attr)
+        // The selector and the keys are compared as 32-bit patterns: a selector constant
+        // `0xffff_ffff` selects the key `-1`.
+        let selector = {
+            let attr = operands[0].as_ref()?.borrow();
+            let selector = attr.as_attr().as_trait::<dyn IntegerLikeAttr>()?.as_int();
+            if selector.width() != 32 {
+                return None;
+            }
+            selector.unsigned() as u32
         };
 
         for switch_case in self.cases().iter() {
             let key = *switch_case.key();
-            if selector == key {
+            if selector == key as u32 {
                 return Some(*switch_case.info());
             }
         }
@@ -198,14 +174,14 @@ impl BranchOpInterface for Switch {
 /// operation.
 #[derive(Debug, Clone)]
 pub struct SwitchCase {
-    pub value: UnsafeIntrusiveEntityRef<U32Attr>,
+    pub value: UnsafeIntrusiveEntityRef<I32Attr>,
     pub successor: BlockRef,
     pub arguments: Vec<ValueRef>,
 }
 
 impl SwitchCase {
-    pub fn create(value: u32, successor: BlockRef, arguments: Vec<ValueRef>) -> Self {
-        let value = successor.borrow().context_rc().create_attribute::<U32Attr, _>(value);
+    pub fn create(value: i32, successor: BlockRef, arguments: Vec<ValueRef>) -> Self {
+        let value = successor.borrow().context_rc().create_attribute::<I32Attr, _>(value);
         Self {
             value,
             successor,
@@ -216,25 +192,25 @@ impl SwitchCase {
 
 #[doc(hidden)]
 pub struct SwitchCaseRef<'a> {
-    pub value: UnsafeIntrusiveEntityRef<U32Attr>,
+    pub value: UnsafeIntrusiveEntityRef<I32Attr>,
     pub successor: BlockOperandRef,
     pub arguments: OpOperandRange<'a>,
 }
 
 #[doc(hidden)]
 pub struct SwitchCaseMut<'a> {
-    pub value: UnsafeIntrusiveEntityRef<U32Attr>,
+    pub value: UnsafeIntrusiveEntityRef<I32Attr>,
     pub successor: BlockOperandRef,
     pub arguments: OpOperandRangeMut<'a>,
 }
 
 impl KeyedSuccessor for SwitchCase {
-    type Key = u32;
-    type KeyStorage = U32Attr;
+    type Key = i32;
+    type KeyStorage = I32Attr;
     type Repr<'a> = SwitchCaseRef<'a>;
     type ReprMut<'a> = SwitchCaseMut<'a>;
 
-    fn key(&self) -> u32 {
+    fn key(&self) -> i32 {
         *self.value.borrow().as_value()
     }
 
@@ -267,7 +243,7 @@ impl KeyedSuccessor for SwitchCase {
     }
 }
 
-/// Choose a value based on a boolean condition
+/// Choose one of two integers of one type based on an `i1` condition
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
 #[operation(
     dialect = ControlFlowDialect,
@@ -286,7 +262,7 @@ pub struct Select {
 
 impl InferTypeOpInterface for Select {
     fn infer_return_types(&mut self, _context: &Context) -> Result<(), Report> {
-        let ty = self.first().ty().clone();
+        let ty = self.first().ty();
         self.result_mut().set_type(ty);
         Ok(())
     }
@@ -341,10 +317,10 @@ impl Foldable for Select {
         if self.fold_degenerate_arms(&first, &second, results).is_ok() {
             return FoldResult::Ok(());
         }
-        if let Some(value) =
-            matchers::foldable_operand_of::<BoolAttr>().matches(&self.cond().as_operand_ref())
+        if let Some(cond) = matchers::foldable_operand()
+            .matches(&self.cond().as_operand_ref())
+            .and_then(|attr| constant_condition(&attr))
         {
-            let cond = *value.borrow().as_value();
             let maybe_folded = if cond {
                 matchers::foldable_operand()
                     .matches(&self.first().as_operand_ref())
@@ -375,10 +351,7 @@ impl Foldable for Select {
         if self.fold_degenerate_arms(&operands[1], &operands[2], results).is_ok() {
             return FoldResult::Ok(());
         }
-        if let Some(cond) = operands[0]
-            .as_ref()
-            .and_then(|o| o.borrow().value().downcast_ref::<bool>().copied())
-        {
+        if let Some(cond) = operands[0].as_ref().and_then(constant_condition) {
             let maybe_folded = if cond {
                 operands[1]
                     .map(OpFoldResult::Attribute)
@@ -403,9 +376,8 @@ mod tests {
     use alloc::{format, string::String, vec, vec::Vec};
 
     use runic_core::{
-        Type,
         diagnostics::Report,
-        dialects::builtin::Ret,
+        dialects::builtin::{BuiltinOpBuilder, Ret, attributes::BoolAttr},
         print::AsmPrinter,
         testing::{Test, parse_function_fixpoint},
     };
@@ -415,77 +387,23 @@ mod tests {
     use crate::ControlFlowOpBuilder;
 
     #[test]
-    fn branch_range_requirements_allow_forwarded_values() {
-        let mut test = Test::new("forward", &[Type::U32], &[]);
-        let value = test.function().borrow().entry_block().borrow().arguments()[0] as ValueRef;
-        let mut builder = test.function_builder();
-        let target = builder.create_block();
-        builder.append_block_param(target, Type::U32, SourceSpan::UNKNOWN);
-        let branch = builder.br(target, [value], SourceSpan::UNKNOWN).unwrap();
-        assert_eq!(operation_operand_range_requirement(branch.borrow().as_operation(), 0), None);
-    }
-
-    #[test]
-    fn conditional_branch_range_requirements_check_only_the_condition() {
-        let mut test = Test::new("forward", &[Type::I1, Type::U32], &[]);
-        let entry = test.function().borrow().entry_block();
-        let condition = entry.borrow().arguments()[0] as ValueRef;
-        let value = entry.borrow().arguments()[1] as ValueRef;
-        let mut builder = test.function_builder();
-        let target = builder.create_block();
-        builder.append_block_param(target, Type::U32, SourceSpan::UNKNOWN);
-        let branch = builder
-            .cond_br(condition, target, [value], target, [value], SourceSpan::UNKNOWN)
-            .unwrap();
-        let branch = branch.borrow();
-        assert_eq!(branch.num_operands(), 3);
-        assert_eq!(
-            operation_operand_range_requirement(branch.as_operation(), 0),
-            Some(ValueRangeConstraint::Type(Type::I1))
-        );
-        assert_eq!(operation_operand_range_requirement(branch.as_operation(), 1), None);
-        assert_eq!(operation_operand_range_requirement(branch.as_operation(), 2), None);
-    }
-
-    #[test]
-    fn switch_range_requirements_check_only_the_selector() {
-        let mut test = Test::new("forward", &[Type::U32], &[]);
-        let selector = test.function().borrow().entry_block().borrow().arguments()[0] as ValueRef;
-        let mut builder = test.function_builder();
-        let target = builder.create_block();
-        builder.append_block_param(target, Type::U32, SourceSpan::UNKNOWN);
-        let cases = [SwitchCase::create(1, target, vec![selector])];
-        let switch = builder
-            .switch(selector, cases, target, [selector], SourceSpan::UNKNOWN)
-            .unwrap();
-        let switch = switch.borrow();
-        assert_eq!(switch.num_operands(), 3);
-        assert_eq!(
-            operation_operand_range_requirement(switch.as_operation(), 0),
-            Some(ValueRangeConstraint::Type(Type::U32))
-        );
-        assert_eq!(operation_operand_range_requirement(switch.as_operation(), 1), None);
-        assert_eq!(operation_operand_range_requirement(switch.as_operation(), 2), None);
-    }
-
-    #[test]
     fn switch_building() {
-        let mut test = Test::new("foo", &[Type::U32], &[]);
+        let mut test = Test::new("foo", |cx| ([cx.i32()], []));
         let context = test.context_rc();
         let selector = test.function().borrow().entry_block().borrow().arguments()[0] as ValueRef;
         let mut builder = test.function_builder();
         let block2 = builder.create_block();
         let block3 = builder.create_block();
-        builder.append_block_param(block3, Type::U32, SourceSpan::UNKNOWN);
+        builder.append_block_param(block3, context.i32(), SourceSpan::UNKNOWN);
         let fallback = builder.create_block();
         let cases = vec![
             SwitchCase {
-                value: context.create_attribute::<U32Attr, _>(1u32),
+                value: context.create_attribute::<I32Attr, _>(1i32),
                 successor: block2,
                 arguments: vec![],
             },
             SwitchCase {
-                value: context.create_attribute::<U32Attr, _>(2u32),
+                value: context.create_attribute::<I32Attr, _>(2i32),
                 successor: block3,
                 arguments: vec![selector],
             },
@@ -497,23 +415,20 @@ mod tests {
         let cases = switch_op.cases();
         let block2_case = cases.get(0).unwrap();
         assert_eq!(block2_case.block(), block2);
-        assert_eq!(*block2_case.key(), 1u32);
+        assert_eq!(*block2_case.key(), 1i32);
         let block3_case = cases.get(1).unwrap();
         assert_eq!(block3_case.block(), block3);
-        assert_eq!(*block3_case.key(), 2u32);
+        assert_eq!(*block3_case.key(), 2i32);
         assert_eq!(block3_case.arguments().len(), 1);
         assert_eq!(block3_case.arguments()[0].borrow().as_value_ref(), selector);
     }
 
-    /// Regression test for https://github.com/0xMiden/compiler/issues/1084.
-    ///
-    /// A `cf.switch` built with an empty `cases` list must still place the fallback successor
-    /// in its own group. Previously, the builder routed the fallback into group 0 when the
-    /// prior keyed-successor group was empty, causing `Switch::fallback()` to panic with
-    /// `index out of bounds` in the accessor for group 1.
+    /// A `cf.switch` built with an empty `cases` list still places the fallback successor in its
+    /// own group (group 1), after the empty keyed-successor group, so `Switch::fallback()` finds
+    /// it.
     #[test]
     fn switch_building_with_empty_cases() {
-        let mut test = Test::new("foo", &[Type::U32], &[]);
+        let mut test = Test::new("foo", |cx| ([cx.i32()], []));
         let selector = test.function().borrow().entry_block().borrow().arguments()[0] as ValueRef;
         let mut builder = test.function_builder();
         let fallback = builder.create_block();
@@ -532,16 +447,16 @@ mod tests {
     fn switch_building_with_more_than_255_cases_and_arguments() {
         const NUM_CASES: usize = 300;
 
-        let mut test = Test::new("foo", &[Type::U32], &[]);
+        let mut test = Test::new("foo", |cx| ([cx.i32()], []));
         let context = test.context_rc();
         let selector = test.function().borrow().entry_block().borrow().arguments()[0] as ValueRef;
         let mut builder = test.function_builder();
         let dest = builder.create_block();
-        builder.append_block_param(dest, Type::U32, SourceSpan::UNKNOWN);
+        builder.append_block_param(dest, context.i32(), SourceSpan::UNKNOWN);
         let fallback = builder.create_block();
         let cases = (0..NUM_CASES)
             .map(|i| SwitchCase {
-                value: context.create_attribute::<U32Attr, _>(i as u32),
+                value: context.create_attribute::<I32Attr, _>(i as i32),
                 successor: dest,
                 arguments: vec![selector],
             })
@@ -555,7 +470,7 @@ mod tests {
         assert_eq!(cases.len(), NUM_CASES);
         let last_case = cases.get(NUM_CASES - 1).unwrap();
         assert_eq!(last_case.block(), dest);
-        assert_eq!(*last_case.key(), (NUM_CASES - 1) as u32);
+        assert_eq!(*last_case.key(), (NUM_CASES - 1) as i32);
         assert_eq!(last_case.arguments().len(), 1);
         assert_eq!(last_case.arguments()[0].borrow().as_value_ref(), selector);
         assert_eq!(switch_op.operands().all().len(), NUM_CASES + 1);
@@ -565,15 +480,15 @@ mod tests {
     /// zero-argument fallback, all targeting one block.
     fn wide_switch_source(num_cases: usize) -> String {
         let cases = (0..num_cases)
-            .map(|i| format!("#builtin.u32<{i}> -> ^dest"))
+            .map(|i| format!("#builtin.i32<{i}> -> ^dest"))
             .collect::<Vec<_>>()
             .join(", ");
         format!(
             "\
-builtin.function public extern(\"C\") @wide(%s: u32) -> u32 {{
-    cf.switch %s [{cases}], ^dest : (u32);
+builtin.function public extern(\"C\") @wide(%s: i32) -> i32 {{
+    cf.switch %s [{cases}], ^dest : (i32);
 ^dest:
-    builtin.ret %s : (u32);
+    builtin.ret %s : (i32);
 }};"
         )
     }
@@ -586,10 +501,9 @@ builtin.function public extern(\"C\") @wide(%s: u32) -> u32 {{
         let context = Rc::new(Context::default());
         let config = runic_core::parse::ParserConfig::new(context.clone());
         let function = runic_core::parse::parse::<runic_core::dialects::builtin::Function>(
-            config,
-            runic_core::diagnostics::Uri::new(name),
-            source,
-        )?;
+            config, name, source,
+        )
+        .into_result()?;
         Ok((context, function))
     }
 
@@ -652,10 +566,10 @@ builtin.function public extern(\"C\") @wide(%s: u32) -> u32 {{
     fn parse_generic_br_with_bare_successor() -> Result<(), Report> {
         let context = Rc::new(Context::default());
         let source = r#"
-builtin.function public extern("C") @branch(%a: u32) -> u32 {
+builtin.function public extern("C") @branch(%a: i32) -> i32 {
     "cf.br"()[^dest] : () -> ();
 ^dest:
-    builtin.ret %a : (u32);
+    builtin.ret %a : (i32);
 };"#;
         let (function, _) = parse_function_fixpoint(&context, "parse_generic_br.hir", source)?;
         let function = function.borrow();
@@ -669,7 +583,7 @@ builtin.function public extern("C") @branch(%a: u32) -> u32 {
         assert_eq!(returned_value(target.successor()), arg);
 
         let flags = Default::default();
-        let mut printer = AsmPrinter::new(context.clone(), &flags);
+        let mut printer = AsmPrinter::root(context.clone(), &flags);
         printer.print_operation_generic(branch.as_operation());
         expect![[r#""cf.br"() [ ^block2 ] : () -> ();"#]]
             .assert_eq(&format!("{}", printer.finish()));
@@ -680,12 +594,12 @@ builtin.function public extern("C") @branch(%a: u32) -> u32 {
     fn parse_generic_cond_br_with_bare_successors() -> Result<(), Report> {
         let context = Rc::new(Context::default());
         let source = r#"
-builtin.function public extern("C") @branch(%c: i1, %a: u32, %b: u32) -> u32 {
+builtin.function public extern("C") @branch(%c: i1, %a: i32, %b: i32) -> i32 {
     "cf.cond_br"(%c)[^yes, ^no] : (i1) -> ();
 ^yes:
-    builtin.ret %a : (u32);
+    builtin.ret %a : (i32);
 ^no:
-    builtin.ret %b : (u32);
+    builtin.ret %b : (i32);
 };"#;
         let (function, _) = parse_function_fixpoint(&context, "parse_generic_cond_br.hir", source)?;
         let function = function.borrow();
@@ -702,7 +616,7 @@ builtin.function public extern("C") @branch(%c: i1, %a: u32, %b: u32) -> u32 {
         assert_eq!(returned_value(else_dest.successor()), entry.arguments()[2] as ValueRef);
 
         let flags = Default::default();
-        let mut printer = AsmPrinter::new(context.clone(), &flags);
+        let mut printer = AsmPrinter::root(context.clone(), &flags);
         printer.print_operation_generic(branch.as_operation());
         expect![[r#""cf.cond_br"(%0) [ ^block2, ^block3 ] : i1 -> ();"#]]
             .assert_eq(&format!("{}", printer.finish()));
@@ -712,7 +626,6 @@ builtin.function public extern("C") @branch(%c: i1, %a: u32, %b: u32) -> u32 {
     #[test]
     fn parse_generic_branches_reject_incorrect_successor_counts() {
         use runic_core::{
-            diagnostics::Uri,
             dialects::builtin::Function,
             parse::{ParserConfig, parse},
         };
@@ -736,9 +649,10 @@ builtin.function public extern("C") @branch(%c: i1, %a: u32, %b: u32) -> u32 {
             );
             let error = parse::<Function>(
                 ParserConfig::new(context.clone()),
-                Uri::new("parse_generic_successor_count.hir"),
+                "parse_generic_successor_count.hir",
                 &source,
             )
+            .into_result()
             .err()
             .expect("incorrect successor counts must be rejected during parsing");
             let message = format!("{error}");
@@ -749,7 +663,6 @@ builtin.function public extern("C") @branch(%c: i1, %a: u32, %b: u32) -> u32 {
     #[test]
     fn parse_generic_cond_br_rejects_incorrect_operand_counts() {
         use runic_core::{
-            diagnostics::Uri,
             dialects::builtin::Function,
             parse::{ParserConfig, parse},
         };
@@ -768,9 +681,10 @@ builtin.function public extern("C") @branch(%c: i1, %a: u32, %b: u32) -> u32 {
             );
             let error = parse::<Function>(
                 ParserConfig::new(context.clone()),
-                Uri::new("parse_generic_operand_count.hir"),
+                "parse_generic_operand_count.hir",
                 &source,
             )
+            .into_result()
             .err()
             .expect("incorrect operand counts must be rejected");
             let message = format!("{error}");
@@ -781,19 +695,18 @@ builtin.function public extern("C") @branch(%c: i1, %a: u32, %b: u32) -> u32 {
     #[test]
     fn parse_cond_br_rejects_non_boolean_condition() {
         use runic_core::{
-            diagnostics::Uri,
             dialects::builtin::Function,
             parse::{ParserConfig, parse},
         };
 
         for branch in [
-            r#""cf.cond_br"(%c)[^yes, ^no] : (u32) -> ();"#,
-            "cf.cond_br %c ^yes, ^no : (u32);",
+            r#""cf.cond_br"(%c)[^yes, ^no] : (i32) -> ();"#,
+            "cf.cond_br %c ^yes, ^no : (i32);",
         ] {
             let context = Rc::new(Context::default());
             context.get_or_register_dialect::<ControlFlowDialect>();
             let source = format!(
-                r#"builtin.function public extern("C") @branch(%c: u32) {{
+                r#"builtin.function public extern("C") @branch(%c: i32) {{
     {branch}
 ^yes:
     builtin.ret;
@@ -803,22 +716,22 @@ builtin.function public extern("C") @branch(%c: i1, %a: u32, %b: u32) -> u32 {
             );
             let error = parse::<Function>(
                 ParserConfig::new(context.clone()),
-                Uri::new("parse_non_boolean_condition.hir"),
+                "parse_non_boolean_condition.hir",
                 &source,
             )
+            .into_result()
             .err()
             .expect("non-boolean branch conditions must be rejected");
             let message = format!("{error}");
             assert!(message.contains("invalid operand"), "{message}");
             assert!(message.contains("1-bit integral type"), "{message}");
-            assert!(message.contains("got u32"), "{message}");
+            assert!(message.contains("got i32"), "{message}");
         }
     }
 
     #[test]
     fn parse_generic_switch_rejects_unsupported_successor_layout() {
         use runic_core::{
-            diagnostics::Uri,
             dialects::builtin::Function,
             parse::{ParserConfig, parse},
         };
@@ -829,17 +742,18 @@ builtin.function public extern("C") @branch(%c: i1, %a: u32, %b: u32) -> u32 {
             let context = Rc::new(Context::default());
             context.get_or_register_dialect::<ControlFlowDialect>();
             let source = format!(
-                r#"builtin.function public extern("C") @branch(%s: u32) -> u32 {{
-    "cf.switch"(%s){successors} : (u32) -> ();
+                r#"builtin.function public extern("C") @branch(%s: i32) -> i32 {{
+    "cf.switch"(%s){successors} : (i32) -> ();
 ^dest:
-    builtin.ret %s : (u32);
+    builtin.ret %s : (i32);
 }};"#
             );
             let Err(error) = parse::<Function>(
                 ParserConfig::new(context.clone()),
-                Uri::new("parse_generic_switch.hir"),
+                "parse_generic_switch.hir",
                 source,
-            ) else {
+            )
+            .into_result() else {
                 panic!("expected generic cf.switch with successors '{successors}' to be rejected");
             };
             let message = format!("{error}");
@@ -859,21 +773,21 @@ builtin.function public extern("C") @branch(%c: i1, %a: u32, %b: u32) -> u32 {
     fn parse_cond_br_with_bare_successors() -> Result<(), Report> {
         let context = Rc::new(Context::default());
         let source = "\
-builtin.function public extern(\"C\") @branch(%c: i1, %a: u32, %b: u32) -> u32 {
+builtin.function public extern(\"C\") @branch(%c: i1, %a: i32, %b: i32) -> i32 {
     cf.cond_br %c ^yes, ^no : (i1);
 ^yes:
-    builtin.ret %a : (u32);
+    builtin.ret %a : (i32);
 ^no:
-    builtin.ret %b : (u32);
+    builtin.ret %b : (i32);
 };";
         let (function, printed) = parse_function_fixpoint(&context, "parse_cond_br.hir", source)?;
         expect![[r#"
-            builtin.function public extern("C") @branch(%0: i1, %1: u32, %2: u32) -> u32 {
+            builtin.function public extern("C") @branch(%0: i1, %1: i32, %2: i32) -> i32 {
                 cf.cond_br %0 ^block2, ^block3 : (i1);
             ^block2:
-                builtin.ret %1 : (u32);
+                builtin.ret %1 : (i32);
             ^block3:
-                builtin.ret %2 : (u32);
+                builtin.ret %2 : (i32);
             };"#]]
         .assert_eq(&printed);
 
@@ -907,22 +821,22 @@ builtin.function public extern(\"C\") @branch(%c: i1, %a: u32, %b: u32) -> u32 {
     fn parse_cond_br_with_successor_arguments() -> Result<(), Report> {
         let context = Rc::new(Context::default());
         let source = "\
-builtin.function public extern(\"C\") @branch_args(%c: i1, %a: u32, %b: u32) -> u32 {
-    cf.cond_br %c ^one(%a : u32), ^two(%a, %b : u32, u32) : (i1);
-^one(%x: u32):
-    builtin.ret %x : (u32);
-^two(%y: u32, %z: u32):
-    builtin.ret %z : (u32);
+builtin.function public extern(\"C\") @branch_args(%c: i1, %a: i32, %b: i32) -> i32 {
+    cf.cond_br %c ^one(%a : i32), ^two(%a, %b : i32, i32) : (i1);
+^one(%x: i32):
+    builtin.ret %x : (i32);
+^two(%y: i32, %z: i32):
+    builtin.ret %z : (i32);
 };";
         let (function, printed) =
             parse_function_fixpoint(&context, "parse_cond_br_args.hir", source)?;
         expect![[r#"
-            builtin.function public extern("C") @branch_args(%0: i1, %1: u32, %2: u32) -> u32 {
-                cf.cond_br %0 ^block2(%1 : u32), ^block3(%1, %2 : u32, u32) : (i1);
-            ^block2(%3: u32):
-                builtin.ret %3 : (u32);
-            ^block3(%4: u32, %5: u32):
-                builtin.ret %5 : (u32);
+            builtin.function public extern("C") @branch_args(%0: i1, %1: i32, %2: i32) -> i32 {
+                cf.cond_br %0 ^block2(%1 : i32), ^block3(%1, %2 : i32, i32) : (i1);
+            ^block2(%3: i32):
+                builtin.ret %3 : (i32);
+            ^block3(%4: i32, %5: i32):
+                builtin.ret %5 : (i32);
             };"#]]
         .assert_eq(&printed);
 
@@ -1033,21 +947,21 @@ builtin.function public extern(\"C\") @looped(%start: i1) -> i1 {
     fn parse_switch_with_keyed_successors() -> Result<(), Report> {
         let context = Rc::new(Context::default());
         let source = "\
-builtin.function public extern(\"C\") @select(%sel: u32, %a: u32, %b: u32) -> u32 {
-    cf.switch %sel [#builtin.u32<1> -> ^one(%a : u32)], ^fallback : (u32);
-^one(%x: u32):
-    builtin.ret %x : (u32);
+builtin.function public extern(\"C\") @select(%sel: i32, %a: i32, %b: i32) -> i32 {
+    cf.switch %sel [#builtin.i32<1> -> ^one(%a : i32)], ^fallback : (i32);
+^one(%x: i32):
+    builtin.ret %x : (i32);
 ^fallback:
-    builtin.ret %b : (u32);
+    builtin.ret %b : (i32);
 };";
         let (function, printed) = parse_function_fixpoint(&context, "parse_switch.hir", source)?;
         expect![[r#"
-            builtin.function public extern("C") @select(%0: u32, %1: u32, %2: u32) -> u32 {
-                cf.switch %0 [#builtin.u32<1> -> ^block2(%1 : u32)], ^block3 : (u32);
-            ^block2(%3: u32):
-                builtin.ret %3 : (u32);
+            builtin.function public extern("C") @select(%0: i32, %1: i32, %2: i32) -> i32 {
+                cf.switch %0 [#builtin.i32<1> -> ^block2(%1 : i32)], ^block3 : (i32);
+            ^block2(%3: i32):
+                builtin.ret %3 : (i32);
             ^block3:
-                builtin.ret %2 : (u32);
+                builtin.ret %2 : (i32);
             };"#]]
         .assert_eq(&printed);
 
@@ -1081,5 +995,149 @@ builtin.function public extern(\"C\") @select(%sel: u32, %a: u32, %b: u32) -> u3
         assert_eq!(returned_value(fallback.successor()), arg_b);
 
         Ok(())
+    }
+
+    /// A switch with the keys `-1`, `0` and `i32::MAX` builds, prints each key as a signed
+    /// `#builtin.i32<..>` and parses back.
+    #[test]
+    fn switch_keys_are_i32() -> Result<(), Report> {
+        let mut test = Test::new("keys", |cx| ([cx.i32()], [cx.i32()]));
+        let selector = test.function().borrow().entry_block().borrow().arguments()[0] as ValueRef;
+        {
+            let mut builder = test.function_builder();
+            let negative = builder.create_block();
+            let zero = builder.create_block();
+            let max = builder.create_block();
+            let fallback = builder.create_block();
+            let cases = vec![
+                SwitchCase::create(-1, negative, vec![]),
+                SwitchCase::create(0, zero, vec![]),
+                SwitchCase::create(i32::MAX, max, vec![]),
+            ];
+            builder.switch(selector, cases, fallback, [], SourceSpan::UNKNOWN)?;
+            for block in [negative, zero, max, fallback] {
+                builder.switch_to_block(block);
+                builder.ret([selector], SourceSpan::UNKNOWN)?;
+            }
+        }
+        let function = test.function();
+        function.borrow().as_operation().verify()?;
+        let text = format!("{}", function.borrow().as_operation());
+        expect![[r#"
+            builtin.function public extern("C") @keys(%0: i32) -> i32 {
+                cf.switch %0 [#builtin.i32<-1> -> ^block1, 
+                    #builtin.i32<0> -> ^block2, 
+                    #builtin.i32<2147483647> -> ^block3], ^block4 : (i32);
+            ^block1:
+                builtin.ret %0 : (i32);
+            ^block2:
+                builtin.ret %0 : (i32);
+            ^block3:
+                builtin.ret %0 : (i32);
+            ^block4:
+                builtin.ret %0 : (i32);
+            };"#]]
+        .assert_eq(&text);
+
+        let context = Rc::new(Context::default());
+        // A parsed function numbers its blocks from `^block2`, a built one from `^block1`.
+        let (parsed, printed) = parse_function_fixpoint(&context, "switch_keys.hir", &text)?;
+        assert!(printed.contains("#builtin.i32<-1> -> ^block2"), "{printed}");
+        let parsed = parsed.borrow();
+        let switch_op =
+            parsed.body().entry().terminator().unwrap().try_downcast_op::<Switch>().unwrap();
+        let switch_op = switch_op.borrow();
+        let keys = switch_op.cases().iter().map(|case| *case.key()).collect::<Vec<_>>();
+        assert_eq!(keys, [-1, 0, i32::MAX]);
+        Ok(())
+    }
+
+    /// A constant selector is compared with the keys as 32-bit patterns: `0xffff_ffff` selects
+    /// the key `-1`; a selector that matches no key selects the fallback.
+    #[test]
+    fn switch_constant_selector_compares_32_bit_patterns() {
+        let mut test = Test::new("select", |cx| ([cx.i32()], []));
+        let context = test.context_rc();
+        let selector = test.function().borrow().entry_block().borrow().arguments()[0] as ValueRef;
+        let mut builder = test.function_builder();
+        let negative = builder.create_block();
+        let max = builder.create_block();
+        let fallback = builder.create_block();
+        let cases = vec![
+            SwitchCase::create(-1, negative, vec![]),
+            SwitchCase::create(i32::MAX, max, vec![]),
+        ];
+        let op = builder.switch(selector, cases, fallback, [], SourceSpan::UNKNOWN).unwrap();
+        let op = op.borrow();
+        let successor_for = |bits: u128| {
+            let attr = context.int_attr(Int::from_bits(32, bits), context.i32());
+            op.get_successor_for_operands(&[Some(attr.as_attribute_ref())])
+                .expect("a constant selector selects a successor")
+                .successor()
+        };
+        assert_eq!(successor_for(0xffff_ffff), negative);
+        assert_eq!(successor_for(0x7fff_ffff), max);
+        assert_eq!(successor_for(5), fallback);
+        assert_eq!(successor_for(0x8000_0000), fallback);
+        assert!(op.get_successor_for_operands(&[None]).is_none());
+    }
+
+    /// A constant condition of `cf.cond_br` is read with `as_int`, whether it is an `IntAttr` (an
+    /// `i1` constant) or a `BoolAttr`.
+    #[test]
+    fn cond_br_constant_condition_is_read_as_an_integer() {
+        let mut test = Test::new("branch", |cx| ([cx.i1()], []));
+        let context = test.context_rc();
+        let cond = test.function().borrow().entry_block().borrow().arguments()[0] as ValueRef;
+        let mut builder = test.function_builder();
+        let yes = builder.create_block();
+        let no = builder.create_block();
+        let op = builder.cond_br(cond, yes, [], no, [], SourceSpan::UNKNOWN).unwrap();
+        let op = op.borrow();
+        let conditions = [
+            (context.int_attr(Int::from(true), context.i1()).as_attribute_ref(), yes),
+            (context.int_attr(Int::from(false), context.i1()).as_attribute_ref(), no),
+            (context.create_attribute::<BoolAttr, _>(true).as_attribute_ref(), yes),
+            (context.create_attribute::<BoolAttr, _>(false).as_attribute_ref(), no),
+        ];
+        for (attr, expected) in conditions {
+            let successor = op.get_successor_for_operands(&[Some(attr)]).unwrap().successor();
+            assert_eq!(successor, expected);
+        }
+        assert!(op.get_successor_for_operands(&[None]).is_none());
+    }
+
+    /// `cf.select` with a constant condition folds to the chosen arm, whether the condition is an
+    /// `IntAttr` or a `BoolAttr`, and whether it is folded from the IR or from given operands.
+    #[test]
+    fn select_constant_condition_is_read_as_an_integer() {
+        use runic_dialect_arith::ArithOpBuilder;
+
+        let mut test = Test::new("select", |cx| ([cx.i32(), cx.i32()], []));
+        let context = test.context_rc();
+        let entry = test.function().borrow().entry_block();
+        let a = entry.borrow().arguments()[0] as ValueRef;
+        let b = entry.borrow().arguments()[1] as ValueRef;
+        let mut builder = test.function_builder();
+        for value in [true, false] {
+            let cond = builder.i1(value, SourceSpan::UNKNOWN);
+            let result = builder.select(cond, a, b, SourceSpan::UNKNOWN).unwrap();
+            let op = result.borrow().get_defining_op().unwrap();
+            let op = op.borrow();
+            let select = op.downcast_ref::<Select>().unwrap();
+            let mut results = SmallVec::<[OpFoldResult; 1]>::new();
+            assert!(select.fold(&mut results).is_ok());
+            let expected = if value { a } else { b };
+            assert!(matches!(results[0], OpFoldResult::Value(v) if v == expected));
+
+            for attr in [
+                context.int_attr(Int::from(value), context.i1()).as_attribute_ref(),
+                context.create_attribute::<BoolAttr, _>(value).as_attribute_ref(),
+            ] {
+                let mut results = SmallVec::<[OpFoldResult; 1]>::new();
+                assert!(select.fold_with(&[Some(attr), None, None], &mut results).is_ok());
+                assert!(matches!(results[0], OpFoldResult::Value(v) if v == expected));
+            }
+        }
     }
 }

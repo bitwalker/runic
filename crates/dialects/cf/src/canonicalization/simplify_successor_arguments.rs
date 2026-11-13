@@ -122,12 +122,12 @@ mod tests {
     fn remove_unused_single_pred_block_args_with_a_borrowing_listener() -> Result<(), Report> {
         let context = Rc::new(Context::default());
         let source = "\
-builtin.function public extern(\"C\") @args(%c: i1, %a: u32, %b: u32) -> u32 {
-    cf.cond_br %c ^then(%a : u32), ^else(%b : u32) : (i1);
-^then(%x: u32):
-    builtin.ret %x : (u32);
-^else(%y: u32):
-    builtin.ret %y : (u32);
+builtin.function public extern(\"C\") @args(%c: i1, %a: i32, %b: i32) -> i32 {
+    cf.cond_br %c ^then(%a : i32), ^else(%b : i32) : (i1);
+^then(%x: i32):
+    builtin.ret %x : (i32);
+^else(%y: i32):
+    builtin.ret %y : (i32);
 };";
         let (function, _) =
             parse_function_fixpoint(&context, "simplify_successor_arguments.hir", source)?;
@@ -139,12 +139,12 @@ builtin.function public extern(\"C\") @args(%c: i1, %a: u32, %b: u32) -> u32 {
 
         let printed = format!("{}", function.as_operation_ref().borrow());
         expect![[r#"
-            builtin.function public extern("C") @args(%0: i1, %1: u32, %2: u32) -> u32 {
+            builtin.function public extern("C") @args(%0: i1, %1: i32, %2: i32) -> i32 {
                 cf.cond_br %0 ^block2, ^block3 : (i1);
             ^block2:
-                builtin.ret %1 : (u32);
+                builtin.ret %1 : (i32);
             ^block3:
-                builtin.ret %2 : (u32);
+                builtin.ret %2 : (i32);
             };"#]]
         .assert_eq(&printed);
 

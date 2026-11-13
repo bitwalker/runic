@@ -170,12 +170,12 @@ mod tests {
     fn split_critical_edges_with_a_borrowing_listener() -> Result<(), Report> {
         let context = Rc::new(Context::default());
         let source = "\
-builtin.function public extern(\"C\") @split(%c: i1, %a: u32) -> u32 {
-    cf.cond_br %c ^join(%a : u32), ^other : (i1);
-^join(%x: u32):
-    builtin.ret %x : (u32);
+builtin.function public extern(\"C\") @split(%c: i1, %a: i32) -> i32 {
+    cf.cond_br %c ^join(%a : i32), ^other : (i1);
+^join(%x: i32):
+    builtin.ret %x : (i32);
 ^other:
-    cf.br ^join(%a : u32);
+    cf.br ^join(%a : i32);
 };";
         let (function, _) = parse_function_fixpoint(&context, "split_critical_edges.hir", source)?;
 
@@ -185,14 +185,14 @@ builtin.function public extern(\"C\") @split(%c: i1, %a: u32) -> u32 {
 
         let printed = format!("{}", function.as_operation_ref().borrow());
         expect![[r#"
-            builtin.function public extern("C") @split(%0: i1, %1: u32) -> u32 {
+            builtin.function public extern("C") @split(%0: i1, %1: i32) -> i32 {
                 cf.cond_br %0 ^block4, ^block3 : (i1);
             ^block4:
-                cf.br ^block2(%1 : u32);
-            ^block2(%2: u32):
-                builtin.ret %2 : (u32);
+                cf.br ^block2(%1 : i32);
+            ^block2(%2: i32):
+                builtin.ret %2 : (i32);
             ^block3:
-                cf.br ^block2(%1 : u32);
+                cf.br ^block2(%1 : i32);
             };"#]]
         .assert_eq(&printed);
 

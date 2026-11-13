@@ -77,7 +77,6 @@ mod tests {
     use alloc::vec::Vec;
 
     use runic_core::{
-        diagnostics::Uri,
         dialects::builtin::Function,
         parse::{self, ParserConfig},
         patterns::RewriterImpl,
@@ -90,13 +89,14 @@ mod tests {
         let context = Rc::new(Context::default());
         let function = parse::parse::<Function>(
             ParserConfig::new(context.clone()),
-            Uri::new("entry.hir"),
-            r#"builtin.function public extern("C") @cycle(%a: u32, %b: u64) {
+            "entry.hir",
+            r#"builtin.function public extern("C") @cycle(%a: i32, %b: i64) {
             cf.br ^again;
-        ^again: cf.br ^placeholder(%a, %b : u32, u64);
-        ^placeholder(%x: u32, %y: u64): builtin.ret;
+        ^again: cf.br ^placeholder(%a, %b : i32, i64);
+        ^placeholder(%x: i32, %y: i64): builtin.ret;
         };"#,
-        )?;
+        )
+        .into_result()?;
         let entry = function.borrow().body().entry_block_ref().unwrap();
         let args = entry.borrow().arguments().as_value_range().into_iter().collect::<Vec<_>>();
         let mut placeholder = function.borrow().body().body().back().as_pointer().unwrap();
@@ -127,14 +127,15 @@ mod tests {
         let context = Rc::new(Context::default());
         let function = parse::parse::<Function>(
             ParserConfig::new(context.clone()),
-            Uri::new("entry.hir"),
-            r#"builtin.function public extern("C") @cycle(%c: i1, %a: u32, %b: u64) {
+            "entry.hir",
+            r#"builtin.function public extern("C") @cycle(%c: i1, %a: i32, %b: i64) {
             cf.br ^again;
-        ^again: cf.cond_br %c ^placeholder(%c, %a, %b : i1, u32, u64), ^exit : (i1);
+        ^again: cf.cond_br %c ^placeholder(%c, %a, %b : i1, i32, i64), ^exit : (i1);
         ^exit: builtin.ret;
-        ^placeholder(%x: i1, %y: u32, %z: u64): builtin.ret;
+        ^placeholder(%x: i1, %y: i32, %z: i64): builtin.ret;
         };"#,
-        )?;
+        )
+        .into_result()?;
         let entry = function.borrow().body().entry_block_ref().unwrap();
         let args = entry.borrow().arguments().as_value_range().into_iter().collect::<Vec<_>>();
         let mut placeholder = function.borrow().body().body().back().as_pointer().unwrap();
@@ -164,16 +165,17 @@ mod tests {
         let context = Rc::new(Context::default());
         let function = parse::parse::<Function>(
             ParserConfig::new(context.clone()),
-            Uri::new("entry.hir"),
-            r#"builtin.function public extern("C") @cycle(%a: u32, %b: u64) -> (u32, u64) {
-            builtin.ret %a, %b : (u32, u64);
+            "entry.hir",
+            r#"builtin.function public extern("C") @cycle(%a: i32, %b: i64) -> (i32, i64) {
+            builtin.ret %a, %b : (i32, i64);
         ^again:
-            %incoming_a = arith.constant 13 : u32;
-            %incoming_b = arith.constant 29 : u64;
-            cf.br ^placeholder(%incoming_a, %incoming_b : u32, u64);
-        ^placeholder(%x: u32, %y: u64): builtin.ret %x, %y : (u32, u64);
+            %incoming_a = arith.constant 13 : i32;
+            %incoming_b = arith.constant 29 : i64;
+            cf.br ^placeholder(%incoming_a, %incoming_b : i32, i64);
+        ^placeholder(%x: i32, %y: i64): builtin.ret %x, %y : (i32, i64);
         };"#,
-        )?;
+        )
+        .into_result()?;
         let entry = function.borrow().body().entry_block_ref().unwrap();
         let args = entry.borrow().arguments().as_value_range().into_iter().collect::<Vec<_>>();
         let mut placeholder = function.borrow().body().body().back().as_pointer().unwrap();
@@ -221,15 +223,16 @@ mod tests {
         let context = Rc::new(Context::default());
         let function = parse::parse::<Function>(
             ParserConfig::new(context.clone()),
-            Uri::new("critical-entry.hir"),
-            r#"builtin.function public extern("C") @cycle(%c: i1, %a: u32, %b: u64) -> (u32, u64) {
+            "critical-entry.hir",
+            r#"builtin.function public extern("C") @cycle(%c: i1, %a: i32, %b: i64) -> (i32, i64) {
             cf.cond_br %c ^left, ^right : (i1);
-        ^left: cf.cond_br %c ^placeholder(%c, %a, %b : i1, u32, u64), ^exit : (i1);
-        ^right: cf.cond_br %c ^placeholder(%c, %a, %b : i1, u32, u64), ^exit : (i1);
-        ^exit: builtin.ret %a, %b : (u32, u64);
-        ^placeholder(%x: i1, %y: u32, %z: u64): builtin.ret %y, %z : (u32, u64);
+        ^left: cf.cond_br %c ^placeholder(%c, %a, %b : i1, i32, i64), ^exit : (i1);
+        ^right: cf.cond_br %c ^placeholder(%c, %a, %b : i1, i32, i64), ^exit : (i1);
+        ^exit: builtin.ret %a, %b : (i32, i64);
+        ^placeholder(%x: i1, %y: i32, %z: i64): builtin.ret %y, %z : (i32, i64);
         };"#,
-        )?;
+        )
+        .into_result()?;
         let entry = function.borrow().body().entry_block_ref().unwrap();
         let args = entry.borrow().arguments().to_vec();
         let mut placeholder = function.borrow().body().body().back().as_pointer().unwrap();
@@ -302,12 +305,13 @@ mod tests {
             let context = Rc::new(Context::default());
             let function = parse::parse::<Function>(
                 ParserConfig::new(context.clone()),
-                Uri::new("nonentry.hir"),
-                r#"builtin.function public extern("C") @forward(%a: u32, %b: u64) -> (u32, u64) {
-                cf.br ^exit(%a, %b : u32, u64);
-            ^exit(%x: u32, %y: u64): builtin.ret %x, %y : (u32, u64);
+                "nonentry.hir",
+                r#"builtin.function public extern("C") @forward(%a: i32, %b: i64) -> (i32, i64) {
+                cf.br ^exit(%a, %b : i32, i64);
+            ^exit(%x: i32, %y: i64): builtin.ret %x, %y : (i32, i64);
             };"#,
-            )?;
+            )
+            .into_result()?;
             let entry = function.borrow().body().entry_block_ref().unwrap();
             let args = entry.borrow().arguments().as_value_range().into_iter().collect::<Vec<_>>();
             let branch = entry.borrow().terminator().unwrap();

@@ -59,7 +59,7 @@ impl RewritePattern for SimplifyCondBrLikeSwitch {
 
         // Materialize comparison
         let selector = switch_op.selector().as_value_ref();
-        let expected_value = rewriter.u32(*if_true_case.key(), switch_op.span());
+        let expected_value = rewriter.i32(*if_true_case.key(), switch_op.span());
         let is_true = rewriter.eq(selector, expected_value, switch_op.span())?;
 
         // Rewrite as cf.cond_br
@@ -77,5 +77,48 @@ impl RewritePattern for SimplifyCondBrLikeSwitch {
         rewriter.replace_op(operation, new_op.as_operation_ref());
 
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{boxed::Box, format};
+
+    use runic_core::testing::parse_function_fixpoint;
+    use runic_expect_test::expect;
+
+    use super::*;
+    use crate::canonicalization::testing::apply_with_borrowing_listener;
+
+    /// A switch with one case becomes a `cf.cond_br` on an `i32` equality with the case's key.
+    #[test]
+    fn switch_with_one_case_becomes_cond_br() -> Result<(), Report> {
+        let context = Rc::new(Context::default());
+        let source = "\
+builtin.function public extern(\"C\") @f(%s: i32, %a: i32, %b: i32) -> i32 {
+    cf.switch %s [#builtin.i32<-1> -> ^one], ^two : (i32);
+^one:
+    builtin.ret %a : (i32);
+^two:
+    builtin.ret %b : (i32);
+};";
+        let (function, _) =
+            parse_function_fixpoint(&context, "simplify_cond_br_like_switch.hir", source)?;
+        let pattern: Box<dyn RewritePattern> =
+            Box::new(SimplifyCondBrLikeSwitch::new(context.clone()));
+        assert!(apply_with_borrowing_listener(&context, function, pattern)?);
+        let printed = format!("{}", function.as_operation_ref().borrow());
+        expect![[r#"
+            builtin.function public extern("C") @f(%0: i32, %1: i32, %2: i32) -> i32 {
+                %3 = arith.constant -1 : i32;
+                %4 = arith.cmpi eq %0, %3;
+                cf.cond_br %4 ^block2, ^block3 : (i1);
+            ^block2:
+                builtin.ret %1 : (i32);
+            ^block3:
+                builtin.ret %2 : (i32);
+            };"#]]
+        .assert_eq(&printed);
+        Ok(())
     }
 }
