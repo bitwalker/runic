@@ -93,7 +93,7 @@ impl RewritePattern for ConvertTrivialIfToSelect {
                 && (true_value == false_value || AnyInteger::get().matches(true_value_ref.ty()));
             hoistable.push(is_hoistable);
             if !is_hoistable {
-                non_hoistable.push(true_value_ref.ty().clone());
+                non_hoistable.push(true_value_ref.ty());
             }
         }
 
@@ -156,10 +156,10 @@ impl RewritePattern for ConvertTrivialIfToSelect {
         // `then_yield`/`else_yield`, and the whole body below is written against those two
         // handles. There is no way to arrive here without them, and the regions the new `scf.if`
         // receives are those same two regions, moved into it by `take_body` with their terminators
-        // intact. A branch that leaves the `scf.if` — a `builtin.ret` under a conditional, before
-        // `LowerEarlyExits` — is declined up there and never gets this far. Replacing that bail
-        // with the accessors' pre-guard `expect` shape confirms it: the early-exit program dies
-        // at the binding, not here. `convert_trivial_if_to_select_declines_a_branch_that_leaves_the_if`
+        // intact. A branch that leaves the `scf.if` — a `builtin.ret` under a conditional, say —
+        // is declined up there and never gets this far. Replacing that bail with the accessors'
+        // pre-guard `expect` shape confirms it: the early-exit program dies at the binding, not
+        // here. `convert_trivial_if_to_select_declines_a_branch_that_leaves_the_if`
         // is the kept witness that the pattern declines that shape rather than panicking on it.
         let new_then_yield =
             anchor_op.then_yield().expect("cloned `then` branch lost its scf.yield");
@@ -222,16 +222,15 @@ mod terminal_region_tests {
                     for shape in
                         [ResultShape::Zero, ResultShape::Unused, ResultShape::One, ResultShape::Two]
                     {
-                        let outputs = if shape == ResultShape::Two {
-                            &[Type::U32, Type::U64][..]
-                        } else {
-                            &[Type::U32][..]
-                        };
-                        let mut test = Test::new(
-                            "terminal_regions",
-                            &[Type::I1, Type::U32, Type::U64, Type::U32],
-                            outputs,
-                        );
+                        let mut test = Test::new("terminal_regions", |cx| {
+                            let outputs = if shape == ResultShape::Two {
+                                alloc::vec![cx.i32(), cx.i64()]
+                            } else {
+                                alloc::vec![cx.i32()]
+                            };
+                            ([cx.i1(), cx.i32(), cx.i64(), cx.i32()], outputs)
+                        });
+                        let (i32_ty, i64_ty) = (test.context().i32(), test.context().i64());
                         let span = SourceSpan::default();
                         let mut builder = test.function_builder();
                         let entry = builder.entry_block();
@@ -246,7 +245,7 @@ mod terminal_region_tests {
                         let types = if shape == ResultShape::Zero {
                             SmallVec::<[Type; 3]>::new()
                         } else {
-                            [Type::U32, Type::U64, Type::U32].into_iter().collect()
+                            [i32_ty, i64_ty, i32_ty].into_iter().collect()
                         };
                         let structured = builder.r#if(condition, &types, span)?;
                         let regions = [
@@ -405,15 +404,15 @@ mod tests {
     }
 
     const PROGRAM: &str = "\
-builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
-    %zero = arith.constant 0 : u32;
-    %flag = arith.gt %n, %zero;
+builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
+    %zero = arith.constant 0 : i32;
+    %flag = arith.cmpi ugt %n, %zero;
     %a = scf.if %flag then {
         THEN
     } else {
-        scf.yield %zero : (u32);
-    } : (i1) -> (u32);
-    builtin.ret %a : (u32);
+        scf.yield %zero : (i32);
+    } : (i1) -> (i32);
+    builtin.ret %a : (i32);
 };";
 
     /// The guard that makes the two `expect`s on the clone's yields unreachable, asserted at the
@@ -425,7 +424,7 @@ builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
     fn convert_trivial_if_to_select_declines_a_branch_that_leaves_the_if() {
         let (changed, verified) = run_one(
             "convert_trivial_if_to_select_early_exit.hir",
-            &PROGRAM.replace("THEN", "builtin.ret %n : (u32);"),
+            &PROGRAM.replace("THEN", "builtin.ret %n : (i32);"),
         );
         verified.unwrap_or_else(|err| panic!("output does not verify:\n{err}"));
         assert!(!changed, "must decline an scf.if whose branch does not yield");
@@ -441,28 +440,28 @@ builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
     #[test]
     fn convert_trivial_if_to_select_keeps_a_nested_early_exit_it_hoists_around() {
         let source = "\
-builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
-    %z = arith.constant 0 : u32;
+builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
+    %z = arith.constant 0 : i32;
     %r = scf.while %z before {
-    ^before(%i: u32):
-        %c = arith.lt %i, %n;
-        scf.condition %c, %i : (i1, u32);
+    ^before(%i: i32):
+        %c = arith.cmpi ult %i, %n;
+        scf.condition %c, %i : (i1, i32);
     } after {
-    ^after(%j: u32):
-        %g = arith.gt %j, %n;
+    ^after(%j: i32):
+        %g = arith.cmpi ugt %j, %n;
         %o = scf.if %g then {
             %p = scf.if %g then {
-                scf.break 1 %j : (u32);
+                scf.break 1 %j : (i32);
             } else {
-                scf.yield %j : (u32);
-            } : (i1) -> (u32);
-            scf.yield %j : (u32);
+                scf.yield %j : (i32);
+            } : (i1) -> (i32);
+            scf.yield %j : (i32);
         } else {
-            scf.yield %n : (u32);
-        } : (i1) -> (u32);
-        scf.yield %o : (u32);
-    } : (u32) -> (u32);
-    builtin.ret %r : (u32);
+            scf.yield %n : (i32);
+        } : (i1) -> (i32);
+        scf.yield %o : (i32);
+    } : (i32) -> (i32);
+    builtin.ret %r : (i32);
 };";
         let context = Rc::new(Context::default());
         let (function, _) = parse_function_fixpoint(
@@ -509,7 +508,7 @@ builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
     fn convert_trivial_if_to_select_still_fires_when_both_branches_yield() {
         let (changed, verified) = run_one(
             "convert_trivial_if_to_select_control.hir",
-            &PROGRAM.replace("THEN", "scf.yield %n : (u32);"),
+            &PROGRAM.replace("THEN", "scf.yield %n : (i32);"),
         );
         verified.unwrap_or_else(|err| panic!("output does not verify:\n{err}"));
         assert!(changed, "must still hoist two outer-defined yields into a select");
@@ -523,14 +522,13 @@ builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
     #[test]
     fn convert_trivial_if_to_select_keeps_a_pointer_pair_in_the_if() {
         const POINTERS: &str = "\
-builtin.function public extern(\"C\") @f(%p: ptr<u32, byte>, %q: ptr<u32, byte>, %c: i1) -> \
-                                ptr<u32, byte> {
+builtin.function public extern(\"C\") @f(%p: ptr<i32>, %q: ptr<i32>, %c: i1) -> ptr<i32> {
     %r = scf.if %c then {
-        scf.yield %p : (ptr<u32, byte>);
+        scf.yield %p : (ptr<i32>);
     } else {
-        scf.yield %q : (ptr<u32, byte>);
-    } : (i1) -> (ptr<u32, byte>);
-    builtin.ret %r : (ptr<u32, byte>);
+        scf.yield %q : (ptr<i32>);
+    } : (i1) -> (ptr<i32>);
+    builtin.ret %r : (ptr<i32>);
 };";
         let (changed, verified, before, after) =
             rewrite("convert_trivial_if_to_select_pointers.hir", POINTERS);
@@ -539,14 +537,14 @@ builtin.function public extern(\"C\") @f(%p: ptr<u32, byte>, %q: ptr<u32, byte>,
         assert_eq!(after, before, "a declined scf.if is left as it was");
 
         const MIXED: &str = "\
-builtin.function public extern(\"C\") @f(%p: ptr<u32, byte>, %q: ptr<u32, byte>, %n: u32, %m: u32, \
-                             %c: i1) -> u32 {
+builtin.function public extern(\"C\") @f(%p: ptr<i32>, %q: ptr<i32>, %n: i32, %m: i32, %c: i1) -> \
+                             i32 {
     %r, %k = scf.if %c then {
-        scf.yield %p, %n : (ptr<u32, byte>, u32);
+        scf.yield %p, %n : (ptr<i32>, i32);
     } else {
-        scf.yield %q, %m : (ptr<u32, byte>, u32);
-    } : (i1) -> (ptr<u32, byte>, u32);
-    builtin.ret %k : (u32);
+        scf.yield %q, %m : (ptr<i32>, i32);
+    } : (i1) -> (ptr<i32>, i32);
+    builtin.ret %k : (i32);
 };";
         let (changed, verified, _, after) =
             rewrite("convert_trivial_if_to_select_mixed.hir", MIXED);

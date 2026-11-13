@@ -31,7 +31,8 @@ impl FoldConstantIndexSwitch {
 }
 
 impl FoldConstantIndexSwitch {
-    fn match_constant_selector(&self, op: OperationRef) -> Option<u32> {
+    /// The selector's constant value, read as a 32-bit pattern (see `constant_selector`).
+    fn match_constant_selector(&self, op: OperationRef) -> Option<i32> {
         use runic_core::matchers::{self, Matcher};
 
         let op = op.borrow();
@@ -40,11 +41,8 @@ impl FoldConstantIndexSwitch {
             selector
                 .borrow()
                 .get_defining_op()
-                .and_then(|defined_by| {
-                    let matcher = matchers::constant_of::<Immediate>();
-                    matcher.matches(&*defined_by.borrow())
-                })
-                .and_then(|imm| imm.as_u32())
+                .and_then(|defined_by| matchers::constant().matches(&*defined_by.borrow()))
+                .and_then(|attr| crate::ops::constant_selector(&attr))
         } else {
             None
         }
@@ -140,16 +138,15 @@ mod terminal_region_tests {
                     for shape in
                         [ResultShape::Zero, ResultShape::Unused, ResultShape::One, ResultShape::Two]
                     {
-                        let outputs = if shape == ResultShape::Two {
-                            &[Type::U32, Type::U64][..]
-                        } else {
-                            &[Type::U32][..]
-                        };
-                        let mut test = Test::new(
-                            "terminal_regions",
-                            &[Type::U32, Type::U32, Type::U64, Type::U32],
-                            outputs,
-                        );
+                        let mut test = Test::new("terminal_regions", |cx| {
+                            let outputs = if shape == ResultShape::Two {
+                                alloc::vec![cx.i32(), cx.i64()]
+                            } else {
+                                alloc::vec![cx.i32()]
+                            };
+                            ([cx.i32(), cx.i32(), cx.i64(), cx.i32()], outputs)
+                        });
+                        let (i32_ty, i64_ty) = (test.context().i32(), test.context().i64());
                         let span = SourceSpan::default();
                         let mut builder = test.function_builder();
                         let entry = builder.entry_block();
@@ -164,9 +161,9 @@ mod terminal_region_tests {
                         let types = if shape == ResultShape::Zero {
                             SmallVec::<[Type; 3]>::new()
                         } else {
-                            [Type::U32, Type::U64, Type::U32].into_iter().collect()
+                            [i32_ty, i64_ty, i32_ty].into_iter().collect()
                         };
-                        let selector = builder.u32(
+                        let selector = builder.i32(
                             if terminal_first == select_terminal {
                                 1
                             } else {
@@ -292,5 +289,63 @@ mod terminal_region_tests {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod selector_tests {
+    use alloc::{boxed::Box, format, rc::Rc};
+
+    use runic_core::{
+        patterns::{self, FrozenRewritePatternSet, GreedyRewriteConfig, RewritePatternSet},
+        testing::parse_function_fixpoint,
+    };
+
+    use super::*;
+
+    /// The function returned by `source` after [FoldConstantIndexSwitch] ran to a fixpoint.
+    fn fold(name: &str, source: &str) -> alloc::string::String {
+        let context = Rc::new(Context::default());
+        let (function, _) = parse_function_fixpoint(&context, name, source)
+            .unwrap_or_else(|err| panic!("'{name}' must parse before the pattern runs: {err}"));
+        let pattern_set = RewritePatternSet::from_iter(
+            context.clone(),
+            [Box::new(FoldConstantIndexSwitch::new(context.clone())) as Box<dyn RewritePattern>],
+        );
+        let changed = patterns::apply_patterns_and_fold_greedily(
+            function.as_operation_ref(),
+            Rc::new(FrozenRewritePatternSet::new(pattern_set)),
+            GreedyRewriteConfig::default(),
+        )
+        .expect("expected the canonicalizer to converge");
+        assert!(changed, "a constant selector must fold the switch");
+        format!("{}", function.as_operation_ref().borrow())
+    }
+
+    const PROGRAM: &str = "\
+builtin.function public extern(\"C\") @f(%a: i32, %b: i32) -> i32 {
+    %s = arith.constant SELECTOR : i32;
+    %r = scf.index_switch %s
+    case -1 {
+        scf.yield %a : (i32);
+    }
+    default {
+        scf.yield %b : (i32);
+    } : (i32);
+    builtin.ret %r : (i32);
+};";
+
+    /// The selector constant `0xffffffff` is the 32-bit pattern of `-1`, so the switch folds to
+    /// `case -1`; any other selector folds to the default region.
+    #[test]
+    fn a_constant_selector_is_compared_as_a_32_bit_pattern() {
+        for selector in ["0xffffffff", "-1", "4294967295"] {
+            let folded = fold("selector_pattern.hir", &PROGRAM.replace("SELECTOR", selector));
+            assert!(!folded.contains("scf.index_switch"), "{folded}");
+            assert!(folded.contains("builtin.ret %0 : (i32);"), "selector {selector}:\n{folded}");
+        }
+        let folded = fold("selector_default.hir", &PROGRAM.replace("SELECTOR", "7"));
+        assert!(!folded.contains("scf.index_switch"), "{folded}");
+        assert!(folded.contains("builtin.ret %1 : (i32);"), "{folded}");
     }
 }

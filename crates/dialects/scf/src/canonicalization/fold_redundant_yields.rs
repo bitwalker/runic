@@ -184,10 +184,10 @@ impl RewritePattern for FoldRedundantYields {
 
 #[cfg(test)]
 mod tests {
-    use alloc::{boxed::Box, format, rc::Rc, sync::Arc, vec::Vec};
+    use alloc::{boxed::Box, format, rc::Rc, vec::Vec};
 
     use runic_core::{
-        Context, Report, SourceSpan, Type,
+        Context, Report, SourceSpan,
         dialects::{builtin::BuiltinOpBuilder, test::TestOpBuilder},
         pass::{Pass, PassExecutionState},
         patterns::{
@@ -298,9 +298,11 @@ mod tests {
     #[test]
     fn fold_redundant_yields_subset_if_switch() -> Result<(), Report> {
         let mut test =
-            Test::new("fold_redundant_yields_subset_if_switch", &[Type::U32], &[Type::U32]);
+            Test::new("fold_redundant_yields_subset_if_switch", |cx| ([cx.i32()], [cx.i32()]));
 
         let span = SourceSpan::default();
+
+        let i32_ty = test.context().i32();
 
         let mut builder = test.function_builder();
         let if_then = builder.create_block();
@@ -310,8 +312,8 @@ mod tests {
         let switch_default_block = builder.create_block();
         let if_final = builder.create_block();
 
-        let if_sum_lhs = builder.append_block_param(if_final, Type::U32, span);
-        let if_sum_rhs = builder.append_block_param(if_final, Type::U32, span);
+        let if_sum_lhs = builder.append_block_param(if_final, i32_ty, span);
+        let if_sum_rhs = builder.append_block_param(if_final, i32_ty, span);
 
         let input = builder.current_block().borrow().arguments()[0].upcast();
         let redundant_val = builder.u32(11, span)?;
@@ -359,9 +361,12 @@ mod tests {
 
     #[test]
     fn fold_redundant_yields_all_if_switch() -> Result<(), Report> {
-        let mut test = Test::new("fold_redundant_yields_all_if_switch", &[Type::U32], &[Type::U32]);
+        let mut test =
+            Test::new("fold_redundant_yields_all_if_switch", |cx| ([cx.i32()], [cx.i32()]));
 
         let span = SourceSpan::default();
+
+        let i32_ty = test.context().i32();
 
         let mut builder = test.function_builder();
 
@@ -372,8 +377,8 @@ mod tests {
         let switch_default_block = builder.create_block();
         let switch_final_block = builder.create_block();
 
-        let sum_lhs = builder.append_block_param(switch_final_block, Type::U32, span);
-        let sum_rhs = builder.append_block_param(switch_final_block, Type::U32, span);
+        let sum_lhs = builder.append_block_param(switch_final_block, i32_ty, span);
+        let sum_rhs = builder.append_block_param(switch_final_block, i32_ty, span);
 
         let input = builder.current_block().borrow().arguments()[0].upcast();
         let redundant_val0 = builder.u32(11, span)?;
@@ -417,9 +422,12 @@ mod tests {
 
     #[test]
     fn fold_redundant_yields_all_switch_if() -> Result<(), Report> {
-        let mut test = Test::new("fold_redundant_yields_all_switch_if", &[Type::U32], &[Type::U32]);
+        let mut test =
+            Test::new("fold_redundant_yields_all_switch_if", |cx| ([cx.i32()], [cx.i32()]));
 
         let span = SourceSpan::default();
+
+        let i32_ty = test.context().i32();
 
         let mut builder = test.function_builder();
 
@@ -430,8 +438,8 @@ mod tests {
         let if_else_block = builder.create_block();
         let if_final_block = builder.create_block();
 
-        let sum_lhs = builder.append_block_param(if_final_block, Type::U32, span);
-        let sum_rhs = builder.append_block_param(if_final_block, Type::U32, span);
+        let sum_lhs = builder.append_block_param(if_final_block, i32_ty, span);
+        let sum_rhs = builder.append_block_param(if_final_block, i32_ty, span);
 
         let input = builder.current_block().borrow().arguments()[0].upcast();
         let redundant_val0 = builder.u32(11, span)?;
@@ -474,9 +482,12 @@ mod tests {
 
     #[test]
     fn fold_redundant_yields_many_switch() -> Result<(), Report> {
-        let mut test = Test::new("fold_redundant_yields_many_switch", &[Type::U32], &[Type::U32]);
+        let mut test =
+            Test::new("fold_redundant_yields_many_switch", |cx| ([cx.i32()], [cx.i32()]));
 
         let span = SourceSpan::default();
+
+        let i32_ty = test.context().i32();
 
         let mut builder = test.function_builder();
 
@@ -487,13 +498,13 @@ mod tests {
         let switch_final_block = builder.create_block();
         let exit_block = builder.create_block();
 
-        let final_arg0 = builder.append_block_param(switch_final_block, Type::U32, span);
-        let final_arg1 = builder.append_block_param(switch_final_block, Type::U32, span);
-        let final_arg2 = builder.append_block_param(switch_final_block, Type::U32, span);
-        let final_arg3 = builder.append_block_param(switch_final_block, Type::U32, span);
-        let final_arg4 = builder.append_block_param(switch_final_block, Type::U32, span);
+        let final_arg0 = builder.append_block_param(switch_final_block, i32_ty, span);
+        let final_arg1 = builder.append_block_param(switch_final_block, i32_ty, span);
+        let final_arg2 = builder.append_block_param(switch_final_block, i32_ty, span);
+        let final_arg3 = builder.append_block_param(switch_final_block, i32_ty, span);
+        let final_arg4 = builder.append_block_param(switch_final_block, i32_ty, span);
 
-        let ret_val = builder.append_block_param(exit_block, Type::U32, span);
+        let ret_val = builder.append_block_param(exit_block, i32_ty, span);
 
         let input = builder.current_block().borrow().arguments()[0].upcast();
 
@@ -590,9 +601,11 @@ mod tests {
     #[test]
     fn fold_redundant_yields_different_pos_switch() -> Result<(), Report> {
         let mut test =
-            Test::new("fold_redundant_yields_different_pos_switch", &[Type::U32], &[Type::U32]);
+            Test::new("fold_redundant_yields_different_pos_switch", |cx| ([cx.i32()], [cx.i32()]));
 
         let span = SourceSpan::default();
+
+        let i32_ty = test.context().i32();
 
         let mut builder = test.function_builder();
 
@@ -601,8 +614,8 @@ mod tests {
         let switch_on_default_block = builder.create_block();
         let switch_final_block = builder.create_block();
 
-        let final_arg0 = builder.append_block_param(switch_final_block, Type::U32, span);
-        let final_arg1 = builder.append_block_param(switch_final_block, Type::U32, span);
+        let final_arg0 = builder.append_block_param(switch_final_block, i32_ty, span);
+        let final_arg1 = builder.append_block_param(switch_final_block, i32_ty, span);
 
         let input = builder.current_block().borrow().arguments()[0].upcast();
 
@@ -643,9 +656,11 @@ mod tests {
     #[test]
     fn fold_redundant_yields_all_but_one_switch() -> Result<(), Report> {
         let mut test =
-            Test::new("fold_redundant_yields_all_but_one_switch", &[Type::U32], &[Type::U32]);
+            Test::new("fold_redundant_yields_all_but_one_switch", |cx| ([cx.i32()], [cx.i32()]));
 
         let span = SourceSpan::default();
+
+        let i32_ty = test.context().i32();
 
         let mut builder = test.function_builder();
 
@@ -656,11 +671,11 @@ mod tests {
         let switch_final_block = builder.create_block();
         let exit_block = builder.create_block();
 
-        let final_arg0 = builder.append_block_param(switch_final_block, Type::U32, span);
-        let final_arg1 = builder.append_block_param(switch_final_block, Type::U32, span);
-        let final_arg2 = builder.append_block_param(switch_final_block, Type::U32, span);
+        let final_arg0 = builder.append_block_param(switch_final_block, i32_ty, span);
+        let final_arg1 = builder.append_block_param(switch_final_block, i32_ty, span);
+        let final_arg2 = builder.append_block_param(switch_final_block, i32_ty, span);
 
-        let ret_val = builder.append_block_param(exit_block, Type::U32, span);
+        let ret_val = builder.append_block_param(exit_block, i32_ty, span);
 
         let input = builder.current_block().borrow().arguments()[0].upcast();
 
@@ -723,13 +738,13 @@ mod tests {
 
     #[test]
     fn fold_redundant_yields_effects_if() -> Result<(), Report> {
-        let mut test = Test::new(
-            "fold_redundant_yields_effects_if",
-            &[Type::U32, Type::Ptr(Arc::new(PointerType::new(Type::U32)))],
-            &[Type::U32],
-        );
+        let mut test = Test::new("fold_redundant_yields_effects_if", |cx| {
+            ([cx.i32(), cx.ptr_type(cx.i32())], [cx.i32()])
+        });
 
         let span = SourceSpan::default();
+
+        let i32_ty = test.context().i32();
 
         let mut builder = test.function_builder();
 
@@ -737,7 +752,7 @@ mod tests {
         let if_else = builder.create_block();
         let if_final = builder.create_block();
 
-        let ret_val = builder.append_block_param(if_final, Type::U32, span);
+        let ret_val = builder.append_block_param(if_final, i32_ty, span);
 
         let input = builder.current_block().borrow().arguments()[0].upcast();
         let input_ptr = builder.current_block().borrow().arguments()[1].upcast();
@@ -814,28 +829,28 @@ mod tests {
         let (_, before, after) = run_one(
             "fold_redundant_yields_nested_early_exit.hir",
             "\
-builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
-    %z = arith.constant 0 : u32;
+builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
+    %z = arith.constant 0 : i32;
     %r = scf.while %z before {
-    ^before(%i: u32):
-        %c = arith.lt %i, %n;
-        scf.condition %c, %i : (i1, u32);
+    ^before(%i: i32):
+        %c = arith.cmpi ult %i, %n;
+        scf.condition %c, %i : (i1, i32);
     } after {
-    ^after(%j: u32):
-        %g = arith.gt %j, %n;
+    ^after(%j: i32):
+        %g = arith.cmpi ugt %j, %n;
         %o = scf.if %g then {
             %p = scf.if %g then {
-                scf.break 1 %j : (u32);
+                scf.break 1 %j : (i32);
             } else {
-                scf.yield %j : (u32);
-            } : (i1) -> (u32);
-            scf.yield %j : (u32);
+                scf.yield %j : (i32);
+            } : (i1) -> (i32);
+            scf.yield %j : (i32);
         } else {
-            scf.yield %j : (u32);
-        } : (i1) -> (u32);
-        scf.yield %o : (u32);
-    } : (u32) -> (u32);
-    builtin.ret %r : (u32);
+            scf.yield %j : (i32);
+        } : (i1) -> (i32);
+        scf.yield %o : (i32);
+    } : (i32) -> (i32);
+    builtin.ret %r : (i32);
 };",
         );
         assert_eq!(before, 1, "the input must contain exactly one loop exit");
@@ -854,23 +869,23 @@ builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
         let (changed, before, after) = run_one(
             "fold_redundant_yields_nested_early_exit_control.hir",
             "\
-builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
-    %z = arith.constant 0 : u32;
+builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
+    %z = arith.constant 0 : i32;
     %r = scf.while %z before {
-    ^before(%i: u32):
-        %c = arith.lt %i, %n;
-        scf.condition %c, %i : (i1, u32);
+    ^before(%i: i32):
+        %c = arith.cmpi ult %i, %n;
+        scf.condition %c, %i : (i1, i32);
     } after {
-    ^after(%j: u32):
-        %g = arith.gt %j, %n;
+    ^after(%j: i32):
+        %g = arith.cmpi ugt %j, %n;
         %o = scf.if %g then {
-            scf.yield %j : (u32);
+            scf.yield %j : (i32);
         } else {
-            scf.yield %j : (u32);
-        } : (i1) -> (u32);
-        scf.yield %o : (u32);
-    } : (u32) -> (u32);
-    builtin.ret %r : (u32);
+            scf.yield %j : (i32);
+        } : (i1) -> (i32);
+        scf.yield %o : (i32);
+    } : (i32) -> (i32);
+    builtin.ret %r : (i32);
 };",
         );
         assert!(changed, "an `scf.if` yielding the same value from both branches is redundant");
@@ -964,16 +979,15 @@ mod terminal_region_tests {
                     for shape in
                         [ResultShape::Zero, ResultShape::Unused, ResultShape::One, ResultShape::Two]
                     {
-                        let outputs = if shape == ResultShape::Two {
-                            &[Type::U32, Type::U64][..]
-                        } else {
-                            &[Type::U32][..]
-                        };
-                        let mut test = Test::new(
-                            "terminal_regions",
-                            &[Type::I1, Type::U32, Type::U64, Type::U32],
-                            outputs,
-                        );
+                        let mut test = Test::new("terminal_regions", |cx| {
+                            let outputs = if shape == ResultShape::Two {
+                                alloc::vec![cx.i32(), cx.i64()]
+                            } else {
+                                alloc::vec![cx.i32()]
+                            };
+                            ([cx.i1(), cx.i32(), cx.i64(), cx.i32()], outputs)
+                        });
+                        let (i32_ty, i64_ty) = (test.context().i32(), test.context().i64());
                         let span = SourceSpan::default();
                         let mut builder = test.function_builder();
                         let entry = builder.entry_block();
@@ -988,7 +1002,7 @@ mod terminal_region_tests {
                         let types = if shape == ResultShape::Zero {
                             SmallVec::<[Type; 3]>::new()
                         } else {
-                            [Type::U32, Type::U64, Type::U32].into_iter().collect()
+                            [i32_ty, i64_ty, i32_ty].into_iter().collect()
                         };
                         let structured = builder.r#if(condition, &types, span)?;
                         let regions = [

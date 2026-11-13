@@ -95,7 +95,7 @@ impl RewritePattern for IndexSwitchRemoveUnusedResults {
 
             let result_types = used_results
                 .iter()
-                .map(|result| result.borrow().ty().clone())
+                .map(|result| result.borrow().ty())
                 .collect::<SmallVec<[_; 4]>>();
 
             (
@@ -152,7 +152,7 @@ mod tests {
     use alloc::{boxed::Box, format, rc::Rc, string::String, vec::Vec};
 
     use runic_core::{
-        Op, Report, SourceSpan, Type,
+        Op, Report, SourceSpan,
         dialects::{builtin::BuiltinOpBuilder, test::TestOpBuilder},
         patterns::{self, FrozenRewritePatternSet, GreedyRewriteConfig, RewritePatternSet},
         testing::Test,
@@ -170,9 +170,11 @@ mod tests {
 
     #[test]
     fn index_switch_remove_unused_results() -> Result<(), Report> {
-        let mut test = Test::new("index_switch_remove_unused_results", &[Type::U32], &[Type::U32]);
+        let mut test =
+            Test::new("index_switch_remove_unused_results", |cx| ([cx.i32()], [cx.i32()]));
 
         let span = SourceSpan::default();
+        let i32_ty = test.context().i32();
         let mut builder = test.function_builder();
         let entry = builder.entry_block();
         let selector = entry.borrow().arguments()[0].upcast();
@@ -182,7 +184,7 @@ mod tests {
         let dead_default_value = builder.u32(3, span)?;
         let live_default_value = builder.u32(4, span)?;
 
-        let switch = builder.index_switch(selector, [1], &[Type::U32, Type::U32], span)?;
+        let switch = builder.index_switch(selector, [1], &[i32_ty, i32_ty], span)?;
 
         let case_region = switch.borrow().get_case_region(0);
         let case_block = builder.create_block_in_region(case_region);
@@ -236,9 +238,10 @@ mod tests {
     /// and it panicked the compiler.
     #[test]
     fn an_unreachable_case_region_is_left_alone() -> Result<(), Report> {
-        let mut test = Test::new("unreachable_case_region", &[Type::U32], &[Type::U32]);
+        let mut test = Test::new("unreachable_case_region", |cx| ([cx.i32()], [cx.i32()]));
 
         let span = SourceSpan::default();
+        let i32_ty = test.context().i32();
         let mut builder = test.function_builder();
         let entry = builder.entry_block();
         let selector = entry.borrow().arguments()[0].upcast();
@@ -246,7 +249,7 @@ mod tests {
         let dead_case_value = builder.u32(1, span)?;
         let live_case_value = builder.u32(2, span)?;
 
-        let switch = builder.index_switch(selector, [1], &[Type::U32, Type::U32], span)?;
+        let switch = builder.index_switch(selector, [1], &[i32_ty, i32_ty], span)?;
 
         let case_region = switch.borrow().get_case_region(0);
         let case_block = builder.create_block_in_region(case_region);
@@ -335,16 +338,15 @@ mod terminal_region_tests {
                     for shape in
                         [ResultShape::Zero, ResultShape::Unused, ResultShape::One, ResultShape::Two]
                     {
-                        let outputs = if shape == ResultShape::Two {
-                            &[Type::U32, Type::U64][..]
-                        } else {
-                            &[Type::U32][..]
-                        };
-                        let mut test = Test::new(
-                            "terminal_regions",
-                            &[Type::U32, Type::U32, Type::U64, Type::U32],
-                            outputs,
-                        );
+                        let mut test = Test::new("terminal_regions", |cx| {
+                            let outputs = if shape == ResultShape::Two {
+                                alloc::vec![cx.i32(), cx.i64()]
+                            } else {
+                                alloc::vec![cx.i32()]
+                            };
+                            ([cx.i32(), cx.i32(), cx.i64(), cx.i32()], outputs)
+                        });
+                        let (i32_ty, i64_ty) = (test.context().i32(), test.context().i64());
                         let span = SourceSpan::default();
                         let mut builder = test.function_builder();
                         let entry = builder.entry_block();
@@ -359,7 +361,7 @@ mod terminal_region_tests {
                         let types = if shape == ResultShape::Zero {
                             SmallVec::<[Type; 3]>::new()
                         } else {
-                            [Type::U32, Type::U64, Type::U32].into_iter().collect()
+                            [i32_ty, i64_ty, i32_ty].into_iter().collect()
                         };
                         let structured = builder.index_switch(condition, [1], &types, span)?;
                         let regions = [
@@ -435,14 +437,14 @@ mod terminal_region_tests {
                         assert!(replacement_op.borrow().is::<IndexSwitch>());
                         let expected_types: &[Type] = match shape {
                             ResultShape::Zero | ResultShape::Unused => &[],
-                            ResultShape::One => &[Type::U32],
-                            ResultShape::Two => &[Type::U64, Type::U32],
+                            ResultShape::One => &[i32_ty],
+                            ResultShape::Two => &[i64_ty, i32_ty],
                         };
                         let actual_types = replacement_op
                             .borrow()
                             .results()
                             .iter()
-                            .map(|result| result.borrow().ty().clone())
+                            .map(|result| result.borrow().ty())
                             .collect::<SmallVec<[Type; 3]>>();
                         assert_eq!(actual_types.as_slice(), expected_types);
                         if changed {
@@ -461,7 +463,7 @@ mod terminal_region_tests {
                             }
                             let replacement = user.borrow().operands()[0].borrow().as_value_ref();
                             if matches!(shape, ResultShape::One | ResultShape::Two) {
-                                assert_eq!(replacement.borrow().ty(), &Type::U32);
+                                assert_eq!(replacement.borrow().ty(), i32_ty);
                                 for (_, yielded) in &yields {
                                     let expected = if shape == ResultShape::Two {
                                         &values[1..3]

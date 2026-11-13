@@ -2,8 +2,7 @@ use alloc::{format, rc::Rc, string::String, vec::Vec};
 
 use runic_core::{
     derive::{EffectOpInterface, OpParser, OpPrinter, operation},
-    diagnostics::Severity,
-    dialects::builtin::attributes::{U32ArrayAttr, U32Attr},
+    dialects::builtin::attributes::{I32ArrayAttr, I32Attr},
     effects::*,
     parse::ParserExt,
     patterns::RewritePatternSet,
@@ -26,26 +25,22 @@ use crate::ScfDialect;
 /// * `runic_dialect_ub::Unreachable` to abort execution
 /// * [Yield] to return from the enclosing [If]
 ///
-/// The op itself touches no memory and no advice resource — selecting a region is not a read or a
-/// write — so it declares no effects OF ITS OWN. What it does to either is whatever the taken
-/// region does, which is what [`HasRecursiveMemoryEffects`] and [`HasRecursiveAdviceEffects`] say;
-/// the declarations are complementary, and all of them are needed. An empty declaration without a
-/// marker would claim the whole `scf.if` is effect-free on that channel no matter what its regions
-/// hold — and the two markers are registered separately, so declaring one says nothing about the
-/// other.
+/// The op itself touches no memory — selecting a region is not a read or a write — so it declares
+/// no effects OF ITS OWN. What it does to memory is whatever the taken region does, which is what
+/// [`HasRecursiveMemoryEffects`] says; the two declarations are complementary, and both are needed.
+/// An empty declaration without the marker would claim the whole `scf.if` is effect-free no matter
+/// what its regions hold.
 #[derive(OpPrinter, OpParser, EffectOpInterface)]
 #[effects(MemoryEffect())]
-#[effects(AdviceEffect())]
 #[operation(
     dialect = ScfDialect,
     traits(
         SingleBlock,
         NoRegionArguments,
         HasRecursiveMemoryEffects,
-        HasRecursiveAdviceEffects,
         PropagateControlFlowBreak
     ),
-    implements(RegionBranchOpInterface, MemoryEffectOpInterface, AdviceEffectOpInterface, OpPrinter)
+    implements(RegionBranchOpInterface, MemoryEffectOpInterface, OpPrinter)
 )]
 pub struct If {
     #[operand]
@@ -180,18 +175,15 @@ impl RegionBranchOpInterface for If {
 /// this way, the "after" body can feed back input to the "before" body to determine whether to
 /// continue the loop.
 ///
-/// No effects of its own; its memory and advice effects are its regions', per
-/// [`HasRecursiveMemoryEffects`] and [`HasRecursiveAdviceEffects`].
+/// No effects of its own; its memory effects are its regions', per [`HasRecursiveMemoryEffects`].
 /// See [`If`] for why both declarations are required.
 #[derive(OpPrinter, OpParser, EffectOpInterface)]
 #[effects(MemoryEffect())]
-#[effects(AdviceEffect())]
 #[operation(
     dialect = ScfDialect,
     traits(
         SingleBlock,
         HasRecursiveMemoryEffects,
-        HasRecursiveAdviceEffects,
         PropagateControlFlowBreak
     ),
     implements(
@@ -199,8 +191,6 @@ impl RegionBranchOpInterface for If {
         HasBreakingControlFlowOpInterface,
         LoopLikeOpInterface,
         MemoryEffectOpInterface,
-        AdviceEffectOpInterface,
-        OperandRangeRequirementOpInterface,
         OpPrinter
     )
 )]
@@ -213,13 +203,6 @@ pub struct While {
     after: Region,
     #[results]
     returns: AnyType,
-}
-
-impl OperandRangeRequirementOpInterface for While {
-    fn operand_range_requirement(&self, _operand_index: usize) -> OperandRangeRequirement {
-        // Initial values are forwarded to the loop header without interpreting their range.
-        OperandRangeRequirement::None
-    }
 }
 
 impl While {
@@ -246,12 +229,10 @@ impl Canonicalizable for While {
         rewrites.push(crate::canonicalization::RemoveLoopInvariantArgsFromBeforeBlock::new(
             context.clone(),
         ));
-        //rewrites.push(crate::canonicalization::RemoveLoopInvariantValueYielded::new(context.clone()));
         rewrites.push(crate::canonicalization::WhileConditionTruth::new(context.clone()));
         rewrites.push(crate::canonicalization::WhileUnusedResult::new(context.clone()));
         rewrites.push(crate::canonicalization::WhileRemoveDuplicatedResults::new(context.clone()));
-        rewrites.push(crate::canonicalization::WhileRemoveUnusedArgs::new(context.clone()));
-        //rewrites.push(crate::canonicalization::ConvertDoWhileToWhileTrue::new(context));
+        rewrites.push(crate::canonicalization::WhileRemoveUnusedArgs::new(context));
     }
 }
 
@@ -337,15 +318,13 @@ impl HasBreakingControlFlowOpInterface for While {
 /// * The operands forwarded by [Condition], when the header has one, the `after` block arguments
 ///   and the results agree in number and, position by position, in type.
 impl Verify<dyn LoopLikeOpInterface> for While {
-    fn verify(&self, context: &Context) -> Result<(), Report> {
+    fn verify(&self, _context: &Context) -> Result<(), Report> {
         let op = self.as_operation();
         let invalid = |label: String| {
-            context
-                .diagnostics()
-                .diagnostic(Severity::Error)
-                .with_message(format!("invalid operation {}", op.name()))
-                .with_primary_label(op.span(), label)
-                .into_report()
+            runic_core::diagnostics::report!(
+                message: (format!("invalid operation {}", op.name())),
+                labels: [primary(op.span(), label)],
+            )
         };
 
         let before = self.before();
@@ -388,9 +367,8 @@ impl Verify<dyn LoopLikeOpInterface> for While {
 
         let operand_types =
             |range: OpOperandRange<'_>| range.iter().map(|o| o.borrow().ty()).collect::<Vec<_>>();
-        let argument_types = |block: &Block| {
-            block.arguments().iter().map(|a| a.borrow().ty().clone()).collect::<Vec<_>>()
-        };
+        let argument_types =
+            |block: &Block| block.arguments().iter().map(|a| a.borrow().ty()).collect::<Vec<_>>();
         let inits = ("init operand", operand_types(self.inits()));
         let before_args = ("before block argument", argument_types(&before_block));
         let yielded =
@@ -401,7 +379,7 @@ impl Verify<dyn LoopLikeOpInterface> for While {
         let after_args = ("after block argument", argument_types(&after_block));
         let results = (
             "result",
-            self.results().all().iter().map(|r| r.borrow().ty().clone()).collect::<Vec<_>>(),
+            self.results().all().iter().map(|r| r.borrow().ty()).collect::<Vec<_>>(),
         );
 
         let mut pairs = Vec::from([(&inits, &before_args)]);
@@ -521,61 +499,57 @@ impl RegionBranchOpInterface for While {
     }
 }
 
-/// The `hir.index_switch` is a control-flow operation that branches to one of the given regions
-/// based on the values of the argument and the cases. The argument is always of type `u32`.
+/// `scf.index_switch` is a control-flow operation that branches to one of the given regions
+/// based on the values of the argument and the cases. The argument is always an `i32`.
 ///
-/// The operation always has a "default" region and any number of case regions denoted by integer
-/// constants. Control-flow transfers to the case region whose constant value equals the value of
-/// the argument. If the argument does not equal any of the case values, control-flow transfer to
-/// the "default" region.
+/// The operation always has a "default" region and any number of case regions denoted by `i32`
+/// constants, written as signed decimals. Control-flow transfers to the case region whose value
+/// equals the value of the argument, compared as 32-bit patterns (so a selector `0xffff_ffff`
+/// chooses `case -1`). If the argument does not equal any of the case values, control-flow
+/// transfers to the "default" region.
 ///
 /// ## Example
 ///
 /// ```text,ignore
-/// %0 = hir.index_switch %arg0 : u32 -> i32
-/// case 2 {
-///   %1 = hir.constant 10 : i32
-///   scf.yield %1 : i32
+/// %0 = scf.index_switch %arg0
+/// case -1 {
+///   %1 = arith.constant 10 : i32;
+///   scf.yield %1 : (i32);
 /// }
 /// case 5 {
-///   %2 = hir.constant 20 : i32
-///   scf.yield %2 : i32
+///   %2 = arith.constant 20 : i32;
+///   scf.yield %2 : (i32);
 /// }
 /// default {
-///   %3 = hir.constant 30 : i32
-///   scf.yield %3 : i32
-/// }
+///   %3 = arith.constant 30 : i32;
+///   scf.yield %3 : (i32);
+/// } : (i32);
 /// ```
 ///
-/// No effects of its own; its memory and advice effects are its regions', per
-/// [`HasRecursiveMemoryEffects`] and [`HasRecursiveAdviceEffects`].
+/// No effects of its own; its memory effects are its regions', per [`HasRecursiveMemoryEffects`].
 /// See [`If`] for why both declarations are required.
 #[derive(EffectOpInterface)]
 #[effects(MemoryEffect())]
-#[effects(AdviceEffect())]
 #[operation(
     dialect = ScfDialect,
     traits(
         SingleBlock,
         HasRecursiveMemoryEffects,
-        HasRecursiveAdviceEffects,
         PropagateControlFlowBreak
     ),
-    implements(RegionBranchOpInterface, MemoryEffectOpInterface, AdviceEffectOpInterface, OpPrinter)
+    implements(RegionBranchOpInterface, MemoryEffectOpInterface, OpPrinter)
 )]
 pub struct IndexSwitch {
     #[operand]
-    selector: UInt32,
+    selector: Int32,
     #[attr]
-    cases: U32ArrayAttr,
+    cases: I32ArrayAttr,
     #[region]
     default_region: Region,
 }
 
 impl OpPrinter for IndexSwitch {
     fn print(&self, printer: &mut AsmPrinter<'_>) {
-        use alloc::borrow::Cow;
-
         use formatter::*;
 
         printer.print_space();
@@ -600,45 +574,33 @@ impl OpPrinter for IndexSwitch {
         }
 
         printer.print_space();
-        printer.print_colon_type_list(
-            self.results().iter().map(|r| Cow::Owned(r.borrow().ty().clone())),
-        );
+        printer.print_colon_type_list(self.results().iter().map(|r| r.borrow().ty()));
     }
 }
 
 impl OpParser for IndexSwitch {
     fn parse(state: &mut OperationState, parser: &mut dyn OpAsmParser<'_>) -> ParseResult {
-        use alloc::{format, vec};
-
-        use runic_core::{
-            diagnostics::{LabeledSpan, RelatedError, Report, Severity, miette::diagnostic},
-            dialects::builtin::attributes::Array,
-            parse::ParserError,
-        };
+        use runic_core::{dialects::builtin::attributes::Array, parse::ParserError};
 
         let selector = parser.parse_operand(/*allow_result_number=*/ true)?;
-        let selector = parser.resolve_operand(selector, Type::U32)?;
+        let selector = parser.resolve_operand(selector, parser.context().i32())?;
         state.add_operand(selector);
 
-        let mut cases = Array::<u32>::default();
+        let mut cases = Array::<i32>::default();
         let mut regions = SmallVec::<[RegionRef; 2]>::default();
         while parser.parse_optional_custom_keyword("case")?.is_some() {
-            let case_value = parser.parse_decimal_integer::<u32>()?;
+            let (span, case_value) = parse_i32(parser)?;
             if cases.contains(&case_value) {
-                return Err(ParserError::Report(RelatedError::new(Report::from(diagnostic!(
-                    severity = Severity::Error,
-                    labels = vec![LabeledSpan::at(
-                        case_value.span(),
-                        "this case selector has already been used"
-                    )],
-                    "invalid scf.index_switch operation"
-                )))));
+                return Err(ParserError::from(runic_core::diagnostics::report!(
+                    message: "invalid scf.index_switch operation",
+                    labels: [primary(span, "this case selector has already been used")],
+                )));
             }
 
             let region = parser.context().create_region();
             parser.parse_region(region, &[], false)?;
 
-            cases.push(case_value.into_inner());
+            cases.push(case_value);
             regions.push(region);
         }
 
@@ -647,7 +609,7 @@ impl OpParser for IndexSwitch {
         parser.parse_region(fallback_region, &[], false)?;
 
         state
-            .add_attribute("cases", parser.context_rc().create_attribute::<U32ArrayAttr, _>(cases));
+            .add_attribute("cases", parser.context_rc().create_attribute::<I32ArrayAttr, _>(cases));
         // The default region is declared first on the operation; case regions follow it (see
         // `get_case_region`).
         state.add_region(fallback_region);
@@ -671,7 +633,9 @@ impl IndexSwitch {
         self.default_region().entry_block_ref().expect("default region has no blocks")
     }
 
-    pub fn get_case_index_for_selector(&self, selector: u32) -> Option<usize> {
+    /// The index of the case whose value is `selector`, or `None` when the default region is
+    /// taken.
+    pub fn get_case_index_for_selector(&self, selector: i32) -> Option<usize> {
         self.cases().iter().position(|case| *case == selector)
     }
 
@@ -702,12 +666,30 @@ impl IndexSwitch {
     }
 }
 
+/// The value of a constant `scf.index_switch` selector, read as a 32-bit pattern: any 32-bit
+/// integer-like attribute, so a constant `0xffff_ffff : i32` is the case value `-1`. `None` for
+/// any other attribute (poison, say).
+pub(crate) fn constant_selector(attr: &AttributeRef) -> Option<i32> {
+    let value = attr.borrow().as_int()?;
+    (value.width() == 32).then(|| value.unsigned() as u32 as i32)
+}
+
+/// Parses an `i32` written as an `i32` constant's literal is: a signed decimal, or a hex or binary
+/// literal standing for its 32-bit pattern.
+fn parse_i32(
+    parser: &mut dyn OpAsmParser<'_>,
+) -> Result<(SourceSpan, i32), runic_core::parse::ParserError> {
+    let (span, literal) = parser.parse_integer_literal()?.into_parts();
+    let value = literal.to_int(parser.context().i32(), span)?;
+    Ok((span, value.signed() as i32))
+}
+
 impl RegionBranchOpInterface for IndexSwitch {
     fn get_entry_successor_regions(
         &self,
         operands: &[Option<AttributeRef>],
     ) -> RegionSuccessorIter<'_> {
-        let selector = operands[0].as_ref().and_then(|v| v.borrow().as_u32());
+        let selector = operands[0].as_ref().and_then(constant_selector);
         let selected = selector.map(|s| self.get_case_index_for_selector(s));
 
         match selected {
@@ -758,17 +740,17 @@ impl RegionBranchOpInterface for IndexSwitch {
         &self,
         operands: &[Option<AttributeRef>],
     ) -> SmallVec<[InvocationBounds; 1]> {
-        let selector = operands[0].as_ref().and_then(|v| v.borrow().as_u32());
+        let selector = operands[0].as_ref().and_then(constant_selector);
 
         if let Some(selector) = selector {
-            let mut bounds = smallvec![InvocationBounds::Never; self.num_cases()];
+            let mut bounds = smallvec![InvocationBounds::Never; self.num_regions()];
             let selected =
                 self.get_case_index_for_selector(selector).map(|idx| idx + 1).unwrap_or(0);
             bounds[selected] = InvocationBounds::Exact(1);
             bounds
         } else {
             // Only one region is invoked, and no more than a single time
-            smallvec![InvocationBounds::NoMoreThan(1); self.num_cases()]
+            smallvec![InvocationBounds::NoMoreThan(1); self.num_regions()]
         }
     }
 
@@ -801,15 +783,12 @@ impl Canonicalizable for IndexSwitch {
 /// violated.
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
 #[effects(MemoryEffect())]
-#[effects(AdviceEffect())]
 #[operation(
     dialect = ScfDialect,
     traits(Terminator, ReturnLike),
     implements(
         RegionBranchTerminatorOpInterface,
         MemoryEffectOpInterface,
-        AdviceEffectOpInterface,
-        OperandRangeRequirementOpInterface,
         OpPrinter
     )
 )]
@@ -818,15 +797,6 @@ pub struct Condition {
     condition: Bool,
     #[operands]
     forwarded: AnyType,
-}
-
-impl OperandRangeRequirementOpInterface for Condition {
-    fn operand_range_requirement(&self, operand_index: usize) -> OperandRangeRequirement {
-        match operand_index {
-            0 => OperandRangeRequirement::Required(ValueRangeConstraint::Type(Type::I1)),
-            _ => OperandRangeRequirement::None,
-        }
-    }
 }
 
 impl RegionBranchTerminatorOpInterface for Condition {
@@ -901,15 +871,12 @@ impl RegionBranchTerminatorOpInterface for Condition {
 /// regions must yield the same arity and types.
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
 #[effects(MemoryEffect())]
-#[effects(AdviceEffect())]
 #[operation(
     dialect = ScfDialect,
     traits(Terminator, ReturnLike, Pure, AlwaysSpeculatable),
     implements(
         RegionBranchTerminatorOpInterface,
         MemoryEffectOpInterface,
-        AdviceEffectOpInterface,
-        OperandRangeRequirementOpInterface,
         ConditionallySpeculatable,
         OpPrinter,
     )
@@ -917,12 +884,6 @@ impl RegionBranchTerminatorOpInterface for Condition {
 pub struct Yield {
     #[operands]
     yielded: AnyType,
-}
-
-impl OperandRangeRequirementOpInterface for Yield {
-    fn operand_range_requirement(&self, _operand_index: usize) -> OperandRangeRequirement {
-        OperandRangeRequirement::None
-    }
 }
 
 impl RegionBranchTerminatorOpInterface for Yield {
@@ -972,31 +933,33 @@ impl ConditionallySpeculatable for Yield {
 /// Resolve the operation an early exit in `op` addresses, walking outward and counting receivers.
 ///
 /// This is the whole of the `levels` mechanism, and it is deliberately one function shared by the
-/// verifier, the successor-region computation and the interpreter: three answers to "which op does
-/// this exit leave?" that disagreed would be worse than one that is wrong. It is also the
-/// implementation of [RegionExitTerminatorOpInterface::resolve_exit] for both exit ops, which is
-/// what lets `hir` verify rules 2-7 over the ANSWER without knowing that `levels` exists.
+/// verifier and the successor-region computations: two answers to "which op does this exit
+/// leave?" that disagreed would be worse than one that is wrong. It is also the implementation of
+/// [RegionExitTerminatorOpInterface::resolve_exit] for both exit ops, which is what lets the
+/// interface's verifier check rules 2-7 over the ANSWER without knowing that `levels` exists.
 ///
-/// # RULE 1 (`levels >= 1`) IS DETECTED HERE AND NOWHERE ELSE — THE HOIST'S HONEST BOUNDARY
+/// # RULE 1 (`levels >= 1`) IS DETECTED HERE AND NOWHERE ELSE
 ///
-/// Every other rule of [RegionExitTerminatorOpInterface]'s contract is verified in `hir`, for
-/// every implementor. Rule 1 cannot be: *"the name is well-formed"* is a property of THIS
-/// encoding — a token operand or a label would be malformed in some other way — and the interface
-/// has no vocabulary for it. What the interface can do is require the malformedness to be
-/// **reported**, which is what [ExitDefectKind::Malformed] below is; what it cannot do is detect
-/// one. So a resolver that silently treated `levels = 0` as "not found" would produce the wrong
-/// diagnostic and nothing would catch it. The rule stays here, and it stays stated.
-fn resolve_levels(op: &Operation, levels: u32, kind: RegionExitKind) -> ExitResolution {
-    // Rule 1. The wording is this encoding's own, and `hir` renders it verbatim.
-    if levels == 0 {
+/// Every other rule of [RegionExitTerminatorOpInterface]'s contract is verified by the
+/// interface's own verifier, for every implementor. Rule 1 cannot be: *"the name is well-formed"*
+/// is a property of THIS encoding — a token operand or a label would be malformed in some other
+/// way — and the interface has no vocabulary for it. What the interface can do is require the
+/// malformedness to be **reported**, which is what [ExitDefectKind::Malformed] below is; what it
+/// cannot do is detect one. So a resolver that silently treated `levels = 0` (or a negative
+/// `levels`) as "not found" would produce the wrong diagnostic and nothing would catch it. The rule
+/// stays here, and it stays stated.
+fn resolve_levels(op: &Operation, levels: i32, kind: RegionExitKind) -> ExitResolution {
+    // Rule 1. The wording is this encoding's own, and the verifier renders it verbatim.
+    if levels < 1 {
         return ExitResolution::Unresolved(ExitDefect {
             kind: ExitDefectKind::Malformed,
             detail: alloc::format!(
                 "`levels` is 1-based and counts enclosing loops, so it must be at least 1, but \
-                 this {kind} names level 0"
+                 this {kind} names level {levels}"
             ),
         });
     }
+    let levels = levels as u32;
 
     let not_found = |found: u32| {
         ExitResolution::Unresolved(ExitDefect {
@@ -1070,7 +1033,7 @@ fn resolve_levels(op: &Operation, levels: u32, kind: RegionExitKind) -> ExitReso
 
 /// The target of an exit in `op`, or `None` if it does not resolve — the successor computations'
 /// half of [resolve_levels].
-fn exit_target(op: &Operation, levels: u32, kind: RegionExitKind) -> Option<OperationRef> {
+fn exit_target(op: &Operation, levels: i32, kind: RegionExitKind) -> Option<OperationRef> {
     match resolve_levels(op, levels, kind) {
         ExitResolution::Resolved(resolved) => Some(resolved.target),
         ExitResolution::Unresolved(_) => None,
@@ -1080,28 +1043,17 @@ fn exit_target(op: &Operation, levels: u32, kind: RegionExitKind) -> Option<Oper
 /// [Break] transfers control out of the `levels`-th enclosing loop, past every intermediate op.
 ///
 /// `levels` is 1-based and counts enclosing ops which receive breaking control flow (i.e.
-/// [While]): `levels = 1` names the innermost enclosing loop, `levels = 2` the one outside it.
+/// [While]): `levels = 1` names the innermost enclosing loop, `levels = 2` the one outside it. It is
+/// an `i32`; zero and negative values are rejected by the verifier.
 ///
 /// The operands become the target loop's **results**, so their types must equal the target's
 /// result types.
 ///
-/// # A [Break] IN A LOOP'S `before` REGION — WHAT EACH CONSUMER ACTUALLY DOES
+/// # A [Break] IN A LOOP'S `before` REGION
 ///
-/// The three consumers do not agree, and the disagreement is stated here rather than left for
-/// someone to discover at the end of a pipeline:
-///
-/// * **The verifier ACCEPTS it.** It is equivalent to `scf.condition(false, args)`, and rule 6 —
-///   which rejects a [Continue] in its own target's header — deliberately does not extend to a
-///   break. `v6_rejects_continue_in_the_targets_header`'s accept side is the witness.
-/// * **The interpreter RUNS it, correctly**, unwinding to the named ancestor exactly as it does
-///   for a break in the body.
-/// * **MASM codegen REFUSES it, loudly.** `LowerEarlyExits` rewrites the condition region itself
-///   — that is where it installs the header guard — so an exit already living there would have to
-///   be spliced into the very code being generated for it. No frontend produces the shape, so the
-///   pass reports rather than attempting it (`an_exit_inside_a_loop_condition_is_fenced`).
-///
-/// So the shape is legal to *write* and legal to *interpret*, and it does not survive to MASM.
-/// It costs nothing to allow at the IR level, which is why the verifier still allows it.
+/// The verifier accepts it. It is equivalent to `scf.condition(false, args)`, and rule 6 — which
+/// rejects a [Continue] in its own target's header — deliberately does not extend to a break.
+/// `v6_rejects_continue_in_the_targets_header`'s accept side is the witness.
 ///
 /// Effect-free: unwinding to an enclosing op and carrying values is neither a read nor a write.
 /// Where it may appear is a matter of its terminator-ness — see the nested-terminator clause in
@@ -1109,7 +1061,6 @@ fn exit_target(op: &Operation, levels: u32, kind: RegionExitKind) -> Option<Oper
 /// deletes the `scf.if` that carries the exit, and the exit with it.
 #[derive(EffectOpInterface)]
 #[effects(MemoryEffect())]
-#[effects(AdviceEffect())]
 #[operation(
     dialect = ScfDialect,
     traits(Terminator, ReturnLike),
@@ -1117,13 +1068,12 @@ fn exit_target(op: &Operation, levels: u32, kind: RegionExitKind) -> Option<Oper
         RegionBranchTerminatorOpInterface,
         RegionExitTerminatorOpInterface,
         MemoryEffectOpInterface,
-        AdviceEffectOpInterface,
         OpPrinter
     )
 )]
 pub struct Break {
     #[attr]
-    levels: U32Attr,
+    levels: I32Attr,
     #[operands]
     args: AnyType,
 }
@@ -1140,7 +1090,6 @@ pub struct Break {
 /// Effect-free, for the same reason [`Break`] is.
 #[derive(EffectOpInterface)]
 #[effects(MemoryEffect())]
-#[effects(AdviceEffect())]
 #[operation(
     dialect = ScfDialect,
     traits(Terminator, ReturnLike),
@@ -1148,37 +1097,28 @@ pub struct Break {
         RegionBranchTerminatorOpInterface,
         RegionExitTerminatorOpInterface,
         MemoryEffectOpInterface,
-        AdviceEffectOpInterface,
         OpPrinter
     )
 )]
 pub struct Continue {
     #[attr]
-    levels: U32Attr,
+    levels: I32Attr,
     #[operands]
     args: AnyType,
 }
 
 /// Print `scf.break`/`scf.continue` as `<op> <levels> <operands> : (<types>)`.
 ///
-/// The level count is printed POSITIONALLY rather than in the attribute dictionary, because a
-/// `U32Attr` cannot be written in `.hir` text at all: an attribute dictionary parses its values
-/// with `Type::Unknown` (`Parser::parse_attribute_dict`), for which an integer literal falls
-/// through to "invalid attribute value". `scf.index_switch`'s `case <n>` has the same shape for
-/// the same reason.
-fn print_exit(op: &Operation, levels: u32, printer: &mut AsmPrinter<'_>) {
-    use alloc::borrow::Cow;
-
+/// The level count is printed positionally, as a signed decimal, rather than in the attribute
+/// dictionary; `scf.index_switch`'s `case <n>` has the same shape.
+fn print_exit(op: &Operation, levels: i32, printer: &mut AsmPrinter<'_>) {
     use formatter::*;
 
     printer.print_space();
     *printer += display(levels);
 
     let operands = op.operands().all();
-    let types = operands
-        .iter()
-        .map(|o| Cow::Owned(o.borrow().as_value_ref().borrow().ty().clone()))
-        .collect::<SmallVec<[_; 2]>>();
+    let types = operands.iter().map(|o| o.borrow().ty()).collect::<SmallVec<[_; 2]>>();
     if !operands.is_empty() {
         printer.print_space();
         printer.print_value_uses(ValueRange::<2>::from(operands));
@@ -1187,13 +1127,12 @@ fn print_exit(op: &Operation, levels: u32, printer: &mut AsmPrinter<'_>) {
     printer.print_colon_type_list(types);
 }
 
-/// Parse `<levels> [<operands>] : (<types>)` into `state`, the inverse of [print_exit].
+/// Parse `<levels> [<operands>] : (<types>)` into `state`, the inverse of [print_exit]. `levels`
+/// is read as an `i32` constant's literal is (see [parse_i32]); the verifier rejects a value below
+/// 1.
 fn parse_exit(state: &mut OperationState, parser: &mut dyn OpAsmParser<'_>) -> ParseResult {
-    let levels = parser.parse_decimal_integer::<u32>()?;
-    state.add_attribute(
-        "levels",
-        parser.context_rc().create_attribute::<U32Attr, _>(levels.into_inner()),
-    );
+    let (_, levels) = parse_i32(parser)?;
+    state.add_attribute("levels", parser.context_rc().create_attribute::<I32Attr, _>(levels));
 
     let mut operands = SmallVec::default();
     parser.parse_operand_list(
@@ -1376,20 +1315,20 @@ mod tests {
     fn nested_break_can_return_a_loop_result() -> Result<(), Report> {
         let context = Rc::new(Context::default());
         let source = r#"
-builtin.function public extern("C") @exit(%flag: i1, %value: u32) -> u32 {
+builtin.function public extern("C") @exit(%flag: i1, %value: i32) -> i32 {
     %result = scf.while %value before {
-    ^head(%current: u32):
-        scf.condition %flag, %current : (i1, u32);
+    ^head(%current: i32):
+        scf.condition %flag, %current : (i1, i32);
     } after {
-    ^body(%next: u32):
+    ^body(%next: i32):
         scf.if %flag then {
-            scf.break 1 %next : (u32);
+            scf.break 1 %next : (i32);
         } else {
             scf.yield : ();
         } : (i1) -> ();
-        scf.yield %next : (u32);
-    } : (u32) -> u32;
-    builtin.ret %result : (u32);
+        scf.yield %next : (i32);
+    } : (i32) -> i32;
+    builtin.ret %result : (i32);
 };"#;
         parse_function_fixpoint(&context, "nested_break.hir", source)?;
         Ok(())
@@ -1404,11 +1343,10 @@ builtin.function public extern("C") @exit(%flag: i1, %value: u32) -> u32 {
     /// the rule would be "tested" by a set that cannot violate it.
     #[derive(OpPrinter, OpParser, EffectOpInterface)]
     #[effects(MemoryEffect())]
-    #[effects(AdviceEffect())]
     #[operation(
         dialect = TestDialect,
-        traits(SingleBlock, HasRecursiveMemoryEffects, HasRecursiveAdviceEffects),
-        implements(MemoryEffectOpInterface, AdviceEffectOpInterface, OpPrinter)
+        traits(SingleBlock, HasRecursiveMemoryEffects),
+        implements(MemoryEffectOpInterface, OpPrinter)
     )]
     pub struct OpaqueRegion {
         #[region]
@@ -1423,16 +1361,14 @@ builtin.function public extern("C") @exit(%flag: i1, %value: u32) -> u32 {
     /// an op whose only difference is the marker.
     #[derive(OpPrinter, OpParser, EffectOpInterface)]
     #[effects(MemoryEffect())]
-    #[effects(AdviceEffect())]
     #[operation(
         dialect = TestDialect,
         traits(
             SingleBlock,
             HasRecursiveMemoryEffects,
-            HasRecursiveAdviceEffects,
             PropagateControlFlowBreak
         ),
-        implements(MemoryEffectOpInterface, AdviceEffectOpInterface, OpPrinter)
+        implements(MemoryEffectOpInterface, OpPrinter)
     )]
     pub struct TransparentRegion {
         #[region]
@@ -1442,14 +1378,13 @@ builtin.function public extern("C") @exit(%flag: i1, %value: u32) -> u32 {
     /// An exit whose resolver **forgets rule 3**: it counts outward to the first receiver without
     /// ever asking whether the ops it passed through declared [PropagateControlFlowBreak].
     ///
-    /// It exists to prove that the blanket verifier in `hir` CHECKS the resolver rather than
+    /// It exists to prove that the interface's blanket verifier CHECKS the resolver rather than
     /// restating it. `scf.break` in the same position reports the crossing itself, as an
     /// [ExitDefectKind::Opaque] defect, and is rejected through the defect arm (V-3). This op
     /// reports a confident `Resolved` and is rejected through the RE-DERIVATION arm, with the
     /// same rule and the same wording — which is the whole claim of variant (B).
     #[derive(OpPrinter, OpParser, EffectOpInterface)]
     #[effects(MemoryEffect())]
-    #[effects(AdviceEffect())]
     #[operation(
         dialect = TestDialect,
         traits(Terminator, ReturnLike),
@@ -1457,7 +1392,6 @@ builtin.function public extern("C") @exit(%flag: i1, %value: u32) -> u32 {
             RegionBranchTerminatorOpInterface,
             RegionExitTerminatorOpInterface,
             MemoryEffectOpInterface,
-        AdviceEffectOpInterface,
             OpPrinter
         )
     )]
@@ -1474,7 +1408,6 @@ builtin.function public extern("C") @exit(%flag: i1, %value: u32) -> u32 {
     /// rejects it. The pair is what makes this a test of the CHECK rather than of the op.
     #[derive(OpPrinter, OpParser, EffectOpInterface)]
     #[effects(MemoryEffect())]
-    #[effects(AdviceEffect())]
     #[operation(
         dialect = TestDialect,
         traits(Terminator, ReturnLike),
@@ -1482,7 +1415,6 @@ builtin.function public extern("C") @exit(%flag: i1, %value: u32) -> u32 {
             RegionBranchTerminatorOpInterface,
             RegionExitTerminatorOpInterface,
             MemoryEffectOpInterface,
-        AdviceEffectOpInterface,
             OpPrinter
         )
     )]
@@ -1494,13 +1426,12 @@ builtin.function public extern("C") @exit(%flag: i1, %value: u32) -> u32 {
     /// An exit whose target and originating region are **right**, and whose `callable` is wrong:
     /// it names the receiver it found instead of the callable it lives in.
     ///
-    /// This is the witness for the HIR half of the Q9-6 carry. [BlindExit] in the identical
+    /// This is the witness that the verifier checks `ResolvedExit::callable`. [BlindExit] in the identical
     /// program position reports the identical target and `from_region` with `callable: None` and
     /// is ACCEPTED — so the two resolutions differ in exactly one field, and that field is what
     /// the verifier is reacting to.
     #[derive(OpPrinter, OpParser, EffectOpInterface)]
     #[effects(MemoryEffect())]
-    #[effects(AdviceEffect())]
     #[operation(
         dialect = TestDialect,
         traits(Terminator, ReturnLike),
@@ -1508,7 +1439,6 @@ builtin.function public extern("C") @exit(%flag: i1, %value: u32) -> u32 {
             RegionBranchTerminatorOpInterface,
             RegionExitTerminatorOpInterface,
             MemoryEffectOpInterface,
-        AdviceEffectOpInterface,
             OpPrinter
         )
     )]
@@ -1665,7 +1595,7 @@ builtin.function public extern("C") @exit(%flag: i1, %value: u32) -> u32 {
     fn exit_verifier_requires_registered_branch_terminator_interface() {
         let error = rejection(
             "unregistered_branch_exit.hir",
-            &RESOLVER_CHECK_PROGRAM.replace("BODY", "test.unregistered_branch_exit %j : (u32);"),
+            &RESOLVER_CHECK_PROGRAM.replace("BODY", "test.unregistered_branch_exit %j : (i32);"),
         );
         assert!(error.contains("RegionBranchTerminatorOpInterface"), "{error}");
     }
@@ -1710,7 +1640,7 @@ builtin.function public extern("C") @f() {
     fn exit_verifier_checks_the_resolvers_originating_region() {
         let error = rejection(
             "wrong_exit_origin.hir",
-            &RESOLVER_CHECK_PROGRAM.replace("BODY", "test.wrong_origin_exit %j : (u32);"),
+            &RESOLVER_CHECK_PROGRAM.replace("BODY", "test.wrong_origin_exit %j : (i32);"),
         );
         assert!(error.contains("originating region"), "{error}");
     }
@@ -1859,37 +1789,6 @@ builtin.function public extern("C") @f() {
             })
     }
 
-    #[test]
-    fn loop_range_requirements_distinguish_conditions_from_forwarded_values() -> Result<(), Report>
-    {
-        let context = Rc::new(Context::default());
-        let source = r#"
-builtin.function public extern("C") @forward(%condition: i1, %value: u32) -> u32 {
-    %result = scf.while %value before {
-    ^head(%current: u32):
-        scf.condition %condition, %current : (i1, u32);
-    } after {
-    ^body(%next: u32):
-        scf.yield %next : (u32);
-    } : (u32) -> u32;
-    builtin.ret %result : (u32);
-};"#;
-        let (function, _) =
-            parse_function_fixpoint(&context, "loop_range_requirements.hir", source)?;
-        let function = function.borrow();
-        let while_op = find_op::<While>(&function);
-        let while_op = while_op.borrow();
-        assert_eq!(operation_operand_range_requirement(while_op.as_operation(), 0), None);
-        let condition = while_op.condition_op().unwrap();
-        let condition = condition.borrow();
-        assert_eq!(
-            operation_operand_range_requirement(condition.as_operation(), 0),
-            Some(ValueRangeConstraint::Type(Type::I1))
-        );
-        assert_eq!(operation_operand_range_requirement(condition.as_operation(), 1), None);
-        Ok(())
-    }
-
     /// The regions of an operation with operands must parse with no pre-bound entry arguments:
     /// the `^block(...)` header the printer emits declares them. Also covers the variadic
     /// forwarded operands of `scf.condition`, which parse as the trailing comma list following
@@ -1898,33 +1797,35 @@ builtin.function public extern("C") @forward(%condition: i1, %value: u32) -> u32
     fn parse_scf_while_round_trips() -> Result<(), Report> {
         let context = Rc::new(Context::default());
         let source = "\
-builtin.function public extern(\"C\") @count_to(%n: u32) -> u32 {
-    %zero = arith.constant 0 : u32;
+builtin.function public extern(\"C\") @count_to(%n: i32) -> i32 {
+    %zero = arith.constant 0 : i32;
     %count = scf.while %zero before {
-    ^head(%i: u32):
-        %continue = arith.lt %i, %n;
-        scf.condition %continue, %i : (i1, u32);
+    ^head(%i: i32):
+        %continue = arith.cmpi ult %i, %n;
+        scf.condition %continue, %i : (i1, i32);
     } after {
-    ^body(%j: u32):
-        %next = arith.incr %j;
-        scf.yield %next : (u32);
-    } : (u32) -> u32;
-    builtin.ret %count : (u32);
+    ^body(%j: i32):
+        %one = arith.constant 1 : i32;
+        %next = arith.add %j, %one;
+        scf.yield %next : (i32);
+    } : (i32) -> i32;
+    builtin.ret %count : (i32);
 };";
         let (function, printed) = parse_function_fixpoint(&context, "parse_scf_while.hir", source)?;
         expect![[r#"
-            builtin.function public extern("C") @count_to(%0: u32) -> u32 {
-                %1 = arith.constant 0 : u32;
-                %6 = scf.while %1 before {
-                ^block2(%2: u32):
-                    %3 = arith.lt %2, %0;
-                    scf.condition %3, %2 : (i1, u32);
+            builtin.function public extern("C") @count_to(%0: i32) -> i32 {
+                %1 = arith.constant 0 : i32;
+                %7 = scf.while %1 before {
+                ^block2(%2: i32):
+                    %3 = arith.cmpi ult %2, %0;
+                    scf.condition %3, %2 : (i1, i32);
                 } after {
-                ^block3(%4: u32):
-                    %5 = arith.incr %4;
-                    scf.yield %5 : (u32);
-                } : (u32) -> (u32);
-                builtin.ret %6 : (u32);
+                ^block3(%4: i32):
+                    %5 = arith.constant 1 : i32;
+                    %6 = arith.add %4, %5;
+                    scf.yield %6 : (i32);
+                } : (i32) -> (i32);
+                builtin.ret %7 : (i32);
             };"#]]
         .assert_eq(&printed);
 
@@ -1947,32 +1848,32 @@ builtin.function public extern(\"C\") @count_to(%n: u32) -> u32 {
     fn parse_scf_condition_without_forwarded_operands() -> Result<(), Report> {
         let context = Rc::new(Context::default());
         let source = "\
-builtin.function public extern(\"C\") @spin(%n: u32) -> u32 {
-    %zero = arith.constant 0 : u32;
+builtin.function public extern(\"C\") @spin(%n: i32) -> i32 {
+    %zero = arith.constant 0 : i32;
     scf.while %zero before {
-    ^head(%i: u32):
-        %continue = arith.lt %i, %n;
+    ^head(%i: i32):
+        %continue = arith.cmpi ult %i, %n;
         scf.condition %continue : (i1);
     } after {
     ^body:
-        scf.yield %zero : (u32);
-    } : (u32) -> ();
-    builtin.ret %n : (u32);
+        scf.yield %zero : (i32);
+    } : (i32) -> ();
+    builtin.ret %n : (i32);
 };";
         let (function, printed) =
             parse_function_fixpoint(&context, "parse_scf_condition_bare.hir", source)?;
         expect![[r#"
-            builtin.function public extern("C") @spin(%0: u32) -> u32 {
-                %1 = arith.constant 0 : u32;
+            builtin.function public extern("C") @spin(%0: i32) -> i32 {
+                %1 = arith.constant 0 : i32;
                 scf.while %1 before {
-                ^block2(%2: u32):
-                    %3 = arith.lt %2, %0;
+                ^block2(%2: i32):
+                    %3 = arith.cmpi ult %2, %0;
                     scf.condition %3 : (i1);
                 } after {
                 ^block3:
-                    scf.yield %1 : (u32);
-                } : (u32) -> ();
-                builtin.ret %0 : (u32);
+                    scf.yield %1 : (i32);
+                } : (i32) -> ();
+                builtin.ret %0 : (i32);
             };"#]]
         .assert_eq(&printed);
 
@@ -1993,26 +1894,26 @@ builtin.function public extern(\"C\") @spin(%n: u32) -> u32 {
     fn parse_multi_name_result_bindings() -> Result<(), Report> {
         let context = Rc::new(Context::default());
         let source = "\
-builtin.function public extern(\"C\") @pick(%c: i1, %a: u32, %b: u32) -> u32 {
+builtin.function public extern(\"C\") @pick(%c: i1, %a: i32, %b: i32) -> i32 {
     %x, %y = scf.if %c then {
-        scf.yield %a, %b : (u32, u32);
+        scf.yield %a, %b : (i32, i32);
     } else {
-        scf.yield %b, %a : (u32, u32);
-    } : (i1) -> (u32, u32);
-    %sum = arith.add %x, %y <{ overflow = #builtin.overflow<unchecked> }>;
-    builtin.ret %sum : (u32);
+        scf.yield %b, %a : (i32, i32);
+    } : (i1) -> (i32, i32);
+    %sum = arith.add %x, %y <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+    builtin.ret %sum : (i32);
 };";
         let (function, printed) =
             parse_function_fixpoint(&context, "parse_multi_result.hir", source)?;
         expect![[r#"
-            builtin.function public extern("C") @pick(%0: i1, %1: u32, %2: u32) -> u32 {
+            builtin.function public extern("C") @pick(%0: i1, %1: i32, %2: i32) -> i32 {
                 %3, %4 = scf.if %0 then {
-                    scf.yield %1, %2 : (u32, u32);
+                    scf.yield %1, %2 : (i32, i32);
                 } else {
-                    scf.yield %2, %1 : (u32, u32);
-                } : (i1) -> (u32, u32);
-                %5 = arith.add %3, %4 <{ overflow = #builtin.overflow<unchecked> }>;
-                builtin.ret %5 : (u32);
+                    scf.yield %2, %1 : (i32, i32);
+                } : (i1) -> (i32, i32);
+                %5 = arith.add %3, %4 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+                builtin.ret %5 : (i32);
             };"#]]
         .assert_eq(&printed);
 
@@ -2036,16 +1937,16 @@ builtin.function public extern(\"C\") @pick(%c: i1, %a: u32, %b: u32) -> u32 {
         let context = Rc::new(Context::default());
         let names = (0..NUM_RESULTS).map(|i| format!("%r{i}")).collect::<Vec<_>>().join(", ");
         let values = ["%a"; NUM_RESULTS].join(", ");
-        let types = ["u32"; NUM_RESULTS].join(", ");
+        let types = ["i32"; NUM_RESULTS].join(", ");
         let source = format!(
             "\
-builtin.function public extern(\"C\") @wide(%c: i1, %a: u32) -> u32 {{
+builtin.function public extern(\"C\") @wide(%c: i1, %a: i32) -> i32 {{
     {names} = scf.if %c then {{
         scf.yield {values} : ({types});
     }} else {{
         scf.yield {values} : ({types});
     }} : (i1) -> ({types});
-    builtin.ret %r{last} : (u32);
+    builtin.ret %r{last} : (i32);
 }};",
             last = NUM_RESULTS - 1
         );
@@ -2065,28 +1966,28 @@ builtin.function public extern(\"C\") @wide(%c: i1, %a: u32) -> u32 {{
     fn parse_index_switch_region_order() -> Result<(), Report> {
         let context = Rc::new(Context::default());
         let source = "\
-builtin.function public extern(\"C\") @dispatch(%sel: u32, %a: u32, %b: u32) -> u32 {
+builtin.function public extern(\"C\") @dispatch(%sel: i32, %a: i32, %b: i32) -> i32 {
     %r = scf.index_switch %sel
     case 1 {
-        scf.yield %a : (u32);
+        scf.yield %a : (i32);
     }
     default {
-        scf.yield %b : (u32);
-    } : u32;
-    builtin.ret %r : (u32);
+        scf.yield %b : (i32);
+    } : i32;
+    builtin.ret %r : (i32);
 };";
         let (function, printed) =
             parse_function_fixpoint(&context, "parse_index_switch.hir", source)?;
         expect![[r#"
-            builtin.function public extern("C") @dispatch(%0: u32, %1: u32, %2: u32) -> u32 {
-                %3 = scf.index_switch %0
+            builtin.function public extern("C") @dispatch(%0: i32, %1: i32, %2: i32) -> i32 {
+                %3 = scf.index_switch %0 
                 case 1 {
-                    scf.yield %1 : (u32);
+                    scf.yield %1 : (i32);
                 }
                 default {
-                    scf.yield %2 : (u32);
-                } : (u32);
-                builtin.ret %3 : (u32);
+                    scf.yield %2 : (i32);
+                } : (i32);
+                builtin.ret %3 : (i32);
             };"#]]
         .assert_eq(&printed);
 
@@ -2123,45 +2024,47 @@ builtin.function public extern(\"C\") @dispatch(%sel: u32, %a: u32, %b: u32) -> 
     fn parse_scf_break_round_trips() -> Result<(), Report> {
         let context = Rc::new(Context::default());
         let source = "\
-builtin.function public extern(\"C\") @first_over(%n: u32) -> u32 {
-    %zero = arith.constant 0 : u32;
+builtin.function public extern(\"C\") @first_over(%n: i32) -> i32 {
+    %zero = arith.constant 0 : i32;
     %found = scf.while %zero before {
-    ^head(%i: u32):
-        %more = arith.lt %i, %n;
-        scf.condition %more, %i : (i1, u32);
+    ^head(%i: i32):
+        %more = arith.cmpi ult %i, %n;
+        scf.condition %more, %i : (i1, i32);
     } after {
-    ^body(%j: u32):
-        %stop = arith.gt %j, %n;
+    ^body(%j: i32):
+        %stop = arith.cmpi ugt %j, %n;
         %k = scf.if %stop then {
-            scf.break 1 %j : (u32);
+            scf.break 1 %j : (i32);
         } else {
-            scf.yield %j : (u32);
-        } : (i1) -> (u32);
-        %next = arith.incr %k;
-        scf.yield %next : (u32);
-    } : (u32) -> u32;
-    builtin.ret %found : (u32);
+            scf.yield %j : (i32);
+        } : (i1) -> (i32);
+        %one = arith.constant 1 : i32;
+        %next = arith.add %k, %one;
+        scf.yield %next : (i32);
+    } : (i32) -> i32;
+    builtin.ret %found : (i32);
 };";
         let (function, printed) = parse_function_fixpoint(&context, "scf_break.hir", source)?;
         expect![[r#"
-            builtin.function public extern("C") @first_over(%0: u32) -> u32 {
-                %1 = arith.constant 0 : u32;
-                %8 = scf.while %1 before {
-                ^block2(%2: u32):
-                    %3 = arith.lt %2, %0;
-                    scf.condition %3, %2 : (i1, u32);
+            builtin.function public extern("C") @first_over(%0: i32) -> i32 {
+                %1 = arith.constant 0 : i32;
+                %9 = scf.while %1 before {
+                ^block2(%2: i32):
+                    %3 = arith.cmpi ult %2, %0;
+                    scf.condition %3, %2 : (i1, i32);
                 } after {
-                ^block3(%4: u32):
-                    %5 = arith.gt %4, %0;
+                ^block3(%4: i32):
+                    %5 = arith.cmpi ugt %4, %0;
                     %6 = scf.if %5 then {
-                        scf.break 1 %4 : (u32);
+                        scf.break 1 %4 : (i32);
                     } else {
-                        scf.yield %4 : (u32);
-                    } : (i1) -> (u32);
-                    %7 = arith.incr %6;
-                    scf.yield %7 : (u32);
-                } : (u32) -> (u32);
-                builtin.ret %8 : (u32);
+                        scf.yield %4 : (i32);
+                    } : (i1) -> (i32);
+                    %7 = arith.constant 1 : i32;
+                    %8 = arith.add %6, %7;
+                    scf.yield %8 : (i32);
+                } : (i32) -> (i32);
+                builtin.ret %9 : (i32);
             };"#]]
         .assert_eq(&printed);
 
@@ -2201,47 +2104,51 @@ builtin.function public extern(\"C\") @first_over(%n: u32) -> u32 {
     fn parse_scf_continue_round_trips() -> Result<(), Report> {
         let context = Rc::new(Context::default());
         let source = "\
-builtin.function public extern(\"C\") @skip_odds(%n: u32) -> u32 {
-    %zero = arith.constant 0 : u32;
+builtin.function public extern(\"C\") @skip_odds(%n: i32) -> i32 {
+    %zero = arith.constant 0 : i32;
     %total = scf.while %zero before {
-    ^head(%i: u32):
-        %more = arith.lt %i, %n;
-        scf.condition %more, %i : (i1, u32);
+    ^head(%i: i32):
+        %more = arith.cmpi ult %i, %n;
+        scf.condition %more, %i : (i1, i32);
     } after {
-    ^body(%j: u32):
-        %odd = arith.gt %j, %n;
+    ^body(%j: i32):
+        %odd = arith.cmpi ugt %j, %n;
         %k = scf.if %odd then {
-            %bump = arith.incr %j;
-            scf.continue 1 %bump : (u32);
+            %bump_one = arith.constant 1 : i32;
+            %bump = arith.add %j, %bump_one;
+            scf.continue 1 %bump : (i32);
         } else {
-            scf.yield %j : (u32);
-        } : (i1) -> (u32);
-        %next = arith.incr %k;
-        scf.yield %next : (u32);
-    } : (u32) -> u32;
-    builtin.ret %total : (u32);
+            scf.yield %j : (i32);
+        } : (i1) -> (i32);
+        %one = arith.constant 1 : i32;
+        %next = arith.add %k, %one;
+        scf.yield %next : (i32);
+    } : (i32) -> i32;
+    builtin.ret %total : (i32);
 };";
         let (function, printed) = parse_function_fixpoint(&context, "scf_continue.hir", source)?;
         expect![[r#"
-            builtin.function public extern("C") @skip_odds(%0: u32) -> u32 {
-                %1 = arith.constant 0 : u32;
-                %9 = scf.while %1 before {
-                ^block2(%2: u32):
-                    %3 = arith.lt %2, %0;
-                    scf.condition %3, %2 : (i1, u32);
+            builtin.function public extern("C") @skip_odds(%0: i32) -> i32 {
+                %1 = arith.constant 0 : i32;
+                %11 = scf.while %1 before {
+                ^block2(%2: i32):
+                    %3 = arith.cmpi ult %2, %0;
+                    scf.condition %3, %2 : (i1, i32);
                 } after {
-                ^block3(%4: u32):
-                    %5 = arith.gt %4, %0;
-                    %7 = scf.if %5 then {
-                        %6 = arith.incr %4;
-                        scf.continue 1 %6 : (u32);
+                ^block3(%4: i32):
+                    %5 = arith.cmpi ugt %4, %0;
+                    %8 = scf.if %5 then {
+                        %6 = arith.constant 1 : i32;
+                        %7 = arith.add %4, %6;
+                        scf.continue 1 %7 : (i32);
                     } else {
-                        scf.yield %4 : (u32);
-                    } : (i1) -> (u32);
-                    %8 = arith.incr %7;
-                    scf.yield %8 : (u32);
-                } : (u32) -> (u32);
-                builtin.ret %9 : (u32);
+                        scf.yield %4 : (i32);
+                    } : (i1) -> (i32);
+                    %9 = arith.constant 1 : i32;
+                    %10 = arith.add %8, %9;
+                    scf.yield %10 : (i32);
+                } : (i32) -> (i32);
+                builtin.ret %11 : (i32);
             };"#]]
         .assert_eq(&printed);
 
@@ -2297,17 +2204,17 @@ builtin.function public extern(\"C\") @skip_odds(%n: u32) -> u32 {
         let err = rejection(
             "v1.hir",
             "\
-builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
-    %zero = arith.constant 0 : u32;
+builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
+    %zero = arith.constant 0 : i32;
     %r = scf.while %zero before {
-    ^head(%i: u32):
-        %more = arith.lt %i, %n;
-        scf.condition %more, %i : (i1, u32);
+    ^head(%i: i32):
+        %more = arith.cmpi ult %i, %n;
+        scf.condition %more, %i : (i1, i32);
     } after {
-    ^body(%j: u32):
-        scf.break 0 %j : (u32);
-    } : (u32) -> u32;
-    builtin.ret %r : (u32);
+    ^body(%j: i32):
+        scf.break 0 %j : (i32);
+    } : (i32) -> i32;
+    builtin.ret %r : (i32);
 };",
         );
         assert!(err.contains("must be at least 1"), "unexpected diagnostic: {err}");
@@ -2320,25 +2227,25 @@ builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
         let err = rejection(
             "v2.hir",
             "\
-builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
-    %zero = arith.constant 0 : u32;
+builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
+    %zero = arith.constant 0 : i32;
     %r = scf.while %zero before {
-    ^outer_head(%i: u32):
-        %more = arith.lt %i, %n;
-        scf.condition %more, %i : (i1, u32);
+    ^outer_head(%i: i32):
+        %more = arith.cmpi ult %i, %n;
+        scf.condition %more, %i : (i1, i32);
     } after {
-    ^outer_body(%j: u32):
+    ^outer_body(%j: i32):
         %inner = scf.while %j before {
-        ^inner_head(%k: u32):
-            %go = arith.lt %k, %n;
-            scf.condition %go, %k : (i1, u32);
+        ^inner_head(%k: i32):
+            %go = arith.cmpi ult %k, %n;
+            scf.condition %go, %k : (i1, i32);
         } after {
-        ^inner_body(%m: u32):
-            scf.break 3 %m : (u32);
-        } : (u32) -> u32;
-        scf.yield %inner : (u32);
-    } : (u32) -> u32;
-    builtin.ret %r : (u32);
+        ^inner_body(%m: i32):
+            scf.break 3 %m : (i32);
+        } : (i32) -> i32;
+        scf.yield %inner : (i32);
+    } : (i32) -> i32;
+    builtin.ret %r : (i32);
 };",
         );
         assert!(err.contains("names enclosing loop 3"), "unexpected diagnostic: {err}");
@@ -2358,20 +2265,20 @@ builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
     #[test]
     fn v3_rejects_an_exit_crossing_an_op_that_has_not_opted_in() {
         const PROGRAM: &str = "\
-builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
-    %zero = arith.constant 0 : u32;
+builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
+    %zero = arith.constant 0 : i32;
     %r = scf.while %zero before {
-    ^head(%i: u32):
-        %more = arith.lt %i, %n;
-        scf.condition %more, %i : (i1, u32);
+    ^head(%i: i32):
+        %more = arith.cmpi ult %i, %n;
+        scf.condition %more, %i : (i1, i32);
     } after {
-    ^body(%j: u32):
+    ^body(%j: i32):
         INTERMEDIATE {
-            scf.break 1 %j : (u32);
+            scf.break 1 %j : (i32);
         };
-        scf.yield %j : (u32);
-    } : (u32) -> u32;
-    builtin.ret %r : (u32);
+        scf.yield %j : (i32);
+    } : (i32) -> i32;
+    builtin.ret %r : (i32);
 };";
 
         let err = rejection("v3.hir", &PROGRAM.replace("INTERMEDIATE", "test.opaque_region"));
@@ -2401,22 +2308,22 @@ builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
         let err = rejection(
             "v4.hir",
             "\
-builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
-    %zero = arith.constant 0 : u32;
+builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
+    %zero = arith.constant 0 : i32;
     %r = scf.while %zero before {
-    ^head(%i: u32):
-        %more = arith.lt %i, %n;
-        scf.condition %more, %i : (i1, u32);
+    ^head(%i: i32):
+        %more = arith.cmpi ult %i, %n;
+        scf.condition %more, %i : (i1, i32);
     } after {
-    ^body(%j: u32):
-        %flag = arith.gt %j, %n;
+    ^body(%j: i32):
+        %flag = arith.cmpi ugt %j, %n;
         scf.break 1 %flag : (i1);
-    } : (u32) -> u32;
-    builtin.ret %r : (u32);
+    } : (i32) -> i32;
+    builtin.ret %r : (i32);
 };",
         );
         assert!(
-            err.contains("this break carries (i1), but the loop it exits produces (u32)"),
+            err.contains("this break carries (i1), but the loop it exits produces (i32)"),
             "unexpected diagnostic: {err}"
         );
     }
@@ -2427,22 +2334,22 @@ builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
         let err = rejection(
             "v5.hir",
             "\
-builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
-    %zero = arith.constant 0 : u32;
+builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
+    %zero = arith.constant 0 : i32;
     %r = scf.while %zero before {
-    ^head(%i: u32):
-        %more = arith.lt %i, %n;
-        scf.condition %more, %i : (i1, u32);
+    ^head(%i: i32):
+        %more = arith.cmpi ult %i, %n;
+        scf.condition %more, %i : (i1, i32);
     } after {
-    ^body(%j: u32):
-        %flag = arith.gt %j, %n;
+    ^body(%j: i32):
+        %flag = arith.cmpi ugt %j, %n;
         scf.continue 1 %flag : (i1);
-    } : (u32) -> u32;
-    builtin.ret %r : (u32);
+    } : (i32) -> i32;
+    builtin.ret %r : (i32);
 };",
         );
         assert!(
-            err.contains("this continue carries (i1), but the loop it targets iterates on (u32)"),
+            err.contains("this continue carries (i1), but the loop it targets iterates on (i32)"),
             "unexpected diagnostic: {err}"
         );
     }
@@ -2456,16 +2363,16 @@ builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
         let err = rejection(
             "v6.hir",
             "\
-builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
-    %zero = arith.constant 0 : u32;
+builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
+    %zero = arith.constant 0 : i32;
     %r = scf.while %zero before {
-    ^head(%i: u32):
-        scf.continue 1 %i : (u32);
+    ^head(%i: i32):
+        scf.continue 1 %i : (i32);
     } after {
-    ^body(%j: u32):
-        scf.yield %j : (u32);
-    } : (u32) -> u32;
-    builtin.ret %r : (u32);
+    ^body(%j: i32):
+        scf.yield %j : (i32);
+    } : (i32) -> i32;
+    builtin.ret %r : (i32);
 };",
         );
         assert!(
@@ -2479,16 +2386,16 @@ builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
             &context,
             "v6_accept.hir",
             "\
-builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
-    %zero = arith.constant 0 : u32;
+builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
+    %zero = arith.constant 0 : i32;
     %r = scf.while %zero before {
-    ^head(%i: u32):
-        scf.break 1 %i : (u32);
+    ^head(%i: i32):
+        scf.break 1 %i : (i32);
     } after {
-    ^body(%j: u32):
-        scf.yield %j : (u32);
-    } : (u32) -> u32;
-    builtin.ret %r : (u32);
+    ^body(%j: i32):
+        scf.yield %j : (i32);
+    } : (i32) -> i32;
+    builtin.ret %r : (i32);
 };",
         )
         .expect("a break in a loop's header is equivalent to `scf.condition(false, args)`");
@@ -2500,8 +2407,8 @@ builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
         let err = rejection(
             "v7.hir",
             "\
-builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
-    scf.break 1 %n : (u32);
+builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
+    scf.break 1 %n : (i32);
 };",
         );
         assert!(err.contains("names enclosing loop 1"), "unexpected diagnostic: {err}");
@@ -2515,24 +2422,24 @@ builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
     /// SAME shape the rule's own witness runs on, and the only variable is which op sits in the
     /// hole and how deep.
     const RESOLVER_CHECK_PROGRAM: &str = "\
-builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
-    %zero = arith.constant 0 : u32;
+builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
+    %zero = arith.constant 0 : i32;
     %r = scf.while %zero before {
-    ^head(%i: u32):
-        %more = arith.lt %i, %n;
-        scf.condition %more, %i : (i1, u32);
+    ^head(%i: i32):
+        %more = arith.cmpi ult %i, %n;
+        scf.condition %more, %i : (i1, i32);
     } after {
-    ^body(%j: u32):
+    ^body(%j: i32):
         BODY
-    } : (u32) -> u32;
-    builtin.ret %r : (u32);
+    } : (i32) -> i32;
+    builtin.ret %r : (i32);
 };";
 
     /// The reject-side body: the exit one region deeper, inside `wrapper`.
     fn nested_body(wrapper: &str, exit: &str) -> alloc::string::String {
         alloc::format!(
-            "{wrapper} {{\n            {exit} %j : (u32);\n        }};\n        scf.yield %j : \
-             (u32);"
+            "{wrapper} {{\n            {exit} %j : (i32);\n        }};\n        scf.yield %j : \
+             (i32);"
         )
     }
 
@@ -2540,7 +2447,7 @@ builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
     ///
     /// [BlindExit] never asks whether it crossed a transparent op, so on the reject side it
     /// returns a confident `Resolved` naming the loop. The rejection therefore cannot come from
-    /// the implementor, and it does not: it comes from `hir`'s own re-derivation, in the same
+    /// the implementor, and it does not: it comes from the interface verifier's own re-derivation, in the same
     /// words rule 3 has always used.
     ///
     /// **The accept side is what makes this a test of the CHECK.** The same op, one region
@@ -2567,7 +2474,7 @@ builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
         parse_function_fixpoint(
             &context,
             "v8_accept.hir",
-            &RESOLVER_CHECK_PROGRAM.replace("BODY", "test.blind_exit %j : (u32);"),
+            &RESOLVER_CHECK_PROGRAM.replace("BODY", "test.blind_exit %j : (i32);"),
         )
         .expect("an exit whose resolver returns the right answer must be accepted");
     }
@@ -2598,12 +2505,12 @@ builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
         parse_function_fixpoint(
             &context,
             "v9_accept.hir",
-            &RESOLVER_CHECK_PROGRAM.replace("BODY", "test.stray_exit %j : (u32);"),
+            &RESOLVER_CHECK_PROGRAM.replace("BODY", "test.stray_exit %j : (i32);"),
         )
         .expect("an exit whose resolver returns the right answer must be accepted");
     }
 
-    /// **V-10** — the Q9-6 carry, on the HIR side: `ResolvedExit::callable` is CHECKED.
+    /// **V-10** — `ResolvedExit::callable` is CHECKED.
     ///
     /// [DisownedExit] and [BlindExit] resolve to the same target from the same region in the same
     /// program; the only difference between their two resolutions is that one names a `callable`
@@ -2614,7 +2521,7 @@ builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
     fn v10_the_blanket_rejects_a_resolver_that_claimed_the_wrong_callable() {
         let err = rejection(
             "v10.hir",
-            &RESOLVER_CHECK_PROGRAM.replace("BODY", "test.disowned_exit %j : (u32);"),
+            &RESOLVER_CHECK_PROGRAM.replace("BODY", "test.disowned_exit %j : (i32);"),
         );
         assert!(
             err.contains("resolved to a target in 'scf.while'"),
@@ -2630,8 +2537,224 @@ builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
         parse_function_fixpoint(
             &context,
             "v10_control.hir",
-            &RESOLVER_CHECK_PROGRAM.replace("BODY", "test.blind_exit %j : (u32);"),
+            &RESOLVER_CHECK_PROGRAM.replace("BODY", "test.blind_exit %j : (i32);"),
         )
         .expect("an exit that leaves `callable` unreported must be accepted");
+    }
+
+    /// `scf.index_switch` cases are `i32`s written as signed decimals: `case -1` parses, prints
+    /// back as `case -1`, and is the case value `-1`.
+    #[test]
+    fn index_switch_with_a_negative_case_round_trips() -> Result<(), Report> {
+        let context = Rc::new(Context::default());
+        let source = "\
+builtin.function public extern(\"C\") @dispatch(%sel: i32, %a: i32, %b: i32) -> i32 {
+    %r = scf.index_switch %sel
+    case -1 {
+        scf.yield %a : (i32);
+    }
+    case 2147483647 {
+        scf.yield %b : (i32);
+    }
+    default {
+        scf.yield %b : (i32);
+    } : (i32);
+    builtin.ret %r : (i32);
+};";
+        let (function, printed) =
+            parse_function_fixpoint(&context, "parse_index_switch_negative.hir", source)?;
+        expect![[r#"
+            builtin.function public extern("C") @dispatch(%0: i32, %1: i32, %2: i32) -> i32 {
+                %3 = scf.index_switch %0 
+                case -1 {
+                    scf.yield %1 : (i32);
+                }
+                case 2147483647 {
+                    scf.yield %2 : (i32);
+                }
+                default {
+                    scf.yield %2 : (i32);
+                } : (i32);
+                builtin.ret %3 : (i32);
+            };"#]]
+        .assert_eq(&printed);
+
+        let function = function.borrow();
+        let switch_op = find_op::<IndexSwitch>(&function);
+        let switch_op = switch_op.borrow();
+        assert_eq!(switch_op.cases().iter().copied().collect::<Vec<_>>(), [-1, i32::MAX]);
+        assert_eq!(switch_op.get_case_index_for_selector(-1), Some(0));
+        assert_eq!(switch_op.get_case_index_for_selector(i32::MAX), Some(1));
+        assert_eq!(switch_op.get_case_index_for_selector(0), None);
+
+        Ok(())
+    }
+
+    /// A constant selector is compared with the cases as a 32-bit pattern: the `i32` constant
+    /// `0xffffffff` is `-1`, so it selects `case -1` (and invokes only that region), while a
+    /// selector matching no case selects the default region.
+    #[test]
+    fn index_switch_compares_a_constant_selector_as_a_32_bit_pattern() -> Result<(), Report> {
+        let context = Rc::new(Context::default());
+        let source = "\
+builtin.function public extern(\"C\") @dispatch(%sel: i32, %a: i32, %b: i32) -> i32 {
+    %r = scf.index_switch %sel
+    case -1 {
+        scf.yield %a : (i32);
+    }
+    default {
+        scf.yield %b : (i32);
+    } : (i32);
+    builtin.ret %r : (i32);
+};";
+        let (function, _) =
+            parse_function_fixpoint(&context, "index_switch_selector_pattern.hir", source)?;
+        let function = function.borrow();
+        let switch_op = find_op::<IndexSwitch>(&function);
+        let switch_op = switch_op.borrow();
+        let case_region = switch_op.get_case_region(0);
+        let default_region = switch_op.default_region().as_region_ref();
+
+        let all_ones = context.int_attr(Int::from_bits(32, 0xffff_ffff), context.i32());
+        let entered = |selector: AttributeRef| {
+            switch_op
+                .get_entry_successor_regions(&[Some(selector)])
+                .map(|successor| {
+                    successor
+                        .region_graph_successor()
+                        .expect("an index_switch entry successor is a region")
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(entered(all_ones), [case_region]);
+        assert_eq!(
+            switch_op.get_region_invocation_bounds(&[Some(all_ones)]).as_slice(),
+            [InvocationBounds::Never, InvocationBounds::Exact(1)]
+        );
+
+        let seven = context.int_attr(Int::from_bits(32, 7), context.i32());
+        assert_eq!(entered(seven), [default_region]);
+        assert_eq!(
+            switch_op.get_region_invocation_bounds(&[Some(seven)]).as_slice(),
+            [InvocationBounds::Exact(1), InvocationBounds::Never]
+        );
+
+        Ok(())
+    }
+
+    /// A case value may appear once; the second `case 1` is rejected as before.
+    #[test]
+    fn index_switch_rejects_a_duplicate_case() {
+        let err = rejection(
+            "index_switch_duplicate_case.hir",
+            "\
+builtin.function public extern(\"C\") @dispatch(%sel: i32, %a: i32) -> i32 {
+    %r = scf.index_switch %sel
+    case 1 {
+        scf.yield %a : (i32);
+    }
+    case 1 {
+        scf.yield %a : (i32);
+    }
+    default {
+        scf.yield %a : (i32);
+    } : (i32);
+    builtin.ret %r : (i32);
+};",
+        );
+        assert!(
+            err.contains("invalid scf.index_switch operation"),
+            "unexpected diagnostic: {err}"
+        );
+    }
+
+    /// Rule 1 covers a negative `levels` too, with the same message as `levels = 0`.
+    #[test]
+    fn v1_rejects_a_negative_level() {
+        let err = rejection(
+            "v1_negative.hir",
+            "\
+builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
+    %zero = arith.constant 0 : i32;
+    %r = scf.while %zero before {
+    ^head(%i: i32):
+        %more = arith.cmpi ult %i, %n;
+        scf.condition %more, %i : (i1, i32);
+    } after {
+    ^body(%j: i32):
+        scf.continue -1 %j : (i32);
+    } : (i32) -> (i32);
+    builtin.ret %r : (i32);
+};",
+        );
+        assert!(err.contains("must be at least 1"), "unexpected diagnostic: {err}");
+        assert!(err.contains("names level -1"), "unexpected diagnostic: {err}");
+    }
+
+    /// `levels` round-trips through text, and the builders store the `i32` they are given.
+    #[test]
+    fn exit_levels_round_trip() -> Result<(), Report> {
+        let context = Rc::new(Context::default());
+        let source = "\
+builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
+    %zero = arith.constant 0 : i32;
+    %r = scf.while %zero before {
+    ^outer_head(%i: i32):
+        %more = arith.cmpi ult %i, %n;
+        scf.condition %more, %i : (i1, i32);
+    } after {
+    ^outer_body(%j: i32):
+        %inner = scf.while %j before {
+        ^inner_head(%k: i32):
+            %go = arith.cmpi ult %k, %n;
+            scf.condition %go, %k : (i1, i32);
+        } after {
+        ^inner_body(%m: i32):
+            %stop = arith.cmpi ugt %m, %n;
+            %p = scf.if %stop then {
+                scf.break 2 %m : (i32);
+            } else {
+                scf.continue 1 %m : (i32);
+            } : (i1) -> (i32);
+            scf.yield %p : (i32);
+        } : (i32) -> (i32);
+        scf.yield %inner : (i32);
+    } : (i32) -> (i32);
+    builtin.ret %r : (i32);
+};";
+        let (function, printed) = parse_function_fixpoint(&context, "exit_levels.hir", source)?;
+        assert!(printed.contains("scf.break 2 %"), "{printed}");
+        assert!(printed.contains("scf.continue 1 %"), "{printed}");
+
+        let mut levels = Vec::new();
+        function.as_operation_ref().borrow().prewalk_all(|op| {
+            if let Some(exit) = op.downcast_ref::<Break>() {
+                levels.push(("break", *exit.get_levels()));
+            } else if let Some(exit) = op.downcast_ref::<Continue>() {
+                levels.push(("continue", *exit.get_levels()));
+            }
+        });
+        assert_eq!(levels, [("break", 2), ("continue", 1)]);
+
+        let mut builder = OpBuilder::new(context.clone());
+        let block = context.create_block_with_params([context.i32()]);
+        builder.set_insertion_point_to_end(block);
+        let arg = block.borrow().arguments()[0].upcast();
+        let exit = crate::StructuredControlFlowOpBuilder::r#break(
+            &mut builder,
+            3,
+            [arg],
+            SourceSpan::UNKNOWN,
+        )?;
+        assert_eq!(*exit.borrow().get_levels(), 3);
+        let exit = crate::StructuredControlFlowOpBuilder::r#continue(
+            &mut builder,
+            -2,
+            [arg],
+            SourceSpan::UNKNOWN,
+        )?;
+        assert_eq!(*exit.borrow().get_levels(), -2);
+
+        Ok(())
     }
 }

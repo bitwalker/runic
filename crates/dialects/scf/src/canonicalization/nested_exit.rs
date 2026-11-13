@@ -135,30 +135,31 @@ mod tests {
     #[test]
     fn while_unused_result_bails_on_a_loop_a_nested_break_addresses() {
         const PROGRAM: &str = "\
-builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
-    %zero = arith.constant 0 : u32;
+builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
+    %zero = arith.constant 0 : i32;
     %r0, %r1 = scf.while %zero, %zero before {
-    ^head(%i: u32, %k: u32):
-        %more = arith.lt %i, %n;
-        scf.condition %more, %i, %k : (i1, u32, u32);
+    ^head(%i: i32, %k: i32):
+        %more = arith.cmpi ult %i, %n;
+        scf.condition %more, %i, %k : (i1, i32, i32);
     } after {
-    ^body(%j: u32, %m: u32):
-        %flag = arith.gt %j, %n;
+    ^body(%j: i32, %m: i32):
+        %flag = arith.cmpi ugt %j, %n;
         %picked = scf.if %flag then {
             EXIT
         } else {
-            scf.yield %j : (u32);
-        } : (i1) -> (u32);
-        %next = arith.incr %picked;
-        scf.yield %next, %next : (u32, u32);
-    } : (u32, u32) -> (u32, u32);
-    builtin.ret %r0 : (u32);
+            scf.yield %j : (i32);
+        } : (i1) -> (i32);
+        %one = arith.constant 1 : i32;
+        %next = arith.add %picked, %one;
+        scf.yield %next, %next : (i32, i32);
+    } : (i32, i32) -> (i32, i32);
+    builtin.ret %r0 : (i32);
 };";
 
         matched_pair(
             "while_unused_result",
-            &PROGRAM.replace("EXIT", "scf.break 1 %j, %j : (u32, u32);"),
-            &PROGRAM.replace("EXIT", "scf.yield %j : (u32);"),
+            &PROGRAM.replace("EXIT", "scf.break 1 %j, %j : (i32, i32);"),
+            &PROGRAM.replace("EXIT", "scf.yield %j : (i32);"),
             |context| Box::new(WhileUnusedResult::new(context)),
         );
     }
@@ -168,30 +169,31 @@ builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
     #[test]
     fn while_remove_duplicated_results_bails_on_a_loop_a_nested_break_addresses() {
         const PROGRAM: &str = "\
-builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
-    %zero = arith.constant 0 : u32;
+builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
+    %zero = arith.constant 0 : i32;
     %r0, %r1 = scf.while %zero, %zero before {
-    ^head(%i: u32, %k: u32):
-        %more = arith.lt %i, %n;
-        scf.condition %more, %i, %i : (i1, u32, u32);
+    ^head(%i: i32, %k: i32):
+        %more = arith.cmpi ult %i, %n;
+        scf.condition %more, %i, %i : (i1, i32, i32);
     } after {
-    ^body(%j: u32, %m: u32):
-        %flag = arith.gt %j, %n;
+    ^body(%j: i32, %m: i32):
+        %flag = arith.cmpi ugt %j, %n;
         %picked = scf.if %flag then {
             EXIT
         } else {
-            scf.yield %j : (u32);
-        } : (i1) -> (u32);
-        %next = arith.incr %picked;
-        scf.yield %next, %next : (u32, u32);
-    } : (u32, u32) -> (u32, u32);
-    builtin.ret %r0 : (u32);
+            scf.yield %j : (i32);
+        } : (i1) -> (i32);
+        %one = arith.constant 1 : i32;
+        %next = arith.add %picked, %one;
+        scf.yield %next, %next : (i32, i32);
+    } : (i32, i32) -> (i32, i32);
+    builtin.ret %r0 : (i32);
 };";
 
         matched_pair(
             "while_remove_duplicated_results",
-            &PROGRAM.replace("EXIT", "scf.break 1 %j, %m : (u32, u32);"),
-            &PROGRAM.replace("EXIT", "scf.yield %j : (u32);"),
+            &PROGRAM.replace("EXIT", "scf.break 1 %j, %m : (i32, i32);"),
+            &PROGRAM.replace("EXIT", "scf.yield %j : (i32);"),
             |context| Box::new(WhileRemoveDuplicatedResults::new(context)),
         );
     }
@@ -201,30 +203,31 @@ builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
     #[test]
     fn while_remove_unused_args_bails_on_a_loop_a_nested_continue_addresses() {
         const PROGRAM: &str = "\
-builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
-    %zero = arith.constant 0 : u32;
+builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
+    %zero = arith.constant 0 : i32;
     %r = scf.while %zero, %zero before {
-    ^head(%i: u32, %k: u32):
-        %more = arith.lt %i, %n;
-        scf.condition %more, %i : (i1, u32);
+    ^head(%i: i32, %k: i32):
+        %more = arith.cmpi ult %i, %n;
+        scf.condition %more, %i : (i1, i32);
     } after {
-    ^body(%j: u32):
-        %flag = arith.gt %j, %n;
+    ^body(%j: i32):
+        %flag = arith.cmpi ugt %j, %n;
         %picked = scf.if %flag then {
             EXIT
         } else {
-            scf.yield %j : (u32);
-        } : (i1) -> (u32);
-        %next = arith.incr %picked;
-        scf.yield %next, %next : (u32, u32);
-    } : (u32, u32) -> (u32);
-    builtin.ret %r : (u32);
+            scf.yield %j : (i32);
+        } : (i1) -> (i32);
+        %one = arith.constant 1 : i32;
+        %next = arith.add %picked, %one;
+        scf.yield %next, %next : (i32, i32);
+    } : (i32, i32) -> (i32);
+    builtin.ret %r : (i32);
 };";
 
         matched_pair(
             "while_remove_unused_args",
-            &PROGRAM.replace("EXIT", "scf.continue 1 %j, %j : (u32, u32);"),
-            &PROGRAM.replace("EXIT", "scf.yield %j : (u32);"),
+            &PROGRAM.replace("EXIT", "scf.continue 1 %j, %j : (i32, i32);"),
+            &PROGRAM.replace("EXIT", "scf.yield %j : (i32);"),
             |context| Box::new(WhileRemoveUnusedArgs::new(context)),
         );
     }
@@ -236,30 +239,31 @@ builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
     #[test]
     fn remove_loop_invariant_args_bails_on_a_loop_a_nested_continue_addresses() {
         const PROGRAM: &str = "\
-builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
-    %zero = arith.constant 0 : u32;
+builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
+    %zero = arith.constant 0 : i32;
     %r = scf.while %zero, %zero before {
-    ^head(%i: u32, %k: u32):
-        %more = arith.lt %i, %n;
-        scf.condition %more, %i : (i1, u32);
+    ^head(%i: i32, %k: i32):
+        %more = arith.cmpi ult %i, %n;
+        scf.condition %more, %i : (i1, i32);
     } after {
-    ^body(%j: u32):
-        %flag = arith.gt %j, %n;
+    ^body(%j: i32):
+        %flag = arith.cmpi ugt %j, %n;
         %picked = scf.if %flag then {
             EXIT
         } else {
-            scf.yield %j : (u32);
-        } : (i1) -> (u32);
-        %next = arith.incr %picked;
-        scf.yield %next, %zero : (u32, u32);
-    } : (u32, u32) -> (u32);
-    builtin.ret %r : (u32);
+            scf.yield %j : (i32);
+        } : (i1) -> (i32);
+        %one = arith.constant 1 : i32;
+        %next = arith.add %picked, %one;
+        scf.yield %next, %zero : (i32, i32);
+    } : (i32, i32) -> (i32);
+    builtin.ret %r : (i32);
 };";
 
         matched_pair(
             "remove_loop_invariant_args",
-            &PROGRAM.replace("EXIT", "scf.continue 1 %j, %j : (u32, u32);"),
-            &PROGRAM.replace("EXIT", "scf.yield %j : (u32);"),
+            &PROGRAM.replace("EXIT", "scf.continue 1 %j, %j : (i32, i32);"),
+            &PROGRAM.replace("EXIT", "scf.yield %j : (i32);"),
             |context| Box::new(RemoveLoopInvariantArgsFromBeforeBlock::new(context)),
         );
     }

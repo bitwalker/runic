@@ -97,7 +97,7 @@ impl RewritePattern for IfRemoveUnusedResults {
             // Compute the result types of the replacement operation.
             let new_types = used_results
                 .iter()
-                .map(|result| result.borrow().ty().clone())
+                .map(|result| result.borrow().ty())
                 .collect::<SmallVec<[_; 4]>>();
 
             (
@@ -146,7 +146,7 @@ mod tests {
     use alloc::{boxed::Box, format, rc::Rc, string::String, vec::Vec};
 
     use runic_core::{
-        Listener, ListenerType, Op, OperationRef, ProgramPoint, Report, SourceSpan, Type,
+        Listener, ListenerType, Op, OperationRef, ProgramPoint, Report, SourceSpan,
         dialects::{builtin::BuiltinOpBuilder, test::TestOpBuilder},
         patterns::{
             self, FrozenRewritePatternSet, GreedyRewriteConfig, RewritePatternSet, RewriterListener,
@@ -184,21 +184,21 @@ mod tests {
     }
 
     const PROGRAM: &str = "\
-builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
-    %flag = arith.gt %n, %n;
+builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
+    %flag = arith.cmpi ugt %n, %n;
     %a, %b = scf.if %flag then {
         THEN
     } else {
-        scf.yield %n, %n : (u32, u32);
-    } : (i1) -> (u32, u32);
-    builtin.ret %b : (u32);
+        scf.yield %n, %n : (i32, i32);
+    } : (i1) -> (i32, i32);
+    builtin.ret %b : (i32);
 };";
 
     #[test]
     fn if_remove_unused_results_prunes_results_around_a_branch_that_leaves_the_if() {
         let (changed, verified) = run_one(
             "if_remove_unused_results_early_exit.hir",
-            &PROGRAM.replace("THEN", "builtin.ret %n : (u32);"),
+            &PROGRAM.replace("THEN", "builtin.ret %n : (i32);"),
         );
         verified.unwrap_or_else(|err| panic!("output does not verify:\n{err}"));
         assert!(changed, "unused results can be pruned while retaining a non-yielding branch");
@@ -213,28 +213,28 @@ builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
     #[test]
     fn if_remove_unused_results_keeps_a_nested_early_exit_it_rewrites_around() {
         let source = "\
-builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
-    %z = arith.constant 0 : u32;
+builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
+    %z = arith.constant 0 : i32;
     %r = scf.while %z before {
-    ^before(%i: u32):
-        %c = arith.lt %i, %n;
-        scf.condition %c, %i : (i1, u32);
+    ^before(%i: i32):
+        %c = arith.cmpi ult %i, %n;
+        scf.condition %c, %i : (i1, i32);
     } after {
-    ^after(%j: u32):
-        %g = arith.gt %j, %n;
+    ^after(%j: i32):
+        %g = arith.cmpi ugt %j, %n;
         %a, %b = scf.if %g then {
             %p = scf.if %g then {
-                scf.break 1 %j : (u32);
+                scf.break 1 %j : (i32);
             } else {
-                scf.yield %j : (u32);
-            } : (i1) -> (u32);
-            scf.yield %j, %p : (u32, u32);
+                scf.yield %j : (i32);
+            } : (i1) -> (i32);
+            scf.yield %j, %p : (i32, i32);
         } else {
-            scf.yield %j, %j : (u32, u32);
-        } : (i1) -> (u32, u32);
-        scf.yield %b : (u32);
-    } : (u32) -> (u32);
-    builtin.ret %r : (u32);
+            scf.yield %j, %j : (i32, i32);
+        } : (i1) -> (i32, i32);
+        scf.yield %b : (i32);
+    } : (i32) -> (i32);
+    builtin.ret %r : (i32);
 };";
         let context = Rc::new(Context::default());
         let (function, _) =
@@ -276,7 +276,7 @@ builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
     fn if_remove_unused_results_still_fires_when_both_branches_yield() {
         let (changed, verified) = run_one(
             "if_remove_unused_results_control.hir",
-            &PROGRAM.replace("THEN", "scf.yield %n, %n : (u32, u32);"),
+            &PROGRAM.replace("THEN", "scf.yield %n, %n : (i32, i32);"),
         );
         verified.unwrap_or_else(|err| panic!("output does not verify:\n{err}"));
         assert!(changed, "must still drop the unused result when both branches yield");
@@ -313,9 +313,10 @@ builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
     /// listener that borrows the neighbour of every op the pattern creates.
     #[test]
     fn if_remove_unused_results() -> Result<(), Report> {
-        let mut test = Test::new("if_remove_unused_results", &[Type::I1], &[Type::U32]);
+        let mut test = Test::new("if_remove_unused_results", |cx| ([cx.i1()], [cx.i32()]));
 
         let span = SourceSpan::default();
+        let i32_ty = test.context().i32();
         let mut builder = test.function_builder();
         let entry = builder.entry_block();
         let condition = entry.borrow().arguments()[0].upcast();
@@ -325,7 +326,7 @@ builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
         let dead_else_value = builder.u32(3, span)?;
         let live_else_value = builder.u32(4, span)?;
 
-        let if_op = builder.r#if(condition, &[Type::U32, Type::U32], span)?;
+        let if_op = builder.r#if(condition, &[i32_ty, i32_ty], span)?;
 
         let then_region = if_op.borrow().then_body().as_region_ref();
         let then_block = builder.create_block_in_region(then_region);
@@ -413,16 +414,15 @@ mod terminal_region_tests {
                     for shape in
                         [ResultShape::Zero, ResultShape::Unused, ResultShape::One, ResultShape::Two]
                     {
-                        let outputs = if shape == ResultShape::Two {
-                            &[Type::U32, Type::U64][..]
-                        } else {
-                            &[Type::U32][..]
-                        };
-                        let mut test = Test::new(
-                            "terminal_regions",
-                            &[Type::I1, Type::U32, Type::U64, Type::U32],
-                            outputs,
-                        );
+                        let mut test = Test::new("terminal_regions", |cx| {
+                            let outputs = if shape == ResultShape::Two {
+                                alloc::vec![cx.i32(), cx.i64()]
+                            } else {
+                                alloc::vec![cx.i32()]
+                            };
+                            ([cx.i1(), cx.i32(), cx.i64(), cx.i32()], outputs)
+                        });
+                        let (i32_ty, i64_ty) = (test.context().i32(), test.context().i64());
                         let span = SourceSpan::default();
                         let mut builder = test.function_builder();
                         let entry = builder.entry_block();
@@ -437,7 +437,7 @@ mod terminal_region_tests {
                         let types = if shape == ResultShape::Zero {
                             SmallVec::<[Type; 3]>::new()
                         } else {
-                            [Type::U32, Type::U64, Type::U32].into_iter().collect()
+                            [i32_ty, i64_ty, i32_ty].into_iter().collect()
                         };
                         let structured = builder.r#if(condition, &types, span)?;
                         let regions = [
@@ -513,14 +513,14 @@ mod terminal_region_tests {
                         assert!(replacement_op.borrow().is::<If>());
                         let expected_types: &[Type] = match shape {
                             ResultShape::Zero | ResultShape::Unused => &[],
-                            ResultShape::One => &[Type::U32],
-                            ResultShape::Two => &[Type::U64, Type::U32],
+                            ResultShape::One => &[i32_ty],
+                            ResultShape::Two => &[i64_ty, i32_ty],
                         };
                         let actual_types = replacement_op
                             .borrow()
                             .results()
                             .iter()
-                            .map(|result| result.borrow().ty().clone())
+                            .map(|result| result.borrow().ty())
                             .collect::<SmallVec<[Type; 3]>>();
                         assert_eq!(actual_types.as_slice(), expected_types);
                         if changed {
@@ -539,7 +539,7 @@ mod terminal_region_tests {
                             }
                             let replacement = user.borrow().operands()[0].borrow().as_value_ref();
                             if matches!(shape, ResultShape::One | ResultShape::Two) {
-                                assert_eq!(replacement.borrow().ty(), &Type::U32);
+                                assert_eq!(replacement.borrow().ty(), i32_ty);
                                 for (_, yielded) in &yields {
                                     let expected = if shape == ResultShape::Two {
                                         &values[1..3]

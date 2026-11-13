@@ -31,8 +31,3 @@ runic-transform.workspace = true
 runic-expect-test = { path = "../../../tools/expect-test" }
 runic-core = { path = "../../core", features = ["logging"] }
 
-[package.metadata.cargo-shear]
-ignored-paths = [
-    "src/canonicalization/convert_do_while_to_while_true.rs",
-    "src/canonicalization/remove_loop_invariant_value_yielded.rs",
-]

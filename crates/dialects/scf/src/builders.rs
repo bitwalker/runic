@@ -18,7 +18,7 @@ pub trait StructuredControlFlowOpBuilder<'f, B: ?Sized + Builder> {
             let mut owner = if_op.as_operation_ref();
             let context = self.builder().context();
             for result_ty in results {
-                let result = context.make_result(span, result_ty.clone(), owner, 0);
+                let result = context.make_result(span, *result_ty, owner, 0);
                 owner.borrow_mut().results_mut().push(result);
             }
         }
@@ -46,7 +46,7 @@ pub trait StructuredControlFlowOpBuilder<'f, B: ?Sized + Builder> {
             let mut owner = while_op.as_operation_ref();
             let context = self.builder().context();
             for result_ty in results {
-                let result = context.make_result(span, result_ty.clone(), owner, 0);
+                let result = context.make_result(span, *result_ty, owner, 0);
                 owner.borrow_mut().results_mut().push(result);
             }
         }
@@ -58,12 +58,14 @@ pub trait StructuredControlFlowOpBuilder<'f, B: ?Sized + Builder> {
                 .create_block_with_params(while_op.inits().iter().map(|v| v.borrow().ty()));
             while_op.before_mut().body_mut().push_back(before_block);
             let after_block =
-                self.builder().context_rc().create_block_with_params(results.iter().cloned());
+                self.builder().context_rc().create_block_with_params(results.iter().copied());
             while_op.after_mut().body_mut().push_back(after_block);
         }
         Ok(while_op)
     }
 
+    /// Creates an `scf.index_switch` on the `i32` `selector` with one empty case region per value
+    /// of `cases`, after the (empty) default region, and results of the types in `results`.
     fn index_switch<T>(
         &mut self,
         selector: ValueRef,
@@ -72,7 +74,7 @@ pub trait StructuredControlFlowOpBuilder<'f, B: ?Sized + Builder> {
         span: SourceSpan,
     ) -> Result<UnsafeIntrusiveEntityRef<IndexSwitch>, Report>
     where
-        T: IntoIterator<Item = u32>,
+        T: IntoIterator<Item = i32>,
     {
         let cases = Array::from_iter(cases);
         let num_cases = cases.len();
@@ -84,7 +86,7 @@ pub trait StructuredControlFlowOpBuilder<'f, B: ?Sized + Builder> {
         {
             let context = self.builder().context();
             for result_ty in results {
-                let result = context.make_result(span, result_ty.clone(), owner, 0);
+                let result = context.make_result(span, *result_ty, owner, 0);
                 owner.borrow_mut().results_mut().push(result);
             }
         }
@@ -129,11 +131,11 @@ pub trait StructuredControlFlowOpBuilder<'f, B: ?Sized + Builder> {
     /// loop's results.
     ///
     /// `levels` is 1-based; 1 names the innermost enclosing loop. The value is not validated
-    /// here — the op's verifier is what resolves it, so that a break built against a tree still
+    /// here (zero and negative values are rejected by the verifier) — the op's verifier is what resolves it, so that a break built against a tree still
     /// under construction is rejected once, at verification, with the enclosing ops in place.
     fn r#break<T>(
         &mut self,
-        levels: u32,
+        levels: i32,
         args: T,
         span: SourceSpan,
     ) -> Result<UnsafeIntrusiveEntityRef<Break>, Report>
@@ -148,7 +150,7 @@ pub trait StructuredControlFlowOpBuilder<'f, B: ?Sized + Builder> {
     /// `args` as that loop's next iter_args.
     fn r#continue<T>(
         &mut self,
-        levels: u32,
+        levels: i32,
         args: T,
         span: SourceSpan,
     ) -> Result<UnsafeIntrusiveEntityRef<Continue>, Report>

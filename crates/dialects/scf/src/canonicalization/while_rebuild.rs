@@ -100,7 +100,7 @@ pub(super) fn rebuild_while(
             .position(|result| *result == Some(new_index))
             .expect("every result of the new loop must replace a result of the original loop");
         new_forwarded.push(forwarded[index]);
-        new_result_types.push(while_op.results()[index].borrow().ty().clone());
+        new_result_types.push(while_op.results()[index].borrow().ty());
     }
 
     // Creating the new op is the only fallible step; nothing has been modified before it.

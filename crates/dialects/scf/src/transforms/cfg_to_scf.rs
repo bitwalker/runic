@@ -3,7 +3,6 @@ use alloc::rc::Rc;
 use runic_core::{
     Builder, EntityMut, Forward, Op, Operation, OperationName, OperationRef, RawWalk, Report,
     SmallVec, Spanned, ValueRange, ValueRef, WalkResult,
-    diagnostics::Severity,
     dialects::builtin,
     dominance::DominanceInfo,
     pass::{Pass, PassExecutionState, PostPassStatus},
@@ -15,7 +14,7 @@ use runic_transform::{self as transforms, CFGToSCFInterface};
 
 use crate::*;
 
-/// Lifts unstructured control flow operations to structured operations in the HIR dialect.
+/// Lifts unstructured control flow operations (`cf`) to structured control flow operations (`scf`).
 ///
 /// This pass is not always guaranteed to replace all unstructured control flow operations. If a
 /// region contains only a single kind of return-like operation, all unstructured control flow ops
@@ -164,7 +163,7 @@ impl Pass for LiftControlFlowToSCF {
 }
 
 /// Implementation of [CFGToSCFInterface] used to lift unstructured control flow operations into
-/// HIR's structured control flow operations.
+/// the structured control flow operations of this dialect.
 struct ControlFlowToSCFTransformation;
 
 impl CFGToSCFInterface for ControlFlowToSCFTransformation {
@@ -221,16 +220,13 @@ impl CFGToSCFInterface for ControlFlowToSCFTransformation {
             return Ok(operation);
         }
 
-        Err(builder
-            .context()
-            .diagnostics()
-            .diagnostic(Severity::Error)
-            .with_message("control flow transformation failed")
-            .with_primary_label(
+        Err(runic_core::diagnostics::report!(
+            message: "control flow transformation failed",
+            labels: [primary(
                 cf_op.span(),
-                "unknown control flow operation cannot be lifted to structured control flow",
-            )
-            .into_report())
+                "unknown control flow operation cannot be lifted to structured control flow"
+            )],
+        ))
     }
 
     /// Creates an `scf.yield` op returning the given results.
@@ -264,7 +260,7 @@ impl CFGToSCFInterface for ControlFlowToSCFTransformation {
         // Results are derived from the forwarded values given to `scf.condition`
         let result_types = loop_values_next_iter
             .iter()
-            .map(|v| v.borrow().ty().clone())
+            .map(|v| v.borrow().ty())
             .collect::<SmallVec<[_; 2]>>();
         let mut while_op = builder.r#while(loop_values_init, &result_types, span)?;
         let mut op = while_op.borrow_mut();
@@ -306,9 +302,9 @@ impl CFGToSCFInterface for ControlFlowToSCFTransformation {
         &self,
         span: runic_core::SourceSpan,
         builder: &mut runic_core::OpBuilder,
-        value: u32,
+        value: i32,
     ) -> runic_core::ValueRef {
-        builder.u32(value, span)
+        builder.i32(value, span)
     }
 
     /// Creates a `cf.switch` op with the given cases and flag.
@@ -317,7 +313,7 @@ impl CFGToSCFInterface for ControlFlowToSCFTransformation {
         span: runic_core::SourceSpan,
         builder: &mut runic_core::OpBuilder,
         flag: runic_core::ValueRef,
-        case_values: &[u32],
+        case_values: &[i32],
         case_destinations: &[runic_core::BlockRef],
         case_arguments: &[ValueRange<'_, 2>],
         default_dest: runic_core::BlockRef,
@@ -392,7 +388,7 @@ mod tests {
 
     use builtin::BuiltinOpBuilder;
     use runic_core::{
-        PointerType, Report, SourceSpan, Type,
+        Report, Signedness, SourceSpan,
         dialects::builtin::{self},
         testing::Test,
     };
@@ -407,7 +403,7 @@ mod tests {
         };
 
         for second_line in [None, Some(10), Some(20)] {
-            let mut test = Test::new("inline_exits", &[Type::I1, Type::U32], &[Type::U32]);
+            let mut test = Test::new("inline_exits", |cx| ([cx.i1(), cx.i32()], [cx.i32()]));
             let (mut first, mut second) = {
                 let mut builder = test.function_builder();
                 let first_block = builder.create_block();
@@ -473,9 +469,12 @@ mod tests {
 
     #[test]
     fn cfg_to_scf_lift_simple_conditional() -> Result<(), Report> {
-        let mut test = Test::new("cfg_to_scf_lift_simple_conditional", &[Type::U32], &[Type::U32]);
+        let mut test =
+            Test::new("cfg_to_scf_lift_simple_conditional", |cx| ([cx.i32()], [cx.i32()]));
 
         let span = SourceSpan::default();
+
+        let i32_ty = test.context().i32();
 
         // Define function body
         let mut builder = test.function_builder();
@@ -483,17 +482,18 @@ mod tests {
         let if_is_zero = builder.create_block();
         let if_is_nonzero = builder.create_block();
         let exit_block = builder.create_block();
-        let return_val = builder.append_block_param(exit_block, Type::U32, span);
+        let return_val = builder.append_block_param(exit_block, i32_ty, span);
 
         let block = builder.current_block();
         let input = block.borrow().arguments()[0].upcast();
 
-        let zero = builder.u32(0, span);
+        let zero = builder.i32(0, span);
         let is_zero = builder.eq(input, zero, span)?;
         builder.cond_br(is_zero, if_is_zero, [], if_is_nonzero, [], span)?;
 
         builder.switch_to_block(if_is_zero);
-        let a = builder.incr(input, span)?;
+        let a_one = builder.i32(1, span);
+        let a = builder.add(input, a_one, span)?;
         builder.br(exit_block, [a], span)?;
 
         builder.switch_to_block(if_is_nonzero);
@@ -527,50 +527,49 @@ mod tests {
     /// the other branch performs additional computation before exiting.
     #[test]
     fn cfg_to_scf_lift_conditional_early_exit() -> Result<(), Report> {
-        let mut test = Test::new(
-            "cfg_to_scf_lift_conditional_early_exit",
-            &[Type::U32, Type::U32, Type::U32, Type::U32],
-            &[Type::U32],
-        );
+        let mut test = Test::new("cfg_to_scf_lift_conditional_early_exit", |cx| {
+            ([cx.i32(), cx.i32(), cx.i32(), cx.i32()], [cx.i32()])
+        });
 
         let span = SourceSpan::default();
+
+        let i32_ty = test.context().i32();
 
         // Define function body
         let mut builder = test.function_builder();
 
-        // This is the HIR we derived this test case from originally, as reported in issue #510
+        // The shape this test lifts, a reduction of a reallocation routine: two of its paths call
+        // out (here an increment of an argument stands in for each call), join at `^block34`,
+        // and the join either returns or ends in `ub.unreachable`; a third path returns early.
         //
-        // public builtin.function @cabi_realloc_wit_bindgen_0_28_0(v325: i32, v326: i32, v327: i32, v328: i32) -> i32 {
-        //     ^block32(v325: i32, v326: i32, v327: i32, v328: i32):
-        //         v330 = arith.constant 0 : i32;
-        //         v331 = arith.neq v326, v330 : i1;
-        //         cf.cond_br v331 ^block35, ^block36;
-        //     ^block34(v343: i32):
-        //         v345 = arith.eq v343, v330 : i1;
-        //         v346 = arith.zext v345 : u32;
-        //         v347 = hir.bitcast v346 : i32;
-        //         v349 = arith.neq v347, v330 : i1;
-        //         cf.cond_br v349 ^block39, ^block40;
+        //     ^block32(%v325, %v326, %v327, %v328):
+        //         %v330 = arith.constant 0 : i32;
+        //         %v331 = arith.cmpi ne %v326, %v330;
+        //         cf.cond_br %v331 ^block35, ^block36;
+        //     ^block34(%v343: i32):
+        //         %v345 = arith.cmpi eq %v343, %v330;
+        //         %v346 = arith.zext %v345 : i32;
+        //         %v349 = arith.cmpi ne %v346, %v330;
+        //         cf.cond_br %v349 ^block39, ^block40;
         //     ^block35:
-        //         v342 = hir.exec @miden:test-proj-underscore/test-proj-underscore@0.1.0/test_proj_underscore/_RNvCs95KLPZDDxvS_7___rustc14___rust_realloc(v325, v326, v327, v328) : i32
-        //         cf.br ^block34(v342);
+        //         %v342 = (call with %v325, %v326, %v327, %v328);
+        //         cf.br ^block34(%v342);
         //     ^block36:
-        //         v333 = arith.neq v328, v330 : i1;
-        //         cf.cond_br v333 ^block37, ^block38;
+        //         %v333 = arith.cmpi ne %v328, %v330;
+        //         cf.cond_br %v333 ^block37, ^block38;
         //     ^block37:
-        //         v341 = hir.exec @miden:test-proj-underscore/test-proj-underscore@0.1.0/test_proj_underscore/_RNvCs95KLPZDDxvS_7___rustc12___rust_alloc(v328, v327) : i32
-        //         cf.br ^block34(v341);
+        //         %v341 = (call with %v328, %v327);
+        //         cf.br ^block34(%v341);
         //     ^block38:
-        //         builtin.ret v327;
+        //         builtin.ret %v327;
         //     ^block39:
-        //         ub.unreachable ;
+        //         ub.unreachable;
         //     ^block40:
-        //         builtin.ret v343;
-        //     };
+        //         builtin.ret %v343;
 
         let block32 = builder.current_block();
         let block34 = builder.create_block();
-        let v343 = builder.append_block_param(block34, Type::U32, span);
+        let v343 = builder.append_block_param(block34, i32_ty, span);
         let block35 = builder.create_block();
         let block36 = builder.create_block();
         let block37 = builder.create_block();
@@ -587,26 +586,28 @@ mod tests {
             (arg0, args[1].upcast(), arg2, arg3)
         };
 
-        let v330 = builder.u32(0, span);
-        let v331 = builder.neq(v326, v330, span)?;
+        let v330 = builder.i32(0, span);
+        let v331 = builder.ne(v326, v330, span)?;
         builder.cond_br(v331, block35, [], block36, [], span)?;
 
         builder.switch_to_block(block34);
         let v345 = builder.eq(v343, v330, span)?;
-        let v346 = builder.zext(v345, Type::U32, span)?;
-        let v349 = builder.neq(v346, v330, span)?;
+        let v346 = builder.zext(v345, i32_ty, span)?;
+        let v349 = builder.ne(v346, v330, span)?;
         builder.cond_br(v349, block39, [], block40, [], span)?;
 
         builder.switch_to_block(block35);
-        let v342 = builder.incr(v325, span)?;
+        let v342_one = builder.i32(1, span);
+        let v342 = builder.add(v325, v342_one, span)?;
         builder.br(block34, [v342], span)?;
 
         builder.switch_to_block(block36);
-        let v333 = builder.neq(v328, v330, span)?;
+        let v333 = builder.ne(v328, v330, span)?;
         builder.cond_br(v333, block37, [], block38, [], span)?;
 
         builder.switch_to_block(block37);
-        let v341 = builder.incr(v328, span)?;
+        let v341_one = builder.i32(1, span);
+        let v341 = builder.add(v328, v341_one, span)?;
         builder.br(block34, [v341], span)?;
 
         builder.switch_to_block(block38);
@@ -639,24 +640,27 @@ mod tests {
 
     #[test]
     fn cfg_to_scf_lift_simple_while_loop() -> Result<(), Report> {
-        let mut test = Test::new("cfg_to_scf_lift_simple_while_loop", &[Type::U32], &[Type::U32]);
+        let mut test =
+            Test::new("cfg_to_scf_lift_simple_while_loop", |cx| ([cx.i32()], [cx.i32()]));
 
         let span = SourceSpan::default();
+
+        let i32_ty = test.context().i32();
 
         // Define function body
         let mut builder = test.function_builder();
 
         let loop_header = builder.create_block();
-        let n = builder.append_block_param(loop_header, Type::U32, span);
-        let counter = builder.append_block_param(loop_header, Type::U32, span);
+        let n = builder.append_block_param(loop_header, i32_ty, span);
+        let counter = builder.append_block_param(loop_header, i32_ty, span);
         let if_is_zero = builder.create_block();
         let if_is_nonzero = builder.create_block();
 
         let block = builder.current_block();
         let input = block.borrow().arguments()[0].upcast();
 
-        let zero = builder.u32(0, span);
-        let one = builder.u32(1, span);
+        let zero = builder.i32(0, span);
+        let one = builder.i32(1, span);
         builder.br(loop_header, [input, zero], span)?;
 
         builder.switch_to_block(loop_header);
@@ -667,8 +671,9 @@ mod tests {
         builder.ret(Some(counter), span)?;
 
         builder.switch_to_block(if_is_nonzero);
-        let n_prime = builder.sub_unchecked(n, one, span)?;
-        let counter_prime = builder.incr(counter, span)?;
+        let n_prime = builder.sub_unchecked(n, one, Signedness::Unsigned, span)?;
+        let counter_prime_one = builder.i32(1, span);
+        let counter_prime = builder.add(counter, counter_prime_one, span)?;
         builder.br(loop_header, [n_prime, counter_prime], span)?;
 
         let operation = test.function().as_operation_ref();
@@ -692,17 +697,15 @@ mod tests {
 
     #[test]
     fn cfg_to_scf_lift_nested_while_loop() -> Result<(), Report> {
-        let mut test = Test::new(
-            "cfg_to_scf_lift_nested_while_loop",
-            &[Type::from(PointerType::new(Type::U32)), Type::U32, Type::U32],
-            &[Type::U32],
-        );
+        let mut test = Test::new("cfg_to_scf_lift_nested_while_loop", |cx| {
+            ([cx.ptr_type(cx.i32()), cx.i32(), cx.i32()], [cx.i32()])
+        });
 
         let span = SourceSpan::default();
 
         // Define function body for the following pseudocode:
         //
-        // function test(v0: *mut u32, rows: u32, cols: u32) -> u32 {
+        // function test(v0: *mut i32, rows: i32, cols: i32) -> i32 {
         //     let row_offset = 0;
         //     let sum = 0;
         //     while row_offset < rows {
@@ -719,14 +722,16 @@ mod tests {
         //     return sum;
         // }
         //
+        let i32_ty = test.context().i32();
+        let ptr_ty = test.context().ptr_type(i32_ty);
         let mut builder = test.function_builder();
 
         let outer_loop_header = builder.create_block();
         let inner_loop_header = builder.create_block();
-        let row_offset = builder.append_block_param(outer_loop_header, Type::U32, span);
-        let row_sum = builder.append_block_param(outer_loop_header, Type::U32, span);
-        let col_offset = builder.append_block_param(inner_loop_header, Type::U32, span);
-        let col_sum = builder.append_block_param(inner_loop_header, Type::U32, span);
+        let row_offset = builder.append_block_param(outer_loop_header, i32_ty, span);
+        let row_sum = builder.append_block_param(outer_loop_header, i32_ty, span);
+        let col_offset = builder.append_block_param(inner_loop_header, i32_ty, span);
+        let col_sum = builder.append_block_param(inner_loop_header, i32_ty, span);
         let has_more_rows = builder.create_block();
         let no_more_rows = builder.create_block();
         let has_more_columns = builder.create_block();
@@ -737,42 +742,40 @@ mod tests {
         let num_rows = block.borrow().arguments()[1].upcast();
         let num_cols = block.borrow().arguments()[2].upcast();
 
-        let zero = builder.u32(0, span);
+        let zero = builder.i32(0, span);
         builder.br(outer_loop_header, [zero, zero], span)?;
 
         builder.switch_to_block(outer_loop_header);
-        let end_of_rows = builder.lt(row_offset, num_rows, span)?;
+        let end_of_rows = builder.ult(row_offset, num_rows, span)?;
         builder.cond_br(end_of_rows, no_more_rows, [], has_more_rows, [row_sum], span)?;
 
         builder.switch_to_block(no_more_rows);
         builder.ret(Some(row_sum), span)?;
 
         builder.switch_to_block(has_more_rows);
-        let offset = builder.mul_unchecked(row_offset, num_cols, span)?;
+        let offset = builder.mul_unchecked(row_offset, num_cols, Signedness::Unsigned, span)?;
         builder.br(inner_loop_header, [zero, row_sum], span)?;
 
         builder.switch_to_block(inner_loop_header);
-        let end_of_cols = builder.lt(col_offset, num_cols, span)?;
+        let end_of_cols = builder.ult(col_offset, num_cols, span)?;
         builder.cond_br(end_of_cols, no_more_columns, [], has_more_columns, [col_sum], span)?;
 
         builder.switch_to_block(no_more_columns);
-        let new_row_offset = builder.incr(row_offset, span)?;
+        let new_row_offset_one = builder.i32(1, span);
+        let new_row_offset = builder.add(row_offset, new_row_offset_one, span)?;
         builder.br(outer_loop_header, [new_row_offset, col_sum], span)?;
 
         builder.switch_to_block(has_more_columns);
-        let addr_offset = builder.add_unchecked(offset, col_offset, span)?;
-        let addr = builder.unrealized_conversion_cast(ptr, Type::U32, span)?;
-        let cell_addr = builder.add_unchecked(addr, addr_offset, span)?;
+        let addr_offset = builder.add_unchecked(offset, col_offset, Signedness::Unsigned, span)?;
+        let addr = builder.unrealized_conversion_cast(ptr, i32_ty, span)?;
+        let cell_addr = builder.add_unchecked(addr, addr_offset, Signedness::Unsigned, span)?;
         // This represents a bitcast
-        let cell_ptr = builder.unrealized_conversion_cast(
-            cell_addr,
-            Type::from(PointerType::new(Type::U32)),
-            span,
-        )?;
+        let cell_ptr = builder.unrealized_conversion_cast(cell_addr, ptr_ty, span)?;
         // This represents a load
-        let cell = builder.unrealized_conversion_cast(cell_ptr, Type::U32, span)?;
-        let new_col_offset = builder.incr(col_offset, span)?;
-        let new_sum = builder.add_unchecked(col_sum, cell, span)?;
+        let cell = builder.unrealized_conversion_cast(cell_ptr, i32_ty, span)?;
+        let new_col_offset_one = builder.i32(1, span);
+        let new_col_offset = builder.add(col_offset, new_col_offset_one, span)?;
+        let new_sum = builder.add_unchecked(col_sum, cell, Signedness::Unsigned, span)?;
         builder.br(inner_loop_header, [new_col_offset, new_sum], span)?;
 
         let operation = test.function().as_operation_ref();
@@ -796,17 +799,15 @@ mod tests {
 
     #[test]
     fn cfg_to_scf_lift_multiple_exit_nested_while_loop() -> Result<(), Report> {
-        let mut test = Test::new(
-            "cfg_to_scf_lift_multiple_exit_nested_while_loop",
-            &[Type::from(PointerType::new(Type::U32)), Type::U32, Type::U32],
-            &[Type::U32],
-        );
+        let mut test = Test::new("cfg_to_scf_lift_multiple_exit_nested_while_loop", |cx| {
+            ([cx.ptr_type(cx.i32()), cx.i32(), cx.i32()], [cx.i32()])
+        });
 
         let span = SourceSpan::default();
 
         // Define function body for the following pseudocode:
         //
-        // function test(v0: *mut u32, rows: u32, cols: u32) -> u32 {
+        // function test(v0: *mut i32, rows: i32, cols: i32) -> i32 {
         //     let row_offset = 0;
         //     let sum = 0;
         //     while row_offset < rows {
@@ -817,7 +818,7 @@ mod tests {
         //             col_offset += 1;
         //             let (sum_p, overflowed) = sum.add_overflowing(cell);
         //             if overflowed {
-        //                 return u32::MAX;
+        //                 return i32::MAX;
         //             }
         //             sum += cell;
         //         }
@@ -827,14 +828,16 @@ mod tests {
         //     return sum;
         // }
         //
+        let i32_ty = test.context().i32();
+        let ptr_ty = test.context().ptr_type(i32_ty);
         let mut builder = test.function_builder();
 
         let outer_loop_header = builder.create_block();
         let inner_loop_header = builder.create_block();
-        let row_offset = builder.append_block_param(outer_loop_header, Type::U32, span);
-        let row_sum = builder.append_block_param(outer_loop_header, Type::U32, span);
-        let col_offset = builder.append_block_param(inner_loop_header, Type::U32, span);
-        let col_sum = builder.append_block_param(inner_loop_header, Type::U32, span);
+        let row_offset = builder.append_block_param(outer_loop_header, i32_ty, span);
+        let row_sum = builder.append_block_param(outer_loop_header, i32_ty, span);
+        let col_offset = builder.append_block_param(inner_loop_header, i32_ty, span);
+        let col_sum = builder.append_block_param(inner_loop_header, i32_ty, span);
         let has_more_rows = builder.create_block();
         let no_more_rows = builder.create_block();
         let has_more_columns = builder.create_block();
@@ -846,42 +849,41 @@ mod tests {
         let num_rows = block.borrow().arguments()[1].upcast();
         let num_cols = block.borrow().arguments()[2].upcast();
 
-        let zero = builder.u32(0, span);
+        let zero = builder.i32(0, span);
         builder.br(outer_loop_header, [zero, zero], span)?;
 
         builder.switch_to_block(outer_loop_header);
-        let more_rows = builder.lt(row_offset, num_rows, span)?;
+        let more_rows = builder.ult(row_offset, num_rows, span)?;
         builder.cond_br(more_rows, has_more_rows, [row_sum], no_more_rows, [], span)?;
 
         builder.switch_to_block(no_more_rows);
         builder.ret(Some(row_sum), span)?;
 
         builder.switch_to_block(has_more_rows);
-        let offset = builder.mul_unchecked(row_offset, num_cols, span)?;
+        let offset = builder.mul_unchecked(row_offset, num_cols, Signedness::Unsigned, span)?;
         builder.br(inner_loop_header, [zero, row_sum], span)?;
 
         builder.switch_to_block(inner_loop_header);
-        let more_cols = builder.lt(col_offset, num_cols, span)?;
+        let more_cols = builder.ult(col_offset, num_cols, span)?;
         builder.cond_br(more_cols, has_more_columns, [col_sum], no_more_columns, [], span)?;
 
         builder.switch_to_block(no_more_columns);
-        let new_row_offset = builder.incr(row_offset, span)?;
+        let new_row_offset_one = builder.i32(1, span);
+        let new_row_offset = builder.add(row_offset, new_row_offset_one, span)?;
         builder.br(outer_loop_header, [new_row_offset, col_sum], span)?;
 
         builder.switch_to_block(has_more_columns);
-        let addr_offset = builder.add_unchecked(offset, col_offset, span)?;
-        let addr = builder.unrealized_conversion_cast(ptr, Type::U32, span)?;
-        let cell_addr = builder.add_unchecked(addr, addr_offset, span)?;
+        let addr_offset = builder.add_unchecked(offset, col_offset, Signedness::Unsigned, span)?;
+        let addr = builder.unrealized_conversion_cast(ptr, i32_ty, span)?;
+        let cell_addr = builder.add_unchecked(addr, addr_offset, Signedness::Unsigned, span)?;
         // This represents a bitcast
-        let cell_ptr = builder.unrealized_conversion_cast(
-            cell_addr,
-            Type::from(PointerType::new(Type::U32)),
-            span,
-        )?;
+        let cell_ptr = builder.unrealized_conversion_cast(cell_addr, ptr_ty, span)?;
         // This represents a load
-        let cell = builder.unrealized_conversion_cast(cell_ptr, Type::U32, span)?;
-        let new_col_offset = builder.incr(col_offset, span)?;
-        let (overflowed, new_sum) = builder.add_overflowing(col_sum, cell, span)?;
+        let cell = builder.unrealized_conversion_cast(cell_ptr, i32_ty, span)?;
+        let new_col_offset_one = builder.i32(1, span);
+        let new_col_offset = builder.add(col_offset, new_col_offset_one, span)?;
+        let (overflowed, new_sum) =
+            builder.add_overflowing(col_sum, cell, Signedness::Unsigned, span)?;
         builder.cond_br(
             overflowed,
             has_overflowed,
@@ -892,7 +894,7 @@ mod tests {
         )?;
 
         builder.switch_to_block(has_overflowed);
-        builder.ret_imm(runic_core::Immediate::U32(u32::MAX), span)?;
+        builder.ret_imm(runic_core::Int::from(-1i32), span)?;
 
         let operation = test.function().as_operation_ref();
 
@@ -927,16 +929,18 @@ mod tests {
             interner::Symbol,
         };
 
-        let mut test = Test::new("cfg_to_scf_debug_value_preservation", &[Type::U32], &[Type::U32]);
+        let mut test =
+            Test::new("cfg_to_scf_debug_value_preservation", |cx| ([cx.i32()], [cx.i32()]));
         test.context().get_or_register_dialect::<DebugInfoDialect>();
 
         let span = SourceSpan::default();
+        let i32_ty = test.context().i32();
         let mut builder = test.function_builder();
 
         let if_is_zero = builder.create_block();
         let if_is_nonzero = builder.create_block();
         let exit_block = builder.create_block();
-        let return_val = builder.append_block_param(exit_block, Type::U32, span);
+        let return_val = builder.append_block_param(exit_block, i32_ty, span);
 
         let block = builder.current_block();
         let input = block.borrow().arguments()[0].upcast();
@@ -946,13 +950,14 @@ mod tests {
         let result_var =
             Variable::new(Symbol::intern("result"), Symbol::intern("test.rs"), 2, Some(1));
 
-        let zero = builder.u32(0, span);
+        let zero = builder.i32(0, span);
         let is_zero = builder.eq(input, zero, span)?;
         builder.builder_mut().debug_value(input, input_var.clone(), span)?;
         builder.cond_br(is_zero, if_is_zero, [], if_is_nonzero, [], span)?;
 
         builder.switch_to_block(if_is_zero);
-        let a = builder.incr(input, span)?;
+        let a_one = builder.i32(1, span);
+        let a = builder.add(input, a_one, span)?;
         builder.builder_mut().debug_value(a, result_var.clone(), span)?;
         builder.br(exit_block, [a], span)?;
 

@@ -152,24 +152,25 @@ mod tests {
     #[test]
     fn a_constant_true_header_with_a_break_survives_intact() {
         const PROGRAM: &str = "\
-builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
-    %zero = arith.constant 0 : u32;
+builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
+    %zero = arith.constant 0 : i32;
     %r = scf.while %zero before {
-    ^head(%i: u32):
+    ^head(%i: i32):
         %t = arith.constant 1 : i1;
-        scf.condition %t, %i : (i1, u32);
+        scf.condition %t, %i : (i1, i32);
     } after {
-    ^body(%j: u32):
-        %flag = arith.gt %j, %n;
+    ^body(%j: i32):
+        %flag = arith.cmpi ugt %j, %n;
         %picked = scf.if %flag then {
-            scf.break 1 %j : (u32);
+            scf.break 1 %j : (i32);
         } else {
-            scf.yield %j : (u32);
-        } : (i1) -> (u32);
-        %next = arith.incr %picked;
-        scf.yield %next : (u32);
-    } : (u32) -> (u32);
-    builtin.ret %r : (u32);
+            scf.yield %j : (i32);
+        } : (i1) -> (i32);
+        %one = arith.constant 1 : i32;
+        %next = arith.add %picked, %one;
+        scf.yield %next : (i32);
+    } : (i32) -> (i32);
+    builtin.ret %r : (i32);
 };";
 
         let context = Rc::new(Context::default());
