@@ -688,7 +688,7 @@ fn parsing_a_module_still_wraps_it_in_a_world() -> TestResult {
 const UNVERIFIABLE_SOURCE: &str = "\
 builtin.module public @lib {
     builtin.function public extern(\"C\") @main(%0: i32, %1: i64) {
-        %2 = test.add %0, %1 <{ overflow = #builtin.overflow<checked> }>;
+        %2 = test.add %0, %1 <{ overflow = #builtin.overflow<checked unsigned> }>;
         builtin.ret;
     };
 };";
@@ -1307,8 +1307,8 @@ fn an_outcome_renders_sources_loaded_while_parsing() {
     // The addition fails verification (see `UNVERIFIABLE_SOURCE`), at its location
     let source = format!(
         "builtin.module public @lib {{\n    builtin.function public extern(\"C\") @main(%0: i32, \
-         %1: i64) {{\n        %2 = test.add %0, %1 <{{ overflow = #builtin.overflow<checked> }}> \
-         loc(\"{origin}\":1:1);\n        builtin.ret;\n    }};\n}};"
+         %1: i64) {{\n        %2 = test.add %0, %1 <{{ overflow = #builtin.overflow<checked \
+         unsigned> }}> loc(\"{origin}\":1:1);\n        builtin.ret;\n    }};\n}};"
     );
     let outcome = parse::parse_any(ParserConfig::new(context.clone()), "origin.runic", source);
     assert!(context.sources().find_by_name(origin).is_some(), "the location loaded its file");
@@ -5333,4 +5333,54 @@ fn functions_that_agree_with_their_signatures_verify() {
             .verify()
             .unwrap_or_else(|err| panic!("{source}\n{err:?}"));
     }
+}
+
+#[test]
+fn overflow_and_signedness_attributes_round_trip_through_text() -> TestResult {
+    use crate::{
+        Overflow, Signedness,
+        dialects::builtin::attributes::{OverflowAttr, SignednessAttr},
+    };
+
+    let context = Rc::new(Context::default());
+    let unknown = context.unknown_type();
+
+    for value in [Signedness::Signed, Signedness::Unsigned] {
+        let text = format!("#builtin.signedness<{value}>");
+        let attr = parse_attribute_text(&context, &text, unknown)?;
+        assert_eq!(attr.borrow().downcast_ref::<SignednessAttr>().unwrap().as_value(), &value);
+        assert_eq!(print_attribute_text(&context, &attr), text);
+        let reparsed = parse_attribute_text(&context, &text, unknown)?;
+        assert_eq!(&*reparsed.borrow(), &*attr.borrow());
+    }
+
+    for value in [
+        Overflow::Wrapping,
+        Overflow::Checked(Signedness::Signed),
+        Overflow::Checked(Signedness::Unsigned),
+        Overflow::Unchecked(Signedness::Signed),
+        Overflow::Unchecked(Signedness::Unsigned),
+    ] {
+        let text = format!("#builtin.overflow<{value}>");
+        let attr = parse_attribute_text(&context, &text, unknown)?;
+        assert_eq!(attr.borrow().downcast_ref::<OverflowAttr>().unwrap().as_value(), &value);
+        assert_eq!(print_attribute_text(&context, &attr), text);
+        let reparsed = parse_attribute_text(&context, &text, unknown)?;
+        assert_eq!(&*reparsed.borrow(), &*attr.borrow());
+    }
+
+    for text in [
+        "#builtin.overflow<checked>",
+        "#builtin.overflow<unchecked>",
+        "#builtin.overflow<checked both>",
+        "#builtin.overflow<overflowing>",
+        "#builtin.overflow<wrapping signed>",
+        "#builtin.signedness<both>",
+    ] {
+        assert!(
+            parse_attribute_text(&context, text, unknown).is_err(),
+            "{text} should not parse"
+        );
+    }
+    Ok(())
 }

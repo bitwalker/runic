@@ -600,7 +600,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        Context, Int, Op, OperationRef, Overflow, Report, SourceSpan, Spanned, Type, ValueRef,
+        Context, Int, Op, OperationRef, Overflow, Report, Signedness, SourceSpan, Spanned, Type,
+        ValueRef,
         conversion::{
             ConvertedOperands, DynamicLegalityResult, TypeConversion, TypeConverter,
             UnknownOpPolicy,
@@ -649,7 +650,11 @@ mod tests {
                 return Ok(false);
             };
 
-            rewriter.replace_op_with_new_op::<Mul, _>(op, span, (lhs, rhs, Overflow::Checked))?;
+            rewriter.replace_op_with_new_op::<Mul, _>(
+                op,
+                span,
+                (lhs, rhs, Overflow::Checked(Signedness::Unsigned)),
+            )?;
             Ok(true)
         }
     }
@@ -697,7 +702,11 @@ mod tests {
                 return Ok(false);
             };
 
-            rewriter.replace_op_with_new_op::<Mul, _>(op, span, (lhs, rhs, Overflow::Checked))?;
+            rewriter.replace_op_with_new_op::<Mul, _>(
+                op,
+                span,
+                (lhs, rhs, Overflow::Checked(Signedness::Unsigned)),
+            )?;
             Ok(true)
         }
     }
@@ -804,7 +813,8 @@ mod tests {
             };
             let constant = rewriter.create_op::<Constant, _>(span, (Int::from(2i32),))?;
             let rhs = constant.borrow().result().as_value_ref();
-            let mul = rewriter.create_op::<Mul, _>(span, (lhs, rhs, Overflow::Checked))?;
+            let mul = rewriter
+                .create_op::<Mul, _>(span, (lhs, rhs, Overflow::Checked(Signedness::Unsigned)))?;
             let result = mul.borrow().result().as_value_ref();
             rewriter.replace_op(op, &[result])?;
             Ok(true)
@@ -845,7 +855,11 @@ mod tests {
             let Some((span, lhs, rhs)) = add_parts(op, operands) else {
                 return Ok(false);
             };
-            rewriter.replace_op_with_new_op::<Mul, _>(op, span, (lhs, rhs, Overflow::Checked))?;
+            rewriter.replace_op_with_new_op::<Mul, _>(
+                op,
+                span,
+                (lhs, rhs, Overflow::Checked(Signedness::Unsigned)),
+            )?;
             Ok(true)
         }
     }
@@ -988,7 +1002,7 @@ mod tests {
         let expected = "\
 builtin.function public extern(\"C\") @full_conversion_rewrites_illegal_op_to_legal_op(%0: i32, \
                         %1: i32) -> i32 {
-    %3 = test.mul %0, %1 <{ overflow = #builtin.overflow<checked> }>;
+    %3 = test.mul %0, %1 <{ overflow = #builtin.overflow<checked unsigned> }>;
     builtin.ret %3 : (i32);
 };";
         assert_str_eq!(output.as_str(), expected);
