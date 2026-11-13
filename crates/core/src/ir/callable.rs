@@ -82,8 +82,8 @@ pub trait CallOpInterface: Op {
     /// possible callees is not statically known.
     ///
     /// Direct calls have exactly one possible callee, which the default implementation derives
-    /// from [Self::resolve]. Indirect calls whose dispatch set is statically known (e.g. calls
-    /// through a function table) override this to enumerate that set, which interprocedural
+    /// from [Self::resolve]. Indirect calls whose dispatch set is statically known (e.g. a call of
+    /// one of a fixed set of callables, chosen at runtime) override this to enumerate that set, which interprocedural
     /// analyses join over; an empty set means the call can never transfer control (every
     /// dispatch traps).
     ///

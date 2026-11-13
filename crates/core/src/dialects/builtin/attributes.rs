@@ -17,7 +17,7 @@ mod unit;
 mod visibility;
 
 pub use self::{
-    array::{Array, I32ArrayAttr, LocalVariableArrayAttr, TypeArrayAttr},
+    array::{Array, I32ArrayAttr, TypeArrayAttr},
     boolean::BoolAttr,
     bytes::{Bytes, BytesAttr},
     data_layout::DataLayoutAttr,

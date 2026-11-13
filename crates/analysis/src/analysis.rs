@@ -22,8 +22,8 @@ pub enum CallControlFlowAction {
 /// callee has no body to analyze.
 ///
 /// A call whose possible callees are statically known participates in interprocedural
-/// propagation even without a single resolvable callee (e.g. an indirect call through a function
-/// table).
+/// propagation even without a single resolvable callee (e.g. a call of one of a fixed set of
+/// callables, chosen at runtime).
 pub(crate) fn is_external_call(call: &dyn runic_core::CallOpInterface) -> bool {
     call.possible_callees()
         .is_none_or(|targets| targets.iter().any(|target| target.callable_region().is_none()))

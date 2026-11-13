@@ -195,7 +195,6 @@ mod tests {
             };
         }
         values!(
-            LocalVariableArrayAttr,
             DeclaredEffectsAttr,
             TypeArrayAttr,
             I32ArrayAttr,

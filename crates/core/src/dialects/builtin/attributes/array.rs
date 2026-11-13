@@ -34,15 +34,6 @@ struct I32Array;
 #[allow(unused)]
 struct TypeArray;
 
-#[derive(DialectAttribute)]
-#[attribute(
-    dialect = BuiltinDialect,
-    remote = "Array<super::LocalVariable>",
-    implements(AttrPrinter),
-)]
-#[allow(unused)]
-struct LocalVariableArray;
-
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Array<T>(SmallVec<[T; 2]>);
 
@@ -304,19 +295,6 @@ impl AttrParser for TypeArrayAttr {
             }
         }
         Ok(parser.context_rc().create_attribute::<Self, _>(types).as_attribute_ref())
-    }
-}
-
-impl crate::print::AttrPrinter for LocalVariableArrayAttr {
-    fn print(&self, printer: &mut AsmPrinter<'_>) {
-        use crate::formatter::*;
-
-        for (i, value) in self.0.iter().enumerate() {
-            if i > 0 {
-                *printer += const_text(", ");
-            }
-            *printer += text(alloc::format!("{value}"));
-        }
     }
 }
 

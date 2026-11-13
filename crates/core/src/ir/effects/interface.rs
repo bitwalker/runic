@@ -24,8 +24,12 @@ pub trait EffectOpInterface<T: Effect> {
     /// since the walk asks every operation it visits for its effects, an implementation that
     /// starts the walk at its own operation would recurse without bound.
     fn effects(&self) -> EffectIterator<T>;
-    /// False when the operation cannot list its effects: it is then treated as an operation
-    /// without this interface. `effects()` is not consulted.
+    /// False when the operation cannot list its own effects. `effects()` is not consulted.
+    ///
+    /// The operation's own effects are then unknown, so the operation as a whole is never
+    /// effect-free, whatever its regions hold. This differs from an operation without this
+    /// interface when the operation has [HasRecursiveMemoryEffects]: the effects of such an
+    /// operation without the interface are those of its regions, which may be known.
     ///
     /// The recursive walk ([RecursiveEffectIterator]) reports such an operation as "unknown", and
     /// so do the queries on [Operation](crate::Operation) built on it. A caller that asks for

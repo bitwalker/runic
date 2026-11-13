@@ -16,7 +16,8 @@ use crate::{
 /// One memory effect a callable declares, optionally on one of its arguments or results.
 ///
 /// Text: `read`, `write`, `allocate` or `free`, optionally followed by `(arg N)` or `(result N)`.
-/// At most one of `argument` and `result` is set.
+/// At most one of `argument` and `result` is set. An index is at most 255: a callable whose
+/// effects fall on a later argument or result cannot state them per value.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MemoryEffectDescriptor {
     pub effect: MemoryEffect,

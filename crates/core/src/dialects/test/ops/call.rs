@@ -57,7 +57,8 @@ impl EffectOpInterface<MemoryEffect> for Effects {
 /// either names has its address taken. The call has one argument per parameter of its signature
 /// and one result per result of it, of the same types; the results are made from the signature
 /// when the call is built or parsed. It implements no effect interface, so its effects are
-/// unknown.
+/// unknown. Its signature is not compared with its callees' signatures: the verifier checks only
+/// that its arguments and results agree with its own.
 #[operation(
     dialect = TestDialect,
     implements(CallOpInterface, InferTypeOpInterface, OpPrinter)
