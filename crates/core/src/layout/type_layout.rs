@@ -140,3 +140,20 @@ pub trait AggregateType {
     /// and possibly below it: an enum variant without a payload has an index but no element.
     fn element_type(&self, index: u32) -> Option<Type>;
 }
+
+/// The type of the element `path` selects inside a value of `ty`, through [AggregateType] alone:
+/// no layout is needed.
+///
+/// Each index of `path` selects an element of the type the path has reached. The empty path
+/// selects `ty` itself. A step into a type that is not an aggregate, an index at or past its
+/// [AggregateType::element_count], or an index with no element (an enum variant without a
+/// payload) is [LayoutError::NoSuchElement], naming the type the step was applied to.
+/// [DataLayout::offset_of] selects the same element.
+pub fn element_at(ty: Type, path: &[u32]) -> Result<Type, LayoutError> {
+    path.iter().try_fold(ty, |current, &index| {
+        current
+            .as_trait::<dyn AggregateType>()
+            .and_then(|aggregate| aggregate.element_type(index))
+            .ok_or(LayoutError::NoSuchElement { ty: current, index })
+    })
+}

@@ -1532,6 +1532,72 @@ fn offsets_of_elements() {
     assert!(layout.is_idle());
 }
 
+/// `element_at` selects the element `offset_of` selects, with the same errors, and needs no
+/// layout: it walks into a type that has none.
+#[test]
+fn element_at_selects_without_a_layout() {
+    let context = context();
+    let cx = &*context;
+
+    let ty = parse_ty(&context, "struct<i8, array<struct<i16, i32>; 4>>");
+    let array = parse_ty(&context, "array<struct<i16, i32>; 4>");
+    let inner = parse_ty(&context, "struct<i16, i32>");
+    assert_eq!(element_at(ty, &[]), Ok(ty));
+    assert_eq!(element_at(ty, &[0]), Ok(cx.i8()));
+    assert_eq!(element_at(ty, &[1]), Ok(array));
+    assert_eq!(element_at(ty, &[1, 3]), Ok(inner));
+    assert_eq!(element_at(ty, &[1, 2, 1]), Ok(cx.i32()));
+    assert_eq!(element_at(ty, &[2]), Err(LayoutError::NoSuchElement { ty, index: 2 }));
+    assert_eq!(
+        element_at(ty, &[1, 4, 0]),
+        Err(LayoutError::NoSuchElement {
+            ty: array,
+            index: 4
+        })
+    );
+    assert_eq!(
+        element_at(ty, &[1, 0, 1, 0]),
+        Err(LayoutError::NoSuchElement {
+            ty: cx.i32(),
+            index: 0
+        })
+    );
+    assert_eq!(
+        element_at(cx.i8(), &[0]),
+        Err(LayoutError::NoSuchElement {
+            ty: cx.i8(),
+            index: 0
+        })
+    );
+
+    // Into an enum: the discriminant, a payload, a variant without one, past the end
+    let enum_ty = parse_ty(&context, "enum<i8; a: i32, b, c: struct<i8, i16>>");
+    assert_eq!(element_at(enum_ty, &[0]), Ok(cx.i8()));
+    assert_eq!(element_at(enum_ty, &[1]), Ok(cx.i32()));
+    assert_eq!(element_at(enum_ty, &[3, 1]), Ok(cx.i16()));
+    for index in [2, 4, u32::MAX] {
+        assert_eq!(
+            element_at(enum_ty, &[index]),
+            Err(LayoutError::NoSuchElement { ty: enum_ty, index })
+        );
+    }
+
+    // No layout is consulted: a type holding a function type, and a pointer's pointee is not an
+    // element of the pointer
+    let fn_ty = cx.function_type([cx.i32()], [cx.i32()]);
+    let holder = parse_ty(&context, "struct<i32, (i32) -> i32>");
+    assert_eq!(element_at(holder, &[1]), Ok(fn_ty));
+    assert_eq!(element_at(fn_ty, &[]), Ok(fn_ty));
+    let pointer = cx.ptr_type(inner);
+    assert_eq!(
+        element_at(pointer, &[0]),
+        Err(LayoutError::NoSuchElement {
+            ty: pointer,
+            index: 0
+        })
+    );
+}
+
 #[test]
 fn a_type_holding_one_without_a_layout_names_it() {
     let context = context();

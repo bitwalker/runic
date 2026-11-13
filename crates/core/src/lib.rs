@@ -100,7 +100,7 @@ pub use self::{
     layout::{
         AggregateType, Align, DATA_LAYOUT_ATTR, DataLayout, DataLayoutOpInterface, DataLayoutSpec,
         Endianness, FieldsShape, InvalidDataLayout, Layout, LayoutError, PointerSpec, TypeLayout,
-        set_data_layout_spec,
+        element_at, set_data_layout_spec,
     },
     patterns::{Rewriter, RewriterExt},
     program_point::{Position, ProgramPoint},

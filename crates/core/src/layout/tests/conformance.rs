@@ -2306,6 +2306,70 @@ fn a_layout_without_an_offset_for_a_counted_element_is_a_debug_panic() {
     assert!(layout.is_idle());
 }
 
+/// A random path into `ty`: mostly elements it has, sometimes an index at or past its element
+/// count, an index of a variant without a payload, or a step into a scalar.
+fn random_path(rng: &mut Rng, ty: Type) -> Vec<u32> {
+    let mut path = Vec::new();
+    let mut current = Some(ty);
+    for _ in 0..rng.below(5) {
+        let count = current
+            .and_then(|current| current.as_trait::<dyn AggregateType>().map(|a| a.element_count()));
+        let index = match count {
+            Some(count) if count > 0 && rng.below(6) != 0 => rng.below(count) as u32,
+            Some(count) => u32::try_from(count).unwrap().saturating_add(rng.below(3) as u32),
+            None => rng.below(3) as u32,
+        };
+        path.push(index);
+        current = current.and_then(|current| element_at(current, &[index]).ok());
+    }
+    path
+}
+
+/// For 500 random pairs of a type with a layout and a path, valid and invalid, `element_at`
+/// selects the type `offset_of` selects, or fails as it does.
+#[test]
+fn element_at_agrees_with_offset_of_on_random_paths() {
+    const PAIRS: usize = 500;
+    for seed in seeds() {
+        std::eprintln!("seed {seed:#x}");
+        let mut rng = Rng(seed);
+        let context = context();
+        let cx = &*context;
+        let (mut valid, mut invalid, mut without_layout) = (0usize, 0usize, 0usize);
+        while valid + invalid < PAIRS {
+            let model = random_model(&mut rng);
+            let layout = DataLayout::new(cx, &model.build(&mut rng));
+            let ty = build(cx, &random_t(&mut rng, 3));
+            let path = random_path(&mut rng, ty);
+            let walked = element_at(ty, &path);
+            if layout.layout_of(ty).is_err() {
+                without_layout += 1;
+                continue;
+            }
+            let laid_out = layout.offset_of(ty, &path).map(|(_, element)| element);
+            assert_eq!(
+                walked,
+                laid_out,
+                "seed {seed:#x} (LAYOUT_TEST_SEED={seed}), pair {}: {ty}, path {path:?}",
+                valid + invalid
+            );
+            if walked.is_ok() {
+                valid += 1;
+            } else {
+                invalid += 1;
+            }
+        }
+        std::eprintln!(
+            "element_at: {valid} valid and {invalid} invalid paths; {without_layout} types \
+             without a layout passed over"
+        );
+        assert!(
+            valid >= 100 && invalid >= 100,
+            "seed {seed:#x}: {valid} valid, {invalid} invalid"
+        );
+    }
+}
+
 // --- A field's own alignment, against clang ------------------------------------------------------
 
 /// A field's `align(N)` is C's `__attribute__((aligned(N)))` on a member, and `packed(1)` is

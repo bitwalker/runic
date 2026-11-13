@@ -2,7 +2,7 @@ use alloc::rc::Rc;
 use core::cell::RefCell;
 
 use super::{
-    AggregateType, Align, DataLayoutSpec, Endianness, Layout, LayoutError, PointerSpec, TypeLayout,
+    Align, DataLayoutSpec, Endianness, Layout, LayoutError, PointerSpec, TypeLayout, element_at,
 };
 use crate::{
     Context, FxHashMap, FxHashSet, Op, Operation, Report, diagnostics::Spanned,
@@ -60,6 +60,10 @@ where
 
 /// Makes `op` state `spec`: sets its attribute [DATA_LAYOUT_ATTR] to a new [DataLayoutAttr],
 /// replacing any it has. An attribute may be shared, so the old one is never edited.
+///
+/// Changing the specification after layouts were consulted does not update what was taken from
+/// the old one: a [DataLayout] already made keeps the specification it was made for, and a
+/// constant already folded under it (a size, say) keeps its value.
 pub fn set_data_layout_spec(op: &mut Operation, spec: DataLayoutSpec) {
     let attr = op.context_rc().create_attribute::<DataLayoutAttr, _>(spec);
     op.set_attribute(DATA_LAYOUT_ATTR, attr.as_attribute_ref());
@@ -191,7 +195,9 @@ impl DataLayout {
             answer => answer,
         };
         #[cfg(debug_assertions)]
-        if let (Ok(laid_out), Some(aggregate)) = (&answer, ty.as_trait::<dyn AggregateType>()) {
+        if let (Ok(laid_out), Some(aggregate)) =
+            (&answer, ty.as_trait::<dyn super::AggregateType>())
+        {
             let count = aggregate.element_count();
             assert!(
                 count == 0 || laid_out.fields().offset(count - 1).is_some(),
@@ -216,18 +222,16 @@ impl DataLayout {
     /// The byte offset and type of the element `path` selects inside a value of `ty`.
     ///
     /// Each index of `path` selects an element of the type the path has reached, as its
-    /// [AggregateType] numbers them, at the offset its layout gives. The empty path selects `ty`
-    /// itself, at offset 0. `ty` must have a layout; an index into a type that has no such
-    /// element, or no elements at all, is [LayoutError::NoSuchElement].
+    /// [AggregateType](super::AggregateType) numbers them, at the offset its layout gives. The
+    /// empty path selects `ty` itself, at offset 0. `ty` must have a layout; an index into a type
+    /// that has no such element, or no elements at all, is [LayoutError::NoSuchElement]. The type
+    /// selected is the one [element_at] gives for `ty` and `path`.
     pub fn offset_of(&self, ty: Type, path: &[u32]) -> Result<(u64, Type), LayoutError> {
         let mut laid_out = self.layout_of(ty)?;
         let mut offset = 0;
         let mut current = ty;
         for &index in path {
-            let element = current
-                .as_trait::<dyn AggregateType>()
-                .and_then(|aggregate| aggregate.element_type(index))
-                .ok_or(LayoutError::NoSuchElement { ty: current, index })?;
+            let element = element_at(current, &[index])?;
             let at = laid_out.fields().offset(u64::from(index)).unwrap_or_else(|| {
                 panic!("the layout of '{current}' has no offset for its element {index}")
             });
