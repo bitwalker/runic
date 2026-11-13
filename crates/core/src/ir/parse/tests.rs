@@ -467,6 +467,38 @@ builtin.module public @outer {
     Ok(())
 }
 
+/// A component keeps its attribute dictionary through print and parse, as a module does.
+#[test]
+fn a_component_keeps_its_attribute_dictionary() -> TestResult {
+    let test = ParserTest::default();
+    let source = "builtin.component private @a attributes { note = #builtin.i32<7> } {\n};";
+    let parsed = test.parse_any("component_attributes.hir", source)?;
+    let printed = format!("{}", parsed.borrow());
+    assert!(printed.contains("attributes { note = #builtin.i32<7> }"), "{printed}");
+
+    let reparsed = test.parse_any("component_attributes2.hir", &printed)?;
+    assert_eq!(format!("{}", reparsed.borrow()), printed);
+    let reparsed = reparsed.borrow();
+    let note = reparsed.get_attribute("note").expect("the attribute survives");
+    assert_eq!(note.borrow().as_u32(), Some(7));
+    Ok(())
+}
+
+/// A global variable declaration keeps its attribute dictionary through print and parse.
+#[test]
+fn a_global_declaration_keeps_its_attribute_dictionary() -> TestResult {
+    let test = ParserTest::default();
+    let source = "builtin.module public @m {\n    builtin.global_variable public @g : i32 \
+                  attributes { note = #builtin.i32<7> };\n};";
+    let parsed = test.parse_any("global_attributes.hir", source)?;
+    let printed = format!("{}", parsed.borrow());
+    assert!(printed.contains("@g : i32 attributes { note = #builtin.i32<7> }"), "{printed}");
+
+    let reparsed = test.parse_any("global_attributes2.hir", &printed)?;
+    assert_eq!(format!("{}", reparsed.borrow()), printed);
+    Ok(())
+}
+
 /// The `reserved_memory` module attribute is an input to the linker's memory layout, so it must
 /// survive a print/parse round-trip of the textual HIR.
 #[test]

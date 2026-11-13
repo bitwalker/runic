@@ -76,6 +76,13 @@ impl OpPrinter for Component {
         );
         printer.print_symbol_path(&path);
         printer.print_space();
+        if self.op.has_attributes() {
+            *printer += crate::formatter::const_text("attributes ");
+            printer.print_attribute_dictionary(
+                self.op.attributes().iter().map(|attr| *attr.as_named_attribute()),
+            );
+            printer.print_space();
+        }
         printer.print_region(&self.body());
     }
 }
@@ -110,6 +117,8 @@ impl OpParser for Component {
             "name",
             context.create_attribute::<IdentAttr, _>(Ident::new(name, span)),
         );
+
+        parser.parse_optional_attribute_dict_with_keyword(&mut state.attrs)?;
 
         let region = parser.context().create_region();
         parser.parse_region(region, &[], true)?;

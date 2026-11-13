@@ -126,11 +126,10 @@ impl OpPrinter for GlobalVariable {
         printer.print_symbol_name(self.get_name().as_symbol());
         *printer += const_text(" : ");
         printer.print_type(*self.get_ty());
-        if self.is_declaration() {
-            return;
+        if !self.is_declaration() {
+            printer.print_space();
+            printer.print_region(&self.initializer());
         }
-        printer.print_space();
-        printer.print_region(&self.initializer());
 
         if self.op.has_attributes() {
             *printer += const_text(" attributes ");
