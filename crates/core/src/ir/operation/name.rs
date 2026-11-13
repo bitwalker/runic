@@ -188,8 +188,8 @@ impl AttrInfo {
 
     /// Returns true if this property has a default and `value` is equal to it, its type included.
     ///
-    /// The default is created once per context and attribute kind
-    /// ([Context::is_default_attribute]), so asking this does not allocate an attribute each time.
+    /// The default is created once per context and attribute kind and kept by the context, so
+    /// asking this does not allocate an attribute each time.
     pub fn is_default(&self, context: &Rc<Context>, value: &AttributeRef) -> bool {
         match self.default {
             Some(create_default) => {

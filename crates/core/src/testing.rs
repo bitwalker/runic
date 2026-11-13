@@ -11,6 +11,8 @@ use crate::{
     pass::{OperationPass, Pass, PassManager},
 };
 
+pub mod text;
+
 /// Enable compiler-internal tracing and instrumentation during tests
 #[cfg(feature = "logging")]
 pub fn enable_compiler_instrumentation() {

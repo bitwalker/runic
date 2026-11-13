@@ -5602,6 +5602,65 @@ fn a_segment_prints_readonly_only_when_it_is_set() -> TestResult {
     Ok(())
 }
 
+/// Module-level operations with random properties (a global variable's visibility and type, a
+/// segment's offset, data, empty included, and `readonly`, a function's visibility) print, parse
+/// back and print the same, and every operation keeps its properties and whether each is at its
+/// default.
+#[test]
+fn properties_of_module_level_operations_round_trip() {
+    use crate::{
+        Builder, Ident,
+        dialects::builtin::FunctionBuilder,
+        testing::text::{Rng, round_trip},
+    };
+
+    const WIDTHS: [u32; 7] = [1, 7, 8, 32, 64, 127, 128];
+    const VISIBILITIES: [Visibility; 3] =
+        [Visibility::Public, Visibility::Private, Visibility::Internal];
+
+    let mut rng = Rng(0xabcd_0003);
+    let mut failures = Vec::new();
+    for round in 0..60 {
+        let mut test = Test::named("m").in_module("m");
+        let context = test.context_rc();
+        let module = test.module();
+        {
+            let b = test.builder_mut();
+            let body = module.borrow().body().entry_block_ref().unwrap();
+            b.set_insertion_point_to_end(body);
+            b.create_global_variable(
+                Ident::with_empty_span("g".into()),
+                rng.pick(&VISIBILITIES),
+                context.int_type(rng.pick(&WIDTHS)),
+            )
+            .unwrap();
+            b.set_insertion_point_to_end(body);
+            let n = rng.below(5) as usize;
+            let data = (0..n).map(|_| rng.below(256) as u8).collect::<Vec<u8>>();
+            let offset = rng.pick(&[0u32, 1, 16, 0x7fff_ffff, 0x8000_0000, u32::MAX]);
+            b.create_data_segment(offset, data, rng.below(2) == 0, SourceSpan::UNKNOWN)
+                .unwrap();
+            b.set_insertion_point_to_end(body);
+            let function = b
+                .create_function(
+                    Ident::with_empty_span("f".into()),
+                    rng.pick(&VISIBILITIES),
+                    Signature::new(&context, [context.i32()], [] as [Type; 0]),
+                )
+                .unwrap();
+            let mut fb = FunctionBuilder::new(function, b);
+            fb.ret([], SourceSpan::UNKNOWN).unwrap();
+        }
+        // Only the derived and hand-written forms: the generic form of a function does not parse
+        // back yet
+        let mut skipped = Vec::new();
+        for failure in round_trip::<Module>(module.as_operation_ref(), false, &mut skipped) {
+            failures.push(format!("round {round}: {failure}"));
+        }
+    }
+    assert!(failures.is_empty(), "{} failures, first:\n{}", failures.len(), failures[0]);
+}
+
 /// Prints `op` in the generic form.
 fn print_generic(op: &crate::Operation) -> String {
     let flags = Default::default();

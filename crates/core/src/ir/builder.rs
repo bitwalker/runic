@@ -248,19 +248,22 @@ pub trait BuilderExt: Builder {
     /// ```text,ignore
     /// // Get an OpBuilder
     /// let builder = context.builder();
-    /// // Obtain a builder for AddOp
-    /// let add_builder = builder.create::<AddOp, _>(span);
+    /// // Obtain a builder for AddOp. `AddOp`'s `overflow` property has a default, so the operation
+    /// // has two builders, one with the property and one without: `Args` names the one wanted
+    /// let add_builder = builder.create::<AddOp, (_, _, _)>(span);
     /// // Consume the builder by creating the op with the given arguments
     /// let add = add_builder(lhs, rhs, Overflow::Wrapping).expect("invalid add op");
     /// ```
     ///
-    /// Or, simplified/collapsed:
+    /// Or, simplified/collapsed, with the builder that leaves the property at its default:
     ///
     /// ```text,ignore
     /// let builder = context.builder();
-    /// let add = builder.create::<AddOp, _>(span)(lhs, rhs, Overflow::Wrapping)
-    ///     .expect("invalid add op");
+    /// let add = builder.create::<AddOp, (_, _)>(span)(lhs, rhs).expect("invalid add op");
     /// ```
+    ///
+    /// For an operation with a single builder, `Args` may be left to inference:
+    /// `builder.create::<SomeOp, _>(span)`.
     #[inline(always)]
     fn create<T, Args>(&mut self, span: SourceSpan) -> <T as BuildableOp<Args>>::Builder<'_, Self>
     where

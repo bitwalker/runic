@@ -278,7 +278,7 @@ impl Context {
     /// The default is created on the first call for a kind and kept, so later calls compare
     /// without allocating. `create_default` must create an attribute of kind `type_id`, and must
     /// give the same value on every call (as [AttributeRegistration::create_default] does).
-    pub fn is_default_attribute(
+    pub(crate) fn is_default_attribute(
         self: &Rc<Context>,
         type_id: core::any::TypeId,
         create_default: fn(&Rc<Context>) -> AttributeRef,

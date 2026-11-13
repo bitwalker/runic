@@ -231,3 +231,49 @@ fn overflow_defaults_to_wrapping_and_signedness_is_required() {
         assert!(err.contains("missing required property 'signedness'"), "{err}");
     }
 }
+
+/// The short builder form, a parsed operation without `overflow`, and an explicitly wrapping one
+/// are the same operation: none has a property away from its default, the derived form prints no
+/// dictionary, and the generic form prints the default.
+#[test]
+fn the_three_forms_of_the_default_agree() {
+    use runic_core::{
+        BuilderExt, Overflow,
+        testing::text::{print_custom, print_generic},
+    };
+
+    let mut test = Test::new("f", |cx| ([cx.i32(), cx.i32()], []));
+    let [x, y] = params(&test)[..] else {
+        unreachable!()
+    };
+    let (short, explicit) = {
+        let mut b = test.function_builder();
+        let short = b.builder_mut().create::<Mul, (_, _)>(SPAN)(x, y).unwrap();
+        let explicit =
+            b.builder_mut().create::<Mul, (_, _, _)>(SPAN)(x, y, Overflow::Wrapping).unwrap();
+        b.ret([], SPAN).unwrap();
+        (short, explicit)
+    };
+    assert_eq!(*short.borrow().get_overflow(), Overflow::Wrapping);
+    assert_eq!(short.borrow().as_operation().non_default_properties().count(), 0);
+    assert_eq!(explicit.borrow().as_operation().non_default_properties().count(), 0);
+    assert_eq!(print_custom(short.borrow().as_operation()), "%2 = arith.mul %0, %1;");
+    assert_eq!(
+        print_generic(explicit.borrow().as_operation()),
+        "%3 = \"arith.mul\"(%0, %1) <{ overflow = #builtin.overflow<wrapping> }> : (i32, i32) -> \
+         i32;"
+    );
+
+    let (_cx, parsed) =
+        runic_core::testing::text::parse::<runic_core::dialects::builtin::Function>(
+            "builtin.function public extern(\"C\") @f(%0: i32, %1: i32) {\n    %2 = arith.mul %0, \
+             %1;\n    builtin.ret;\n};",
+        )
+        .unwrap();
+    let parsed = parsed.borrow();
+    let entry = parsed.entry_block();
+    let op = entry.borrow().front().unwrap();
+    let op = op.borrow();
+    assert_eq!(*op.downcast_ref::<Mul>().unwrap().get_overflow(), Overflow::Wrapping);
+    assert_eq!(op.non_default_properties().count(), 0);
+}
