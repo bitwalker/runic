@@ -4,7 +4,10 @@ mod module;
 mod world;
 
 pub use self::{component::*, function::*, module::*, world::*};
-use super::{attributes::Signature, ops::*};
+use super::{
+    attributes::{LocalVariable, Signature},
+    ops::*,
+};
 use crate::{
     AsCallableSymbolRef, Builder, BuilderExt, Ident, Int, OpBuilder, OpRegistration, Report,
     SourceSpan, Spanned, SymbolName, SymbolTable, Type, UnsafeIntrusiveEntityRef, ValueRef,
@@ -169,6 +172,26 @@ pub trait BuiltinOpBuilder<'f, B: ?Sized + Builder> {
     ) -> Result<UnsafeIntrusiveEntityRef<RetImm>, Report> {
         let op_builder = self.builder_mut().create::<RetImm, _>(span);
         op_builder(arg)
+    }
+
+    /// Create a [LoadLocal] of `local`, and return the value read, of the local's type.
+    fn load_local(&mut self, local: LocalVariable, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<LoadLocal, _>(span);
+        let op = op_builder(local)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// Create a [StoreLocal] of `value` to `local`.
+    ///
+    /// Nothing checks here that `value` has the local's type: the store's verifier does.
+    fn store_local(
+        &mut self,
+        local: LocalVariable,
+        value: ValueRef,
+        span: SourceSpan,
+    ) -> Result<StoreLocalRef, Report> {
+        let op_builder = self.builder_mut().create::<StoreLocal, _>(span);
+        op_builder(local, value)
     }
 
     fn builder(&self) -> &B;

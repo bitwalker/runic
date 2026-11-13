@@ -80,3 +80,22 @@ impl InferTypeOpInterface for Load {
         }
     }
 }
+
+/// An operation that names a local variable of the enclosing function in its `local` property and
+/// frees it: `test.touch_local <{ local = #builtin.local_variable<0, i32> }>;`.
+///
+/// It stands for an operation, other than a load or store of the local, whose effect reaches the
+/// local: a pass that promotes locals must leave this one alone.
+#[derive(OpPrinter, OpParser, EffectOpInterface)]
+#[operation(
+    dialect = TestDialect,
+    implements(MemoryEffectOpInterface, OpPrinter)
+)]
+pub struct TouchLocal {
+    #[attr]
+    #[effects(
+        MemoryEffect(MemoryEffect::Free),
+        resource(crate::dialects::builtin::LocalsResource)
+    )]
+    local: crate::dialects::builtin::attributes::LocalVariableAttr,
+}

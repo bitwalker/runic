@@ -4709,7 +4709,8 @@ fn a_never_result_round_trips() {
 
 /// A function's declared effects and locals are written after its signature, each left out at its
 /// default: `effects()` declares no effects, `effects(..)` lists them, and no `effects` leaves them
-/// unknown. Each form round-trips on a declaration and on a definition.
+/// unknown. Each form of the effects round-trips on a declaration and on a definition; locals, which
+/// only a definition has, round-trip on a definition.
 #[test]
 fn declared_effects_and_locals_round_trip_on_declarations_and_definitions() {
     use crate::{
@@ -4741,7 +4742,7 @@ fn declared_effects_and_locals_round_trip_on_declarations_and_definitions() {
             0,
         ),
         (
-            format!("{header} @f(i32) -> i32 effects(read, write) locals(i32, i64);"),
+            format!("{header} @f(i32) -> i32 effects(read, write);"),
             format!(
                 "{header} @f(%0: i32) -> i32 effects(read, write) locals(i32, i64) {{\n    \
                  builtin.ret %0 : (i32);\n}};"
@@ -4763,6 +4764,7 @@ fn declared_effects_and_locals_round_trip_on_declarations_and_definitions() {
             let function = function.borrow();
             assert_eq!(function.is_declaration(), is_declaration, "{source}");
             assert_eq!(function.declared_effects(), effects, "{source}");
+            let locals = if is_declaration { 0 } else { locals };
             assert_eq!(function.num_locals(), locals, "{source}");
         }
     }
@@ -4770,12 +4772,32 @@ fn declared_effects_and_locals_round_trip_on_declarations_and_definitions() {
     let function = test
         .parse::<Function>(
             "locals.hir",
-            "builtin.function public extern(\"C\") @f(i32) -> i32 locals(i32, i64);",
+            "builtin.function public extern(\"C\") @f(%0: i32) -> i32 locals(i32, i64) {\n    \
+             builtin.ret %0 : (i32);\n};",
         )
         .unwrap();
     let function = function.borrow();
     let locals = function.get_locals();
     assert_eq!(locals[..], [test.context().i32(), test.context().i64()]);
+}
+
+/// A declaration has no body, so it has no locals: one that states `locals(..)` does not verify.
+#[test]
+fn a_declaration_with_locals_does_not_verify() {
+    let source = "builtin.function public extern(\"C\") @f(i32) -> i32 locals(i32, i64);";
+    let test = ParserTest::default();
+    let config = ParserConfig::new(test.context_rc()).verify_after_parse(false);
+    let function = parse::parse::<Function>(config, "locals.hir", source)
+        .into_result()
+        .unwrap_or_else(|err| panic!("{source}\n{err:?}"));
+    assert_eq!(function.borrow().num_locals(), 2);
+    let text = verify_error_text(function);
+    assert!(
+        text.contains(
+            "a declaration has no body, so it has no locals, but this one states 2 local(s)"
+        ),
+        "{text}"
+    );
 }
 
 /// An effect that names an argument or a result the signature does not have is a verification
@@ -4861,22 +4883,21 @@ fn declared_effects_attributes_round_trip_through_text() -> TestResult {
 }
 
 /// The generic form of a function writes its declared effects and locals as properties, and
-/// reads them back. (A declaration: the generic print of a definition does not write the
-/// arguments of its entry block.)
+/// reads them back. (The effects on a declaration, and the locals on a definition without
+/// parameters: the generic print of a definition does not write the arguments of its entry block,
+/// and a declaration has no locals.)
 #[test]
 fn the_generic_form_of_a_function_reads_its_effects_and_locals() -> TestResult {
     use crate::{CallableOpInterface, Op, dialects::builtin::attributes::DeclaredEffects};
 
     let test = ParserTest::default();
-    let source =
-        "builtin.function public extern(\"C\") @f(i32) -> i32 effects(read(arg 0)) locals(i64);";
+    let source = "builtin.function public extern(\"C\") @f(i32) -> i32 effects(read(arg 0));";
     let function = test.parse::<Function>("generic_first.hir", source)?;
     let generic = print_generic(function.borrow().as_operation());
     assert!(
         generic.contains("memory_effects = #builtin.declared_effects<read(arg 0)>"),
         "{generic}"
     );
-    assert!(generic.contains("locals = #builtin.type_array<i64>"), "{generic}");
 
     let world = test.parse_generic("generic_second.hir", &generic)?;
     let parsed = world.borrow().body().entry().front().unwrap();
@@ -4884,6 +4905,16 @@ fn the_generic_form_of_a_function_reads_its_effects_and_locals() -> TestResult {
     let parsed = parsed.downcast_ref::<Function>().expect("a function");
     assert_eq!(parsed.declared_effects(), function.borrow().declared_effects());
     assert_ne!(parsed.declared_effects(), DeclaredEffects::Unknown);
+
+    let source = "builtin.function public extern(\"C\") @g() locals(i64) {\n    builtin.ret;\n};";
+    let test = ParserTest::default();
+    let function = test.parse::<Function>("generic_third.hir", source)?;
+    let generic = print_generic(function.borrow().as_operation());
+    assert!(generic.contains("locals = #builtin.type_array<i64>"), "{generic}");
+    let world = test.parse_generic("generic_fourth.hir", &generic)?;
+    let parsed = world.borrow().body().entry().front().unwrap();
+    let parsed = parsed.borrow();
+    let parsed = parsed.downcast_ref::<Function>().expect("a function");
     assert_eq!(parsed.num_locals(), 1);
     Ok(())
 }
@@ -6494,9 +6525,9 @@ fn parse_holds_the_context_until_the_operation_is_downcast() {
     }
 }
 
-/// Random functions, declarations and definitions, in every effect state and with locals: the
-/// text parses to the effects and locals written, prints back the same, and (a declaration) reads
-/// back the same from the generic form.
+/// Random functions, declarations and definitions, in every effect state and (a definition) with
+/// locals: the text parses to the effects and locals written, prints back the same, and (a
+/// declaration, or a definition without parameters) reads back the same from the generic form.
 #[test]
 fn fuzz_function_effects_and_locals_round_trip() {
     use crate::{
@@ -6540,6 +6571,8 @@ fn fuzz_function_effects_and_locals_round_trip() {
             _ => 2,
         }] += 1;
         let locals = (0..rng.below(3)).map(|_| rng.pick(&TYPES[..3])).collect::<Vec<_>>();
+        // a declaration has no locals (drawn anyway, so the random stream stays the same)
+        let locals = if definition { locals } else { Vec::new() };
         let locals_text = if locals.is_empty() {
             String::new()
         } else {

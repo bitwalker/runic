@@ -24,5 +24,6 @@ runic-analysis.workspace = true
 litcheck-filecheck.workspace = true
 runic-dialect-arith = { path = "../dialects/arith" }
 runic-dialect-cf = { path = "../dialects/cf" }
+runic-dialect-mem = { path = "../dialects/mem" }
 runic-dialect-scf = { path = "../dialects/scf" }
 runic-core = { path = "../core", features = ["logging"] }

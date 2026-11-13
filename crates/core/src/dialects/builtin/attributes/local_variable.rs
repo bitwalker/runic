@@ -47,8 +47,8 @@ impl LocalVariable {
 
     /// Returns true if this local is bound to its containing function.
     ///
-    /// Locals reconstructed from parsed HIR are unbound: the local's type is carried by the
-    /// attribute's type slot instead of the function's locals table. Use
+    /// Locals parsed from text are unbound: the local's type is carried by the attribute's type
+    /// slot instead of the function's locals table. Use
     /// [`LocalVariableAttr::local_type`] to obtain the type regardless of binding.
     #[inline(always)]
     pub const fn is_bound(&self) -> bool {
@@ -92,8 +92,7 @@ impl LocalVariableAttr {
     /// Get the type of this local variable.
     ///
     /// For locals bound to a function this reads the function's locals table; for locals
-    /// reconstructed from parsed HIR (which are unbound), it reads the type recorded on the
-    /// attribute itself.
+    /// parsed from text (which are unbound), it reads the type recorded on the attribute itself.
     pub fn local_type(&self) -> Type {
         if self.value.is_bound() {
             self.value.ty()

@@ -495,7 +495,8 @@ impl CallableSymbol for Function {}
 /// appear in a function that never returns).
 ///
 /// Every effect in the function's declared effects names at most one of an argument and a result,
-/// and the one it names exists in the signature.
+/// and the one it names exists in the signature. A declaration has no locals: its `locals(..)` is
+/// empty.
 ///
 /// The signature itself is checked before this runs, by
 /// [Operation::verify_signature_attributes], as for every operation that holds one.
@@ -540,6 +541,13 @@ impl crate::Verify<dyn CallableSymbol> for Function {
             }
         }
         if self.is_declaration() {
+            let locals = self.num_locals();
+            if locals != 0 {
+                return Err(invalid(format!(
+                    "a declaration has no body, so it has no locals, but this one states {locals} \
+                     local(s)"
+                )));
+            }
             return Ok(());
         }
 

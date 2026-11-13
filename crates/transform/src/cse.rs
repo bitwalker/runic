@@ -583,7 +583,11 @@ impl PartialEq for OpKey {
 
 #[cfg(test)]
 mod tests {
-    use alloc::{boxed::Box, format, string::ToString};
+    use alloc::{
+        boxed::Box,
+        format,
+        string::{String, ToString},
+    };
 
     use litcheck_filecheck::{filecheck, litcheck};
     use runic_core::{
@@ -1419,6 +1423,15 @@ builtin.function public extern("C") @down_propagate_while() {
     /// The function `@f(%p: ptr<i32>, %v: i32) -> (i32, i32)` with the body `body`, in a module
     /// that also holds [CALLEES], after CSE ran on it, as text.
     fn cse_in_module(body: &str) -> Result<alloc::string::String, runic_core::Report> {
+        cse_in_module_with_locals("", body)
+    }
+
+    /// [cse_in_module] with `@f` stating `locals` (a list of types, as written in `locals(..)`;
+    /// none when empty).
+    fn cse_in_module_with_locals(
+        locals: &str,
+        body: &str,
+    ) -> Result<alloc::string::String, runic_core::Report> {
         use runic_core::{
             SymbolTable,
             dialects::builtin::Function,
@@ -1428,7 +1441,12 @@ builtin.function public extern("C") @down_propagate_while() {
         let context = Rc::new(runic_core::Context::default());
         let text = format!(
             "builtin.module public @m {{\n{CALLEES}\nbuiltin.function public extern(\"C\") @f(%p: \
-             ptr<i32>, %v: i32) -> (i32, i32) {{\n{body}\n}};\n}};"
+             ptr<i32>, %v: i32) -> (i32, i32){locals} {{\n{body}\n}};\n}};",
+            locals = if locals.is_empty() {
+                String::new()
+            } else {
+                format!(" locals({locals})")
+            },
         );
         let module = parse::parse::<Module>(ParserConfig::new(context.clone()), "cse", text)
             .into_result()?;
@@ -1533,6 +1551,64 @@ cf.assert %c, "between";"#;
             r#"builtin.call @frees(%p) : extern("C") (ptr<i32>);"#,
         ] {
             assert_eq!(loads_left_with_between(between)?, 2, "{between}");
+        }
+        Ok(())
+    }
+
+    /// Locals are not memory: two loads of one local merge across a `mem.store`, and two
+    /// `test.load`s merge across a store of a local.
+    #[test]
+    fn loads_of_locals_and_of_memory_merge_across_writes_of_the_other()
+    -> Result<(), runic_core::Report> {
+        // `mem` registers its dialect when it is linked
+        use runic_dialect_mem as _;
+
+        let text = cse_in_module_with_locals(
+            "i32",
+            r#"
+    %1 = builtin.load_local <{ local = #builtin.local_variable<0, i32> }>;
+    mem.store %v, %p;
+    %2 = builtin.load_local <{ local = #builtin.local_variable<0, i32> }>;
+    builtin.ret %1, %2 : (i32, i32);"#,
+        )?;
+        filecheck!(
+            text,
+            r#"
+// CHECK: [[V:%\d+]] = builtin.load_local <{ local = #builtin.local_variable<0, i32> }>;
+// CHECK-NEXT: mem.store %1, %0;
+// CHECK-NEXT: builtin.ret [[V]], [[V]] : (i32, i32);
+            "#
+        );
+
+        let store = "builtin.store_local %v <{ local = #builtin.local_variable<0, i32> }> : (i32);";
+        let text = cse_in_module_with_locals(
+            "i32",
+            &format!(
+                "%1 = test.load %p;\n{store}\n%2 = test.load %p;\nbuiltin.ret %1, %2 : (i32, i32);"
+            ),
+        )?;
+        assert_eq!(text.matches("test.load").count(), 1, "{text}");
+        assert!(text.contains("builtin.store_local"), "{text}");
+        Ok(())
+    }
+
+    /// One resource holds every local: two loads of one local do not merge across a store of
+    /// another local, nor across a store of the same one.
+    #[test]
+    fn loads_of_a_local_are_not_merged_across_a_store_of_any_local()
+    -> Result<(), runic_core::Report> {
+        for stored in [0, 1] {
+            let text = cse_in_module_with_locals(
+                "i32, i32",
+                &format!(
+                    r#"
+    %1 = builtin.load_local <{{ local = #builtin.local_variable<0, i32> }}>;
+    builtin.store_local %v <{{ local = #builtin.local_variable<{stored}, i32> }}> : (i32);
+    %2 = builtin.load_local <{{ local = #builtin.local_variable<0, i32> }}>;
+    builtin.ret %1, %2 : (i32, i32);"#
+                ),
+            )?;
+            assert_eq!(text.matches("builtin.load_local").count(), 2, "{text}");
         }
         Ok(())
     }

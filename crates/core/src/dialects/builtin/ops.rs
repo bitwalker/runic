@@ -4,6 +4,7 @@ mod cast;
 mod component;
 mod function;
 mod global_variable;
+mod local;
 mod module;
 mod segment;
 mod world;
@@ -17,6 +18,7 @@ pub use self::{
     component::{Component, ComponentRef},
     function::{Function, FunctionBuilder as PrimFunctionBuilder, FunctionRef, Ret, RetImm},
     global_variable::*,
+    local::{LoadLocal, LoadLocalRef, LocalsResource, StoreLocal, StoreLocalRef},
     module::{Module, ModuleRef},
     segment::*,
     world::{World, WorldRef},

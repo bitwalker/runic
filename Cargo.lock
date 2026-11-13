@@ -1474,6 +1474,7 @@ dependencies = [
  "runic-core",
  "runic-dialect-arith",
  "runic-dialect-cf",
+ "runic-dialect-mem",
  "runic-dialect-scf",
 ]
 
