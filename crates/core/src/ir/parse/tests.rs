@@ -5866,3 +5866,21 @@ fn the_verifier_checks_result_type_constraints() -> TestResult {
     );
     Ok(())
 }
+
+/// `0b` or `0x` without a digit is an invalid integer literal in every profile, not a panic.
+#[test]
+fn an_empty_radix_literal_is_a_diagnostic() {
+    for (layout, reason) in [
+        ("little, ptr = 0b", "'0b' must be followed by a binary digit"),
+        ("little, ptr = 32, i8 = 0x", "'0x' must be followed by a hexadecimal digit"),
+        ("little, ptr = 0big", "'0b' must be followed by a binary digit"),
+    ] {
+        let source = format!(
+            "builtin.module public @m attributes {{ data_layout = #builtin.data_layout<{layout}> \
+             }} {{\n}};"
+        );
+        let message = parse_error(&source);
+        assert!(message.contains("invalid integer literal"), "{layout}: {message}");
+        assert!(message.contains(reason), "{layout}: {message}");
+    }
+}

@@ -552,8 +552,12 @@ impl<'input> Lexer<'input> {
     }
 
     fn lex_hex(&mut self) -> Result<Token<'input>, ParserError> {
-        // Expect the first character to be a valid hexadecimal digit
-        debug_assert!(self.read().is_ascii_hexdigit());
+        if !self.read().is_ascii_hexdigit() {
+            return Err(ParserError::InvalidIntegerLiteral {
+                span: self.span(),
+                reason: "'0x' must be followed by a hexadecimal digit".to_string(),
+            });
+        }
 
         loop {
             // If we hit a non-hex digit, we're done
@@ -584,8 +588,12 @@ impl<'input> Lexer<'input> {
     }
 
     fn lex_bin(&mut self) -> Result<Token<'input>, ParserError> {
-        // Expect the first character to be a valid binary digit
-        debug_assert!(is_ascii_binary(self.read()));
+        if !is_ascii_binary(self.read()) {
+            return Err(ParserError::InvalidIntegerLiteral {
+                span: self.span(),
+                reason: "'0b' must be followed by a binary digit".to_string(),
+            });
+        }
 
         loop {
             // If we hit a non-binary digit, we're done
