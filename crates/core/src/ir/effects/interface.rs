@@ -24,19 +24,35 @@ pub trait EffectOpInterface<T: Effect> {
     /// since the walk asks every operation it visits for its effects, an implementation that
     /// starts the walk at its own operation would recurse without bound.
     fn effects(&self) -> EffectIterator<T>;
-    /// Returns true if this operation has no effects
+    /// False when the operation cannot list its effects: it is then treated as an operation
+    /// without this interface. `effects()` is not consulted.
+    ///
+    /// The recursive walk ([RecursiveEffectIterator]) reports such an operation as "unknown", and
+    /// so do the queries on [Operation](crate::Operation) built on it. A caller that asks for
+    /// [Self::effects] directly must check this first.
+    fn effects_are_known(&self) -> bool {
+        true
+    }
+    /// Returns true if this operation is known to have no effects: false when its effects are
+    /// unknown.
     fn has_no_effect(&self) -> bool {
-        self.effects().is_empty()
+        self.effects_are_known() && self.effects().is_empty()
     }
     /// Return the set of effect instances that operate on the provided value
+    ///
+    /// Only meaningful when [Self::effects_are_known] is true.
     fn effects_on_value(&self, value: ValueRef) -> ValueEffectIterator<T> {
         EffectIterator::for_value(self.effects(), value)
     }
     /// Return the set of effect instances that operate on the provided symbol
+    ///
+    /// Only meaningful when [Self::effects_are_known] is true.
     fn effects_on_symbol(&self, symbol: SymbolRef) -> SymbolEffectIterator<T> {
         EffectIterator::for_symbol(self.effects(), symbol)
     }
     /// Return the set of effect instances that operate on the provided resource
+    ///
+    /// Only meaningful when [Self::effects_are_known] is true.
     fn effects_on_resource<'a, 'b: 'a>(
         &self,
         resource: &'b dyn Resource,
@@ -47,26 +63,35 @@ pub trait EffectOpInterface<T: Effect> {
 
 impl<T: Effect> dyn EffectOpInterface<T> {
     /// Return the set all of the operation's effects that correspond to effect type `T`
+    ///
+    /// Empty when the operation's effects are unknown: check [Self::effects_are_known] first.
     pub fn effects_of_type<E>(&self) -> impl Iterator<Item = EffectInstance<T>> + '_
     where
         E: Effect,
     {
-        self.effects().filter(|instance| instance.effect().as_any().is::<E>())
+        let known = self.effects_are_known();
+        self.effects()
+            .filter(move |instance| known && instance.effect().as_any().is::<E>())
     }
 
-    /// Returns true if the operation exhibits the given effect.
+    /// Returns true if the operation is known to exhibit the given effect: false when its effects
+    /// are unknown.
     pub fn has_effect<E>(&self) -> bool
     where
         E: Effect,
     {
-        self.effects().any(|instance| instance.effect().as_any().is::<E>())
+        self.effects_are_known()
+            && self.effects().any(|instance| instance.effect().as_any().is::<E>())
     }
 
-    /// Returns true if the operation only exhibits the given effect.
+    /// Returns true if the operation is known to exhibit only the given effect.
     pub fn only_has_effect<E>(&self) -> bool
     where
         E: Effect,
     {
+        if !self.effects_are_known() {
+            return false;
+        }
         let mut effects = self.effects();
         !effects.is_empty() && effects.all(|instance| instance.effect().as_any().is::<E>())
     }
@@ -202,7 +227,9 @@ impl<T> Iterator for ResourceEffectIterator<'_, T> {
 ///
 /// * `Some` represents an effect on the operation or one of its nested operations
 /// * `None` indicates that we have identified that the given operation has unknown effects, and
-///   thus the entire operation could have unknown effects.
+///   thus the entire operation could have unknown effects. An operation has unknown effects when
+///   it implements neither [EffectOpInterface] nor the recursive marker, or when it implements the
+///   interface and [EffectOpInterface::effects_are_known] is false.
 ///
 /// Note that in the case of discovering that an operation has unknown effects, the iterator can
 /// continue to visit all effects recursively - it is up to the caller to stop iteration if the
@@ -250,12 +277,17 @@ impl<T: Effect> Iterator for RecursiveEffectIterator<T> {
                     }
                 }
 
-                if let Some(effect_interface) = operation.as_trait::<dyn EffectOpInterface<T>>() {
-                    self.buffer.extend(effect_interface.effects().map(|eff| (op, Some(eff))));
-                } else if !has_recursive_effects {
-                    // The operation does not have recursive memory effects or implement
+                match operation.as_trait::<dyn EffectOpInterface<T>>() {
+                    Some(effect_interface) if effect_interface.effects_are_known() => {
+                        self.buffer.extend(effect_interface.effects().map(|eff| (op, Some(eff))));
+                    }
+                    // The operation says it cannot list its own effects: they are unknown,
+                    // whether or not it also has recursive effects
+                    Some(_) => self.buffer.push_back((op, None)),
+                    // The operation does not have recursive effects or implement
                     // EffectOpInterface, so its effects are unknown.
-                    self.buffer.push_back((op, None));
+                    None if !has_recursive_effects => self.buffer.push_back((op, None)),
+                    None => (),
                 }
             } else {
                 break;
@@ -457,5 +489,71 @@ mod tests {
         assert_eq!(ping.len(), 2, "{ping:?}");
         assert!(ping.contains(&Some(PingEffect::Ping)), "{ping:?}");
         assert!(ping.contains(&None), "the store's ping effects are unknown: {ping:?}");
+    }
+
+    /// A `test.effects <{ known = .. }>` in a new function, unused, directly in the entry block or
+    /// inside a [RecursiveRegion]. Returns the operation the queries are asked of: the
+    /// `test.effects`, or the region operation that holds it.
+    fn effects_op(known: bool, nested: bool) -> (Test, crate::OperationRef) {
+        use crate::dialects::test::TestOpBuilder;
+
+        let mut test = Test::named("effects_op");
+        test.with_function("effects_op", &[], &[]);
+        let op = {
+            let mut builder = test.function_builder();
+            let entry = builder.entry_block();
+            let builder = builder.builder_mut();
+            builder.set_insertion_point_to_end(entry);
+            if nested {
+                let op = builder.create::<RecursiveRegion, ()>(SourceSpan::UNKNOWN)().unwrap();
+                let body = op.borrow().body().as_region_ref();
+                let block = builder.create_block(body, None, &[]);
+                builder.set_insertion_point_to_end(block);
+                builder.effects(known, SourceSpan::UNKNOWN).unwrap();
+                op.borrow().as_operation().as_operation_ref()
+            } else {
+                let result = builder.effects(known, SourceSpan::UNKNOWN).unwrap();
+                result.borrow().get_defining_op().unwrap()
+            }
+        };
+        (test, op)
+    }
+
+    /// An operation that implements the interface and says its effects are unknown is treated as
+    /// one without the interface by every query, alone and inside a region with recursive effects.
+    #[test]
+    fn unknown_effects_from_an_operation_with_the_interface() {
+        for nested in [false, true] {
+            let (_test, op) = effects_op(false, nested);
+            let op = op.borrow();
+            assert!(!op.is_memory_effect_free(), "nested: {nested}");
+            assert!(!op.is_used());
+            assert!(!op.would_be_trivially_dead(), "nested: {nested}");
+            assert!(op.get_effects_recursively::<MemoryEffect>().is_none(), "nested: {nested}");
+            assert!(!op.has_single_memory_effect(MemoryEffect::Read), "nested: {nested}");
+            assert!(!op.has_memory_effect(MemoryEffect::Read), "nested: {nested}");
+            let walked = RecursiveEffectIterator::<MemoryEffect>::new(op.as_operation_ref())
+                .map(|(_, effect)| effect.map(|instance| *instance.effect()))
+                .collect::<alloc::vec::Vec<_>>();
+            assert_eq!(walked, [None], "nested: {nested}");
+        }
+    }
+
+    /// The same operation with known effects (a single `Read`) is dead when unused, and its one
+    /// effect is a `Read`.
+    #[test]
+    fn known_effects_from_the_same_operation() {
+        for nested in [false, true] {
+            let (_test, op) = effects_op(true, nested);
+            let op = op.borrow();
+            assert!(!op.is_memory_effect_free(), "nested: {nested}");
+            assert!(op.would_be_trivially_dead(), "nested: {nested}");
+            let effects = op
+                .get_effects_recursively::<MemoryEffect>()
+                .map(|effects| effects.iter().map(|e| *e.effect()).collect::<alloc::vec::Vec<_>>());
+            assert_eq!(effects, Some(alloc::vec![MemoryEffect::Read]), "nested: {nested}");
+            // The single-effect queries consult the operation's own effects only
+            assert_eq!(op.has_single_memory_effect(MemoryEffect::Read), !nested);
+        }
     }
 }

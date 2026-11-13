@@ -110,6 +110,14 @@ pub trait TestOpBuilder<'f, B: ?Sized + Builder> {
         Ok(op.borrow().result().as_value_ref())
     }
 
+    /// A `test.effects`: an `i32` whose memory effects are a `Read` when `known` is true, and
+    /// unknown otherwise.
+    fn effects(&mut self, known: bool, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Effects, _>(span);
+        let op = op_builder(known)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
     /// Loads a value of the type pointed to by the given pointer
     ///
     /// NOTE: This function will panic if `ptr` is not a pointer typed value

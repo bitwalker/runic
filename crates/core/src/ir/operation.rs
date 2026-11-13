@@ -1517,9 +1517,12 @@ impl Operation {
     /// of memory effects if all of its nested operations are free of memory effects.
     ///
     /// If the operation has both, then it is free of memory effects if both conditions are
-    /// satisfied.
+    /// satisfied. An operation whose implementation says its effects are unknown
+    /// ([EffectOpInterface::effects_are_known](crate::effects::EffectOpInterface::effects_are_known))
+    /// is not free of memory effects.
     pub fn is_memory_effect_free(&self) -> bool {
         if let Some(mem_interface) = self.as_trait::<dyn MemoryEffectOpInterface>() {
+            // `has_no_effect` is false when the effects are unknown
             if !mem_interface.has_no_effect() {
                 return false;
             }
@@ -1575,13 +1578,17 @@ impl Operation {
         let Some(mem_interface) = self.as_trait::<dyn MemoryEffectOpInterface>() else {
             return false;
         };
+        if !mem_interface.effects_are_known() {
+            return false;
+        }
 
         mem_interface.effects().any(|effect| effect.effect() == expected_effect)
     }
 
     /// Returns true if this operation has `expected_effect` and _only_ `expected_effect`.
     ///
-    /// Returns false if the op has no effects, or has any effect other than `expected_effect`.
+    /// Returns false if the op has unknown effects, no effects, or has any effect other than
+    /// `expected_effect`.
     ///
     /// Only the operation's own effects are consulted, not those of the operations in its
     /// regions: for an operation with `HasRecursiveMemoryEffects`, use
@@ -1590,7 +1597,7 @@ impl Operation {
         let Some(mem_interface) = self.as_trait::<dyn MemoryEffectOpInterface>() else {
             return false;
         };
-        if mem_interface.has_no_effect() {
+        if !mem_interface.effects_are_known() || mem_interface.has_no_effect() {
             return false;
         }
         for effect in mem_interface.effects() {
