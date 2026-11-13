@@ -2,7 +2,8 @@ mod lattice;
 
 use runic_core::{
     AttributeRef, Forward, Operation, ProgramPoint, Report, SmallVec, ValueRef,
-    attributes::IntegerLikeAttr, traits::InferIntRangeInterface,
+    attributes::IntegerLikeAttr,
+    traits::{InferIntRangeInterface, operation_operand_range_requirement},
 };
 pub use runic_core::{ConstantIntRange, IntegerRangeConfidence, IntegerValueRange};
 
@@ -163,6 +164,22 @@ pub fn value_range(solver: &DataFlowSolver, value: ValueRef) -> Option<IntegerVa
         .get::<IntegerRangeLattice, _>(&value)
         .map(|range| range.value().clone())
         .filter(|range| !range.is_uninitialized())
+}
+
+/// Return true if the range analysis proves every requirement `op` states of an operand
+/// ([runic_core::traits::OperandRangeRequirementOpInterface]): for each operand with a
+/// requirement, `solver` has an initialized range for it that [ConstantIntRange::is_within] the
+/// requirement. An operation that states no requirement trivially has them all proven.
+pub fn operand_range_requirements_hold(solver: &DataFlowSolver, op: &Operation) -> bool {
+    (0..op.num_operands()).all(|index| {
+        let Some(requirement) = operation_operand_range_requirement(op, index) else {
+            return true;
+        };
+        let operand = op.operands()[index].borrow().as_value_ref();
+        value_range(solver, operand)
+            .and_then(|range| range.range().copied())
+            .is_some_and(|range| range.is_within(&requirement))
+    })
 }
 
 enum ConstantRange {
