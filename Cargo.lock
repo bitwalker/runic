@@ -1374,6 +1374,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "runic-dialect-mem"
+version = "0.1.0"
+dependencies = [
+ "runic-core",
+ "runic-dialect-arith",
+ "runic-dialect-cf",
+ "runic-expect-test",
+ "runic-transform",
+]
+
+[[package]]
 name = "runic-dialect-scf"
 version = "0.1.0"
 dependencies = [

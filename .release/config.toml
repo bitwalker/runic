@@ -53,6 +53,10 @@ name = "runic-dialect-cf"
 unit = "compiler"
 
 [[packages]]
+name = "runic-dialect-mem"
+unit = "compiler"
+
+[[packages]]
 name = "runic-dialect-scf"
 unit = "compiler"
 
