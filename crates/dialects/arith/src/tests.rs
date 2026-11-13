@@ -749,6 +749,51 @@ fn coercion_folds_preserve_shared_constants() {
 }
 
 #[test]
+fn a_cast_that_does_not_verify_does_not_fold() {
+    type CastBuilder = fn(Builder<'_, '_>, ValueRef, Type) -> Result<ValueRef, Report>;
+    let cases: [(CastBuilder, &str, TypeFn, TypeFn); 4] = [
+        (
+            |b, v, t| b.trunc(v, t, SPAN),
+            "trunc isize -> i32",
+            Context::isize,
+            Context::i32,
+        ),
+        (
+            |b, v, t| b.zext(v, t, SPAN),
+            "zext isize -> i128",
+            Context::isize,
+            Context::i128,
+        ),
+        (|b, v, t| b.sext(v, t, SPAN), "sext i32 -> isize", Context::i32, Context::isize),
+        (|b, v, t| b.trunc(v, t, SPAN), "trunc i32 -> i64", Context::i32, Context::i64),
+    ];
+    for (build, name, from, to) in cases {
+        for explicit_operands in [false, true] {
+            let mut test = test_with(&[]);
+            let context = test.context_rc();
+            let mut b = test.function_builder();
+            let from_ty = from(&context);
+            let source = if from_ty.is_isize() {
+                b.isize(5, SPAN)
+            } else {
+                b.int(Int::from(5i32), from_ty, SPAN)
+            };
+            let result = build(&mut b, source, to(&context)).unwrap();
+            let constant = source.borrow().get_defining_op().unwrap();
+            let attribute = constant.borrow().get_attribute("value").unwrap();
+            let operands = [Some(attribute)];
+            let op = result.borrow().get_defining_op().unwrap();
+            assert!(op.borrow().verify().is_err(), "{name} verifies");
+            assert_eq!(
+                fold_value(result, explicit_operands.then_some(&operands[..])),
+                None,
+                "{name} folded"
+            );
+        }
+    }
+}
+
+#[test]
 fn bnot_folds_a_constant_boolean_and_a_double_negation() {
     let mut test = test_with(&[Context::i8]);
     let [param] = params(&test)[..] else {

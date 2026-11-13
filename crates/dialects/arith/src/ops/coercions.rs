@@ -21,28 +21,31 @@ pub(super) fn constant_operand(operand: &Option<AttributeRef>, ty: Type) -> Opti
 }
 
 /// Folds a resize of the constant operand of `op` to the attribute `resize` maps its value and the
-/// result width to, at the result type; `resize` returns `None` for a cast that is not valid.
+/// result width to, at the result type.
+///
+/// Only a cast that satisfies `rule`, the rule its verifier checks, folds: a cast that does not
+/// verify (an `isize` operand, the wrong width order) is left alone.
 ///
 /// The fold creates a new attribute: the operand's attribute may be shared by other uses.
 fn fold_resize(
     op: &Operation,
     operand: &Option<AttributeRef>,
     results: &mut SmallVec<[OpFoldResult; 1]>,
-    resize: impl FnOnce(Int, u32) -> Option<Int>,
+    rule: CastRule,
+    resize: impl FnOnce(Int, u32) -> Int,
 ) -> FoldResult {
     let operand_ty = op.operands()[0].borrow().as_value_ref().borrow().ty();
     let result_ty = op.results()[0].borrow().ty();
+    if rule.check(operand_ty, result_ty).is_some() {
+        return FoldResult::Failed;
+    }
     let (Some(value), Some(width)) = (
         constant_operand(operand, operand_ty),
         result_ty.integer_width().filter(|width| *width <= Int::MAX_WIDTH),
     ) else {
         return FoldResult::Failed;
     };
-    // An invalid cast (one its verifier rejects) is not folded.
-    let Some(value) = resize(value, width) else {
-        return FoldResult::Failed;
-    };
-    let result = op.context_rc().int_attr(value, result_ty);
+    let result = op.context_rc().int_attr(resize(value, width), result_ty);
     results.push(OpFoldResult::Attribute(result.as_attribute_ref()));
     FoldResult::Ok(())
 }
@@ -58,37 +61,48 @@ enum CastRule {
     OneIsize,
 }
 
-/// Checks the operand and result types of the cast `op` against `rule`.
-fn verify_cast(op: &Operation, rule: CastRule) -> Result<(), Report> {
+impl CastRule {
+    /// What is wrong with a cast from `from` to `to` under this rule, or `None` if it is valid.
+    fn check(self, from: Type, to: Type) -> Option<String> {
+        match self {
+            CastRule::Narrower | CastRule::Wider => {
+                match (from.integer_width(), to.integer_width()) {
+                    (Some(from_width), Some(to_width)) => match self {
+                        CastRule::Narrower if to_width >= from_width => {
+                            Some(format!("`{to}` is not narrower than `{from}`"))
+                        }
+                        CastRule::Wider if to_width <= from_width => {
+                            Some(format!("`{to}` is not wider than `{from}`"))
+                        }
+                        _ => None,
+                    },
+                    _ => Some(format!(
+                        "it resizes between fixed-width integer types, and `{from}` to `{to}` is \
+                         not; use `arith.sext_or_trunc` or `arith.zext_or_trunc` for `isize`"
+                    )),
+                }
+            }
+            CastRule::OneIsize => {
+                let fixed = |ty: Type| ty.integer_width().is_some();
+                let valid = (from.is_isize() && fixed(to)) || (fixed(from) && to.is_isize());
+                (!valid).then(|| {
+                    format!(
+                        "exactly one of its types must be `isize` and the other fixed-width, but \
+                         it converts `{from}` to `{to}`"
+                    )
+                })
+            }
+        }
+    }
+}
+
+/// Checks the operand and result types of the cast `op` against `rule`, and its result type
+/// against its `ty` attribute.
+fn verify_cast(op: &Operation, rule: CastRule, ty: Type) -> Result<(), Report> {
     let from = op.operands()[0].borrow().as_value_ref().borrow().ty();
     let to = op.results()[0].borrow().ty();
-    let problem: Option<String> = match rule {
-        CastRule::Narrower | CastRule::Wider => match (from.integer_width(), to.integer_width()) {
-            (Some(from_width), Some(to_width)) => match rule {
-                CastRule::Narrower if to_width >= from_width => {
-                    Some(format!("`{to}` is not narrower than `{from}`"))
-                }
-                CastRule::Wider if to_width <= from_width => {
-                    Some(format!("`{to}` is not wider than `{from}`"))
-                }
-                _ => None,
-            },
-            _ => Some(format!(
-                "it resizes between fixed-width integer types, and `{from}` to `{to}` is not; use \
-                 `arith.sext_or_trunc` or `arith.zext_or_trunc` for `isize`"
-            )),
-        },
-        CastRule::OneIsize => {
-            let fixed = |ty: Type| ty.integer_width().is_some();
-            let valid = (from.is_isize() && fixed(to)) || (fixed(from) && to.is_isize());
-            (!valid).then(|| {
-                format!(
-                    "exactly one of its types must be `isize` and the other fixed-width, but it \
-                     converts `{from}` to `{to}`"
-                )
-            })
-        }
-    };
+    let _ = ty;
+    let problem = rule.check(from, to);
     let Some(problem) = problem else {
         return Ok(());
     };
@@ -118,7 +132,7 @@ macro_rules! cast_type_rules {
 
         impl Verify<dyn InferTypeOpInterface> for $Op {
             fn verify(&self, _context: &Context) -> Result<(), Report> {
-                verify_cast(self.as_operation(), $rule)
+                verify_cast(self.as_operation(), $rule, *self.get_ty())
             }
         }
     };
@@ -162,9 +176,13 @@ impl Foldable for Trunc {
         operands: &[Option<AttributeRef>],
         results: &mut SmallVec<[OpFoldResult; 1]>,
     ) -> FoldResult {
-        fold_resize(self.as_operation(), &operands[0], results, |value, width| {
-            (width < value.width()).then(|| value.trunc(width))
-        })
+        fold_resize(
+            self.as_operation(),
+            &operands[0],
+            results,
+            CastRule::Narrower,
+            |value, width| value.trunc(width),
+        )
     }
 }
 
@@ -197,8 +215,8 @@ impl Foldable for Zext {
         operands: &[Option<AttributeRef>],
         results: &mut SmallVec<[OpFoldResult; 1]>,
     ) -> FoldResult {
-        fold_resize(self.as_operation(), &operands[0], results, |value, width| {
-            (width > value.width()).then(|| value.zext(width))
+        fold_resize(self.as_operation(), &operands[0], results, CastRule::Wider, |value, width| {
+            value.zext(width)
         })
     }
 }
@@ -233,8 +251,8 @@ impl Foldable for Sext {
         operands: &[Option<AttributeRef>],
         results: &mut SmallVec<[OpFoldResult; 1]>,
     ) -> FoldResult {
-        fold_resize(self.as_operation(), &operands[0], results, |value, width| {
-            (width > value.width()).then(|| value.sext(width))
+        fold_resize(self.as_operation(), &operands[0], results, CastRule::Wider, |value, width| {
+            value.sext(width)
         })
     }
 }
