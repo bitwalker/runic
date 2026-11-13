@@ -66,26 +66,30 @@ macro_rules! infer_return_ty_for_binary_op {
 
 /// The unsigned range `0 ..= width - 1` of a shift amount of type `ty`. For a type whose range is
 /// not tracked (`isize`, an integer wider than 128 bits) the requirement exists but cannot be
-/// written as a range, and is the untracked range, which no range is within.
-fn shift_amount_requirement(ty: Type) -> Option<ConstantIntRange> {
+/// written as a range, and is [OperandRangeRequirement::Unexpressed].
+fn shift_amount_requirement(ty: Type) -> OperandRangeRequirement {
     let width = ConstantIntRange::max_for_type(ty).width();
-    Some(if width == 0 {
-        ConstantIntRange::untracked()
+    if width == 0 {
+        OperandRangeRequirement::Unexpressed
     } else {
-        ConstantIntRange::from_unsigned(width, 0, u128::from(width) - 1)
-    })
+        OperandRangeRequirement::Range(ConstantIntRange::from_unsigned(
+            width,
+            0,
+            u128::from(width) - 1,
+        ))
+    }
 }
 
 /// The unsigned range `1 ..= 2^width - 1` of a divisor of type `ty` (every value but zero). For a
 /// type whose range is not tracked (`isize`, an integer wider than 128 bits) the requirement exists
-/// but cannot be written as a range, and is the untracked range, which no range is within.
-fn divisor_requirement(ty: Type) -> Option<ConstantIntRange> {
+/// but cannot be written as a range, and is [OperandRangeRequirement::Unexpressed].
+fn divisor_requirement(ty: Type) -> OperandRangeRequirement {
     let top = ConstantIntRange::max_for_type(ty);
-    Some(if top.is_untracked() {
-        ConstantIntRange::untracked()
+    if top.is_untracked() {
+        OperandRangeRequirement::Unexpressed
     } else {
-        ConstantIntRange::from_unsigned(top.width(), 1, top.umax())
-    })
+        OperandRangeRequirement::Range(ConstantIntRange::from_unsigned(top.width(), 1, top.umax()))
+    }
 }
 
 /// Implements [OperandRangeRequirementOpInterface] for `$Op`, whose operand 1 (`$operand`) must
@@ -93,10 +97,10 @@ fn divisor_requirement(ty: Type) -> Option<ConstantIntRange> {
 macro_rules! operand_one_requirement {
     ($Op:ty, $operand:ident, $requirement:ident) => {
         impl OperandRangeRequirementOpInterface for $Op {
-            fn operand_range_requirement(&self, index: usize) -> Option<ConstantIntRange> {
+            fn operand_range_requirement(&self, index: usize) -> OperandRangeRequirement {
                 match index {
                     1 => $requirement(self.$operand().ty()),
-                    _ => None,
+                    _ => OperandRangeRequirement::None,
                 }
             }
         }

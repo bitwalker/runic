@@ -12,13 +12,21 @@ use crate::{
 /// `umin ..= umax`: `%r = test.check_range %x <{ umin = .., umax = .. }>;`.
 ///
 /// The result reports its range through [InferIntRangeInterface] as the operand's range refined
-/// by the checked one ([IntegerValueRange::refined_by]). The operation has no effects: a trap is
-/// not an effect, so an unused check is dead code like any other operation that may trap.
+/// by the checked one ([IntegerValueRange::refined_by]), and the operation states the checked range
+/// as its operand's requirement through [OperandRangeRequirementOpInterface]. The operation has no
+/// effects: a trap is not an effect, so an unused check is dead code like any other operation that
+/// may trap.
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
 #[operation(
     dialect = TestDialect,
     traits(UnaryOp, SameTypeOperands, SameOperandsAndResultType),
-    implements(InferTypeOpInterface, InferIntRangeInterface, MemoryEffectOpInterface, OpPrinter)
+    implements(
+        InferTypeOpInterface,
+        InferIntRangeInterface,
+        OperandRangeRequirementOpInterface,
+        MemoryEffectOpInterface,
+        OpPrinter
+    )
 )]
 pub struct CheckRange {
     #[operand]
@@ -90,6 +98,22 @@ impl Verify<dyn InferTypeOpInterface> for CheckRange {
             ));
         }
         Ok(())
+    }
+}
+
+/// The operand must lie in the checked range; for an operand whose ranges are not tracked
+/// (`isize`) the requirement is [OperandRangeRequirement::Unexpressed].
+impl OperandRangeRequirementOpInterface for CheckRange {
+    fn operand_range_requirement(&self, index: usize) -> OperandRangeRequirement {
+        if index != 0 {
+            return OperandRangeRequirement::None;
+        }
+        let checked = self.checked_range();
+        if checked.is_untracked() {
+            OperandRangeRequirement::Unexpressed
+        } else {
+            OperandRangeRequirement::Range(checked)
+        }
     }
 }
 
@@ -210,6 +234,30 @@ mod tests {
             IntegerValueRange::proven(ConstantIntRange::untracked())
         );
         assert!(infer(result, IntegerValueRange::uninitialized()).is_uninitialized());
+    }
+
+    /// The operand's requirement is the checked range, and is unexpressed for an `isize` operand.
+    #[test]
+    fn a_check_requires_its_operand_to_lie_in_the_checked_range() {
+        use crate::traits::{OperandRangeRequirement, operation_operand_range_requirement};
+
+        let requirement = |ty: fn(&crate::Context) -> Type| {
+            let (_test, result) = check_range(ty, 10, 100);
+            let op = result.borrow().get_defining_op().unwrap();
+            let op = op.borrow();
+            [0, 1].map(|index| operation_operand_range_requirement(&op, index))
+        };
+        assert_eq!(
+            requirement(crate::Context::i32),
+            [
+                OperandRangeRequirement::Range(ConstantIntRange::from_unsigned(32, 10, 100)),
+                OperandRangeRequirement::None
+            ]
+        );
+        assert_eq!(
+            requirement(crate::Context::isize),
+            [OperandRangeRequirement::Unexpressed, OperandRangeRequirement::None]
+        );
     }
 
     #[test]

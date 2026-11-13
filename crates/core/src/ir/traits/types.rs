@@ -19,30 +19,38 @@ pub trait InferTypeOpInterface: Op {
     }
 }
 
-/// For operations that are defined only for some values of an operand.
-pub trait OperandRangeRequirementOpInterface: Op {
-    /// The values of operand `index` for which this operation neither traps nor has an undefined
-    /// result, or `None` when every value of the operand's type is accepted. It is a condition on
-    /// that operand alone: a requirement that relates two operands (a sum that must fit,
-    /// `MIN / -1`) is not expressed here.
-    ///
-    /// A requirement on an operand whose ranges are not tracked (`isize`, an integer wider than 128
-    /// bits) is [ConstantIntRange::untracked], which no range is within: it is not `None`.
-    fn operand_range_requirement(&self, index: usize) -> Option<ConstantIntRange>;
+/// What an operation requires of one operand's value in order to neither trap nor have an undefined
+/// result.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum OperandRangeRequirement {
+    /// Every value of the operand's type is accepted.
+    None,
+    /// The operand must lie in this range. A condition on this operand alone.
+    Range(ConstantIntRange),
+    /// The operation has a requirement that involves this operand and cannot be written as a range
+    /// of it: one that relates two operands (a sum that must fit, `MIN / -1`), or one on an operand
+    /// whose ranges are not tracked (`isize`). Nothing proves it through this interface.
+    Unexpressed,
 }
 
-/// The values of operand `index` of `op` for which `op` neither traps nor has an undefined result,
-/// as [OperandRangeRequirementOpInterface] states them: `None` when `op` does not implement the
-/// interface, when `index` is not an operand of `op`, or when every value is accepted.
+/// For operations that are defined only for some values of an operand.
+pub trait OperandRangeRequirementOpInterface: Op {
+    /// What this operation requires of operand `index`.
+    fn operand_range_requirement(&self, index: usize) -> OperandRangeRequirement;
+}
+
+/// What `op` requires of operand `index`, as [OperandRangeRequirementOpInterface] states it:
+/// [OperandRangeRequirement::None] when `op` does not implement the interface or when `index` is
+/// not an operand of `op`.
 pub fn operation_operand_range_requirement(
     op: &Operation,
     index: usize,
-) -> Option<ConstantIntRange> {
+) -> OperandRangeRequirement {
     if index >= op.num_operands() {
-        return None;
+        return OperandRangeRequirement::None;
     }
-    op.as_trait::<dyn OperandRangeRequirementOpInterface>()?
-        .operand_range_requirement(index)
+    op.as_trait::<dyn OperandRangeRequirementOpInterface>()
+        .map_or(OperandRangeRequirement::None, |op| op.operand_range_requirement(index))
 }
 
 /// OpInterface for operations that can infer integer ranges for their results.

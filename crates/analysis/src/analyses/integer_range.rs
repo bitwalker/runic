@@ -3,7 +3,9 @@ mod lattice;
 use runic_core::{
     AttributeRef, Forward, Operation, ProgramPoint, Report, SmallVec, ValueRef,
     attributes::IntegerLikeAttr,
-    traits::{InferIntRangeInterface, operation_operand_range_requirement},
+    traits::{
+        InferIntRangeInterface, OperandRangeRequirement, operation_operand_range_requirement,
+    },
 };
 pub use runic_core::{ConstantIntRange, IntegerRangeConfidence, IntegerValueRange};
 
@@ -166,23 +168,27 @@ pub fn value_range(solver: &DataFlowSolver, value: ValueRef) -> Option<IntegerVa
         .filter(|range| !range.is_uninitialized())
 }
 
-/// Return true if the range analysis proves every requirement `op` states of an operand
-/// ([runic_core::traits::OperandRangeRequirementOpInterface]): for each operand with a
-/// requirement, `solver` has an initialized range for it that [ConstantIntRange::is_within] the
+/// Return true if no operand of `op` has a requirement that is
+/// [OperandRangeRequirement::Unexpressed] and the range analysis proves every one that is a
+/// [OperandRangeRequirement::Range] ([runic_core::traits::OperandRangeRequirementOpInterface]):
+/// `solver` has an initialized range for the operand that [ConstantIntRange::is_within] the
 /// requirement. An operation that states no requirement trivially has them all proven.
 ///
-/// A requirement on an operand whose ranges are not tracked (`isize`) is the untracked range, which
-/// no range is within, so this is false for such an operation. A range of either confidence is
-/// accepted: an assumed range is still a fact about a signless integer.
+/// This is a sound and conservative answer to "this operation cannot trap or be undefined": when it
+/// is true, the operation neither traps nor has an undefined result, provided the operation states
+/// every requirement it has; when it is false, it may. It is never true for an operation with a
+/// requirement on an operand whose ranges are not tracked (`isize`). A range of either confidence
+/// is accepted: an assumed range is still a fact about a signless integer.
 pub fn operand_range_requirements_hold(solver: &DataFlowSolver, op: &Operation) -> bool {
-    (0..op.num_operands()).all(|index| {
-        let Some(requirement) = operation_operand_range_requirement(op, index) else {
-            return true;
-        };
-        let operand = op.operands()[index].borrow().as_value_ref();
-        value_range(solver, operand)
-            .and_then(|range| range.range().copied())
-            .is_some_and(|range| range.is_within(&requirement))
+    (0..op.num_operands()).all(|index| match operation_operand_range_requirement(op, index) {
+        OperandRangeRequirement::None => true,
+        OperandRangeRequirement::Unexpressed => false,
+        OperandRangeRequirement::Range(requirement) => {
+            let operand = op.operands()[index].borrow().as_value_ref();
+            value_range(solver, operand)
+                .and_then(|range| range.range().copied())
+                .is_some_and(|range| range.is_within(&requirement))
+        }
     })
 }
 
@@ -917,6 +923,48 @@ mod tests {
 
         let rotl = requirements_hold(Context::i32, |b, x, unknown| b.rotl(x, unknown, SPAN))?;
         assert!(rotl, "arith.rotl by an unknown amount");
+
+        Ok(())
+    }
+
+    /// `test.check_range` requires its operand to lie in the checked range: the requirement holds
+    /// when the operand is proven inside it (a constant, or a value checked into a narrower range
+    /// first), and not when it may lie outside.
+    #[test]
+    fn a_check_range_requirement_holds_when_its_operand_is_proven_inside() -> Result<(), Report> {
+        let constant = requirements_hold(Context::i32, |b, _, _| {
+            let value = b.i32(7, SPAN);
+            check_range(b, value, 0, 10)
+        })?;
+        assert!(constant, "a constant inside the checked range");
+
+        let narrower = requirements_hold(Context::i32, |b, _, unknown| {
+            let value = check_range(b, unknown, 2, 5)?;
+            check_range(b, value, 0, 10)
+        })?;
+        assert!(narrower, "a value checked into 2 ..= 5, checked into 0 ..= 10");
+
+        let outside = requirements_hold(Context::i32, |b, _, _| {
+            let value = b.i32(11, SPAN);
+            check_range(b, value, 0, 10)
+        })?;
+        assert!(!outside, "a constant outside the checked range");
+
+        let wider = requirements_hold(Context::i32, |b, _, unknown| {
+            let value = check_range(b, unknown, 0, 20)?;
+            check_range(b, value, 0, 10)
+        })?;
+        assert!(!wider, "a value checked into 0 ..= 20, checked into 0 ..= 10");
+
+        let unknown =
+            requirements_hold(Context::i32, |b, _, unknown| check_range(b, unknown, 0, 10))?;
+        assert!(!unknown, "an unknown value");
+
+        let isize = requirements_hold(Context::isize, |b, _, _| {
+            let value = b.isize(1, SPAN);
+            check_range(b, value, 0, 10)
+        })?;
+        assert!(!isize, "an isize operand, whose requirement is unexpressed");
 
         Ok(())
     }

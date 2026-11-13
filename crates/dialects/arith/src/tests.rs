@@ -15,7 +15,7 @@ use runic_core::{
     diagnostics::{Diagnostic, Label, VisitDiagnostic},
     dialects::builtin::{BuiltinOpBuilder, FunctionBuilder, FunctionRef, attributes::BoolAttr},
     testing::{Test, parse_function_fixpoint},
-    traits::Foldable,
+    traits::{Foldable, OperandRangeRequirement},
 };
 
 use crate::*;
@@ -1265,7 +1265,7 @@ fn an_isize_constant_folds_to_its_own_attribute() {
 fn operand_requirements(
     ty: TypeFn,
     build: fn(Builder<'_, '_>, ValueRef, ValueRef) -> ValueRef,
-) -> [Option<runic_core::ConstantIntRange>; 3] {
+) -> [OperandRangeRequirement; 3] {
     use runic_core::traits::operation_operand_range_requirement;
     let mut test = test_with(&[ty, ty]);
     let [lhs, rhs] = params(&test)[..] else {
@@ -1282,9 +1282,11 @@ fn i200(context: &Context) -> Type {
 }
 
 /// The shifts require of their amount (operand 1) the unsigned range `0 ..= width - 1`; at `i1`
-/// the amount must be `0`. The rotates take their amount modulo the width and require nothing.
+/// the amount must be `0`; for `isize` and `i200` the requirement is unexpressed. The rotates take
+/// their amount modulo the width and require nothing.
 #[test]
 fn a_shift_requires_an_amount_below_the_width() {
+    use OperandRangeRequirement::{None as Any, Range, Unexpressed};
     use runic_core::ConstantIntRange;
     type BuildFn = fn(Builder<'_, '_>, ValueRef, ValueRef) -> ValueRef;
     let shifts: [(&str, BuildFn); 3] = [
@@ -1299,43 +1301,44 @@ fn a_shift_requires_an_amount_below_the_width() {
             let expected = ConstantIntRange::from_unsigned(width, 0, u128::from(width) - 1);
             assert_eq!(
                 operand_requirements(ty, build),
-                [None, Some(expected), None],
+                [Any, Range(expected), Any],
                 "{name} at width {width}"
             );
         }
         for (ty, what) in [(Context::isize as TypeFn, "isize"), (i200, "i200")] {
             assert_eq!(
                 operand_requirements(ty, build),
-                [None, Some(ConstantIntRange::untracked()), None],
+                [Any, Unexpressed, Any],
                 "{name} at {what}"
             );
         }
     }
     assert_eq!(
         operand_requirements(Context::i1, |b, l, r| b.shl(l, r, SPAN).unwrap())[1],
-        Some(ConstantIntRange::constant(Int::from(false)))
+        Range(ConstantIntRange::constant(Int::from(false)))
     );
     for build in [(|b, l, r| b.rotl(l, r, SPAN).unwrap()) as BuildFn, |b, l, r| {
         b.rotr(l, r, SPAN).unwrap()
     }] {
-        assert_eq!(operand_requirements(Context::i8, build), [None; 3]);
+        assert_eq!(operand_requirements(Context::i8, build), [Any; 3]);
     }
 }
 
 /// The divisions require of their divisor (operand 1) every value but zero, the unsigned range
-/// `1 ..= 2^width - 1`; at `i1` the divisor must be `1`. For `isize` and `i200` the requirement is the
-/// untracked range.
+/// `1 ..= 2^width - 1`; at `i1` the divisor must be `1`. For `isize` and `i200` the requirement is
+/// unexpressed. The dividend has no requirement.
 #[test]
 fn a_division_requires_a_nonzero_divisor() {
+    use OperandRangeRequirement::{None as Any, Range, Unexpressed};
     use runic_core::ConstantIntRange;
     type BuildFn = fn(Builder<'_, '_>, ValueRef, ValueRef) -> ValueRef;
-    let divisions: [(&str, BuildFn); 6] = [
-        ("udiv", |b, l, r| b.udiv(l, r, SPAN).unwrap()),
-        ("sdiv", |b, l, r| b.sdiv(l, r, SPAN).unwrap()),
-        ("urem", |b, l, r| b.urem(l, r, SPAN).unwrap()),
-        ("srem", |b, l, r| b.srem(l, r, SPAN).unwrap()),
-        ("udivrem", |b, l, r| b.udivrem(l, r, SPAN).unwrap().0),
-        ("sdivrem", |b, l, r| b.sdivrem(l, r, SPAN).unwrap().0),
+    let divisions: [(&str, BuildFn, OperandRangeRequirement); 6] = [
+        ("udiv", |b, l, r| b.udiv(l, r, SPAN).unwrap(), Any),
+        ("sdiv", |b, l, r| b.sdiv(l, r, SPAN).unwrap(), Any),
+        ("urem", |b, l, r| b.urem(l, r, SPAN).unwrap(), Any),
+        ("srem", |b, l, r| b.srem(l, r, SPAN).unwrap(), Any),
+        ("udivrem", |b, l, r| b.udivrem(l, r, SPAN).unwrap().0, Any),
+        ("sdivrem", |b, l, r| b.sdivrem(l, r, SPAN).unwrap().0, Any),
     ];
     let widths: [(TypeFn, u16, u128); 4] = [
         (Context::i1, 1, 1),
@@ -1343,35 +1346,54 @@ fn a_division_requires_a_nonzero_divisor() {
         (Context::i64, 64, u128::from(u64::MAX)),
         (Context::i128, 128, u128::MAX),
     ];
-    for (name, build) in divisions {
+    for (name, build, dividend) in divisions {
         for (ty, width, max) in widths {
             let expected = ConstantIntRange::from_unsigned(width, 1, max);
             assert_eq!(expected.umax(), max);
             assert_eq!(
                 operand_requirements(ty, build),
-                [None, Some(expected), None],
+                [dividend, Range(expected), Any],
                 "{name} at width {width}"
             );
         }
         for (ty, what) in [(Context::isize as TypeFn, "isize"), (i200, "i200")] {
             assert_eq!(
                 operand_requirements(ty, build),
-                [None, Some(ConstantIntRange::untracked()), None],
+                [dividend, Unexpressed, Any],
                 "{name} at {what}"
             );
         }
     }
     assert_eq!(
         operand_requirements(Context::i1, |b, l, r| b.udiv(l, r, SPAN).unwrap())[1],
-        Some(ConstantIntRange::constant(Int::from(true)))
+        Range(ConstantIntRange::constant(Int::from(true)))
     );
 }
 
-/// An operation that does not implement `OperandRangeRequirementOpInterface` requires nothing.
+/// An operation that does not implement `OperandRangeRequirementOpInterface` requires nothing,
+/// and neither do the operations that report an overflow instead of trapping, the rotates, the
+/// comparisons, the extrema, `neg`, the counts and the casts.
 #[test]
 fn an_operation_without_the_interface_requires_nothing() {
-    assert_eq!(
-        operand_requirements(Context::i8, |b, l, r| b.band(l, r, SPAN).unwrap()),
-        [None; 3]
-    );
+    use OperandRangeRequirement::None as Any;
+    type BuildFn = fn(Builder<'_, '_>, ValueRef, ValueRef) -> ValueRef;
+    let operations: [(&str, BuildFn); 7] = [
+        ("band", |b, l, r| b.band(l, r, SPAN).unwrap()),
+        ("add_overflowing", |b, l, r| {
+            b.add_overflowing(l, r, Signedness::Signed, SPAN).unwrap().1
+        }),
+        ("mul_overflowing", |b, l, r| {
+            b.mul_overflowing(l, r, Signedness::Unsigned, SPAN).unwrap().1
+        }),
+        ("cmpi", |b, l, r| b.slt(l, r, SPAN).unwrap()),
+        ("min", |b, l, r| b.min(l, r, Signedness::Signed, SPAN).unwrap()),
+        ("neg", |b, l, _| b.neg(l, SPAN).unwrap()),
+        ("sext", |b, l, _| {
+            let ty = b.builder().context().i64();
+            b.sext(l, ty, SPAN).unwrap()
+        }),
+    ];
+    for (name, build) in operations {
+        assert_eq!(operand_requirements(Context::i8, build), [Any; 3], "{name}");
+    }
 }
