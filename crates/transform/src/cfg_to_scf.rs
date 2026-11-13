@@ -193,12 +193,13 @@ pub trait CFGToSCFInterface {
     ) -> ValueRef;
 
     /// Creates a constant operation with a result representing `value` that is suitable as flag
-    /// for `create_cfg_switch_op`.
+    /// for `create_cfg_switch_op`. The transformation asks only for non-negative values: the
+    /// index of a successor among those a switch dispatches to.
     fn get_cfg_switch_value(
         &self,
         span: SourceSpan,
         builder: &mut OpBuilder,
-        value: u32,
+        value: i32,
     ) -> ValueRef;
 
     /// Creates a switch-like unstructured branch operation, branching to one of `case_destinations`
@@ -219,7 +220,7 @@ pub trait CFGToSCFInterface {
         span: SourceSpan,
         builder: &mut OpBuilder,
         flag: ValueRef,
-        case_values: &[u32],
+        case_values: &[i32],
         case_destinations: &[BlockRef],
         case_arguments: &[ValueRange<'_, 2>],
         default_dest: BlockRef,

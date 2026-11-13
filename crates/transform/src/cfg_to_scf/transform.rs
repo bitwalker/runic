@@ -115,8 +115,10 @@ impl<'a> TransformationContext<'a> {
         }
     }
 
-    pub fn get_switch_value(&mut self, discriminant: u32) -> ValueRef {
-        let index = discriminant as usize;
+    /// Returns the cached switch flag `discriminant`, creating it at the start of the entry block.
+    /// A discriminant is the index of a successor, so it is never negative.
+    pub fn get_switch_value(&mut self, discriminant: i32) -> ValueRef {
+        let index = usize::try_from(discriminant).expect("a switch discriminant is not negative");
 
         if let Some(val) = self.switch_value_cache.get(index).copied().flatten() {
             return val;

@@ -326,8 +326,9 @@ impl<'multiplexer, 'context: 'multiplexer> EdgeMultiplexer<'multiplexer, 'contex
             if discriminator_index.is_some_and(|di| di == index) {
                 log::trace!(target: "cfg-to-scf", "arg corresponds to discriminator index");
                 let succ_index =
-                    self.block_arg_mapping.iter().position(|(k, _)| k == &succ_block).unwrap()
-                        as u32;
+                    self.block_arg_mapping.iter().position(|(k, _)| k == &succ_block).unwrap();
+                let succ_index =
+                    i32::try_from(succ_index).expect("a switch has fewer than 2^31 successors");
                 let value = self.transform_ctx.get_switch_value(succ_index);
                 log::trace!(target: "cfg-to-scf", "new successor operand is {value}");
                 new_succ_operands.push(value);
@@ -377,7 +378,7 @@ impl<'multiplexer, 'context: 'multiplexer> EdgeMultiplexer<'multiplexer, 'contex
         // We create the switch by creating a case for all entries and then splitting of the last
         // entry as a default case.
         let mut case_arguments = SmallVec::<[_; 4]>::default();
-        let mut case_values = SmallVec::<[u32; 4]>::default();
+        let mut case_values = SmallVec::<[i32; 4]>::default();
         let mut case_destinations = SmallVec::<[BlockRef; 4]>::default();
 
         log::trace!(
@@ -391,7 +392,8 @@ impl<'multiplexer, 'context: 'multiplexer> EdgeMultiplexer<'multiplexer, 'contex
                 continue;
             }
 
-            case_values.push(index as u32);
+            case_values
+                .push(i32::try_from(index).expect("a switch has fewer than 2^31 successors"));
             case_destinations.push(*succ);
             let succ = succ.borrow();
             let offset = *offset;
