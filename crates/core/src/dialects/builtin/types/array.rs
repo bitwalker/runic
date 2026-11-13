@@ -3,12 +3,13 @@ use core::fmt::{self, Write};
 use crate::{
     derive::DialectType,
     dialects::builtin::BuiltinDialect,
+    layout::TypeLayout,
     types::{Type, TypeFormatter, TypePrinter},
 };
 
 /// A fixed-length sequence of elements of one type, `array<T; N>`.
 #[derive(Debug, PartialEq, Eq, Hash, DialectType)]
-#[ty(dialect = BuiltinDialect, name = "array")]
+#[ty(dialect = BuiltinDialect, name = "array", implements(TypeLayout))]
 pub struct ArrayType {
     element: Type,
     len: u64,

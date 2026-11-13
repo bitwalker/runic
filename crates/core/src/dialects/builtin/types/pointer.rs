@@ -3,6 +3,7 @@ use core::fmt::{self, Write};
 use crate::{
     derive::DialectType,
     dialects::builtin::BuiltinDialect,
+    layout::TypeLayout,
     types::{Type, TypeFormatter, TypePrinter},
 };
 
@@ -11,7 +12,7 @@ use crate::{
 /// Prints as `ptr`, `ptr<N>`, `ptr<T>` or `ptr<T, N>`; a pointer without a pointee is opaque, and
 /// address space 0 is not printed.
 #[derive(Debug, PartialEq, Eq, Hash, DialectType)]
-#[ty(dialect = BuiltinDialect, name = "ptr")]
+#[ty(dialect = BuiltinDialect, name = "ptr", implements(TypeLayout))]
 pub struct PointerType {
     pointee: Option<Type>,
     addrspace: u32,

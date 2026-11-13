@@ -3,12 +3,13 @@ use core::fmt::{self, Write};
 use crate::{
     derive::DialectType,
     dialects::builtin::BuiltinDialect,
+    layout::TypeLayout,
     types::{TypeFormatter, TypePrinter},
 };
 
 /// An IEEE 754 binary floating-point type, `f32` or `f64`.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, DialectType)]
-#[ty(dialect = BuiltinDialect, name = "float")]
+#[ty(dialect = BuiltinDialect, name = "float", implements(TypeLayout))]
 pub enum FloatType {
     F32,
     F64,

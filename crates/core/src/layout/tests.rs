@@ -16,6 +16,7 @@ use crate::{
     parse::{self, ParserConfig},
     print::AsmPrinter,
     testing::text::{Rng, describe},
+    types::Type,
 };
 
 fn align(bytes: u64) -> Align {
@@ -572,4 +573,322 @@ fn a_world_states_a_specification_through_text() {
         .unwrap_or_else(|err| panic!("{printed}\n{}", describe(&err)));
     let module = first_child(world);
     assert_eq!(closest_spec(module), Some(little32()));
+}
+
+// --- Task 4: the layout of a type ----------------------------------------------------------------
+
+/// The layout `text` (the body of a `#builtin.data_layout<..>`) states.
+fn data_layout(context: &Rc<Context>, text: &str) -> DataLayout {
+    let spec = parse_spec(context, &format!("#builtin.data_layout<{text}>")).unwrap();
+    DataLayout::new(context, &spec)
+}
+
+/// `(size, align)` of `ty` under `layout`, both in bytes.
+fn size_align(layout: &DataLayout, ty: Type) -> Result<(u64, u64), LayoutError> {
+    let laid_out = layout.layout_of(ty)?;
+    assert_eq!(layout.size_of(ty), Ok(laid_out.size()));
+    assert_eq!(layout.align_of(ty), Ok(laid_out.align()));
+    assert!(laid_out.size().is_multiple_of(laid_out.align().bytes()), "{ty}: {laid_out:?}");
+    Ok((laid_out.size(), laid_out.align().bytes()))
+}
+
+const LITTLE_32: &str = "little, ptr = 32";
+const LITTLE_64: &str = "little, ptr = 64";
+const BIG_64: &str = "big, ptr = 64, ptr<1> = 64 align 8 index 32, i64 = 4";
+
+#[test]
+fn scalars_and_pointers_under_three_specifications() {
+    let context = context();
+    let cx = &*context;
+    let fn_ty = cx.function_type([cx.i32()], [cx.i32()]);
+    // (type, then (size, align) under LITTLE_32, LITTLE_64, BIG_64)
+    let cases: [(Type, [(u64, u64); 3]); 20] = [
+        (cx.i1(), [(1, 1); 3]),
+        (cx.i8(), [(1, 1); 3]),
+        (cx.i16(), [(2, 2); 3]),
+        (cx.int_type(24), [(4, 4); 3]),
+        (cx.i32(), [(4, 4); 3]),
+        // The next listed width of i40 is i64, aligned to 4 under BIG_64
+        (cx.int_type(40), [(8, 8), (8, 8), (8, 4)]),
+        (cx.i64(), [(8, 8), (8, 8), (8, 4)]),
+        (cx.int_type(65), [(16, 16); 3]),
+        (cx.i128(), [(16, 16); 3]),
+        (cx.int_type(256), [(32, 16); 3]),
+        (cx.int_type(IntegerType::MAX_WIDTH), [(2_097_152, 16); 3]),
+        // isize is the integer of the index width of address space 0
+        (cx.isize(), [(4, 4), (8, 8), (8, 4)]),
+        (cx.f32(), [(4, 4); 3]),
+        (cx.f64(), [(8, 8); 3]),
+        (cx.opaque_ptr_type(), [(4, 4), (8, 8), (8, 8)]),
+        (cx.ptr_type(cx.i8()), [(4, 4), (8, 8), (8, 8)]),
+        (cx.ptr_type(fn_ty), [(4, 4), (8, 8), (8, 8)]),
+        (cx.ptr_type(cx.unknown_type()), [(4, 4), (8, 8), (8, 8)]),
+        (cx.ptr_type(cx.never_type()), [(4, 4), (8, 8), (8, 8)]),
+        (cx.ptr_type_in(Some(cx.i8()), 1), [(4, 4), (8, 8), (8, 8)]),
+    ];
+    for (index, text) in [LITTLE_32, LITTLE_64, BIG_64].into_iter().enumerate() {
+        let layout = data_layout(&context, text);
+        for (ty, expected) in &cases {
+            assert_eq!(size_align(&layout, *ty), Ok(expected[index]), "{ty} under {text}");
+            assert_eq!(*layout.layout_of(*ty).unwrap().fields(), FieldsShape::Scalar, "{ty}");
+        }
+    }
+
+    // isize follows the index width, not the pointer size
+    let layout = data_layout(&context, "little, ptr = 64 align 8 index 32");
+    assert_eq!(size_align(&layout, cx.isize()), Ok((4, 4)));
+    assert_eq!(size_align(&layout, cx.opaque_ptr_type()), Ok((8, 8)));
+
+    // A pointer is laid out by its own address space; one without an entry by address space 0
+    let layout = data_layout(&context, "little, ptr = 64, ptr<1> = 16, ptr<2> = 24 align 4");
+    assert_eq!(size_align(&layout, cx.ptr_type_in(Some(cx.i8()), 1)), Ok((2, 2)));
+    assert_eq!(size_align(&layout, cx.opaque_ptr_type()), Ok((8, 8)));
+    assert_eq!(size_align(&layout, cx.ptr_type_in(Some(cx.i8()), 3)), Ok((8, 8)));
+    // A 3-byte pointer aligned to 4 is 4 bytes, so its size stays a multiple of its alignment
+    assert_eq!(size_align(&layout, cx.ptr_type_in(Some(cx.i8()), 2)), Ok((4, 4)));
+    // So is a float aligned beyond its size
+    let layout = data_layout(&context, "little, ptr = 32, f32 = 16, f64 = 2");
+    assert_eq!(size_align(&layout, cx.f32()), Ok((16, 16)));
+    assert_eq!(size_align(&layout, cx.f64()), Ok((8, 2)));
+}
+
+#[test]
+fn arrays() {
+    let context = context();
+    let cx = &*context;
+    let layout = data_layout(&context, LITTLE_32);
+
+    let array = cx.array_type(cx.i32(), 3);
+    let laid_out = layout.layout_of(array).unwrap();
+    assert_eq!((laid_out.size(), laid_out.align()), (12, align(4)));
+    assert_eq!(
+        *laid_out.fields(),
+        FieldsShape::Array {
+            stride: 4,
+            count: 3
+        }
+    );
+    assert_eq!(laid_out.fields().offset(2), Some(8));
+    assert_eq!(laid_out.fields().offset(3), None);
+
+    let empty = cx.array_type(cx.i8(), 0);
+    assert_eq!(size_align(&layout, empty), Ok((0, 1)));
+    let empty = cx.array_type(cx.i64(), 0);
+    assert_eq!(size_align(&layout, empty), Ok((0, 8)));
+
+    // The stride is the element's size, which is already a multiple of its alignment
+    let nested = cx.array_type(cx.array_type(cx.int_type(24), 3), 2);
+    let laid_out = layout.layout_of(nested).unwrap();
+    assert_eq!((laid_out.size(), laid_out.align()), (24, align(4)));
+    assert_eq!(
+        *laid_out.fields(),
+        FieldsShape::Array {
+            stride: 12,
+            count: 2
+        }
+    );
+
+    let huge = cx.array_type(cx.i64(), 1 << 61);
+    assert_eq!(layout.layout_of(huge), Err(LayoutError::TooLarge(huge)));
+    let largest = cx.array_type(cx.i64(), (1 << 61) - 1);
+    assert_eq!(layout.size_of(largest), Ok(u64::MAX - 7));
+    // Too large inside an array names the inner array, as an element's error is passed on
+    let outer = cx.array_type(huge, 1);
+    assert_eq!(layout.layout_of(outer), Err(LayoutError::TooLarge(huge)));
+    let outer = cx.array_type(largest, 2);
+    assert_eq!(layout.layout_of(outer), Err(LayoutError::TooLarge(outer)));
+}
+
+#[test]
+fn function_types_unknown_and_never_have_no_layout() {
+    let context = context();
+    let cx = &*context;
+    let layout = data_layout(&context, LITTLE_64);
+    let fn_ty = cx.function_type([cx.i32()], [cx.i32()]);
+    for ty in [fn_ty, cx.unknown_type(), cx.never_type()] {
+        assert_eq!(layout.layout_of(ty), Err(LayoutError::NoLayout(ty)), "{ty}");
+        assert_eq!(layout.size_of(ty), Err(LayoutError::NoLayout(ty)), "{ty}");
+        assert_eq!(layout.align_of(ty), Err(LayoutError::NoLayout(ty)), "{ty}");
+        // An array passes its element's error on unchanged, naming the element
+        let array = cx.array_type(ty, 4);
+        assert_eq!(layout.layout_of(array), Err(LayoutError::NoLayout(ty)), "{array}");
+        let nested = cx.array_type(array, 2);
+        assert_eq!(layout.layout_of(nested), Err(LayoutError::NoLayout(ty)), "{nested}");
+        // Even an empty one: its alignment is its element's
+        let empty = cx.array_type(ty, 0);
+        assert_eq!(layout.layout_of(empty), Err(LayoutError::NoLayout(ty)), "{empty}");
+        // A pointer to it has the pointer's layout
+        assert_eq!(size_align(&layout, cx.ptr_type(ty)), Ok((8, 8)), "ptr<{ty}>");
+    }
+    assert!(layout.is_idle());
+}
+
+#[test]
+fn a_layout_error_names_the_type_as_it_prints() {
+    let context = context();
+    let cx = &*context;
+    let fn_ty = cx.function_type([cx.i32()], [cx.i32()]);
+    let error = data_layout(&context, LITTLE_32).layout_of(fn_ty).unwrap_err();
+    assert_eq!(error.to_string(), "type '(i32) -> i32' has no representation in memory");
+    let report = crate::Report::from(error.clone());
+    assert_eq!(report.to_string(), error.to_string());
+
+    let huge = cx.array_type(cx.i64(), 1 << 61);
+    assert_eq!(
+        LayoutError::TooLarge(huge).to_string(),
+        "type 'array<i64; 2305843009213693952>' is too large: its size in bytes does not fit in \
+         64 bits"
+    );
+    assert_eq!(
+        LayoutError::InfiniteSize(cx.i8()).to_string(),
+        "type 'i8' has infinite size: it holds itself by value"
+    );
+    assert_eq!(
+        LayoutError::NoSuchElement {
+            ty: cx.i8(),
+            index: 3
+        }
+        .to_string(),
+        "type 'i8' has no element 3"
+    );
+    assert_eq!(
+        LayoutError::DiscriminantTooWide(cx.i8()).to_string(),
+        "type 'i8' has a discriminant that does not fit the 'isize' of the data layout"
+    );
+}
+
+mod test_types {
+    use super::*;
+    use crate::{derive::DialectType, dialects::test::TestDialect};
+
+    /// A dialect type with a layout of its own: 24 bytes aligned to 8.
+    #[derive(Debug, Default, PartialEq, Eq, Hash, DialectType)]
+    #[ty(dialect = TestDialect, name = "layout_fixed", implements(TypeLayout))]
+    pub(super) struct FixedType;
+    impl TypeLayout for FixedType {
+        fn layout(&self, _ty: Type, _layout: &DataLayout) -> Result<Layout, LayoutError> {
+            Ok(Layout::scalar(24, align(8)))
+        }
+    }
+
+    /// A dialect type without [TypeLayout].
+    #[derive(Debug, Default, PartialEq, Eq, Hash, DialectType)]
+    #[ty(dialect = TestDialect, name = "layout_none")]
+    pub(super) struct NoneType;
+
+    /// A dialect type that holds itself by value: its layout asks for its own.
+    #[derive(Debug, Default, PartialEq, Eq, Hash, DialectType)]
+    #[ty(dialect = TestDialect, name = "layout_self", implements(TypeLayout))]
+    pub(super) struct SelfType;
+    impl TypeLayout for SelfType {
+        fn layout(&self, ty: Type, layout: &DataLayout) -> Result<Layout, LayoutError> {
+            let inner = layout.layout_of(ty)?;
+            Ok(Layout::scalar(inner.size() + 8, align(8)))
+        }
+    }
+}
+
+#[test]
+fn a_dialect_type_lays_itself_out_through_the_interface() {
+    use test_types::*;
+
+    let context = context();
+    let cx = &*context;
+    let layout = data_layout(&context, LITTLE_32);
+
+    let fixed = cx.intern_type(FixedType);
+    assert_eq!(size_align(&layout, fixed), Ok((24, 8)));
+    let array = cx.array_type(fixed, 2);
+    assert_eq!(size_align(&layout, array), Ok((48, 8)));
+
+    let none = cx.intern_type(NoneType);
+    assert_eq!(layout.layout_of(none), Err(LayoutError::NoLayout(none)));
+    assert_eq!(layout.layout_of(cx.array_type(none, 1)), Err(LayoutError::NoLayout(none)));
+
+    // The guard stops a type that asks for its own layout, and is unwound afterwards
+    let looping = cx.intern_type(SelfType);
+    assert_eq!(layout.layout_of(looping), Err(LayoutError::InfiniteSize(looping)));
+    assert!(layout.is_idle());
+    assert_eq!(layout.layout_of(looping), Err(LayoutError::InfiniteSize(looping)));
+    let array = cx.array_type(looping, 3);
+    assert_eq!(layout.layout_of(array), Err(LayoutError::InfiniteSize(looping)));
+    assert!(layout.is_idle());
+    // A pointer to it is finite
+    assert_eq!(size_align(&layout, cx.ptr_type(looping)), Ok((4, 4)));
+}
+
+#[test]
+fn layouts_are_shared_by_equal_specifications() {
+    let context = context();
+    let cx = &*context;
+    let a = DataLayout::new(&context, &little32());
+    let b = DataLayout::new(&context, &little32().with_integer_align(32, align(4)).unwrap());
+    let c = DataLayout::new(&context, &little32().with_integer_align(32, align(8)).unwrap());
+    for ty in [cx.i32(), cx.array_type(cx.i16(), 5), cx.opaque_ptr_type()] {
+        let first = a.layout_of(ty).unwrap();
+        assert!(Rc::ptr_eq(&first, &b.layout_of(ty).unwrap()), "{ty}");
+        assert!(Rc::ptr_eq(&first, &a.layout_of(ty).unwrap()), "{ty}");
+        assert!(!Rc::ptr_eq(&first, &c.layout_of(ty).unwrap()), "{ty}");
+    }
+    assert_eq!(c.size_of(cx.i32()), Ok(8));
+    // Errors are kept too
+    let fn_ty = cx.function_type([], []);
+    assert_eq!(a.layout_of(fn_ty), b.layout_of(fn_ty));
+}
+
+/// The alignment of an integer of `width` bits under `entries` (the integer entries of a
+/// specification, defaults included), stated here apart from `DataLayoutSpec`: that of the
+/// narrowest entry at least `width` bits wide, else that of the widest entry.
+fn model_integer_align(entries: &alloc::collections::BTreeMap<u32, u64>, width: u32) -> u64 {
+    match entries.range(width..).next() {
+        Some((_, bytes)) => *bytes,
+        None => *entries.values().next_back().unwrap(),
+    }
+}
+
+#[test]
+fn random_integer_layouts_follow_the_rule() {
+    let context = context();
+    for seed in seeds() {
+        let mut rng = Rng(seed);
+        for case in 0..2000 {
+            let pointer = PointerSpec::sized(8 * (1 << rng.below(4))).unwrap();
+            let index_bits = 1 + rng.below(u64::from(pointer.size_bits)) as u32;
+            let pointer = PointerSpec {
+                index_bits,
+                ..pointer
+            };
+            let mut spec = DataLayoutSpec::new(Endianness::Little, pointer).unwrap();
+            let mut entries: alloc::collections::BTreeMap<u32, u64> =
+                [(8, 1), (16, 2), (32, 4), (64, 8), (128, 16)].into_iter().collect();
+            for _ in 0..rng.below(6) {
+                let width = match rng.below(3) {
+                    0 => rng.pick(&[1, 8, 16, 24, 32, 64, 128, 256]),
+                    1 => 1 + rng.below(300) as u32,
+                    _ => 1 + rng.below(u64::from(IntegerType::MAX_WIDTH)) as u32,
+                };
+                let bytes = 1 << rng.below(16);
+                spec = spec.with_integer_align(width, align(bytes)).unwrap();
+                entries.insert(width, bytes);
+            }
+            let width = match rng.below(3) {
+                0 => rng.pick(&entries.keys().copied().collect::<Vec<_>>()),
+                1 => 1 + rng.below(300) as u32,
+                _ => 1 + rng.below(u64::from(IntegerType::MAX_WIDTH)) as u32,
+            };
+            let layout = DataLayout::new(&context, &spec);
+            for (ty, width) in [(context.int_type(width), width), (context.isize(), index_bits)] {
+                let model_align = model_integer_align(&entries, width);
+                let bytes = u64::from(width).div_ceil(8);
+                let model_size = bytes.div_ceil(model_align) * model_align;
+                assert_eq!(
+                    size_align(&layout, ty),
+                    Ok((model_size, model_align)),
+                    "seed {seed:#x} (LAYOUT_TEST_SEED={seed}), case {case}: {ty} (i{width}) under \
+                     {}",
+                    print_spec(&context, &spec)
+                );
+            }
+        }
+    }
 }

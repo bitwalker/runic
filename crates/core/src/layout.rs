@@ -13,15 +13,21 @@
 //! the operation itself or by its nearest ancestor that states one. No specification in scope
 //! means no layout.
 //!
+//! A type that has a representation in memory implements [TypeLayout];
+//! [DataLayout::layout_of] gives its [Layout] under a specification.
+//!
 //! Widths are in bits; alignments are in bytes.
 
+mod builtin;
 mod data_layout;
 mod spec;
 #[cfg(test)]
 mod tests;
+mod type_layout;
 
 pub(crate) use self::data_layout::LayoutCache;
 pub use self::{
     data_layout::{DATA_LAYOUT_ATTR, DataLayout, DataLayoutOpInterface, set_data_layout_spec},
     spec::{Align, DataLayoutSpec, Endianness, InvalidDataLayout, PointerSpec},
+    type_layout::{FieldsShape, Layout, LayoutError, TypeLayout},
 };

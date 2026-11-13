@@ -3,6 +3,7 @@ use core::fmt::{self, Write};
 use crate::{
     derive::DialectType,
     dialects::builtin::BuiltinDialect,
+    layout::TypeLayout,
     types::{TypeFormatter, TypePrinter},
 };
 
@@ -10,7 +11,7 @@ use crate::{
 ///
 /// Whether its values are signed is up to the operations that use it.
 #[derive(Debug, PartialEq, Eq, Hash, DialectType)]
-#[ty(dialect = BuiltinDialect, name = "int")]
+#[ty(dialect = BuiltinDialect, name = "int", implements(TypeLayout))]
 pub struct IntegerType {
     width: u32,
 }
@@ -38,7 +39,7 @@ impl TypePrinter for IntegerType {
 
 /// A signless, pointer-width integer, `isize`. Its width is chosen by the target.
 #[derive(Debug, PartialEq, Eq, Hash, DialectType)]
-#[ty(dialect = BuiltinDialect, name = "isize")]
+#[ty(dialect = BuiltinDialect, name = "isize", implements(TypeLayout))]
 pub struct IsizeType;
 
 impl TypePrinter for IsizeType {
