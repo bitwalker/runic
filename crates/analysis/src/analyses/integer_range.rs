@@ -1,7 +1,7 @@
 mod lattice;
 
 use runic_core::{
-    AttributeRef, Forward, Int, Operation, ProgramPoint, Report, SmallVec, ValueRef,
+    AttributeRef, Forward, Operation, ProgramPoint, Report, SmallVec, ValueRef,
     attributes::IntegerLikeAttr,
     traits::{InferIntRangeInterface, operation_result_value_range_refinement},
 };
@@ -187,15 +187,18 @@ fn constant_range_from_solver(
         return ConstantRange::Pending;
     }
 
-    match constant.value().constant_value().and_then(immediate_from_attribute) {
-        Some(value) => ConstantRange::Known(IntegerValueRange::constant(value)),
+    match constant.value().constant_value().and_then(integer_constant_range) {
+        Some(range) => ConstantRange::Known(range),
         None => ConstantRange::NotConstant,
     }
 }
 
-fn immediate_from_attribute(attr: AttributeRef) -> Option<Int> {
+/// The range of the integer constant `attr`, which knows its type: an `isize` constant has no
+/// exact range (see `ConstantIntRange::for_constant`). `None` if `attr` is not an integer.
+fn integer_constant_range(attr: AttributeRef) -> Option<IntegerValueRange> {
     let attr = attr.borrow();
-    attr.as_attr().as_trait::<dyn IntegerLikeAttr>().map(|integer| integer.as_int())
+    let value = attr.as_attr().as_trait::<dyn IntegerLikeAttr>()?.as_int();
+    Some(IntegerValueRange::for_constant(value, attr.ty()))
 }
 
 fn refined_result_range(

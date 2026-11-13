@@ -87,8 +87,35 @@ impl ConstantIntRange {
 
     /// Return the exact range for an integer value: its bit pattern, from which both the signed
     /// and the unsigned bounds follow.
+    ///
+    /// This is for a value of a fixed-width type, `iN`: the value's width is the type's. A constant
+    /// read from an attribute goes through [Self::for_constant] with the attribute's type, which
+    /// knows that an `isize` constant has no exact range.
     pub fn constant(value: Int) -> Self {
         Self::from_unsigned(value.width() as u16, value.unsigned(), value.unsigned())
+    }
+
+    /// Return the range of a constant `value` of type `ty`.
+    ///
+    /// An `isize` constant holds a 64-bit value, but on a 32-bit target it stands for its low 32
+    /// bits, so it has no exact range: it is untracked, as [Self::max_for_type] of `isize` is. So is
+    /// a constant of a type that is not an integer type of at most 128 bits. Otherwise the range is
+    /// exact, as [Self::constant] gives it.
+    ///
+    /// In a debug build, panics if `value` is not as wide as a constant of `ty`
+    /// ([Int::width_for_type]).
+    pub fn for_constant(value: Int, ty: Type) -> Self {
+        match ty.integer_width() {
+            Some(1..=128) => {
+                debug_assert_eq!(
+                    Int::width_for_type(ty),
+                    Some(value.width()),
+                    "a constant of type `{ty}` must be as wide as the type"
+                );
+                Self::constant(value)
+            }
+            _ => Self::untracked(),
+        }
     }
 
     /// Return an exact boolean in the raw representation of `ty`.
@@ -391,9 +418,25 @@ impl IntegerValueRange {
     }
 
     /// Create a proven exact range for `value`.
+    ///
+    /// This is for a value of a fixed-width type, `iN`. A constant read from an attribute goes
+    /// through [Self::for_constant] with the attribute's type.
     #[inline]
     pub fn constant(value: Int) -> Self {
         Self::proven(ConstantIntRange::constant(value))
+    }
+
+    /// Create the range of a constant `value` of type `ty`: a proven exact range, or, for an
+    /// `isize` constant (or one of a type that is not an integer type of at most 128 bits), the
+    /// untracked range of every value of the type, as [Self::max_for_type] gives it. See
+    /// [ConstantIntRange::for_constant].
+    pub fn for_constant(value: Int, ty: Type) -> Self {
+        let range = ConstantIntRange::for_constant(value, ty);
+        if range.is_untracked() {
+            Self::max_for_type(ty)
+        } else {
+            Self::proven(range)
+        }
     }
 
     /// Return true if this lattice value has not been initialized.
@@ -849,5 +892,43 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A constant of a fixed-width type has the exact range of its value; an `isize` constant is
+    /// untracked, because its value on a 32-bit target is its low 32 bits.
+    #[test]
+    fn the_range_of_a_constant_knows_its_type() {
+        let context = Context::default();
+
+        let i32 = ConstantIntRange::for_constant(Int::from(-5i32), context.i32());
+        assert_eq!(i32, ConstantIntRange::constant(Int::from(-5i32)));
+        assert_eq!((i32.width(), i32.smin(), i32.smax()), (32, -5, -5));
+
+        let i1 = ConstantIntRange::for_constant(Int::from(true), context.i1());
+        assert_eq!((i1.width(), i1.umin(), i1.umax()), (1, 1, 1));
+
+        let i128 = ConstantIntRange::for_constant(Int::from(i128::MIN), context.i128());
+        assert_eq!((i128.width(), i128.smin(), i128.smax()), (128, i128::MIN, i128::MIN));
+
+        let isize = ConstantIntRange::for_constant(Int::from(1u64 << 32), context.isize());
+        assert!(isize.is_untracked());
+        assert_eq!(isize, ConstantIntRange::max_for_type(context.isize()));
+
+        let proven = IntegerValueRange::for_constant(Int::from(7u32), context.i32());
+        assert!(proven.is_proven());
+        assert_eq!(proven, IntegerValueRange::constant(Int::from(7u32)));
+        let isize = IntegerValueRange::for_constant(Int::from(1u64 << 32), context.isize());
+        assert!(!isize.is_proven());
+        assert!(isize.range().unwrap().is_untracked());
+        assert_eq!(isize, IntegerValueRange::max_for_type(context.isize()));
+    }
+
+    /// In a debug build, a constant whose value is not as wide as its type is a bug.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "must be as wide as the type")]
+    fn the_range_of_a_constant_of_the_wrong_width_panics_in_a_debug_build() {
+        let context = Context::default();
+        let _ = ConstantIntRange::for_constant(Int::from(5i64), context.i32());
     }
 }
