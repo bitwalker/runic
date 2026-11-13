@@ -707,6 +707,11 @@ mod tests {
             disjoint.refined_by(&range),
             IntegerValueRange::new(ConstantIntRange::max_for_type(context.i32()))
         );
+        // An input that shares no value with the checked range: the check traps for every value,
+        // and a result that exists is in the checked range.
+        let checked = ConstantIntRange::from_unsigned(32, 0, 10);
+        let outside = IntegerValueRange::new(ConstantIntRange::from_unsigned(32, 100, 200));
+        assert_eq!(outside.refined_by(&checked), IntegerValueRange::new(checked));
     }
 
     /// An input of the checked width keeps its bounds; an input of another width, narrower or

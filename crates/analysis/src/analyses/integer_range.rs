@@ -22,7 +22,16 @@ impl LatticeLike for IntegerValueRange {
         match (self.range().copied(), other.range().copied()) {
             (None, None) | (Some(_), None) => self.clone(),
             (None, Some(_)) => other.clone(),
-            (Some(lhs), Some(rhs)) => Self::new(lhs.union(&rhs)),
+            (Some(lhs), Some(rhs)) => {
+                // Every range of a value has the width of the value's type, so two ranges that
+                // meet at a join have one width. A range of another width would be read as a
+                // fact about a value it does not describe.
+                debug_assert!(
+                    lhs.is_untracked() || rhs.is_untracked() || lhs.width() == rhs.width(),
+                    "joined ranges of different widths: {lhs} and {rhs}"
+                );
+                Self::new(lhs.union(&rhs))
+            }
         }
     }
 
