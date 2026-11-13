@@ -1275,6 +1275,10 @@ builtin.module public @m {
     /// Random callees (declarations and definitions) with random declared effects, called directly
     /// and through alias chains of up to three aliases: the call's effects are known exactly when the
     /// callee's are, and each is the declared effect on the call's own operand or result.
+    ///
+    /// No signature generated here never returns (each has no result or an `i32` one): a call that
+    /// never returns has unknown effects whatever its callee declares, which
+    /// `a_call_that_never_returns_is_kept` in the transform crate covers.
     #[test]
     fn fuzz_a_calls_effects_are_its_callees_declared_effects() {
         const ROUNDS: usize = 400;

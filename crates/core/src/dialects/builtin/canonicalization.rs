@@ -74,19 +74,18 @@ impl RewritePattern for CallIndirectOfFunctionRef {
                 .map(|operand| operand.borrow().as_value_ref())
                 .collect::<SmallVec<[ValueRef; 4]>>();
             let path = reference.callee().path().clone();
-            // A symbol reference in the dictionary gets a use of its own on the new call; the
-            // indirect call's use goes with it when it is erased
+            // A symbol reference in the dictionary gets an attribute and a use of its own on the
+            // new call; the indirect call's attribute and use go with it when it is erased
             let attributes = op
                 .attributes()
                 .iter()
                 .map(|attr| {
                     let attr = *attr.as_named_attribute();
-                    let symbol = attr.value.try_downcast_attr::<SymbolRefAttr>().ok().and_then(
-                        |reference| {
+                    let symbol =
+                        attr.value.try_downcast_attr::<SymbolRefAttr>().ok().map(|reference| {
                             let reference = reference.borrow();
-                            Some((reference.resolve()?, reference.path().clone()))
-                        },
-                    );
+                            (reference.resolve(), reference.path().clone())
+                        });
                     (attr, symbol)
                 })
                 .collect::<SmallVec<[_; 2]>>();
@@ -105,6 +104,14 @@ impl RewritePattern for CallIndirectOfFunctionRef {
             for (attr, symbol) in attributes {
                 let Some((symbol, path)) = symbol else {
                     call.set_attribute(attr.name, attr.value);
+                    continue;
+                };
+                let Some(symbol) = symbol else {
+                    // Unlinked, as the parser leaves a reference that names no symbol
+                    let reference = call.context_rc().create_attribute::<SymbolRefAttr, _>(
+                        crate::dialects::builtin::attributes::SymbolRef::new(path, None),
+                    );
+                    call.set_attribute(attr.name, reference.as_attribute_ref());
                     continue;
                 };
                 // Linked to the same symbol, by the path it was written with, as the callee is
@@ -267,6 +274,59 @@ mod tests {
         let other = target.borrow().resolve().expect("the copied reference resolves");
         assert_eq!(other.borrow().name().as_str(), "other");
         assert_eq!(other.borrow().iter_uses().count(), 1, "the erased call's use is gone");
+        Ok(())
+    }
+
+    /// A reference in the dictionary that names no symbol is not shared with the erased
+    /// indirect call: the new call gets an unlinked attribute of its own with the same path,
+    /// which verification reports as before.
+    #[test]
+    fn the_rewrite_gives_an_unlinked_reference_its_own_attribute() -> Result<(), Report> {
+        let context = Rc::new(Context::default());
+        let source = r#"builtin.module public @m {
+    builtin.function public extern("C") @callee(i32, i32) -> i32;
+    builtin.function public extern("C") @caller(%a: i32, %b: i32) -> i32 {
+        %f = builtin.function_ref @callee : (i32, i32) -> i32;
+        %r = builtin.call_indirect %f(%a, %b) : extern("C") (i32, i32) -> i32 attributes { target = #builtin.symbol<@missing> };
+        builtin.ret %r : (i32);
+    };
+};"#;
+        let module = parse::parse::<Module>(
+            ParserConfig::new(context.clone()).verify_after_parse(false),
+            "indirect",
+            source,
+        )
+        .into_result()?;
+        let module = module.as_operation_ref();
+        let find = |is: fn(&Operation) -> bool| {
+            let mut found = None;
+            module.borrow().prewalk_all(|op: &Operation| {
+                if is(op) {
+                    found = Some(op.as_operation_ref());
+                }
+            });
+            found.unwrap()
+        };
+        let indirect = find(|op| op.is::<CallIndirect>());
+        let target_of = |op: OperationRef| {
+            let target = op.borrow().get_attribute("target").unwrap();
+            target.try_downcast_attr::<SymbolRefAttr>().ok().unwrap()
+        };
+        let old = target_of(indirect);
+        assert!(old.borrow().try_user().is_none());
+
+        let mut rewriter: RewriterImpl = RewriterImpl::new(context.clone());
+        let applied = CallIndirectOfFunctionRef::new(context.clone())
+            .match_and_rewrite(indirect, &mut rewriter)?;
+        assert!(applied);
+
+        let call = find(|op| op.is::<Call>());
+        let new = target_of(call);
+        assert!(new != old, "the new call has an attribute of its own");
+        assert!(new.borrow().try_user().is_none_or(|user| !user.is_linked()));
+        assert_eq!(new.borrow().path(), old.borrow().path());
+        let err = call.borrow().verify().expect_err("the reference still names nothing");
+        assert!(format!("{err}").contains("symbol '@missing' does not resolve"), "{err}");
         Ok(())
     }
 }

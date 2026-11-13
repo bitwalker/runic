@@ -749,6 +749,11 @@ impl Block {
         }
     }
 
+    /// Remove this block from its containing region.
+    ///
+    /// This does not unlink the symbol references of the operations it holds, nor the references
+    /// to a symbol among them: they stay linked. Erase each operation first with
+    /// [Operation::erase](crate::Operation::erase), as the rewriter does, to unlink them.
     pub fn erase(&mut self) {
         if let Some(mut region) = self.parent() {
             let mut region = region.borrow_mut();

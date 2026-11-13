@@ -1127,6 +1127,46 @@ fn a_definition_that_declares_no_effects_is_believed() {
     assert!(text.contains("builtin.call"), "{text}");
 }
 
+/// An unused call of a function declaring `effects()` inside that function is erased by DCE and
+/// by the canonicalizer, run on the module and on the function itself, without a borrow panic:
+/// erasing the call takes its use out of the use list of the function the pass is running on.
+#[test]
+fn a_pass_erases_a_dead_recursive_call() {
+    let source = r#"builtin.module public @m {
+    builtin.function public extern("C") @f(%a: i32) -> i32 effects() {
+        %r = builtin.call @f(%a) : extern("C") (i32) -> i32;
+        builtin.ret %a : (i32);
+    };
+};"#;
+    let passes: [(&str, MakePass); 2] = [
+        ("dce", || Box::<DeadCodeElimination>::default()),
+        ("canonicalize", || Box::<Canonicalizer>::default()),
+    ];
+    for (name, pass) in passes {
+        for on_module in [true, false] {
+            let context = Rc::new(Context::default());
+            let module = parse::parse::<Module>(ParserConfig::new(context.clone()), "rec", source)
+                .into_result()
+                .unwrap_or_else(|err| panic!("{}", describe(&err)));
+            let function = module.borrow().symbol_manager().lookup_op("f").unwrap();
+            let uses = || function.borrow().as_symbol_ref().unwrap().borrow().iter_uses().count();
+            assert_eq!(uses(), 1);
+            if on_module {
+                let mut passes = PassManager::on::<Module>(context.clone(), Nesting::Implicit);
+                passes.add_pass(pass());
+                passes.enable_verifier(true);
+                passes.run(module.as_operation_ref()).unwrap();
+            } else {
+                run(&context, function, pass()).unwrap();
+            }
+            let text = function.borrow().to_string();
+            assert!(!text.contains("builtin.call"), "{name}, on the module: {on_module}\n{text}");
+            assert_eq!(uses(), 0, "{name}, on the module: {on_module}");
+            module.as_operation_ref().borrow().recursively_verify().unwrap();
+        }
+    }
+}
+
 /// The SCCP pass does not follow calls (its solver is not interprocedural): the result of a call
 /// of a private function that returns a constant is not replaced, so the pass never erases a
 /// call, whatever its callee declares.

@@ -97,10 +97,15 @@ pub fn apply_patterns_and_fold_greedily(
 ) -> Result<bool, bool> {
     let mut any_region_changed = false;
     let mut failed = false;
-    let op = op.borrow();
-    let mut cursor = op.regions().front();
-    while let Some(region) = cursor.as_pointer() {
-        cursor.move_next();
+    // `op` is not borrowed while its regions are rewritten: erasing an operation in them may
+    // change the use list of `op`, as erasing a recursive call inside a function does
+    let regions = op
+        .borrow()
+        .regions()
+        .iter()
+        .map(|region| region.as_region_ref())
+        .collect::<SmallVec<[RegionRef; 2]>>();
+    for region in regions {
         match apply_patterns_and_fold_region_greedily(region, patterns.clone(), config.clone()) {
             Ok(region_changed) => {
                 any_region_changed |= region_changed;
