@@ -22,7 +22,6 @@ runic-core.workspace = true
 
 [dev-dependencies]
 # Use local paths for dev-only dependency to avoid relying on crates.io during packaging
-runic-dialect-hir = { path = "../dialects/hir" }
 runic-dialect-arith = { path = "../dialects/arith" }
 runic-dialect-scf = { path = "../dialects/scf" }
 runic-core = { path = "../core", features = ["logging"] }

@@ -219,23 +219,51 @@ fn integer_constant_range(attr: AttributeRef) -> Option<IntegerValueRange> {
 #[cfg(test)]
 mod tests {
     use runic_core::{
-        Felt, Op, SourceSpan, Type, dialects::builtin::BuiltinOpBuilder, pass::AnalysisManager,
+        Context, Int, Op, OpBuilder, Signedness, SourceSpan, Type,
+        dialects::{
+            builtin::{BuiltinOpBuilder, FunctionBuilder},
+            test::TestOpBuilder,
+        },
+        pass::AnalysisManager,
         testing::Test,
     };
     use runic_dialect_arith::ArithOpBuilder;
-    use runic_dialect_hir::HirOpBuilder;
     use runic_dialect_scf::StructuredControlFlowOpBuilder;
 
     use super::*;
     use crate::{DataFlowConfig, analyses::dce::DeadCodeAnalysis};
 
+    const SPAN: SourceSpan = SourceSpan::UNKNOWN;
+
+    /// One of the context's getters of an integer type, such as [Context::i32].
+    type TypeOf = fn(&Context) -> Type;
+
+    /// `test.check_range` of `value` into `umin ..= umax`, both read as unsigned numbers at the
+    /// width of `value`'s type.
+    fn check_range(
+        builder: &mut FunctionBuilder<'_, OpBuilder>,
+        value: ValueRef,
+        umin: u128,
+        umax: u128,
+    ) -> Result<ValueRef, Report> {
+        let width = Int::width_for_type(value.borrow().ty()).expect("an integer type");
+        let umin = Int::from_unsigned(width, umin).expect("umin fits the type");
+        let umax = Int::from_unsigned(width, umax).expect("umax fits the type");
+        TestOpBuilder::check_range(builder, value, umin, umax, SPAN)
+    }
+
+    /// The entry block's argument `index`.
+    fn argument(test: &Test, index: usize) -> ValueRef {
+        test.entry_block().borrow().arguments()[index].borrow().as_value_ref()
+    }
+
     #[test]
     fn constants_get_exact_ranges() -> Result<(), Report> {
-        let mut test = Test::new("constants_get_exact_ranges", &[], &[Type::U32]);
+        let mut test = Test::new("constants_get_exact_ranges", |cx| ([], [cx.i32()]));
         let value = {
             let mut builder = test.function_builder();
-            let value = builder.u32(42, SourceSpan::UNKNOWN);
-            builder.ret([value], SourceSpan::UNKNOWN)?;
+            let value = builder.i32(42, SPAN);
+            builder.ret([value], SPAN)?;
             value
         };
 
@@ -250,106 +278,86 @@ mod tests {
         Ok(())
     }
 
+    /// A check of a value whose range is only its type's (assumed) proves the checked range, at the
+    /// operand's width, in place of the assumed one.
     #[test]
-    fn checked_assertion_refines_to_u32() -> Result<(), Report> {
-        let mut test = Test::new("checked_assertion_refines_to_u32", &[Type::Felt], &[Type::U32]);
-        let asserted = {
-            let raw = test.entry_block().borrow().arguments()[0].borrow().as_value_ref();
+    fn a_check_replaces_an_assumed_range_with_its_own() -> Result<(), Report> {
+        let mut test = Test::new("check_replaces_assumed", |cx| ([cx.i64()], [cx.i64()]));
+        let checked = {
+            let raw = argument(&test, 0);
             let mut builder = test.function_builder();
-            let asserted = builder.assert_u32(raw, SourceSpan::UNKNOWN)?;
-            builder.ret([asserted], SourceSpan::UNKNOWN)?;
-            asserted
+            let checked = check_range(&mut builder, raw, 0, u32::MAX as u128)?;
+            builder.ret([checked], SPAN)?;
+            checked
         };
 
         let solver = run_integer_range_analysis(&test)?;
-        let range = range_for(&solver, asserted);
+        let range = range_for(&solver, checked);
+        assert_eq!(range.width(), 64);
         assert_eq!(range.umin(), 0);
         assert_eq!(range.umax(), u32::MAX as u128);
-        assert_eq!(range.smin(), i32::MIN as i128);
-        assert_eq!(range.smax(), i32::MAX as i128);
-        assert!(value_range(&solver, asserted).expect("expected integer range").is_proven());
+        assert_eq!(range.smin(), 0);
+        assert_eq!(range.smax(), u32::MAX as i128);
+        assert!(value_range(&solver, checked).expect("expected integer range").is_proven());
 
         Ok(())
     }
 
+    /// A check of a value with a proven range gives the intersection of the two.
     #[test]
-    fn checked_felt_to_signed_cast_is_never_negative() -> Result<(), Report> {
-        for (ty, zero) in [
-            (Type::I8, Immediate::I8(0)),
-            (Type::I16, Immediate::I16(0)),
-            (Type::I32, Immediate::I32(0)),
-            (Type::I64, Immediate::I64(0)),
-            (Type::I128, Immediate::I128(0)),
-        ] {
-            let mut test = Test::new("checked_felt_cast_sign", &[Type::Felt], &[Type::I1]);
-            let comparison = {
-                let raw = test.entry_block().borrow().arguments()[0].borrow().as_value_ref();
-                let mut builder = test.function_builder();
-                let cast = builder.cast(raw, ty, SourceSpan::UNKNOWN)?;
-                let zero = builder.imm(zero, SourceSpan::UNKNOWN);
-                let comparison = builder.lt(cast, zero, SourceSpan::UNKNOWN)?;
-                builder.ret([comparison], SourceSpan::UNKNOWN)?;
-                comparison
+    fn a_check_narrows_a_proven_range() -> Result<(), Report> {
+        let mut test = Test::new("check_narrows_proven", |cx| ([cx.i1()], [cx.i32()]));
+        let checked = {
+            let cond = argument(&test, 0);
+            let i32 = test.context().i32();
+            let mut builder = test.function_builder();
+            let entry = builder.current_block();
+            let if_op = builder.r#if(cond, &[i32], SPAN)?;
+            let joined = if_op.as_operation_ref().borrow().results()[0] as ValueRef;
+            let (then_region, else_region) = {
+                let if_op = if_op.borrow();
+                (if_op.then_body().as_region_ref(), if_op.else_body().as_region_ref())
             };
-            let solver = run_integer_range_analysis(&test)?;
-            assert_bool_range(&solver, comparison, false);
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn checked_felt_cast_preserves_runtime_domain() -> Result<(), Report> {
-        for (ty, width, max) in [
-            (Type::I1, 1, 1),
-            (Type::I8, 8, 127),
-            (Type::I16, 16, 32_767),
-            (Type::I32, 32, 2_147_483_647),
-            (Type::I64, 64, 9_223_372_036_854_775_807),
-            (Type::I128, 128, 18_446_744_069_414_584_320),
-            (Type::U8, 8, 255),
-            (Type::U16, 16, 65_535),
-            (Type::U32, 32, 4_294_967_295),
-            (Type::U64, 64, 18_446_744_069_414_584_320),
-            (Type::U128, 128, 18_446_744_069_414_584_320),
-        ] {
-            let mut test =
-                Test::new("checked_felt_cast_domain", &[Type::Felt], core::slice::from_ref(&ty));
-            let cast = {
-                let raw = test.entry_block().borrow().arguments()[0].borrow().as_value_ref();
-                let mut builder = test.function_builder();
-                let cast = builder.cast(raw, ty.clone(), SourceSpan::UNKNOWN)?;
-                builder.ret([cast], SourceSpan::UNKNOWN)?;
-                cast
-            };
-            let solver = run_integer_range_analysis(&test)?;
-            let range = value_range(&solver, cast).expect("checked result range");
-            assert!(range.is_proven(), "{ty}");
-            let range = range.range().unwrap();
-            assert_eq!((range.width(), range.umin(), range.umax()), (width, 0, max), "{ty}");
-            if (ty.is_signed_integer() && ty != Type::I1) || ty == Type::U128 {
-                assert_eq!((range.smin(), range.smax()), (0, max as i128), "{ty}");
+            for (region, value) in [(then_region, 1), (else_region, 5)] {
+                let block = builder.create_block_in_region(region);
+                builder.switch_to_block(block);
+                let value = builder.i32(value, SPAN);
+                builder.r#yield([value], SPAN)?;
             }
-        }
+            builder.switch_to_block(entry);
+            let checked = check_range(&mut builder, joined, 3, 10)?;
+            builder.ret([checked], SPAN)?;
+            checked
+        };
+
+        let solver = run_integer_range_analysis(&test)?;
+        let range = value_range(&solver, checked).expect("expected integer range");
+        assert_eq!(range, IntegerValueRange::proven(ConstantIntRange::from_unsigned(32, 3, 5)));
+
         Ok(())
     }
 
+    /// A check whose `umin` and `umax` are equal establishes that exact value, at the width of the
+    /// operand's type.
     #[test]
     fn assertions_establish_exact_values_at_the_result_width() -> Result<(), Report> {
-        for (ty, width) in [(Type::I1, 1), (Type::I8, 8), (Type::U32, 32), (Type::Felt, 64)] {
+        let types: [(TypeOf, u16); 4] =
+            [(Context::i1, 1), (Context::i8, 8), (Context::i32, 32), (Context::i64, 64)];
+        for (ty, width) in types {
             let mut test =
-                Test::new("assertion_value_domain", &[ty.clone(), ty.clone()], &[ty.clone(), ty]);
+                Test::new("assertion_value_domain", |cx| ([ty(cx), ty(cx)], [ty(cx), ty(cx)]));
             let (one, zero) = {
-                let one = test.entry_block().borrow().arguments()[0].borrow().as_value_ref();
-                let zero = test.entry_block().borrow().arguments()[1].borrow().as_value_ref();
+                let one = argument(&test, 0);
+                let zero = argument(&test, 1);
                 let mut builder = test.function_builder();
-                let one = builder.assert(one, SourceSpan::UNKNOWN)?;
-                let zero = builder.assertz(zero, SourceSpan::UNKNOWN)?;
-                builder.ret([one, zero], SourceSpan::UNKNOWN)?;
+                let one = check_range(&mut builder, one, 1, 1)?;
+                let zero = check_range(&mut builder, zero, 0, 0)?;
+                builder.ret([one, zero], SPAN)?;
                 (one, zero)
             };
             let solver = run_integer_range_analysis(&test)?;
             for (result, expected) in [(one, 1), (zero, 0)] {
-                let range = value_range(&solver, result).expect("assertion result range");
+                let range = value_range(&solver, result).expect("checked result range");
                 assert!(range.is_proven());
                 let range = range.range().unwrap();
                 assert_eq!(
@@ -361,29 +369,33 @@ mod tests {
         Ok(())
     }
 
+    /// A check of a constant that lies on a bound of the checked range keeps the constant's exact
+    /// range: the check narrows, it never widens a proven value it admits.
     #[test]
-    fn checked_felt_cast_keeps_valid_boundary_values_exact() -> Result<(), Report> {
-        for (ty, max) in [
-            (Type::I1, 1),
-            (Type::I8, 127),
-            (Type::I16, 32_767),
-            (Type::I32, 2_147_483_647),
-            (Type::I64, 9_223_372_036_854_775_807),
-            (Type::I128, 18_446_744_069_414_584_320),
-        ] {
+    fn checks_keep_valid_boundary_values_exact() -> Result<(), Report> {
+        let types: [(TypeOf, u128); 6] = [
+            (Context::i1, 1),
+            (Context::i8, 127),
+            (Context::i16, 32_767),
+            (Context::i32, 2_147_483_647),
+            (Context::i64, 9_223_372_036_854_775_807),
+            (Context::i128, i128::MAX as u128),
+        ];
+        for (ty, max) in types {
             for value in [0, max] {
-                let mut test =
-                    Test::new("checked_felt_cast_boundary", &[], core::slice::from_ref(&ty));
-                let cast = {
+                let mut test = Test::new("check_boundary", |cx| ([], [ty(cx)]));
+                let checked = {
+                    let ty = ty(test.context());
+                    let width = Int::width_for_type(ty).unwrap();
                     let mut builder = test.function_builder();
-                    let raw = builder.felt(Felt::new(value).unwrap(), SourceSpan::UNKNOWN);
-                    let cast = builder.cast(raw, ty.clone(), SourceSpan::UNKNOWN)?;
-                    builder.ret([cast], SourceSpan::UNKNOWN)?;
-                    cast
+                    let raw = builder.int(Int::from_unsigned(width, value).unwrap(), ty, SPAN);
+                    let checked = check_range(&mut builder, raw, 0, max)?;
+                    builder.ret([checked], SPAN)?;
+                    checked
                 };
                 let solver = run_integer_range_analysis(&test)?;
-                let range = range_for(&solver, cast);
-                assert_eq!((range.umin(), range.umax()), (value as u128, value as u128), "{ty}");
+                let range = range_for(&solver, checked);
+                assert_eq!((range.umin(), range.umax()), (value, value), "{max}");
             }
         }
         Ok(())
@@ -392,33 +404,33 @@ mod tests {
     #[test]
     fn unrealized_conversion_cast_preserves_input_range() -> Result<(), Report> {
         let mut test =
-            Test::new("unrealized_conversion_cast_preserves_input_range", &[], &[Type::U32]);
+            Test::new("unrealized_conversion_cast_preserves_input_range", |cx| ([], [cx.i32()]));
         let cast = {
+            let i32 = test.context().i32();
             let mut builder = test.function_builder();
-            let raw =
-                builder.felt(Felt::new(u64::from(u32::MAX) + 1).unwrap(), SourceSpan::UNKNOWN);
-            let cast = builder.unrealized_conversion_cast(raw, Type::U32, SourceSpan::UNKNOWN)?;
-            builder.ret([cast], SourceSpan::UNKNOWN)?;
+            let raw = builder.i64(1 << 32, SPAN);
+            let cast = builder.unrealized_conversion_cast(raw, i32, SPAN)?;
+            builder.ret([cast], SPAN)?;
             cast
         };
 
         let solver = run_integer_range_analysis(&test)?;
         let range = range_for(&solver, cast);
-        assert_eq!(range.umin(), u64::from(u32::MAX) as u128 + 1);
-        assert_eq!(range.umax(), u64::from(u32::MAX) as u128 + 1);
+        assert_eq!(range.umin(), 1 << 32);
+        assert_eq!(range.umax(), 1 << 32);
 
         Ok(())
     }
 
     #[test]
     fn inferrable_add_uses_operand_ranges() -> Result<(), Report> {
-        let mut test = Test::new("inferrable_add_uses_operand_ranges", &[], &[Type::U32]);
+        let mut test = Test::new("inferrable_add_uses_operand_ranges", |cx| ([], [cx.i32()]));
         let sum = {
             let mut builder = test.function_builder();
-            let lhs = builder.u32(1, SourceSpan::UNKNOWN);
-            let rhs = builder.u32(2, SourceSpan::UNKNOWN);
-            let sum = builder.add(lhs, rhs, SourceSpan::UNKNOWN)?;
-            builder.ret([sum], SourceSpan::UNKNOWN)?;
+            let lhs = builder.i32(1, SPAN);
+            let rhs = builder.i32(2, SPAN);
+            let sum = ArithOpBuilder::add(&mut builder, lhs, rhs, SPAN)?;
+            builder.ret([sum], SPAN)?;
             sum
         };
 
@@ -432,33 +444,29 @@ mod tests {
 
     #[test]
     fn comparisons_infer_exact_true_values() -> Result<(), Report> {
-        let mut test = Test::new(
-            "comparisons_infer_exact_true_values",
-            &[],
-            &[Type::I1, Type::I1, Type::I1, Type::I1, Type::I1, Type::I1],
-        );
+        let mut test = Test::new("comparisons_infer_exact_true_values", |cx| ([], [cx.i1(); 6]));
         let comparisons = {
             let mut builder = test.function_builder();
-            let lt_lhs = builder.u32(1, SourceSpan::UNKNOWN);
-            let lt_rhs = builder.u32(2, SourceSpan::UNKNOWN);
-            let lt = builder.lt(lt_lhs, lt_rhs, SourceSpan::UNKNOWN)?;
-            let lte_lhs = builder.u32(2, SourceSpan::UNKNOWN);
-            let lte_rhs = builder.u32(2, SourceSpan::UNKNOWN);
-            let lte = builder.lte(lte_lhs, lte_rhs, SourceSpan::UNKNOWN)?;
-            let gt_lhs = builder.u32(3, SourceSpan::UNKNOWN);
-            let gt_rhs = builder.u32(2, SourceSpan::UNKNOWN);
-            let gt = builder.gt(gt_lhs, gt_rhs, SourceSpan::UNKNOWN)?;
-            let gte_lhs = builder.u32(2, SourceSpan::UNKNOWN);
-            let gte_rhs = builder.u32(2, SourceSpan::UNKNOWN);
-            let gte = builder.gte(gte_lhs, gte_rhs, SourceSpan::UNKNOWN)?;
-            let eq_lhs = builder.u32(5, SourceSpan::UNKNOWN);
-            let eq_rhs = builder.u32(5, SourceSpan::UNKNOWN);
-            let eq = builder.eq(eq_lhs, eq_rhs, SourceSpan::UNKNOWN)?;
-            let neq_lhs = builder.u32(5, SourceSpan::UNKNOWN);
-            let neq_rhs = builder.u32(6, SourceSpan::UNKNOWN);
-            let neq = builder.neq(neq_lhs, neq_rhs, SourceSpan::UNKNOWN)?;
-            let comparisons = [lt, lte, gt, gte, eq, neq];
-            builder.ret(comparisons, SourceSpan::UNKNOWN)?;
+            let lt_lhs = builder.i32(1, SPAN);
+            let lt_rhs = builder.i32(2, SPAN);
+            let lt = builder.ult(lt_lhs, lt_rhs, SPAN)?;
+            let lte_lhs = builder.i32(2, SPAN);
+            let lte_rhs = builder.i32(2, SPAN);
+            let lte = builder.ule(lte_lhs, lte_rhs, SPAN)?;
+            let gt_lhs = builder.i32(3, SPAN);
+            let gt_rhs = builder.i32(2, SPAN);
+            let gt = builder.ugt(gt_lhs, gt_rhs, SPAN)?;
+            let gte_lhs = builder.i32(2, SPAN);
+            let gte_rhs = builder.i32(2, SPAN);
+            let gte = builder.uge(gte_lhs, gte_rhs, SPAN)?;
+            let eq_lhs = builder.i32(5, SPAN);
+            let eq_rhs = builder.i32(5, SPAN);
+            let eq = ArithOpBuilder::eq(&mut builder, eq_lhs, eq_rhs, SPAN)?;
+            let ne_lhs = builder.i32(5, SPAN);
+            let ne_rhs = builder.i32(6, SPAN);
+            let ne = builder.ne(ne_lhs, ne_rhs, SPAN)?;
+            let comparisons = [lt, lte, gt, gte, eq, ne];
+            builder.ret(comparisons, SPAN)?;
             comparisons
         };
 
@@ -472,33 +480,29 @@ mod tests {
 
     #[test]
     fn comparisons_infer_exact_false_values() -> Result<(), Report> {
-        let mut test = Test::new(
-            "comparisons_infer_exact_false_values",
-            &[],
-            &[Type::I1, Type::I1, Type::I1, Type::I1, Type::I1, Type::I1],
-        );
+        let mut test = Test::new("comparisons_infer_exact_false_values", |cx| ([], [cx.i1(); 6]));
         let comparisons = {
             let mut builder = test.function_builder();
-            let lt_lhs = builder.u32(2, SourceSpan::UNKNOWN);
-            let lt_rhs = builder.u32(1, SourceSpan::UNKNOWN);
-            let lt = builder.lt(lt_lhs, lt_rhs, SourceSpan::UNKNOWN)?;
-            let lte_lhs = builder.u32(3, SourceSpan::UNKNOWN);
-            let lte_rhs = builder.u32(2, SourceSpan::UNKNOWN);
-            let lte = builder.lte(lte_lhs, lte_rhs, SourceSpan::UNKNOWN)?;
-            let gt_lhs = builder.u32(2, SourceSpan::UNKNOWN);
-            let gt_rhs = builder.u32(3, SourceSpan::UNKNOWN);
-            let gt = builder.gt(gt_lhs, gt_rhs, SourceSpan::UNKNOWN)?;
-            let gte_lhs = builder.u32(2, SourceSpan::UNKNOWN);
-            let gte_rhs = builder.u32(3, SourceSpan::UNKNOWN);
-            let gte = builder.gte(gte_lhs, gte_rhs, SourceSpan::UNKNOWN)?;
-            let eq_lhs = builder.u32(5, SourceSpan::UNKNOWN);
-            let eq_rhs = builder.u32(6, SourceSpan::UNKNOWN);
-            let eq = builder.eq(eq_lhs, eq_rhs, SourceSpan::UNKNOWN)?;
-            let neq_lhs = builder.u32(5, SourceSpan::UNKNOWN);
-            let neq_rhs = builder.u32(5, SourceSpan::UNKNOWN);
-            let neq = builder.neq(neq_lhs, neq_rhs, SourceSpan::UNKNOWN)?;
-            let comparisons = [lt, lte, gt, gte, eq, neq];
-            builder.ret(comparisons, SourceSpan::UNKNOWN)?;
+            let lt_lhs = builder.i32(2, SPAN);
+            let lt_rhs = builder.i32(1, SPAN);
+            let lt = builder.ult(lt_lhs, lt_rhs, SPAN)?;
+            let lte_lhs = builder.i32(3, SPAN);
+            let lte_rhs = builder.i32(2, SPAN);
+            let lte = builder.ule(lte_lhs, lte_rhs, SPAN)?;
+            let gt_lhs = builder.i32(2, SPAN);
+            let gt_rhs = builder.i32(3, SPAN);
+            let gt = builder.ugt(gt_lhs, gt_rhs, SPAN)?;
+            let gte_lhs = builder.i32(2, SPAN);
+            let gte_rhs = builder.i32(3, SPAN);
+            let gte = builder.uge(gte_lhs, gte_rhs, SPAN)?;
+            let eq_lhs = builder.i32(5, SPAN);
+            let eq_rhs = builder.i32(6, SPAN);
+            let eq = ArithOpBuilder::eq(&mut builder, eq_lhs, eq_rhs, SPAN)?;
+            let ne_lhs = builder.i32(5, SPAN);
+            let ne_rhs = builder.i32(5, SPAN);
+            let ne = builder.ne(ne_lhs, ne_rhs, SPAN)?;
+            let comparisons = [lt, lte, gt, gte, eq, ne];
+            builder.ret(comparisons, SPAN)?;
             comparisons
         };
 
@@ -510,19 +514,21 @@ mod tests {
         Ok(())
     }
 
+    /// The signed predicates order operands by their signed bounds: `-1 < 1` read as signed.
     #[test]
-    fn comparisons_use_signed_bounds_for_signed_types() -> Result<(), Report> {
-        let mut test =
-            Test::new("comparisons_use_signed_bounds_for_signed_types", &[], &[Type::I1, Type::I1]);
+    fn comparisons_use_signed_bounds_for_signed_predicates() -> Result<(), Report> {
+        let mut test = Test::new("comparisons_use_signed_bounds_for_signed_predicates", |cx| {
+            ([], [cx.i1(), cx.i1()])
+        });
         let (lt, gt) = {
             let mut builder = test.function_builder();
-            let minus_one = builder.i32(-1, SourceSpan::UNKNOWN);
-            let one = builder.i32(1, SourceSpan::UNKNOWN);
-            let lt = builder.lt(minus_one, one, SourceSpan::UNKNOWN)?;
-            let minus_one = builder.i32(-1, SourceSpan::UNKNOWN);
-            let one = builder.i32(1, SourceSpan::UNKNOWN);
-            let gt = builder.gt(minus_one, one, SourceSpan::UNKNOWN)?;
-            builder.ret([lt, gt], SourceSpan::UNKNOWN)?;
+            let minus_one = builder.i32(-1, SPAN);
+            let one = builder.i32(1, SPAN);
+            let lt = builder.slt(minus_one, one, SPAN)?;
+            let minus_one = builder.i32(-1, SPAN);
+            let one = builder.i32(1, SPAN);
+            let gt = builder.sgt(minus_one, one, SPAN)?;
+            builder.ret([lt, gt], SPAN)?;
             (lt, gt)
         };
 
@@ -535,14 +541,15 @@ mod tests {
 
     #[test]
     fn comparisons_remain_unknown_when_ranges_overlap() -> Result<(), Report> {
-        let mut test =
-            Test::new("comparisons_remain_unknown_when_ranges_overlap", &[Type::U32], &[Type::I1]);
+        let mut test = Test::new("comparisons_remain_unknown_when_ranges_overlap", |cx| {
+            ([cx.i32()], [cx.i1()])
+        });
         let comparison = {
-            let arg = test.entry_block().borrow().arguments()[0].borrow().as_value_ref();
+            let arg = argument(&test, 0);
             let mut builder = test.function_builder();
-            let limit = builder.u32(10, SourceSpan::UNKNOWN);
-            let comparison = builder.lt(arg, limit, SourceSpan::UNKNOWN)?;
-            builder.ret([comparison], SourceSpan::UNKNOWN)?;
+            let limit = builder.i32(10, SPAN);
+            let comparison = builder.ult(arg, limit, SPAN)?;
+            builder.ret([comparison], SPAN)?;
             comparison
         };
 
@@ -555,22 +562,24 @@ mod tests {
         Ok(())
     }
 
+    /// An operation that neither infers ranges nor folds gives its result the assumed range of its
+    /// type, even when its operands are constants: `test.mul` has neither.
     #[test]
     fn unknown_ops_fall_back_to_type_range() -> Result<(), Report> {
-        let mut test = Test::new("unknown_ops_fall_back_to_type_range", &[], &[Type::Felt]);
+        let mut test = Test::new("unknown_ops_fall_back_to_type_range", |cx| ([], [cx.i32()]));
         let value = {
             let mut builder = test.function_builder();
-            let base = builder.felt(Felt::new(2).unwrap(), SourceSpan::UNKNOWN);
-            let exp = builder.felt(Felt::new(3).unwrap(), SourceSpan::UNKNOWN);
-            let value = builder.exp(base, exp, SourceSpan::UNKNOWN)?;
-            builder.ret([value], SourceSpan::UNKNOWN)?;
+            let lhs = builder.i32(2, SPAN);
+            let rhs = builder.i32(3, SPAN);
+            let value = TestOpBuilder::mul(&mut builder, lhs, rhs, SPAN)?;
+            builder.ret([value], SPAN)?;
             value
         };
 
         let solver = run_integer_range_analysis(&test)?;
         let range = range_for(&solver, value);
         assert_eq!(range.umin(), 0);
-        assert_eq!(range.umax(), (Felt::ORDER - 1) as u128);
+        assert_eq!(range.umax(), u32::MAX as u128);
         assert!(!value_range(&solver, value).expect("expected integer range").is_proven());
 
         Ok(())
@@ -578,12 +587,13 @@ mod tests {
 
     #[test]
     fn region_branch_results_join_ranges() -> Result<(), Report> {
-        let mut test = Test::new("region_branch_results_join_ranges", &[Type::I1], &[Type::U32]);
+        let mut test = Test::new("region_branch_results_join_ranges", |cx| ([cx.i1()], [cx.i32()]));
         let if_result = {
-            let cond = test.entry_block().borrow().arguments()[0].borrow().as_value_ref();
+            let cond = argument(&test, 0);
+            let i32 = test.context().i32();
             let mut builder = test.function_builder();
             let entry = builder.current_block();
-            let if_op = builder.r#if(cond, &[Type::U32], SourceSpan::UNKNOWN)?;
+            let if_op = builder.r#if(cond, &[i32], SPAN)?;
             let if_result = if_op.as_operation_ref().borrow().results()[0] as ValueRef;
 
             let (then_region, else_region) = {
@@ -593,16 +603,16 @@ mod tests {
 
             let then_block = builder.create_block_in_region(then_region);
             builder.switch_to_block(then_block);
-            let one = builder.u32(1, SourceSpan::UNKNOWN);
-            builder.r#yield([one], SourceSpan::UNKNOWN)?;
+            let one = builder.i32(1, SPAN);
+            builder.r#yield([one], SPAN)?;
 
             let else_block = builder.create_block_in_region(else_region);
             builder.switch_to_block(else_block);
-            let five = builder.u32(5, SourceSpan::UNKNOWN);
-            builder.r#yield([five], SourceSpan::UNKNOWN)?;
+            let five = builder.i32(5, SPAN);
+            builder.r#yield([five], SPAN)?;
 
             builder.switch_to_block(entry);
-            builder.ret([if_result], SourceSpan::UNKNOWN)?;
+            builder.ret([if_result], SPAN)?;
             if_result
         };
 
@@ -616,35 +626,45 @@ mod tests {
         Ok(())
     }
 
+    /// An `unchecked` addition whose operands are known to overflow has an undefined result, so
+    /// the analysis gives it no proven range: only the assumed range of its type.
     #[test]
     fn regression_unchecked_overflow_does_not_prove_the_result_type() -> Result<(), Report> {
-        let mut test = Test::new("unchecked_overflow", &[], &[Type::U32]);
+        let mut test = Test::new("unchecked_overflow", |cx| ([], [cx.i32()]));
         let sum = {
-            let span = SourceSpan::UNKNOWN;
             let mut builder = test.function_builder();
-            let lhs = builder.u32(u32::MAX, span);
-            let rhs = builder.u32(1, span);
-            let sum = builder.add_unchecked(lhs, rhs, span)?;
-            builder.ret([sum], span)?;
+            let lhs = builder.i32(-1, SPAN);
+            let rhs = builder.i32(1, SPAN);
+            let sum =
+                ArithOpBuilder::add_unchecked(&mut builder, lhs, rhs, Signedness::Unsigned, SPAN)?;
+            builder.ret([sum], SPAN)?;
             sum
         };
         let solver = run_integer_range_analysis(&test)?;
-        assert!(!value_range(&solver, sum).expect("expected integer range").is_proven());
+        let range = value_range(&solver, sum).expect("expected integer range");
+        assert!(!range.is_proven());
+        assert_eq!(
+            range.range().copied(),
+            Some(ConstantIntRange::from_unsigned(32, 0, u32::MAX as u128))
+        );
         Ok(())
     }
 
+    /// An unrealized cast hands an `i32` value the range of its `i64` source, whose signed bounds
+    /// are those of a 64-bit number. A signed comparison of the `i32` values must not order them
+    /// by those bounds.
     #[test]
     fn regression_signed_comparison_does_not_reuse_wider_signed_bounds() -> Result<(), Report> {
-        let mut test = Test::new("signed_cast_comparison", &[], &[Type::I1]);
+        let mut test = Test::new("signed_cast_comparison", |cx| ([], [cx.i1()]));
         let comparison = {
-            let span = SourceSpan::UNKNOWN;
+            let i32 = test.context().i32();
             let mut builder = test.function_builder();
-            let lhs = builder.felt(Felt::new(u64::from(u32::MAX)).unwrap(), span);
-            let rhs = builder.felt(Felt::new(1).unwrap(), span);
-            let lhs = builder.unrealized_conversion_cast(lhs, Type::I32, span)?;
-            let rhs = builder.unrealized_conversion_cast(rhs, Type::I32, span)?;
-            let comparison = builder.lt(lhs, rhs, span)?;
-            builder.ret([comparison], span)?;
+            let lhs = builder.i64(u32::MAX as i64, SPAN);
+            let rhs = builder.i64(1, SPAN);
+            let lhs = builder.unrealized_conversion_cast(lhs, i32, SPAN)?;
+            let rhs = builder.unrealized_conversion_cast(rhs, i32, SPAN)?;
+            let comparison = builder.slt(lhs, rhs, SPAN)?;
+            builder.ret([comparison], SPAN)?;
             comparison
         };
         let solver = run_integer_range_analysis(&test)?;
@@ -655,27 +675,27 @@ mod tests {
 
     #[test]
     fn regression_loop_ranges_converge_within_solver_budget() -> Result<(), Report> {
-        let span = SourceSpan::UNKNOWN;
-        let mut test = Test::new("incrementing_loop", &[Type::I1], &[Type::U32]);
+        let mut test = Test::new("incrementing_loop", |cx| ([cx.i1()], [cx.i32()]));
         let loop_result = {
-            let cond = test.entry_block().borrow().arguments()[0].borrow().as_value_ref();
+            let cond = argument(&test, 0);
+            let i32 = test.context().i32();
             let mut builder = test.function_builder();
             let entry = builder.current_block();
-            let zero = builder.u32(0, span);
-            let loop_op = builder.r#while([zero], &[Type::U32], span)?;
+            let zero = builder.i32(0, SPAN);
+            let loop_op = builder.r#while([zero], &[i32], SPAN)?;
             let before = loop_op.borrow().before().entry().as_block_ref();
             let after = loop_op.borrow().after().entry().as_block_ref();
             builder.switch_to_block(before);
             let current = before.borrow().arguments()[0].borrow().as_value_ref();
-            builder.condition(cond, [current], span)?;
+            builder.condition(cond, [current], SPAN)?;
             builder.switch_to_block(after);
             let current = after.borrow().arguments()[0].borrow().as_value_ref();
-            let one = builder.u32(1, span);
-            let next = builder.add(current, one, span)?;
-            builder.r#yield([next], span)?;
+            let one = builder.i32(1, SPAN);
+            let next = ArithOpBuilder::add(&mut builder, current, one, SPAN)?;
+            builder.r#yield([next], SPAN)?;
             builder.switch_to_block(entry);
             let result = loop_op.borrow().results()[0].borrow().as_value_ref();
-            builder.ret([result], span)?;
+            builder.ret([result], SPAN)?;
             result
         };
         let solver = run_integer_range_analysis(&test)?;
@@ -723,32 +743,36 @@ mod tests {
         Ok(solver)
     }
 
+    /// A constant, and an operation without a range interface that folds to a constant
+    /// (`arith.mul`), get exact ranges once SCCP's facts arrive.
     #[test]
     fn delayed_constant_and_fold_facts_keep_exact_ranges() -> Result<(), Report> {
-        let mut test = Test::new("delayed_constants", &[], &[Type::U32, Type::I32]);
+        let mut test = Test::new("delayed_constants", |cx| ([], [cx.i32(), cx.i32()]));
         let (constant, folded) = {
             let mut builder = test.function_builder();
-            let constant = builder.u32(42, SourceSpan::UNKNOWN);
-            let folded = builder.bitcast(constant, Type::I32, SourceSpan::UNKNOWN)?;
-            builder.ret([constant, folded], SourceSpan::UNKNOWN)?;
+            let constant = builder.i32(42, SPAN);
+            let one = builder.i32(1, SPAN);
+            let folded = ArithOpBuilder::mul(&mut builder, constant, one, SPAN)?;
+            builder.ret([constant, folded], SPAN)?;
             (constant, folded)
         };
         let solver = run_ranges_before_constants(&test)?;
         for value in [constant, folded] {
             let range = value_range(&solver, value).expect("range after delayed SCCP fact");
-            assert_eq!(range, IntegerValueRange::constant(Immediate::U32(42)));
+            assert_eq!(range, IntegerValueRange::constant(Int::from(42i32)));
         }
         Ok(())
     }
 
     #[test]
     fn delayed_operand_facts_keep_checked_refinements_precise() -> Result<(), Report> {
-        let mut test = Test::new("delayed_refinements", &[Type::I1], &[Type::U32, Type::U32]);
-        let (raw, asserted, cast) = {
-            let condition = test.entry_block().borrow().arguments()[0].borrow().as_value_ref();
+        let mut test = Test::new("delayed_refinements", |cx| ([cx.i1()], [cx.i64(), cx.i64()]));
+        let (raw, wide, narrow) = {
+            let condition = argument(&test, 0);
+            let i64 = test.context().i64();
             let mut builder = test.function_builder();
             let entry = builder.current_block();
-            let branch = builder.r#if(condition, &[Type::Felt], SourceSpan::UNKNOWN)?;
+            let branch = builder.r#if(condition, &[i64], SPAN)?;
             let raw = branch.as_operation_ref().borrow().results()[0] as ValueRef;
             let (then_region, else_region) = {
                 let branch = branch.borrow();
@@ -757,18 +781,18 @@ mod tests {
             for region in [then_region, else_region] {
                 let block = builder.create_block_in_region(region);
                 builder.switch_to_block(block);
-                let seven = builder.felt(Felt::new(7).unwrap(), SourceSpan::UNKNOWN);
-                builder.r#yield([seven], SourceSpan::UNKNOWN)?;
+                let seven = builder.i64(7, SPAN);
+                builder.r#yield([seven], SPAN)?;
             }
             builder.switch_to_block(entry);
-            let asserted = builder.assert_u32(raw, SourceSpan::UNKNOWN)?;
-            let cast = builder.cast(raw, Type::U32, SourceSpan::UNKNOWN)?;
-            builder.ret([asserted, cast], SourceSpan::UNKNOWN)?;
-            (raw, asserted, cast)
+            let wide = check_range(&mut builder, raw, 0, u32::MAX as u128)?;
+            let narrow = check_range(&mut builder, raw, 0, 255)?;
+            builder.ret([wide, narrow], SPAN)?;
+            (raw, wide, narrow)
         };
-        // Complete SCCP before loading range analysis. The checked operations therefore have
-        // nonconstant facts when range analysis first sees their still-pending region input.
-        // No constant fallback can mask an eager full-range publication by refined_by.
+        // Complete SCCP before loading range analysis. The checks therefore have nonconstant facts
+        // when range analysis first sees their still-pending region input. No constant fallback
+        // can mask an eager full-range publication by refined_by.
         let mut config = DataFlowConfig::new();
         config.set_interprocedural(true);
         let mut solver = DataFlowSolver::new(config);
@@ -778,11 +802,8 @@ mod tests {
         solver.initialize_and_run(&op.borrow(), AnalysisManager::new(op, None))?;
         solver.load::<IntegerRangeAnalysis>();
         solver.initialize_and_run(&op.borrow(), AnalysisManager::new(op, None))?;
-        assert_eq!(
-            range_for(&solver, raw),
-            ConstantIntRange::constant(Immediate::Felt(Felt::new(7).unwrap()))
-        );
-        for value in [asserted, cast] {
+        assert_eq!(range_for(&solver, raw), ConstantIntRange::constant(Int::from(7i64)));
+        for value in [wide, narrow] {
             let constant = solver.get::<Lattice<ConstantValue>, _>(&value).expect("SCCP fact");
             assert!(!constant.value().is_uninitialized());
             assert!(
@@ -790,8 +811,113 @@ mod tests {
                 "precision must come from checked refinement, not constant fallback"
             );
             let range = value_range(&solver, value).expect("range after delayed operand fact");
-            assert_eq!(range, IntegerValueRange::constant(Immediate::U32(7)));
+            assert_eq!(range, IntegerValueRange::constant(Int::from(7i64)));
         }
+        Ok(())
+    }
+
+    /// Builds a function of two parameters of type `ty`, `x` and `unknown`, whose body is what
+    /// `build` makes of them, then returns whether the range analysis proves every requirement
+    /// that the operation defining `build`'s result states of its operands.
+    fn requirements_hold(
+        ty: TypeOf,
+        build: impl FnOnce(
+            &mut FunctionBuilder<'_, OpBuilder>,
+            ValueRef,
+            ValueRef,
+        ) -> Result<ValueRef, Report>,
+    ) -> Result<bool, Report> {
+        let mut test = Test::new("requirements", |cx| ([ty(cx), ty(cx)], [ty(cx)]));
+        let result = {
+            let (x, unknown) = (argument(&test, 0), argument(&test, 1));
+            let mut builder = test.function_builder();
+            let result = build(&mut builder, x, unknown)?;
+            builder.ret([result], SPAN)?;
+            result
+        };
+        let solver = run_integer_range_analysis(&test)?;
+        let op = result.borrow().get_defining_op().expect("an operation result");
+        Ok(operand_range_requirements_hold(&solver, &op.borrow()))
+    }
+
+    #[test]
+    fn a_shift_amount_requirement_holds_only_below_the_width() -> Result<(), Report> {
+        let below = requirements_hold(Context::i32, |b, x, _| {
+            let amount = b.i32(31, SPAN);
+            ArithOpBuilder::shl(b, x, amount, SPAN)
+        })?;
+        assert!(below, "a constant amount below the width");
+
+        let checked = requirements_hold(Context::i32, |b, x, unknown| {
+            let amount = check_range(b, unknown, 0, 31)?;
+            ArithOpBuilder::shl(b, x, amount, SPAN)
+        })?;
+        assert!(checked, "an amount checked into 0 ..= 31");
+
+        let checked_too_wide = requirements_hold(Context::i32, |b, x, unknown| {
+            let amount = check_range(b, unknown, 0, 32)?;
+            ArithOpBuilder::shl(b, x, amount, SPAN)
+        })?;
+        assert!(!checked_too_wide, "an amount checked into 0 ..= 32 may be the width");
+
+        let unknown = requirements_hold(Context::i32, |b, x, unknown| {
+            ArithOpBuilder::shl(b, x, unknown, SPAN)
+        })?;
+        assert!(!unknown, "an unknown amount");
+
+        let width = requirements_hold(Context::i32, |b, x, _| {
+            let amount = b.i32(32, SPAN);
+            ArithOpBuilder::shl(b, x, amount, SPAN)
+        })?;
+        assert!(!width, "a constant amount equal to the width");
+
+        Ok(())
+    }
+
+    #[test]
+    fn a_divisor_requirement_holds_only_when_zero_is_excluded() -> Result<(), Report> {
+        let zero = requirements_hold(Context::i32, |b, x, _| {
+            let divisor = b.i32(0, SPAN);
+            b.udiv(x, divisor, SPAN)
+        })?;
+        assert!(!zero, "a constant divisor of 0");
+
+        let checked = requirements_hold(Context::i32, |b, x, unknown| {
+            let divisor = check_range(b, unknown, 1, 5)?;
+            b.udiv(x, divisor, SPAN)
+        })?;
+        assert!(checked, "a divisor checked into 1 ..= 5");
+
+        let unknown = requirements_hold(Context::i32, |b, x, unknown| b.udiv(x, unknown, SPAN))?;
+        assert!(!unknown, "an unknown divisor");
+
+        Ok(())
+    }
+
+    /// The ranges of `isize` values are not tracked, so a requirement on an `isize` operand is
+    /// never proven, not even for a constant shift amount of 1.
+    #[test]
+    fn an_isize_shift_requirement_is_never_proven() -> Result<(), Report> {
+        let holds = requirements_hold(Context::isize, |b, x, _| {
+            let amount = b.isize(1, SPAN);
+            ArithOpBuilder::shl(b, x, amount, SPAN)
+        })?;
+        assert!(!holds);
+        Ok(())
+    }
+
+    /// An operation that states no requirement of its operands has them all proven, whatever its
+    /// operands' ranges: an addition, and a rotation by an unknown amount.
+    #[test]
+    fn operations_without_requirements_trivially_hold() -> Result<(), Report> {
+        let add = requirements_hold(Context::i32, |b, x, unknown| {
+            ArithOpBuilder::add(b, x, unknown, SPAN)
+        })?;
+        assert!(add, "arith.add");
+
+        let rotl = requirements_hold(Context::i32, |b, x, unknown| b.rotl(x, unknown, SPAN))?;
+        assert!(rotl, "arith.rotl by an unknown amount");
+
         Ok(())
     }
 

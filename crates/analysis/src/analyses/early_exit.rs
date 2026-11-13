@@ -15,36 +15,37 @@ use crate::analyses::{LivenessAnalysis, dce::PredecessorState};
 /// * `%seed` is defined **before** the loop and used **after** it.
 /// * the loop's condition is a constant `true`, so the only way out is whatever `EXIT` is.
 const SKELETON: &str = "\
-builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
-    %zero = arith.constant 0 : u32;
-    %seed = arith.constant 7 : u32;
+builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
+    %zero = arith.constant 0 : i32;
+    %seed = arith.constant 7 : i32;
     %always = arith.constant 1 : i1;
     %r = scf.while %zero before {
-    ^head(%i: u32):
-        scf.condition %always, %i : (i1, u32);
+    ^head(%i: i32):
+        scf.condition %always, %i : (i1, i32);
     } after {
-    ^body(%j: u32):
-        %hit = arith.gt %j, %n;
+    ^body(%j: i32):
+        %hit = arith.cmpi ugt %j, %n;
         %k = scf.if %hit then {
             EXIT
         } else {
-            scf.yield %j : (u32);
-        } : (i1) -> (u32);
-        %next = arith.incr %k;
-        scf.yield %next : (u32);
-    } : (u32) -> u32;
-    %sum = arith.add %r, %seed <{ overflow = #builtin.overflow<unchecked> }>;
-    builtin.ret %sum : (u32);
+            scf.yield %j : (i32);
+        } : (i1) -> (i32);
+        %one = arith.constant 1 : i32;
+        %next = arith.add %k, %one;
+        scf.yield %next : (i32);
+    } : (i32) -> i32;
+    %sum = arith.add %r, %seed <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+    builtin.ret %sum : (i32);
 };";
 
 /// The program whose loop exits through an `scf.break`.
 fn with_break() -> String {
-    SKELETON.replace("EXIT", "scf.break 1 %j : (u32);")
+    SKELETON.replace("EXIT", "scf.break 1 %j : (i32);")
 }
 
 /// The control: the same program whose `then` branch yields instead, so the loop never exits.
 fn without_break() -> String {
-    SKELETON.replace("EXIT", "scf.yield %j : (u32);")
+    SKELETON.replace("EXIT", "scf.yield %j : (i32);")
 }
 
 struct Program {
@@ -215,25 +216,25 @@ fn n6_the_loop_body_reports_an_exit_when_a_nested_break_targets_it() -> Result<(
 /// it is live. **The two points are one op apart and the correct answers are opposite**, which is
 /// what makes this program able to say which one the backward walk anchored the break's edge at.
 const BODY_LOCAL_SKELETON: &str = "\
-builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
-    %zero = arith.constant 0 : u32;
+builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
+    %zero = arith.constant 0 : i32;
     %always = arith.constant 1 : i1;
     %r = scf.while %zero before {
-    ^head(%i: u32):
-        scf.condition %always, %i : (i1, u32);
+    ^head(%i: i32):
+        scf.condition %always, %i : (i1, i32);
     } after {
-    ^body(%j: u32):
-        %q = arith.constant 9 : u32;
-        %hit = arith.gt %j, %n;
+    ^body(%j: i32):
+        %q = arith.constant 9 : i32;
+        %hit = arith.cmpi ugt %j, %n;
         %k = scf.if %hit then {
             EXIT
         } else {
-            scf.yield %j : (u32);
-        } : (i1) -> (u32);
-        %next = arith.add %k, %q <{ overflow = #builtin.overflow<unchecked> }>;
-        scf.yield %next : (u32);
-    } : (u32) -> u32;
-    builtin.ret %r : (u32);
+            scf.yield %j : (i32);
+        } : (i1) -> (i32);
+        %next = arith.add %k, %q <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+        scf.yield %next : (i32);
+    } : (i32) -> i32;
+    builtin.ret %r : (i32);
 };";
 
 /// The break bypasses a use after its enclosing if, so that body-local value is dead after
@@ -242,7 +243,7 @@ builtin.function public extern(\"C\") @f(%n: u32) -> u32 {
 fn the_backward_walk_anchors_a_breaks_edge_after_the_loop_not_after_the_if() -> Result<(), Report> {
     let broken = Program::parse(
         "backward_edge_with_break.hir",
-        &BODY_LOCAL_SKELETON.replace("EXIT", "scf.break 1 %j : (u32);"),
+        &BODY_LOCAL_SKELETON.replace("EXIT", "scf.break 1 %j : (i32);"),
     )?;
 
     let q = broken

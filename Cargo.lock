@@ -1298,7 +1298,6 @@ dependencies = [
  "log",
  "runic-core",
  "runic-dialect-arith",
- "runic-dialect-hir",
  "runic-dialect-scf",
 ]
 

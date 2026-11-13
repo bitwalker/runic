@@ -430,7 +430,7 @@ mod tests {
     use alloc::rc::Rc;
     use core::hash::Hasher;
 
-    use runic_core::{Context, Type};
+    use runic_core::Context;
 
     use super::*;
     use crate::{DataFlowSolver, Lattice};
@@ -478,7 +478,7 @@ mod tests {
     #[test]
     fn typed_and_erased_value_anchors_share_analysis_state() {
         let context = Rc::new(Context::default());
-        let block = context.create_block_with_params([Type::U32]);
+        let block = context.create_block_with_params([context.i32()]);
         let argument = block.borrow().arguments()[0];
         let value = argument as ValueRef;
         let mut solver = DataFlowSolver::default();
