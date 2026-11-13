@@ -10,6 +10,10 @@ pub trait AttributeRegistration: Attribute {
     type Dialect: DialectRegistration;
     type Value: AttributeValue;
 
+    /// False for an attribute kind without a default value, which is always written with a body
+    /// (`#[attribute(.., no_default)]`); its [Self::create_default] panics.
+    const HAS_DEFAULT: bool = true;
+
     /// The name of the dialect this attribute is declared part of
     fn dialect_name() -> interner::Symbol {
         interner::Symbol::intern(

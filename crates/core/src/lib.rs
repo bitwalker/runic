@@ -74,6 +74,7 @@ pub mod formatter;
 mod hash;
 mod ir;
 pub mod itertools;
+pub mod layout;
 pub mod matchers;
 pub mod pass;
 pub mod patterns;
@@ -96,6 +97,7 @@ pub use self::{
     hash::{DynHash, DynHasher},
     ir::*,
     itertools::IteratorExt,
+    layout::{Align, DataLayoutSpec, Endianness, InvalidDataLayout, PointerSpec},
     patterns::{Rewriter, RewriterExt},
     program_point::{Position, ProgramPoint},
 };

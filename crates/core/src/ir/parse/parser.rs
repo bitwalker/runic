@@ -1332,6 +1332,11 @@ pub(super) fn parse_extended_attribute<'input, P: Parser<'input>>(
                 ),
             })
         }
+    } else if !name.has_default() {
+        Err(ParserError::InvalidAttributeValue {
+            span: name_span,
+            reason: format!("attribute '{name}' has no default value: it must have a '<..>' body"),
+        })
     } else {
         let mut value = name.create_default(&parser.context_rc());
         let attr_ty = value.borrow().ty();

@@ -27,6 +27,10 @@ pub struct Attribute {
     /// A function `fn(&Context) -> Value` giving the attribute's default value.
     #[darling(default)]
     default: Option<syn::Path>,
+    /// The attribute has no default value: it is always written with a body, and its
+    /// `create_default` panics.
+    #[darling(default)]
+    no_default: bool,
     #[darling(default)]
     bounds: Option<Vec<syn::WherePredicate>>,
     #[darling(default)]
@@ -181,8 +185,13 @@ impl quote::ToTokens for Attribute {
         // impl Attribute
         // impl AttributeRegistration
 
-        let create_default_impl: syn::ImplItemFn = if let Some(default_ctor) = self.default.as_ref()
-        {
+        let create_default_impl: syn::ImplItemFn = if self.no_default {
+            parse_quote_spanned! { attr_name.span() =>
+                fn create_default(_context: &::alloc::rc::Rc<::runic_core::Context>) -> ::runic_core::UnsafeIntrusiveEntityRef<Self> {
+                    panic!("the attribute `{}` has no default value", <Self as ::runic_core::AttributeRegistration>::full_name())
+                }
+            }
+        } else if let Some(default_ctor) = self.default.as_ref() {
             parse_quote_spanned! { default_ctor.span() =>
                 #[allow(clippy::let_unit_value)]
                 fn create_default(context: &::alloc::rc::Rc<::runic_core::Context>) -> ::runic_core::UnsafeIntrusiveEntityRef<Self> {
@@ -202,6 +211,7 @@ impl quote::ToTokens for Attribute {
             }
         };
 
+        let no_default = self.no_default;
         let dialect = &self.dialect;
         let attr_name_str =
             syn::Lit::Str(syn::LitStr::new(&attr_name.to_string(), attr_name.span()));
@@ -279,6 +289,7 @@ impl quote::ToTokens for Attribute {
             impl #attr_impl_generics ::runic_core::AttributeRegistration for #attr_struct_name #attr_ty_generics #attr_where_clause {
                 type Dialect = #dialect;
                 type Value = #value_type_name #ty_generics;
+                const HAS_DEFAULT: bool = !#no_default;
 
                 fn name() -> ::runic_core::interner::Symbol {
                     ::runic_core::interner::Symbol::intern(#attr_name_str)

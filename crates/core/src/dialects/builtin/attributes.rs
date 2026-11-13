@@ -1,6 +1,7 @@
 mod array;
 mod boolean;
 mod bytes;
+mod data_layout;
 mod effects;
 mod integer;
 mod list;
@@ -19,6 +20,7 @@ pub use self::{
     array::{Array, I32ArrayAttr, LocalVariableArrayAttr, MemoryEffectArrayAttr, TypeArrayAttr},
     boolean::BoolAttr,
     bytes::{Bytes, BytesAttr},
+    data_layout::DataLayoutAttr,
     effects::MemoryEffectDescriptor,
     integer::*,
     list::{List, ListAttr},

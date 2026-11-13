@@ -34,6 +34,8 @@ struct AttributeInfo {
     /// Allocates a new uninitialized instance of this attribute
     alloc_uninit: AllocUninit,
     create_default: fn(&Rc<Context>) -> AttributeRef,
+    /// See [AttributeRegistration::HAS_DEFAULT]
+    has_default: bool,
 }
 
 unsafe fn alloc_uninit<T: AttributeRegistration>(context: Rc<Context>) -> *mut dyn Attribute {
@@ -88,6 +90,7 @@ impl AttributeName {
             parse_assembly,
             alloc_uninit: alloc_uninit::<T>,
             create_default: create_default::<T>,
+            has_default: <T as AttributeRegistration>::HAS_DEFAULT,
         }))
     }
 
@@ -111,6 +114,13 @@ impl AttributeName {
     #[inline(always)]
     pub fn parse_assembly_fn(&self) -> Option<ParseAssemblyFn> {
         self.0.parse_assembly
+    }
+
+    /// Returns false if this attribute has no default value: it is always written with a body,
+    /// and [Self::create_default] panics.
+    #[inline(always)]
+    pub fn has_default(&self) -> bool {
+        self.0.has_default
     }
 
     #[inline(always)]

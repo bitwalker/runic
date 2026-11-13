@@ -7,7 +7,7 @@ use crate::{
 };
 
 /// An IEEE 754 binary floating-point type, `f32` or `f64`.
-#[derive(Debug, PartialEq, Eq, Hash, DialectType)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, DialectType)]
 #[ty(dialect = BuiltinDialect, name = "float")]
 pub enum FloatType {
     F32,
