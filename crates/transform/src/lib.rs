@@ -10,6 +10,7 @@ mod canonicalization;
 mod cfg_to_scf;
 mod cse;
 mod dce;
+mod local2reg;
 //mod inliner;
 mod sccp;
 mod sink;
@@ -22,6 +23,7 @@ pub use self::{
     canonicalization::Canonicalizer,
     cfg_to_scf::{CFGToSCFInterface, transform_cfg_to_scf},
     cse::CommonSubexpressionElimination,
+    local2reg::Local2Reg,
     sccp::SparseConditionalConstantPropagation,
     sink::{ControlFlowSink, SinkOperandDefs},
 };
