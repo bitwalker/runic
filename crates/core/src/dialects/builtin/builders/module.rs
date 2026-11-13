@@ -82,7 +82,7 @@ impl ModuleBuilder {
 
     pub fn define_data_segment(
         &mut self,
-        offset: u32,
+        offset: u64,
         data: impl Into<ConstantData>,
         readonly: bool,
         span: SourceSpan,

@@ -68,7 +68,7 @@ pub trait BuiltinOpBuilder<'f, B: ?Sized + Builder> {
 
     fn create_data_segment(
         &mut self,
-        offset: u32,
+        offset: u64,
         data: impl Into<ConstantData>,
         readonly: bool,
         span: SourceSpan,
@@ -76,8 +76,8 @@ pub trait BuiltinOpBuilder<'f, B: ?Sized + Builder> {
         let id = self.builder().context().create_constant(data);
         let data = self.builder().context().get_constant(id);
         let op_builder = self.builder_mut().create::<Segment, (_, _, _)>(span);
-        // The offset is held in an `I32Attr`, as the bits of the `u32`
-        op_builder(offset as i32, data, readonly)
+        // The offset is held in an `I64Attr`, as the bits of the `u64`
+        op_builder(offset as i64, data, readonly)
     }
 
     fn unrealized_conversion_cast(

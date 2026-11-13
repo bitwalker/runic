@@ -83,15 +83,6 @@ pub struct Module {
 }
 
 impl Module {
-    /// Name of the optional operation attribute (an `I64Attr`) recording the amount of linear
-    /// memory, in bytes, that this module claims for its own layout.
-    ///
-    /// The producer of the module guarantees that everything it placed in linear memory — its
-    /// stack, statics, and any other data, whether or not it is visible in the module itself —
-    /// lives below this boundary, so the linker treats it as the floor for compiler-managed
-    /// memory regions (global variables, function tables, and the dynamic heap).
-    pub const RESERVED_MEMORY_ATTR: &'static str = "reserved_memory";
-
     /// The module's own function operations, including declarations but excluding aliases.
     ///
     /// An alias to a function never adds a body to this inventory.

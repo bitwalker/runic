@@ -499,10 +499,9 @@ fn a_global_declaration_keeps_its_attribute_dictionary() -> TestResult {
     Ok(())
 }
 
-/// The `reserved_memory` module attribute is an input to the linker's memory layout, so it must
-/// survive a print/parse round-trip of the textual HIR.
+/// An attribute on a module survives a print/parse round-trip.
 #[test]
-fn module_reserved_memory_roundtrip() -> TestResult {
+fn module_attribute_roundtrip() -> TestResult {
     use crate::{Op, dialects::builtin::attributes::I64Attr};
 
     let mut test = ParserTest::default();
@@ -514,15 +513,14 @@ fn module_reserved_memory_roundtrip() -> TestResult {
         };
     };";
 
-    let parsed = test.parse_any("reserved_memory_roundtrip.hir", source)?;
+    let parsed = test.parse_any("module_attribute_roundtrip.hir", source)?;
 
-    // Attach the linker-facing memory reservation, then round-trip through print/parse and
-    // verify nothing is lost
+    // Attach a plain attribute, then round-trip through print/parse and verify nothing is lost
     {
         let attr = test.context_rc().create_attribute::<I64Attr, _>(0x110000i64);
         let mut op = parsed;
         let mut op = op.borrow_mut();
-        op.set_attribute(Module::RESERVED_MEMORY_ATTR, attr);
+        op.set_attribute("note", attr);
     }
 
     let flags = Default::default();
@@ -531,15 +529,15 @@ fn module_reserved_memory_roundtrip() -> TestResult {
     let printed = printer.finish().to_string();
     std::println!("{printed}");
 
-    let reparsed = test.parse_any("reserved_memory_roundtrip2.hir", &printed)?;
+    let reparsed = test.parse_any("module_attribute_roundtrip2.hir", &printed)?;
     let reparsed = reparsed.borrow();
     let module = reparsed.downcast_ref::<Module>().unwrap();
 
-    let reserved = module
+    let note = module
         .as_operation()
-        .get_typed_attribute::<I64Attr>(Module::RESERVED_MEMORY_ATTR)
-        .expect("reserved_memory attribute lost in print/parse round-trip");
-    assert_eq!(**reserved.borrow(), 0x110000);
+        .get_typed_attribute::<I64Attr>("note")
+        .expect("the note attribute is lost in print/parse round-trip");
+    assert_eq!(**note.borrow(), 0x110000);
 
     Ok(())
 }
@@ -3739,39 +3737,59 @@ fn test_constants_keep_their_other_attributes_in_text() -> TestResult {
     Ok(())
 }
 
-/// A segment's offset is a `u32` held in an `I32Attr`: an offset in the upper half of the address
-/// space builds, prints, and its printed attribute parses back to the same `u32`.
-///
-/// The whole operation does not round-trip through text yet: `#builtin.bytes<..>` has no parser.
+/// A segment's offset is a `u64` held in an `I64Attr`: an offset past 2^32 builds, prints, and
+/// parses back to the same offset, as text and as an operation.
 #[test]
-fn a_segment_offset_in_the_upper_half_round_trips() -> TestResult {
+fn a_segment_offset_beyond_32_bits_round_trips() -> TestResult {
     use crate::dialects::builtin::ModuleBuilder;
 
     let test = ParserTest::default();
     let module = test.parse_any("segment.hir", "builtin.module public @m {};")?;
     let module = module.try_downcast_op::<Module>().unwrap();
     let mut builder = ModuleBuilder::new(module);
-    let mut segment = builder.define_data_segment(
-        0x8000_0000,
+    let segment = builder.define_data_segment(
+        1 << 32,
         [1u8, 2, 3, 4].as_slice(),
         true,
         SourceSpan::UNKNOWN,
     )?;
-    assert_eq!(segment.borrow().offset_in_bytes(), 0x8000_0000);
-    segment.borrow_mut().set_offset_in_bytes(0xffff_ffff);
-    assert_eq!(segment.borrow().offset_in_bytes(), 0xffff_ffff);
-    segment.borrow_mut().set_offset_in_bytes(0x8000_0000);
+    assert_eq!(segment.borrow().offset_in_bytes(), 1 << 32);
 
     let printed = format!("{}", module.as_operation_ref().borrow());
-    let offset = "#builtin.i32<-2147483648>";
-    assert!(printed.contains(&format!("offset = {offset}")), "{printed}");
+    assert!(printed.contains("offset = #builtin.i64<4294967296>"), "{printed}");
 
-    let context = test.context_rc();
-    for text in [offset, "#builtin.i32<2147483648>"] {
-        let attr = parse_attribute_text(&context, text, context.unknown_type())?;
-        assert_eq!(attr.borrow().as_u32(), Some(0x8000_0000), "{text}");
-        assert_eq!(print_attribute_text(&context, &attr), offset, "{text}");
-    }
+    let reparsed = test.parse_any("segment2.hir", &printed)?;
+    assert_eq!(format!("{}", reparsed.borrow()), printed);
+    let reparsed = reparsed.try_downcast_op::<Module>().unwrap();
+    let body = reparsed.borrow().body().as_region_ref();
+    let segment = body
+        .borrow()
+        .entry()
+        .body()
+        .iter()
+        .find_map(|op| {
+            op.downcast_ref::<crate::dialects::builtin::Segment>()
+                .map(|s| s.offset_in_bytes())
+        })
+        .expect("the segment parses back");
+    assert_eq!(segment, 1 << 32);
+    Ok(())
+}
+
+/// The top bit of a segment's offset is part of the offset, not a sign.
+#[test]
+fn a_segment_offset_is_unsigned() -> TestResult {
+    use crate::dialects::builtin::ModuleBuilder;
+
+    let test = ParserTest::default();
+    let module = test.parse_any("segment.hir", "builtin.module public @m {};")?;
+    let module = module.try_downcast_op::<Module>().unwrap();
+    let mut builder = ModuleBuilder::new(module);
+    let mut segment =
+        builder.define_data_segment(u64::MAX, [1u8].as_slice(), true, SourceSpan::UNKNOWN)?;
+    assert_eq!(segment.borrow().offset_in_bytes(), u64::MAX);
+    segment.borrow_mut().set_offset_in_bytes(1 << 63);
+    assert_eq!(segment.borrow().offset_in_bytes(), 1 << 63);
     Ok(())
 }
 
@@ -3966,44 +3984,6 @@ fn enum_discriminants_round_trip_at_the_edges() -> TestResult {
         let parsed = parse_type_text(&context, &text)?;
         let printed = format!("{parsed}");
         assert_eq!(parsed, parse_type_text(&context, &printed)?, "{text} -> {printed}");
-    }
-    Ok(())
-}
-
-/// A data segment layout orders and checks segments as unsigned offsets on both sides of 2^31.
-#[test]
-fn segment_layout_treats_offsets_as_unsigned() -> TestResult {
-    use crate::dialects::builtin::{DataSegmentError, DataSegmentLayout, ModuleBuilder};
-
-    let test = ParserTest::default();
-    let module = test.parse_any("segment.hir", "builtin.module public @m {};")?;
-    let module = module.try_downcast_op::<Module>().unwrap();
-    let mut builder = ModuleBuilder::new(module);
-    let mut segment = |offset: u32, len: usize| {
-        builder
-            .define_data_segment(
-                offset,
-                alloc::vec![1u8; len].as_slice(),
-                true,
-                SourceSpan::UNKNOWN,
-            )
-            .unwrap()
-    };
-    let (hi, lo, top) = (segment(0x8000_0000, 4), segment(0x10, 4), segment(0xffff_fffc, 4));
-    let (overlap, past) = (segment(0x8000_0002, 4), segment(0xffff_fffe, 4));
-    for order in [[hi, lo, top], [top, hi, lo], [lo, top, hi]] {
-        let mut layout = DataSegmentLayout::default();
-        for s in order {
-            layout.insert(s).unwrap();
-        }
-        let offsets: Vec<u32> = layout.iter().map(|s| s.borrow().offset_in_bytes()).collect();
-        assert_eq!(offsets, alloc::vec![0x10, 0x8000_0000, 0xffff_fffc]);
-        assert!(matches!(
-            layout.insert(overlap),
-            Err(DataSegmentError::OverlappingSegments { .. })
-        ));
-        assert!(matches!(layout.insert(past), Err(DataSegmentError::OutOfBounds { .. })));
-        assert_eq!(layout.next_available_offset(), None);
     }
     Ok(())
 }
@@ -5608,7 +5588,7 @@ fn a_segment_prints_readonly_only_when_it_is_set() -> TestResult {
 
     for (readonly, written) in [(false, ""), (true, ", readonly = #builtin.bool<true>")] {
         let source = format!(
-            "builtin.module public @m {{\n    builtin.segment <{{ offset = #builtin.i32<16>, data \
+            "builtin.module public @m {{\n    builtin.segment <{{ offset = #builtin.i64<16>, data \
              = #builtin.bytes<\"0201\">{written} }}>;\n}};"
         );
         let test = ParserTest::default();
@@ -5669,7 +5649,16 @@ fn properties_of_module_level_operations_round_trip() {
             b.set_insertion_point_to_end(body);
             let n = rng.below(5) as usize;
             let data = (0..n).map(|_| rng.below(256) as u8).collect::<Vec<u8>>();
-            let offset = rng.pick(&[0u32, 1, 16, 0x7fff_ffff, 0x8000_0000, u32::MAX]);
+            let offset = rng.pick(&[
+                0u64,
+                1,
+                16,
+                0x7fff_ffff,
+                0x8000_0000,
+                u32::MAX as u64,
+                1 << 32,
+                u64::MAX,
+            ]);
             b.create_data_segment(offset, data, rng.below(2) == 0, SourceSpan::UNKNOWN)
                 .unwrap();
             b.set_insertion_point_to_end(body);
