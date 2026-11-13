@@ -1,688 +1,509 @@
 use runic_core::{
-    Builder, BuilderExt, Felt, OpBuilder, Overflow, Report, SmallVec, SourceSpan, Type, ValueRef,
-    dialects::builtin::FunctionBuilder,
+    Builder, BuilderExt, Int, OpBuilder, Overflow, ReadyAttr, Report, Signedness, SourceSpan, Type,
+    ValueRef, dialects::builtin::FunctionBuilder,
 };
 
 use crate::*;
 
+/// Builds the operations of the `arith` dialect, returning their results.
 pub trait ArithOpBuilder<'f, B: ?Sized + Builder> {
-    /*
-    fn character(&mut self, c: char, span: SourceSpan) -> Value {
-        self.i32((c as u32) as i32, span)
+    /// The constant `value` of type `ty`.
+    ///
+    /// Panics unless `ty` is the integer type of `value`'s width, or `isize` and `value` is 64
+    /// bits wide.
+    fn int(&mut self, value: Int, ty: Type, span: SourceSpan) -> ValueRef {
+        let attr = self.builder().context_rc().int_attr(value, ty);
+        let op_builder = self.builder_mut().create::<Constant, _>(span);
+        let constant = op_builder(ReadyAttr(attr)).unwrap();
+        constant.borrow().result().as_value_ref()
     }
-    */
 
+    /// The `i1` constant `value`: `1` for `true`.
     fn i1(&mut self, value: bool, span: SourceSpan) -> ValueRef {
-        let op_builder = self.builder_mut().create::<crate::ops::Constant, _>(span);
-        let constant = op_builder(Immediate::I1(value)).unwrap();
-        constant.borrow().result().as_value_ref()
+        let ty = self.builder().context().i1();
+        self.int(Int::from(value), ty, span)
     }
 
+    /// The `i8` constant holding the bits of `value`.
     fn i8(&mut self, value: i8, span: SourceSpan) -> ValueRef {
-        let op_builder = self.builder_mut().create::<crate::ops::Constant, _>(span);
-        let constant = op_builder(Immediate::I8(value)).unwrap();
-        constant.borrow().result().as_value_ref()
+        let ty = self.builder().context().i8();
+        self.int(Int::from(value), ty, span)
     }
 
+    /// The `i16` constant holding the bits of `value`.
     fn i16(&mut self, value: i16, span: SourceSpan) -> ValueRef {
-        let op_builder = self.builder_mut().create::<crate::ops::Constant, _>(span);
-        let constant = op_builder(Immediate::I16(value)).unwrap();
-        constant.borrow().result().as_value_ref()
+        let ty = self.builder().context().i16();
+        self.int(Int::from(value), ty, span)
     }
 
+    /// The `i32` constant holding the bits of `value`.
     fn i32(&mut self, value: i32, span: SourceSpan) -> ValueRef {
-        let op_builder = self.builder_mut().create::<crate::ops::Constant, _>(span);
-        let constant = op_builder(Immediate::I32(value)).unwrap();
-        constant.borrow().result().as_value_ref()
+        let ty = self.builder().context().i32();
+        self.int(Int::from(value), ty, span)
     }
 
+    /// The `i64` constant holding the bits of `value`.
     fn i64(&mut self, value: i64, span: SourceSpan) -> ValueRef {
-        let op_builder = self.builder_mut().create::<crate::ops::Constant, _>(span);
-        let constant = op_builder(Immediate::I64(value)).unwrap();
-        constant.borrow().result().as_value_ref()
+        let ty = self.builder().context().i64();
+        self.int(Int::from(value), ty, span)
     }
 
-    fn u8(&mut self, value: u8, span: SourceSpan) -> ValueRef {
-        let op_builder = self.builder_mut().create::<crate::ops::Constant, _>(span);
-        let constant = op_builder(Immediate::U8(value)).unwrap();
-        constant.borrow().result().as_value_ref()
+    /// The `i128` constant holding the bits of `value`.
+    fn i128(&mut self, value: i128, span: SourceSpan) -> ValueRef {
+        let ty = self.builder().context().i128();
+        self.int(Int::from(value), ty, span)
     }
 
-    fn u16(&mut self, value: u16, span: SourceSpan) -> ValueRef {
-        let op_builder = self.builder_mut().create::<crate::ops::Constant, _>(span);
-        let constant = op_builder(Immediate::U16(value)).unwrap();
-        constant.borrow().result().as_value_ref()
+    /// The `isize` constant `value`. On a 32-bit target it stands for its low 32 bits.
+    fn isize(&mut self, value: i64, span: SourceSpan) -> ValueRef {
+        let ty = self.builder().context().isize();
+        self.int(Int::from(value), ty, span)
     }
 
-    fn u32(&mut self, value: u32, span: SourceSpan) -> ValueRef {
-        let op_builder = self.builder_mut().create::<crate::ops::Constant, _>(span);
-        let constant = op_builder(Immediate::U32(value)).unwrap();
-        constant.borrow().result().as_value_ref()
-    }
-
-    fn u64(&mut self, value: u64, span: SourceSpan) -> ValueRef {
-        let op_builder = self.builder_mut().create::<crate::ops::Constant, _>(span);
-        let constant = op_builder(Immediate::U64(value)).unwrap();
-        constant.borrow().result().as_value_ref()
-    }
-
-    fn f64(&mut self, value: f64, span: SourceSpan) -> ValueRef {
-        let op_builder = self.builder_mut().create::<crate::ops::Constant, _>(span);
-        let constant = op_builder(Immediate::F64(value)).unwrap();
-        constant.borrow().result().as_value_ref()
-    }
-
-    fn felt(&mut self, value: Felt, span: SourceSpan) -> ValueRef {
-        let op_builder = self.builder_mut().create::<crate::ops::Constant, _>(span);
-        let constant = op_builder(Immediate::Felt(value)).unwrap();
-        constant.borrow().result().as_value_ref()
-    }
-
-    fn imm(&mut self, value: Immediate, span: SourceSpan) -> ValueRef {
-        let op_builder = self.builder_mut().create::<crate::ops::Constant, _>(span);
-        let constant = op_builder(value).unwrap();
-        constant.borrow().result().as_value_ref()
-    }
-
-    /// Truncates an integral value as necessary to fit in `ty`.
-    ///
-    /// NOTE: Truncating a value into a larger type has undefined behavior, it is
-    /// equivalent to extending a value without doing anything with the new high-order
-    /// bits of the resulting value.
-    fn trunc(&mut self, arg: ValueRef, ty: Type, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Trunc, _>(span);
-        let op = op_builder(arg, ty)?;
-        Ok(op.borrow().result().as_value_ref())
-    }
-
-    /// Extends an integer into a larger integeral type, by zero-extending the value,
-    /// i.e. the new high-order bits of the resulting value will be all zero.
-    ///
-    /// NOTE: This function will panic if `ty` is smaller than `arg`.
-    ///
-    /// If `arg` is the same type as `ty`, `arg` is returned as-is
-    fn zext(&mut self, arg: ValueRef, ty: Type, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Zext, _>(span);
-        let op = op_builder(arg, ty)?;
-        Ok(op.borrow().result().as_value_ref())
-    }
-
-    /// Extends an integer into a larger integeral type, by sign-extending the value,
-    /// i.e. the new high-order bits of the resulting value will all match the sign bit.
-    ///
-    /// NOTE: This function will panic if `ty` is smaller than `arg`.
-    ///
-    /// If `arg` is the same type as `ty`, `arg` is returned as-is
-    fn sext(&mut self, arg: ValueRef, ty: Type, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Sext, _>(span);
-        let op = op_builder(arg, ty)?;
-        Ok(op.borrow().result().as_value_ref())
-    }
-
-    /// Two's complement addition which traps on overflow
+    /// The wrapping two's complement sum.
     fn add(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Add, _>(span);
-        let op = op_builder(lhs, rhs, Overflow::Checked)?;
+        let op_builder = self.builder_mut().create::<Add, _>(span);
+        let op = op_builder(lhs, rhs, Overflow::Wrapping)?;
         Ok(op.borrow().result().as_value_ref())
     }
 
-    /// Unchecked two's complement addition. Behavior is undefined if the result overflows.
+    /// The two's complement sum, trapping if the exact sum does not fit, read as
+    /// `signedness` says.
+    fn add_checked(
+        &mut self,
+        lhs: ValueRef,
+        rhs: ValueRef,
+        signedness: Signedness,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Add, _>(span);
+        let op = op_builder(lhs, rhs, Overflow::Checked(signedness))?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// The two's complement sum, undefined if the exact sum does not fit, read as
+    /// `signedness` says.
     fn add_unchecked(
         &mut self,
         lhs: ValueRef,
         rhs: ValueRef,
+        signedness: Signedness,
         span: SourceSpan,
     ) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Add, _>(span);
-        let op = op_builder(lhs, rhs, Overflow::Unchecked)?;
+        let op_builder = self.builder_mut().create::<Add, _>(span);
+        let op = op_builder(lhs, rhs, Overflow::Unchecked(signedness))?;
         Ok(op.borrow().result().as_value_ref())
     }
 
-    /// Two's complement addition which wraps around on overflow, e.g. `wrapping_add`
-    fn add_wrapping(
-        &mut self,
-        lhs: ValueRef,
-        rhs: ValueRef,
-        span: SourceSpan,
-    ) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Add, _>(span);
-        let op = op_builder(lhs, rhs, Overflow::Wrapping)?;
-        Ok(op.borrow().result().as_value_ref())
-    }
-
-    /// Two's complement addition which wraps around on overflow, but returns a boolean flag that
-    /// indicates whether or not the operation overflowed, followed by the wrapped result, e.g.
-    /// `overflowing_add` (but with the result types inverted compared to Rust's version).
+    /// The wrapping two's complement sum with an overflow flag: returns the flag, which says
+    /// whether the exact sum does not fit read as `signedness` says, then the wrapped sum.
     fn add_overflowing(
         &mut self,
         lhs: ValueRef,
         rhs: ValueRef,
+        signedness: Signedness,
         span: SourceSpan,
     ) -> Result<(ValueRef, ValueRef), Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::AddOverflowing, _>(span);
-        let op = op_builder(lhs, rhs)?;
+        let op_builder = self.builder_mut().create::<AddOverflowing, _>(span);
+        let op = op_builder(lhs, rhs, signedness)?;
         let op = op.borrow();
-        let overflowed = op.overflowed().as_value_ref();
-        let result = op.result().as_value_ref();
-        Ok((overflowed, result))
+        Ok((op.overflowed().as_value_ref(), op.result().as_value_ref()))
     }
 
-    /// Two's complement subtraction which traps on under/overflow
+    /// The wrapping two's complement difference.
     fn sub(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Sub, _>(span);
-        let op = op_builder(lhs, rhs, Overflow::Checked)?;
+        let op_builder = self.builder_mut().create::<Sub, _>(span);
+        let op = op_builder(lhs, rhs, Overflow::Wrapping)?;
         Ok(op.borrow().result().as_value_ref())
     }
 
-    /// Unchecked two's complement subtraction. Behavior is undefined if the result under/overflows.
+    /// The two's complement difference, trapping if the exact difference does not fit, read as
+    /// `signedness` says.
+    fn sub_checked(
+        &mut self,
+        lhs: ValueRef,
+        rhs: ValueRef,
+        signedness: Signedness,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Sub, _>(span);
+        let op = op_builder(lhs, rhs, Overflow::Checked(signedness))?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// The two's complement difference, undefined if the exact difference does not fit, read as
+    /// `signedness` says.
     fn sub_unchecked(
         &mut self,
         lhs: ValueRef,
         rhs: ValueRef,
+        signedness: Signedness,
         span: SourceSpan,
     ) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Sub, _>(span);
-        let op = op_builder(lhs, rhs, Overflow::Unchecked)?;
+        let op_builder = self.builder_mut().create::<Sub, _>(span);
+        let op = op_builder(lhs, rhs, Overflow::Unchecked(signedness))?;
         Ok(op.borrow().result().as_value_ref())
     }
 
-    /// Two's complement subtraction which wraps around on under/overflow, e.g. `wrapping_sub`
-    fn sub_wrapping(
-        &mut self,
-        lhs: ValueRef,
-        rhs: ValueRef,
-        span: SourceSpan,
-    ) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Sub, _>(span);
-        let op = op_builder(lhs, rhs, Overflow::Wrapping)?;
-        Ok(op.borrow().result().as_value_ref())
-    }
-
-    /// Two's complement subtraction which wraps around on overflow, but returns a boolean flag that
-    /// indicates whether or not the operation under/overflowed, followed by the wrapped result,
-    /// e.g. `overflowing_sub` (but with the result types inverted compared to Rust's version).
+    /// The wrapping two's complement difference with an overflow flag: returns the flag, which says
+    /// whether the exact difference does not fit read as `signedness` says, then the wrapped difference.
     fn sub_overflowing(
         &mut self,
         lhs: ValueRef,
         rhs: ValueRef,
+        signedness: Signedness,
         span: SourceSpan,
     ) -> Result<(ValueRef, ValueRef), Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::SubOverflowing, _>(span);
-        let op = op_builder(lhs, rhs)?;
+        let op_builder = self.builder_mut().create::<SubOverflowing, _>(span);
+        let op = op_builder(lhs, rhs, signedness)?;
         let op = op.borrow();
-        let overflowed = op.overflowed().as_value_ref();
-        let result = op.result().as_value_ref();
-        Ok((overflowed, result))
+        Ok((op.overflowed().as_value_ref(), op.result().as_value_ref()))
     }
 
-    /// Two's complement multiplication which traps on overflow
+    /// The wrapping two's complement product.
     fn mul(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Mul, _>(span);
-        let op = op_builder(lhs, rhs, Overflow::Checked)?;
-        Ok(op.borrow().result().as_value_ref())
-    }
-
-    /// Unchecked two's complement multiplication. Behavior is undefined if the result overflows.
-    fn mul_unchecked(
-        &mut self,
-        lhs: ValueRef,
-        rhs: ValueRef,
-        span: SourceSpan,
-    ) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Mul, _>(span);
-        let op = op_builder(lhs, rhs, Overflow::Unchecked)?;
-        Ok(op.borrow().result().as_value_ref())
-    }
-
-    /// Two's complement multiplication which wraps around on overflow, e.g. `wrapping_mul`
-    fn mul_wrapping(
-        &mut self,
-        lhs: ValueRef,
-        rhs: ValueRef,
-        span: SourceSpan,
-    ) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Mul, _>(span);
+        let op_builder = self.builder_mut().create::<Mul, _>(span);
         let op = op_builder(lhs, rhs, Overflow::Wrapping)?;
         Ok(op.borrow().result().as_value_ref())
     }
 
-    /// Two's complement multiplication which wraps around on overflow, but returns a boolean flag
-    /// that indicates whether or not the operation overflowed, followed by the wrapped result,
-    /// e.g. `overflowing_mul` (but with the result types inverted compared to Rust's version).
+    /// The two's complement product, trapping if the exact product does not fit, read as
+    /// `signedness` says.
+    fn mul_checked(
+        &mut self,
+        lhs: ValueRef,
+        rhs: ValueRef,
+        signedness: Signedness,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Mul, _>(span);
+        let op = op_builder(lhs, rhs, Overflow::Checked(signedness))?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// The two's complement product, undefined if the exact product does not fit, read as
+    /// `signedness` says.
+    fn mul_unchecked(
+        &mut self,
+        lhs: ValueRef,
+        rhs: ValueRef,
+        signedness: Signedness,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Mul, _>(span);
+        let op = op_builder(lhs, rhs, Overflow::Unchecked(signedness))?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// The wrapping two's complement product with an overflow flag: returns the flag, which says
+    /// whether the exact product does not fit read as `signedness` says, then the wrapped product.
     fn mul_overflowing(
         &mut self,
         lhs: ValueRef,
         rhs: ValueRef,
+        signedness: Signedness,
         span: SourceSpan,
     ) -> Result<(ValueRef, ValueRef), Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::MulOverflowing, _>(span);
-        let op = op_builder(lhs, rhs)?;
+        let op_builder = self.builder_mut().create::<MulOverflowing, _>(span);
+        let op = op_builder(lhs, rhs, signedness)?;
         let op = op.borrow();
-        let overflowed = op.overflowed().as_value_ref();
-        let result = op.result().as_value_ref();
-        Ok((overflowed, result))
+        Ok((op.overflowed().as_value_ref(), op.result().as_value_ref()))
     }
 
-    /// Integer division. Traps if `rhs` is zero.
-    fn div(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Div, _>(span);
-        let op = op_builder(lhs, rhs)?;
-        Ok(op.borrow().result().as_value_ref())
-    }
-
-    /// Extension-field addition over two felt limbs.
-    fn ext2add(
-        &mut self,
-        lhs0: ValueRef,
-        lhs1: ValueRef,
-        rhs0: ValueRef,
-        rhs1: ValueRef,
-        span: SourceSpan,
-    ) -> Result<(ValueRef, ValueRef), Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Ext2Add, _>(span);
-        let op = op_builder(lhs0, lhs1, rhs0, rhs1)?;
-        let op = op.borrow();
-        Ok((op.result0().as_value_ref(), op.result1().as_value_ref()))
-    }
-
-    /// Extension-field subtraction over two felt limbs.
-    fn ext2sub(
-        &mut self,
-        lhs0: ValueRef,
-        lhs1: ValueRef,
-        rhs0: ValueRef,
-        rhs1: ValueRef,
-        span: SourceSpan,
-    ) -> Result<(ValueRef, ValueRef), Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Ext2Sub, _>(span);
-        let op = op_builder(lhs0, lhs1, rhs0, rhs1)?;
-        let op = op.borrow();
-        Ok((op.result0().as_value_ref(), op.result1().as_value_ref()))
-    }
-
-    /// Extension-field multiplication over two felt limbs.
-    fn ext2mul(
-        &mut self,
-        lhs0: ValueRef,
-        lhs1: ValueRef,
-        rhs0: ValueRef,
-        rhs1: ValueRef,
-        span: SourceSpan,
-    ) -> Result<(ValueRef, ValueRef), Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Ext2Mul, _>(span);
-        let op = op_builder(lhs0, lhs1, rhs0, rhs1)?;
-        let op = op.borrow();
-        Ok((op.result0().as_value_ref(), op.result1().as_value_ref()))
-    }
-
-    /// Extension-field division over two felt limbs. Traps if `rhs` is zero.
-    fn ext2div(
-        &mut self,
-        lhs0: ValueRef,
-        lhs1: ValueRef,
-        rhs0: ValueRef,
-        rhs1: ValueRef,
-        span: SourceSpan,
-    ) -> Result<(ValueRef, ValueRef), Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Ext2Div, _>(span);
-        let op = op_builder(lhs0, lhs1, rhs0, rhs1)?;
-        let op = op.borrow();
-        Ok((op.result0().as_value_ref(), op.result1().as_value_ref()))
-    }
-
-    /// Integer Euclidean modulo. Traps if `rhs` is zero.
-    fn r#mod(
-        &mut self,
-        lhs: ValueRef,
-        rhs: ValueRef,
-        span: SourceSpan,
-    ) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Mod, _>(span);
+    /// Unsigned division, rounding toward zero. Traps on a zero divisor.
+    fn udiv(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Udiv, _>(span);
         let op = op_builder(lhs, rhs)?;
         Ok(op.borrow().result().as_value_ref())
     }
 
-    /// Combined integer Euclidean division and modulo. Traps if `rhs` is zero.
-    fn divmod(
+    /// Signed division, rounding toward zero. Traps on a zero divisor and on `MIN / -1`.
+    fn sdiv(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Sdiv, _>(span);
+        let op = op_builder(lhs, rhs)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// Unsigned remainder. Traps on a zero divisor.
+    fn urem(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Urem, _>(span);
+        let op = op_builder(lhs, rhs)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// Signed remainder, with the sign of `lhs`. Traps on a zero divisor and on `MIN / -1`.
+    fn srem(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Srem, _>(span);
+        let op = op_builder(lhs, rhs)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// Unsigned division and remainder: returns the remainder, then the quotient, in the order of
+    /// the operation's results. Traps on a zero divisor.
+    fn udivrem(
         &mut self,
         lhs: ValueRef,
         rhs: ValueRef,
         span: SourceSpan,
     ) -> Result<(ValueRef, ValueRef), Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Divmod, _>(span);
+        let op_builder = self.builder_mut().create::<Udivrem, _>(span);
         let op = op_builder(lhs, rhs)?;
         let op = op.borrow();
-        let quotient = op.quotient().as_value_ref();
-        let remainder = op.remainder().as_value_ref();
-        Ok((quotient, remainder))
+        Ok((op.remainder().as_value_ref(), op.quotient().as_value_ref()))
     }
 
-    /// Exponentiation
-    fn exp(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Exp, (ValueRef, ValueRef)>(span);
-        let op = op_builder(lhs, rhs)?;
-        Ok(op.borrow().result().as_value_ref())
-    }
-
-    /// Exponentiation whose exponent operand must be u32-range constrained.
-    fn exp_u32_exponent(
+    /// Signed division and remainder: returns the remainder, then the quotient, in the order of
+    /// the operation's results. Traps on a zero divisor and on `MIN / -1`.
+    fn sdivrem(
         &mut self,
         lhs: ValueRef,
         rhs: ValueRef,
         span: SourceSpan,
-    ) -> Result<ValueRef, Report> {
-        let op_builder =
-            self.builder_mut().create::<crate::ops::Exp, (ValueRef, ValueRef, bool)>(span);
-        let op = op_builder(lhs, rhs, true)?;
-        Ok(op.borrow().result().as_value_ref())
-    }
-
-    /// Compute 2^n
-    fn pow2(&mut self, n: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Pow2, _>(span);
-        let op = op_builder(n)?;
-        Ok(op.borrow().result().as_value_ref())
-    }
-
-    /// Compute ilog2(n)
-    fn ilog2(&mut self, n: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Ilog2, _>(span);
-        let op = op_builder(n)?;
-        Ok(op.borrow().result().as_value_ref())
-    }
-
-    /// Modular inverse
-    fn inv(&mut self, n: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Inv, _>(span);
-        let op = op_builder(n)?;
-        Ok(op.borrow().result().as_value_ref())
-    }
-
-    /// Extension-field negation over two felt limbs.
-    fn ext2neg(
-        &mut self,
-        operand0: ValueRef,
-        operand1: ValueRef,
-        span: SourceSpan,
     ) -> Result<(ValueRef, ValueRef), Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Ext2Neg, _>(span);
-        let op = op_builder(operand0, operand1)?;
+        let op_builder = self.builder_mut().create::<Sdivrem, _>(span);
+        let op = op_builder(lhs, rhs)?;
         let op = op.borrow();
-        Ok((op.result0().as_value_ref(), op.result1().as_value_ref()))
+        Ok((op.remainder().as_value_ref(), op.quotient().as_value_ref()))
     }
 
-    /// Extension-field inversion over two felt limbs.
-    fn ext2inv(
-        &mut self,
-        operand0: ValueRef,
-        operand1: ValueRef,
-        span: SourceSpan,
-    ) -> Result<(ValueRef, ValueRef), Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Ext2Inv, _>(span);
-        let op = op_builder(operand0, operand1)?;
-        let op = op.borrow();
-        Ok((op.result0().as_value_ref(), op.result1().as_value_ref()))
-    }
-
-    /// Unary negation
-    fn neg(&mut self, n: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Neg, _>(span);
-        let op = op_builder(n)?;
-        Ok(op.borrow().result().as_value_ref())
-    }
-
-    /// Two's complement unary increment by one which traps on overflow
-    fn incr(&mut self, lhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Incr, _>(span);
-        let op = op_builder(lhs)?;
-        Ok(op.borrow().result().as_value_ref())
-    }
-
-    /// Logical AND
-    fn and(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::And, _>(span);
-        let op = op_builder(lhs, rhs)?;
-        Ok(op.borrow().result().as_value_ref())
-    }
-
-    /// Logical OR
-    fn or(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Or, _>(span);
-        let op = op_builder(lhs, rhs)?;
-        Ok(op.borrow().result().as_value_ref())
-    }
-
-    /// Logical XOR
-    fn xor(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Xor, _>(span);
-        let op = op_builder(lhs, rhs)?;
-        Ok(op.borrow().result().as_value_ref())
-    }
-
-    /// Logical NOT
-    fn not(&mut self, lhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Not, _>(span);
-        let op = op_builder(lhs)?;
-        Ok(op.borrow().result().as_value_ref())
-    }
-
-    /// Bitwise AND
+    /// Bitwise AND.
     fn band(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Band, _>(span);
+        let op_builder = self.builder_mut().create::<Band, _>(span);
         let op = op_builder(lhs, rhs)?;
         Ok(op.borrow().result().as_value_ref())
     }
 
-    /// Bitwise OR
+    /// Bitwise OR.
     fn bor(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Bor, _>(span);
+        let op_builder = self.builder_mut().create::<Bor, _>(span);
         let op = op_builder(lhs, rhs)?;
         Ok(op.borrow().result().as_value_ref())
     }
 
-    /// Bitwise XOR
+    /// Bitwise XOR.
     fn bxor(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Bxor, _>(span);
+        let op_builder = self.builder_mut().create::<Bxor, _>(span);
         let op = op_builder(lhs, rhs)?;
         Ok(op.borrow().result().as_value_ref())
     }
 
-    /// Bitwise NOT
-    fn bnot(&mut self, lhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Bnot, _>(span);
-        let op = op_builder(lhs)?;
+    /// Bitwise NOT.
+    fn bnot(&mut self, operand: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Bnot, _>(span);
+        let op = op_builder(operand)?;
         Ok(op.borrow().result().as_value_ref())
     }
 
-    fn rotl(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Rotl, _>(span);
-        let op = op_builder(lhs, rhs)?;
-        Ok(op.borrow().result().as_value_ref())
-    }
-
-    fn rotr(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Rotr, _>(span);
-        let op = op_builder(lhs, rhs)?;
-        Ok(op.borrow().result().as_value_ref())
-    }
-
+    /// `lhs` shifted left by `rhs`, which has the type of `lhs`.
     fn shl(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Shl, _>(span);
+        let op_builder = self.builder_mut().create::<Shl, _>(span);
         let op = op_builder(lhs, rhs)?;
         Ok(op.borrow().result().as_value_ref())
     }
 
+    /// `lhs` shifted right by `rhs`, filling with zeros.
     fn shr(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Shr, _>(span);
+        let op_builder = self.builder_mut().create::<Shr, _>(span);
         let op = op_builder(lhs, rhs)?;
         Ok(op.borrow().result().as_value_ref())
     }
 
-    fn popcnt(&mut self, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Popcnt, _>(span);
-        let op = op_builder(rhs)?;
+    /// `lhs` shifted right by `rhs`, filling with copies of the sign bit.
+    fn ashr(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Ashr, _>(span);
+        let op = op_builder(lhs, rhs)?;
         Ok(op.borrow().result().as_value_ref())
     }
 
-    fn clz(&mut self, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Clz, _>(span);
-        let op = op_builder(rhs)?;
+    /// `lhs` rotated left by `rhs` modulo the width.
+    fn rotl(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Rotl, _>(span);
+        let op = op_builder(lhs, rhs)?;
         Ok(op.borrow().result().as_value_ref())
     }
 
-    fn ctz(&mut self, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Ctz, _>(span);
-        let op = op_builder(rhs)?;
+    /// `lhs` rotated right by `rhs` modulo the width.
+    fn rotr(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Rotr, _>(span);
+        let op = op_builder(lhs, rhs)?;
         Ok(op.borrow().result().as_value_ref())
     }
 
-    fn clo(&mut self, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Clo, _>(span);
-        let op = op_builder(rhs)?;
+    /// The `i1` result of comparing `lhs` and `rhs` with `predicate`.
+    fn cmpi(
+        &mut self,
+        predicate: CmpPredicate,
+        lhs: ValueRef,
+        rhs: ValueRef,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Cmpi, _>(span);
+        let op = op_builder(lhs, rhs, predicate)?;
         Ok(op.borrow().result().as_value_ref())
     }
 
-    fn cto(&mut self, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Cto, _>(span);
-        let op = op_builder(rhs)?;
-        Ok(op.borrow().result().as_value_ref())
-    }
-
+    /// `lhs == rhs`: `arith.cmpi eq`.
     fn eq(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Eq, _>(span);
-        let op = op_builder(lhs, rhs)?;
-        Ok(op.borrow().result().as_value_ref())
+        self.cmpi(CmpPredicate::Eq, lhs, rhs, span)
     }
 
-    fn neq(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Neq, _>(span);
-        let op = op_builder(lhs, rhs)?;
-        Ok(op.borrow().result().as_value_ref())
+    /// `lhs != rhs`: `arith.cmpi ne`.
+    fn ne(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        self.cmpi(CmpPredicate::Ne, lhs, rhs, span)
     }
 
-    /// Compares two integers and returns the minimum value
-    fn min(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Min, _>(span);
-        let op = op_builder(lhs, rhs)?;
-        Ok(op.borrow().result().as_value_ref())
+    /// `lhs < rhs`, signed: `arith.cmpi slt`.
+    fn slt(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        self.cmpi(CmpPredicate::Slt, lhs, rhs, span)
     }
 
-    /// Compares two integers and returns the maximum value
-    fn max(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Max, _>(span);
-        let op = op_builder(lhs, rhs)?;
-        Ok(op.borrow().result().as_value_ref())
+    /// `lhs <= rhs`, signed: `arith.cmpi sle`.
+    fn sle(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        self.cmpi(CmpPredicate::Sle, lhs, rhs, span)
     }
 
-    fn gt(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Gt, _>(span);
-        let op = op_builder(lhs, rhs)?;
-        Ok(op.borrow().result().as_value_ref())
+    /// `lhs > rhs`, signed: `arith.cmpi sgt`.
+    fn sgt(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        self.cmpi(CmpPredicate::Sgt, lhs, rhs, span)
     }
 
-    fn gte(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Gte, _>(span);
-        let op = op_builder(lhs, rhs)?;
-        Ok(op.borrow().result().as_value_ref())
+    /// `lhs >= rhs`, signed: `arith.cmpi sge`.
+    fn sge(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        self.cmpi(CmpPredicate::Sge, lhs, rhs, span)
     }
 
-    fn lt(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Lt, _>(span);
-        let op = op_builder(lhs, rhs)?;
-        Ok(op.borrow().result().as_value_ref())
+    /// `lhs < rhs`, unsigned: `arith.cmpi ult`.
+    fn ult(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        self.cmpi(CmpPredicate::Ult, lhs, rhs, span)
     }
 
-    fn lte(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Lte, _>(span);
-        let op = op_builder(lhs, rhs)?;
-        Ok(op.borrow().result().as_value_ref())
+    /// `lhs <= rhs`, unsigned: `arith.cmpi ule`.
+    fn ule(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        self.cmpi(CmpPredicate::Ule, lhs, rhs, span)
     }
 
-    /// Join `limbs` into a single value of type `ty`, where limbs are ordered from
-    /// most-significant to least-significant.
-    fn join<A>(&mut self, limbs: A, ty: Type, span: SourceSpan) -> Result<ValueRef, Report>
-    where
-        A: IntoIterator<Item = ValueRef>,
-    {
-        let op_builder = self.builder_mut().create::<crate::ops::Join, (A, Type)>(span);
-        let op = op_builder(limbs, ty)?;
-        Ok(op.borrow().result().as_value_ref())
+    /// `lhs > rhs`, unsigned: `arith.cmpi ugt`.
+    fn ugt(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        self.cmpi(CmpPredicate::Ugt, lhs, rhs, span)
     }
 
-    /// Join 2 limbs into a single value of type `ty`.
-    ///
-    /// Limbs are ordered from most-significant to least-significant.
-    fn join2(
+    /// `lhs >= rhs`, unsigned: `arith.cmpi uge`.
+    fn uge(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        self.cmpi(CmpPredicate::Uge, lhs, rhs, span)
+    }
+
+    /// The smaller of `lhs` and `rhs`, read as `signedness` says.
+    fn min(
         &mut self,
-        high: ValueRef,
-        low: ValueRef,
+        lhs: ValueRef,
+        rhs: ValueRef,
+        signedness: Signedness,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Min, _>(span);
+        let op = op_builder(lhs, rhs, signedness)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// The larger of `lhs` and `rhs`, read as `signedness` says.
+    fn max(
+        &mut self,
+        lhs: ValueRef,
+        rhs: ValueRef,
+        signedness: Signedness,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Max, _>(span);
+        let op = op_builder(lhs, rhs, signedness)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// Two's complement negation.
+    fn neg(&mut self, operand: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Neg, _>(span);
+        let op = op_builder(operand)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// The number of set bits, as a value of the operand's type.
+    fn popcnt(&mut self, operand: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Popcnt, _>(span);
+        let op = op_builder(operand)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// The number of leading zero bits, as a value of the operand's type.
+    fn clz(&mut self, operand: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Clz, _>(span);
+        let op = op_builder(operand)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// The number of trailing zero bits, as a value of the operand's type.
+    fn ctz(&mut self, operand: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Ctz, _>(span);
+        let op = op_builder(operand)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// The number of leading one bits, as a value of the operand's type.
+    fn clo(&mut self, operand: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Clo, _>(span);
+        let op = op_builder(operand)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// The number of trailing one bits, as a value of the operand's type.
+    fn cto(&mut self, operand: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Cto, _>(span);
+        let op = op_builder(operand)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// `operand` truncated to the narrower fixed-width type `ty`.
+    fn trunc(&mut self, operand: ValueRef, ty: Type, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Trunc, _>(span);
+        let op = op_builder(operand, ty)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// `operand` zero-extended to the wider fixed-width type `ty`.
+    fn zext(&mut self, operand: ValueRef, ty: Type, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Zext, _>(span);
+        let op = op_builder(operand, ty)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// `operand` sign-extended to the wider fixed-width type `ty`.
+    fn sext(&mut self, operand: ValueRef, ty: Type, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Sext, _>(span);
+        let op = op_builder(operand, ty)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// `operand` converted between `isize` and the fixed-width type `ty`, sign-extending or
+    /// truncating as the target requires.
+    fn sext_or_trunc(
+        &mut self,
+        operand: ValueRef,
         ty: Type,
         span: SourceSpan,
     ) -> Result<ValueRef, Report> {
-        self.join([high, low], ty, span)
+        let op_builder = self.builder_mut().create::<SextOrTrunc, _>(span);
+        let op = op_builder(operand, ty)?;
+        Ok(op.borrow().result().as_value_ref())
     }
 
-    /// Join 4 limbs into a single value of type `ty`.
-    ///
-    /// Limbs are ordered from most-significant to least-significant.
-    fn join4(
+    /// `operand` converted between `isize` and the fixed-width type `ty`, zero-extending or
+    /// truncating as the target requires.
+    fn zext_or_trunc(
         &mut self,
-        limbs: [ValueRef; 4],
+        operand: ValueRef,
         ty: Type,
         span: SourceSpan,
     ) -> Result<ValueRef, Report> {
-        self.join(limbs, ty, span)
-    }
-
-    /// Split `n` into limbs of type `limb_ty`, ordered from most-significant to least-significant.
-    fn split(
-        &mut self,
-        n: ValueRef,
-        limb_ty: Type,
-        span: SourceSpan,
-    ) -> Result<SmallVec<[ValueRef; 4]>, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::Split, _>(span);
-        let op = op_builder(n, limb_ty)?;
-        let op = op.borrow();
-        Ok(op.limbs().iter().map(|limb| limb.borrow().as_value_ref()).collect())
-    }
-
-    /// Split `n` into 2 limbs of type `limb_ty`.
-    ///
-    /// Returns limbs ordered from most-significant to least-significant.
-    fn split2(
-        &mut self,
-        n: ValueRef,
-        limb_ty: Type,
-        span: SourceSpan,
-    ) -> Result<(ValueRef, ValueRef), Report> {
-        let limbs = self.split(n, limb_ty, span)?;
-        match limbs.as_slice() {
-            [high, low] => Ok((*high, *low)),
-            _ => Err(Report::msg("invalid arith.split: expected 2 result limb values")),
-        }
-    }
-
-    /// Split `n` into 4 limbs of type `limb_ty`.
-    ///
-    /// Returns limbs ordered from most-significant to least-significant.
-    fn split4(
-        &mut self,
-        n: ValueRef,
-        limb_ty: Type,
-        span: SourceSpan,
-    ) -> Result<[ValueRef; 4], Report> {
-        let limbs = self.split(n, limb_ty, span)?;
-        match limbs.as_slice() {
-            [a, b, c, d] => Ok([*a, *b, *c, *d]),
-            _ => Err(Report::msg("invalid arith.split: expected 4 result limb values")),
-        }
-    }
-
-    #[allow(clippy::wrong_self_convention)]
-    fn is_odd(&mut self, value: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<crate::ops::IsOdd, _>(span);
-        let op = op_builder(value)?;
+        let op_builder = self.builder_mut().create::<ZextOrTrunc, _>(span);
+        let op = op_builder(operand, ty)?;
         Ok(op.borrow().result().as_value_ref())
     }
 

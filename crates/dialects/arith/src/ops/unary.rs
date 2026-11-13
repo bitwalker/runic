@@ -8,49 +8,22 @@ use runic_core::{
     *,
 };
 
-use super::coercions::fold_integer_coercion;
 use crate::*;
 
+/// Implements [InferTypeOpInterface] for a unary operation whose result has the operand's type.
 macro_rules! infer_return_ty_for_unary_op {
     ($Op:ty) => {
         impl InferTypeOpInterface for $Op {
             fn infer_return_types(&mut self, _context: &Context) -> Result<(), Report> {
-                let lhs = self.operand().ty().clone();
-                self.result_mut().set_type(lhs);
+                let ty = self.operand().ty();
+                self.result_mut().set_type(ty);
                 Ok(())
             }
         }
     };
-
-    ($Op:ty as $manually_specified_ty:expr) => {
-        paste::paste! {
-            impl InferTypeOpInterface for $Op {
-                fn infer_return_types(&mut self, _context: &Context) -> Result<(), Report> {
-                    self.result_mut().set_type($manually_specified_ty);
-                    Ok(())
-                }
-            }
-        }
-    };
 }
 
-/// Increment
-#[derive(EffectOpInterface, OpPrinter, OpParser)]
-#[operation (
-        dialect = ArithDialect,
-        traits(UnaryOp, SameTypeOperands, SameOperandsAndResultType),
-        implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
-    )]
-pub struct Incr {
-    #[operand]
-    operand: AnyInteger,
-    #[result]
-    result: AnyInteger,
-}
-
-infer_return_ty_for_unary_op!(Incr);
-
-/// Negation
+/// Two's complement negation: `0 - operand`, wrapping.
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
 #[operation (
         dialect = ArithDialect,
@@ -66,79 +39,28 @@ pub struct Neg {
 
 infer_return_ty_for_unary_op!(Neg);
 
-/// Modular inverse
+/// Bitwise NOT. On `i1`, logical NOT.
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
 #[operation (
         dialect = ArithDialect,
         traits(UnaryOp, SameTypeOperands, SameOperandsAndResultType),
-        implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
+        implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
     )]
-pub struct Inv {
-    #[operand]
-    operand: IntFelt,
-    #[result]
-    result: IntFelt,
-}
-
-infer_return_ty_for_unary_op!(Inv);
-
-/// log2(operand)
-#[derive(EffectOpInterface, OpPrinter, OpParser)]
-#[operation (
-        dialect = ArithDialect,
-        name = "ilog_2",
-        traits(UnaryOp, SameTypeOperands, SameOperandsAndResultType),
-        implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
-    )]
-pub struct Ilog2 {
-    #[operand]
-    operand: IntFelt,
-    #[result]
-    result: IntFelt,
-}
-
-infer_return_ty_for_unary_op!(Ilog2);
-
-/// pow2(operand)
-#[derive(EffectOpInterface, OpPrinter, OpParser)]
-#[operation (
-        dialect = ArithDialect,
-        name = "pow_2",
-        traits(UnaryOp, SameTypeOperands, SameOperandsAndResultType),
-        implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
-    )]
-pub struct Pow2 {
+pub struct Bnot {
     #[operand]
     operand: AnyInteger,
     #[result]
     result: AnyInteger,
 }
 
-infer_return_ty_for_unary_op!(Pow2);
+infer_return_ty_for_unary_op!(Bnot);
 
-/// Logical NOT
-#[derive(EffectOpInterface, OpPrinter, OpParser)]
-#[operation (
-        dialect = ArithDialect,
-        traits(UnaryOp, SameTypeOperands, SameOperandsAndResultType),
-        implements(InferTypeOpInterface, MemoryEffectOpInterface, Foldable, OpPrinter)
-
-    )]
-pub struct Not {
-    #[operand]
-    operand: Bool,
-    #[result]
-    result: Bool,
-}
-
-infer_return_ty_for_unary_op!(Not);
-
-impl Foldable for Not {
-    /// Folds a constant operand, and `not (not x)` to `x`.
+impl Foldable for Bnot {
+    /// Folds `bnot (bnot x)` to `x`, and the negation of a constant `i1`.
     fn fold(&self, results: &mut SmallVec<[OpFoldResult; 1]>) -> FoldResult {
         let operand = self.operand().as_value_ref();
         if let Some(inner) = operand.borrow().get_defining_op()
-            && let Some(inner) = inner.borrow().downcast_ref::<Not>()
+            && let Some(inner) = inner.borrow().downcast_ref::<Bnot>()
         {
             results.push(OpFoldResult::Value(inner.operand().as_value_ref()));
             return FoldResult::Ok(());
@@ -152,13 +74,20 @@ impl Foldable for Not {
         operands: &[Option<AttributeRef>],
         results: &mut SmallVec<[OpFoldResult; 1]>,
     ) -> FoldResult {
-        fold_integer_coercion(self.as_operation(), &operands[0], results, |value| {
-            value.as_bool().map(|value| Immediate::I1(!value))
-        })
+        let ty = self.result().ty();
+        if ty.integer_width() != Some(1) {
+            return FoldResult::Failed;
+        }
+        let Some(value) = super::coercions::constant_operand(&operands[0], ty) else {
+            return FoldResult::Failed;
+        };
+        let result = self.as_operation().context_rc().int_attr(!value, ty);
+        results.push(OpFoldResult::Attribute(result.as_attribute_ref()));
+        FoldResult::Ok(())
     }
 }
 
-impl Canonicalizable for Not {
+impl Canonicalizable for Bnot {
     fn get_canonicalization_patterns(
         rewrites: &mut patterns::RewritePatternSet,
         context: Rc<Context>,
@@ -167,114 +96,82 @@ impl Canonicalizable for Not {
     }
 }
 
-/// Bitwise NOT
+/// The number of set bits, as a value of the operand's type.
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
 #[operation (
         dialect = ArithDialect,
         traits(UnaryOp, SameTypeOperands, SameOperandsAndResultType),
         implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
     )]
-pub struct Bnot {
+pub struct Popcnt {
     #[operand]
     operand: AnyInteger,
     #[result]
     result: AnyInteger,
 }
 
-infer_return_ty_for_unary_op!(Bnot);
+infer_return_ty_for_unary_op!(Popcnt);
 
-/// is_odd(operand)
+/// The number of leading (most significant) zero bits, as a value of the operand's type.
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
 #[operation (
         dialect = ArithDialect,
-        traits(UnaryOp),
-        implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
-    )]
-pub struct IsOdd {
-    #[operand]
-    operand: AnyInteger,
-    #[result]
-    result: Bool,
-}
-
-infer_return_ty_for_unary_op!(IsOdd as Type::I1);
-
-/// Count of non-zero bits (population count)
-#[derive(EffectOpInterface, OpPrinter, OpParser)]
-#[operation (
-        dialect = ArithDialect,
-        traits(UnaryOp),
-        implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
-    )]
-pub struct Popcnt {
-    #[operand]
-    operand: AnyInteger,
-    #[result]
-    result: UInt32,
-}
-
-infer_return_ty_for_unary_op!(Popcnt as Type::U32);
-
-/// Count Leading Zeros
-#[derive(EffectOpInterface, OpPrinter, OpParser)]
-#[operation (
-        dialect = ArithDialect,
-        traits(UnaryOp),
+        traits(UnaryOp, SameTypeOperands, SameOperandsAndResultType),
         implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
     )]
 pub struct Clz {
     #[operand]
     operand: AnyInteger,
     #[result]
-    result: UInt32,
+    result: AnyInteger,
 }
 
-infer_return_ty_for_unary_op!(Clz as Type::U32);
+infer_return_ty_for_unary_op!(Clz);
 
-/// Count Trailing Zeros
+/// The number of trailing (least significant) zero bits, as a value of the operand's type.
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
 #[operation (
         dialect = ArithDialect,
-        traits(UnaryOp),
+        traits(UnaryOp, SameTypeOperands, SameOperandsAndResultType),
         implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
     )]
 pub struct Ctz {
     #[operand]
     operand: AnyInteger,
     #[result]
-    result: UInt32,
+    result: AnyInteger,
 }
 
-infer_return_ty_for_unary_op!(Ctz as Type::U32);
+infer_return_ty_for_unary_op!(Ctz);
 
-/// Count Leading Ones
+/// The number of leading (most significant) one bits, as a value of the operand's type.
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
 #[operation (
         dialect = ArithDialect,
-        traits(UnaryOp),
+        traits(UnaryOp, SameTypeOperands, SameOperandsAndResultType),
         implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
     )]
 pub struct Clo {
     #[operand]
     operand: AnyInteger,
     #[result]
-    result: UInt32,
+    result: AnyInteger,
 }
 
-infer_return_ty_for_unary_op!(Clo as Type::U32);
+infer_return_ty_for_unary_op!(Clo);
 
-/// Count Trailing Ones
+/// The number of trailing (least significant) one bits, as a value of the operand's type.
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
 #[operation (
         dialect = ArithDialect,
-        traits(UnaryOp),
+        traits(UnaryOp, SameTypeOperands, SameOperandsAndResultType),
         implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
     )]
 pub struct Cto {
     #[operand]
     operand: AnyInteger,
     #[result]
-    result: UInt32,
+    result: AnyInteger,
 }
 
-infer_return_ty_for_unary_op!(Cto as Type::U32);
+infer_return_ty_for_unary_op!(Cto);

@@ -2,18 +2,16 @@
 //!
 //! The patterns are:
 //!
-//! * `canonicalize-i64-rotate-by-32-to-swap`: 32-bit rotates of `i64`/`u64` become a swap of the
-//!   32-bit limbs, preserving the full 64-bit payload when the values represent felts.
-//! * `simplify-bool-compare`: `eq`/`neq` of a widened boolean against 0 or 1 becomes the boolean
-//!   or its negation.
-//! * `simplify-not-compare`: `not` of a single-use `eq`/`neq` becomes the complementary
-//!   comparison.
+//! * `simplify-bool-compare`: `cmpi eq`/`cmpi ne` of a widened boolean against 0 or 1 becomes the
+//!   boolean or its negation.
+//! * `simplify-not-compare`: `bnot` of the `i1` result of a single-use `cmpi` becomes the `cmpi`
+//!   with the inverted predicate.
 //! * `simplify-trunc-to-bool`: `trunc` to `i1` of a widened boolean becomes the boolean.
 
 use alloc::rc::Rc;
 
 use runic_core::{
-    interner::Symbol,
+    attributes::IntegerLikeAttr,
     matchers::Matcher,
     patterns::{Pattern, PatternBenefit, PatternInfo, PatternKind, RewritePattern, RewriterExt},
     traits::TransparentCast,
@@ -22,156 +20,40 @@ use runic_core::{
 
 use crate::*;
 
-/// Canonicalizes 32-bit rotations of `i64`/`u64` values into a swap of the 32-bit limbs.
-///
-/// This is used to preserve the "extra" bits that may be present when `i64` values are actually
-/// being used to operate over two felt values in memory.
-pub(crate) struct CanonicalizeI64RotateBy32ToSwap {
-    info: PatternInfo,
-}
-
-impl CanonicalizeI64RotateBy32ToSwap {
-    /// Create a canonicalization pattern for `op`.
-    pub fn for_op(context: Rc<Context>, op: OperationName) -> Self {
-        Self {
-            info: PatternInfo::new(
-                context,
-                "canonicalize-i64-rotate-by-32-to-swap",
-                PatternKind::Operation(op),
-                PatternBenefit::MAX,
-            ),
-        }
-    }
-}
-
-impl Pattern for CanonicalizeI64RotateBy32ToSwap {
-    fn info(&self) -> &PatternInfo {
-        &self.info
-    }
-}
-
-impl RewritePattern for CanonicalizeI64RotateBy32ToSwap {
-    fn match_and_rewrite(
-        &self,
-        operation: OperationRef,
-        rewriter: &mut dyn Rewriter,
-    ) -> Result<bool, Report> {
-        let hir = Symbol::intern("hir");
-        let arith = Symbol::intern("arith");
-        let cast = Symbol::intern("cast");
-        let bitcast = Symbol::intern("bitcast");
-        let trunc = Symbol::intern("trunc");
-        let sext = Symbol::intern("sext");
-        let zext = Symbol::intern("zext");
-        let max_depth = 4usize;
-
-        // Try to recover a `u32` constant value from `value`, allowing a small set of passthrough
-        // casts/conversions, e.g. `hir.cast(arith.constant 32 : i64) : u32`.
-        let constant_u32 = |value: ValueRef| -> Option<u32> {
-            let mut current = value;
-            for _ in 0..max_depth {
-                let defining_op = current.borrow().get_defining_op()?;
-                let op = defining_op.borrow();
-                if let Some(constant) = op.downcast_ref::<Constant>() {
-                    let imm = constant.value();
-                    return imm
-                        .as_u32()
-                        .or_else(|| imm.as_i32().and_then(|v| u32::try_from(v).ok()))
-                        .or_else(|| imm.as_u64().and_then(|v| u32::try_from(v).ok()));
-                }
-
-                let name = op.name();
-                let dialect = name.dialect();
-                let opcode = name.name();
-                let is_passthrough = (dialect == hir && (opcode == cast || opcode == bitcast))
-                    || (dialect == arith && (opcode == trunc || opcode == sext || opcode == zext));
-                if !is_passthrough {
-                    return None;
-                }
-
-                let mut operands = op.operands().iter();
-                let operand = operands.next()?;
-                current = operand.borrow().as_value_ref();
-            }
-
-            None
-        };
-
-        let (span, lhs, lhs_ty, is_rotate_by_32) = {
-            let op = operation.borrow();
-            let span = op.span();
-            let Some((lhs, shift)) = op
-                .downcast_ref::<Rotl>()
-                .map(|rotl| (rotl.lhs().as_value_ref(), rotl.shift().as_operand_ref()))
-                .or_else(|| {
-                    op.downcast_ref::<Rotr>()
-                        .map(|rotr| (rotr.lhs().as_value_ref(), rotr.shift().as_operand_ref()))
-                })
-            else {
-                return Ok(false);
-            };
-
-            let lhs_ty = lhs.borrow().ty().clone();
-            if !matches!(lhs_ty, Type::I64 | Type::U64) {
-                return Ok(false);
-            }
-
-            let is_rotate_by_32 = constant_u32(shift.borrow().as_value_ref()) == Some(32);
-
-            (span, lhs, lhs_ty, is_rotate_by_32)
-        };
-
-        if !is_rotate_by_32 {
-            return Ok(false);
-        }
-
-        let mut guard = InsertionGuard::new(rewriter);
-        guard.set_insertion_point_before(operation);
-
-        // Split the `i64` into (felt, felt) limbs, swap them, then join back to the original type.
-        //
-        // Using felts (instead of 32-bit integer types) ensures the underlying values are not
-        // range-checked/normalized, which is required to preserve any extra bits.
-        let split = {
-            let op_builder = guard.create::<Split, _>(span);
-            op_builder(lhs, Type::Felt)?
-        };
-        let (hi, lo) = {
-            let split = split.borrow();
-            let [hi, lo] = split.limbs().as_slice() else {
-                unreachable!("expected arith.split to produce 2 limbs for i64/u64");
-            };
-            (hi.borrow().as_value_ref(), lo.borrow().as_value_ref())
-        };
-        let joined = {
-            let op_builder = guard.create::<Join, ([ValueRef; 2], Type)>(span);
-            let join = op_builder([lo, hi], lhs_ty)?;
-            join.borrow().result().as_value_ref()
-        };
-
-        guard.replace_op_with_values(operation, &[Some(joined)]);
-        Ok(true)
-    }
-}
-
 /// How many widening/transparent-cast operations [widened_bool] looks through at most.
 const MAX_WIDENING_DEPTH: usize = 4;
 
+/// An integer that is a boolean `b` widened: zero when `b` is false, nonzero when it is true.
+struct WidenedBool {
+    /// The `i1` value that was widened.
+    value: ValueRef,
+    /// Whether the widened value is exactly 1 when `b` is true: every step zero-extends (or is a
+    /// transparent cast). A sign extension makes it all ones instead.
+    true_is_one: bool,
+}
+
 /// Returns the `i1` value that `value` is a widening of.
 ///
-/// Looks through up to [MAX_WIDENING_DEPTH] `arith.zext` and transparent casts between integer
-/// types, which preserve the integer value 0/1 of a widened boolean. Returns `value` itself when it
-/// is already an `i1`. Sign extension is deliberately not looked through (`true` widens to -1).
-fn widened_bool(value: ValueRef) -> Option<ValueRef> {
+/// Looks through up to [MAX_WIDENING_DEPTH] `arith.zext`, `arith.sext` and transparent casts
+/// between integer types; each keeps a false boolean zero and a true one nonzero, and keeps the
+/// lowest bit. Returns `value` itself when it is already an `i1`.
+fn widened_bool(value: ValueRef) -> Option<WidenedBool> {
+    let is_bool = |value: &ValueRef| value.borrow().ty().integer_width() == Some(1);
     let mut current = value;
+    let mut true_is_one = true;
     for _ in 0..MAX_WIDENING_DEPTH {
-        if current.borrow().ty() == &Type::I1 {
-            return Some(current);
+        if is_bool(&current) {
+            return Some(WidenedBool {
+                value: current,
+                true_is_one,
+            });
         }
         let defining_op = current.borrow().get_defining_op()?;
         let op = defining_op.borrow();
-        let is_widening =
-            op.downcast_ref::<Zext>().is_some() || op.implements::<dyn TransparentCast>();
+        let is_sext = op.downcast_ref::<Sext>().is_some();
+        let is_widening = is_sext
+            || op.downcast_ref::<Zext>().is_some()
+            || op.implements::<dyn TransparentCast>();
         if !is_widening || op.num_operands() != 1 {
             return None;
         }
@@ -179,20 +61,28 @@ fn widened_bool(value: ValueRef) -> Option<ValueRef> {
         if !operand.borrow().ty().is_integer() {
             return None;
         }
+        true_is_one &= !is_sext;
         current = operand;
     }
     // The value reached by the last step is a candidate too.
-    (current.borrow().ty() == &Type::I1).then_some(current)
+    is_bool(&current).then_some(WidenedBool {
+        value: current,
+        true_is_one,
+    })
 }
 
 /// Returns the boolean a constant 0 or 1 integer `value` stands for, or `None` for anything else.
 fn constant_bit(value: ValueRef) -> Option<bool> {
     let defining_op = value.borrow().get_defining_op()?;
-    let imm = matchers::constant_of::<Immediate>().matches(&*defining_op.borrow())?;
-    match imm.as_u64()? {
-        0 => Some(false),
-        1 => Some(true),
-        _ => None,
+    let attr = matchers::constant().matches(&*defining_op.borrow())?;
+    let attr = attr.borrow();
+    let value = attr.as_attr().as_trait::<dyn IntegerLikeAttr>()?.as_int();
+    if value.is_zero() {
+        Some(false)
+    } else if value.is_one() {
+        Some(true)
+    } else {
+        None
     }
 }
 
@@ -203,15 +93,16 @@ fn has_single_use(value: ValueRef) -> bool {
     uses.next().is_some() && uses.next().is_none()
 }
 
-/// Simplifies `arith.eq`/`arith.neq` of a widened boolean against a constant 0 or 1 to the
-/// boolean itself or its negation.
+/// Simplifies `arith.cmpi eq`/`arith.cmpi ne` of a widened boolean against a constant 0 or 1 to
+/// the boolean itself or its negation.
 ///
 /// Frontends commonly widen booleans to an integer and test them against 0 again before a branch
-/// or select, so these comparisons are common, and each one costs several VM ops while the boolean
-/// is already at hand:
+/// or select, so these comparisons are common, while the boolean is already at hand:
 ///
-/// * `neq(x, 0)` and `eq(x, 1)` become `b`
-/// * `eq(x, 0)` and `neq(x, 1)` become `not b`
+/// * `ne(x, 0)` becomes `b` and `eq(x, 0)` becomes `bnot b`, however `x` widens `b`;
+/// * `eq(x, 1)` becomes `b` and `ne(x, 1)` becomes `bnot b`, when `x` widens `b` by zero
+///   extension only. A sign-extended true boolean is all ones, which is not 1 at a width above 1,
+///   so those comparisons are left alone.
 ///
 /// where `b` is the `i1` that `x` widens (see [widened_bool]).
 pub(crate) struct SimplifyBoolCompare {
@@ -219,13 +110,16 @@ pub(crate) struct SimplifyBoolCompare {
 }
 
 impl SimplifyBoolCompare {
-    /// Create the pattern for `op`, which must be `arith.eq` or `arith.neq`.
-    pub fn for_op(context: Rc<Context>, op: OperationName) -> Self {
+    /// Creates the pattern, matching `arith.cmpi`.
+    pub fn new(context: Rc<Context>) -> Self {
+        let cmpi = context
+            .get_or_register_dialect::<ArithDialect>()
+            .expect_registered_name::<Cmpi>();
         Self {
             info: PatternInfo::new(
                 context,
                 "simplify-bool-compare",
-                PatternKind::Operation(op),
+                PatternKind::Operation(cmpi),
                 PatternBenefit::MAX,
             ),
         }
@@ -246,57 +140,61 @@ impl RewritePattern for SimplifyBoolCompare {
     ) -> Result<bool, Report> {
         let (span, is_eq, lhs, rhs) = {
             let op = operation.borrow();
-            let span = op.span();
-            let (is_eq, lhs, rhs) = if let Some(eq) = op.downcast_ref::<Eq>() {
-                (true, eq.lhs().as_value_ref(), eq.rhs().as_value_ref())
-            } else if let Some(neq) = op.downcast_ref::<Neq>() {
-                (false, neq.lhs().as_value_ref(), neq.rhs().as_value_ref())
-            } else {
+            let Some(cmpi) = op.downcast_ref::<Cmpi>() else {
                 return Ok(false);
             };
-            (span, is_eq, lhs, rhs)
+            let is_eq = match *cmpi.get_predicate() {
+                CmpPredicate::Eq => true,
+                CmpPredicate::Ne => false,
+                _ => return Ok(false),
+            };
+            (op.span(), is_eq, cmpi.lhs().as_value_ref(), cmpi.rhs().as_value_ref())
         };
 
-        let (bool_value, bit) = if let Some(bit) = constant_bit(rhs) {
+        let (widened, bit) = if let Some(bit) = constant_bit(rhs) {
             (widened_bool(lhs), bit)
         } else if let Some(bit) = constant_bit(lhs) {
             (widened_bool(rhs), bit)
         } else {
             return Ok(false);
         };
-        let Some(bool_value) = bool_value else {
+        let Some(widened) = widened else {
             return Ok(false);
         };
+        if bit && !widened.true_is_one {
+            return Ok(false);
+        }
 
-        // `eq(b, true)`/`neq(b, false)` is `b`; the other two combinations negate it.
+        // `eq(x, 1)`/`ne(x, 0)` is `b`; the other two combinations negate it.
         let replacement = if is_eq == bit {
-            bool_value
+            widened.value
         } else {
             rewriter.set_insertion_point_before(operation);
-            rewriter.not(bool_value, span)?
+            rewriter.bnot(widened.value, span)?
         };
         rewriter.replace_op_with_values(operation, &[Some(replacement)]);
         Ok(true)
     }
 }
 
-/// Simplifies `arith.not` of a single-use `arith.eq`/`arith.neq` into the complementary
-/// comparison, so the negation disappears from the generated code.
+/// Simplifies `arith.bnot` of the `i1` result of a single-use `arith.cmpi` into the `cmpi` with the
+/// inverted predicate, so the negation disappears from the generated code. On `i1`, bitwise NOT is
+/// logical NOT.
 pub(crate) struct SimplifyNotCompare {
     info: PatternInfo,
 }
 
 impl SimplifyNotCompare {
-    /// Creates the pattern, matching `arith.not`.
+    /// Creates the pattern, matching `arith.bnot`.
     pub fn new(context: Rc<Context>) -> Self {
-        let not_op = context
+        let bnot = context
             .get_or_register_dialect::<ArithDialect>()
-            .expect_registered_name::<Not>();
+            .expect_registered_name::<Bnot>();
         Self {
             info: PatternInfo::new(
                 context,
                 "simplify-not-compare",
-                PatternKind::Operation(not_op),
+                PatternKind::Operation(bnot),
                 PatternBenefit::MAX,
             ),
         }
@@ -317,49 +215,47 @@ impl RewritePattern for SimplifyNotCompare {
     ) -> Result<bool, Report> {
         let operand = {
             let op = operation.borrow();
-            let Some(not) = op.downcast_ref::<Not>() else {
+            let Some(bnot) = op.downcast_ref::<Bnot>() else {
                 return Ok(false);
             };
-            not.operand().as_value_ref()
+            bnot.operand().as_value_ref()
         };
-        if !has_single_use(operand) {
+        if operand.borrow().ty().integer_width() != Some(1) || !has_single_use(operand) {
             return Ok(false);
         }
         let Some(compare) = operand.borrow().get_defining_op() else {
             return Ok(false);
         };
         // The replacement executes where the comparison was, so it carries that span.
-        let (span, is_eq, lhs, rhs) = {
+        let (span, predicate, lhs, rhs) = {
             let compare = compare.borrow();
-            let span = compare.span();
-            if let Some(eq) = compare.downcast_ref::<Eq>() {
-                (span, true, eq.lhs().as_value_ref(), eq.rhs().as_value_ref())
-            } else if let Some(neq) = compare.downcast_ref::<Neq>() {
-                (span, false, neq.lhs().as_value_ref(), neq.rhs().as_value_ref())
-            } else {
+            let Some(cmpi) = compare.downcast_ref::<Cmpi>() else {
                 return Ok(false);
-            }
+            };
+            (
+                compare.span(),
+                *cmpi.get_predicate(),
+                cmpi.lhs().as_value_ref(),
+                cmpi.rhs().as_value_ref(),
+            )
         };
 
-        // The complementary comparison takes the place of the original one, not of the `not`:
-        // the `not` may sit in a nested region (a loop body), and rebuilding the comparison there
+        // The inverted comparison takes the place of the original one, not of the `bnot`: the
+        // `bnot` may sit in a nested region (a loop body), and rebuilding the comparison there
         // would evaluate it per iteration and keep its operands live across the region. It also
-        // belongs to the comparison's inline frame, not to the frame of the `not` being rewritten.
+        // belongs to the comparison's inline frame, not to the frame of the `bnot` being rewritten.
         let replacement = {
             let mut scope = rewriter.with_inline_call_chain(compare);
             scope.set_insertion_point_after(compare);
-            if is_eq {
-                scope.neq(lhs, rhs, span)?
-            } else {
-                scope.eq(lhs, rhs, span)?
-            }
+            scope.cmpi(predicate.inverted(), lhs, rhs, span)?
         };
         rewriter.replace_op_with_values(operation, &[Some(replacement)]);
         Ok(true)
     }
 }
 
-/// Simplifies `arith.trunc` to `i1` of a widened boolean into the boolean itself.
+/// Simplifies `arith.trunc` to `i1` of a widened boolean into the boolean itself: zero and sign
+/// extension both keep the lowest bit.
 pub(crate) struct SimplifyTruncToBool {
     info: PatternInfo,
 }
@@ -398,61 +294,47 @@ impl RewritePattern for SimplifyTruncToBool {
             let Some(trunc) = op.downcast_ref::<Trunc>() else {
                 return Ok(false);
             };
-            if trunc.result().ty() != &Type::I1 {
+            if trunc.result().ty().integer_width() != Some(1) {
                 return Ok(false);
             }
             trunc.operand().as_value_ref()
         };
-        let Some(bool_value) = widened_bool(operand) else {
+        let Some(widened) = widened_bool(operand) else {
             return Ok(false);
         };
-        rewriter.replace_op_with_values(operation, &[Some(bool_value)]);
+        rewriter.replace_op_with_values(operation, &[Some(widened.value)]);
         Ok(true)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use alloc::rc::Rc;
+    use alloc::{format, rc::Rc};
 
     use runic_core::{
-        Op, Report, SourceSpan, Type,
-        dialects::builtin::{BuiltinOpBuilder, Function},
+        Context, Op, OperationRef, Report, SourceSpan, Type, ValueRef,
+        dialects::builtin::{BuiltinOpBuilder, Ret},
         patterns::{
             FrozenRewritePatternSet, GreedyRewriteConfig, RegionSimplificationLevel,
             RewritePatternSet, apply_patterns_and_fold_greedily,
         },
         testing::Test,
-        traits::Canonicalizable,
+        traits::{Canonicalizable, ConstantLike},
     };
 
-    use crate::{ArithOpBuilder, Join, Rotl, Rotr, Split};
+    use crate::*;
 
-    fn build_rotate_by_32(test: &mut Test, ty: Type, is_rotr: bool) -> Result<(), Report> {
-        let span = SourceSpan::default();
+    const SPAN: SourceSpan = SourceSpan::UNKNOWN;
 
-        test.with_function("test", core::slice::from_ref(&ty), core::slice::from_ref(&ty));
-
-        {
-            let mut builder = test.function_builder();
-            let input = builder.current_block().borrow().arguments()[0].upcast();
-            let shift = builder.u32(32, span);
-            let rotated = if is_rotr {
-                builder.rotr(input, shift, span)?
-            } else {
-                builder.rotl(input, shift, span)?
-            };
-            builder.ret(Some(rotated), span)?;
-        }
-
-        Ok(())
-    }
-
-    fn apply_rotate_canonicalization(test: &Test) -> bool {
+    /// Applies the canonicalization patterns `register` adds, and folding, to `test`'s function.
+    /// Returns whether anything changed.
+    fn canonicalize(
+        test: &Test,
+        register: impl FnOnce(&mut RewritePatternSet, Rc<Context>),
+    ) -> bool {
         let context = test.context_rc();
         let mut patterns = RewritePatternSet::new(context.clone());
-        Rotl::get_canonicalization_patterns(&mut patterns, context.clone());
-        Rotr::get_canonicalization_patterns(&mut patterns, context);
+        register(&mut patterns, context);
         let patterns = Rc::new(FrozenRewritePatternSet::new(patterns));
 
         let mut config = GreedyRewriteConfig::default();
@@ -465,159 +347,192 @@ mod tests {
         }
     }
 
-    fn assert_rotate_by_32_rewritten(function: runic_core::OperationRef, ty: Type) {
-        let body = {
-            let function = function.borrow();
-            let function = function.downcast_ref::<Function>().expect("expected builtin.function");
-            function.body().as_region_ref()
-        };
-        let entry = body
+    /// The operand of the `builtin.ret` of `test`'s function.
+    fn returned(test: &Test) -> ValueRef {
+        let mut value = None;
+        test.function()
             .borrow()
-            .entry_block_ref()
-            .expect("expected function body to have an entry block");
-
-        let mut rotl = false;
-        let mut rotr = false;
-        let mut split = None;
-        let mut join = None;
-
-        for op in entry.borrow().body() {
-            let op = op.as_operation_ref();
-            let operation = op.borrow();
-
-            rotl |= operation.downcast_ref::<Rotl>().is_some();
-            rotr |= operation.downcast_ref::<Rotr>().is_some();
-
-            if operation.downcast_ref::<Split>().is_some() {
-                assert!(split.replace(op).is_none(), "expected a single arith.split");
-            }
-            if operation.downcast_ref::<Join>().is_some() {
-                assert!(join.replace(op).is_none(), "expected a single arith.join");
-            }
-        }
-
-        assert!(!rotl, "expected arith.rotl to be eliminated");
-        assert!(!rotr, "expected arith.rotr to be eliminated");
-
-        let split = split.expect("expected arith.split");
-        let join = join.expect("expected arith.join");
-
-        let (hi, lo) = {
-            let split = split.borrow();
-            let split = split.downcast_ref::<Split>().unwrap();
-            assert_eq!(&*split.get_limb_ty(), &Type::Felt, "expected split to use `felt` limbs");
-            let [hi, lo] = split.limbs().as_slice() else {
-                panic!("expected arith.split to produce 2 limbs for i64/u64");
-            };
-            (hi.borrow().as_value_ref(), lo.borrow().as_value_ref())
-        };
-
-        let (high, low) = {
-            let join = join.borrow();
-            let join = join.downcast_ref::<Join>().unwrap();
-            assert_eq!(
-                &*join.get_ty(),
-                &ty,
-                "expected join to reconstruct the original rotate type"
-            );
-            let [high, low] = join.limbs().as_slice() else {
-                panic!("expected arith.join to consume 2 limbs for i64/u64");
-            };
-            (high.borrow().as_value_ref(), low.borrow().as_value_ref())
-        };
-
-        assert_eq!(high, lo, "expected join high limb to use split low limb");
-        assert_eq!(low, hi, "expected join low limb to use split high limb");
-    }
-
-    #[test]
-    fn canonicalize_rotl_u64_by_32_to_swap() -> Result<(), Report> {
-        let mut test = Test::named("canonicalize_rotl_u64_by_32_to_swap");
-        build_rotate_by_32(&mut test, Type::U64, false)?;
-
-        assert!(apply_rotate_canonicalization(&test));
-        assert_rotate_by_32_rewritten(test.function().as_operation_ref(), Type::U64);
-
-        Ok(())
-    }
-
-    #[test]
-    fn canonicalize_rotr_i64_by_32_to_swap() -> Result<(), Report> {
-        let mut test = Test::named("canonicalize_rotr_i64_by_32_to_swap");
-        build_rotate_by_32(&mut test, Type::I64, true)?;
-
-        assert!(apply_rotate_canonicalization(&test));
-        assert_rotate_by_32_rewritten(test.function().as_operation_ref(), Type::I64);
-
-        Ok(())
-    }
-
-    #[test]
-    fn inline_metadata_survives_rotate_rewrite() -> Result<(), Report> {
-        check_inline_metadata_survives_rotate_rewrite(false)
-    }
-
-    #[test]
-    fn standalone_pattern_application_inherits_inline_metadata() -> Result<(), Report> {
-        check_inline_metadata_survives_rotate_rewrite(true)
-    }
-
-    fn check_inline_metadata_survives_rotate_rewrite(standalone: bool) -> Result<(), Report> {
-        use runic_core::dialects::debuginfo::attributes::{
-            INLINE_CALL_CHAIN_ATTR_NAME, InlineCallChain, InlineCallChainAttr, InlineCallFrame,
-        };
-        let mut test = Test::named("inline_metadata_survives_rotate_rewrite");
-        build_rotate_by_32(&mut test, Type::U64, false)?;
-        let function = test.function().as_operation_ref();
-        let mut rotate = None;
-        function.borrow().prewalk_all(|op| {
-            if op.is::<Rotl>() {
-                rotate = Some(op.as_operation_ref());
-            }
-        });
-        let attr = test
-            .context_rc()
-            .create_attribute::<InlineCallChainAttr, _>(InlineCallChain::new(alloc::vec![
-                InlineCallFrame {
-                    name: "inline_rotate".into(),
-                    linkage_name: None,
-                    file: "source.rs".into(),
-                    line: 1,
-                    column: 1,
-                    call_file: "source.rs".into(),
-                    call_line: 2,
-                    call_column: 1,
+            .as_operation()
+            .prewalk_all(|op: &runic_core::Operation| {
+                if op.is::<Ret>() {
+                    value = Some(op.operands().all()[0].borrow().as_value_ref());
                 }
-            ]))
-            .as_attribute_ref();
-        let mut rotate = rotate.unwrap();
-        rotate.borrow_mut().set_attribute(INLINE_CALL_CHAIN_ATTR_NAME, attr);
-        if standalone {
-            use runic_core::patterns::{NoopRewriterListener, PatternApplicator, RewriterImpl};
-            let context = test.context_rc();
-            let mut patterns = RewritePatternSet::new(context.clone());
-            Rotl::get_canonicalization_patterns(&mut patterns, context.clone());
-            let mut applicator =
-                PatternApplicator::new(Rc::new(FrozenRewritePatternSet::new(patterns)));
-            applicator.apply_cost_model(|pattern| *pattern.benefit());
-            let mut rewriter = RewriterImpl::<NoopRewriterListener>::new(context);
-            assert!(
-                applicator
-                    .match_and_rewrite(rotate, &mut rewriter, |_| true, |_| {}, |_| Ok(()))
-                    .is_ok()
-            );
-        } else {
-            assert!(apply_rotate_canonicalization(&test));
-        }
-        let mut marked_replacements = 0;
-        function.borrow().prewalk_all(|op| {
-            if op.is::<Split>() || op.is::<Join>() {
-                assert_eq!(op.get_attribute(INLINE_CALL_CHAIN_ATTR_NAME), Some(attr));
-                marked_replacements += 1;
+            });
+        value.expect("a builtin.ret")
+    }
+
+    /// The operation defining `value`, if any.
+    fn defining_op(value: ValueRef) -> Option<OperationRef> {
+        value.borrow().get_defining_op()
+    }
+
+    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+    enum Extension {
+        Zero,
+        Sign,
+    }
+
+    /// What `cmpi predicate (ext b), bit` canonicalizes to.
+    #[derive(Debug, PartialEq, Eq)]
+    enum Outcome {
+        /// The boolean `b` itself.
+        Bool,
+        /// `bnot b`.
+        NotBool,
+        /// The comparison is left alone.
+        Unchanged,
+    }
+
+    /// Builds `f(%b: i1) -> i1` returning `cmpi predicate (ext b : i32), bit` (or with the operands
+    /// swapped), canonicalizes it, and says what it returns.
+    fn simplify_bool_compare(
+        extension: Extension,
+        predicate: CmpPredicate,
+        bit: i32,
+        constant_first: bool,
+    ) -> Outcome {
+        let mut test = Test::new("f", |cx| ([cx.i1()], [cx.i1()]));
+        test.context().get_or_register_dialect::<ArithDialect>();
+        let flag = test.entry_block().borrow().arguments()[0].borrow().as_value_ref();
+        {
+            let mut b = test.function_builder();
+            let i32 = b.builder().context().i32();
+            let widened = match extension {
+                Extension::Zero => b.zext(flag, i32, SPAN),
+                Extension::Sign => b.sext(flag, i32, SPAN),
             }
-        });
-        assert_eq!(marked_replacements, 2, "both replacement ops must retain their inline frame");
-        Ok(())
+            .unwrap();
+            let constant = b.i32(bit, SPAN);
+            let (lhs, rhs) = if constant_first {
+                (constant, widened)
+            } else {
+                (widened, constant)
+            };
+            let compared = b.cmpi(predicate, lhs, rhs, SPAN).unwrap();
+            b.ret(Some(compared), SPAN).unwrap();
+        }
+        canonicalize(&test, Cmpi::get_canonicalization_patterns);
+        test.function()
+            .borrow()
+            .as_operation()
+            .verify()
+            .expect("valid after canonicalization");
+
+        let result = returned(&test);
+        if result == flag {
+            return Outcome::Bool;
+        }
+        let op = defining_op(result).expect("an operation result");
+        let op = op.borrow();
+        if let Some(bnot) = op.downcast_ref::<Bnot>() {
+            assert_eq!(bnot.operand().as_value_ref(), flag);
+            return Outcome::NotBool;
+        }
+        assert!(op.is::<Cmpi>(), "{}", format!("{}", op));
+        Outcome::Unchanged
+    }
+
+    #[test]
+    fn a_zero_extended_boolean_compared_with_zero_or_one_is_the_boolean() {
+        for constant_first in [false, true] {
+            let check = |predicate, bit| {
+                simplify_bool_compare(Extension::Zero, predicate, bit, constant_first)
+            };
+            assert_eq!(check(CmpPredicate::Ne, 0), Outcome::Bool);
+            assert_eq!(check(CmpPredicate::Eq, 1), Outcome::Bool);
+            assert_eq!(check(CmpPredicate::Eq, 0), Outcome::NotBool);
+            assert_eq!(check(CmpPredicate::Ne, 1), Outcome::NotBool);
+            // Only equality is simplified.
+            assert_eq!(check(CmpPredicate::Ult, 1), Outcome::Unchanged);
+        }
+    }
+
+    #[test]
+    fn a_sign_extended_boolean_is_simplified_only_against_zero() {
+        for constant_first in [false, true] {
+            let check = |predicate, bit| {
+                simplify_bool_compare(Extension::Sign, predicate, bit, constant_first)
+            };
+            assert_eq!(check(CmpPredicate::Ne, 0), Outcome::Bool);
+            assert_eq!(check(CmpPredicate::Eq, 0), Outcome::NotBool);
+            // A true boolean sign-extends to -1, never 1: `eq 1` is always false and `ne 1` always
+            // true, so neither is the boolean or its negation.
+            assert_eq!(check(CmpPredicate::Eq, 1), Outcome::Unchanged);
+            assert_eq!(check(CmpPredicate::Ne, 1), Outcome::Unchanged);
+        }
+    }
+
+    /// Builds `f(%a: i32, %b: i32) -> i1` returning `bnot (cmpi predicate %a, %b)`, with a second
+    /// use of the comparison if `shared`, and canonicalizes it.
+    fn simplify_not_compare(predicate: CmpPredicate, shared: bool) -> Test {
+        let mut test = Test::new("f", |cx| ([cx.i32(), cx.i32()], [cx.i1()]));
+        test.context().get_or_register_dialect::<ArithDialect>();
+        let args = test.entry_block().borrow().arguments().to_vec();
+        let (lhs, rhs) = (args[0].borrow().as_value_ref(), args[1].borrow().as_value_ref());
+        {
+            let mut b = test.function_builder();
+            let compared = b.cmpi(predicate, lhs, rhs, SPAN).unwrap();
+            let negated = b.bnot(compared, SPAN).unwrap();
+            let result = if shared {
+                b.band(negated, compared, SPAN).unwrap()
+            } else {
+                negated
+            };
+            b.ret(Some(result), SPAN).unwrap();
+        }
+        canonicalize(&test, Bnot::get_canonicalization_patterns);
+        test.function()
+            .borrow()
+            .as_operation()
+            .verify()
+            .expect("valid after canonicalization");
+        test
+    }
+
+    #[test]
+    fn bnot_of_a_comparison_is_the_inverted_comparison() {
+        for predicate in CmpPredicate::ALL {
+            let test = simplify_not_compare(predicate, false);
+            let args = test.entry_block().borrow().arguments().to_vec();
+            let op = defining_op(returned(&test)).expect("an operation result");
+            let op = op.borrow();
+            let cmpi = op.downcast_ref::<Cmpi>().expect("an arith.cmpi");
+            assert_eq!(*cmpi.get_predicate(), predicate.inverted());
+            assert_eq!(cmpi.lhs().as_value_ref(), args[0].borrow().as_value_ref());
+            assert_eq!(cmpi.rhs().as_value_ref(), args[1].borrow().as_value_ref());
+        }
+    }
+
+    #[test]
+    fn bnot_of_a_shared_comparison_is_left_alone() {
+        let test = simplify_not_compare(CmpPredicate::Slt, true);
+        let op = defining_op(returned(&test)).unwrap();
+        let op = op.borrow();
+        let band = op.downcast_ref::<Band>().expect("an arith.band");
+        let negated = defining_op(band.lhs().as_value_ref()).unwrap();
+        assert!(negated.borrow().is::<Bnot>());
+    }
+
+    #[test]
+    fn trunc_to_i1_of_a_widened_boolean_is_the_boolean() {
+        for extension in [Extension::Zero, Extension::Sign] {
+            let mut test = Test::new("f", |cx| ([cx.i1()], [cx.i1()]));
+            test.context().get_or_register_dialect::<ArithDialect>();
+            let flag = test.entry_block().borrow().arguments()[0].borrow().as_value_ref();
+            {
+                let mut b = test.function_builder();
+                let (i1, i64) = (b.builder().context().i1(), b.builder().context().i64());
+                let widened = match extension {
+                    Extension::Zero => b.zext(flag, i64, SPAN),
+                    Extension::Sign => b.sext(flag, i64, SPAN),
+                }
+                .unwrap();
+                let truncated = b.trunc(widened, i1, SPAN).unwrap();
+                b.ret(Some(truncated), SPAN).unwrap();
+            }
+            assert!(canonicalize(&test, Trunc::get_canonicalization_patterns));
+            assert_eq!(returned(&test), flag, "{extension:?}");
+        }
     }
 
     #[test]
@@ -625,38 +540,31 @@ mod tests {
         use runic_core::dialects::debuginfo::attributes::{
             INLINE_CALL_CHAIN_ATTR_NAME, InlineCallChain, InlineCallChainAttr,
         };
-        let mut test = Test::new("inline_metadata_survives_constant_folding", &[], &[Type::U32]);
+        let mut test =
+            Test::new("inline_metadata_survives_constant_folding", |cx| ([], [cx.i32()]));
+        test.context().get_or_register_dialect::<ArithDialect>();
         let chain = test
             .context_rc()
             .create_attribute::<InlineCallChainAttr, _>(InlineCallChain::default())
             .as_attribute_ref();
         {
             let mut builder = test.function_builder();
-            let input = builder.u64(33, SourceSpan::UNKNOWN);
-            let truncated = builder.trunc(input, Type::U32, SourceSpan::UNKNOWN)?;
+            let i32: Type = builder.builder().context().i32();
+            let input = builder.i64(33, SPAN);
+            let truncated = builder.trunc(input, i32, SPAN)?;
             truncated
                 .borrow()
                 .get_defining_op()
                 .unwrap()
                 .borrow_mut()
                 .set_attribute(INLINE_CALL_CHAIN_ATTR_NAME, chain);
-            builder.ret(Some(truncated), SourceSpan::UNKNOWN)?;
+            builder.ret(Some(truncated), SPAN)?;
         }
-        assert!(apply_rotate_canonicalization(&test));
-        let mut returns = 0;
-        test.function().borrow().as_operation().prewalk_all(|op| {
-            if op.is::<runic_core::dialects::builtin::Ret>() {
-                let value = op.operands().all()[0].borrow().as_value_ref();
-                let constant = value.borrow().get_defining_op().unwrap();
-                assert!(constant.borrow().implements::<dyn runic_core::traits::ConstantLike>());
-                assert_eq!(
-                    constant.borrow().get_attribute(INLINE_CALL_CHAIN_ATTR_NAME),
-                    Some(chain)
-                );
-                returns += 1;
-            }
-        });
-        assert_eq!(returns, 1);
+        assert!(canonicalize(&test, Trunc::get_canonicalization_patterns));
+        let constant = defining_op(returned(&test)).unwrap();
+        assert!(constant.borrow().implements::<dyn ConstantLike>());
+        assert_eq!(constant.borrow().get_attribute(INLINE_CALL_CHAIN_ATTR_NAME), Some(chain));
+        assert_eq!(returned(&test).borrow().ty(), test.context().i32());
         Ok(())
     }
 }
