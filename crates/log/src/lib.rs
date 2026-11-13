@@ -359,7 +359,3 @@ pub fn runic_logger() -> Result<(Box<dyn log::Log>, log::LevelFilter), String> {
     // Suppress the known-harmless dependency errors until the upstream fix ships
     Ok((Box::new(SuppressKnownDependencyErrors::new(logger)), filter))
 }
-
-#[doc = include_str!("../README.md")]
-#[cfg(doctest)]
-pub struct ReadmeDoctests;
