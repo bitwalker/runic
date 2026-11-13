@@ -895,14 +895,43 @@ mod integer_range_tests {
     ];
 
     #[test]
-    fn adding_zero_to_a_full_width_range_keeps_the_domain() {
+    fn adding_zero_or_one_to_a_full_width_or_small_range() {
         let context = Context::default();
         let i32 = context.i32();
         let top = ConstantIntRange::max_for_type(i32);
+        let small = ConstantIntRange::from_unsigned(32, 0, 10);
+        let add = |lhs: &ConstantIntRange, rhs: i32, overflow| {
+            infer_add_range(i32, lhs, &ConstantIntRange::constant(Int::from(rhs)), overflow)
+        };
+        let range = |range| IntegerValueRange::new(range);
+
+        // Adding zero changes nothing in any mode.
         for overflow in ALL_MODES {
-            let result =
-                infer_add_range(i32, &top, &ConstantIntRange::constant(Int::from(0i32)), overflow);
-            assert_eq!(result, IntegerValueRange::new(top), "{overflow}");
+            assert_eq!(add(&top, 0, overflow), range(top), "top + 0, {overflow}");
+        }
+        for overflow in ALL_MODES {
+            assert_eq!(add(&small, 0, overflow), range(small), "[0, 10] + 0, {overflow}");
+        }
+        // A small range plus one cannot overflow, so every mode gives [1, 11].
+        for overflow in ALL_MODES {
+            assert_eq!(
+                add(&small, 1, overflow),
+                range(ConstantIntRange::from_unsigned(32, 1, 11)),
+                "[0, 10] + 1, {overflow}"
+            );
+        }
+        // A wrapping sum may wrap to any value, so the result is the full range.
+        assert_eq!(add(&top, 1, Overflow::Wrapping), range(top), "top + 1, wrapping");
+        // A checked sum of the full range plus one overflows for one operand value, which traps,
+        // so the exact result range would exclude one end. The interval sum only narrows when its
+        // exact bounds fit the type, and here the upper bound does not, so the result is the full
+        // range: sound, though not the tightest.
+        for signedness in [Signedness::Signed, Signedness::Unsigned] {
+            assert_eq!(
+                add(&top, 1, Overflow::Checked(signedness)),
+                range(top),
+                "top + 1, checked {signedness:?}"
+            );
         }
     }
 

@@ -419,6 +419,10 @@ impl IntegerValueRange {
 
     /// Refine with an explicit runtime-checked range in the result's representation.
     /// Cross-width refinement does not model sign extension.
+    ///
+    /// The widths differ only for a value that went through an unrealized conversion cast, whose
+    /// result keeps its source's range. The operand is then taken to keep its unsigned value
+    /// across the width change, and its unsigned bounds are intersected with the checked range.
     pub fn refined_by(&self, range: &ConstantIntRange) -> Self {
         let Some(current) = self.value else {
             return Self::uninitialized();
@@ -858,8 +862,8 @@ mod tests {
         assert!(isize.is_untracked());
         assert_eq!(isize, ConstantIntRange::max_for_type(context.isize()));
 
-        let proven = IntegerValueRange::for_constant(Int::from(7u32), context.i32());
-        assert_eq!(proven, IntegerValueRange::constant(Int::from(7u32)));
+        let exact = IntegerValueRange::for_constant(Int::from(7u32), context.i32());
+        assert_eq!(exact, IntegerValueRange::constant(Int::from(7u32)));
         let isize = IntegerValueRange::for_constant(Int::from(1u64 << 32), context.isize());
         assert!(isize.range().unwrap().is_untracked());
         assert_eq!(isize, IntegerValueRange::max_for_type(context.isize()));

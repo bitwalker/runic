@@ -313,8 +313,8 @@ mod tests {
 
     /// A check of a value with a narrower range gives the intersection of the two.
     #[test]
-    fn a_check_narrows_a_proven_range() -> Result<(), Report> {
-        let mut test = Test::new("check_narrows_proven", |cx| ([cx.i1()], [cx.i32()]));
+    fn a_check_narrows_a_wider_range() -> Result<(), Report> {
+        let mut test = Test::new("check_narrows_range", |cx| ([cx.i1()], [cx.i32()]));
         let checked = {
             let cond = argument(&test, 0);
             let i32 = test.context().i32();
@@ -377,7 +377,7 @@ mod tests {
     }
 
     /// A check of a constant that lies on a bound of the checked range keeps the constant's exact
-    /// range: the check narrows, it never widens a proven value it admits.
+    /// range: the check narrows, it never widens a value it admits.
     #[test]
     fn checks_keep_valid_boundary_values_exact() -> Result<(), Report> {
         let types: [(TypeOf, u128); 6] = [
@@ -653,7 +653,7 @@ mod tests {
     /// An `unchecked` addition whose operands are known to overflow has an undefined result, so
     /// the analysis gives it only the range of its type.
     #[test]
-    fn regression_unchecked_overflow_does_not_prove_the_result_type() -> Result<(), Report> {
+    fn an_unchecked_overflowing_sum_has_the_range_of_its_type() -> Result<(), Report> {
         let mut test = Test::new("unchecked_overflow", |cx| ([], [cx.i32()]));
         let sum = {
             let mut builder = test.function_builder();
