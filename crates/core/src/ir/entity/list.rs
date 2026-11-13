@@ -825,7 +825,10 @@ impl<T> EntityListCursorMut<'_, T>
 where
     T: EntityWithParent,
 {
-    fn parent(&self) -> Option<UnsafeIntrusiveEntityRef<<T as EntityWithParent>::Parent>> {
+    /// The entity owning the list this cursor is in, or `None` if the list is orphaned.
+    pub(crate) fn parent(
+        &self,
+    ) -> Option<UnsafeIntrusiveEntityRef<<T as EntityWithParent>::Parent>> {
         if self.parent.is_null() {
             None
         } else {

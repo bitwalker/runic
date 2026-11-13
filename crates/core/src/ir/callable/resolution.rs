@@ -299,9 +299,14 @@ builtin.module public @test {
         let (_test, module) = module(ALIASED);
         let mb = ModuleBuilder::new(module);
         let mut first = mb.get_function_alias("first").unwrap();
-        // Builders reject self-uses. Emulate malformed IR to exercise resolution.
+        // Builders reject self-uses. Emulate malformed IR to exercise resolution: the target's
+        // path and its link both name the alias itself, as the parser would link that text.
         let path = first.borrow().path();
+        let user = first.borrow().target().try_user().unwrap();
+        user.unlink_from_symbol();
         first.borrow_mut().target_mut().set_path(path);
+        let symbol = first.borrow().as_operation().as_symbol_ref().unwrap();
+        user.link_to_symbol(symbol);
         assert!(matches!(mb.resolve_callable("api"), Err(SymbolResolutionError::Cycle { .. })));
         let error = module.borrow().as_operation().recursively_verify().unwrap_err();
         assert!(format!("{error}").contains("cycle"));

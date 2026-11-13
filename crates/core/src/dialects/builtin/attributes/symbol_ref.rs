@@ -134,9 +134,9 @@ impl SymbolRefAttr {
     ///
     /// Returns `None` if the reference has no tracked use, or its use is not linked to a symbol: it
     /// never was (the parser leaves a reference that names no symbol unlinked), or the symbol was
-    /// removed from its symbol table, or the operation holding the reference was erased. The path
-    /// is not looked up again: a reference resolves exactly when
-    /// [Operation::verify_symbol_refs](crate::Operation::verify_symbol_refs) accepts it.
+    /// removed from its symbol table or erased, or the operation holding the reference was erased.
+    /// The path is not looked up again; in IR that verifies, the linked symbol is the one the path
+    /// names, as [Operation::verify_symbol_refs](crate::Operation::verify_symbol_refs) checks.
     ///
     /// This resolves the *named* symbol only, without following aliases: if the path names a
     /// [`FunctionAlias`], the alias itself is returned. Use [Self::resolve_callable] to obtain both

@@ -383,10 +383,10 @@ builtin.module public @test {
     }
 
     /// Removing the target unlinks the alias's use of it; a symbol inserted later under the same
-    /// name does not relink it, so the target is reported as not resolving, before the alias's own
-    /// verifier would look the path up.
+    /// name does not relink it, so the target is reported as not linked to the symbol its path now
+    /// names, before the alias's own verifier would look the path up.
     #[test]
-    fn alias_whose_target_is_removed_and_replaced_does_not_resolve() {
+    fn alias_whose_target_is_removed_and_replaced_is_not_linked_to_the_replacement() {
         let mut test = Test::default().in_module("test");
         let i32 = test.context().i32();
         let primary = test.define_function("foo", &[], &[i32]);
@@ -415,7 +415,18 @@ builtin.module public @test {
             assert!(mb.resolve_function("bar").is_none());
         }
         let err = module.borrow().as_operation().recursively_verify().unwrap_err();
-        assert!(format!("{err}").contains("symbol '::@test::@foo' does not resolve"), "{err}");
+        let err = crate::testing::text::describe(&err);
+        assert!(
+            err.contains("symbol '::@test::@foo' is not linked to the symbol its path names"),
+            "{err}"
+        );
+        assert!(
+            err.contains(
+                "this path names '::@test::@foo' (a 'builtin.global_variable') from \
+                 'builtin.function_alias', but the reference is linked to no symbol"
+            ),
+            "{err}"
+        );
     }
 
     #[test]

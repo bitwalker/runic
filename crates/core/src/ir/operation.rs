@@ -230,23 +230,35 @@ impl EntityListItem for Operation {
         to.borrow_mut().invalidate_op_order();
     }
 
-    fn on_removed(this: OperationRef, _list: &mut EntityListCursorMut<'_, Self>) {
+    /// A symbol taken out of a block leaves the symbol table it was registered in (the nearest one
+    /// above the block, as [Self::on_inserted] finds it), which mutably borrows that table.
+    ///
+    /// `this` is already detached here, so the table is found from the block the list belongs to.
+    /// `this` itself may be mutably borrowed (by [Operation::remove] and [Operation::erase]), so
+    /// it is not borrowed when that would fail.
+    fn on_removed(this: OperationRef, list: &mut EntityListCursorMut<'_, Self>) {
         // NOTE: We use OperationName, instead of the Operation itself, to avoid borrowing.
-        if this.name().implements::<dyn Symbol>() {
-            let parent = this.nearest_symbol_table();
-            if let Some(mut parent) = parent {
-                // NOTE: We use OperationName, instead of the Operation itself, to avoid borrowing.
-                if parent.name().implements::<dyn SymbolTable>() {
-                    let mut symbol_table = parent.borrow_mut();
-                    let sym_manager = symbol_table.as_trait_mut::<dyn SymbolTable>().unwrap();
-                    let mut sym_manager = sym_manager.symbol_manager_mut();
-
-                    let symbol_ref = this.borrow().as_symbol_ref().unwrap();
-
-                    sym_manager.remove(symbol_ref);
-                };
-            }
+        if !this.name().implements::<dyn Symbol>() {
+            return;
         }
+        let Some(parent) = list.parent().and_then(|block| block.grandparent()) else {
+            return;
+        };
+        let symbol_table = if parent.name().implements::<dyn SymbolTable>() {
+            Some(parent)
+        } else {
+            parent.nearest_symbol_table()
+        };
+        let Some(mut symbol_table) = symbol_table else {
+            return;
+        };
+        let symbol_ref = this.as_trait_ref::<dyn Symbol>().unwrap();
+        let name = this.try_borrow().map(|op| op.as_symbol().unwrap().name());
+
+        let mut symbol_table = symbol_table.borrow_mut();
+        let sym_manager = symbol_table.as_trait_mut::<dyn SymbolTable>().unwrap();
+        let mut sym_manager = sym_manager.symbol_manager_mut();
+        sym_manager.symbols_mut().remove_symbol(symbol_ref, name);
     }
 }
 
@@ -511,9 +523,9 @@ impl Operation {
     /// integer constant among its properties and attributes is valid; see
     /// [Self::verify_int_attributes]. The third is that every signature among its properties and
     /// attributes is valid; see [Self::verify_signature_attributes]. The fourth is that every
-    /// symbol reference among its properties and attributes is linked to a symbol; see
-    /// [Self::verify_symbol_refs]. The operation's own verifiers run after these, so they may
-    /// assume the operation's symbol references are linked.
+    /// symbol reference among its properties and attributes is linked to the symbol its path
+    /// names; see [Self::verify_symbol_refs]. The operation's own verifiers run after these, so
+    /// they may assume the operation's symbol references are linked.
     pub fn verify(&self) -> Result<(), Report> {
         self.verify_type_ownership()?;
         self.verify_int_attributes()?;
@@ -524,32 +536,88 @@ impl Operation {
     }
 
     /// Check that every symbol reference among this operation's properties and attributes is
-    /// linked to a symbol.
+    /// linked to exactly the symbol its path names, looked up in the nearest symbol table of this
+    /// operation (or in this operation, if it is a symbol table and has no symbol table above it),
+    /// as the parser looks it up.
     ///
     /// The parser links each reference to the symbol it names once the whole input is parsed, and
     /// leaves one that names no symbol unlinked; the typed builders only accept a symbol that
-    /// exists. This check is what turns a reference to a missing symbol into a diagnostic.
+    /// exists. Removing a symbol from its table, or erasing it, unlinks the references to it. This
+    /// check is what turns a reference to a missing symbol into a diagnostic, and it also reports
+    /// a reference whose link and path disagree (its symbol was detached and another inserted
+    /// under its name, or a symbol table on its path was renamed), so that IR which verifies
+    /// prints to text that parses back to the same links.
+    ///
+    /// Each reference's path is looked up once, which borrows this operation's nearest symbol
+    /// table and the symbol tables on the path immutably.
     ///
     /// Only the properties and attributes of the operation itself are visited, as by
     /// [Self::walk_symbol_refs]: a reference nested inside a list or map attribute value is not
     /// checked.
     pub fn verify_symbol_refs(&self) -> Result<(), Report> {
-        Self::walk_symbol_refs(self, |reference| match reference {
-            Ok(_) => WalkResult::Continue(()),
-            Err(attr) => {
-                let flags = crate::OpPrintingFlags::default();
-                let mut printer = crate::print::AsmPrinter::fragment(self.context_rc(), &flags);
-                printer.print_symbol_path(attr.borrow().path());
-                WalkResult::Break(crate::diagnostics::report!(
-                    message: (alloc::format!("symbol '{}' does not resolve", printer.finish())),
+        let print_path = |path: &crate::SymbolPath| {
+            let flags = crate::OpPrintingFlags::default();
+            let mut printer = crate::print::AsmPrinter::fragment(self.context_rc(), &flags);
+            printer.print_symbol_path(path);
+            printer.finish()
+        };
+        // The symbol `path` names, looked up as the parser does (see `resolve_symbol_uses`)
+        let lookup = |path: &crate::SymbolPath| -> Option<SymbolRef> {
+            match self.nearest_symbol_table() {
+                Some(symbol_table) => symbol_table.borrow().as_symbol_table()?.resolve(path),
+                None => self.as_symbol_table()?.resolve(path),
+            }
+        };
+        let symbol_description = |symbol: SymbolRef| {
+            let symbol = symbol.borrow();
+            alloc::format!(
+                "'{}' (a '{}')",
+                print_path(&symbol.path()),
+                symbol.as_symbol_operation().name()
+            )
+        };
+
+        Self::walk_symbol_refs(self, |reference| {
+            let (attr, linked) = match reference {
+                Ok(symbol_use) => (symbol_use.borrow().attr, symbol_use.linked_symbol()),
+                Err(attr) => (attr, None),
+            };
+            let path = attr.borrow().path().clone();
+            let named = lookup(&path);
+            if named.is_some() && named == linked {
+                return WalkResult::Continue(());
+            }
+            let printed = print_path(&path);
+            let Some(named) = named else {
+                return WalkResult::Break(crate::diagnostics::report!(
+                    message: (alloc::format!("symbol '{printed}' does not resolve")),
                     labels: [
                         primary(
                             self.span(),
                             alloc::format!("no symbol visible to '{}' has this path", self.name())
                         ),
                     ],
-                ))
-            }
+                ));
+            };
+            let linked = match linked {
+                Some(linked) => alloc::format!("linked to {}", symbol_description(linked)),
+                None => "linked to no symbol".into(),
+            };
+            WalkResult::Break(crate::diagnostics::report!(
+                message: (alloc::format!(
+                    "symbol '{printed}' is not linked to the symbol its path names"
+                )),
+                labels: [
+                    primary(
+                        self.span(),
+                        alloc::format!(
+                            "this path names {} from '{}', but the reference is {linked}",
+                            symbol_description(named),
+                            self.name()
+                        )
+                    ),
+                ],
+            ))
         })
         .into_result()
     }
@@ -1648,7 +1716,9 @@ impl Operation {
     /// Remove this operation (and its descendants) from its containing block, and delete them
     ///
     /// The symbol references of this operation and of every operation nested in it are unlinked
-    /// from the symbols they name, so an erased operation is no longer a use of any symbol.
+    /// from the symbols they name, so an erased operation is no longer a use of any symbol. If this
+    /// operation, or an operation nested in it, is a symbol, the references to it from outside the
+    /// erased operation are unlinked too: they no longer resolve, and verification reports them.
     pub fn erase(&mut self) {
         self.unlink_symbol_uses();
 
@@ -1660,15 +1730,21 @@ impl Operation {
     }
 
     /// Unlinks every symbol reference held by this operation or an operation nested in it from
-    /// the symbol it is linked to.
+    /// the symbol it is linked to, and then empties the use list of this operation and of every
+    /// operation nested in it that is a symbol, which leaves only the references from outside.
     ///
-    /// The uses are collected first, so no operation is borrowed by the walk when a symbol's use
-    /// list is changed. A use of this operation itself (a recursive call inside a function being
-    /// erased) is removed through `self`, which the caller already borrows mutably; every other
-    /// symbol is borrowed mutably in turn, so the caller must not hold a borrow of one.
+    /// The uses and symbols are collected first, so no operation is borrowed by the walk when a
+    /// symbol's use list is changed. The references held inside are unlinked before the use lists
+    /// are emptied, so each use is taken out of a list once. A use list of this operation itself
+    /// (a recursive call inside a function being erased) is changed through `self`, which the
+    /// caller already borrows mutably; every other symbol is borrowed mutably in turn, so the
+    /// caller must not hold a borrow of one.
     fn unlink_symbol_uses(&mut self) {
         let mut uses = SmallVec::<[crate::SymbolUseRef; 4]>::default();
-        let mut collect = |op: &Operation| {
+        let mut nested_symbols = SmallVec::<[SymbolRef; 4]>::default();
+        // `self` is visited directly: the walkers borrow the operations they visit, and `self` is
+        // already borrowed mutably
+        let mut collect_uses = |op: &Operation| {
             let _ = Operation::walk_symbol_refs(op, |reference| {
                 if let Ok(symbol_use) = reference {
                     uses.push(symbol_use);
@@ -1676,14 +1752,14 @@ impl Operation {
                 WalkResult::Continue(())
             });
         };
-        // `self` is visited directly: the walkers borrow the operations they visit, and `self` is
-        // already borrowed mutably
-        collect(self);
+        collect_uses(self);
         for region in self.regions() {
-            region.prewalk_all(&mut collect);
-        }
-        if uses.is_empty() {
-            return;
+            region.prewalk_all(|op: &Operation| {
+                collect_uses(op);
+                if let Some(symbol) = op.as_symbol_ref() {
+                    nested_symbols.push(symbol);
+                }
+            });
         }
 
         for symbol_use in uses {
@@ -1701,6 +1777,15 @@ impl Operation {
             } else {
                 symbol_use.unlink_from_symbol();
             }
+        }
+
+        // What remains in these use lists are the references from outside, as `SymbolTable::remove`
+        // leaves them
+        if let Some(symbol) = self.as_trait_mut::<dyn crate::Symbol>() {
+            symbol.uses_mut().clear();
+        }
+        for mut symbol in nested_symbols {
+            symbol.borrow_mut().uses_mut().clear();
         }
     }
 

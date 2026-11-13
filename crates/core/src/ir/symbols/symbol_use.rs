@@ -358,15 +358,236 @@ mod tests {
         assert_eq!((uses(g), uses(f)), (1, 1));
     }
 
+    /// Whether the callee of the call `op` resolves.
+    fn call_resolves(op: crate::OperationRef) -> bool {
+        use crate::dialects::builtin::Call;
+
+        let op = op.borrow();
+        op.downcast_ref::<Call>().unwrap().callee().resolve().is_some()
+    }
+
+    /// `op` verified on its own and recursively, with the errors described.
+    fn verify(op: crate::OperationRef) -> [Result<(), alloc::string::String>; 2] {
+        let op = op.borrow();
+        let describe = |err: crate::Report| crate::testing::text::describe(&err);
+        [op.verify().map_err(describe), op.recursively_verify().map_err(describe)]
+    }
+
     /// Erasing a function unlinks the references inside it, among them a call of the function
-    /// itself, without borrowing it twice; references to it from outside stay.
+    /// itself, without borrowing it twice, and the references to it from outside: the call in
+    /// `@h` no longer resolves, and the module does not verify.
     #[test]
-    fn erasing_a_function_unlinks_the_calls_inside_it_including_one_of_itself() {
-        let (_context, _module, [g, mut f, h]) = calls();
+    fn erasing_a_function_unlinks_every_reference_to_it_and_in_it() {
+        let (_context, module, [g, mut f, h]) = calls();
+        let call_in_h = ops_named(h, "builtin.call")[0];
+        assert!(call_resolves(call_in_h));
         f.borrow_mut().erase();
         assert_eq!(uses(g), 1, "the reference in @h remains");
-        assert_eq!(uses(f), 1, "the recursive call is gone; the call in @h remains");
+        assert_eq!(uses(f), 0, "the recursive call and the call in @h are both unlinked");
         assert_eq!(uses(h), 0);
+        assert!(!call_resolves(call_in_h));
+
+        for err in verify(call_in_h).into_iter().chain([verify(module)[1].clone()]) {
+            let err = err.expect_err("a call of an erased function must not verify");
+            assert!(err.contains("symbol '@f' does not resolve"), "{err}");
+            assert!(err.contains("no symbol visible to 'builtin.call' has this path"), "{err}");
+        }
+    }
+
+    /// A module where `@h` calls `@f` directly and `@k` calls it through the alias `@af`.
+    const ALIASED_CALLS: &str = r#"builtin.module public @m {
+    builtin.function public extern("C") @f(%a: i32) -> i32 {
+        builtin.ret %a : (i32);
+    };
+    builtin.function_alias public @af -> @f;
+    builtin.function public extern("C") @h(%a: i32) -> i32 {
+        %r = builtin.call @f(%a) : extern("C") (i32) -> i32;
+        builtin.ret %r : (i32);
+    };
+    builtin.function public extern("C") @k(%a: i32) -> i32 {
+        %r = builtin.call @af(%a) : extern("C") (i32) -> i32;
+        builtin.ret %r : (i32);
+    };
+};"#;
+
+    /// After an erased function, both its direct call and a call through an alias of it are
+    /// diagnosed: the direct call and the alias no longer resolve their reference, and the call
+    /// through the alias reaches no callable.
+    #[test]
+    fn a_direct_call_and_a_call_through_an_alias_of_an_erased_function_are_diagnosed() {
+        use crate::{
+            SymbolTable,
+            dialects::builtin::Module,
+            parse::{ParserConfig, parse},
+        };
+
+        let test = Test::default();
+        let module =
+            parse::<Module>(ParserConfig::new(test.context_rc()), "aliased", ALIASED_CALLS)
+                .into_result()
+                .unwrap_or_else(|err| panic!("{}", crate::testing::text::describe(&err)));
+        let [mut f, alias, h, k] = ["f", "af", "h", "k"]
+            .map(|name| module.borrow().symbol_manager().lookup_op(name).unwrap());
+        let module = module.as_operation_ref();
+        let [direct, through_alias] = [h, k].map(|function| ops_named(function, "builtin.call")[0]);
+        assert!(verify(module)[1].is_ok());
+
+        f.borrow_mut().erase();
+
+        let [own, _] = verify(direct);
+        let err = own.expect_err("the direct call must not verify");
+        assert!(err.contains("symbol '@f' does not resolve"), "{err}");
+
+        let [own, _] = verify(alias);
+        let err = own.expect_err("the alias of an erased function must not verify");
+        assert!(err.contains("symbol '@f' does not resolve"), "{err}");
+
+        // The call's own reference, to the alias, is sound; its verifier finds no callee
+        let [own, _] = verify(through_alias);
+        own.expect_err("a call through an alias of an erased function must not verify");
+        assert!(verify(module)[1].is_err());
+    }
+
+    /// A symbol detached without being erased keeps its uses linked; another symbol inserted
+    /// under its name is what their paths name now, which verification reports, naming both.
+    #[test]
+    fn a_reference_linked_to_a_detached_symbol_whose_name_was_reused_is_diagnosed() {
+        use crate::{Ident, SymbolName, Visibility, dialects::builtin::ModuleBuilder};
+
+        let (context, module, [mut g, f, h]) = calls();
+        g.borrow_mut().remove();
+        let mut mb = ModuleBuilder::new(module.try_downcast_op().unwrap());
+        mb.define_global_variable(
+            Ident::with_empty_span(SymbolName::intern("g")),
+            Visibility::Public,
+            context.i32(),
+        )
+        .unwrap();
+        assert_eq!(uses(g), 2, "detaching leaves the uses linked");
+
+        let call_of_g = ops_named(f, "builtin.call")[0];
+        let reference = ops_named(h, "builtin.function_ref")[0];
+        for op in [call_of_g, reference] {
+            let [own, _] = verify(op);
+            let err = own.expect_err("a reference linked to a detached symbol must not verify");
+            assert!(
+                err.contains("symbol '@g' is not linked to the symbol its path names"),
+                "{err}"
+            );
+            assert!(
+                err.contains("this path names '::@m::@g' (a 'builtin.global_variable')"),
+                "{err}"
+            );
+            assert!(err.contains("but the reference is linked to '"), "{err}");
+            assert!(err.contains("(a 'builtin.function')"), "{err}");
+        }
+    }
+
+    /// The world of the corpus whose `@app::@main` calls `::@lib::@exported` and takes a reference
+    /// to `::@lib::@reexported`, an alias of it: the context, the world, `@lib` and `@main`.
+    fn world_of_lib_and_app() -> (
+        alloc::rc::Rc<crate::Context>,
+        crate::OperationRef,
+        crate::OperationRef,
+        crate::OperationRef,
+    ) {
+        use crate::{
+            SymbolTable,
+            dialects::builtin::World,
+            parse::{ParserConfig, parse},
+        };
+
+        let source = crate::testing::calls::CORPUS
+            .iter()
+            .find(|source| source.contains("::@lib::@exported"))
+            .unwrap();
+        let test = Test::default();
+        let world = parse::<World>(ParserConfig::new(test.context_rc()), "world", *source)
+            .into_result()
+            .unwrap_or_else(|err| panic!("{}", crate::testing::text::describe(&err)));
+        let lib = world.borrow().symbol_manager().lookup_op("lib").unwrap();
+        let app = world.borrow().symbol_manager().lookup_op("app").unwrap();
+        let main = app
+            .borrow()
+            .as_symbol_table()
+            .unwrap()
+            .symbol_manager()
+            .lookup_op("main")
+            .unwrap();
+        (test.context_rc(), world.as_operation_ref(), lib, main)
+    }
+
+    /// References written with an absolute path (the call), with a relative path (the alias's
+    /// target), to an alias (the function reference), and stored as a plain attribute through
+    /// `set_symbol_attribute`, all verify.
+    #[test]
+    fn every_form_of_a_sound_reference_verifies() {
+        let (_context, world, lib, mut main) = world_of_lib_and_app();
+        assert!(verify(world)[1].is_ok(), "{:?}", verify(world)[1]);
+        let reexported = lib
+            .borrow()
+            .as_symbol_table()
+            .unwrap()
+            .symbol_manager()
+            .lookup("reexported")
+            .unwrap();
+        main.borrow_mut().set_symbol_attribute("note", reexported);
+        assert!(verify(world)[1].is_ok(), "{:?}", verify(world)[1]);
+
+        let (_context, module, [g, mut f, _h]) = calls();
+        let g = g.borrow().as_symbol_ref().unwrap();
+        f.borrow_mut().set_symbol_attribute("note", g);
+        assert!(verify(module)[1].is_ok(), "{:?}", verify(module)[1]);
+    }
+
+    /// Erasing a module erases the symbols in it: a reference from outside to a symbol nested in
+    /// it no longer resolves.
+    #[test]
+    fn erasing_a_module_unlinks_the_references_to_the_symbols_in_it() {
+        let (_context, world, mut lib, main) = world_of_lib_and_app();
+        let call = ops_named(main, "builtin.call")[0];
+        let reference = ops_named(main, "builtin.function_ref")[0];
+        lib.borrow_mut().erase();
+        assert!(!call_resolves(call));
+        let [own, _] = verify(call);
+        let err = own.expect_err("a call into an erased module must not verify");
+        assert!(err.contains("symbol '::@lib::@exported' does not resolve"), "{err}");
+        let [own, _] = verify(reference);
+        let err = own.expect_err("a reference into an erased module must not verify");
+        assert!(err.contains("symbol '::@lib::@reexported' does not resolve"), "{err}");
+        assert!(verify(world)[1].is_err());
+    }
+
+    /// Renaming a symbol rewrites the path of each of its uses, which all still verify; a use
+    /// that names a symbol through a renamed symbol table keeps its old path, which names nothing
+    /// now, and is diagnosed although it is still linked.
+    #[test]
+    fn renaming_keeps_the_rewritten_uses_verifying_and_a_stale_nested_path_is_diagnosed() {
+        use crate::{SymbolName, SymbolTable};
+
+        let (_context, mut world, mut lib, main) = world_of_lib_and_app();
+        let call = ops_named(main, "builtin.call")[0];
+
+        // `@exported` is named by the call (absolute) and by the alias (relative)
+        lib.borrow_mut()
+            .as_trait_mut::<dyn SymbolTable>()
+            .unwrap()
+            .rename(SymbolName::intern("exported"), SymbolName::intern("renamed"))
+            .unwrap();
+        assert!(verify(world)[1].is_ok(), "{:?}", verify(world)[1]);
+        assert!(crate::testing::text::print_custom(&call.borrow()).contains("::@lib::@renamed"));
+
+        // Only the uses of `@lib` itself would be rewritten, and it has none
+        world
+            .borrow_mut()
+            .as_trait_mut::<dyn SymbolTable>()
+            .unwrap()
+            .rename(SymbolName::intern("lib"), SymbolName::intern("library"))
+            .unwrap();
+        assert!(call_resolves(call), "the call stays linked");
+        let [own, _] = verify(call);
+        let err = own.expect_err("a stale path must not verify");
+        assert!(err.contains("symbol '::@lib::@renamed' does not resolve"), "{err}");
     }
 
     /// Erasing a module unlinks every reference in it, those between its functions and the

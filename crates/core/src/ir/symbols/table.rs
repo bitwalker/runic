@@ -555,6 +555,22 @@ impl SymbolMap {
         self.symbols.remove(&name)
     }
 
+    /// Removes `symbol` from the map, if it is registered: looked up as `name` when its name is
+    /// given, otherwise by comparing it with every registered symbol (for a caller that cannot
+    /// borrow `symbol` to read its name). Another symbol registered as `name` is left in place.
+    pub(crate) fn remove_symbol(&mut self, symbol: SymbolRef, name: Option<SymbolName>) {
+        let name = match name {
+            Some(name) => name,
+            None => match self.symbols.iter().find(|(_, registered)| **registered == symbol) {
+                Some((name, _)) => *name,
+                None => return,
+            },
+        };
+        if self.symbols.get(&name) == Some(&symbol) {
+            self.remove(name);
+        }
+    }
+
     /// Inserts `symbol` in the map, as `name`, so long as no symbol has `name` or the path a
     /// symbol named `name` would have (a symbol table named `"my-mod"` and a function named
     /// `my-mod` share the path `my-mod`, see [Symbol::path]).
@@ -1045,7 +1061,8 @@ impl<'a> SymbolManagerMut<'a> {
     ///
     /// Unsupported: only the direct uses of `op` are rewritten. A use of a symbol nested in a
     /// renamed symbol table (`::acme::a::b::m::f` after renaming the component `acme::a::b`)
-    /// keeps the old path, and no longer resolves.
+    /// keeps the old path while it stays linked to that symbol, so its path no longer names the
+    /// symbol it is linked to, and [Operation::verify_symbol_refs] reports it.
     pub fn replace_all_symbol_uses(&mut self, op: SymbolRef, to: SymbolName) -> Result<(), Report> {
         let symbol = op.borrow();
         // For a symbol table, the number of trailing components naming it in a path, and the
