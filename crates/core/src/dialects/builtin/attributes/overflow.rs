@@ -56,9 +56,10 @@ impl AttrParser for OverflowAttr {
 
         let mode = parser.parse_keyword_from(&keywords)?;
         let overflow = match mode.as_str() {
+            "wrapping" => Overflow::Wrapping,
             "checked" => Overflow::Checked(parse_signedness(parser)?),
             "unchecked" => Overflow::Unchecked(parse_signedness(parser)?),
-            _ => Overflow::Wrapping,
+            other => unreachable!("`parse_keyword_from` returned `{other}`, which is not a mode"),
         };
 
         let attr = parser.context_rc().create_attribute::<OverflowAttr, _>(overflow);

@@ -91,7 +91,7 @@ pub trait TestOpBuilder<'f, B: ?Sized + Builder> {
         Ok(op.borrow().result().as_value_ref())
     }
 
-    /// Loads a value of the type pointed to by the given pointer, on to the stack
+    /// Loads a value of the type pointed to by the given pointer
     ///
     /// NOTE: This function will panic if `ptr` is not a pointer typed value
     fn load(&mut self, addr: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {

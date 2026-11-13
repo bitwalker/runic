@@ -263,7 +263,7 @@
 //!     builtin.br ^after(%arg0, %0);
 //! ^after(%1: i32, %2 : ptr<i8>):
 //!     %3 = arith.constant 0 : i32;
-//!     %4 = arith.eq %1, %3 : i1;
+//!     %4 = arith.cmpi eq %1, %3;
 //!     builtin.ret %4, %1, %3;
 //! }) { attr = "string" } : (i32, ptr<i8>) -> (i1, i32, i32) loc<"file.hir":1:1 to :32>;
 //! ```
@@ -275,7 +275,7 @@
 //!   by a previous operation can be referenced.
 //!
 //! ```text
-//! %overflowing_add:2 = arith.add %lhs, %rhs <{ overflow = overflowing }>;
+//! %overflowing_add:2 = arith.add_overflowing %lhs, %rhs <{ signedness = #builtin.signedness<signed> }>;
 //! "cf.cond_br"(%overflowing_add#0) [
 //!     ^overflowed,
 //!     ^didnt:(%overflowing_add#1)

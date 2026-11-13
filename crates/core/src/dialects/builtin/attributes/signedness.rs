@@ -56,7 +56,11 @@ pub(super) fn parse_signedness(
             .map(Token::BareIdent),
     );
     let keyword = parser.parse_keyword_from(&keywords)?;
-    Ok(keyword.as_str().parse::<Signedness>().unwrap())
+    match keyword.as_str() {
+        "signed" => Ok(Signedness::Signed),
+        "unsigned" => Ok(Signedness::Unsigned),
+        other => unreachable!("`parse_keyword_from` returned `{other}`, which is not a signedness"),
+    }
 }
 
 impl Signedness {
