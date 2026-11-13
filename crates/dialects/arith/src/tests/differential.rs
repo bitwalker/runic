@@ -645,7 +645,8 @@ fn every_fold_agrees_with_the_model_on_random_operands() {
     for seed in seeds() {
         run(seed, cases_per_variant(), |_, test, plan| check_fold(test, plan, &mut tally));
     }
-    // Every variant both folded somewhere, and every variant that can decline did.
+    // Every variant folded somewhere. That the cases which must not fold are reached is checked by
+    // `the_generator_reaches_the_cases_that_must_not_fold`.
     let never_folded: Vec<_> = tally
         .by_variant
         .iter()
