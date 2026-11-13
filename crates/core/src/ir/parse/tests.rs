@@ -3622,6 +3622,42 @@ fn test_constants_of_any_integer_type_round_trip() -> TestResult {
     Ok(())
 }
 
+/// `test.constant` prints the attributes that are not properties after its type, and parses them
+/// back; a constant without any prints as `test.constant 5 : i32`.
+#[test]
+fn test_constants_keep_their_other_attributes_in_text() -> TestResult {
+    use crate::dialects::builtin::attributes::TypeAttr;
+
+    let source = "builtin.function public extern(\"C\") @f() -> i32 {\n    %0 = test.constant 5 : \
+                  i32;\n    builtin.ret %0 : (i32);\n};";
+    let test = ParserTest::default();
+    test.context().get_or_register_dialect::<TestDialect>();
+    let parsed = test.parse::<Function>("constant.hir", source)?;
+    assert_eq!(format!("{}", parsed.as_operation_ref().borrow()), source);
+
+    let context = test.context_rc();
+    let note = context.create_attribute::<TypeAttr, _>(context.i64()).as_attribute_ref();
+    let mut op = parsed.borrow().body().entry().front().unwrap();
+    op.borrow_mut().set_attribute("note", note);
+    let text = format!("{}", parsed.as_operation_ref().borrow());
+    assert!(text.contains("test.constant 5 : i32 attributes { note = "), "{text}");
+
+    let fresh = ParserTest::default();
+    fresh.context().get_or_register_dialect::<TestDialect>();
+    let reparsed = fresh.parse::<Function>("constant-printed.hir", &text)?;
+    assert_eq!(format!("{}", reparsed.as_operation_ref().borrow()), text);
+    let function = reparsed.borrow();
+    let op = function.body().entry().front().unwrap();
+    let op = op.borrow();
+    let note = op.get_attribute("note").expect("the attribute survives");
+    let note = note.borrow();
+    let note = note.downcast_ref::<TypeAttr>().expect("a type attribute");
+    assert_eq!(*note.as_value(), fresh.context().i64());
+    let value = op.get_attribute("value").unwrap();
+    assert_eq!(int_and_type_of(&value), (Int::from(5i32), fresh.context().i32()));
+    Ok(())
+}
+
 /// A segment's offset is a `u32` held in an `I32Attr`: an offset in the upper half of the address
 /// space builds, prints, and its printed attribute parses back to the same `u32`.
 ///
