@@ -110,3 +110,40 @@ impl DeadCodeElimination {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use alloc::{string::ToString, vec::Vec};
+
+    use runic_core::{SourceSpan, ValueRef, dialects::builtin::BuiltinOpBuilder, testing::Test};
+    use runic_dialect_arith::ArithOpBuilder;
+    use runic_dialect_cf::{Assert, ControlFlowOpBuilder};
+
+    use super::DeadCodeElimination;
+
+    /// A `cf.assert` has no results and a write effect, so dead-code elimination keeps it, and
+    /// with it the definition of its condition; an unused, effect-free operation is erased.
+    #[test]
+    fn assert_survives_dead_code_elimination() {
+        let mut test = Test::new("assert_survives_dce", |cx| ([cx.i32(), cx.i32()], []));
+        {
+            let mut builder = test.function_builder();
+            let [a, b] = *builder.entry_block().borrow().arguments()[0..2].as_array().unwrap();
+            let (a, b) = (a as ValueRef, b as ValueRef);
+            builder.add(a, b, SourceSpan::UNKNOWN).unwrap();
+            let cond = builder.ult(a, b, SourceSpan::UNKNOWN).unwrap();
+            builder.assert(cond, "m", SourceSpan::UNKNOWN).unwrap();
+            builder.ret(None, SourceSpan::UNKNOWN).unwrap();
+        }
+
+        test.apply_pass::<DeadCodeElimination>(true).expect("invalid ir");
+
+        let entry = test.entry_block();
+        let entry = entry.borrow();
+        let names = entry.body().iter().map(|op| op.name().to_string()).collect::<Vec<_>>();
+        assert_eq!(names, ["arith.cmpi", "cf.assert", "builtin.ret"]);
+        let assert = entry.body().iter().find(|op| op.is::<Assert>()).unwrap();
+        let assert = assert.downcast_ref::<Assert>().unwrap();
+        assert_eq!(assert.message().as_str(), "m");
+    }
+}

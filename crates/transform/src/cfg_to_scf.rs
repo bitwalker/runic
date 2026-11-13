@@ -440,7 +440,6 @@ mod entry_cycle_tests {
 
     use runic_core::{
         Context, Forward, OperationRef, RawWalk, Report,
-        diagnostics::Uri,
         dialects::builtin::Function,
         parse::{self, ParserConfig},
         pass::{Nesting, PassManager},
@@ -448,11 +447,9 @@ mod entry_cycle_tests {
 
     fn lift(source: &str, entry_placeholder: bool) -> Result<(), Report> {
         let context = Rc::new(Context::default());
-        let function = parse::parse::<Function>(
-            ParserConfig::new(context.clone()),
-            Uri::new("entry-cycle.hir"),
-            source,
-        )?;
+        let function =
+            parse::parse::<Function>(ParserConfig::new(context.clone()), "entry-cycle.hir", source)
+                .into_result()?;
         if entry_placeholder {
             // Named function parameters require an unlabeled entry in textual HIR. Retarget
             // the typed placeholder edges to construct the corresponding in-memory CFG.
@@ -493,9 +490,9 @@ mod entry_cycle_tests {
     #[test]
     fn entry_cycle_self_loop_with_arguments() -> Result<(), Report> {
         lift(
-            r#"builtin.function public extern("C") @cycle(%a: u32, %b: u64) {
-            cf.br ^back(%a, %b : u32, u64);
-            ^back(%x: u32, %y: u64): ub.unreachable;
+            r#"builtin.function public extern("C") @cycle(%a: i32, %b: i64) {
+            cf.br ^back(%a, %b : i32, i64);
+            ^back(%x: i32, %y: i64): ub.unreachable;
         };"#,
             true,
         )
@@ -515,17 +512,17 @@ mod entry_cycle_tests {
     #[test]
     fn entry_cycle_conditional_exit_with_mixed_arguments() -> Result<(), Report> {
         lift(
-            r#"builtin.function public extern("C") @cycle(%a: u32, %b: u64) -> (u32, u64) {
-                %one = arith.constant 1 : u32;
-                %wide = arith.constant 7 : u64;
-                %next_a = arith.add %a, %one <{ overflow = #builtin.overflow<unchecked> }>;
-                %next_b = arith.add %b, %wide <{ overflow = #builtin.overflow<unchecked> }>;
-                %limit = arith.constant 4 : u32;
-                %done = arith.eq %next_a, %limit;
+            r#"builtin.function public extern("C") @cycle(%a: i32, %b: i64) -> (i32, i64) {
+                %one = arith.constant 1 : i32;
+                %wide = arith.constant 7 : i64;
+                %next_a = arith.add %a, %one <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+                %next_b = arith.add %b, %wide <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+                %limit = arith.constant 4 : i32;
+                %done = arith.cmpi eq %next_a, %limit;
                 cf.cond_br %done ^exit, ^again : (i1);
-            ^again: cf.br ^back(%next_a, %next_b : u32, u64);
-            ^exit: builtin.ret %next_a, %next_b : (u32, u64);
-            ^back(%x: u32, %y: u64): ub.unreachable;
+            ^again: cf.br ^back(%next_a, %next_b : i32, i64);
+            ^exit: builtin.ret %next_a, %next_b : (i32, i64);
+            ^back(%x: i32, %y: i64): ub.unreachable;
         };"#,
             true,
         )
@@ -547,8 +544,8 @@ mod entry_cycle_tests {
     #[test]
     fn entry_cycle_acyclic_single_block() -> Result<(), Report> {
         lift(
-            r#"builtin.function public extern("C") @cycle(%a: u32) -> u32 {
-            builtin.ret %a : u32;
+            r#"builtin.function public extern("C") @cycle(%a: i32) -> i32 {
+            builtin.ret %a : i32;
         };"#,
             false,
         )
@@ -561,7 +558,6 @@ mod canonical_entry_tests {
 
     use runic_core::{
         AsValueRange, Context, Region, Report, Spanned, Value,
-        diagnostics::Uri,
         dialects::builtin::Function,
         parse::{self, ParserConfig},
         patterns::{RegionSimplificationLevel, RewriterImpl},
@@ -580,21 +576,19 @@ mod canonical_entry_tests {
     fn redundant_arguments(mixed: bool) -> Result<(), Report> {
         let context = Rc::new(Context::default());
         let source = if mixed {
-            r#"builtin.function public extern("C") @args(%c: i1, %a: u32, %b: u64, %d: u32, %e: u32) -> (u32, u32, u64) {
-            cf.cond_br %c ^join(%a, %d, %b : u32, u32, u64), ^join(%a, %e, %b : u32, u32, u64) : (i1);
-        ^join(%x: u32, %retained: u32, %y: u64): builtin.ret %x, %retained, %y : (u32, u32, u64);
+            r#"builtin.function public extern("C") @args(%c: i1, %a: i32, %b: i64, %d: i32, %e: i32) -> (i32, i32, i64) {
+            cf.cond_br %c ^join(%a, %d, %b : i32, i32, i64), ^join(%a, %e, %b : i32, i32, i64) : (i1);
+        ^join(%x: i32, %retained: i32, %y: i64): builtin.ret %x, %retained, %y : (i32, i32, i64);
         };"#
         } else {
-            r#"builtin.function public extern("C") @args(%c: i1, %a: u32, %b: u64) -> (u32, u64) {
-            cf.cond_br %c ^join(%a, %b : u32, u64), ^join(%a, %b : u32, u64) : (i1);
-        ^join(%x: u32, %y: u64): builtin.ret %x, %y : (u32, u64);
+            r#"builtin.function public extern("C") @args(%c: i1, %a: i32, %b: i64) -> (i32, i64) {
+            cf.cond_br %c ^join(%a, %b : i32, i64), ^join(%a, %b : i32, i64) : (i1);
+        ^join(%x: i32, %y: i64): builtin.ret %x, %y : (i32, i64);
         };"#
         };
-        let function = parse::parse::<Function>(
-            ParserConfig::new(context.clone()),
-            Uri::new("redundant.hir"),
-            source,
-        )?;
+        let function =
+            parse::parse::<Function>(ParserConfig::new(context.clone()), "redundant.hir", source)
+                .into_result()?;
         let entry = function.borrow().body().entry_block_ref().unwrap();
         let join = function.borrow().body().body().back().as_pointer().unwrap();
         let retained = if mixed {
@@ -667,42 +661,40 @@ mod canonical_entry_tests {
             patterns::GreedyRewriteConfig,
         };
         let context = Rc::new(Context::default());
-        let source = r#"builtin.function public extern("C") @cycle(%a: u32, %b: u64) -> (u32, u64) {
-            %one = arith.constant 1 : u32;
-            %wide = arith.constant 7 : u64;
-            %next_a = arith.add %a, %one <{ overflow = #builtin.overflow<unchecked> }>;
-            %next_b = arith.add %b, %wide <{ overflow = #builtin.overflow<unchecked> }>;
-            %limit = arith.constant 4 : u32;
-            %done = arith.eq %next_a, %limit;
+        let source = r#"builtin.function public extern("C") @cycle(%a: i32, %b: i64) -> (i32, i64) {
+            %one = arith.constant 1 : i32;
+            %wide = arith.constant 7 : i64;
+            %next_a = arith.add %a, %one <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+            %next_b = arith.add %b, %wide <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+            %limit = arith.constant 4 : i32;
+            %done = arith.cmpi eq %next_a, %limit;
             cf.cond_br %done ^exit, ^again : (i1);
-        ^again: cf.br ^placeholder(%next_a, %next_b : u32, u64);
-        ^exit: builtin.ret %next_a, %next_b : (u32, u64);
-        ^placeholder(%y: u32, %z: u64): builtin.ret %y, %z : (u32, u64);
+        ^again: cf.br ^placeholder(%next_a, %next_b : i32, i64);
+        ^exit: builtin.ret %next_a, %next_b : (i32, i64);
+        ^placeholder(%y: i32, %z: i64): builtin.ret %y, %z : (i32, i64);
         };"#;
         let source = if invariant {
             source
-                .replace("@cycle(%a: u32, %b: u64)", "@cycle(%c: i1, %a: u32, %b: u64)")
+                .replace("@cycle(%a: i32, %b: i64)", "@cycle(%c: i1, %a: i32, %b: i64)")
                 .replace("cf.cond_br %done", "cf.cond_br %c")
                 .replace(
-                    "^placeholder(%next_a, %next_b : u32, u64)",
-                    "^placeholder(%c, %next_a, %next_b : i1, u32, u64)",
+                    "^placeholder(%next_a, %next_b : i32, i64)",
+                    "^placeholder(%c, %next_a, %next_b : i1, i32, i64)",
                 )
-                .replace("^placeholder(%y: u32, %z: u64)", "^placeholder(%x: i1, %y: u32, %z: u64)")
+                .replace("^placeholder(%y: i32, %z: i64)", "^placeholder(%x: i1, %y: i32, %z: i64)")
         } else {
             source.into()
         };
-        let function = parse::parse::<Function>(
-            ParserConfig::new(context.clone()),
-            Uri::new("entry.hir"),
-            &source,
-        )?;
+        let function =
+            parse::parse::<Function>(ParserConfig::new(context.clone()), "entry.hir", &source)
+                .into_result()?;
         let entry = function.borrow().body().entry_block_ref().unwrap();
         let args = entry.borrow().arguments().to_vec();
         let initial = args
             .iter()
             .map(|arg| {
                 let arg = arg.borrow();
-                (arg.ty().clone(), arg.span())
+                (arg.ty(), arg.span())
             })
             .collect::<Vec<_>>();
         let mut placeholder = function.borrow().body().body().back().as_pointer().unwrap();
@@ -763,7 +755,7 @@ mod canonical_entry_tests {
                 .iter()
                 .map(|arg| {
                     let arg = arg.borrow();
-                    (arg.ty().clone(), arg.span())
+                    (arg.ty(), arg.span())
                 })
                 .collect::<Vec<_>>(),
             initial
@@ -808,14 +800,15 @@ mod canonical_entry_tests {
         let context = Rc::new(Context::default());
         let module = parse::parse::<runic_core::dialects::builtin::Module>(
             ParserConfig::new(context.clone()),
-            Uri::new("nested.hir"),
+            "nested.hir",
             r#"builtin.module public @outer {
-            builtin.function public extern("C") @nested(%c: i1, %x: u32, %y: u32) -> u32 {
-                cf.cond_br %c ^join(%x : u32), ^join(%x : u32) : (i1);
-            ^join(%ret: u32): builtin.ret %ret : (u32);
+            builtin.function public extern("C") @nested(%c: i1, %x: i32, %y: i32) -> i32 {
+                cf.cond_br %c ^join(%x : i32), ^join(%x : i32) : (i1);
+            ^join(%ret: i32): builtin.ret %ret : (i32);
             };
         };"#,
-        )?;
+        )
+        .into_result()?;
         let function = module.borrow().functions().next().unwrap();
         let entry = function.borrow().body().entry_block_ref().unwrap();
         let args = entry.borrow().arguments().to_vec();

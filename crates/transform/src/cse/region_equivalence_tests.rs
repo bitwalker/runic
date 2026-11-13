@@ -2,7 +2,6 @@ use alloc::{boxed::Box, rc::Rc};
 
 use runic_core::{
     Context, Report,
-    diagnostics::Uri,
     dialects::builtin::{Function, FunctionRef},
     parse::{self, ParserConfig},
     pass::{Nesting, PassManager},
@@ -12,7 +11,8 @@ use runic_dialect_scf::If;
 use super::CommonSubexpressionElimination;
 
 fn parse_function(context: &Rc<Context>, source: &str) -> Result<FunctionRef, Report> {
-    parse::parse::<Function>(ParserConfig::new(context.clone()), Uri::new("regions.hir"), source)
+    parse::parse::<Function>(ParserConfig::new(context.clone()), "regions.hir", source)
+        .into_result()
 }
 
 #[test]
@@ -27,20 +27,20 @@ fn cse_reconciles_inline_locations_in_merged_regions() -> Result<(), Report> {
         let function = parse_function(
             &context,
             r#"
-builtin.function public extern("C") @regions(%c: i1, %a: u32, %b: u32) -> (u32, u32) {
+builtin.function public extern("C") @regions(%c: i1, %a: i32, %b: i32) -> (i32, i32) {
     %x = scf.if %c then {
-        %sum = arith.add %a, %b <{ overflow = #builtin.overflow<unchecked> }>;
-        scf.yield %sum : (u32);
+        %sum = arith.add %a, %b <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+        scf.yield %sum : (i32);
     } else {
-        scf.yield %b : (u32);
-    } : (i1) -> (u32);
+        scf.yield %b : (i32);
+    } : (i1) -> (i32);
     %y = scf.if %c then {
-        %sum2 = arith.add %a, %b <{ overflow = #builtin.overflow<unchecked> }>;
-        scf.yield %sum2 : (u32);
+        %sum2 = arith.add %a, %b <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+        scf.yield %sum2 : (i32);
     } else {
-        scf.yield %b : (u32);
-    } : (i1) -> (u32);
-    builtin.ret %x, %y : (u32, u32);
+        scf.yield %b : (i32);
+    } : (i1) -> (i32);
+    builtin.ret %x, %y : (i32, i32);
 };
 "#,
         )?;
@@ -85,20 +85,20 @@ fn cse_eliminates_equivalent_regions() -> Result<(), Report> {
     let function = parse_function(
         &context,
         r#"
-builtin.function public extern("C") @regions(%c: i1, %a: u32, %b: u32) -> (u32, u32) {
+builtin.function public extern("C") @regions(%c: i1, %a: i32, %b: i32) -> (i32, i32) {
     %x = scf.if %c then {
-        %sum = arith.add %a, %b <{ overflow = #builtin.overflow<unchecked> }>;
-        scf.yield %sum : (u32);
+        %sum = arith.add %a, %b <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+        scf.yield %sum : (i32);
     } else {
-        scf.yield %b : (u32);
-    } : (i1) -> (u32);
+        scf.yield %b : (i32);
+    } : (i1) -> (i32);
     %y = scf.if %c then {
-        %sum2 = arith.add %b, %a <{ overflow = #builtin.overflow<unchecked> }>;
-        scf.yield %sum2 : (u32);
+        %sum2 = arith.add %b, %a <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+        scf.yield %sum2 : (i32);
     } else {
-        scf.yield %b : (u32);
-    } : (i1) -> (u32);
-    builtin.ret %x, %y : (u32, u32);
+        scf.yield %b : (i32);
+    } : (i1) -> (i32);
+    builtin.ret %x, %y : (i32, i32);
 };
 "#,
     )?;
@@ -124,16 +124,16 @@ fn region_equivalence_maps_nested_values_and_preserves_captures() -> Result<(), 
 
     let context = Rc::new(Context::default());
     let source = r#"
-builtin.function public extern("C") @nested(%c: i1, %a: u32, %b: u32) -> u32 {
-    %first = arith.add %a, %b <{ overflow = #builtin.overflow<unchecked> }>;
-    %second = arith.add %a, %a <{ overflow = #builtin.overflow<unchecked> }>;
+builtin.function public extern("C") @nested(%c: i1, %a: i32, %b: i32) -> i32 {
+    %first = arith.add %a, %b <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+    %second = arith.add %a, %a <{ overflow = #builtin.overflow<unchecked unsigned> }>;
     %x = scf.if %c then {
-        %sum = arith.add %first, %second <{ overflow = #builtin.overflow<unchecked> }>;
-        scf.yield %sum : (u32);
+        %sum = arith.add %first, %second <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+        scf.yield %sum : (i32);
     } else {
-        scf.yield %b : (u32);
-    } : (i1) -> (u32);
-    builtin.ret %x : (u32);
+        scf.yield %b : (i32);
+    } : (i1) -> (i32);
+    builtin.ret %x : (i32);
 };
 "#;
     let lhs = parse_function(&context, source)?;
@@ -161,21 +161,21 @@ fn region_equivalence_preserves_branch_targets_and_case_keys() -> Result<(), Rep
 
     let context = Rc::new(Context::default());
     let source = r#"
-builtin.function public extern("C") @select(%sel: u32, %a: u32, %b: u32) -> u32 {
-    cf.switch %sel [#builtin.u32<1> -> ^one(%a : u32)], ^fallback(%b : u32) : (u32);
-^one(%x: u32):
-    builtin.ret %x : (u32);
-^fallback(%y: u32):
-    builtin.ret %y : (u32);
+builtin.function public extern("C") @select(%sel: i32, %a: i32, %b: i32) -> i32 {
+    cf.switch %sel [#builtin.i32<1> -> ^one(%a : i32)], ^fallback(%b : i32) : (i32);
+^one(%x: i32):
+    builtin.ret %x : (i32);
+^fallback(%y: i32):
+    builtin.ret %y : (i32);
 };
 "#;
     let lhs = parse_function(&context, source)?;
     let rhs =
         parse_function(&context, &source.replace("^one", "^renamed").replace("%x", "%renamed"))?;
     let different_key =
-        parse_function(&context, &source.replace("#builtin.u32<1>", "#builtin.u32<2>"))?;
+        parse_function(&context, &source.replace("#builtin.i32<1>", "#builtin.i32<2>"))?;
     let different_target =
-        parse_function(&context, &source.replace("^one(%a : u32)", "^fallback(%a : u32)"))?;
+        parse_function(&context, &source.replace("^one(%a : i32)", "^fallback(%a : i32)"))?;
     let flags = OperationEquivalenceFlags::IGNORE_LOCATIONS;
     let lhs = lhs.as_operation_ref();
     assert!(lhs.borrow().is_equivalent(&rhs.as_operation_ref().borrow(), flags));
@@ -186,32 +186,43 @@ builtin.function public extern("C") @select(%sel: u32, %a: u32, %b: u32) -> u32 
 
 #[test]
 fn region_equivalence_handles_graph_forward_references() {
-    use runic_core::{Builder, SourceSpan, equivalence::OperationEquivalenceFlags, testing::Test};
+    use runic_core::{
+        Builder, Ident, Signedness, SourceSpan, dialects::builtin::BuiltinOpBuilder,
+        equivalence::OperationEquivalenceFlags, testing::Test,
+    };
     use runic_dialect_arith::ArithOpBuilder;
 
-    let mut lhs = Test::named("forward_refs").in_module("forward_refs");
-    let mut rhs = Test::named("forward_refs").in_module("forward_refs");
-    for (test, reverse_allocation) in [(&mut lhs, false), (&mut rhs, true)] {
-        let block = test.module().borrow().body().entry_block_ref().unwrap();
+    // Both modules are built in one context: types and attributes are compared by their handles,
+    // which are unique only within a context.
+    let mut test = Test::named("forward_refs");
+    let mut modules = alloc::vec::Vec::new();
+    for reverse_allocation in [false, true] {
         let builder = test.builder_mut();
+        builder.clear_insertion_point();
+        let module = builder.create_module(Ident::with_empty_span("forward_refs".into())).unwrap();
+        let body = module.borrow().body().as_region_ref();
+        let block = builder.create_block(body, None, &[]);
         builder.set_insertion_point_to_end(block);
         // Opposite allocation order ensures address sorting cannot substitute for the SSA map.
         let (seven, nine) = if reverse_allocation {
-            let nine = builder.u32(9, SourceSpan::UNKNOWN);
-            (builder.u32(7, SourceSpan::UNKNOWN), nine)
+            let nine = builder.i32(9, SourceSpan::UNKNOWN);
+            (builder.i32(7, SourceSpan::UNKNOWN), nine)
         } else {
-            let seven = builder.u32(7, SourceSpan::UNKNOWN);
-            (seven, builder.u32(9, SourceSpan::UNKNOWN))
+            let seven = builder.i32(7, SourceSpan::UNKNOWN);
+            (seven, builder.i32(9, SourceSpan::UNKNOWN))
         };
-        let sum = builder.add_unchecked(seven, nine, SourceSpan::UNKNOWN).unwrap();
+        let sum = builder
+            .add_unchecked(seven, nine, Signedness::Unsigned, SourceSpan::UNKNOWN)
+            .unwrap();
         for value in [sum, seven, nine] {
             let mut op = value.borrow().get_defining_op().unwrap();
             op.borrow_mut().remove();
             op.insert_at_end(block);
         }
+        modules.push(module);
     }
-    assert!(lhs.module().as_operation_ref().borrow().is_equivalent(
-        &rhs.module().as_operation_ref().borrow(),
+    assert!(modules[0].as_operation_ref().borrow().is_equivalent(
+        &modules[1].as_operation_ref().borrow(),
         OperationEquivalenceFlags::IGNORE_LOCATIONS,
     ));
 }

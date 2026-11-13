@@ -566,17 +566,18 @@ impl PartialEq for OpKey {
 
 #[cfg(test)]
 mod tests {
-    use alloc::{boxed::Box, format, string::ToString, sync::Arc};
+    use alloc::{boxed::Box, format, string::ToString};
 
     use litcheck_filecheck::{filecheck, litcheck};
     use runic_core::{
-        Builder, PointerType, SourceSpan, Type,
+        Builder, SourceSpan,
         dialects::builtin::{BuiltinOpBuilder, Module},
         pass::{Nesting, PassManager},
         print::AsmPrinter,
         testing::Test,
     };
     use runic_dialect_arith::ArithOpBuilder;
+    use runic_dialect_cf::ControlFlowOpBuilder;
 
     use super::*;
 
@@ -613,7 +614,7 @@ mod tests {
             equivalence::{IgnoreValueEquivalence, OperationEquivalenceFlags},
         };
 
-        let mut test = Test::new("inline_equivalence", &[], &[Type::I32, Type::I32]);
+        let mut test = Test::new("inline_equivalence", |cx| ([], [cx.i32(), cx.i32()]));
         let (mut first, mut second) = {
             let mut builder = test.function_builder();
             let first = builder.i32(1, SourceSpan::UNKNOWN);
@@ -657,7 +658,7 @@ mod tests {
         use runic_core::dialects::debuginfo::attributes::INLINE_CALL_CHAIN_ATTR_NAME;
 
         for second_line in [None, Some(10), Some(20)] {
-            let mut test = Test::new("inline_constants", &[], &[Type::I32, Type::I32]);
+            let mut test = Test::new("inline_constants", |cx| ([], [cx.i32(), cx.i32()]));
             let (mut first, mut second) = {
                 let mut builder = test.function_builder();
                 let first = builder.i32(1, SourceSpan::UNKNOWN);
@@ -691,7 +692,7 @@ mod tests {
 
     #[test]
     fn simple_constant() {
-        let mut test = Test::new("simple_constant", &[], &[Type::I32, Type::I32]);
+        let mut test = Test::new("simple_constant", |cx| ([], [cx.i32(), cx.i32()]));
         {
             let mut builder = test.function_builder();
             let v0 = builder.i32(1, SourceSpan::UNKNOWN);
@@ -702,7 +703,7 @@ mod tests {
         test.apply_pass::<CommonSubexpressionElimination>(true).expect("invalid ir");
 
         let flags = Default::default();
-        let mut printer = AsmPrinter::new(test.context_rc(), &flags);
+        let mut printer = AsmPrinter::root(test.context_rc(), &flags);
         printer.print_operation(test.function().borrow());
         let output = format!("{}", printer.finish());
         filecheck!(
@@ -722,11 +723,10 @@ builtin.function public extern("C") @simple_constant() -> (i32, i32) {
 
     #[test]
     fn cse_eliminates_redundant_memory_reads_in_ssa_region() {
-        use runic_dialect_hir::HirOpBuilder;
+        use runic_core::dialects::test::TestOpBuilder;
 
-        let ptr_ty = Type::Ptr(Arc::new(PointerType::new(Type::U8)));
         let mut test =
-            Test::new("ssa_memory_reads", core::slice::from_ref(&ptr_ty), &[Type::U8, Type::U8]);
+            Test::new("ssa_memory_reads", |cx| ([cx.ptr_type(cx.i8())], [cx.i8(), cx.i8()]));
         {
             let mut builder = test.function_builder();
             let ptr = builder.entry_block().borrow().arguments()[0] as ValueRef;
@@ -738,19 +738,19 @@ builtin.function public extern("C") @simple_constant() -> (i32, i32) {
         test.apply_pass::<CommonSubexpressionElimination>(true).expect("invalid ir");
 
         let flags = Default::default();
-        let mut printer = AsmPrinter::new(test.context_rc(), &flags);
+        let mut printer = AsmPrinter::root(test.context_rc(), &flags);
         printer.print_operation(test.function().borrow());
         let output = format!("{}", printer.finish());
         filecheck!(
             output,
             r#"
-builtin.function public extern("C") @ssa_memory_reads(%0: ptr<u8, byte>) -> (u8, u8) {
-    // CHECK: [[LOAD:%\d+]] = hir.load %0;
-    %1 = hir.load %0;
-    %2 = hir.load %0;
+builtin.function public extern("C") @ssa_memory_reads(%0: ptr<i8>) -> (i8, i8) {
+    // CHECK: [[LOAD:%\d+]] = test.load %0;
+    %1 = test.load %0;
+    %2 = test.load %0;
 
-    // CHECK-NEXT: builtin.ret [[LOAD]], [[LOAD]] : (u8, u8);
-    builtin.ret %1, %2 : (u8, u8);
+    // CHECK-NEXT: builtin.ret [[LOAD]], [[LOAD]] : (i8, i8);
+    builtin.ret %1, %2 : (i8, i8);
 };
             "#
         );
@@ -758,20 +758,23 @@ builtin.function public extern("C") @ssa_memory_reads(%0: ptr<u8, byte>) -> (u8,
 
     #[test]
     fn cse_does_not_eliminate_memory_reads_in_graph_region() {
-        use runic_dialect_hir::HirOpBuilder;
+        use runic_core::dialects::test::TestOpBuilder;
 
         let mut test = Test::named("graph_memory_reads").in_module("graph_memory_reads");
         {
             let module_body = test.module().borrow().body().entry_block_ref().unwrap();
-            let builder = test.builder_mut();
+            let ptr_ty = test.context().ptr_type(test.context().i8());
+            let mut builder = test.builder_mut();
             builder.set_insertion_point_to_end(module_body);
 
-            let ptr_ty = Type::Ptr(Arc::new(PointerType::new(Type::U8)));
-            let addr = builder.u32(0, SourceSpan::UNKNOWN);
-            let ptr = builder.inttoptr(addr, ptr_ty, SourceSpan::UNKNOWN).unwrap();
-            let first = builder.load(ptr, SourceSpan::UNKNOWN).unwrap();
-            let second = builder.load(ptr, SourceSpan::UNKNOWN).unwrap();
-            builder.assert_eq(first, second, SourceSpan::UNKNOWN).unwrap();
+            let addr = builder.i32(0, SourceSpan::UNKNOWN);
+            let ptr =
+                builder.unrealized_conversion_cast(addr, ptr_ty, SourceSpan::UNKNOWN).unwrap();
+            let first = TestOpBuilder::load(&mut builder, ptr, SourceSpan::UNKNOWN).unwrap();
+            let second = TestOpBuilder::load(&mut builder, ptr, SourceSpan::UNKNOWN).unwrap();
+            let same =
+                ArithOpBuilder::eq(&mut builder, first, second, SourceSpan::UNKNOWN).unwrap();
+            builder.assert(same, "loads differ", SourceSpan::UNKNOWN).unwrap();
         }
 
         let module = test.module().as_operation_ref();
@@ -783,24 +786,23 @@ builtin.function public extern("C") @ssa_memory_reads(%0: ptr<u8, byte>) -> (u8,
         module.borrow().recursively_verify().expect("valid ir after CSE");
 
         let flags = Default::default();
-        let mut printer = AsmPrinter::new(test.context_rc(), &flags);
+        let mut printer = AsmPrinter::root(test.context_rc(), &flags);
         printer.print_operation(test.module().borrow());
         let output = format!("{}", printer.finish());
         filecheck!(
             output,
             r#"
 // CHECK-LABEL: builtin.module private @graph_memory_reads
-    // CHECK: [[ADDR:%\d+]] = arith.constant 0 : u32;
-    // CHECK-NEXT: [[PTR:%\d+]] = hir.int_to_ptr [[ADDR]] <{ ty = #builtin.type<ptr<u8, byte>> }>;
-    // CHECK-NEXT: [[FIRST:%\d+]] = hir.load [[PTR]];
-    // CHECK-NEXT: [[SECOND:%\d+]] = hir.load [[PTR]];
-    // CHECK-NEXT: hir.assert_eq [[FIRST]], [[SECOND]]
+    // CHECK: [[ADDR:%\d+]] = arith.constant 0 : i32;
+    // CHECK-NEXT: [[PTR:%\d+]] = builtin.unrealized_conversion_cast [[ADDR]] <{ ty = #builtin.type<ptr<i8>> }>;
+    // CHECK-NEXT: [[FIRST:%\d+]] = test.load [[PTR]];
+    // CHECK-NEXT: [[SECOND:%\d+]] = test.load [[PTR]];
+    // CHECK-NEXT: [[SAME:%\d+]] = arith.cmpi eq [[FIRST]], [[SECOND]];
+    // CHECK-NEXT: cf.assert [[SAME]], "loads differ";
             "#
         );
     }
 
-    /// Regression test for https://github.com/0xMiden/compiler/issues/1257
-    ///
     /// Commutative operations are equal under [OpKey] regardless of operand order, and the key
     /// hashes operands in the same canonical order equality compares them in, so both the
     /// identical and the operand-swapped duplicates must always be deduplicated. Previously the
@@ -810,7 +812,7 @@ builtin.function public extern("C") @ssa_memory_reads(%0: ptr<u8, byte>) -> (u8,
     #[test]
     fn cse_commutative_operand_order() {
         let mut test =
-            Test::new("commutative", &[Type::I32, Type::I32], &[Type::I32, Type::I32, Type::I32]);
+            Test::new("commutative", |cx| ([cx.i32(), cx.i32()], [cx.i32(), cx.i32(), cx.i32()]));
         {
             let mut builder = test.function_builder();
             let a = builder.entry_block().borrow().arguments()[0] as ValueRef;
@@ -824,7 +826,7 @@ builtin.function public extern("C") @ssa_memory_reads(%0: ptr<u8, byte>) -> (u8,
         test.apply_pass::<CommonSubexpressionElimination>(true).expect("invalid ir");
 
         let flags = Default::default();
-        let mut printer = AsmPrinter::new(test.context_rc(), &flags);
+        let mut printer = AsmPrinter::root(test.context_rc(), &flags);
         printer.print_operation(test.function().borrow());
         let output = format!("{}", printer.finish());
         filecheck!(
@@ -832,11 +834,11 @@ builtin.function public extern("C") @ssa_memory_reads(%0: ptr<u8, byte>) -> (u8,
             r#"
 builtin.function public extern("C") @commutative(%0: i32, %1: i32) -> (i32, i32, i32) {
     // CHECK: [[SUM:%\d+]] = arith.add %0, %1
-    %2 = arith.add %0, %1 <{ overflow = #builtin.overflow<checked> }> : i32;
+    %2 = arith.add %0, %1;
 
     // Both the operand-swapped and the identical duplicate are deduplicated.
-    %3 = arith.add %1, %0 <{ overflow = #builtin.overflow<checked> }> : i32;
-    %4 = arith.add %0, %1 <{ overflow = #builtin.overflow<checked> }> : i32;
+    %3 = arith.add %1, %0;
+    %4 = arith.add %0, %1;
 
     // CHECK-NEXT: builtin.ret [[SUM]], [[SUM]], [[SUM]] : (i32, i32, i32);
     builtin.ret %2, %3, %4 : (i32, i32, i32);
@@ -867,18 +869,16 @@ builtin.function public extern("C") @commutative(%0: i32, %1: i32) -> (i32, i32,
         hasher.0
     }
 
-    /// Directly pins the [OpKey] Hash/Eq contract that issue #1257 violated: whenever two
+    /// Directly pins the [OpKey] Hash/Eq contract: whenever two
     /// operations are equal under [OpKey], they must feed an identical byte stream to the hasher.
     /// A violation makes CSE deduplication depend on hash-bucket coincidence, i.e. on allocation
     /// addresses, which is non-deterministic. Recording the hash input (rather than comparing
     /// `finish()` values) keeps the check exact and independent of the concrete hasher.
     #[test]
     fn opkey_hash_is_consistent_with_eq() {
-        let mut test = Test::new(
-            "opkey_contract",
-            &[Type::I32, Type::I32],
-            &[Type::I32, Type::I32, Type::I32, Type::I32],
-        );
+        let mut test = Test::new("opkey_contract", |cx| {
+            ([cx.i32(), cx.i32()], [cx.i32(), cx.i32(), cx.i32(), cx.i32()])
+        });
         let (ab, ba, ab_again, aa) = {
             let mut builder = test.function_builder();
             let a = builder.entry_block().borrow().arguments()[0] as ValueRef;
@@ -913,8 +913,7 @@ builtin.function public extern("C") @commutative(%0: i32, %1: i32) -> (i32, i32,
         assert_ne!(opkey_hash_stream(OpKey(ab)), opkey_hash_stream(OpKey(aa)));
     }
 
-    /// Sentinel for the exact regression that caused issue #1257: [DefaultValueHasher] must hash a
-    /// value by its thin address only. Hashing the fat pointer instead (data address plus the
+    /// [DefaultValueHasher] must hash a value by its thin address only. Hashing the fat pointer instead (data address plus the
     /// vtable pointer, which can differ for the same value across codegen units) makes equal CSE
     /// keys hash differently, which is what made deduplication non-deterministic.
     #[test]
@@ -923,7 +922,7 @@ builtin.function public extern("C") @commutative(%0: i32, %1: i32) -> (i32, i32,
 
         use runic_core::equivalence::{DefaultValueHasher, ValueHasher};
 
-        let mut test = Test::new("value_hasher", &[Type::I32], &[Type::I32]);
+        let mut test = Test::new("value_hasher", |cx| ([cx.i32()], [cx.i32()]));
         let value = {
             let mut builder = test.function_builder();
             let a = builder.entry_block().borrow().arguments()[0] as ValueRef;
@@ -940,13 +939,13 @@ builtin.function public extern("C") @commutative(%0: i32, %1: i32) -> (i32, i32,
         assert_eq!(
             via_hasher.0, via_thin_address.0,
             "DefaultValueHasher must hash only the thin value address; hashing the fat pointer \
-             reintroduces the non-determinism of issue #1257"
+             makes CSE deduplication non-deterministic"
         );
     }
 
     #[test]
     fn basic() {
-        let mut test = Test::new("basic", &[], &[Type::I32, Type::I32]);
+        let mut test = Test::new("basic", |cx| ([], [cx.i32(), cx.i32()]));
         {
             let mut builder = test.function_builder();
             let v0 = builder.i32(0, SourceSpan::UNKNOWN);
@@ -960,7 +959,7 @@ builtin.function public extern("C") @commutative(%0: i32, %1: i32) -> (i32, i32,
         test.apply_pass::<CommonSubexpressionElimination>(true).expect("invalid ir");
 
         let flags = Default::default();
-        let mut printer = AsmPrinter::new(test.context_rc(), &flags);
+        let mut printer = AsmPrinter::root(test.context_rc(), &flags);
         printer.print_operation(test.function().borrow());
         let output = format!("{}", printer.finish());
         filecheck!(
@@ -974,9 +973,9 @@ builtin.function public extern("C") @basic() -> (i32, i32) {
     // CHECK-NEXT: [[V2:%\d+]] = arith.constant 1 : i32;
     %2 = arith.constant 1 : i32;
 
-    // CHECK-NEXT: [[V3:%\d+]] = arith.mul [[V0]], [[V2]] <{ overflow = #builtin.overflow<checked> }>
-    %3 = arith.mul %0, %2 <{ overflow = #builtin.overflow<checked> }>
-    %4 = arith.mul %1, %2 <{ overflow = #builtin.overflow<checked> }>
+    // CHECK-NEXT: [[V3:%\d+]] = arith.mul [[V0]], [[V2]];
+    %3 = arith.mul %0, %2;
+    %4 = arith.mul %1, %2;
 
     // CHECK-NEXT: builtin.ret [[V3]], [[V3]] : (i32, i32);
     builtin.ret %3, %3 : (i32, i32);
@@ -987,7 +986,7 @@ builtin.function public extern("C") @basic() -> (i32, i32) {
 
     #[test]
     fn many() {
-        let mut test = Test::new("many", &[Type::I32, Type::I32], &[Type::I32]);
+        let mut test = Test::new("many", |cx| ([cx.i32(), cx.i32()], [cx.i32()]));
         {
             let mut builder = test.function_builder();
             let [v0, v1] = *builder.entry_block().borrow().arguments()[0..2].as_array().unwrap();
@@ -1009,30 +1008,30 @@ builtin.function public extern("C") @basic() -> (i32, i32) {
         test.apply_pass::<CommonSubexpressionElimination>(true).expect("invalid ir");
 
         let flags = Default::default();
-        let mut printer = AsmPrinter::new(test.context_rc(), &flags);
+        let mut printer = AsmPrinter::root(test.context_rc(), &flags);
         printer.print_operation(test.function().borrow());
         let output = format!("{}", printer.finish());
         filecheck!(
             output,
             r#"
 builtin.function public extern("C") @many(%0: i32, %1: i32) -> i32 {
-    // CHECK: [[V2:%\d+]] = arith.add %{{\d+}}, %{{\d+}} <{ overflow = #builtin.overflow<checked> }>;
-    %2 = arith.add %0, %1 <{ overflow = #builtin.overflow<checked> }>;
-    %3 = arith.add %0, %1 <{ overflow = #builtin.overflow<checked> }>;
-    %4 = arith.add %0, %1 <{ overflow = #builtin.overflow<checked> }>;
-    %5 = arith.add %0, %1 <{ overflow = #builtin.overflow<checked> }>;
+    // CHECK: [[V2:%\d+]] = arith.add %{{\d+}}, %{{\d+}};
+    %2 = arith.add %0, %1;
+    %3 = arith.add %0, %1;
+    %4 = arith.add %0, %1;
+    %5 = arith.add %0, %1;
 
-    // CHECK-NEXT: [[V6:%\d+]] = arith.add [[V2]], [[V2]] <{ overflow = #builtin.overflow<checked> }>;
-    %6 = arith.add %2, %3 <{ overflow = #builtin.overflow<checked> }>;
-    %7 = arith.add %4, %5 <{ overflow = #builtin.overflow<checked> }>;
-    %8 = arith.add %2, %4 <{ overflow = #builtin.overflow<checked> }>;
+    // CHECK-NEXT: [[V6:%\d+]] = arith.add [[V2]], [[V2]];
+    %6 = arith.add %2, %3;
+    %7 = arith.add %4, %5;
+    %8 = arith.add %2, %4;
 
-    // CHECK-NEXT: [[V9:%\d+]] = arith.add [[V6]], [[V6]] <{ overflow = #builtin.overflow<checked> }>;
-    %9 = arith.add %6, %7 <{ overflow = #builtin.overflow<checked> }>;
-    %10 = arith.add %7, %8 <{ overflow = #builtin.overflow<checked> }>;
+    // CHECK-NEXT: [[V9:%\d+]] = arith.add [[V6]], [[V6]];
+    %9 = arith.add %6, %7;
+    %10 = arith.add %7, %8;
 
-    // CHECK-NEXT: [[V11:%\d+]] = arith.add [[V9]], [[V9]] <{ overflow = #builtin.overflow<checked> }>;
-    %11 = arith.add %9, %10 <{ overflow = #builtin.overflow<checked> }>;
+    // CHECK-NEXT: [[V11:%\d+]] = arith.add [[V9]], [[V9]];
+    %11 = arith.add %9, %10;
 
     // CHECK-NEXT: builtin.ret [[V11]] : (i32);
     builtin.ret %11 : (i32);
@@ -1044,7 +1043,7 @@ builtin.function public extern("C") @many(%0: i32, %1: i32) -> i32 {
     /// Check that operations are not eliminated if they have different operands.
     #[test]
     fn ops_with_different_operands_are_not_elimited() {
-        let mut test = Test::new("different_operands", &[], &[Type::I32, Type::I32]);
+        let mut test = Test::new("different_operands", |cx| ([], [cx.i32(), cx.i32()]));
         {
             let mut builder = test.function_builder();
             let v0 = builder.i32(0, SourceSpan::UNKNOWN);
@@ -1055,7 +1054,7 @@ builtin.function public extern("C") @many(%0: i32, %1: i32) -> i32 {
         test.apply_pass::<CommonSubexpressionElimination>(true).expect("invalid ir");
 
         let flags = Default::default();
-        let mut printer = AsmPrinter::new(test.context_rc(), &flags);
+        let mut printer = AsmPrinter::root(test.context_rc(), &flags);
         printer.print_operation(test.function().borrow());
         let output = format!("{}", printer.finish());
         filecheck!(
@@ -1077,19 +1076,20 @@ builtin.function public extern("C") @different_operands() -> (i32, i32) {
     /// Check that operations are not eliminated if they have different result types.
     #[test]
     fn ops_with_different_result_types_are_not_elimited() {
-        let mut test = Test::new("different_results", &[Type::I32], &[Type::I64, Type::I128]);
+        let mut test = Test::new("different_results", |cx| ([cx.i32()], [cx.i64(), cx.i128()]));
+        let (i64_ty, i128_ty) = (test.context().i64(), test.context().i128());
         {
             let mut builder = test.function_builder();
             let v0 = builder.entry_block().borrow().arguments()[0] as ValueRef;
-            let v1 = builder.sext(v0, Type::I64, SourceSpan::UNKNOWN).unwrap();
-            let v2 = builder.sext(v0, Type::I128, SourceSpan::UNKNOWN).unwrap();
+            let v1 = builder.sext(v0, i64_ty, SourceSpan::UNKNOWN).unwrap();
+            let v2 = builder.sext(v0, i128_ty, SourceSpan::UNKNOWN).unwrap();
             builder.ret([v1, v2], SourceSpan::UNKNOWN).unwrap();
         }
 
         test.apply_pass::<CommonSubexpressionElimination>(true).expect("invalid ir");
 
         let flags = Default::default();
-        let mut printer = AsmPrinter::new(test.context_rc(), &flags);
+        let mut printer = AsmPrinter::root(test.context_rc(), &flags);
         printer.print_operation(test.function().borrow());
         let output = format!("{}", printer.finish());
         filecheck!(
@@ -1111,20 +1111,25 @@ builtin.function public extern("C") @different_results(%0: i32) -> (i64, i128) {
     /// Check that operations are not eliminated if they have different attributes.
     #[test]
     fn ops_with_different_attributes_are_not_elimited() {
-        let mut test = Test::new("different_attributes", &[Type::I32], &[Type::I32, Type::I32]);
+        use runic_core::Signedness;
+
+        let mut test = Test::new("different_attributes", |cx| ([cx.i32()], [cx.i32(), cx.i32()]));
         {
             let mut builder = test.function_builder();
             let v0 = builder.entry_block().borrow().arguments()[0] as ValueRef;
             let v1 = builder.i32(1, SourceSpan::UNKNOWN);
-            let v2 = builder.add(v0, v1, SourceSpan::UNKNOWN).unwrap();
-            let v3 = builder.add_unchecked(v0, v1, SourceSpan::UNKNOWN).unwrap();
+            let v2 =
+                builder.add_checked(v0, v1, Signedness::Unsigned, SourceSpan::UNKNOWN).unwrap();
+            let v3 = builder
+                .add_unchecked(v0, v1, Signedness::Unsigned, SourceSpan::UNKNOWN)
+                .unwrap();
             builder.ret([v2, v3], SourceSpan::UNKNOWN).unwrap();
         }
 
         test.apply_pass::<CommonSubexpressionElimination>(true).expect("invalid ir");
 
         let flags = Default::default();
-        let mut printer = AsmPrinter::new(test.context_rc(), &flags);
+        let mut printer = AsmPrinter::root(test.context_rc(), &flags);
         printer.print_operation(test.function().borrow());
         let output = format!("{}", printer.finish());
         filecheck!(
@@ -1134,11 +1139,11 @@ builtin.function public extern("C") @different_attributes(%0: i32) -> (i32, i32)
     // CHECK: [[V1:%\d+]] = arith.constant 1 : i32;
     v1 = arith.constant 1 : i32;
 
-    // CHECK-NEXT: [[V2:%\d+]] = arith.add %0, %1 <{ overflow = #builtin.overflow<checked> }>;
-    v2 = arith.add %0, %1 <{ overflow = #builtin.overflow<checked> }>;
+    // CHECK-NEXT: [[V2:%\d+]] = arith.add %0, %1 <{ overflow = #builtin.overflow<checked unsigned> }>;
+    v2 = arith.add %0, %1 <{ overflow = #builtin.overflow<checked unsigned> }>;
 
-    // CHECK-NEXT: [[V3:%\d+]] = arith.add %0, %1 <{ overflow = #builtin.overflow<unchecked> }>;
-    v3 = arith.add %0, %1 <{ overflow = #builtin.overflow<unchecked> }>;
+    // CHECK-NEXT: [[V3:%\d+]] = arith.add %0, %1 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+    v3 = arith.add %0, %1 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
 
     // CHECK-NEXT: builtin.ret [[V2]], [[V3]] : (i32, i32);
     builtin.ret %2, %3 : (i32, i32);
@@ -1147,19 +1152,23 @@ builtin.function public extern("C") @different_attributes(%0: i32) -> (i32, i32)
         );
     }
 
+    /// Identical effectful operations (asserts and stores) are neither erased, merged, nor
+    /// reordered by dead-code elimination, CSE, control-flow sinking or operand sinking.
     #[test]
-    fn generic_event_effect_order_survives_dce_cse_and_sinking() {
-        use runic_dialect_hir::HirOpBuilder;
-        let mut test = Test::new("generic_barriers", &[Type::Felt], &[]);
+    fn generic_effect_order_survives_dce_cse_and_sinking() {
+        use runic_core::dialects::test::TestOpBuilder;
+
+        let mut test =
+            Test::new("generic_barriers", |cx| ([cx.i1(), cx.ptr_type(cx.i32()), cx.i32()], []));
         {
             let mut b = test.function_builder();
-            let id = b.entry_block().borrow().arguments()[0] as ValueRef;
-            b.emit_event(id, SourceSpan::UNKNOWN).unwrap();
-            b.emit_event_imm(runic_core::Felt::from(700001u32), SourceSpan::UNKNOWN)
-                .unwrap();
-            b.emit_event(id, SourceSpan::UNKNOWN).unwrap();
-            b.emit_event_imm(runic_core::Felt::from(700001u32), SourceSpan::UNKNOWN)
-                .unwrap();
+            let [cond, ptr, value] =
+                *b.entry_block().borrow().arguments()[0..3].as_array().unwrap();
+            let (cond, ptr, value) = (cond as ValueRef, ptr as ValueRef, value as ValueRef);
+            b.assert(cond, "barrier", SourceSpan::UNKNOWN).unwrap();
+            b.store(ptr, value, SourceSpan::UNKNOWN).unwrap();
+            b.assert(cond, "barrier", SourceSpan::UNKNOWN).unwrap();
+            b.store(ptr, value, SourceSpan::UNKNOWN).unwrap();
             b.ret([], SourceSpan::UNKNOWN).unwrap();
         }
         let expected = test
@@ -1184,24 +1193,19 @@ builtin.function public extern("C") @different_attributes(%0: i32) -> (i32, i32)
             .iter()
             .map(|op| op.as_operation_ref())
             .collect::<Vec<_>>();
-        assert_eq!(
-            actual, expected,
-            "effectful events with dead results must retain identity and order"
-        );
+        assert_eq!(actual, expected, "effectful operations must retain identity and order");
     }
 
     /// Check that operations with side effects are not eliminated.
     #[test]
     fn ops_with_side_effects_are_not_elimited() {
-        use runic_dialect_hir::HirOpBuilder;
+        use runic_core::dialects::test::TestOpBuilder;
 
-        let byte_ptr = Type::Ptr(Arc::new(PointerType::new(Type::U8)));
-        let mut test =
-            Test::new("side_effect", core::slice::from_ref(&byte_ptr), &[Type::U8, Type::U8]);
+        let mut test = Test::new("side_effect", |cx| ([cx.ptr_type(cx.i8())], [cx.i8(), cx.i8()]));
         {
             let mut builder = test.function_builder();
             let v0 = builder.entry_block().borrow().arguments()[0] as ValueRef;
-            let v1 = builder.u8(1, SourceSpan::UNKNOWN);
+            let v1 = builder.i8(1, SourceSpan::UNKNOWN);
             builder.store(v0, v1, SourceSpan::UNKNOWN).unwrap();
             let v2 = builder.load(v0, SourceSpan::UNKNOWN).unwrap();
             builder.store(v0, v1, SourceSpan::UNKNOWN).unwrap();
@@ -1212,31 +1216,99 @@ builtin.function public extern("C") @different_attributes(%0: i32) -> (i32, i32)
         test.apply_pass::<CommonSubexpressionElimination>(true).expect("invalid ir");
 
         let flags = Default::default();
-        let mut printer = AsmPrinter::new(test.context_rc(), &flags);
+        let mut printer = AsmPrinter::root(test.context_rc(), &flags);
         printer.print_operation(test.function().borrow());
         let output = format!("{}", printer.finish());
         std::println!("{output}");
         filecheck!(
             output,
             r#"
-builtin.function public extern("C") @side_effect(%0: ptr<u8, byte>) -> (u8, u8) {
-    // CHECK: [[V1:%\d+]] = arith.constant 1 : u8;
-    %1 = arith.constant 1 : u8;
+builtin.function public extern("C") @side_effect(%0: ptr<i8>) -> (i8, i8) {
+    // CHECK: [[V1:%\d+]] = arith.constant 1 : i8;
+    %1 = arith.constant 1 : i8;
 
-    // CHECK-NEXT: hir.store %0, %1 : (ptr<u8, byte>, u8);
-    // CHECK-NEXT: [[V2:%\d+]] = hir.load %0;
-    hir.store %0, %1 : (ptr<u8, byte>, u8);
-    %2 = hir.load %0;
+    // CHECK-NEXT: test.store %0, %1 : (ptr<i8>, i8);
+    // CHECK-NEXT: [[V2:%\d+]] = test.load %0;
+    test.store %0, %1 : (ptr<i8>, i8);
+    %2 = test.load %0;
 
-    // CHECK-NEXT: hir.store %0, %1 : (ptr<u8, byte>, u8);
-    // CHECK-NEXT: [[V3:%\d+]] = hir.load %0;
-    hir.store v0, %1 : (ptr<u8, byte>, u8);
-    %3 = hir.load %0;
+    // CHECK-NEXT: test.store %0, %1 : (ptr<i8>, i8);
+    // CHECK-NEXT: [[V3:%\d+]] = test.load %0;
+    test.store %0, %1 : (ptr<i8>, i8);
+    %3 = test.load %0;
 
-    // CHECK-NEXT: builtin.ret [[V2]], [[V3]] : (u8, u8);
-    builtin.ret %2, %3 : (u8, u8);
+    // CHECK-NEXT: builtin.ret [[V2]], [[V3]] : (i8, i8);
+    builtin.ret %2, %3 : (i8, i8);
 };
             "#
+        );
+    }
+
+    /// Counts the `cf.assert` operations in the body of the test's function.
+    fn count_asserts(test: &Test) -> usize {
+        let function = test.function();
+        let function = function.borrow();
+        function
+            .body()
+            .body()
+            .iter()
+            .map(|block| {
+                block.body().iter().filter(|op| op.is::<runic_dialect_cf::Assert>()).count()
+            })
+            .sum()
+    }
+
+    /// Two identical `cf.assert` operations in one block are both kept: an assert is never merged.
+    #[test]
+    fn identical_asserts_in_one_block_are_not_merged() {
+        let mut test = Test::new("identical_asserts", |cx| ([cx.i1()], []));
+        {
+            let mut builder = test.function_builder();
+            let cond = builder.entry_block().borrow().arguments()[0] as ValueRef;
+            builder.assert(cond, "m", SourceSpan::UNKNOWN).unwrap();
+            builder.assert(cond, "m", SourceSpan::UNKNOWN).unwrap();
+            builder.ret(None, SourceSpan::UNKNOWN).unwrap();
+        }
+
+        test.apply_pass::<CommonSubexpressionElimination>(true).expect("invalid ir");
+
+        assert_eq!(count_asserts(&test), 2);
+        let flags = Default::default();
+        let mut printer = AsmPrinter::root(test.context_rc(), &flags);
+        printer.print_operation(test.function().borrow());
+        let output = format!("{}", printer.finish());
+        filecheck!(
+            output,
+            r#"
+// CHECK: cf.assert %0, "m";
+// CHECK-NEXT: cf.assert %0, "m";
+// CHECK-NEXT: builtin.ret;
+            "#
+        );
+    }
+
+    /// An assert in a dominated block is not replaced by an identical one in its dominator.
+    #[test]
+    fn dominated_assert_is_not_replaced_by_dominating_one() {
+        let mut test = Test::new("dominated_assert", |cx| ([cx.i1()], []));
+        let next = {
+            let mut builder = test.function_builder();
+            let cond = builder.entry_block().borrow().arguments()[0] as ValueRef;
+            let next = builder.create_block();
+            builder.assert(cond, "m", SourceSpan::UNKNOWN).unwrap();
+            builder.br(next, [], SourceSpan::UNKNOWN).unwrap();
+            builder.switch_to_block(next);
+            builder.assert(cond, "m", SourceSpan::UNKNOWN).unwrap();
+            builder.ret(None, SourceSpan::UNKNOWN).unwrap();
+            next
+        };
+
+        test.apply_pass::<CommonSubexpressionElimination>(true).expect("invalid ir");
+
+        assert_eq!(count_asserts(&test), 2);
+        assert!(
+            next.borrow().body().iter().any(|op| op.is::<runic_dialect_cf::Assert>()),
+            "the dominated assert must stay in its block"
         );
     }
 
@@ -1245,14 +1317,15 @@ builtin.function public extern("C") @side_effect(%0: ptr<u8, byte>) -> (u8, u8) 
     fn proper_propagation_of_ops_down_dominance_tree() {
         use runic_dialect_scf::StructuredControlFlowOpBuilder;
 
-        let mut test = Test::new("down_propagate_while", &[], &[]);
+        let mut test = Test::new("down_propagate_while", |_| ([], []));
+        let i32_ty = test.context().i32();
         {
             let mut builder = test.function_builder();
             let v0 = builder.i32(0, SourceSpan::UNKNOWN);
             let v1 = builder.i32(1, SourceSpan::UNKNOWN);
             let v2 = builder.i32(4, SourceSpan::UNKNOWN);
             let while_op =
-                builder.r#while([v0, v1], &[Type::I32, Type::I32], SourceSpan::UNKNOWN).unwrap();
+                builder.r#while([v0, v1], &[i32_ty, i32_ty], SourceSpan::UNKNOWN).unwrap();
             builder.ret(None, SourceSpan::UNKNOWN).unwrap();
             {
                 let before_block = while_op.borrow().before().entry().as_block_ref();
@@ -1263,7 +1336,7 @@ builtin.function public extern("C") @side_effect(%0: ptr<u8, byte>) -> (u8, u8) 
                 let v4 = v4 as ValueRef;
                 let v5 = builder.i32(1, SourceSpan::UNKNOWN);
                 let v6 = builder.add(v3, v5, SourceSpan::UNKNOWN).unwrap();
-                let v7 = builder.lt(v6, v2, SourceSpan::UNKNOWN).unwrap();
+                let v7 = builder.slt(v6, v2, SourceSpan::UNKNOWN).unwrap();
                 builder.condition(v7, [v6, v4], SourceSpan::UNKNOWN).unwrap();
 
                 builder.switch_to_block(after_block);
@@ -1275,7 +1348,7 @@ builtin.function public extern("C") @side_effect(%0: ptr<u8, byte>) -> (u8, u8) 
         test.apply_pass::<CommonSubexpressionElimination>(true).expect("invalid ir");
 
         let flags = Default::default();
-        let mut printer = AsmPrinter::new(test.context_rc(), &flags);
+        let mut printer = AsmPrinter::root(test.context_rc(), &flags);
         printer.print_operation(test.function().borrow());
         let output = format!("{}", printer.finish());
         std::println!("output: {output}");
@@ -1294,11 +1367,11 @@ builtin.function public extern("C") @down_propagate_while() {
     // CHECK-NEXT: ^block{{\d}}([[V3:%\d+]]: i32, [[V4:%\d+]]: i32):
     %10, %11 = scf.while %0, %1 before {
     ^block1(%3: i32, %4: i32):
-        // CHECK-NEXT: [[V6:%\d+]] = arith.add [[V3]], [[V1]] <{ overflow = #builtin.overflow<checked> }>;
+        // CHECK-NEXT: [[V6:%\d+]] = arith.add [[V3]], [[V1]];
         %5 = arith.constant 1 : i32;
-        %6 = arith.add %3, %5 <{ overflow = #builtin.overflow<checked> }>;
-        // CHECK-NEXT: [[V7:%\d+]] = arith.lt [[V6]], [[V2]];
-        %7 = arith.lt %6, %2;
+        %6 = arith.add %3, %5;
+        // CHECK-NEXT: [[V7:%\d+]] = arith.cmpi slt [[V6]], [[V2]];
+        %7 = arith.cmpi slt %6, %2;
         // CHECK-NEXT: scf.condition [[V7]], [[V6]], [[V4]] : (i1, i32, i32);
         scf.condition %7, %6, %4 : (i1, i32, i32);
     } after {

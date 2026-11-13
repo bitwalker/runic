@@ -1440,9 +1440,10 @@ mod tests {
             test.entry_block().borrow().terminator().unwrap()
         };
 
-        let ret1 = define_returning_function(&mut test, "f1", Type::I32);
-        let ret2 = define_returning_function(&mut test, "f2", Type::I32);
-        let ret3 = define_returning_function(&mut test, "f3", Type::I64);
+        let (i32_ty, i64_ty) = (test.context().i32(), test.context().i64());
+        let ret1 = define_returning_function(&mut test, "f1", i32_ty);
+        let ret2 = define_returning_function(&mut test, "f2", i32_ty);
+        let ret3 = define_returning_function(&mut test, "f3", i64_ty);
 
         let k1 = ReturnLikeOpKey(ret1);
         let k2 = ReturnLikeOpKey(ret2);

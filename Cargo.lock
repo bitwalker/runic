@@ -1373,20 +1373,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "runic-dialect-hir"
-version = "0.1.0"
-dependencies = [
- "litcheck-filecheck",
- "log",
- "runic-analysis",
- "runic-core",
- "runic-dialect-arith",
- "runic-dialect-cf",
- "runic-dialect-scf",
- "thiserror",
-]
-
-[[package]]
 name = "runic-dialect-scf"
 version = "0.1.0"
 dependencies = [
@@ -1475,7 +1461,7 @@ dependencies = [
  "runic-analysis",
  "runic-core",
  "runic-dialect-arith",
- "runic-dialect-hir",
+ "runic-dialect-cf",
  "runic-dialect-scf",
 ]
 

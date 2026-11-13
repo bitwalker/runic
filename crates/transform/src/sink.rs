@@ -747,3 +747,58 @@ fn get_singly_executed_regions_to_sink(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use alloc::{boxed::Box, rc::Rc, string::ToString, vec::Vec};
+
+    use runic_core::{
+        Context, Report,
+        dialects::builtin::Function,
+        parse::{self, ParserConfig},
+        pass::{Nesting, PassManager},
+    };
+    use runic_dialect_cf::Assert;
+    use runic_dialect_scf::If;
+
+    use super::ControlFlowSink;
+
+    /// Control-flow sinking moves an effect-free definition used only inside a region into it,
+    /// but leaves a `cf.assert` before the region operation where it was written.
+    #[test]
+    fn assert_is_not_sunk_into_a_region() -> Result<(), Report> {
+        let context = Rc::new(Context::default());
+        let function = parse::parse::<Function>(
+            ParserConfig::new(context.clone()),
+            "sink_assert.hir",
+            r#"builtin.function public extern("C") @sink_assert(%c: i1, %a: i32, %b: i32) -> i32 {
+                %sum = arith.add %a, %b;
+                cf.assert %c, "m";
+                %x = scf.if %c then {
+                    scf.yield %sum : (i32);
+                } else {
+                    scf.yield %b : (i32);
+                } : (i1) -> (i32);
+                builtin.ret %x : (i32);
+            };"#,
+        )
+        .into_result()?;
+        let mut passes = PassManager::on::<Function>(context, Nesting::Implicit);
+        passes.add_pass(Box::<ControlFlowSink>::default());
+        passes.run(function.as_operation_ref())?;
+        function.as_operation_ref().borrow().recursively_verify()?;
+
+        let function = function.borrow();
+        let body = function.body();
+        let entry = body.entry();
+        let mut ops = entry.body().iter();
+        assert!(ops.next().unwrap().is::<Assert>(), "the assert must stay in the entry block");
+        let if_op = ops.next().unwrap();
+        let if_op = if_op.downcast_ref::<If>().unwrap();
+        let then_body = if_op.then_body();
+        let then_entry = then_body.entry();
+        let then_ops = then_entry.body().iter().map(|op| op.name().to_string()).collect::<Vec<_>>();
+        assert_eq!(then_ops, ["arith.add", "scf.yield"], "the addition is sunk into the region");
+        Ok(())
+    }
+}

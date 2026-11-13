@@ -323,4 +323,50 @@ mod tests {
             );
         }
     }
+
+    /// The canonicalizer keeps a `cf.assert` of a non-constant and of the constant `0`, and erases
+    /// one of the constant `1`.
+    #[test]
+    fn canonicalizer_erases_only_asserts_of_true() -> Result<(), Report> {
+        use alloc::{boxed::Box, vec::Vec};
+
+        use runic_core::{
+            dialects::builtin::Function,
+            parse::{self, ParserConfig},
+            pass::{Nesting, PassManager},
+        };
+
+        let context = Rc::new(Context::default());
+        let function = parse::parse::<Function>(
+            ParserConfig::new(context.clone()),
+            "asserts.hir",
+            r#"builtin.function public extern("C") @asserts(%c: i1) {
+                %true = arith.constant 1 : i1;
+                %false = arith.constant 0 : i1;
+                cf.assert %c, "unknown";
+                cf.assert %true, "true";
+                cf.assert %false, "false";
+                builtin.ret;
+            };"#,
+        )
+        .into_result()?;
+        let mut passes = PassManager::on::<Function>(context, Nesting::Implicit);
+        passes.add_pass(Box::<Canonicalizer>::default());
+        passes.run(function.as_operation_ref())?;
+        function.as_operation_ref().borrow().recursively_verify()?;
+
+        let function = function.borrow();
+        let messages = function
+            .body()
+            .entry()
+            .body()
+            .iter()
+            .filter_map(|op| {
+                op.downcast_ref::<runic_dialect_cf::Assert>()
+                    .map(|assert| assert.message().as_str().to_string())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(messages, ["unknown", "false"]);
+        Ok(())
+    }
 }

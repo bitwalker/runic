@@ -23,6 +23,6 @@ runic-analysis.workspace = true
 # NOTE: Use local paths for dev-only dependency to avoid relying on crates.io during packaging
 litcheck-filecheck.workspace = true
 runic-dialect-arith = { path = "../dialects/arith" }
-runic-dialect-hir = { path = "../dialects/hir" }
+runic-dialect-cf = { path = "../dialects/cf" }
 runic-dialect-scf = { path = "../dialects/scf" }
 runic-core = { path = "../core", features = ["logging"] }
