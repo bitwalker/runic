@@ -1,7 +1,9 @@
 use alloc::rc::Rc;
 use core::cell::RefCell;
 
-use super::{Align, DataLayoutSpec, Endianness, Layout, LayoutError, PointerSpec, TypeLayout};
+use super::{
+    AggregateType, Align, DataLayoutSpec, Endianness, Layout, LayoutError, PointerSpec, TypeLayout,
+};
 use crate::{
     Context, FxHashMap, FxHashSet, Op, Operation, Report, diagnostics::Spanned,
     dialects::builtin::attributes::DataLayoutAttr, types::Type,
@@ -199,6 +201,32 @@ impl DataLayout {
     /// The alignment of `ty` in bytes: a value of `ty` lies at a multiple of it.
     pub fn align_of(&self, ty: Type) -> Result<Align, LayoutError> {
         self.layout_of(ty).map(|layout| layout.align())
+    }
+
+    /// The byte offset and type of the element `path` selects inside a value of `ty`.
+    ///
+    /// Each index of `path` selects an element of the type the path has reached, as its
+    /// [AggregateType] numbers them, at the offset its layout gives. The empty path selects `ty`
+    /// itself, at offset 0. `ty` must have a layout; an index into a type that has no such
+    /// element, or no elements at all, is [LayoutError::NoSuchElement].
+    pub fn offset_of(&self, ty: Type, path: &[u32]) -> Result<(u64, Type), LayoutError> {
+        let mut laid_out = self.layout_of(ty)?;
+        let mut offset = 0;
+        let mut current = ty;
+        for &index in path {
+            let element = current
+                .as_trait::<dyn AggregateType>()
+                .and_then(|aggregate| aggregate.element_type(index))
+                .ok_or(LayoutError::NoSuchElement { ty: current, index })?;
+            let at = laid_out.fields().offset(u64::from(index)).unwrap_or_else(|| {
+                panic!("the layout of '{current}' has no offset for its element {index}")
+            });
+            // The element lies within `current`, which lies within `ty`, whose size is a `u64`
+            offset += at;
+            laid_out = self.layout_of(element)?;
+            current = element;
+        }
+        Ok((offset, current))
     }
 
     /// Stores `answer` as the layout of `ty` and returns it.

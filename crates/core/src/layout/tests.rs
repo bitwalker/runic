@@ -1322,6 +1322,71 @@ fn elements_of_aggregates() {
 }
 
 #[test]
+fn offsets_of_elements() {
+    let context = context();
+    let cx = &*context;
+    let layout = data_layout(&context, LITTLE_32);
+
+    let ty = parse_ty(&context, "struct<i8, array<struct<i16, i32>; 4>>");
+    let array = parse_ty(&context, "array<struct<i16, i32>; 4>");
+    let inner = parse_ty(&context, "struct<i16, i32>");
+    assert_eq!(layout.offset_of(ty, &[1, 2, 1]), Ok((4 + 2 * 8 + 4, cx.i32())));
+    assert_eq!(layout.offset_of(ty, &[]), Ok((0, ty)));
+    assert_eq!(layout.offset_of(ty, &[0]), Ok((0, cx.i8())));
+    assert_eq!(layout.offset_of(ty, &[1]), Ok((4, array)));
+    assert_eq!(layout.offset_of(ty, &[1, 3]), Ok((28, inner)));
+    assert_eq!(layout.offset_of(ty, &[1, 0, 0]), Ok((4, cx.i16())));
+
+    // Past the end, into a scalar
+    assert_eq!(layout.offset_of(ty, &[2]), Err(LayoutError::NoSuchElement { ty, index: 2 }));
+    assert_eq!(
+        layout.offset_of(ty, &[1, 4, 0]),
+        Err(LayoutError::NoSuchElement {
+            ty: array,
+            index: 4
+        })
+    );
+    assert_eq!(
+        layout.offset_of(ty, &[1, 0, 1, 0]),
+        Err(LayoutError::NoSuchElement {
+            ty: cx.i32(),
+            index: 0
+        })
+    );
+    assert_eq!(
+        layout.offset_of(cx.i8(), &[0]),
+        Err(LayoutError::NoSuchElement {
+            ty: cx.i8(),
+            index: 0
+        })
+    );
+
+    // Into an enum: the discriminant, a payload, a variant without one
+    let enum_ty = parse_ty(&context, "enum<i8; a: i32, b, c: struct<i8, i16>>");
+    assert_eq!(layout.offset_of(enum_ty, &[0]), Ok((0, cx.i8())));
+    assert_eq!(layout.offset_of(enum_ty, &[1]), Ok((4, cx.i32())));
+    assert_eq!(layout.offset_of(enum_ty, &[3, 1]), Ok((6, cx.i16())));
+    for index in [2, 4] {
+        assert_eq!(
+            layout.offset_of(enum_ty, &[index]),
+            Err(LayoutError::NoSuchElement { ty: enum_ty, index })
+        );
+    }
+
+    // A type without a layout has no offsets, even with an empty path
+    let fn_ty = cx.function_type([cx.i32()], [cx.i32()]);
+    let holder = parse_ty(&context, "struct<i32, (i32) -> i32>");
+    assert_eq!(layout.offset_of(holder, &[0]), Err(LayoutError::NoLayout(fn_ty)));
+    assert_eq!(layout.offset_of(fn_ty, &[]), Err(LayoutError::NoLayout(fn_ty)));
+    // The offset in a `transparent` struct and a packed one
+    let transparent = parse_ty(&context, "struct<transparent; struct<i8, i64>>");
+    assert_eq!(layout.offset_of(transparent, &[0, 1]), Ok((8, cx.i64())));
+    let packed = parse_ty(&context, "struct<packed(1); i8, array<i32; 2>>");
+    assert_eq!(layout.offset_of(packed, &[1, 1]), Ok((5, cx.i32())));
+    assert!(layout.is_idle());
+}
+
+#[test]
 fn a_type_holding_one_without_a_layout_names_it() {
     let context = context();
     let cx = &*context;
@@ -1388,6 +1453,7 @@ fn recursion_through_a_pointer_is_finite() {
     let layout = data_layout(&context, LITTLE_32);
     assert_eq!(shape(&layout, members[0]), Ok((8, 4, alloc::vec![0, 4])));
     assert_eq!(shape(&layout, members[1]), Ok((8, 4, alloc::vec![0])));
+    assert_eq!(layout.offset_of(members[1], &[0, 2]), Ok((4, cx.ptr_type(members[0]))));
     assert!(layout.is_idle());
 }
 
@@ -1417,6 +1483,7 @@ fn a_type_holding_itself_by_value_is_infinite() {
         assert_eq!(layout.layout_of(ty), Err(LayoutError::InfiniteSize(ty)), "{ty}");
         assert!(layout.is_idle());
         assert_eq!(layout.layout_of(ty), Err(LayoutError::InfiniteSize(ty)), "{ty}");
+        assert_eq!(layout.offset_of(ty, &[0]), Err(LayoutError::InfiniteSize(ty)), "{ty}");
         // A type holding it by value is infinite too; a pointer to it is not
         let array = cx.array_type(ty, 2);
         assert_eq!(layout.layout_of(array), Err(LayoutError::InfiniteSize(array)), "{ty}");
