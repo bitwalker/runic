@@ -4,50 +4,37 @@ use runic_core::{
     derive::{EffectOpInterface, OpParser, OpPrinter, operation},
     dialects::builtin::attributes::TypeAttr,
     effects::MemoryEffectOpInterface,
-    matchers::Matcher,
     traits::*,
     *,
 };
 
 use crate::*;
 
-/// The value of the constant `operand`, if it is an integer-like attribute of type `ty` holding a
-/// value as wide as a constant of `ty`.
-pub(super) fn constant_operand(operand: &Option<AttributeRef>, ty: Type) -> Option<Int> {
-    let operand = operand.as_ref()?.borrow();
-    let attr = operand.as_attr().as_trait::<dyn IntegerLikeAttr>()?;
-    let value = attr.as_int();
-    (attr.ty() == ty && Int::width_for_type(ty) == Some(value.width())).then_some(value)
-}
-
-/// Folds a resize of the constant operand of `op` to the attribute `resize` maps its value and the
-/// result width to, at the result type.
+/// Folds a resize of the constant operand of `op` to the value `resize` maps it and the result
+/// width to, at the result type.
 ///
 /// Only a cast that satisfies `rule`, the rule its verifier checks, folds: a cast that does not
-/// verify (an `isize` operand, the wrong width order) is left alone.
-///
-/// The fold creates a new attribute: the operand's attribute may be shared by other uses.
+/// verify (an `isize` operand of `trunc`, the wrong width order) is left alone.
 fn fold_resize(
     op: &Operation,
-    operand: &Option<AttributeRef>,
+    operands: &[Option<AttributeRef>],
     results: &mut SmallVec<[OpFoldResult; 1]>,
     rule: CastRule,
-    resize: impl FnOnce(Int, u32) -> Int,
+    resize: impl Fn(Int, u32) -> Int,
 ) -> FoldResult {
-    let operand_ty = op.operands()[0].borrow().as_value_ref().borrow().ty();
-    let result_ty = op.results()[0].borrow().ty();
+    let operand_ty = crate::fold::operand_type(op);
+    let result_ty = crate::fold::result_type(op, 0);
     if rule.check(operand_ty, result_ty).is_some() {
         return FoldResult::Failed;
     }
-    let (Some(value), Some(width)) = (
-        constant_operand(operand, operand_ty),
-        result_ty.integer_width().filter(|width| *width <= Int::MAX_WIDTH),
-    ) else {
+    let Some(width) = Int::width_for_type(result_ty) else {
         return FoldResult::Failed;
     };
-    let result = op.context_rc().int_attr(resize(value, width), result_ty);
-    results.push(OpFoldResult::Attribute(result.as_attribute_ref()));
-    FoldResult::Ok(())
+    let folded =
+        crate::fold::fold_ints(&op.context_rc(), operands, operand_ty, result_ty, |[a]| {
+            Some(resize(a, width))
+        });
+    crate::fold::push_folded(results, folded.map(|attr| [attr]))
 }
 
 /// What a cast operation requires of its operand type and its result type.
@@ -170,8 +157,8 @@ impl Canonicalizable for Trunc {
 
 impl Foldable for Trunc {
     fn fold(&self, results: &mut SmallVec<[OpFoldResult; 1]>) -> FoldResult {
-        let operand = matchers::foldable_operand().matches(&self.operand().as_operand_ref());
-        self.fold_with(&[operand], results)
+        let operands = crate::fold::operand_constants(self.as_operation());
+        self.fold_with(&operands, results)
     }
 
     fn fold_with(
@@ -179,13 +166,9 @@ impl Foldable for Trunc {
         operands: &[Option<AttributeRef>],
         results: &mut SmallVec<[OpFoldResult; 1]>,
     ) -> FoldResult {
-        fold_resize(
-            self.as_operation(),
-            &operands[0],
-            results,
-            CastRule::Narrower,
-            |value, width| value.trunc(width),
-        )
+        fold_resize(self.as_operation(), operands, results, CastRule::Narrower, |value, width| {
+            value.trunc(width)
+        })
     }
 }
 
@@ -209,8 +192,8 @@ cast_type_rules!(Zext, CastRule::Wider);
 
 impl Foldable for Zext {
     fn fold(&self, results: &mut SmallVec<[OpFoldResult; 1]>) -> FoldResult {
-        let operand = matchers::foldable_operand().matches(&self.operand().as_operand_ref());
-        self.fold_with(&[operand], results)
+        let operands = crate::fold::operand_constants(self.as_operation());
+        self.fold_with(&operands, results)
     }
 
     fn fold_with(
@@ -218,7 +201,7 @@ impl Foldable for Zext {
         operands: &[Option<AttributeRef>],
         results: &mut SmallVec<[OpFoldResult; 1]>,
     ) -> FoldResult {
-        fold_resize(self.as_operation(), &operands[0], results, CastRule::Wider, |value, width| {
+        fold_resize(self.as_operation(), operands, results, CastRule::Wider, |value, width| {
             value.zext(width)
         })
     }
@@ -245,8 +228,8 @@ cast_type_rules!(Sext, CastRule::Wider);
 
 impl Foldable for Sext {
     fn fold(&self, results: &mut SmallVec<[OpFoldResult; 1]>) -> FoldResult {
-        let operand = matchers::foldable_operand().matches(&self.operand().as_operand_ref());
-        self.fold_with(&[operand], results)
+        let operands = crate::fold::operand_constants(self.as_operation());
+        self.fold_with(&operands, results)
     }
 
     fn fold_with(
@@ -254,7 +237,7 @@ impl Foldable for Sext {
         operands: &[Option<AttributeRef>],
         results: &mut SmallVec<[OpFoldResult; 1]>,
     ) -> FoldResult {
-        fold_resize(self.as_operation(), &operands[0], results, CastRule::Wider, |value, width| {
+        fold_resize(self.as_operation(), operands, results, CastRule::Wider, |value, width| {
             value.sext(width)
         })
     }

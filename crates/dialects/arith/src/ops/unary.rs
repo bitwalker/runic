@@ -3,7 +3,6 @@ use alloc::rc::Rc;
 use runic_core::{
     derive::{EffectOpInterface, OpParser, OpPrinter, operation},
     effects::MemoryEffectOpInterface,
-    matchers::Matcher,
     traits::*,
     *,
 };
@@ -65,8 +64,8 @@ impl Foldable for Bnot {
             results.push(OpFoldResult::Value(inner.operand().as_value_ref()));
             return FoldResult::Ok(());
         }
-        let operand = matchers::foldable_operand().matches(&self.operand().as_operand_ref());
-        self.fold_with(&[operand], results)
+        let operands = crate::fold::operand_constants(self.as_operation());
+        self.fold_with(&operands, results)
     }
 
     fn fold_with(
@@ -78,12 +77,9 @@ impl Foldable for Bnot {
         if ty.integer_width() != Some(1) {
             return FoldResult::Failed;
         }
-        let Some(value) = super::coercions::constant_operand(&operands[0], ty) else {
-            return FoldResult::Failed;
-        };
-        let result = self.as_operation().context_rc().int_attr(!value, ty);
-        results.push(OpFoldResult::Attribute(result.as_attribute_ref()));
-        FoldResult::Ok(())
+        let context = self.as_operation().context_rc();
+        let folded = crate::fold::fold_ints(&context, operands, ty, ty, |[a]| Some(!a));
+        crate::fold::push_folded(results, folded.map(|attr| [attr]))
     }
 }
 
