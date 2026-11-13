@@ -8,6 +8,7 @@ mod local_variable;
 mod location;
 mod overflow;
 pub(crate) mod signature;
+mod signedness;
 mod string;
 mod symbol_ref;
 mod r#type;
@@ -28,6 +29,7 @@ pub use self::{
         AbiParam, ArgumentExtension, InvalidSignature, SextAttr, Signature, SignatureAttr,
         SretAttr, ZextAttr,
     },
+    signedness::{Signedness, SignednessAttr},
     string::StringAttr,
     symbol_ref::{SymbolRef, SymbolRefAttr},
     r#type::TypeAttr,

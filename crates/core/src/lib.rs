@@ -89,7 +89,7 @@ pub use self::{
         Attribute, AttributeName, AttributeRef, AttributeRegistration, AttributeValue,
         AttributeValueArg, IntoAttribute, NamedAttribute, NamedAttributeList, ReadyAttr,
     },
-    dialects::builtin::attributes::{Location, Overflow, Visibility},
+    dialects::builtin::attributes::{Location, Overflow, Signedness, Visibility},
     direction::{Backward, Direction, Forward},
     eq::{DynPartialEq, PartialEqable},
     folder::OperationFolder,

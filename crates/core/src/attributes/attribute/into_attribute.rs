@@ -213,6 +213,7 @@ mod tests {
             OverflowAttr,
             SextAttr,
             SignatureAttr,
+            SignednessAttr,
             SretAttr,
             ZextAttr,
             StringAttr,
