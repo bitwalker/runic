@@ -11,6 +11,7 @@ pub use self::{
     dce::DeadCodeAnalysis,
     integer_range::{
         ConstantIntRange, IntegerRangeAnalysis, IntegerRangeConfidence, IntegerValueRange,
+        operand_range_requirements_hold, value_range,
     },
     liveness::LivenessAnalysis,
     loops::{LoopAction, LoopState},
