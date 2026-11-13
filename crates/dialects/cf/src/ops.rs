@@ -1402,4 +1402,157 @@ builtin.function public extern(\"C\") @check(%c: i1) {
             "{err}"
         );
     }
+
+    /// The operands for which `cf.switch` and `cf.cond_br` know no successor: a selector that is
+    /// not 32 bits wide (even when its pattern would be a key's), a poison selector or condition,
+    /// and an unknown one. A `BoolAttr` condition names a successor.
+    #[test]
+    fn operands_that_name_no_successor() {
+        use runic_dialect_ub::PoisonAttr;
+
+        let mut test = Test::new("f", |cx| ([cx.i32(), cx.i1()], []));
+        let context = test.context_rc();
+        let selector = test.entry_block().borrow().arguments()[0] as ValueRef;
+        let cond = test.entry_block().borrow().arguments()[1] as ValueRef;
+        let (switch, cond_br) = {
+            let mut b = test.function_builder();
+            let one = b.create_block();
+            let other = b.create_block();
+            let then = b.create_block();
+            let otherwise = b.create_block();
+            let switch = b
+                .switch(
+                    selector,
+                    vec![SwitchCase::create(-1, one, vec![])],
+                    other,
+                    Vec::<ValueRef>::new(),
+                    SourceSpan::UNKNOWN,
+                )
+                .unwrap();
+            b.switch_to_block(one);
+            let cond_br = b
+                .cond_br(
+                    cond,
+                    then,
+                    Vec::<ValueRef>::new(),
+                    otherwise,
+                    Vec::<ValueRef>::new(),
+                    SourceSpan::UNKNOWN,
+                )
+                .unwrap();
+            for block in [other, then, otherwise] {
+                b.switch_to_block(block);
+                b.ret([], SourceSpan::UNKNOWN).unwrap();
+            }
+            (switch, cond_br)
+        };
+        let attr = |value: Int, width: u32| -> AttributeRef {
+            context.int_attr(value, context.int_type(width)).as_attribute_ref()
+        };
+        let poison: AttributeRef =
+            context.create_attribute::<PoisonAttr, _>(context.i32()).as_attribute_ref();
+        let switch = switch.borrow();
+        let switch: &Switch = &switch;
+        // 64-bit and 8-bit all-ones are not the key -1
+        assert!(switch.get_successor_for_operands(&[Some(attr(Int::from(-1i64), 64))]).is_none());
+        assert!(switch.get_successor_for_operands(&[Some(attr(Int::from(-1i8), 8))]).is_none());
+        assert!(switch.get_successor_for_operands(&[Some(poison)]).is_none());
+        assert!(switch.get_successor_for_operands(&[None]).is_none());
+        assert!(switch.get_successor_for_operands(&[Some(attr(Int::from(-1i32), 32))]).is_some());
+
+        let cond_br = cond_br.borrow();
+        let cond_br: &CondBr = &cond_br;
+        assert!(cond_br.get_successor_for_operands(&[Some(poison)]).is_none());
+        assert!(cond_br.get_successor_for_operands(&[None]).is_none());
+        let truth: AttributeRef = context.create_attribute::<BoolAttr, _>(true).as_attribute_ref();
+        assert!(cond_br.get_successor_for_operands(&[Some(truth)]).is_some());
+    }
+
+    /// Random messages (quotes, backslashes, control characters, non-ASCII text, `}>`) survive
+    /// text: the function round-trips in the hand-written form and with the assert in the generic
+    /// form, and the parsed assert has the message built.
+    #[test]
+    fn assert_messages_round_trip_in_both_forms() {
+        use runic_core::{
+            dialects::builtin::Function,
+            testing::text::{Rng, parse, round_trip},
+        };
+
+        const PIECES: [&str; 18] = [
+            "",
+            "a",
+            " ",
+            "\"",
+            "\\",
+            "\n",
+            "\t",
+            "\r",
+            "é",
+            "日本",
+            "\u{1f600}",
+            "}>",
+            "<{",
+            "%0",
+            ";",
+            "\\n",
+            "\u{7f}",
+            "'",
+        ];
+
+        let mut rng = Rng(0xcf_a55e27);
+        let mut failures = Vec::new();
+        let mut skipped = Vec::new();
+        for round in 0..300 {
+            let n = rng.below(6);
+            let message: String = (0..n).map(|_| rng.pick(&PIECES)).collect();
+            let mut test = Test::new("f", |cx| ([cx.i1()], []));
+            let cond = test.entry_block().borrow().arguments()[0] as ValueRef;
+            {
+                let mut b = test.function_builder();
+                b.assert(cond, message.as_str(), SourceSpan::UNKNOWN).unwrap();
+                b.ret([], SourceSpan::UNKNOWN).unwrap();
+            }
+            let function = test.function().as_operation_ref();
+            for failure in round_trip::<Function>(function, true, &mut skipped) {
+                failures.push(format!("round {round} message {message:?}: {failure}"));
+            }
+            let printed = format!("{}", function.borrow());
+            match parse::<Function>(&printed) {
+                Ok((_cx, parsed)) => {
+                    let back = assert_message(parsed);
+                    if back != message {
+                        failures.push(format!("message {message:?} came back as {back:?}"));
+                    }
+                }
+                Err(err) => failures.push(format!("message {message:?}: {err}")),
+            }
+        }
+        assert!(failures.is_empty(), "{} failures, first:\n{}", failures.len(), failures[0]);
+    }
+
+    /// `message` is required in the hand-written form and in the generic form; given in the
+    /// generic form's property dictionary, the assert prints in the hand-written form.
+    #[test]
+    fn assert_requires_its_message_in_both_forms() {
+        use runic_core::{dialects::builtin::Function, testing::text::parse};
+
+        let wrap = |body: &str| {
+            format!(
+                "builtin.function public extern(\"C\") @f(%0: i1) {{\n    {body}\n    \
+                 builtin.ret;\n}};"
+            )
+        };
+        for body in ["cf.assert %0;", "cf.assert %0, ;", "\"cf.assert\"(%0) : (i1) -> ();"] {
+            assert!(parse::<Function>(&wrap(body)).is_err(), "`{body}` parsed");
+        }
+        let err = parse::<Function>(&wrap("\"cf.assert\"(%0) : (i1) -> ();")).err().unwrap();
+        assert!(err.contains("missing required property 'message'"), "{err}");
+
+        let (_cx, function) = parse::<Function>(&wrap(
+            "\"cf.assert\"(%0) <{ message = #builtin.string<\"m\"> }> : (i1) -> ();",
+        ))
+        .unwrap();
+        let printed = format!("{}", function.as_operation_ref().borrow());
+        assert!(printed.contains("cf.assert %0, \"m\";"), "{printed}");
+    }
 }
