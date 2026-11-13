@@ -1,6 +1,6 @@
 use runic_core::{
-    BlockRef, Builder, BuilderExt, OpBuilder, Report, SourceSpan, UnsafeIntrusiveEntityRef,
-    ValueRef, dialects::builtin::FunctionBuilder,
+    BlockRef, Builder, BuilderExt, CompactString, OpBuilder, Report, SourceSpan,
+    UnsafeIntrusiveEntityRef, ValueRef, dialects::builtin::FunctionBuilder,
 };
 
 use crate::*;
@@ -64,6 +64,17 @@ pub trait ControlFlowOpBuilder<'f, B: ?Sized + Builder> {
         let op_builder = self.builder_mut().create::<Select, _>(span);
         let op = op_builder(cond, a, b)?;
         Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// A `cf.assert` that traps with `message` when `cond`, an `i1`, is `0`.
+    fn assert(
+        &mut self,
+        cond: ValueRef,
+        message: impl Into<CompactString>,
+        span: SourceSpan,
+    ) -> Result<UnsafeIntrusiveEntityRef<Assert>, Report> {
+        let op_builder = self.builder_mut().create::<Assert, _>(span);
+        op_builder(cond, message.into())
     }
 
     fn builder(&self) -> &B;

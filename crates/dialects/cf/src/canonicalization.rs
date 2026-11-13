@@ -1,3 +1,4 @@
+mod erase_true_assert;
 mod simplify_br_to_block_with_single_pred;
 mod simplify_br_to_return;
 mod simplify_cond_br_like_switch;
@@ -9,6 +10,7 @@ mod simplify_switch_fallback_overlap;
 mod split_critical_edges;
 
 pub use self::{
+    erase_true_assert::EraseTrueAssert,
     simplify_br_to_block_with_single_pred::SimplifyBrToBlockWithSinglePred,
     simplify_br_to_return::SimplifyBrToReturn,
     simplify_cond_br_like_switch::SimplifyCondBrLikeSwitch,

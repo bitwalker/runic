@@ -3,7 +3,7 @@ use alloc::{rc::Rc, vec::Vec};
 use runic_core::{
     attributes::IntegerLikeAttr,
     derive::{EffectOpInterface, OpParser, OpPrinter, operation},
-    dialects::builtin::attributes::I32Attr,
+    dialects::builtin::attributes::{I32Attr, StringAttr},
     effects::*,
     matchers::Matcher,
     patterns::RewritePatternSet,
@@ -368,6 +368,72 @@ impl Foldable for Select {
             }
         }
         FoldResult::Failed
+    }
+}
+
+/// A check that traps with `message` when `cond`, an `i1`, is `0`: `cf.assert %cond, "message";`.
+///
+/// It has no results and is not a terminator: when `cond` is `1`, execution continues with the
+/// next operation. It declares a write effect, so dead-code elimination keeps it and CSE never
+/// merges or removes one. Its one canonicalization erases an assert whose condition is the constant
+/// `1`; an assert of the constant `0` is the trap, and stays.
+#[derive(EffectOpInterface)]
+#[operation(
+    dialect = ControlFlowDialect,
+    implements(MemoryEffectOpInterface, OpPrinter)
+)]
+#[effects(MemoryEffect(MemoryEffect::Write))]
+pub struct Assert {
+    #[operand]
+    cond: Bool,
+    #[attr(hidden)]
+    message: StringAttr,
+}
+
+impl Canonicalizable for Assert {
+    fn get_canonicalization_patterns(rewrites: &mut RewritePatternSet, context: Rc<Context>) {
+        rewrites.push(crate::canonicalization::EraseTrueAssert::new(context));
+    }
+}
+
+impl OpPrinter for Assert {
+    fn print(&self, printer: &mut print::AsmPrinter<'_>) {
+        let op = self.as_operation();
+        printer.print_space();
+        printer.print_value_uses(op.operands().group(0).as_value_range());
+        *printer += runic_core::formatter::const_text(", ");
+        printer.print_string(self.get_message().as_str());
+        if op.has_attributes() {
+            printer.print_space();
+            printer.print_keyword("attributes");
+            printer.print_space();
+            printer.print_attribute_dictionary(
+                op.attributes().iter().map(|attr| *attr.as_named_attribute()),
+            );
+        }
+    }
+}
+
+impl OpParser for Assert {
+    fn parse(state: &mut OperationState, parser: &mut dyn OpAsmParser<'_>) -> ParseResult {
+        let cond = parser.parse_operand(/*allow_result_number=*/ true)?;
+        parser.parse_comma()?;
+        let message = parser.parse_string()?.into_inner();
+        let mut attrs = SmallVec::default();
+        parser.parse_optional_attribute_dict_with_keyword(&mut attrs)?;
+
+        // The condition is a use of a value defined earlier, which carries its type, as in the
+        // derived format of the other operations.
+        let unknown = parser.context().unknown_type();
+        let cond = parser.resolve_operand(cond, unknown)?;
+        state.add_operand(cond);
+        state.add_attribute(
+            "message",
+            parser.context_rc().create_attribute::<StringAttr, _>(message),
+        );
+        state.attrs.extend(attrs);
+
+        Ok(())
     }
 }
 
@@ -1139,5 +1205,157 @@ builtin.function public extern(\"C\") @select(%sel: i32, %a: i32, %b: i32) -> i3
                 assert!(matches!(results[0], OpFoldResult::Value(v) if v == expected));
             }
         }
+    }
+
+    /// The message of the first `cf.assert` in the entry block of `function`.
+    fn assert_message(function: runic_core::dialects::builtin::FunctionRef) -> String {
+        let entry = function.borrow().entry_block();
+        let op = entry
+            .borrow()
+            .body()
+            .iter()
+            .find(|op| op.is::<Assert>())
+            .expect("expected a cf.assert")
+            .as_operation_ref();
+        let op = op.borrow();
+        op.downcast_ref::<Assert>().unwrap().get_message().as_str().into()
+    }
+
+    /// `cf.assert` builds, verifies, prints as `cf.assert %c, "message";` with the message
+    /// escaped, and parses back to the same message.
+    #[test]
+    fn assert_round_trips() -> Result<(), Report> {
+        let message = "say \"no\" \\ then\nstop";
+        let mut test = Test::new("check", |cx| ([cx.i1()], []));
+        let cond = test.function().borrow().entry_block().borrow().arguments()[0] as ValueRef;
+        {
+            let mut builder = test.function_builder();
+            let op = builder.assert(cond, message, SourceSpan::UNKNOWN)?;
+            assert_eq!(op.borrow().get_message().as_str(), message);
+            assert_eq!(op.borrow().cond().as_value_ref(), cond);
+            builder.ret([], SourceSpan::UNKNOWN)?;
+        }
+        let function = test.function();
+        function.borrow().as_operation().verify()?;
+        let text = format!("{}", function.borrow().as_operation());
+        expect![[r#"
+            builtin.function public extern("C") @check(%0: i1) {
+                cf.assert %0, "say \"no\" \\ then\nstop";
+                builtin.ret;
+            };"#]]
+        .assert_eq(&text);
+
+        let context = Rc::new(Context::default());
+        let (parsed, _) = parse_function_fixpoint(&context, "assert.hir", &text)?;
+        assert_eq!(assert_message(parsed), message);
+        Ok(())
+    }
+
+    /// Attributes that are not properties are written after the message and survive text.
+    #[test]
+    fn assert_keeps_other_attributes_in_text() -> Result<(), Report> {
+        let context = Rc::new(Context::default());
+        let source = "\
+builtin.function public extern(\"C\") @check(%c: i1) {
+    cf.assert %c, \"m\" attributes { note = #builtin.i32<7> };
+    builtin.ret;
+};";
+        let (function, printed) = parse_function_fixpoint(&context, "assert_attrs.hir", source)?;
+        expect![[r#"
+            builtin.function public extern("C") @check(%0: i1) {
+                cf.assert %0, "m" attributes { note = #builtin.i32<7> };
+                builtin.ret;
+            };"#]]
+        .assert_eq(&printed);
+        let function = function.borrow();
+        let op = function.body().entry().body().front().as_pointer().unwrap();
+        let op = op.borrow();
+        let note = op.get_attribute("note").expect("the attribute survives");
+        assert_eq!(*note.borrow().downcast_ref::<I32Attr>().unwrap().as_value(), 7);
+        Ok(())
+    }
+
+    /// The condition of `cf.assert` is an `i1`: an `i32` condition is rejected.
+    #[test]
+    fn assert_rejects_a_non_boolean_condition() {
+        let context = Rc::new(Context::default());
+        let source = "\
+builtin.function public extern(\"C\") @check(%c: i32) {
+    cf.assert %c, \"m\";
+    builtin.ret;
+};";
+        let error = parse_function_fixpoint(&context, "assert_i32.hir", source)
+            .err()
+            .expect("an i32 condition must be rejected");
+        let message = format!("{error}");
+        assert!(message.contains("invalid operand"), "{message}");
+        assert!(message.contains("1-bit integral type"), "{message}");
+
+        let mut test = Test::new("check", |cx| ([cx.i32()], []));
+        let cond = test.function().borrow().entry_block().borrow().arguments()[0] as ValueRef;
+        let error = test
+            .function_builder()
+            .assert(cond, "m", SourceSpan::UNKNOWN)
+            .err()
+            .expect("the builder must reject an i32 condition");
+        let message = format!("{error}");
+        assert!(message.contains("expected 1-bit integral type, got i32"), "{message}");
+    }
+
+    /// An unused `cf.assert` is not trivially dead, and two identical ones each have exactly a
+    /// write effect, so neither is removed or merged with the other.
+    #[test]
+    fn assert_is_kept_and_never_merged() {
+        let mut test = Test::new("check", |cx| ([cx.i1()], []));
+        let cond = test.function().borrow().entry_block().borrow().arguments()[0] as ValueRef;
+        let mut builder = test.function_builder();
+        let first = builder.assert(cond, "m", SourceSpan::UNKNOWN).unwrap();
+        let second = builder.assert(cond, "m", SourceSpan::UNKNOWN).unwrap();
+        for op in [first, second] {
+            let op = op.borrow();
+            let op = op.as_operation();
+            assert!(!op.implements::<dyn Terminator>());
+            assert!(!op.implements::<dyn ConstantLike>());
+            assert_eq!(op.num_results(), 0);
+            assert!(!op.is_trivially_dead());
+            assert!(!op.is_memory_effect_free());
+            assert!(op.has_memory_effect(MemoryEffect::Write));
+            assert!(op.has_single_memory_effect(MemoryEffect::Write));
+        }
+    }
+
+    /// Canonicalization erases an assert of the constant `1` and keeps an assert of the constant
+    /// `0` and of a value that is not constant.
+    #[test]
+    fn assert_of_true_is_erased() -> Result<(), Report> {
+        use alloc::boxed::Box;
+
+        use runic_core::patterns::RewritePattern;
+
+        use crate::canonicalization::{EraseTrueAssert, testing::apply_with_borrowing_listener};
+
+        let context = Rc::new(Context::default());
+        let source = "\
+builtin.function public extern(\"C\") @check(%c: i1) {
+    %t = arith.constant 1 : i1;
+    %f = arith.constant 0 : i1;
+    cf.assert %t, \"true\";
+    cf.assert %f, \"false\";
+    cf.assert %c, \"unknown\";
+    builtin.ret;
+};";
+        let (function, _) = parse_function_fixpoint(&context, "erase_true_assert.hir", source)?;
+        let pattern: Box<dyn RewritePattern> = Box::new(EraseTrueAssert::new(context.clone()));
+        assert!(apply_with_borrowing_listener(&context, function, pattern)?);
+        let printed = format!("{}", function.as_operation_ref().borrow());
+        expect![[r#"
+            builtin.function public extern("C") @check(%0: i1) {
+                %2 = arith.constant 0 : i1;
+                cf.assert %2, "false";
+                cf.assert %0, "unknown";
+                builtin.ret;
+            };"#]]
+        .assert_eq(&printed);
+        Ok(())
     }
 }
