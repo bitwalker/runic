@@ -11,6 +11,7 @@ use crate::{
     pass::{OperationPass, Pass, PassManager},
 };
 
+pub mod calls;
 pub mod text;
 
 /// Enable compiler-internal tracing and instrumentation during tests

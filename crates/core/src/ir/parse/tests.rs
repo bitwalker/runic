@@ -6493,3 +6493,178 @@ fn parse_holds_the_context_until_the_operation_is_downcast() {
         assert!(outcome.into_result().is_ok());
     }
 }
+
+/// Random functions, declarations and definitions, in every effect state and with locals: the
+/// text parses to the effects and locals written, prints back the same, and (a declaration) reads
+/// back the same from the generic form.
+#[test]
+fn fuzz_function_effects_and_locals_round_trip() {
+    use crate::{
+        CallableOpInterface, Op,
+        dialects::builtin::attributes::DeclaredEffects,
+        testing::{
+            calls::{declared_effects_text, random_declared_effects},
+            text::{Rng, describe, print_generic},
+        },
+    };
+
+    extern crate std;
+
+    const TYPES: [&str; 4] = ["i32", "i64", "ptr<i8>", "(i32) -> i32"];
+    const ROUNDS: usize = 600;
+    let seed = match std::env::var("CALLS_TEST_SEED") {
+        Ok(seed) => seed.parse().expect("CALLS_TEST_SEED is a u64"),
+        Err(_) => 0x3d2_0001,
+    };
+    let mut rng = Rng(seed);
+    let mut states = [0usize; 3];
+    let mut generic_errors = alloc::collections::BTreeMap::<String, usize>::new();
+    for round in 0..ROUNDS {
+        let round = format!("seed {seed:#x} (CALLS_TEST_SEED={seed}), round {round}");
+        let definition = rng.below(2) == 0;
+        let params = (0..rng.below(4)).map(|_| rng.pick(&TYPES)).collect::<Vec<_>>();
+        // a definition returns its first parameter, or nothing
+        let results = if definition {
+            if !params.is_empty() && rng.below(2) == 0 {
+                alloc::vec![params[0]]
+            } else {
+                Vec::new()
+            }
+        } else {
+            (0..rng.below(3)).map(|_| rng.pick(&TYPES)).collect::<Vec<_>>()
+        };
+        let effects = random_declared_effects(&mut rng, params.len(), results.len());
+        states[match &effects {
+            DeclaredEffects::Unknown => 0,
+            DeclaredEffects::Known(list) if list.is_empty() => 1,
+            _ => 2,
+        }] += 1;
+        let locals = (0..rng.below(3)).map(|_| rng.pick(&TYPES[..3])).collect::<Vec<_>>();
+        let locals_text = if locals.is_empty() {
+            String::new()
+        } else {
+            format!(" locals({})", locals.join(", "))
+        };
+        let results_text = match results.len() {
+            0 => String::new(),
+            1 if !results[0].starts_with('(') => format!(" -> {}", results[0]),
+            _ => format!(" -> ({})", results.join(", ")),
+        };
+        let source = if definition {
+            let params = params
+                .iter()
+                .enumerate()
+                .map(|(i, ty)| format!("%p{i}: {ty}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let ret = if results.is_empty() {
+                String::from("builtin.ret;")
+            } else {
+                format!("builtin.ret %p0 : ({});", results[0])
+            };
+            format!(
+                "builtin.function public extern(\"C\") @f({params}){results_text}{}{locals_text} \
+                 {{\n    {ret}\n}};",
+                declared_effects_text(&effects)
+            )
+        } else {
+            format!(
+                "builtin.function public extern(\"C\") @f({}){results_text}{}{locals_text};",
+                params.join(", "),
+                declared_effects_text(&effects)
+            )
+        };
+        let (_context, function) = crate::testing::text::parse::<Function>(&source)
+            .unwrap_or_else(|err| panic!("round {round}: {err}\n{source}"));
+        assert_eq!(function.borrow().declared_effects(), effects, "round {round}: {source}");
+        assert_eq!(function.borrow().num_locals(), locals.len(), "round {round}: {source}");
+        assert_eq!(function.borrow().is_declaration(), !definition, "round {round}: {source}");
+
+        // print, parse, print
+        let printed = function.as_operation_ref().borrow().to_string();
+        let (_context2, again) = crate::testing::text::parse::<Function>(&printed)
+            .unwrap_or_else(|err| panic!("round {round}: {err}\n{printed}"));
+        assert_eq!(again.borrow().declared_effects(), effects, "round {round}: {printed}");
+        assert_eq!(again.borrow().num_locals(), locals.len(), "round {round}: {printed}");
+        assert_eq!(again.as_operation_ref().borrow().to_string(), printed, "round {round}");
+        assert_eq!(
+            printed.contains("effects("),
+            effects.is_known(),
+            "round {round}: `effects(..)` is printed exactly when the effects are known: {printed}"
+        );
+
+        // the generic form (a declaration: that of a definition does not parse back)
+        let generic = print_generic(&function.as_operation_ref().borrow());
+        let context = Rc::new(Context::default());
+        let parsed = parse::parse_generic(ParserConfig::new(context.clone()), "generic", &*generic)
+            .into_result();
+        if definition && !params.is_empty() {
+            // the old reason: the arguments of the entry block are not printed, so the block
+            // parsed has none, and a use of one is a use of an undeclared value
+            let err = match parsed {
+                Ok(_) => {
+                    panic!("round {round}: the generic form of a definition parsed\n{generic}")
+                }
+                Err(err) => describe(&err),
+            };
+            *generic_errors
+                .entry(String::from(if err.contains("undeclared") {
+                    "use of undeclared values"
+                } else if err.contains("entry block") || err.contains("argument") {
+                    "entry block arguments disagree with the signature"
+                } else {
+                    panic!("round {round}: {err}\n{generic}")
+                }))
+                .or_default() += 1;
+            continue;
+        }
+        let world =
+            parsed.unwrap_or_else(|err| panic!("round {round}: {}\n{generic}", describe(&err)));
+        let parsed = world.borrow().body().entry().front().unwrap();
+        let parsed = parsed.borrow();
+        let parsed = parsed.downcast_ref::<Function>().expect("a function");
+        assert_eq!(parsed.declared_effects(), effects, "round {round}: {generic}");
+        assert_eq!(parsed.num_locals(), locals.len(), "round {round}: {generic}");
+        assert_eq!(parsed.as_operation().to_string(), printed, "round {round}: {generic}");
+    }
+    assert!(states.iter().all(|count| *count > ROUNDS / 12), "seed {seed:#x}: {states:?}");
+    std::eprintln!("generic form of a definition with parameters: {generic_errors:?}");
+}
+
+/// `effects()` stays "no effects" through the function's own form and the
+/// generic form, built and parsed.
+#[test]
+fn no_effects_never_becomes_unknown() {
+    use crate::{
+        CallableOpInterface, Op,
+        dialects::builtin::attributes::DeclaredEffects,
+        testing::text::{describe, print_generic},
+    };
+
+    // built
+    let mut test = Test::named("f").in_module("m");
+    let i32 = test.context().i32();
+    let mut function = test.define_function("pure", &[i32], &[i32]);
+    function.borrow_mut().set_memory_effects(DeclaredEffects::none());
+    let custom = function.as_operation_ref().borrow().to_string();
+    assert!(custom.contains("-> i32 effects();"), "{custom}");
+    let generic = print_generic(&function.as_operation_ref().borrow());
+    assert!(generic.contains("memory_effects = #builtin.declared_effects<>"), "{generic}");
+
+    for (form, text) in [("custom", custom), ("generic", generic)] {
+        let context = Rc::new(Context::default());
+        let world = parse::parse_generic(ParserConfig::new(context.clone()), form, &*text)
+            .into_result()
+            .or_else(|_| {
+                parse::parse_any(ParserConfig::new(context.clone()), form, &*text)
+                    .into_result()
+                    .map(|op| op.parent_op().unwrap().try_downcast_op::<World>().unwrap())
+            })
+            .unwrap_or_else(|err| panic!("{form}: {}\n{text}", describe(&err)));
+        let parsed = world.borrow().body().entry().front().unwrap();
+        let parsed = parsed.borrow();
+        let parsed = parsed.downcast_ref::<Function>().expect("a function");
+        assert_eq!(parsed.declared_effects(), DeclaredEffects::none(), "{form}: {text}");
+        assert!(parsed.as_operation().is_memory_effect_free(), "{form}");
+    }
+}

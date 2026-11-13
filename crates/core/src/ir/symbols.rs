@@ -5,6 +5,8 @@ mod spelling;
 mod symbol;
 mod symbol_use;
 mod table;
+#[cfg(test)]
+mod tests;
 
 use alloc::collections::VecDeque;
 use core::ptr::{DynMetadata, Pointee};

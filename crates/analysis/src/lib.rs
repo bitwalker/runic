@@ -22,6 +22,8 @@ pub mod dense;
 mod lattice;
 mod solver;
 pub mod sparse;
+#[cfg(test)]
+mod tests;
 
 use self::anchor::LatticeAnchorExt;
 pub use self::{

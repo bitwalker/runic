@@ -667,9 +667,14 @@ mod tests {
 
     use super::*;
     use crate::{
-        CallableOpInterface, SourceSpan, Usable, Value, ValueRef,
-        dialects::builtin::{BuiltinOpBuilder, FunctionRef, attributes::MemoryEffectDescriptor},
-        testing::{Test, text::describe},
+        CallableOpInterface, Operation, SourceSpan, Usable, Value, ValueRef,
+        dialects::builtin::{
+            BuiltinOpBuilder, FunctionRef, Module, attributes::MemoryEffectDescriptor,
+        },
+        testing::{
+            Test,
+            text::{describe, round_trip},
+        },
     };
 
     /// A module holding `@callee(i32, i32) -> i32`, a declaration, and the test's function
@@ -1149,7 +1154,7 @@ builtin.module public @m {
         name: &str,
         replace: impl Fn(&str) -> alloc::string::String,
     ) -> Result<(Rc<Context>, crate::OperationRef), alloc::string::String> {
-        use crate::{Operation, testing::text::print_generic};
+        use crate::testing::text::print_generic;
 
         let (_context, module) = parse_text(CALLS, true).unwrap();
         let mut target = None;
@@ -1181,5 +1186,241 @@ builtin.module public @m {
         .map(|_| ())
         .expect_err("must be rejected");
         assert!(err.contains("the result has type"), "{err}");
+    }
+
+    /// The seed of a randomized test: `CALLS_TEST_SEED` if set, else `default`.
+    fn seed(default: u64) -> u64 {
+        extern crate std;
+
+        match std::env::var("CALLS_TEST_SEED") {
+            Ok(seed) => seed.parse().expect("CALLS_TEST_SEED is a u64"),
+            Err(_) => default,
+        }
+    }
+
+    /// The module of [CALLS] round trips, and so does each of its operations written in the generic
+    /// form in its place.
+    #[test]
+    fn the_call_operations_round_trip_in_both_forms() {
+        let (_context, module) = parse_text(CALLS, true).unwrap_or_else(|err| panic!("{err}"));
+        let mut skipped = Vec::new();
+        let failures = round_trip::<Module>(module, true, &mut skipped);
+        // The generic form of an operation with two operand groups does not parse back (as
+        // `scf.condition`'s does not): `builtin.call_indirect` and `test.call_one_of` are two more.
+        let (known, failures): (Vec<_>, Vec<_>) = failures.into_iter().partition(|failure| {
+            failure.starts_with("generic form of 'builtin.call_indirect' does not parse")
+                || failure.starts_with("generic form of 'test.call_one_of' does not parse")
+        });
+        assert_eq!(known.len(), 4, "{known:#?}");
+        assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n\n"));
+        assert!(skipped.is_empty(), "skipped: {skipped:#?}");
+    }
+
+    /// `test.call_one_of` answers `None` for its possible callees when one of its
+    /// symbols does not resolve, and so does a `builtin.call`.
+    #[test]
+    fn possible_callees_is_none_when_a_symbol_does_not_resolve() {
+        let source = r#"
+    builtin.module public @m {
+        builtin.function private extern("C") @right(i32) -> i32;
+        builtin.function public extern("C") @chooser(%index: i32, %a: i32) -> i32 {
+            %r = test.call_one_of %index, @missing, @right(%a) : extern("C") (i32) -> i32;
+            %s = test.call_one_of %index, @right, @missing(%r) : extern("C") (i32) -> i32;
+            %t = builtin.call @missing(%s) : extern("C") (i32) -> i32;
+            builtin.ret %t : (i32);
+        };
+    };"#;
+        let (_context, root) = parse_text(source, false).unwrap();
+        let mut calls = 0;
+        root.borrow().prewalk_all(|op: &Operation| {
+            if let Some(call) = op.as_trait::<dyn CallOpInterface>() {
+                calls += 1;
+                assert!(call.possible_callees().is_none(), "{op}");
+                assert!(call.resolve().is_none(), "{op}");
+                assert!(op.get_effects_recursively::<MemoryEffect>().is_none(), "{op}");
+            }
+        });
+        assert_eq!(calls, 3);
+        assert!(root.borrow().recursively_verify().is_err());
+    }
+
+    /// Today's rule: `builtin.function_alias` refuses a private target in another symbol table, while
+    /// `builtin.call` and `builtin.function_ref` accept one.
+    #[test]
+    fn a_call_of_a_private_function_of_another_module_verifies() {
+        let source = |user: &str| {
+            format!(
+                r#"
+    builtin.world {{
+        builtin.module public @lib {{
+            builtin.function private extern("C") @hidden(i32) -> i32;
+        }};
+        builtin.module public @app {{
+            {user}
+        }};
+    }};"#
+            )
+        };
+        let call = r#"builtin.function public extern("C") @main(%a: i32) -> i32 {
+                %r = builtin.call ::@lib::@hidden(%a) : extern("C") (i32) -> i32;
+                %f = builtin.function_ref ::@lib::@hidden : (i32) -> i32;
+                builtin.ret %r : (i32);
+            };"#;
+        parse_text(&source(call), true).unwrap_or_else(|err| panic!("{err}"));
+        let alias = "builtin.function_alias private @borrowed -> ::@lib::@hidden;";
+        let err = parse_text(&source(alias), true).map(|_| ()).expect_err("the alias is refused");
+        assert!(err.contains("private to another symbol table"), "{err}");
+    }
+
+    /// Random callees (declarations and definitions) with random declared effects, called directly
+    /// and through alias chains of up to three aliases: the call's effects are known exactly when the
+    /// callee's are, and each is the declared effect on the call's own operand or result.
+    #[test]
+    fn fuzz_a_calls_effects_are_its_callees_declared_effects() {
+        const ROUNDS: usize = 400;
+        use crate::{
+            effects::EffectOpInterface,
+            testing::{
+                calls::{declared_effects_text, random_declared_effects},
+                text::Rng,
+            },
+        };
+
+        let seed = seed(0x3d2_0004);
+        let mut rng = Rng(seed);
+        let mut known = 0;
+        for round in 0..ROUNDS {
+            let round = format!("seed {seed:#x} (CALLS_TEST_SEED={seed}), round {round}");
+            let params = rng.below(4) as usize;
+            let results = if params == 0 {
+                0
+            } else {
+                rng.below(2) as usize
+            };
+            let effects = random_declared_effects(&mut rng, params, results);
+            let definition = rng.below(2) == 0;
+            let depth = rng.below(4) as usize;
+            let effects_text = declared_effects_text(&effects);
+            let result_text = if results == 1 { " -> i32" } else { "" };
+            let callee = if definition {
+                let params =
+                    (0..params).map(|i| format!("%p{i}: i32")).collect::<Vec<_>>().join(", ");
+                let ret = if results == 1 {
+                    "builtin.ret %p0 : (i32);"
+                } else {
+                    "builtin.ret;"
+                };
+                format!(
+                    "builtin.function private extern(\"C\") \
+                     @callee({params}){result_text}{effects_text} {{ {ret} }};"
+                )
+            } else {
+                let params = alloc::vec!["i32"; params].join(", ");
+                format!(
+                    "builtin.function private extern(\"C\") \
+                     @callee({params}){result_text}{effects_text};"
+                )
+            };
+            let mut aliases = String::new();
+            let mut name = String::from("@callee");
+            for level in 0..depth {
+                aliases +=
+                    &format!("    builtin.function_alias private @alias{level} -> {name};\n");
+                name = format!("@alias{level}");
+            }
+            let caller_params =
+                (0..params).map(|i| format!("%a{i}: i32")).collect::<Vec<_>>().join(", ");
+            let args = (0..params).map(|i| format!("%a{i}")).collect::<Vec<_>>().join(", ");
+            let define = if results == 1 { "%r = " } else { "" };
+            let signature =
+                format!("extern(\"C\") ({}){result_text}", alloc::vec!["i32"; params].join(", "));
+            let source = format!(
+                "builtin.module public @m {{\n    {callee}\n{aliases}    builtin.function public \
+                 extern(\"C\") @caller({caller_params}) {{\n        {define}builtin.call \
+                 {name}({args}) : {signature};\n        builtin.ret;\n    }};\n}};"
+            );
+            let (_context, module) = parse_text(&source, true)
+                .unwrap_or_else(|err| panic!("round {round}: {err}\n{source}"));
+            let mut call = None;
+            module.borrow().prewalk_all(|op: &Operation| {
+                if op.is::<Call>() {
+                    call = Some(op.as_operation_ref());
+                }
+            });
+            let call = call.unwrap();
+            let call = call.borrow();
+            let call = call.downcast_ref::<Call>().unwrap();
+            assert_eq!(call.effects_are_known(), effects.is_known(), "round {round}:\n{source}");
+            assert_eq!(call.callee_declared_effects(), effects, "round {round}:\n{source}");
+            assert_eq!(
+                call.as_operation().get_effects_recursively::<MemoryEffect>().is_some(),
+                effects.is_known(),
+                "round {round}:\n{source}"
+            );
+            let Some(declared) = effects.known() else {
+                continue;
+            };
+            known += 1;
+            let actual = call
+                .effects()
+                .map(|instance| (*instance.effect(), instance.value()))
+                .collect::<Vec<_>>();
+            let expected = declared
+                .iter()
+                .map(|descriptor| {
+                    let value = match (descriptor.argument, descriptor.result) {
+                        (Some(index), None) => Some(
+                            call.as_operation().operands()[usize::from(index)]
+                                .borrow()
+                                .as_value_ref(),
+                        ),
+                        (None, Some(index)) => Some(
+                            call.as_operation().results()[usize::from(index)]
+                                .borrow()
+                                .as_value_ref(),
+                        ),
+                        _ => None,
+                    };
+                    (descriptor.effect, value)
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected, "round {round}:\n{source}");
+        }
+        assert!(
+            known > ROUNDS / 4,
+            "seed {seed:#x}: {known} of {ROUNDS} rounds with known effects"
+        );
+    }
+
+    /// The interface's helper methods answer "nothing" for an operation
+    /// whose effects are unknown.
+    #[test]
+    fn the_effect_helpers_are_empty_for_an_operation_with_unknown_effects() {
+        use crate::effects::MemoryEffectOpInterface;
+
+        let source = r#"
+    builtin.module public @m {
+        builtin.function public extern("C") @unknown(ptr<i32>) -> i32;
+        builtin.function public extern("C") @f(%p: ptr<i32>) -> i32 {
+            %r = builtin.call @unknown(%p) : extern("C") (ptr<i32>) -> i32;
+            builtin.ret %r : (i32);
+        };
+    };"#;
+        let (_context, module) = parse_text(source, true).unwrap();
+        let mut call = None;
+        module.borrow().prewalk_all(|op: &Operation| {
+            if op.name().to_string() == "builtin.call" {
+                call = Some(op.as_operation_ref());
+            }
+        });
+        let call = call.unwrap();
+        let call = call.borrow();
+        let interface = call.as_trait::<dyn MemoryEffectOpInterface>().unwrap();
+        assert!(!interface.effects_are_known());
+        let operand = call.operands()[0].borrow().as_value_ref();
+        // each of these reads as "no effect on this value", which is not what is known
+        assert_eq!(interface.effects().count(), 0);
+        assert_eq!(interface.effects_on_value(operand).count(), 0);
+        assert!(!interface.has_no_effect());
     }
 }
