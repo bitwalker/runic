@@ -369,3 +369,5 @@ fn a_switch_with_extreme_keys_lifts_and_folds_as_32_bit_patterns() {
         }
     }
 }
+
+mod calls;

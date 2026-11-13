@@ -11,6 +11,11 @@ use crate::{
 /// Two references are equal, and hash alike, when their paths are: the use that links a reference
 /// to its symbol belongs to the operation holding the reference, so two operations that name the
 /// same symbol hold equal references (and may be merged, as CSE merges equal operations).
+///
+/// A path identifies one symbol only under one nearest symbol table: equal references held by
+/// operations under two different symbol tables may name two different symbols. Operations holding
+/// references are therefore comparable only under one nearest symbol table; a consumer that compares
+/// operations across symbol tables must resolve the references.
 #[derive(DialectAttribute, Debug, Clone)]
 #[attribute(name = "symbol", dialect = BuiltinDialect, implements(AttrPrinter))]
 pub struct SymbolRef {

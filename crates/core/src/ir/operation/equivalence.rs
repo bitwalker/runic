@@ -199,6 +199,12 @@ impl Operation {
         )
     }
 
+    /// Hashes this operation so that operations [Self::is_equivalent] to it hash alike: by name,
+    /// result types, properties, attributes, location (unless `flags` ignores it), and operands and
+    /// results as `operand_hasher` and `result_hasher` see them.
+    ///
+    /// A symbol reference is hashed and compared by its path, which identifies one symbol only under
+    /// one nearest symbol table: operations are comparable only under one nearest symbol table.
     pub fn hash_with_options<H>(
         &self,
         flags: OperationEquivalenceFlags,
@@ -259,6 +265,12 @@ impl Operation {
         }
     }
 
+    /// True if this operation and `rhs` are equal in name, properties, attributes, location (unless
+    /// `flags` ignores it), operands, result types, successors and regions.
+    ///
+    /// A symbol reference is compared by its path, which identifies one symbol only under one
+    /// nearest symbol table: two operations are comparable only under one nearest symbol table. A
+    /// consumer that compares operations from two symbol tables must resolve their references.
     pub fn is_equivalent(&self, rhs: &Operation, flags: OperationEquivalenceFlags) -> bool {
         self.is_equivalent_with_options(rhs, flags, DefaultValueEquivalence)
     }

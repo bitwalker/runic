@@ -36,7 +36,9 @@ pub type CallRef = UnsafeIntrusiveEntityRef<Call>;
 /// ([CallableOpInterface::declared_effects](crate::CallableOpInterface::declared_effects)): an
 /// effect on argument `i` of the callee is an effect on operand `i` of the call, one on result `j`
 /// an effect on result `j` of the call. A callee that states no effects, or that does not resolve,
-/// makes the call's effects unknown. The callee is resolved on every query.
+/// makes the call's effects unknown. So does a signature that never returns (`-> never`): the IR
+/// itself says the call does not come back, so it is never removed, merged or moved, whatever its
+/// callee declares. The callee is resolved on every query.
 #[operation(
     dialect = BuiltinDialect,
     implements(CallOpInterface, InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
@@ -133,6 +135,9 @@ impl CallOpInterface for Call {
 
 impl EffectOpInterface<MemoryEffect> for Call {
     fn effects(&self) -> EffectIterator<MemoryEffect> {
+        if self.get_signature().never_returns() {
+            return EffectIterator::new([]);
+        }
         let DeclaredEffects::Known(declared) = self.callee_declared_effects() else {
             return EffectIterator::new([]);
         };
@@ -158,8 +163,10 @@ impl EffectOpInterface<MemoryEffect> for Call {
         }))
     }
 
+    /// Unknown when the signature never returns, otherwise known exactly when the canonical
+    /// callee's declared effects are.
     fn effects_are_known(&self) -> bool {
-        self.callee_declared_effects().is_known()
+        !self.get_signature().never_returns() && self.callee_declared_effects().is_known()
     }
 }
 

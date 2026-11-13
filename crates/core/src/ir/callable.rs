@@ -120,6 +120,13 @@ pub trait CallableOpInterface: Op {
     ///
     /// Nothing is inferred from the callable's body: a callable that states nothing has unknown
     /// effects.
+    ///
+    /// Declaring no effects, or only reads (and allocations of a result), is the statement that a
+    /// call of the callable may be removed when its results are unused, merged with an equal call,
+    /// or moved past operations that do not write. A trap or a failure to return is not an effect,
+    /// so a callable whose failure to return must be observed declares nothing, or a write. The one
+    /// case the IR sees for itself is a signature that never returns (`-> never`): a call made with
+    /// such a signature has unknown effects whatever its callee declares.
     fn declared_effects(&self) -> DeclaredEffects {
         DeclaredEffects::Unknown
     }
