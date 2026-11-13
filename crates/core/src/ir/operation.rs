@@ -2222,6 +2222,19 @@ mod tests {
         assert!(!load.is_memory_effect_free());
         assert!(load.would_be_trivially_dead_even_if_terminator());
 
+        // Both act on the test dialect's memory, through the operand `addr`
+        for op in [&store, &load] {
+            let effects = op.get_effects_recursively::<MemoryEffect>().unwrap();
+            assert_eq!(effects.len(), 1, "{}", op.name());
+            let effect = &effects[0];
+            assert!(
+                effect.resource().dyn_eq(&crate::dialects::test::TestMemoryResource),
+                "{}",
+                op.name()
+            );
+            assert_eq!(effect.value(), Some(op.operands()[0].borrow().as_value_ref()));
+        }
+
         let add = add.borrow();
         assert!(!add.has_memory_effect(MemoryEffect::Read));
         assert!(!add.has_memory_effect(MemoryEffect::Write));

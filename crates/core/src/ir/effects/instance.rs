@@ -49,16 +49,19 @@ impl<T: Clone> Clone for EffectInstance<T> {
 }
 
 impl<T> EffectInstance<T> {
+    /// An `effect` on the [DefaultResource], with no value.
     pub fn new(effect: T) -> Self {
         Self::new_with_resource(effect, DefaultResource)
     }
 
+    /// An `effect` on `value`, in the [DefaultResource].
     pub fn new_for_value(effect: T, value: impl Into<EffectValue>) -> Self {
         Self::new_for_value_with_resource(effect, value, DefaultResource)
     }
 }
 
 impl<T> EffectInstance<T> {
+    /// An `effect` on `resource`, with no value.
     pub fn new_with_resource(effect: T, resource: impl Resource) -> Self {
         Self {
             effect,
@@ -70,6 +73,7 @@ impl<T> EffectInstance<T> {
         }
     }
 
+    /// An `effect` on `value`, in `resource`.
     #[inline]
     pub fn new_for_value_with_resource(
         effect: T,

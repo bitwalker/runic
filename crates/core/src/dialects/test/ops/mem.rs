@@ -6,7 +6,17 @@ use crate::{
     *,
 };
 
-/// Store `value` on the heap at `addr`
+/// The memory `test.load` reads and `test.store` writes: a child of the default resource.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct TestMemoryResource;
+
+impl Resource for TestMemoryResource {
+    fn name(&self) -> &'static str {
+        "test.memory"
+    }
+}
+
+/// Store `value` on the heap at `addr`, a write of [TestMemoryResource]
 #[derive(OpPrinter, OpParser, EffectOpInterface)]
 #[operation(
     dialect = TestDialect,
@@ -14,13 +24,13 @@ use crate::{
 )]
 pub struct Store {
     #[operand]
-    #[effects(MemoryEffect(MemoryEffect::Write))]
+    #[effects(MemoryEffect(MemoryEffect::Write), resource(TestMemoryResource))]
     addr: AnyPointer,
     #[operand]
     value: AnyType,
 }
 
-/// Load `result` from the heap at `addr`
+/// Load `result` from the heap at `addr`, a read of [TestMemoryResource]
 ///
 /// The type of load is determined by the pointer operand type - cast the pointer to the type you
 /// wish to load, so long as such a load is safe according to the semantics of your high-level
@@ -32,7 +42,7 @@ pub struct Store {
 )]
 pub struct Load {
     #[operand]
-    #[effects(MemoryEffect(MemoryEffect::Read))]
+    #[effects(MemoryEffect(MemoryEffect::Read), resource(TestMemoryResource))]
     addr: AnyPointer,
     #[result]
     result: AnyType,

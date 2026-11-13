@@ -88,9 +88,11 @@ struct CSEDriver<'a> {
     domtree: Rc<DominanceInfo>,
     /// Cache holding MemoryEffect information between two operations.
     ///
-    /// The first operation is the key, the second operation is paired with whatever effect exists
-    /// between the two operations. If the effect is None, then we assume there is no operation with
-    /// `MemoryEffect::Write` between the two operations.
+    /// The first operation, a read, is the key, the second operation is paired with whatever
+    /// effect exists between the two operations. If the effect is None, then no operation between
+    /// the two writes or frees a resource that the first operation reads (or has unknown effects).
+    /// Whether an operation blocks depends only on it and on the first operation's reads, which
+    /// are fixed, so the answer for a key holds for every later operation of the block.
     mem_effects_cache: SmallDenseMap<OperationRef, (OperationRef, Option<MemoryEffect>)>,
 }
 
@@ -445,8 +447,9 @@ impl CSEDriver<'_> {
         false
     }
 
-    /// Check if there is side-effecting operations other than the given effect between the two
-    /// operations.
+    /// Returns true if an operation between `from` and `to`, two reads in one block, may change
+    /// what `from` read: one with unknown effects, or one that writes or frees a resource that is
+    /// not disjoint from the resource of a read of `from`. Reads and allocations never block.
     fn has_other_side_effecting_op_in_between(
         &mut self,
         from: OperationRef,
@@ -465,14 +468,22 @@ impl CSEDriver<'_> {
 
         let result = self.mem_effects_cache.entry(from).or_insert((from, None));
         let mut next_op = if result.1.is_none() {
-            // No `MemoryEffect::Write` has been detected until the cached operation, continue
-            // looking from the cached operation to `to`.
+            // Nothing that blocks has been detected until the cached operation, continue looking
+            // from the cached operation to `to`.
             Some(result.0)
         } else {
-            // MemoryEffects::Write has been detected before so there is no need to check
+            // A blocking operation has been detected before so there is no need to check
             // further.
             return true;
         };
+
+        // The resources `from` reads. Its effects are known: it has a read effect.
+        let reads = from_op
+            .get_effects_recursively::<MemoryEffect>()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|effect| effect.effect() == MemoryEffect::Read)
+            .collect::<SmallVec<[_; 2]>>();
 
         while let Some(next) = next_op.take()
             && next != to
@@ -482,13 +493,19 @@ impl CSEDriver<'_> {
             let effects = next.borrow().get_effects_recursively::<MemoryEffect>();
             if let Some(effects) = effects.as_deref() {
                 for effect in effects {
-                    if effect.effect() == MemoryEffect::Write {
-                        *result = (next, Some(MemoryEffect::Write));
+                    let kind = *effect.effect();
+                    if !matches!(kind, MemoryEffect::Write | MemoryEffect::Free) {
+                        continue;
+                    }
+                    let interferes = reads
+                        .iter()
+                        .any(|read| !effect.resource().is_disjoint_from(read.resource()));
+                    if interferes {
+                        *result = (next, Some(kind));
                         return true;
                     }
                 }
             } else {
-                // TODO: Do we need to handle other effects generically?
                 // If the operation does not implement the MemoryEffectOpInterface we conservatively
                 // assume it writes.
                 *result = (next, Some(MemoryEffect::Write));
@@ -1389,10 +1406,14 @@ builtin.function public extern("C") @down_propagate_while() {
     }
 
     /// Callees for the call tests: `@reads` and `@reads_too` declare a read of their argument,
-    /// `@unknown` states no effects.
+    /// `@reads_any` a read and `@writes_any` a write of the default resource, `@frees` a free of
+    /// its argument, and `@unknown` states no effects.
     const CALLEES: &str = r#"
     builtin.function public extern("C") @reads(ptr<i32>) -> i32 effects(read(arg 0));
     builtin.function public extern("C") @reads_too(ptr<i32>) -> i32 effects(read(arg 0));
+    builtin.function public extern("C") @reads_any(i32) -> i32 effects(read);
+    builtin.function public extern("C") @writes_any(i32) -> i32 effects(write);
+    builtin.function public extern("C") @frees(ptr<i32>) effects(free(arg 0));
     builtin.function public extern("C") @unknown(ptr<i32>) -> i32;"#;
 
     /// The function `@f(%p: ptr<i32>, %v: i32) -> (i32, i32)` with the body `body`, in a module
@@ -1467,6 +1488,55 @@ builtin.function public extern("C") @down_propagate_while() {
                 "{text}"
             );
         }
+        Ok(())
+    }
+
+    /// Two equal `test.load`s of one address with `between` between them, after CSE: the number of
+    /// `test.load`s left.
+    fn loads_left_with_between(between: &str) -> Result<usize, runic_core::Report> {
+        let body = format!(
+            "%1 = test.load %p;\n{between}\n%2 = test.load %p;\nbuiltin.ret %1, %2 : (i32, i32);"
+        );
+        let text = cse_in_module(&body)?;
+        let ret = text.lines().find(|line| line.contains("builtin.ret")).unwrap();
+        let operands = ret.trim().trim_start_matches("builtin.ret").split(':').next().unwrap();
+        let operands = operands.split(',').map(str::trim).collect::<Vec<_>>();
+        let merged = operands[0] == operands[1];
+        let left = text.matches("test.load").count();
+        assert_eq!(merged, left == 1, "{text}");
+        Ok(left)
+    }
+
+    /// Two loads do not merge across a store, an operation with unknown effects, a call that
+    /// writes the default resource, or a call that frees.
+    #[test]
+    fn loads_are_not_merged_across_writes_frees_or_unknown_effects()
+    -> Result<(), runic_core::Report> {
+        for between in [
+            "test.store %p, %v : (ptr<i32>, i32);",
+            "%3 = test.effects <{ known = #builtin.bool<false> }>;",
+            r#"%3 = builtin.call @writes_any(%v) : extern("C") (i32) -> i32;"#,
+            r#"builtin.call @frees(%p) : extern("C") (ptr<i32>);"#,
+        ] {
+            assert_eq!(loads_left_with_between(between)?, 2, "{between}");
+        }
+        Ok(())
+    }
+
+    /// Two calls that read the default resource do not merge across a `cf.assert`: the assert's
+    /// resource is a child of the default resource, so it is not disjoint from it.
+    #[test]
+    fn calls_that_read_the_default_resource_are_not_merged_across_an_assert()
+    -> Result<(), runic_core::Report> {
+        let text = cse_in_module(
+            r#"
+    %1 = builtin.call @reads_any(%v) : extern("C") (i32) -> i32;
+    %c = arith.cmpi eq %v, %v;
+    cf.assert %c, "between";
+    %2 = builtin.call @reads_any(%v) : extern("C") (i32) -> i32;
+    builtin.ret %1, %2 : (i32, i32);"#,
+        )?;
+        assert_eq!(text.matches("builtin.call").count(), 2, "{text}");
         Ok(())
     }
 
