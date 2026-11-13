@@ -5,12 +5,13 @@ use alloc::rc::Rc;
 use super::{BuiltinDialect, BuiltinOpBuilder, CallIndirect, FunctionReference};
 use crate::{
     Context, OperationRef, Report, SmallVec, Spanned, ValueRef,
+    dialects::builtin::attributes::SymbolRefAttr,
     patterns::{Pattern, PatternBenefit, PatternInfo, PatternKind, RewritePattern, Rewriter},
 };
 
 /// Turns a `builtin.call_indirect` whose callee is defined by a `builtin.function_ref` into a
 /// `builtin.call` of the symbol the reference names, by the path the reference names it with, with
-/// the same arguments, signature and span.
+/// the same arguments, signature, span and attribute dictionary.
 ///
 /// The rewrite is made only when the signature of the callable the symbol resolves to equals the
 /// call's, calling convention and parameter attributes included; otherwise the call is left alone.
@@ -48,7 +49,7 @@ impl RewritePattern for CallIndirectOfFunctionRef {
         operation: OperationRef,
         rewriter: &mut dyn Rewriter,
     ) -> Result<bool, Report> {
-        let (callee, path, signature, arguments, span) = {
+        let (callee, path, signature, arguments, span, attributes) = {
             let op = operation.borrow();
             let Some(call) = op.downcast_ref::<CallIndirect>() else {
                 return Ok(false);
@@ -73,7 +74,23 @@ impl RewritePattern for CallIndirectOfFunctionRef {
                 .map(|operand| operand.borrow().as_value_ref())
                 .collect::<SmallVec<[ValueRef; 4]>>();
             let path = reference.callee().path().clone();
-            (resolved.named_symbol(), path, signature, arguments, op.span())
+            // A symbol reference in the dictionary gets a use of its own on the new call; the
+            // indirect call's use goes with it when it is erased
+            let attributes = op
+                .attributes()
+                .iter()
+                .map(|attr| {
+                    let attr = *attr.as_named_attribute();
+                    let symbol = attr.value.try_downcast_attr::<SymbolRefAttr>().ok().and_then(
+                        |reference| {
+                            let reference = reference.borrow();
+                            Some((reference.resolve()?, reference.path().clone()))
+                        },
+                    );
+                    (attr, symbol)
+                })
+                .collect::<SmallVec<[_; 2]>>();
+            (resolved.named_symbol(), path, signature, arguments, op.span(), attributes)
         };
 
         rewriter.set_insertion_point_before(operation);
@@ -82,6 +99,21 @@ impl RewritePattern for CallIndirectOfFunctionRef {
         // function, so the path the reference was written with names the same symbol from the
         // call; keeping it keeps the text, and calls that CSE compares by path, as written.
         call.borrow_mut().callee_mut().set_path(path);
+        {
+            let mut call = call.borrow_mut();
+            let call = crate::Op::as_operation_mut(&mut *call);
+            for (attr, symbol) in attributes {
+                let Some((symbol, path)) = symbol else {
+                    call.set_attribute(attr.name, attr.value);
+                    continue;
+                };
+                // Linked to the same symbol, by the path it was written with, as the callee is
+                call.set_symbol_attribute(attr.name, symbol);
+                let reference = call.get_attribute(attr.name).unwrap();
+                let mut reference = reference.try_downcast_attr::<SymbolRefAttr>().ok().unwrap();
+                reference.borrow_mut().set_path(path);
+            }
+        }
         rewriter.replace_op(operation, call.as_operation_ref());
         Ok(true)
     }
@@ -204,6 +236,37 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("builtin.call "), "{text}");
+        Ok(())
+    }
+
+    /// The new call keeps the indirect call's attribute dictionary. A symbol reference in it is a
+    /// use of its own on the new call, so it still resolves once the indirect call is erased.
+    #[test]
+    fn the_rewrite_keeps_the_attribute_dictionary() -> Result<(), Report> {
+        let (applied, module, _context) = rewrite(
+            r#"builtin.function public extern("C") @callee(i32, i32) -> i32;
+    builtin.function public extern("C") @other();"#,
+            r#"extern("C") (i32, i32) -> i32 attributes { note = #builtin.i32<7>, target = #builtin.symbol<@other> }"#,
+        )?;
+        assert!(applied);
+        let text = caller_text(module);
+        let lines = text.lines().map(str::trim).collect::<Vec<_>>();
+        let call = lines.iter().find(|line| line.contains("builtin.call ")).expect(&text);
+        assert!(call.contains("note = #builtin.i32<7>"), "{text}");
+        assert!(call.contains("target = #builtin.symbol<@other>"), "{text}");
+
+        let mut call = None;
+        module.borrow().prewalk_all(|op: &Operation| {
+            if op.is::<Call>() {
+                call = Some(op.as_operation_ref());
+            }
+        });
+        let call = call.unwrap();
+        let target = call.borrow().get_attribute("target").unwrap();
+        let target = target.try_downcast_attr::<SymbolRefAttr>().ok().unwrap();
+        let other = target.borrow().resolve().expect("the copied reference resolves");
+        assert_eq!(other.borrow().name().as_str(), "other");
+        assert_eq!(other.borrow().iter_uses().count(), 1, "the erased call's use is gone");
         Ok(())
     }
 }

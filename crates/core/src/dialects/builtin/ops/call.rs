@@ -341,7 +341,8 @@ pub type FunctionReferenceRef = UnsafeIntrusiveEntityRef<FunctionReference>;
 /// `%f = builtin.function_ref @callee : (i32, i32) -> i32;`.
 ///
 /// The result's type is written in the text and kept as the hidden property `ty`, from which the
-/// result is made. The callee resolves, through any chain of [FunctionAlias](super::FunctionAlias)es,
+/// result is made. The two are one type stored twice: whoever changes one changes the other, and
+/// the verifier rejects a result whose type is not `ty`. The callee resolves, through any chain of [FunctionAlias](super::FunctionAlias)es,
 /// to a callable whose signature has the parameter and result types of that function type. A callee
 /// that names nothing is reported by the check every symbol use gets
 /// ([Operation::verify_symbol_refs](crate::Operation::verify_symbol_refs)).
@@ -380,9 +381,13 @@ impl ConditionallySpeculatable for FunctionReference {
     }
 }
 
-/// The result has the type `ty`.
+/// A result whose type is not yet known gets the type `ty`. A result that already has a type (the
+/// generic form writes one) keeps it, and the verifier checks it against `ty`.
 impl InferTypeOpInterface for FunctionReference {
     fn infer_return_types(&mut self, _context: &Context) -> Result<(), Report> {
+        if !self.function().ty().is_unknown() {
+            return Ok(());
+        }
         let ty = *self.get_ty();
         self.function_mut().set_type(ty);
         Ok(())
@@ -1096,5 +1101,85 @@ mod tests {
             ),
             "{error}"
         );
+    }
+
+    /// A module with a call of each kind: direct, through an alias, of a function value, of one
+    /// of two callables, with results and without.
+    const CALLS: &str = r#"
+builtin.module public @m {
+    builtin.function public extern("C") @callee(i32, i64) -> i32 effects(read(arg 0));
+    builtin.function public extern("C") @unit();
+    builtin.function public extern("fast") @pair(i8 { extend = #builtin.zext }) -> (i32, i64);
+    builtin.function_alias private @alias -> @callee;
+    builtin.function public extern("C") @caller(%a: i32, %b: i64, %c: i8, %g: (i32, i64) -> i32) -> i32 {
+        %r = builtin.call @callee(%a, %b) : extern("C") (i32, i64) -> i32;
+        builtin.call @unit() : extern("C") ();
+        %p, %q = builtin.call @pair(%c) : extern("fast") (i8 { extend = #builtin.zext }) -> (i32, i64);
+        %s = builtin.call @alias(%p, %q) : extern("C") (i32, i64) -> i32;
+        %f = builtin.function_ref @alias : (i32, i64) -> i32;
+        %u = builtin.function_ref @unit : () -> ();
+        %t = builtin.call_indirect %f(%s, %b) : extern("C") (i32, i64) -> i32;
+        builtin.call_indirect %u() : extern("C") ();
+        %v = builtin.call_indirect %g(%t, %b) : extern("fast") (i32, i64) -> i32;
+        %w = test.call_one_of %v, @callee, @alias(%v, %b) : extern("C") (i32, i64) -> i32;
+        %k = test.effects <{ known = #builtin.bool<true> }>;
+        %n = test.effects <{ known = #builtin.bool<false> }>;
+        builtin.ret %w : (i32);
+    };
+};"#;
+
+    /// `source`, parsed (and verified, if `verify`), with the context that owns it.
+    fn parse_text(
+        source: &str,
+        verify: bool,
+    ) -> Result<(Rc<Context>, crate::OperationRef), alloc::string::String> {
+        use crate::parse::{ParserConfig, parse_any};
+
+        let context = Rc::new(Context::default());
+        let config = ParserConfig::new(context.clone()).verify_after_parse(verify);
+        match parse_any(config, "calls", source).into_result() {
+            Ok(op) => Ok((context, op)),
+            Err(report) => Err(describe(&report)),
+        }
+    }
+
+    /// The text of [CALLS] with the first operation named `name` written as `replace` makes of its
+    /// generic form; parsed and verified.
+    fn with_generic_form_edited(
+        name: &str,
+        replace: impl Fn(&str) -> alloc::string::String,
+    ) -> Result<(Rc<Context>, crate::OperationRef), alloc::string::String> {
+        use crate::{Operation, testing::text::print_generic};
+
+        let (_context, module) = parse_text(CALLS, true).unwrap();
+        let mut target = None;
+        module.borrow().prewalk_all(|op: &Operation| {
+            if target.is_none() && op.name().to_string() == name {
+                target = Some(op.as_operation_ref());
+            }
+        });
+        let target = target.unwrap();
+        let custom = target.borrow().to_string();
+        let generic = print_generic(&target.borrow());
+        let text = module.borrow().to_string();
+        assert_eq!(text.matches(custom.trim()).count(), 1, "{custom}\n{text}");
+        let edited = replace(&generic);
+        assert_ne!(edited, generic, "{generic}");
+        parse_text(&text.replace(custom.trim(), &edited), true)
+    }
+
+    /// A `builtin.function_ref` written in the generic form with the result type
+    /// `(i32, i64) -> i32` (the type its use expects) while its `ty` is `(i32) -> i32` keeps the
+    /// result type written, and the verifier rejects it.
+    #[test]
+    fn a_generic_function_ref_whose_result_type_is_not_its_ty_is_rejected() {
+        let err = with_generic_form_edited("builtin.function_ref", |generic| {
+            let (properties, ty) = generic.split_at(generic.rfind(" : () -> ").unwrap());
+            assert!(properties.contains("(i32, i64) -> i32"), "{generic}");
+            alloc::format!("{}{ty}", properties.replacen("(i32, i64) -> i32", "(i32) -> i32", 1))
+        })
+        .map(|_| ())
+        .expect_err("must be rejected");
+        assert!(err.contains("the result has type"), "{err}");
     }
 }
