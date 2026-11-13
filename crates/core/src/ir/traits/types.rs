@@ -19,98 +19,27 @@ pub trait InferTypeOpInterface: Op {
     }
 }
 
-/// A value-range constraint implied by an operation operand.
-///
-/// This describes a constraint that an operand's type implies but its storage need not enforce:
-/// for example, an `i8` operand held in a wider register or stack slot must have been checked to
-/// fit in 8 bits before it reaches the operand.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ValueRangeConstraint {
-    /// The value must be a valid member of this type's value range.
-    Type(Type),
+/// For operations that are defined only for some values of an operand.
+pub trait OperandRangeRequirementOpInterface: Op {
+    /// The values of operand `index` for which this operation neither traps nor has an undefined
+    /// result, or `None` when every value of the operand's type is accepted. It is a condition on
+    /// that operand alone: a requirement that relates two operands (a sum that must fit,
+    /// `MIN / -1`) is not expressed here.
+    fn operand_range_requirement(&self, index: usize) -> Option<ConstantIntRange>;
 }
 
-impl ValueRangeConstraint {
-    /// Return the implicit value-range constraint for `ty`, if values of that type have a range
-    /// that is tracked; see [is_unconstrained_value_type].
-    pub fn from_type(ty: Type) -> Option<Self> {
-        if is_unconstrained_value_type(ty) {
-            None
-        } else {
-            Some(Self::Type(ty))
-        }
-    }
-
-    pub fn ty(&self) -> Type {
-        match self {
-            Self::Type(ty) => *ty,
-        }
-    }
-}
-
-/// The range requirement imposed on an operation operand.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OperandRangeRequirement {
-    /// The operand does not need to be range-constrained before being consumed by this operation.
-    None,
-    /// The operand must satisfy the given range constraint before being consumed.
-    Required(ValueRangeConstraint),
-}
-
-impl OperandRangeRequirement {
-    #[inline]
-    pub fn into_constraint(self) -> Option<ValueRangeConstraint> {
-        match self {
-            Self::None => None,
-            Self::Required(constraint) => Some(constraint),
-        }
-    }
-}
-
-/// Return the implicit value-range requirement for `op` operand `operand_index`.
-///
-/// Operations may override the default type-derived behavior with
-/// [OperandRangeRequirementOpInterface]. This is important for checked operations, which consume a
-/// value precisely in order to establish a value-range contract.
+/// The values of operand `index` of `op` for which `op` neither traps nor has an undefined result,
+/// as [OperandRangeRequirementOpInterface] states them: `None` when `op` does not implement the
+/// interface, when `index` is not an operand of `op`, or when every value is accepted.
 pub fn operation_operand_range_requirement(
     op: &Operation,
-    operand_index: usize,
-) -> Option<ValueRangeConstraint> {
-    if operand_index >= op.num_operands() {
+    index: usize,
+) -> Option<ConstantIntRange> {
+    if index >= op.num_operands() {
         return None;
     }
-
-    if let Some(interface) = op.as_trait::<dyn OperandRangeRequirementOpInterface>() {
-        return interface.operand_range_requirement(operand_index).into_constraint();
-    }
-
-    default_operand_range_requirement(op, operand_index)
-}
-
-/// Return the default type-derived range requirement for `op` operand `operand_index`.
-pub fn default_operand_range_requirement(
-    op: &Operation,
-    operand_index: usize,
-) -> Option<ValueRangeConstraint> {
-    let operand = &op.operands()[operand_index];
-    let value = operand.borrow().as_value_ref();
-    let value = value.borrow();
-    ValueRangeConstraint::from_type(value.ty())
-}
-
-/// Return true if values of `ty` are unconstrained by type alone.
-///
-/// That is every type whose value range is not tracked: everything but integers of at most 128
-/// bits (so pointers, function types, floats, aggregates, `isize` and dialect types), along with
-/// the unknown and never types.
-pub fn is_unconstrained_value_type(ty: Type) -> bool {
-    ty.is_unknown() || ty.is_never() || ConstantIntRange::max_for_type(ty).is_untracked()
-}
-
-/// OpInterface for operations with operand-specific value-range requirements.
-pub trait OperandRangeRequirementOpInterface: Op {
-    /// Returns the [OperandRangeRequirement] for the operand at `operand_index`
-    fn operand_range_requirement(&self, operand_index: usize) -> OperandRangeRequirement;
+    op.as_trait::<dyn OperandRangeRequirementOpInterface>()?
+        .operand_range_requirement(index)
 }
 
 /// OpInterface for operations that can infer integer ranges for their results.
@@ -733,31 +662,5 @@ mod tests {
         assert!(int32.matches(context.int_type(32)));
         assert!(!int32.matches(context.i1()));
         assert!(!int32.matches(context.isize()));
-    }
-
-    #[test]
-    fn only_types_with_a_tracked_value_range_imply_a_range_constraint() {
-        use super::ValueRangeConstraint;
-        use crate::{StructField, StructType, dialects::test::TestVectorType};
-
-        let context = Context::default();
-        for ty in [context.i1(), context.i32(), context.i128()] {
-            assert_eq!(ValueRangeConstraint::from_type(ty), Some(ValueRangeConstraint::Type(ty)));
-        }
-        for ty in [
-            context.unknown_type(),
-            context.never_type(),
-            context.opaque_ptr_type(),
-            context.ptr_type(context.i32()),
-            context.function_type([context.i32()], [context.i32()]),
-            context.isize(),
-            context.int_type(256),
-            context.f64(),
-            context.array_type(context.i8(), 4),
-            context.struct_type(StructType::new([StructField::new(context.i32())])),
-            context.intern_type(TestVectorType::new(context.f32(), 4)),
-        ] {
-            assert_eq!(ValueRangeConstraint::from_type(ty), None, "{ty} is unconstrained");
-        }
     }
 }

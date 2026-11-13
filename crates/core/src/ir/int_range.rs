@@ -1,7 +1,6 @@
 use core::fmt;
 
 use super::{Int, Type};
-use crate::traits::ValueRangeConstraint;
 
 /// Bounds on an integer value, tracked using both signed and unsigned interpretations.
 ///
@@ -321,17 +320,16 @@ impl ConstantIntRange {
         }
     }
 
-    /// Return true if this range is fully contained by `constraint`.
-    pub fn satisfies(&self, constraint: &ValueRangeConstraint) -> bool {
-        match constraint {
-            ValueRangeConstraint::Type(ty) => {
-                let constraint = Self::max_for_type(*ty);
-                if self.is_untracked() || constraint.is_untracked() {
-                    return false;
-                }
-                self.umin >= constraint.umin && self.umax <= constraint.umax
-            }
+    /// Return true if every value of this range lies in `other`: each bound, unsigned and signed,
+    /// is inside `other`'s. False when either range is untracked or the widths differ.
+    pub fn is_within(&self, other: &ConstantIntRange) -> bool {
+        if self.is_untracked() || other.is_untracked() || self.width != other.width {
+            return false;
         }
+        self.umin >= other.umin
+            && self.umax <= other.umax
+            && self.smin >= other.smin
+            && self.smax <= other.smax
     }
 }
 
@@ -711,14 +709,6 @@ mod tests {
     }
 
     #[test]
-    fn regression_unsigned_constraint_accepts_wider_representation() {
-        let context = Context::default();
-        let range = ConstantIntRange::constant(Int::from(1u64 << 31));
-        assert!(range.satisfies(&ValueRangeConstraint::Type(context.i32())));
-        assert!(!range.satisfies(&ValueRangeConstraint::Type(context.i16())));
-    }
-
-    #[test]
     fn regression_type_range_contains_all_constants_of_its_width() {
         let context = Context::default();
         let top = ConstantIntRange::max_for_type(context.i64());
@@ -820,14 +810,52 @@ mod tests {
     }
 
     #[test]
-    fn integer_constraints_check_the_zero_extended_representation() {
+    fn a_range_is_within_another_when_each_bound_is_inside() {
+        let outer = ConstantIntRange::from_unsigned(8, 10, 20);
+        // equal
+        assert!(outer.is_within(&outer));
+        // inside
+        assert!(ConstantIntRange::from_unsigned(8, 11, 19).is_within(&outer));
+        assert!(ConstantIntRange::constant(Int::from(10u8)).is_within(&outer));
+        assert!(ConstantIntRange::constant(Int::from(20u8)).is_within(&outer));
+        // straddling the lower end, the upper end, and both
+        assert!(!ConstantIntRange::from_unsigned(8, 9, 15).is_within(&outer));
+        assert!(!ConstantIntRange::from_unsigned(8, 15, 21).is_within(&outer));
+        assert!(!ConstantIntRange::from_unsigned(8, 0, 255).is_within(&outer));
+        // the containing range is not within the one it contains
+        assert!(!outer.is_within(&ConstantIntRange::from_unsigned(8, 11, 19)));
+    }
+
+    #[test]
+    fn a_range_is_within_another_only_at_the_same_width() {
+        let narrow = ConstantIntRange::from_unsigned(8, 0, 5);
+        let wide = ConstantIntRange::from_unsigned(16, 0, 100);
+        assert!(!narrow.is_within(&wide));
+        assert!(!ConstantIntRange::from_unsigned(16, 0, 5).is_within(&narrow));
+        // A 64-bit range whose values fit 32 bits is not within the 32-bit type's range.
         let context = Context::default();
-        for (ty, width) in [(context.i8(), 8), (context.i16(), 16), (context.i32(), 32)] {
-            let constraint = ValueRangeConstraint::Type(ty);
-            let max = (1u128 << width) - 1;
-            assert!(ConstantIntRange::from_unsigned(64, 0, max).satisfies(&constraint));
-            assert!(!ConstantIntRange::from_unsigned(64, 0, max + 1).satisfies(&constraint));
-        }
+        let fits = ConstantIntRange::constant(Int::from(1u64 << 31));
+        assert!(!fits.is_within(&ConstantIntRange::max_for_type(context.i32())));
+        assert!(fits.is_within(&ConstantIntRange::max_for_type(context.i64())));
+    }
+
+    #[test]
+    fn an_untracked_range_is_never_within_and_contains_nothing() {
+        let untracked = ConstantIntRange::untracked();
+        let range = ConstantIntRange::from_unsigned(8, 0, 5);
+        assert!(!untracked.is_within(&untracked));
+        assert!(!untracked.is_within(&range));
+        assert!(!range.is_within(&untracked));
+    }
+
+    #[test]
+    fn a_range_is_within_another_only_if_its_signed_bounds_are_inside() {
+        // Unsigned 0..=255 at width 8 with signed bounds -5..=5: the values 0..=5 and 251..=255.
+        let signed = ConstantIntRange::from_signed(8, -5, 5);
+        assert!(ConstantIntRange::from_unsigned(8, 0, 5).is_within(&signed));
+        assert!(ConstantIntRange::from_signed(8, -5, -1).is_within(&signed));
+        assert!(!ConstantIntRange::from_unsigned(8, 0, 6).is_within(&signed));
+        assert!(!ConstantIntRange::max_for_type(Context::default().i8()).is_within(&signed));
     }
 
     #[test]
