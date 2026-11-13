@@ -398,21 +398,35 @@ impl Foldable for Select {
 /// A check that traps with `message` when `cond`, an `i1`, is `0`: `cf.assert %cond, "message";`.
 ///
 /// It has no results and is not a terminator: when `cond` is `1`, execution continues with the
-/// next operation. It declares a write effect, so dead-code elimination keeps it and CSE never
-/// merges or removes one. Its one canonicalization erases an assert whose condition is the constant
-/// `1`; an assert of the constant `0` is the trap, and stays. It states, through
+/// next operation. It declares a write of [AssertionResource], so dead-code elimination keeps it,
+/// CSE never merges or removes one, and no pass moves one across another effect on that resource
+/// or on the default resource; reads of other resources (memory, locals) are not ordered against
+/// it. Its one canonicalization erases an assert whose condition is the constant `1`; an assert
+/// of the constant `0` is the trap, and stays. It states, through
 /// [OperandRangeRequirementOpInterface], that its condition must be exactly `1`.
 #[derive(EffectOpInterface)]
 #[operation(
     dialect = ControlFlowDialect,
     implements(MemoryEffectOpInterface, OperandRangeRequirementOpInterface, OpPrinter)
 )]
-#[effects(MemoryEffect(MemoryEffect::Write))]
+#[effects(MemoryEffect(MemoryEffect::Write), resource(AssertionResource))]
 pub struct Assert {
     #[operand]
     cond: Bool,
     #[attr(hidden)]
     message: StringAttr,
+}
+
+/// What a `cf.assert` writes: whether the program goes on. A child of the default resource, so an
+/// assert is ordered against every effect on the default resource, and against no effect on
+/// another of its children.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct AssertionResource;
+
+impl Resource for AssertionResource {
+    fn name(&self) -> &'static str {
+        "cf.assertion"
+    }
 }
 
 /// The condition must be exactly `1`: the assert traps when it is `0`.
@@ -1441,6 +1455,32 @@ builtin.function public extern(\"C\") @check(%c: i1, %sel: i32, %a: i32, %b: i32
             ["cf.assert", "cf.select", "cf.cond_br", "cf.switch", "cf.br", "builtin.ret"]
         );
         Ok(())
+    }
+
+    /// A `cf.assert` has one effect, a write of [AssertionResource], with no value; that resource
+    /// is a child of the default resource, disjoint from another child.
+    #[test]
+    fn an_assert_writes_its_own_resource() {
+        use runic_core::{dialects::builtin::Function, testing::text::parse};
+
+        let text = "builtin.function public extern(\"C\") @f(%c: i1) {
+    cf.assert %c, \"m\";
+    builtin.ret;
+};";
+        let (_context, function) = parse::<Function>(text).expect("valid ir");
+        let function = function.borrow();
+        let block = function.entry_block();
+        let block = block.borrow();
+        let assert = block.body().front().as_pointer().unwrap();
+        let effects = assert.borrow().get_effects_recursively::<MemoryEffect>().unwrap();
+        assert_eq!(effects.len(), 1);
+        let effect = &effects[0];
+        assert_eq!(*effect.effect(), MemoryEffect::Write);
+        assert!(effect.value().is_none() && effect.attribute().is_none());
+        assert!(effect.resource().dyn_eq(&AssertionResource));
+        assert_eq!(effect.resource().parent().unwrap().name(), DefaultResource.name());
+        assert!(!effect.resource().is_disjoint_from(&DefaultResource));
+        assert!(effect.resource().is_disjoint_from(&AutomaticAllocationScopeResource));
     }
 
     /// A `cf.select` whose arms have two types does not verify, and the diagnostic names the

@@ -1507,6 +1507,20 @@ builtin.function public extern("C") @down_propagate_while() {
         Ok(left)
     }
 
+    /// A `cf.assert` writes a resource of its own, so two loads on either side of one merge.
+    #[test]
+    fn an_assert_between_two_loads_does_not_block_their_merging() -> Result<(), runic_core::Report>
+    {
+        let assert = r#"%c = arith.cmpi eq %v, %v;
+cf.assert %c, "between";"#;
+        assert_eq!(loads_left_with_between(assert)?, 1);
+        let text = cse_in_module(&format!(
+            "%1 = test.load %p;\n{assert}\n%2 = test.load %p;\nbuiltin.ret %1, %2 : (i32, i32);"
+        ))?;
+        assert!(text.contains("cf.assert"), "{text}");
+        Ok(())
+    }
+
     /// Two loads do not merge across a store, an operation with unknown effects, a call that
     /// writes the default resource, or a call that frees.
     #[test]
