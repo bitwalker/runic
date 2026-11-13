@@ -19,6 +19,7 @@ use crate::{
     AttributeRef, AttributeRegistration, FxHashMap,
     attributes::{AttributeName, DerivableTypeAttribute, Marker},
     constants::{ConstantData, ConstantId, ConstantPool},
+    layout::{DataLayoutSpec, LayoutCache},
     types::TypeUniquer,
 };
 
@@ -56,6 +57,9 @@ pub struct Context {
     /// by the attribute's type id. Created on first use and never handed out, so nothing can edit
     /// it. See [Context::is_default_attribute].
     default_attrs: RefCell<FxHashMap<core::any::TypeId, AttributeRef>>,
+    /// One shared copy of each data layout specification a [DataLayout](crate::layout::DataLayout)
+    /// has been made for, keyed by the specification's value. See [Context::data_layout_cache].
+    data_layouts: RefCell<FxHashMap<DataLayoutSpec, Rc<LayoutCache>>>,
     next_block_id: Cell<u32>,
     next_value_id: Cell<u32>,
 }
@@ -179,6 +183,7 @@ impl Context {
             constants: Default::default(),
             uniqued_attr_cache: Default::default(),
             default_attrs: Default::default(),
+            data_layouts: Default::default(),
             next_block_id: Cell::new(0),
             next_value_id: Cell::new(0),
         }
@@ -295,6 +300,17 @@ impl Context {
             }
         };
         *value == default
+    }
+
+    /// The copy this context keeps of `spec`, made on the first call for a specification equal to
+    /// it and shared by every later call.
+    pub(crate) fn data_layout_cache(&self, spec: &DataLayoutSpec) -> Rc<LayoutCache> {
+        if let Some(cache) = self.data_layouts.borrow().get(spec) {
+            return cache.clone();
+        }
+        let cache = Rc::new(LayoutCache::new(spec.clone()));
+        self.data_layouts.borrow_mut().insert(spec.clone(), cache.clone());
+        cache
     }
 
     pub fn get_marker<T>(self: &Rc<Context>) -> UnsafeIntrusiveEntityRef<T>

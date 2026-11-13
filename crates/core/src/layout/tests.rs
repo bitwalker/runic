@@ -211,7 +211,7 @@ fn parse_spec(context: &Rc<Context>, layout: &str) -> Result<DataLayoutSpec, Str
     let module = parse_module(context, layout)?;
     let module = module.borrow();
     let attr = module
-        .get_typed_attribute::<DataLayoutAttr>("data_layout")
+        .get_typed_attribute::<DataLayoutAttr>(DATA_LAYOUT_ATTR)
         .expect("a data layout attribute");
     Ok(attr.borrow().as_value().clone())
 }
@@ -424,4 +424,152 @@ fn an_entry_diagnostic_is_labelled_at_the_entry() {
     let start = source.find("ptr<1>").unwrap();
     let end = start + "ptr<1> = 64 index 72".len();
     assert_eq!(ranges.iter().map(|r| (r.start, r.end)).collect::<Vec<_>>(), [(start, end)]);
+}
+
+// --- Steps 3 and 4: the interface and `DataLayout` ----------------------------------------------
+
+/// The first operation in the single region of `op`.
+fn first_child(op: OperationRef) -> OperationRef {
+    let op = op.borrow();
+    let region = op.region(0);
+    let entry = region.entry();
+    entry.front().expect("a non-empty body")
+}
+
+/// A component holding a module holding a function, each with the attribute dictionary given.
+fn nested(context: &Rc<Context>, component: &str, module: &str) -> [OperationRef; 3] {
+    let source = format!(
+            "builtin.component private @c {component} {{\n    builtin.module internal @m {module} \
+             {{\n        builtin.function public extern(\"C\") @f() {{\n            \
+             builtin.ret;\n        }};\n    }};\n}};"
+        );
+    let config = ParserConfig::new(context.clone());
+    let component = parse::parse_any(config, "nested.hir", source)
+        .into_result()
+        .unwrap_or_else(|err| panic!("{}", describe(&err)));
+    let module = first_child(component);
+    let function = first_child(module);
+    [component, module, function]
+}
+
+fn closest_spec(op: OperationRef) -> Option<DataLayoutSpec> {
+    DataLayout::closest(&op.borrow()).map(|layout| layout.spec().clone())
+}
+
+#[test]
+fn the_nearest_stated_specification_wins_whole() {
+    let context = context();
+    let outer = "attributes { data_layout = #builtin.data_layout<little, ptr = 32, i64 = 4> }";
+    let inner = "attributes { data_layout = #builtin.data_layout<big, ptr = 64> }";
+    let outer_spec = little32().with_integer_align(64, align(4)).unwrap();
+    let inner_spec = DataLayoutSpec::new(Endianness::Big, PointerSpec::sized(64).unwrap()).unwrap();
+
+    // (a) neither states one
+    let [component, module, function] = nested(&context, "", "");
+    assert_eq!(closest_spec(function), None);
+    assert_eq!(closest_spec(module), None);
+    assert_eq!(closest_spec(component), None);
+
+    // (b) the component: the module implements the interface but states none, and is passed over
+    let [_, module, function] = nested(&context, outer, "");
+    assert_eq!(closest_spec(function), Some(outer_spec.clone()));
+    assert_eq!(closest_spec(module), Some(outer_spec.clone()));
+
+    // (c) the module
+    let [component, _, function] = nested(&context, "", inner);
+    assert_eq!(closest_spec(function), Some(inner_spec.clone()));
+    assert_eq!(closest_spec(component), None);
+
+    // (d) both, different: the module's, not merged with the component's (`i64` is 8 bytes)
+    let [component, module, function] = nested(&context, outer, inner);
+    let found = closest_spec(function).unwrap();
+    assert_eq!(found, inner_spec);
+    assert_eq!(found.integer_align(64), align(8));
+    assert_eq!(closest_spec(module), Some(inner_spec));
+    assert_eq!(closest_spec(component), Some(outer_spec));
+}
+
+#[test]
+fn a_parsed_module_answers_its_isize_width() {
+    let context = context();
+    let module = parse_module(&context, "#builtin.data_layout<little, ptr = 64 index 32>").unwrap();
+    let layout = DataLayout::closest(&module.borrow()).expect("the module states a layout");
+    assert_eq!(layout.isize_width(), 32);
+    assert_eq!(layout.pointer(0).size_bits, 64);
+    assert_eq!(layout.pointer(9).size_bits, 64);
+    assert_eq!(layout.endianness(), Endianness::Little);
+}
+
+#[test]
+fn the_verifier_rejects_a_data_layout_that_is_not_one() {
+    let context = context();
+    let err = parse_module(&context, "#builtin.i32<1>").expect_err("a non-layout `data_layout`");
+    assert!(err.contains("is not a '#builtin.data_layout'"), "{err}");
+}
+
+#[test]
+fn equal_specifications_share_one_cache_per_context() {
+    let context = context();
+    let a = DataLayout::new(&context, &little32());
+    let b = DataLayout::new(&context, &little32().with_integer_align(32, align(4)).unwrap());
+    assert!(a.shares_cache_with(&b));
+    assert!(a.shares_cache_with(&a.clone()));
+    let c = DataLayout::new(&context, &little32().with_integer_align(32, align(8)).unwrap());
+    assert!(!a.shares_cache_with(&c));
+
+    let other = Context::default();
+    assert!(!a.shares_cache_with(&DataLayout::new(&other, &little32())));
+
+    // The layouts found from two modules stating equal specifications share too
+    let first = parse_module(&context, "#builtin.data_layout<little, ptr = 32>").unwrap();
+    let second = parse_module(&context, "#builtin.data_layout<little, ptr = 32, i8 = 1>").unwrap();
+    let first = DataLayout::closest(&first.borrow()).unwrap();
+    let second = DataLayout::closest(&second.borrow()).unwrap();
+    assert!(first.shares_cache_with(&second) && first.shares_cache_with(&a));
+}
+
+#[test]
+fn set_data_layout_spec_replaces_the_attribute() {
+    let context = context();
+    let [mut component, module, function] = nested(&context, "", "");
+    let old = DataLayout::closest(&function.borrow());
+    assert!(old.is_none());
+
+    set_data_layout_spec(&mut component.borrow_mut(), little32());
+    let installed = component.borrow().get_attribute(DATA_LAYOUT_ATTR).unwrap();
+    let held = DataLayout::closest(&function.borrow()).unwrap();
+    assert_eq!(held.spec(), &little32());
+
+    let big = DataLayoutSpec::new(Endianness::Big, PointerSpec::sized(16).unwrap()).unwrap();
+    set_data_layout_spec(&mut component.borrow_mut(), big.clone());
+    let replaced = component.borrow().get_attribute(DATA_LAYOUT_ATTR).unwrap();
+    assert!(!crate::AttributeRef::ptr_eq(&installed, &replaced));
+    // The old attribute is not edited, and a layout already found keeps its own copy
+    let old_value = installed.borrow();
+    let old_value = old_value.downcast_ref::<DataLayoutAttr>().unwrap();
+    assert_eq!(old_value.as_value(), &little32());
+    assert_eq!(held.spec(), &little32());
+    assert_eq!(closest_spec(function), Some(big.clone()));
+    assert_eq!(closest_spec(module), Some(big));
+}
+
+#[test]
+fn a_world_states_a_specification_through_text() {
+    let context = context();
+    let source = "builtin.world {\n    builtin.module public @m {\n    };\n};";
+    let config = ParserConfig::new(context.clone());
+    let mut world = parse::parse_any(config, "world.hir", source).into_result().unwrap();
+    set_data_layout_spec(&mut world.borrow_mut(), little32());
+    let printed = format!("{}", world.borrow());
+    assert!(
+        printed.contains("data_layout = #builtin.data_layout<little, ptr = 32>"),
+        "{printed}"
+    );
+
+    let config = ParserConfig::new(context.clone());
+    let world = parse::parse_any(config, "world2.hir", printed.clone())
+        .into_result()
+        .unwrap_or_else(|err| panic!("{printed}\n{}", describe(&err)));
+    let module = first_child(world);
+    assert_eq!(closest_spec(module), Some(little32()));
 }

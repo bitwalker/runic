@@ -7,6 +7,7 @@ use crate::{
         BuiltinDialect,
         attributes::{IdentAttr, VisibilityAttr},
     },
+    layout::DataLayoutOpInterface,
     print::AsmPrinter,
     traits::{
         GraphRegionNoTerminator, HasOnlyGraphRegion, IsolatedFromAbove, NoRegionArguments,
@@ -66,7 +67,7 @@ pub type ModuleRef = UnsafeIntrusiveEntityRef<Module>;
         GraphRegionNoTerminator,
         IsolatedFromAbove,
     ),
-    implements(RegionKindInterface, SymbolTable, Symbol, OpPrinter)
+    implements(RegionKindInterface, SymbolTable, Symbol, DataLayoutOpInterface, OpPrinter)
 )]
 pub struct Module {
     #[attr]
@@ -205,6 +206,9 @@ impl OpParser for Module {
         Ok(())
     }
 }
+
+/// Reads its specification from its attribute dictionary.
+impl DataLayoutOpInterface for Module {}
 
 impl RegionKindInterface for Module {
     #[inline(always)]

@@ -8,6 +8,7 @@ use crate::{
     SymbolTable, SymbolUseList, UnsafeIntrusiveEntityRef, Usable, Verify,
     derive::{OpParser, OpPrinter, operation},
     dialects::builtin::{BuiltinDialect, Component, Module},
+    layout::DataLayoutOpInterface,
     traits::{
         GraphRegionNoTerminator, HasOnlyGraphRegion, IsolatedFromAbove, NoRegionArguments,
         NoTerminator, SingleBlock, SingleRegion,
@@ -43,7 +44,7 @@ pub type WorldRef = UnsafeIntrusiveEntityRef<World>;
         GraphRegionNoTerminator,
         IsolatedFromAbove,
     ),
-    implements(RegionKindInterface, SymbolTable, OpPrinter)
+    implements(RegionKindInterface, SymbolTable, DataLayoutOpInterface, OpPrinter)
 )]
 pub struct World {
     #[region]
@@ -53,6 +54,9 @@ pub struct World {
     #[default]
     uses: SymbolUseList,
 }
+
+/// Reads its specification from its attribute dictionary.
+impl DataLayoutOpInterface for World {}
 
 impl RegionKindInterface for World {
     #[inline(always)]

@@ -97,7 +97,10 @@ pub use self::{
     hash::{DynHash, DynHasher},
     ir::*,
     itertools::IteratorExt,
-    layout::{Align, DataLayoutSpec, Endianness, InvalidDataLayout, PointerSpec},
+    layout::{
+        Align, DATA_LAYOUT_ATTR, DataLayout, DataLayoutOpInterface, DataLayoutSpec, Endianness,
+        InvalidDataLayout, PointerSpec, set_data_layout_spec,
+    },
     patterns::{Rewriter, RewriterExt},
     program_point::{Position, ProgramPoint},
 };

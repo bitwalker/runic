@@ -6,6 +6,7 @@ use crate::{
     derive::operation,
     dialects::builtin::{BuiltinDialect, attributes::VisibilityAttr},
     interner,
+    layout::DataLayoutOpInterface,
     print::AsmPrinter,
     traits::{
         GraphRegionNoTerminator, HasOnlyGraphRegion, IsolatedFromAbove, NoRegionArguments,
@@ -46,7 +47,7 @@ pub type ComponentRef = UnsafeIntrusiveEntityRef<Component>;
         GraphRegionNoTerminator,
         IsolatedFromAbove,
     ),
-    implements(RegionKindInterface, SymbolTable, Symbol, OpPrinter)
+    implements(RegionKindInterface, SymbolTable, Symbol, DataLayoutOpInterface, OpPrinter)
 )]
 pub struct Component {
     #[attr]
@@ -136,6 +137,9 @@ impl Verify<dyn SymbolTable> for Component {
         SymbolPath::validate_table_name(SymbolTableKind::Component, Symbol::name(self))
     }
 }
+
+/// Reads its specification from its attribute dictionary.
+impl DataLayoutOpInterface for Component {}
 
 impl RegionKindInterface for Component {
     #[inline(always)]
