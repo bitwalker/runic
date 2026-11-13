@@ -174,9 +174,12 @@ pub fn value_range(solver: &DataFlowSolver, value: ValueRef) -> Option<IntegerVa
 /// `solver` has an initialized range for the operand that [ConstantIntRange::is_within] the
 /// requirement. An operation that states no requirement trivially has them all proven.
 ///
-/// This is a sound and conservative answer to "this operation cannot trap or be undefined": when it
-/// is true, the operation neither traps nor has an undefined result; when it is false, it may. It
-/// is never true for a signed division (`MIN / -1` relates the two operands) or for a checked or
+/// This is a sound and conservative answer to "this operation cannot trap or be undefined because
+/// of the value of an operand", for operations that state what they require of their operands
+/// through the interface: when it is true, the values its operands can take neither make it trap
+/// nor leave its result undefined; when it is false, they may. A trap that does not depend on an operand's integer
+/// value (an invalid pointer in a load, `ub.unreachable`) is outside what it answers. It is never
+/// true for a signed division (`MIN / -1` relates the two operands) or for a checked or
 /// unchecked addition, subtraction or multiplication (whether the result fits depends on both),
 /// nor for an operation with a requirement on an operand whose ranges are not tracked (`isize`). A
 /// range of either confidence is accepted: an assumed range is still a fact about a signless
@@ -239,6 +242,7 @@ mod tests {
         traits::Foldable,
     };
     use runic_dialect_arith::ArithOpBuilder;
+    use runic_dialect_cf::ControlFlowOpBuilder;
     use runic_dialect_scf::StructuredControlFlowOpBuilder;
 
     use super::*;
@@ -929,6 +933,38 @@ mod tests {
         let rotl = requirements_hold(Context::i32, |b, x, unknown| b.rotl(x, unknown, SPAN))?;
         assert!(rotl, "arith.rotl by an unknown amount");
 
+        Ok(())
+    }
+
+    /// Whether the range analysis proves the requirement of `cf.assert` of the condition `cond`
+    /// gives, built in a function of one `i1` parameter (`unknown`).
+    fn assert_requirement_holds(
+        cond: impl FnOnce(&mut FunctionBuilder<'_, OpBuilder>, ValueRef) -> ValueRef,
+    ) -> Result<bool, Report> {
+        let mut test = Test::new("assert", |cx| ([cx.i1()], []));
+        let assert = {
+            let unknown = argument(&test, 0);
+            let mut builder = test.function_builder();
+            let cond = cond(&mut builder, unknown);
+            let assert = builder.assert(cond, "m", SPAN)?;
+            builder.ret([], SPAN)?;
+            assert
+        };
+        let solver = run_integer_range_analysis(&test)?;
+        let assert = assert.borrow();
+        Ok(operand_range_requirements_hold(&solver, assert.as_operation()))
+    }
+
+    /// `cf.assert` traps unless its condition is `1`: the requirement holds for a constant `1`,
+    /// and not for a constant `0` or a condition that is not known.
+    #[test]
+    fn an_assert_requirement_holds_only_for_a_condition_of_one() -> Result<(), Report> {
+        assert!(assert_requirement_holds(|b, _| b.i1(true, SPAN))?, "an assert of 1");
+        assert!(!assert_requirement_holds(|b, _| b.i1(false, SPAN))?, "an assert of 0");
+        assert!(
+            !assert_requirement_holds(|_, unknown| unknown)?,
+            "an assert of an unknown value"
+        );
         Ok(())
     }
 

@@ -400,11 +400,12 @@ impl Foldable for Select {
 /// It has no results and is not a terminator: when `cond` is `1`, execution continues with the
 /// next operation. It declares a write effect, so dead-code elimination keeps it and CSE never
 /// merges or removes one. Its one canonicalization erases an assert whose condition is the constant
-/// `1`; an assert of the constant `0` is the trap, and stays.
+/// `1`; an assert of the constant `0` is the trap, and stays. It states, through
+/// [OperandRangeRequirementOpInterface], that its condition must be exactly `1`.
 #[derive(EffectOpInterface)]
 #[operation(
     dialect = ControlFlowDialect,
-    implements(MemoryEffectOpInterface, OpPrinter)
+    implements(MemoryEffectOpInterface, OperandRangeRequirementOpInterface, OpPrinter)
 )]
 #[effects(MemoryEffect(MemoryEffect::Write))]
 pub struct Assert {
@@ -412,6 +413,16 @@ pub struct Assert {
     cond: Bool,
     #[attr(hidden)]
     message: StringAttr,
+}
+
+/// The condition must be exactly `1`: the assert traps when it is `0`.
+impl OperandRangeRequirementOpInterface for Assert {
+    fn operand_range_requirement(&self, index: usize) -> OperandRangeRequirement {
+        if index != 0 {
+            return OperandRangeRequirement::None;
+        }
+        OperandRangeRequirement::Range(ConstantIntRange::exact_bool(self.cond().ty(), true))
+    }
 }
 
 impl Canonicalizable for Assert {
@@ -1380,6 +1391,55 @@ builtin.function public extern(\"C\") @check(%c: i1) {
                 builtin.ret;
             };"#]]
         .assert_eq(&printed);
+        Ok(())
+    }
+
+    /// `cf.assert` requires its condition to be exactly `1`; the branches and `cf.select` accept
+    /// every value of their operands.
+    #[test]
+    fn assert_requires_its_condition_to_be_one() -> Result<(), Report> {
+        let context = Rc::new(Context::default());
+        let source = "\
+builtin.function public extern(\"C\") @check(%c: i1, %sel: i32, %a: i32, %b: i32) -> i32 {
+    cf.assert %c, \"m\";
+    %s = cf.select %c, %a, %b;
+    cf.cond_br %c ^yes, ^no : (i1);
+^yes:
+    cf.switch %sel [#builtin.i32<1> -> ^one], ^no : (i32);
+^one:
+    cf.br ^no;
+^no:
+    builtin.ret %s : (i32);
+};";
+        let (function, _) = parse_function_fixpoint(&context, "assert_requirement.hir", source)?;
+        let function = function.borrow();
+        let mut checked = Vec::new();
+        for block in function.body().body() {
+            for op in block.body() {
+                let op = op.as_operation_ref();
+                let op = op.borrow();
+                if op.is::<Assert>() {
+                    assert_eq!(
+                        operation_operand_range_requirement(&op, 0),
+                        OperandRangeRequirement::Range(ConstantIntRange::from_unsigned(1, 1, 1))
+                    );
+                } else {
+                    for index in 0..op.num_operands() {
+                        assert_eq!(
+                            operation_operand_range_requirement(&op, index),
+                            OperandRangeRequirement::None,
+                            "operand {index} of {}",
+                            op.name()
+                        );
+                    }
+                }
+                checked.push(format!("{}", op.name()));
+            }
+        }
+        assert_eq!(
+            checked,
+            ["cf.assert", "cf.select", "cf.cond_br", "cf.switch", "cf.br", "builtin.ret"]
+        );
         Ok(())
     }
 
