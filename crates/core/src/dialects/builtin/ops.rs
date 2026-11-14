@@ -2,6 +2,7 @@ mod alias;
 mod call;
 mod cast;
 mod component;
+mod constants;
 mod function;
 mod global_variable;
 mod local;
@@ -16,6 +17,7 @@ pub use self::{
     call::{Call, CallIndirect, CallIndirectRef, CallRef, FunctionReference, FunctionReferenceRef},
     cast::UnrealizedConversionCast,
     component::{Component, ComponentRef},
+    constants::{Bytes, BytesRef},
     function::{Function, FunctionBuilder as PrimFunctionBuilder, FunctionRef, Ret, RetImm},
     global_variable::*,
     local::{LoadLocal, LoadLocalRef, LocalsResource, StoreLocal, StoreLocalRef},

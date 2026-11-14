@@ -94,6 +94,18 @@ pub trait BuiltinOpBuilder<'f, B: ?Sized + Builder> {
         op_builder(global)
     }
 
+    /// Create a [Bytes] constant holding `data`, an `array<i8; N>` of its `N` bytes.
+    fn bytes(
+        &mut self,
+        data: impl Into<ConstantData>,
+        span: SourceSpan,
+    ) -> Result<BytesRef, Report> {
+        let id = self.builder().context().create_constant(data);
+        let data = self.builder().context().get_constant(id);
+        let op_builder = self.builder_mut().create::<Bytes, (_,)>(span);
+        op_builder(data)
+    }
+
     fn unrealized_conversion_cast(
         &mut self,
         value: ValueRef,
