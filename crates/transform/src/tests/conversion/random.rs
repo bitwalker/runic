@@ -11,16 +11,18 @@
 //! In the `isize` family only operations for which truncation commutes touch an `isize`: the
 //! comparisons and loop counters are over `i64`.
 //!
-//! The tests run fixed seeds; `CONVERSION_TEST_SEED` (decimal, or hex with `0x`) runs one seed
-//! instead, and `CONVERSION_TEST_CASES` sets the number of cases per seed. Each case has a seed of
-//! its own: a failing case prints the values of the two variables that run it alone.
+//! The tests run fixed seeds, under the crate's convention: `TRANSFORM_TEST_SEED` (decimal, or hex
+//! with `0x`) runs one seed instead, and `TRANSFORM_TEST_CASES` sets the number of cases per seed.
+//! Each case has a seed of its own: a failing case prints the values of the two variables that run
+//! it alone.
 
 extern crate std;
 
 use alloc::{format, string::String, vec, vec::Vec};
 use std::println;
 
-use super::{Family, Input, Mode, Setup, check, patterns::Kind};
+use super::{Family, Input, Mode, Setup, check_counting, patterns::Kind};
+use crate::tests::{cases, seeds};
 
 struct Rng(u64);
 
@@ -54,27 +56,6 @@ impl Rng {
             _ => u128::from(self.next()) << 64 | u128::from(self.next()),
         };
         super::mask(bits, width)
-    }
-}
-
-/// The seeds a test runs: `CONVERSION_TEST_SEED` if set, else `default`.
-fn seeds(default: &[u64]) -> Vec<u64> {
-    let Ok(seed) = std::env::var("CONVERSION_TEST_SEED") else {
-        return default.to_vec();
-    };
-    let seed = seed.trim();
-    let seed = match seed.strip_prefix("0x") {
-        Some(hex) => u64::from_str_radix(hex, 16),
-        None => seed.parse(),
-    };
-    vec![seed.expect("CONVERSION_TEST_SEED is a u64")]
-}
-
-/// The number of cases per seed: `CONVERSION_TEST_CASES` if set, else `default`.
-fn cases(default: usize) -> usize {
-    match std::env::var("CONVERSION_TEST_CASES") {
-        Ok(n) => n.trim().parse().expect("CONVERSION_TEST_CASES is a number"),
-        Err(_) => default,
     }
 }
 
@@ -617,6 +598,7 @@ fn setup(rng: &mut Rng, family: Family, mode: Mode) -> Setup {
 fn run(family: Family, mode: Mode, default_seeds: &[u64], default_cases: usize) {
     let mut findings = Vec::new();
     let mut ran = 0;
+    let mut left = 0;
     for seed in seeds(default_seeds) {
         let mut rng = Rng(seed);
         for case in 0..cases(default_cases) {
@@ -627,17 +609,31 @@ fn run(family: Family, mode: Mode, default_seeds: &[u64], default_cases: usize) 
             let setup = setup(&mut case_rng, family, mode);
             let (source, inputs) = module(&mut case_rng, family);
             ran += 1;
-            if let Err(finding) = check(&source, &setup, &inputs) {
-                findings.push((case_seed, format!("{setup:?}\n{finding}\n--- source\n{source}")));
+            match check_counting(&source, &setup, &inputs) {
+                Ok(checked) => left += usize::from(checked.unconverted && checked.materialized),
+                Err(finding) => findings
+                    .push((case_seed, format!("{setup:?}\n{finding}\n--- source\n{source}"))),
             }
         }
     }
-    println!("{ran} modules of {family:?} converted under {mode:?} and checked");
+    println!(
+        "{ran} modules of {family:?} converted under {mode:?} and checked; {left} left an \
+         operation over the converted type reading a materialization"
+    );
     if let Some((case_seed, finding)) = findings.first() {
         panic!(
-            "{} of {ran} cases failed; the first (CONVERSION_TEST_SEED={case_seed} \
-             CONVERSION_TEST_CASES=1 runs it alone):\n{finding}",
+            "{} of {ran} cases failed; the first (TRANSFORM_TEST_SEED={case_seed} \
+             TRANSFORM_TEST_CASES=1 runs it alone):\n{finding}",
             findings.len()
+        );
+    }
+    // A partial conversion must be shown to leave something unconverted, and to join it to what
+    // was converted.
+    if mode == Mode::Partial {
+        assert!(
+            left * 2 >= ran,
+            "only {left} of {ran} partial conversions left an operation over the converted type \
+             reading a materialization"
         );
     }
 }
@@ -665,33 +661,127 @@ fn random_size_modules_convert_partially() {
     run(Family::Size, Mode::Partial, &[0x3e3_0031, 0x3e3_0032], CASES);
 }
 
-/// The generator gives what the tests claim: every module has several functions, and over the
-/// cases of one seed calls of each form, aliases, locals, diamonds, loops, early returns and
-/// immediates appear.
+/// The features of the structure of `source` that the text alone shows, per function: a back edge
+/// (a branch to a block whose label is above it), an early return (more than one return), a block
+/// argument of type `ty`, a local of type `ty`, and an effect on a parameter of type `ty`.
+fn structural_features(source: &str, ty: &str) -> Vec<&'static str> {
+    let mut found = Vec::new();
+    let mut add = |feature: &'static str| {
+        if !found.contains(&feature) {
+            found.push(feature);
+        }
+    };
+    for function in source.split("builtin.function public").skip(1) {
+        let mut lines = function.lines();
+        let header = lines.next().unwrap_or_default();
+        // `extern("C") @fN(%v0: T, ..) -> .. effects(read(arg K), ..) locals(..) {`
+        let params = header
+            .split_once('(')
+            .and_then(|(_, rest)| rest.split_once("@f"))
+            .and_then(|(_, rest)| rest.split_once('('))
+            .and_then(|(_, rest)| rest.split_once(')'))
+            .map(|(params, _)| params)
+            .unwrap_or_default();
+        let params = params
+            .split(", ")
+            .map(|param| param.split_once(": ").map(|(_, ty)| ty).unwrap_or_default())
+            .collect::<Vec<_>>();
+        if let Some((_, rest)) = header.split_once("effects(read(arg ")
+            && let Some((index, _)) = rest.split_once(')')
+            && params.get(index.parse::<usize>().unwrap()) == Some(&ty)
+        {
+            add("an effect on a parameter of the converted type");
+        }
+        if let Some((_, rest)) = header.split_once("locals(")
+            && rest
+                .split_once(')')
+                .is_some_and(|(locals, _)| locals.split(", ").any(|l| l == ty))
+        {
+            add("a local of the converted type");
+        }
+        let mut labels = Vec::new();
+        let mut returns = 0;
+        for line in lines {
+            let line = line.trim();
+            if line.starts_with("};") {
+                break;
+            }
+            if let Some(label) = line.strip_prefix('^') {
+                let name = label.split(['(', ':']).next().unwrap_or_default();
+                if label.contains(&format!(": {ty}")) {
+                    add("a block argument of the converted type");
+                }
+                labels.push(String::from(name));
+            } else if line.starts_with("cf.") {
+                let targets = line
+                    .split('^')
+                    .skip(1)
+                    .map(|target| target.split(['(', ',', ' ', ';']).next().unwrap_or_default());
+                if targets.into_iter().any(|target| labels.iter().any(|label| label == target)) {
+                    add("a back edge");
+                }
+            } else if line.starts_with("builtin.ret") {
+                returns += 1;
+            }
+        }
+        if returns > 1 {
+            add("an early return");
+        }
+    }
+    found
+}
+
+/// The generator gives what the tests claim, in both families: over the cases of one seed, calls
+/// of each form, aliases, locals, effects, diamonds, loops (a back edge), early returns, immediates,
+/// a block argument, a local and an effect on a parameter of the converted type (one that splits,
+/// in the wide family), and the operations of the family's patterns appear.
 #[test]
 fn the_generator_covers_every_feature() {
-    let mut rng = Rng(0x3e3_0041);
-    let mut text = String::new();
-    for _ in 0..40 {
-        let (source, _) = module(&mut rng, Family::Wide);
-        text.push_str(&source);
-    }
-    for feature in [
-        "builtin.call @f",
-        "builtin.call @a",
-        "builtin.call_indirect",
-        "builtin.function_ref @a",
-        "builtin.function_alias",
-        "locals(",
-        "builtin.load_local",
-        "effects(",
-        "cf.cond_br",
-        "arith.cmpi eq",
-        "builtin.ret_imm",
-        "arith.band",
-        "arith.bor",
-        "arith.bxor",
+    for (family, ty, operations) in [
+        (
+            Family::Wide,
+            "i128",
+            &["arith.cmpi eq", "arith.band", "arith.bor", "arith.bxor"][..],
+        ),
+        (
+            Family::Size,
+            "isize",
+            &["arith.sub", "arith.mul", "arith.band", "arith.bor"][..],
+        ),
     ] {
-        assert!(text.contains(feature), "no `{feature}` in 40 modules");
+        let mut rng = Rng(0x3e3_0041);
+        let mut text = String::new();
+        for _ in 0..40 {
+            let (source, _) = module(&mut rng, family);
+            text.push_str(&source);
+        }
+        let common = [
+            "builtin.call @f",
+            "builtin.call @a",
+            "builtin.call_indirect",
+            "builtin.function_ref @a",
+            "builtin.function_alias",
+            "locals(",
+            "builtin.load_local",
+            "effects(",
+            "cf.cond_br",
+            "builtin.ret_imm",
+        ];
+        for feature in common.iter().chain(operations) {
+            assert!(text.contains(feature), "no `{feature}` in 40 modules of {family:?}");
+        }
+        let found = structural_features(&text, ty);
+        for feature in [
+            "a back edge",
+            "an early return",
+            "a block argument of the converted type",
+            "a local of the converted type",
+            "an effect on a parameter of the converted type",
+        ] {
+            assert!(
+                found.contains(&feature),
+                "no {feature} in 40 modules of {family:?}: {found:?}"
+            );
+        }
     }
 }

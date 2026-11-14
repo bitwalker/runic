@@ -370,15 +370,45 @@ fn a_switch_with_extreme_keys_lifts_and_folds_as_32_bit_patterns() {
     }
 }
 
+// One convention for every randomized test of the crate: `TRANSFORM_TEST_SEED` (decimal, or hex
+// with `0x`) replaces a test's seed, or its seeds; `TRANSFORM_TEST_CASES` replaces the number of
+// cases of a test that runs a number of cases per seed.
+
+/// `TRANSFORM_TEST_SEED`, if set.
+fn seed_from_environment() -> Option<u64> {
+    let seed = std::env::var("TRANSFORM_TEST_SEED").ok()?;
+    let seed = seed.trim();
+    let seed = match seed.strip_prefix("0x") {
+        Some(hex) => u64::from_str_radix(hex, 16),
+        None => seed.parse(),
+    };
+    Some(seed.expect("TRANSFORM_TEST_SEED is a u64"))
+}
+
 /// The seed of a randomized test: `TRANSFORM_TEST_SEED` if set, else `default`. It is printed, so
 /// a failing test shows the seed that reproduces it.
 fn seed(default: u64) -> u64 {
-    let seed = match std::env::var("TRANSFORM_TEST_SEED") {
-        Ok(seed) => seed.parse().expect("TRANSFORM_TEST_SEED is a u64"),
-        Err(_) => default,
-    };
+    let seed = seed_from_environment().unwrap_or(default);
     std::eprintln!("seed {seed:#x} (TRANSFORM_TEST_SEED={seed})");
     seed
+}
+
+/// The seeds of a randomized test that runs several: `TRANSFORM_TEST_SEED` alone if set, else
+/// `defaults`.
+fn seeds(defaults: &[u64]) -> alloc::vec::Vec<u64> {
+    match seed_from_environment() {
+        Some(seed) => alloc::vec![seed],
+        None => defaults.to_vec(),
+    }
+}
+
+/// The number of cases per seed of a randomized test: `TRANSFORM_TEST_CASES` if set, else
+/// `default`.
+fn cases(default: usize) -> usize {
+    match std::env::var("TRANSFORM_TEST_CASES") {
+        Ok(n) => n.trim().parse().expect("TRANSFORM_TEST_CASES is a number"),
+        Err(_) => default,
+    }
 }
 
 mod calls;

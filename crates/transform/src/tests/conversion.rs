@@ -13,9 +13,9 @@
 //! Functions, calls, function references, returns, branches and locals are converted by
 //! [populate_builtin_conversion_patterns] in every run, under [add_builtin_legality_by_type].
 //!
-//! - In a full conversion the `arith` dialect is judged by type, so every operation over a converted
-//!   type must be converted, and the converter has no materializations: a cast that remains is an
-//!   error.
+//! - In a full conversion the `arith` dialect is judged by type, so every operation over a
+//!   converted type must be converted, and the converter has no materializations: a cast that
+//!   remains is an error.
 //! - In a partial conversion some of the test's `arith` kinds get neither a rule nor a pattern,
 //!   under the default unknown-operation policy: they are offered, stay as they are, and read
 //!   values the materializations build with real `arith` operations (for `i128`: `zext`, `shl`,
@@ -24,9 +24,11 @@
 //!
 //! After every conversion that succeeds: the module verifies; no cast remains; in a full
 //! conversion no operation holds a type the converter changes (its own types and its operands');
-//! every function computes, on the same inputs, what the original computed (an `i128` read from its
-//! halves; an `isize` compared in its low 32 bits); and converting the result again changes
-//! nothing.
+//! the declared effects of every function are on the new indices of the parts of what they were
+//! on; every function computes, on the same inputs, what the original computed (an `i128` read
+//! from its halves; an `isize` compared in its low 32 bits); and converting the result again
+//! changes nothing. The random partial conversions must also leave, in a large share of their
+//! cases, an operation over the converted type that reads values a materialization built.
 //!
 //! - `eval`: the evaluator of a module.
 //! - `patterns`: the converters, the targets and the patterns the test owns.
@@ -46,7 +48,9 @@ use alloc::{
 use runic_core::{
     Context, Operation, OperationRef, Report, Type, WalkResult,
     conversion::{ConversionResult, TypeConverter},
-    dialects::builtin::{Module, UnrealizedConversionCast},
+    dialects::builtin::{
+        Function, Module, UnrealizedConversionCast, attributes::MemoryEffectDescriptor,
+    },
     parse::{self, ParserConfig},
     testing::text::describe,
 };
@@ -235,16 +239,118 @@ fn converted_type_held(module: OperationRef, converter: &TypeConverter) -> Optio
     None
 }
 
+/// The declared effects of each function of `module`, by name, with its parameter and result
+/// types: `None` for effects that are not known.
+type Effects = Vec<(String, Vec<Type>, Vec<Type>, Option<Vec<MemoryEffectDescriptor>>)>;
+
+fn effects_of(module: OperationRef) -> Effects {
+    let mut effects = Vec::new();
+    for op in all_operations(module) {
+        let op = op.borrow();
+        let Some(function) = op.downcast_ref::<Function>() else {
+            continue;
+        };
+        let signature = function.get_signature();
+        effects.push((
+            function.name().as_str().to_string(),
+            signature.params().iter().map(|param| param.ty).collect(),
+            signature.results().iter().map(|result| result.ty).collect(),
+            function.get_memory_effects().known().map(<[_]>::to_vec),
+        ));
+    }
+    effects
+}
+
+/// Checks the effects of the converted `module` against `before`, the effects of the original: an
+/// effect on old parameter or result `k` is on each new index of `k`'s parts, in order (an `i128`
+/// has two parts, every other type one), and an effect on no value is kept.
+fn check_effects(
+    context: &Context,
+    family: Family,
+    before: &Effects,
+    module: OperationRef,
+) -> Result<(), String> {
+    let parts = |ty: &Type| {
+        if family == Family::Wide && *ty == context.i128() {
+            2
+        } else {
+            1
+        }
+    };
+    let starts = |types: &[Type]| {
+        let mut starts = Vec::new();
+        let mut next = 0u32;
+        for ty in types {
+            starts.push((next, parts(ty)));
+            next += parts(ty);
+        }
+        starts
+    };
+    let after = effects_of(module);
+    for ((name, params, results, effects), (_, _, _, converted)) in before.iter().zip(&after) {
+        let expected = effects.as_ref().map(|effects| {
+            let (params, results) = (starts(params), starts(results));
+            let mut expected = Vec::<MemoryEffectDescriptor>::new();
+            for effect in effects {
+                let (on, starts) = match (effect.argument, effect.result) {
+                    (Some(index), _) => (index, &params),
+                    (None, Some(index)) => (index, &results),
+                    (None, None) => {
+                        expected.push(effect.clone());
+                        continue;
+                    }
+                };
+                let (start, count) = starts[on as usize];
+                for new in start..start + count {
+                    let mut part = effect.clone();
+                    if effect.argument.is_some() {
+                        part.argument = Some(new);
+                    } else {
+                        part.result = Some(new);
+                    }
+                    if !expected.contains(&part) {
+                        expected.push(part);
+                    }
+                }
+            }
+            expected
+        });
+        if expected != *converted {
+            return Err(format!(
+                "the effects of @{name} are {converted:?}, expected {expected:?} (before: \
+                 {effects:?})"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// What a successful [check] saw besides the converted text.
+struct Checked {
+    text: String,
+    /// In a partial conversion: some operation still holds the converted type.
+    unconverted: bool,
+    /// A materialization was built: the module holds an operation that only a materialization
+    /// builds (`arith.shl` or `arith.trunc` for `i128`, `arith.sext_or_trunc` for `isize`).
+    materialized: bool,
+}
+
 /// Converts the module `source` as `setup` says and checks the result (see the module
 /// documentation), evaluating each of `inputs` before and after. Returns the converted text, or
 /// what went wrong. A conversion that fails is reported as `Err` too: every module the tests make
 /// must convert.
 fn check(source: &str, setup: &Setup, inputs: &[Input]) -> Result<String, String> {
+    check_counting(source, setup, inputs).map(|checked| checked.text)
+}
+
+/// [check], with what it saw.
+fn check_counting(source: &str, setup: &Setup, inputs: &[Input]) -> Result<Checked, String> {
     let (context, module) = parse_module(source)?;
     module
         .borrow()
         .recursively_verify()
         .map_err(|err| format!("the source does not verify: {}", describe(&err)))?;
+    let effects = effects_of(module);
 
     // What the original computes, and the original signature of each function evaluated.
     let mut expected = Vec::new();
@@ -278,12 +384,13 @@ fn check(source: &str, setup: &Setup, inputs: &[Input]) -> Result<String, String
     {
         return Err(fail(String::from("a cast remains")));
     }
-    if setup.mode == Mode::Full {
-        let converter = patterns::converter(&context, setup);
-        if let Some(held) = converted_type_held(module, &converter) {
-            return Err(fail(format!("a converted type remains: {held}")));
-        }
+    let held = converted_type_held(module, &patterns::converter(&context, setup));
+    if setup.mode == Mode::Full
+        && let Some(held) = held.as_ref()
+    {
+        return Err(fail(format!("a converted type remains: {held}")));
     }
+    check_effects(&context, setup.family, &effects, module).map_err(fail)?;
     {
         let mut evaluator = Evaluator::new(module);
         for ((function, args), (params, results, outcome)) in inputs.iter().zip(&expected) {
@@ -306,5 +413,13 @@ fn check(source: &str, setup: &Setup, inputs: &[Input]) -> Result<String, String
             again.changed()
         )));
     }
-    Ok(converted)
+    let materialized = match setup.family {
+        Family::Wide => converted.contains("arith.shl") || converted.contains("arith.trunc"),
+        Family::Size => converted.contains("arith.sext_or_trunc"),
+    };
+    Ok(Checked {
+        unconverted: held.is_some(),
+        materialized,
+        text: converted,
+    })
 }

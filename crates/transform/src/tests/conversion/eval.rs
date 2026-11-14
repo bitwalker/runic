@@ -1,8 +1,9 @@
 //! An evaluator of a module, over the IR itself: integers of up to 128 bits (`isize` is 64 bits),
 //! a call stack over the module's functions (through aliases), function values for
 //! `builtin.function_ref` and `builtin.call_indirect`, block arguments for `cf.br` and
-//! `cf.cond_br`, and locals. A bound on the depth of calls and on the operations executed makes
-//! every evaluation end.
+//! `cf.cond_br`, and locals. A function returns one value per result of its signature, each
+//! fitting its type (an immediate is masked to its type). A bound on the depth of calls and on the
+//! operations executed makes every evaluation end.
 
 use alloc::{
     collections::BTreeMap,
@@ -131,6 +132,7 @@ impl Evaluator {
             .get()
             .and_then(|body| body.entry_block_ref())
             .ok_or_else(|| format!("@{name} is a declaration"))?;
+        let results = self.signature(name)?.1;
         let mut env = FxHashMap::<ValueRef, Val>::default();
         let mut locals = BTreeMap::<u32, Val>::new();
         bind(&context, entry, &args, &mut env)?;
@@ -151,7 +153,10 @@ impl Evaluator {
                         next = Some(dest);
                         break;
                     }
-                    Flow::Return(values) => return Ok(values),
+                    Flow::Return(values) => {
+                        check_returned(&context, name, &results, &values)?;
+                        return Ok(values);
+                    }
                 }
             }
             block = next.ok_or_else(|| String::from("a block does not end in a terminator"))?;
@@ -269,7 +274,9 @@ impl Evaluator {
         } else if op.is::<Ret>() {
             return Ok(Flow::Return(operands.into_iter().map(|(_, value)| value).collect()));
         } else if let Some(ret) = op.downcast_ref::<RetImm>() {
-            return Ok(Flow::Return(vec![Val::Int(ret.get_value().unsigned())]));
+            let ty = runic_core::Attribute::ty(&*ret.value());
+            let width = width(context, ty).ok_or_else(|| format!("'{name}' is not an integer"))?;
+            return Ok(Flow::Return(vec![Val::Int(mask(ret.get_value().unsigned(), width))]));
         } else if let Some(reference) = op.downcast_ref::<FunctionReference>() {
             results.push(Val::Func(reference.callee().path().name().as_str().to_string()));
         } else if let Some(call) = op.downcast_ref::<Call>() {
@@ -333,6 +340,31 @@ enum Flow {
     Continue,
     Branch(BlockRef, Vec<Val>),
     Return(Vec<Val>),
+}
+
+/// An error unless `values`, returned by the function `name`, are one value per type of
+/// `results`, each integer fitting its type.
+fn check_returned(
+    context: &Context,
+    name: &str,
+    results: &[Type],
+    values: &[Val],
+) -> Result<(), String> {
+    if results.len() != values.len() {
+        return Err(format!(
+            "@{name} returns {} value(s), but its signature has {} result(s)",
+            values.len(),
+            results.len()
+        ));
+    }
+    for (ty, value) in results.iter().zip(values) {
+        match (width(context, *ty), value) {
+            (Some(width), Val::Int(bits)) if mask(*bits, width) == *bits => {}
+            (None, Val::Func(_)) => {}
+            _ => return Err(format!("@{name} returns {value:?} for a result of type {ty}")),
+        }
+    }
+    Ok(())
 }
 
 /// Binds the arguments of `block` to `values`, checking that each integer fits its type.

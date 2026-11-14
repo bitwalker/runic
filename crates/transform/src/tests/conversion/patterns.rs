@@ -484,10 +484,11 @@ where
     )
 }
 
-/// One pattern for any operation: an operation of the kinds of `kinds` that uses `isize` is
-/// retyped in place, its operands set to the values they became and every type it holds mapped
-/// by `isize -> i32` ([replace_elements_in]), a constant truncated to its new width. Truncation
-/// commutes with each of these kinds.
+/// One pattern for any operation: an operation of the kinds of `kinds` that `converter` does not
+/// call legal is retyped in place, its operands set to the values they became and every type it
+/// holds mapped to the one type the converter gives for it ([replace_elements_in]; `isize -> i32`
+/// in this family), a constant truncated to its new width. Truncation commutes with each of these
+/// kinds.
 fn retype_pattern(context: &Rc<Context>, converter: &TypeConverter, kinds: &[Kind]) -> Rule {
     let names = kinds.iter().map(|kind| kind.name(context)).collect::<Vec<_>>();
     let check = converter.clone();
@@ -511,11 +512,11 @@ fn retype_pattern(context: &Rc<Context>, converter: &TypeConverter, kinds: &[Kin
                 .map(|operand| operand.borrow().as_value_ref())
                 .collect::<Vec<_>>();
             let context = op.borrow().context_rc();
+            // Each type the converter gives one type for is mapped to it.
             let mapper = TypeMapper::new(&context, |context, ty| {
-                if ty == context.isize() {
-                    context.i32()
-                } else {
-                    ty
+                match check.convert_type(context, ty).as_slice() {
+                    [one] => *one,
+                    _ => ty,
                 }
             });
             let mut rewrite = ElementRewrite::types(mapper).with_int_constants(|value, _, new| {
