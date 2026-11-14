@@ -49,7 +49,9 @@
 //! [ConversionPatternRewriter::replace_op_with_multiple] replaces each result by a range of values:
 //! one value of the result's own type, or values of exactly the types the converter gives the
 //! result. A result that still has users is replaced, for them, by a source cast of the range back
-//! to the result's type, placed before the operation. [ConversionPatternRewriter::replace_op] and
+//! to the result's type, placed before the operation, or after the range when the range is defined
+//! after the operation in its block. The range must dominate those users; nothing checks it.
+//! [ConversionPatternRewriter::replace_op] and
 //! [ConversionPatternRewriter::replace_op_with_new_op] are the one-value forms.
 //!
 //! # Materializations

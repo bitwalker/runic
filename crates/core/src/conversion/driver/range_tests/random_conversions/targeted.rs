@@ -325,10 +325,7 @@ fn in_partial_mode_a_rule_free_operation_is_offered_only_when_the_policy_does_no
 }
 
 /// A pattern that builds its replacement after the operation (nothing in the contract says where
-/// the replacement goes, only that it is made through the rewriter). The source cast for a user
-/// that is not converted is placed before the operation, so before the values it reads; the
-/// materialization that realizes it is built there too. The verifier has no dominance check: the
-/// conversion reports success.
+/// the replacement goes, only that it is made through the rewriter).
 fn split_constant_after(context: &Rc<Context>, converter: &TypeConverter) -> Rule {
     let i128 = context.i128();
     Rule::new::<Constant>(
@@ -376,39 +373,10 @@ fn defined_before_use(function: OperationRef) -> Result<(), String> {
     Ok(())
 }
 
+/// A replacement built after the operation: the source cast for the user that stays, and so the
+/// join that realizes it, is placed after the values it reads.
 #[test]
-fn a_replacement_built_after_the_operation_leaves_a_use_before_its_definition() {
-    let (context, function) = parse_function(
-        "()",
-        "    %0 = test.constant 5 : i128;
-    test.sink %0 : (i128);
-    builtin.ret;",
-    );
-    let mut converter = wide_converter(&context);
-    join_callbacks(&mut converter);
-    // The sink is legal: it keeps reading an i128, through a source cast realized as a join.
-    let legal = |op: &Operation| DynamicLegalityResult::legal_if(has_no_wide_types(op));
-    let mut target = ConversionTarget::new(context.clone());
-    target
-        .set_unknown_op_policy(UnknownOpPolicy::Legal)
-        .add_dynamically_legal_op::<Constant, _>(legal);
-
-    let result = convert(function, target, [split_constant_after(&context, &converter)]);
-    let output = function.borrow().to_string();
-    println!("{result:?}\n{output}");
-    assert!(result.is_ok(), "pinned: the conversion reports success");
-    let order = defined_before_use(function);
-    println!("{order:?}");
-    assert!(
-        order.is_err(),
-        "pinned: the join reads the halves before they are defined\n{output}"
-    );
-}
-
-/// What a fix should give: the cast (and so the join) after the values it reads.
-#[test]
-#[ignore = "the source cast is placed before the replaced operation, whatever its inputs are"]
-fn wanted_a_replacement_built_after_the_operation_is_read_after_it() {
+fn a_replacement_built_after_the_operation_is_read_after_it() {
     let (context, function) = parse_function(
         "()",
         "    %0 = test.constant 5 : i128;

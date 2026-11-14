@@ -404,7 +404,13 @@ impl ConversionPatternRewriter {
     /// A range that is one value of the result's own type replaces the result. Any other range
     /// must have exactly the types the pattern's type converter says the result becomes; when the
     /// result still has users, they are given a many-to-one `builtin.unrealized_conversion_cast`
-    /// of the range back to the result's type, inserted before `op`. A range of any other types,
+    /// of the range back to the result's type. The cast is placed after the value of the range
+    /// that is defined last, when that definition is in `op`'s block after `op` (a replacement
+    /// built after `op`); otherwise before `op`.
+    ///
+    /// The values of a range must dominate the users of the result they replace: nothing checks
+    /// it (the verifier has no dominance check), so a range defined after a user leaves IR that
+    /// reads a value before its definition. A range of any other types,
     /// the wrong number of ranges, or an `op` that is the root of the conversion, is an error
     /// raised before anything is changed.
     ///
@@ -466,8 +472,9 @@ impl ConversionPatternRewriter {
             casts.push(true);
         }
 
-        // The casts are inserted before `op`; afterwards the insertion point is where it was, or,
-        // when it was at `op`, at the position `op` occupied.
+        // Each cast is inserted before `op`, or after its range when the range is defined after
+        // `op`; afterwards the insertion point is where it was, or, when it was at `op`, at the
+        // position `op` occupied.
         let saved = *self.inner.insertion_point();
         let restore = match saved {
             ProgramPoint::Op { op: anchor, .. } if anchor == op => match op.next() {
@@ -487,7 +494,7 @@ impl ConversionPatternRewriter {
                 replacements.push(None);
                 continue;
             }
-            self.set_insertion_point_before(op);
+            self.inner.set_insertion_point(source_cast_point(op, range));
             let result_ty = result.borrow().ty();
             let (_, outputs) =
                 self.insert_cast(CastKind::Source, range.iter().copied(), [result_ty], span)?;
@@ -907,6 +914,29 @@ impl ConversionPatternRewriter {
     /// Take and clear tracked mutation state.
     pub fn take_tracked_mutations(&mut self) -> TrackedMutations {
         self.tracking.take_mutations()
+    }
+}
+
+/// Where the source cast of `range`, which stands for a result of `op`, is placed: after the value
+/// of `range` defined last, when that definition is in `op`'s block after `op`; otherwise before
+/// `op`.
+fn source_cast_point(op: OperationRef, range: &[ValueRef]) -> ProgramPoint {
+    let Some(block) = op.parent() else {
+        return ProgramPoint::before(op);
+    };
+    let mut last = op;
+    for value in range {
+        let Some(definition) = value.borrow().get_defining_op() else {
+            continue;
+        };
+        if definition.parent() == Some(block) && last.borrow().is_before_in_block(&definition) {
+            last = definition;
+        }
+    }
+    if last == op {
+        ProgramPoint::before(op)
+    } else {
+        ProgramPoint::after(last)
     }
 }
 
