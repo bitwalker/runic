@@ -793,6 +793,47 @@ fn every_pass_over_the_golden_functions_verifies() {
     assert!(failures.is_empty());
 }
 
+/// Every case of the corpora prints with [OpPrintingFlags::generic] without a panic, each of its
+/// operations on a line of its own in the generic form, and its default print is unchanged by it.
+///
+/// [OpPrintingFlags::generic]: runic_core::print::OpPrintingFlags::generic
+#[test]
+fn every_case_prints_in_the_generic_form() {
+    use runic_core::print::{AsmPrinter, OpPrinter, OpPrintingFlags};
+
+    let flags = OpPrintingFlags {
+        generic: true,
+        ..Default::default()
+    };
+    let mut printed = 0;
+    for case in corpus() {
+        let Ok((context, root)) = parse_case(&case, &case.text, false) else {
+            continue;
+        };
+        let before = root.borrow().to_string();
+        let mut printer = AsmPrinter::fragment(context.clone(), &flags);
+        OpPrinter::print(&*root.borrow(), &mut printer);
+        let generic = printer.finish().to_string();
+        let operations = generic
+            .lines()
+            .map(str::trim_start)
+            // Region delimiters and block labels are not operations.
+            .filter(|line| !line.starts_with(['{', '}', '^']))
+            .inspect(|line| {
+                let name = match line.split_once(" = ") {
+                    Some((results, rest)) if results.starts_with('%') => rest,
+                    _ => line,
+                };
+                assert!(name.starts_with('"'), "{}: {line}", case.name);
+            })
+            .count();
+        assert_eq!(operations, all_ops(root).len(), "{}:\n{generic}", case.name);
+        assert_eq!(root.borrow().to_string(), before, "{}", case.name);
+        printed += 1;
+    }
+    assert!(printed > 200, "{printed}");
+}
+
 // ---------------------------------------------------------------------------------------------
 // Region terminators in the wrong place
 // ---------------------------------------------------------------------------------------------

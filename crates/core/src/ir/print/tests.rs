@@ -1,10 +1,10 @@
-use alloc::{string::ToString, vec::Vec};
+use alloc::{string::ToString, vec, vec::Vec};
 use core::cell::Cell;
 
 use pretty_assertions::assert_eq;
 
 use crate::{
-    Context, Op, OperationRef, SourceSpan, StructType, Type, ValueRef,
+    Builder, Context, Op, OperationRef, SourceSpan, StructType, Type, ValueRef,
     dialects::builtin::BuiltinOpBuilder, interner::Symbol, testing::Test,
 };
 
@@ -279,4 +279,298 @@ fn a_region_or_block_printed_on_its_own_declares_its_groups() {
     let block_text = block.borrow().render().to_string();
     assert!(block_text.starts_with(declaration), "unexpected block text:\n{block_text}");
     assert_eq!(block_text.matches("rec {").count(), 1);
+}
+
+/// A function `f(%0: i32)` whose body has `blocks` blocks. Each holds `casts` casts of its first
+/// argument (the entry block's is `%0`; each other block takes an `i32` of its own), every third
+/// of them casting two values to two results, then a return.
+fn long_function(blocks: usize, casts: usize) -> Test {
+    let mut test = Test::new("f", |cx| ([cx.i32()], []));
+    let region = test.function().borrow().body().as_region_ref();
+    let (i32, i64) = (test.context().i32(), test.context().i64());
+    for i in 0..blocks {
+        let block = if i == 0 {
+            test.entry_block()
+        } else {
+            test.builder_mut().create_block(region, None, &[i32])
+        };
+        let arg = block.borrow().arguments()[0] as ValueRef;
+        let builder = test.builder_mut();
+        builder.set_insertion_point_to_end(block);
+        for j in 0..casts {
+            if j % 3 == 2 {
+                builder
+                    .unrealized_conversion_cast([arg, arg], [i64, i64], SourceSpan::UNKNOWN)
+                    .unwrap();
+            } else {
+                builder.unrealized_conversion_cast([arg], [i64], SourceSpan::UNKNOWN).unwrap();
+            }
+        }
+        builder.ret([], SourceSpan::UNKNOWN).unwrap();
+    }
+    test
+}
+
+/// The text of a block of 50 operations, pinned before the printer joined the operations of a
+/// block as a balanced document.
+#[test]
+fn a_block_of_fifty_operations_prints_as_before() {
+    let test = long_function(1, 49);
+    assert_eq!(
+        print_function(&test),
+        r#"builtin.function public extern("C") @f(%0: i32) {
+    %1 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    %2 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    %3, %4 = builtin.unrealized_conversion_cast %0, %0 : (i32, i32) to (i64, i64);
+    %5 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    %6 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    %7, %8 = builtin.unrealized_conversion_cast %0, %0 : (i32, i32) to (i64, i64);
+    %9 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    %10 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    %11, %12 = builtin.unrealized_conversion_cast %0, %0 : (i32, i32) to (i64, i64);
+    %13 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    %14 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    %15, %16 = builtin.unrealized_conversion_cast %0, %0 : (i32, i32) to (i64, i64);
+    %17 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    %18 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    %19, %20 = builtin.unrealized_conversion_cast %0, %0 : (i32, i32) to (i64, i64);
+    %21 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    %22 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    %23, %24 = builtin.unrealized_conversion_cast %0, %0 : (i32, i32) to (i64, i64);
+    %25 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    %26 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    %27, %28 = builtin.unrealized_conversion_cast %0, %0 : (i32, i32) to (i64, i64);
+    %29 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    %30 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    %31, %32 = builtin.unrealized_conversion_cast %0, %0 : (i32, i32) to (i64, i64);
+    %33 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    %34 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    %35, %36 = builtin.unrealized_conversion_cast %0, %0 : (i32, i32) to (i64, i64);
+    %37 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    %38 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    %39, %40 = builtin.unrealized_conversion_cast %0, %0 : (i32, i32) to (i64, i64);
+    %41 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    %42 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    %43, %44 = builtin.unrealized_conversion_cast %0, %0 : (i32, i32) to (i64, i64);
+    %45 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    %46 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    %47, %48 = builtin.unrealized_conversion_cast %0, %0 : (i32, i32) to (i64, i64);
+    %49 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    %50 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    %51, %52 = builtin.unrealized_conversion_cast %0, %0 : (i32, i32) to (i64, i64);
+    %53 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    %54 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    %55, %56 = builtin.unrealized_conversion_cast %0, %0 : (i32, i32) to (i64, i64);
+    %57 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    %58 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    %59, %60 = builtin.unrealized_conversion_cast %0, %0 : (i32, i32) to (i64, i64);
+    %61 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    %62 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    %63, %64 = builtin.unrealized_conversion_cast %0, %0 : (i32, i32) to (i64, i64);
+    %65 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    builtin.ret;
+};"#
+    );
+}
+
+/// The text of a region of 5 blocks, pinned before the printer joined the blocks of a region as a
+/// balanced document.
+#[test]
+fn a_region_of_five_blocks_prints_as_before() {
+    let test = long_function(5, 2);
+    assert_eq!(
+        print_function(&test),
+        r#"builtin.function public extern("C") @f(%0: i32) {
+    %1 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    %2 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    builtin.ret;
+^block1(%3: i32):
+    %4 = builtin.unrealized_conversion_cast %3 : i32 to i64;
+    %5 = builtin.unrealized_conversion_cast %3 : i32 to i64;
+    builtin.ret;
+^block2(%6: i32):
+    %7 = builtin.unrealized_conversion_cast %6 : i32 to i64;
+    %8 = builtin.unrealized_conversion_cast %6 : i32 to i64;
+    builtin.ret;
+^block3(%9: i32):
+    %10 = builtin.unrealized_conversion_cast %9 : i32 to i64;
+    %11 = builtin.unrealized_conversion_cast %9 : i32 to i64;
+    builtin.ret;
+^block4(%12: i32):
+    %13 = builtin.unrealized_conversion_cast %12 : i32 to i64;
+    %14 = builtin.unrealized_conversion_cast %12 : i32 to i64;
+    builtin.ret;
+};"#
+    );
+}
+
+/// Runs `f` on a thread with a 256 KiB stack, so that a recursion whose depth grows with the size
+/// of the IR overflows it.
+#[cfg(feature = "std")]
+fn on_a_small_stack(f: impl FnOnce() + Send + 'static) {
+    std::thread::Builder::new()
+        .stack_size(256 << 10)
+        .spawn(f)
+        .expect("spawn a thread")
+        .join()
+        .expect("the thread finishes");
+}
+
+/// A block of 20,000 operations is built, printed and dropped without deep recursion.
+#[cfg(feature = "std")]
+#[test]
+fn a_long_block_prints_on_a_small_stack() {
+    on_a_small_stack(|| {
+        let test = long_function(1, 20_000);
+        let text = print_function(&test);
+        assert_eq!(text.lines().count(), 20_003);
+        assert!(text.ends_with("    builtin.ret;\n};"), "{}", &text[text.len() - 100..]);
+        drop(text);
+        drop(test);
+    });
+}
+
+/// A region of 20,000 blocks is built, printed and dropped without deep recursion.
+#[cfg(feature = "std")]
+#[test]
+fn a_long_region_prints_on_a_small_stack() {
+    on_a_small_stack(|| {
+        let test = long_function(20_000, 1);
+        let text = print_function(&test);
+        assert_eq!(text.lines().count(), 1 + 20_000 * 2 + 19_999 + 1);
+        assert!(text.contains("\n^block19999(%"), "{}", &text[text.len() - 200..]);
+        drop(text);
+        drop(test);
+    });
+}
+
+/// An operation with 20,000 operands and results, in a block with 20,000 arguments, is printed
+/// and dropped without deep recursion.
+#[cfg(feature = "std")]
+#[test]
+fn long_lists_print_on_a_small_stack() {
+    on_a_small_stack(|| {
+        const N: usize = 20_000;
+        let mut test = Test::new("f", |cx| ([cx.i32()], []));
+        let region = test.function().borrow().body().as_region_ref();
+        let (i32, i64) = (test.context().i32(), test.context().i64());
+        let entry = test.entry_block();
+        let builder = test.builder_mut();
+        builder.set_insertion_point_to_end(entry);
+        builder.ret([], SourceSpan::UNKNOWN).unwrap();
+        // The lists are on the heap: an array of 20,000 types would not fit on the stack.
+        let block = builder.create_block(region, None, &vec![i32; N]);
+        let args = block
+            .borrow()
+            .arguments()
+            .iter()
+            .map(|arg| *arg as ValueRef)
+            .collect::<Vec<_>>();
+        builder
+            .unrealized_conversion_cast(args, vec![i64; N], SourceSpan::UNKNOWN)
+            .unwrap();
+        builder.ret([], SourceSpan::UNKNOWN).unwrap();
+        let text = print_function(&test);
+        assert_eq!(text.lines().count(), 6);
+        assert_eq!(text.matches(": i32").count(), N + 1);
+        drop(text);
+        drop(test);
+    });
+}
+
+/// A module with two functions, a nested module and operations with properties, attributes and
+/// results, as the default printer prints it.
+const NESTED_MODULE: &str = "\
+builtin.module public @m {
+    builtin.function public extern(\"C\") @f(%0: i32, %1: i32) -> i32 {
+        %2 = test.add %0, %1 <{ overflow = #builtin.overflow<checked unsigned> }>;
+        %3 = test.constant 7 : i32;
+        builtin.ret %2 : (i32);
+    };
+    builtin.module public @inner {
+        builtin.function public extern(\"C\") @g() {
+            builtin.ret;
+        };
+    };
+};";
+
+/// `op` printed from a root printer with `flags`.
+fn print_with(op: &crate::Operation, flags: &crate::OpPrintingFlags) -> alloc::string::String {
+    let mut printer = crate::print::AsmPrinter::root(op.context_rc(), flags);
+    crate::print::OpPrinter::print(op, &mut printer);
+    printer.finish().to_string()
+}
+
+/// With `generic`, every operation at every depth prints in the generic form; the default print
+/// is the custom form.
+#[test]
+fn the_generic_flag_prints_every_operation_generically() {
+    use alloc::rc::Rc;
+
+    use crate::{
+        OpPrintingFlags,
+        dialects::test::TestDialect,
+        parse::{ParserConfig, parse_any},
+    };
+
+    let context = Rc::new(Context::default());
+    context.get_or_register_dialect::<TestDialect>();
+    let module = parse_any(ParserConfig::new(context.clone()), "nested.runic", NESTED_MODULE)
+        .into_result()
+        .unwrap();
+    let module = module.borrow();
+    assert_eq!(print_with(&module, &OpPrintingFlags::default()), NESTED_MODULE);
+    assert_eq!(module.to_string(), NESTED_MODULE);
+
+    let flags = OpPrintingFlags {
+        generic: true,
+        ..Default::default()
+    };
+    let generic = print_with(&module, &flags);
+    // An operation line is a quoted name, or a result list and a quoted name; every other line
+    // closes the regions of an operation.
+    let mut operations = 0;
+    for line in generic.lines().map(str::trim_start) {
+        let name = match line.split_once(" = \"") {
+            Some((results, rest))
+                if results.split(", ").all(|result| {
+                    result.strip_prefix('%').is_some_and(|id| id.chars().all(char::is_alphanumeric))
+                }) =>
+            {
+                rest
+            }
+            _ if line.starts_with('}') => continue,
+            _ => line
+                .strip_prefix('"')
+                .unwrap_or_else(|| panic!("not generic: {line}\n{generic}")),
+        };
+        let name = name.split_once('"').map(|(name, _)| name);
+        assert!(
+            name.is_some_and(|name| name.contains('.')),
+            "not an operation name: {line}\n{generic}"
+        );
+        operations += 1;
+    }
+    assert_eq!(operations, 8, "{generic}");
+    assert!(
+        generic.starts_with("\"builtin.module\"() <{ name = #builtin.ident<@m>"),
+        "{generic}"
+    );
+    assert!(generic.contains("%2 = \"test.add\"(%0, %1) <{ overflow"), "{generic}");
+    assert!(
+        generic.contains("\"test.constant\"() <{ value = #builtin.int<7 : i32> }>"),
+        "{generic}"
+    );
+
+    // A part of the module printed generically is generic too.
+    let inner = module.regions().front().get().unwrap().entry().back().unwrap();
+    let inner = print_with(&inner.borrow(), &flags);
+    assert!(
+        inner.starts_with("\"builtin.module\"() <{ name = #builtin.ident<@inner>"),
+        "{inner}"
+    );
+    assert!(generic.contains(&inner.replace('\n', "\n    ")), "{inner}");
+
+    // The flags have not changed the default print.
+    assert_eq!(module.to_string(), NESTED_MODULE);
 }

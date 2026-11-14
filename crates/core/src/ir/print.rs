@@ -25,6 +25,10 @@
 //! itself a type: a lone operand or result type may be written bare (`i32 -> ()`), and `(i32)`
 //! alone is not a type at all, since tuples are not a type form.
 //!
+//! An operation prints in the generic form when it has no custom printer, and every operation does
+//! when [OpPrintingFlags::generic] is set. The operand list holds the operands of the groups that
+//! no successor forwards; each successor lists the arguments it forwards.
+//!
 //! # Locations
 //!
 //! trailing-location := 'loc' '(' location ')'
@@ -315,6 +319,10 @@ pub struct OpPrintingFlags {
     pub print_entry_block_headers: bool,
     /// When `true`, prints trailing location specifiers after all operations, i.e. `loc(..)`
     pub print_source_locations: bool,
+    /// When `true`, every operation, at every depth and including the one printing starts from,
+    /// prints in the generic form ([AsmPrinter::print_operation_generic]) rather than its custom
+    /// form.
+    pub generic: bool,
 }
 
 /// A trait which must be implemented by all attribute types, for printing the attribute in
@@ -346,7 +354,9 @@ impl OpPrinter for Operation {
     fn print(&self, printer: &mut AsmPrinter<'_>) {
         use crate::formatter::*;
 
-        if let Some(custom_printer) = self.as_trait::<dyn OpPrinter>() {
+        if !printer.flags().generic
+            && let Some(custom_printer) = self.as_trait::<dyn OpPrinter>()
+        {
             printer.print_results(self.results().all());
             *printer += display(self.name());
             custom_printer.print(printer);

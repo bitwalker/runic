@@ -134,20 +134,38 @@ impl<'a> AsmPrinter<'a> {
 
         // Print operand list and successors
         //
-        // If the operation has successors, expect that the number of operand groups is equal to
-        // the number of successors + 1, and only print operands in the default group in the generic
-        // operand list.
-        //
-        // For ops without successors, put all operands in the operand list. This is _not_
-        // round-trippable, but the only sane thing to do when printing in generic form.
+        // The operand list holds the operands of every group that no successor forwards, in group
+        // order; each successor prints the arguments of its own group. Operand groups are not
+        // delimited in the operand list, so an operation with more than one such group does not
+        // read back with its groups.
+        let operands: ValueRange<'static, 4> = if op.has_successors() {
+            let forwarded = op
+                .successors()
+                .all()
+                .iter()
+                .map(|successor| successor.successor_operand_group())
+                .collect::<crate::SmallVec<[usize; 4]>>();
+            let mut operands = crate::SmallVec::<[ValueRef; 4]>::new();
+            for group in (0..op.operands().num_groups()).filter(|g| !forwarded.contains(g)) {
+                operands.extend(
+                    op.operands()
+                        .group(group)
+                        .iter()
+                        .map(|operand| operand.borrow().as_value_ref()),
+                );
+            }
+            operands.into()
+        } else {
+            op.operands().all().iter().copied().collect()
+        };
+        let operand_types: crate::SmallVec<[Type; 4]> =
+            operands.iter().map(|operand| operand.borrow().ty()).collect();
+        self.document += const_text("(");
+        self.print_value_uses(operands);
+        self.document += const_text(")");
         if op.has_successors() {
-            assert_eq!(op.num_successors() + 1, op.operands().num_groups());
-            self.print_operand_list(op.operands().group(0));
-
             self.document += const_text(" ");
             self.print_successors(op.successors().all());
-        } else {
-            self.print_operand_list(op.operands().all());
         }
 
         // Print properties
@@ -177,11 +195,6 @@ impl<'a> AsmPrinter<'a> {
         self.document += const_text(" : ");
         // A lone operand type prints without parentheses, unless it is a function type, which
         // would otherwise run into the `->` of the operation's type.
-        let operand_types: crate::SmallVec<[Type; 4]> = if op.has_successors() {
-            op.operands().group(0).iter().map(|operand| operand.borrow().ty()).collect()
-        } else {
-            op.operands().all().iter().map(|operand| operand.borrow().ty()).collect()
-        };
         match operand_types.as_slice() {
             [ty] if !ty.is_function() => self.print_type(*ty),
             _ => self.print_type_list(operand_types),
@@ -212,12 +225,8 @@ impl<'a> AsmPrinter<'a> {
             return;
         }
 
-        let doc = results.iter().fold(Document::Empty, |acc, result| {
-            if acc.is_empty() {
-                display(result.borrow().id())
-            } else {
-                acc + const_text(", ") + display(result.borrow().id())
-            }
+        let doc = join_balanced(results.iter().map(|result| display(result.borrow().id())), || {
+            const_text(", ")
         });
 
         if doc.is_empty() {
@@ -240,13 +249,8 @@ impl<'a> AsmPrinter<'a> {
     pub fn print_value_uses<const N: usize>(&mut self, values: ValueRange<'_, N>) {
         use crate::formatter::*;
 
-        let doc = values.iter().fold(Document::Empty, |acc, value| {
-            let value = value.borrow();
-            if acc.is_empty() {
-                display(value.id())
-            } else {
-                acc + const_text(", ") + display(value.id())
-            }
+        let doc = join_balanced(values.iter().map(|value| display(value.borrow().id())), || {
+            const_text(", ")
         });
         self.document += doc;
     }
@@ -297,13 +301,13 @@ impl<'a> AsmPrinter<'a> {
     pub fn print_value_ids_and_types(&mut self, values: impl ExactSizeIterator<Item = ValueRef>) {
         use crate::formatter::*;
 
-        let doc = values.fold(Document::Empty, |mut acc, value| {
-            let value = value.borrow();
-            if !acc.is_empty() {
-                acc += const_text(", ");
-            }
-            acc + display(value.id()) + const_text(": ") + self.format_type(value.ty())
-        });
+        let doc = join_balanced(
+            values.map(|value| {
+                let value = value.borrow();
+                display(value.id()) + const_text(": ") + self.format_type(value.ty())
+            }),
+            || const_text(", "),
+        );
         self.document += doc;
     }
 
@@ -356,18 +360,9 @@ impl<'a> AsmPrinter<'a> {
     pub fn print_types(&mut self, types: impl IntoIterator<Item = Type>) {
         use crate::formatter::*;
 
-        let doc = types.into_iter().fold(Document::Empty, |acc, ty| {
-            let ty = self.format_type(ty);
-            if acc.is_empty() {
-                ty
-            } else {
-                acc + const_text(", ") + ty
-            }
-        });
-
-        if !doc.is_empty() {
-            self.document += doc;
-        }
+        let doc =
+            join_balanced(types.into_iter().map(|ty| self.format_type(ty)), || const_text(", "));
+        self.document += doc;
     }
 
     /// Print a single type
@@ -469,16 +464,19 @@ impl<'a> AsmPrinter<'a> {
         self.print_arrow_type_list(/*elide_single_type_parens=*/ true, results);
     }
 
-    /// Prints zero or more regions
+    /// Prints zero or more regions, separated by a space and a newline
     pub fn print_regions(&mut self, regions: &RegionList) {
         use crate::formatter::*;
 
-        for (i, region) in regions.iter().enumerate() {
-            if i > 0 {
-                self.document += const_text(" ") + nl();
-            }
-            self.print_region(&region);
-        }
+        let mut printer = self.nested();
+        let doc = join_balanced(
+            regions.iter().map(|region| {
+                printer.print_region(&region);
+                printer.render()
+            }),
+            || const_text(" ") + nl(),
+        );
+        self.document += doc;
     }
 
     /// Print a single region in `{` `}`
@@ -524,16 +522,16 @@ impl<'a> AsmPrinter<'a> {
 
         self.document += const_text("{");
         let mut printer = self.nested();
-        let body = region.body().iter().enumerate().fold(Document::Empty, |mut acc, (i, block)| {
-            if i > 0 || (i == 0 && !elide_entry_block_label) {
-                acc += nl();
+        let mut parts = alloc::vec::Vec::new();
+        for (i, block) in region.body().iter().enumerate() {
+            if i > 0 || !elide_entry_block_label {
+                parts.push(nl());
                 printer.print_block_label_and_arguments(&block);
             }
             printer.print_block_body(block.body());
-
-            acc + printer.render()
-        });
-        self.document += body;
+            parts.push(printer.render());
+        }
+        self.document += concat_balanced(&mut parts);
         self.document += nl() + const_text("}");
     }
 
@@ -569,16 +567,14 @@ impl<'a> AsmPrinter<'a> {
     pub fn print_block_body(&mut self, ops: &EntityList<Operation>) {
         use crate::formatter::*;
 
-        let body = ops.iter().fold(Document::Empty, |acc, op| {
-            let mut printer = self.nested();
-            op.print(&mut printer);
-            let doc = printer.finish();
-            if acc.is_empty() {
-                doc
-            } else {
-                acc + nl() + doc
-            }
-        });
+        let body = join_balanced(
+            ops.iter().map(|op| {
+                let mut printer = self.nested();
+                op.print(&mut printer);
+                printer.finish()
+            }),
+            nl,
+        );
         self.document += indent(4, nl() + body);
     }
 
@@ -606,19 +602,21 @@ impl<'a> AsmPrinter<'a> {
         }
 
         self.document += const_text("[ ");
-        for (i, successor) in successors.iter().enumerate() {
-            if i > 0 {
-                self.document += const_text(", ");
-            }
-            self.document += display(successor.successor().borrow().id());
-            let operands = successor.successor_operands();
-            if operands.is_empty() {
-                continue;
-            }
-            self.document += const_text(":(");
-            self.print_value_uses(operands);
-            self.document += const_text(")");
-        }
+        let mut printer = self.nested();
+        let doc = join_balanced(
+            successors.iter().map(|successor| {
+                printer.document += display(successor.successor().borrow().id());
+                let operands = successor.successor_operands();
+                if !operands.is_empty() {
+                    printer.document += const_text(":(");
+                    printer.print_value_uses(operands);
+                    printer.document += const_text(")");
+                }
+                printer.render()
+            }),
+            || const_text(", "),
+        );
+        self.document += doc;
         self.document += const_text(" ]");
     }
 
@@ -645,14 +643,17 @@ impl<'a> AsmPrinter<'a> {
         use crate::formatter::*;
 
         self.document += const_text("{ ");
-        for (i, NamedAttribute { name, value }) in attrs.into_iter().enumerate() {
-            if i > 0 {
-                self.document += const_text(", ");
-            }
-            self.print_identifier(name);
-            self.document += const_text(" = ");
-            self.print_attribute_value(&*value.borrow());
-        }
+        let mut printer = self.nested();
+        let doc = join_balanced(
+            attrs.into_iter().map(|NamedAttribute { name, value }| {
+                printer.print_identifier(name);
+                printer.document += const_text(" = ");
+                printer.print_attribute_value(&*value.borrow());
+                printer.render()
+            }),
+            || const_text(", "),
+        );
+        self.document += doc;
         self.document += const_text(" }");
     }
 
@@ -809,6 +810,27 @@ impl AddAssign<Document> for AsmPrinter<'_> {
     fn add_assign(&mut self, rhs: Document) {
         self.document += rhs;
     }
+}
+
+/// Joins `items` with `separator()` between them as a balanced tree, so that the depth of the
+/// document grows with the logarithm of the number of items rather than with the number.
+///
+/// The text is that of a left fold which starts with the first item and appends a separator and
+/// the next item to a non-empty result: a separator follows only a non-empty part.
+fn join_balanced(
+    items: impl IntoIterator<Item = Document>,
+    mut separator: impl FnMut() -> Document,
+) -> Document {
+    let mut parts = alloc::vec::Vec::new();
+    let mut has_content = false;
+    for item in items {
+        if has_content {
+            parts.push(separator());
+        }
+        has_content |= !item.is_empty();
+        parts.push(item);
+    }
+    concat_balanced(&mut parts)
 }
 
 /// Concatenates `parts` as a balanced tree, leaving them empty, so that a long list does not make
