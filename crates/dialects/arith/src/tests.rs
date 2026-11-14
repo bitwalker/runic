@@ -22,6 +22,7 @@ use crate::*;
 
 mod differential;
 mod driver;
+mod elements;
 mod folds;
 mod model;
 mod patterns;

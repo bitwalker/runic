@@ -265,4 +265,36 @@ mod tests {
         printer.print_attribute_value(&*attr.borrow());
         assert_eq!(printer.finish().to_string(), "#ub.poison<i32>");
     }
+
+    /// Rewriting `i64` to `i32` changes the poison's value and its result together, and the
+    /// function's signature with them.
+    #[test]
+    fn rewriting_types_keeps_poison_and_its_result_in_step() {
+        let (test, _) = build(Context::i64);
+        let context = test.context_rc();
+        let i64 = context.i64();
+        let i32 = context.i32();
+        let mut rewrite = runic_core::ElementRewrite::types(runic_core::TypeMapper::new(
+            &context,
+            move |_, ty| if ty == i64 { i32 } else { ty },
+        ));
+        let changed = runic_core::recursively_replace_elements_in(
+            test.function().as_operation_ref(),
+            &mut rewrite,
+        )
+        .expect("the rewrite");
+        assert!(changed);
+        drop(rewrite);
+
+        let op = first_op(&test);
+        let op = op.borrow();
+        let poison = op.downcast_ref::<Poison>().expect("a ub.poison");
+        assert_eq!(*poison.get_value(), i32);
+        assert_eq!(poison.result().ty(), i32);
+        test.function()
+            .borrow()
+            .as_operation()
+            .recursively_verify()
+            .expect("valid function");
+    }
 }

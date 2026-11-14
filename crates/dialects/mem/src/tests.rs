@@ -27,6 +27,7 @@ use runic_transform::{Canonicalizer, CommonSubexpressionElimination, DeadCodeEli
 
 use crate::*;
 
+mod elements;
 mod folds;
 mod fuzz;
 mod probes;

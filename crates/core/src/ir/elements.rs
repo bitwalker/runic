@@ -9,12 +9,17 @@
 //! An operand's type is not something the operation holds: it is the type of the value's
 //! definition.
 
+use alloc::{boxed::Box, format, rc::Rc, vec::Vec};
 use core::fmt;
 
 use smallvec::{SmallVec, smallvec};
 
 use crate::{
-    AttributeRef, FxHashSet, Operation, Type, Value, WalkResult, attributes::ElementVisitor,
+    AttributeRef, Context, FxHashMap, FxHashSet, Int, Operation, OperationRef, Report, Spanned,
+    Type, TypeMapper, Value, WalkResult,
+    attributes::{ElementReplacer, ElementVisitor},
+    dialects::builtin::attributes::IntAttr,
+    interner::Symbol,
 };
 
 /// Where an element of an operation was found.
@@ -228,6 +233,320 @@ impl Operation {
             WalkResult::Continue(())
         })
     }
+}
+
+/// The function an [ElementRewrite] carries an integer constant to a new type with.
+type IntConstantRewrite<'a> = Box<dyn FnMut(&Int, Type, Type) -> Result<Int, Report> + 'a>;
+
+/// How [replace_elements_in] rewrites the types an operation holds: a [TypeMapper], applied to
+/// every type, and optionally a function that carries an integer constant to the type the map
+/// gives its type.
+///
+/// One rewrite may be used for many operations: its mapper remembers the result for each type it
+/// has mapped, so each type is mapped once however many operations hold it.
+pub struct ElementRewrite<'a> {
+    mapper: TypeMapper<'a>,
+    int_constants: Option<IntConstantRewrite<'a>>,
+}
+
+impl<'a> ElementRewrite<'a> {
+    /// A rewrite that maps types with `mapper` and has no rewrite of integer constants: a
+    /// constant whose type the map changes is an error.
+    pub fn types(mapper: TypeMapper<'a>) -> Self {
+        Self {
+            mapper,
+            int_constants: None,
+        }
+    }
+
+    /// Called for an integer constant whose type changes: the constant to use at the new type, or an
+    /// error. Without it, a constant whose type changes is an error.
+    ///
+    /// `f` is given the constant's value, its type and the type the map gives that type. It is not
+    /// called for a constant whose type the map leaves as it is. The value it answers must be as
+    /// wide as a constant of the new type ([Int::width_for_type]); an answer of another width is an
+    /// error, and an error from `f` is the error of the rewrite.
+    pub fn with_int_constants(
+        mut self,
+        f: impl FnMut(&Int, Type, Type) -> Result<Int, Report> + 'a,
+    ) -> Self {
+        self.int_constants = Some(Box::new(f));
+        self
+    }
+}
+
+/// The [ElementReplacer] that computes the new elements of one operation.
+///
+/// The replacer cannot fail, and the type map and the rewrite of integer constants can: the first
+/// error is kept in `error`, and from then on every element is answered unchanged.
+struct OperationReplacer<'r, 'a> {
+    rewrite: &'r mut ElementRewrite<'a>,
+    op: &'r Operation,
+    context: Rc<Context>,
+    /// The property or dictionary entry being rewritten (or the result or block argument whose
+    /// type is), for errors.
+    site: ElementSite<'static>,
+    /// How many attributes are being replaced around the current element: 0 at the site itself
+    /// (the attribute there, or the type of a result or block argument), 1 inside the attribute at
+    /// the site, and so on.
+    depth: usize,
+    /// The answer for each attribute already asked about, by identity, so an attribute held twice
+    /// by the operation is replaced by one new attribute.
+    answers: FxHashMap<usize, Option<AttributeRef>>,
+    error: Option<Report>,
+}
+
+impl OperationReplacer<'_, '_> {
+    /// The attribute being replaced as an error names it: the one at the site, or one held by
+    /// it.
+    fn role(&self) -> alloc::string::String {
+        if self.depth > 0 {
+            format!("an attribute held by {}", self.site)
+        } else {
+            format!("{}", self.site)
+        }
+    }
+
+    /// The type being replaced as an error names it: the type of the result or block argument at
+    /// the site, or a type held by the attribute at the site, or by one it holds.
+    fn type_role(&self) -> alloc::string::String {
+        match self.depth {
+            0 => format!("the type of {}", self.site),
+            1 => format!("a type held by {}", self.site),
+            _ => format!("a type held by an attribute held by {}", self.site),
+        }
+    }
+
+    fn fail(&mut self, label: alloc::string::String) {
+        self.error = Some(crate::diagnostics::report!(
+            message: "cannot rewrite the types of an operation",
+            labels: [primary(self.op.span(), label)],
+        ));
+    }
+
+    /// The replacement of the integer constant `value : ty`, when the map changes `ty`.
+    fn replace_int_constant(&mut self, value: Int, ty: Type) -> Option<AttributeRef> {
+        if ty.is_unknown() {
+            return None;
+        }
+        let new_ty = self.replace_type(ty);
+        if new_ty == ty || self.error.is_some() {
+            return None;
+        }
+        let Some(rewrite) = self.rewrite.int_constants.as_mut() else {
+            let label = format!(
+                "{} of '{}' is the integer constant `{value} : {ty}`, which the type map changes \
+                 to type `{new_ty}`, and no rewrite of integer constants was given",
+                self.role(),
+                self.op.name()
+            );
+            self.fail(label);
+            return None;
+        };
+        let new_value = match rewrite(&value, ty, new_ty) {
+            Ok(new_value) => new_value,
+            Err(err) => {
+                self.error = Some(err);
+                return None;
+            }
+        };
+        let width = new_value.width();
+        let problem = match Int::width_for_type(new_ty) {
+            Some(expected) if expected == width => {
+                return Some(self.context.int_attr(new_value, new_ty).as_attribute_ref());
+            }
+            Some(expected) => format!("a constant of that type is {expected} bits wide"),
+            None => "no integer constant has that type".into(),
+        };
+        let label = format!(
+            "{} of '{}' is the integer constant `{value} : {ty}`, which the rewrite of integer \
+             constants gave the {width}-bit value {new_value} at type `{new_ty}`, but {problem}",
+            self.role(),
+            self.op.name()
+        );
+        self.fail(label);
+        None
+    }
+}
+
+impl ElementReplacer for OperationReplacer<'_, '_> {
+    fn replace_type(&mut self, ty: Type) -> Type {
+        if self.error.is_some() {
+            return ty;
+        }
+        match self.rewrite.mapper.map(ty) {
+            Ok(new_ty) => new_ty,
+            Err(err) => {
+                let label =
+                    format!("{} of '{}' cannot be mapped: {err}", self.type_role(), self.op.name());
+                self.fail(label);
+                ty
+            }
+        }
+    }
+
+    fn replace_attribute(&mut self, attr: &AttributeRef) -> Option<AttributeRef> {
+        if self.error.is_some() {
+            return None;
+        }
+        if let Some(answer) = self.answers.get(&identity(attr)) {
+            return *answer;
+        }
+        let constant = attr
+            .borrow()
+            .downcast_ref::<IntAttr>()
+            .map(|constant| (*constant.as_value(), crate::Attribute::ty(constant)));
+        let answer = match constant {
+            Some((value, ty)) => self.replace_int_constant(value, ty),
+            None => {
+                self.depth += 1;
+                let answer = attr.borrow().replace_elements(self);
+                self.depth -= 1;
+                answer
+            }
+        };
+        let answer = if self.error.is_some() { None } else { answer };
+        self.answers.insert(identity(attr), answer);
+        answer
+    }
+}
+
+/// The new elements of an operation, computed before any is installed.
+#[derive(Default)]
+struct Replacements {
+    results: SmallVec<[(crate::OpResultRef, Type); 2]>,
+    arguments: SmallVec<[(crate::BlockArgumentRef, Type); 4]>,
+    properties: SmallVec<[(Symbol, AttributeRef); 2]>,
+    attributes: SmallVec<[(Symbol, AttributeRef); 2]>,
+}
+
+impl Replacements {
+    fn is_empty(&self) -> bool {
+        self.results.is_empty()
+            && self.arguments.is_empty()
+            && self.properties.is_empty()
+            && self.attributes.is_empty()
+    }
+}
+
+/// Everything of `op` that `rewrite` changes, or the first error.
+fn replacements(op: &Operation, rewrite: &mut ElementRewrite<'_>) -> Result<Replacements, Report> {
+    let mut replacer = OperationReplacer {
+        rewrite,
+        op,
+        context: op.context_rc(),
+        site: ElementSite::Result(0),
+        depth: 0,
+        answers: FxHashMap::default(),
+        error: None,
+    };
+    let mut replacements = Replacements::default();
+    for (index, result) in op.results().iter().enumerate() {
+        replacer.site = ElementSite::Result(index);
+        let ty = result.borrow().ty();
+        let new_ty = replacer.replace_type(ty);
+        if new_ty != ty {
+            replacements.results.push((*result, new_ty));
+        }
+    }
+    for (region, body) in op.regions().iter().enumerate() {
+        for (block, body) in body.body().iter().enumerate() {
+            for (index, arg) in body.arguments().iter().enumerate() {
+                replacer.site = ElementSite::BlockArgument {
+                    region,
+                    block,
+                    index,
+                };
+                let ty = arg.borrow().ty();
+                let new_ty = replacer.replace_type(ty);
+                if new_ty != ty {
+                    replacements.arguments.push((*arg, new_ty));
+                }
+            }
+        }
+    }
+    for property in op.properties() {
+        replacer.site = ElementSite::Property(property.name.as_str());
+        if let Some(new) = replacer.replace_attribute(&property.value) {
+            replacements.properties.push((property.name, new));
+        }
+    }
+    for entry in op.attributes() {
+        let entry = entry.as_named_attribute();
+        replacer.site = ElementSite::Attribute(entry.name.as_str());
+        if let Some(new) = replacer.replace_attribute(&entry.value) {
+            replacements.attributes.push((entry.name, new));
+        }
+    }
+    match replacer.error {
+        Some(err) => Err(err),
+        None => Ok(replacements),
+    }
+}
+
+/// Rewrites the operation's properties, attribute dictionary, result types and the argument types of its
+/// regions' blocks. Operand types are not touched. Returns whether anything changed.
+///
+/// Every type the operation holds is mapped by `rewrite`'s [TypeMapper]: a result's type and a
+/// block argument's type are set in place on the value, and an attribute that holds a type the
+/// map changes, at any depth, is replaced by a new attribute (see
+/// [Attribute::replace_elements](crate::Attribute::replace_elements)), installed with
+/// [Operation::set_property] or [Operation::set_attribute]. The old attribute is not edited, so
+/// another holder of it keeps it as it was, and an attribute whose elements the map does not
+/// change keeps its handle: a symbol reference stays linked, and the identity map changes nothing
+/// and builds no attribute. An attribute held twice by the operation is replaced by one new
+/// attribute. Because the result type and a type the operation keeps beside it in a property (a
+/// hidden `ty`, say) are mapped by one map, they change together.
+///
+/// An integer constant ([IntAttr]) whose type the map changes is given its new value by the
+/// rewrite of integer constants ([ElementRewrite::with_int_constants]); without one, it is an
+/// error naming the operation and where the constant is. The operations nested in the regions
+/// are not rewritten (see [recursively_replace_elements_in]).
+///
+/// Every replacement is computed before any is installed: on an error (the map fails, or a
+/// constant cannot be carried to its new type) nothing of the operation is changed. Whether the
+/// rewritten operation is still valid (an `arith.zext` whose two types became equal, say) is its
+/// verifier's business.
+pub fn replace_elements_in(
+    op: &mut Operation,
+    rewrite: &mut ElementRewrite<'_>,
+) -> Result<bool, Report> {
+    let replacements = replacements(op, rewrite)?;
+    if replacements.is_empty() {
+        return Ok(false);
+    }
+    for (mut result, ty) in replacements.results {
+        result.borrow_mut().set_type(ty);
+    }
+    for (mut arg, ty) in replacements.arguments {
+        arg.borrow_mut().set_type(ty);
+    }
+    for (name, new) in replacements.properties {
+        // a replacement is of the kind of the attribute it replaces, which the property holds
+        op.set_property(name, new)?;
+    }
+    for (name, new) in replacements.attributes {
+        op.set_attribute(name, new);
+    }
+    Ok(true)
+}
+
+/// The same for the operation and everything nested in it.
+///
+/// [replace_elements_in] is applied to `op` and then to each operation nested in it, in
+/// pre-order. On an error the operation that failed is unchanged, and so are the operations after
+/// it, but the operations rewritten before it keep their changes.
+pub fn recursively_replace_elements_in(
+    op: OperationRef,
+    rewrite: &mut ElementRewrite<'_>,
+) -> Result<bool, Report> {
+    let mut ops = Vec::new();
+    op.borrow().prewalk_all(|op: &Operation| ops.push(op.as_operation_ref()));
+    let mut changed = false;
+    for mut op in ops {
+        changed |= replace_elements_in(&mut op.borrow_mut(), rewrite)?;
+    }
+    Ok(changed)
 }
 
 #[cfg(test)]
@@ -506,5 +825,317 @@ mod tests {
                 ("attribute 'ty'".into(), "i8".into()),
             ] as [(String, String); 4]
         );
+    }
+}
+
+#[cfg(test)]
+mod rewrite_tests {
+    use alloc::{format, vec::Vec};
+
+    use super::*;
+    use crate::{
+        Context, Op, StructType,
+        dialects::{
+            builtin::{
+                Module,
+                attributes::{TypeArrayAttr, TypeAttr},
+            },
+            test::Constant,
+        },
+        testing::{Test, text::parse},
+    };
+
+    /// `i64` to `i32`, everything else as it is.
+    fn i64_to_i32(context: &Context) -> TypeMapper<'_> {
+        TypeMapper::new(context, |context, ty| {
+            if ty == context.i64() {
+                context.i32()
+            } else {
+                ty
+            }
+        })
+    }
+
+    /// Truncates a constant to the width of its new type.
+    fn truncate(value: &Int, _old: Type, new: Type) -> Result<Int, Report> {
+        Ok(value.trunc(Int::width_for_type(new).expect("an integer type")))
+    }
+
+    const MODULE: &str = r#"builtin.module public @m {
+    builtin.global_variable public @var : i64;
+    builtin.function private extern("C") @callee(%x: i64) -> i64 locals(i64) {
+        builtin.store_local 0, %x;
+        %y = builtin.load_local 0 : i64;
+        builtin.ret %y : (i64);
+    };
+    builtin.function public extern("C") @caller(%a: i64) -> i64 {
+        %c = test.constant 4294967297 : i64;
+        %r = builtin.call @callee(%c) : extern("C") (i64) -> i64;
+        %f = builtin.function_ref @callee : (i64) -> i64;
+        %t = builtin.call_indirect %f(%r) : extern("C") (i64) -> i64;
+        %p = builtin.global_symbol @var : ptr<i64>;
+        builtin.ret_imm -1 : i64;
+    };
+};"#;
+
+    /// Every operation in `root`, in pre-order.
+    fn operations(root: OperationRef) -> Vec<OperationRef> {
+        let mut ops = Vec::new();
+        root.borrow().prewalk_all(|op: &Operation| ops.push(op.as_operation_ref()));
+        ops
+    }
+
+    /// Every attribute every operation in `root` holds, at any depth.
+    fn all_attributes(root: OperationRef) -> Vec<AttributeRef> {
+        let mut attrs = Vec::new();
+        for op in operations(root) {
+            let _ = op.borrow().walk_attributes(&mut |_, attr| {
+                attrs.push(*attr);
+                WalkResult::Continue(())
+            });
+        }
+        attrs
+    }
+
+    /// The first operation named `name` in `root`.
+    fn find(root: OperationRef, name: &str) -> OperationRef {
+        operations(root)
+            .into_iter()
+            .find(|op| format!("{}", op.borrow().name()) == name)
+            .unwrap_or_else(|| panic!("no '{name}'"))
+    }
+
+    /// The type a `TypeAttr` property holds.
+    fn type_property(op: OperationRef, name: &str) -> Type {
+        *op.borrow()
+            .get_property(Symbol::intern(name))
+            .downcast_ref::<TypeAttr>()
+            .unwrap()
+            .as_value()
+    }
+
+    #[test]
+    fn a_whole_module_is_rewritten_from_i64_to_i32() {
+        let (context, module) = parse::<Module>(MODULE).expect("the module parses");
+        let root = module.as_operation_ref();
+        root.borrow().recursively_verify().expect("the module verifies");
+
+        let mut rewrite = ElementRewrite::types(i64_to_i32(&context)).with_int_constants(truncate);
+        let changed = recursively_replace_elements_in(root, &mut rewrite).expect("the rewrite");
+        assert!(changed);
+        drop(rewrite);
+
+        if let Err(err) = root.borrow().recursively_verify() {
+            panic!("the rewritten module does not verify: {err:?}");
+        }
+        let printed = format!("{}", *root.borrow());
+        let expected = MODULE.replace("i64", "i32").replace("4294967297", "1");
+        let (_expected_context, expected) =
+            parse::<Module>(&expected).expect("the expected module parses");
+        let expected = format!("{}", *expected.as_operation_ref().borrow());
+        assert_eq!(printed, expected);
+        assert!(!printed.contains("i64"), "{printed}");
+
+        // the hidden `ty` of `builtin.function_ref` changed with its result
+        let function_ref = find(root, "builtin.function_ref");
+        let fn_ty = type_property(function_ref, "ty");
+        assert_eq!(fn_ty, function_ref.borrow().results()[0].borrow().ty());
+        assert_eq!(format!("{fn_ty}"), "(i32) -> i32");
+        // and the global's declared type
+        assert_eq!(type_property(find(root, "builtin.global_variable"), "ty"), context.i32());
+        // `locals`
+        let callee = find(root, "builtin.function");
+        let callee = callee.borrow();
+        let locals = callee.get_property(Symbol::intern("locals"));
+        let locals = locals.downcast_ref::<TypeArrayAttr>().unwrap();
+        assert_eq!(locals.as_value().iter().copied().collect::<Vec<_>>(), [context.i32()]);
+    }
+
+    /// The identity map changes nothing and builds no attribute.
+    #[test]
+    fn the_identity_changes_nothing() {
+        let (context, module) = parse::<Module>(MODULE).expect("the module parses");
+        let root = module.as_operation_ref();
+        let before = all_attributes(root);
+        let printed = format!("{}", *root.borrow());
+
+        let mut rewrite = ElementRewrite::types(TypeMapper::new(&context, |_, ty| ty))
+            .with_int_constants(|_, _, _| panic!("no constant changes type"));
+        let changed = recursively_replace_elements_in(root, &mut rewrite).expect("the rewrite");
+        assert!(!changed);
+        drop(rewrite);
+
+        let after = all_attributes(root);
+        assert_eq!(before.len(), after.len());
+        for (before, after) in before.iter().zip(&after) {
+            assert!(AttributeRef::ptr_eq(before, after), "{before:?} was replaced by {after:?}");
+        }
+        assert_eq!(format!("{}", *root.borrow()), printed);
+        root.borrow().recursively_verify().expect("the module still verifies");
+    }
+
+    /// Without a rewrite of integer constants, a constant whose type changes is an error naming
+    /// the operation and the property, and the operation is left as it was: its result type too,
+    /// although results are mapped first.
+    #[test]
+    fn a_constant_whose_type_changes_needs_the_hook() {
+        let (context, module) = parse::<Module>(MODULE).expect("the module parses");
+        let root = module.as_operation_ref();
+        let mut constant = find(root, "test.constant");
+        let value_before = constant.borrow().get_attribute(Symbol::intern("value")).unwrap();
+
+        let mut rewrite = ElementRewrite::types(i64_to_i32(&context));
+        let err = replace_elements_in(&mut constant.borrow_mut(), &mut rewrite)
+            .expect_err("the constant cannot be retyped");
+        let message = crate::testing::label_messages(err.as_diagnostic()).join(" | ");
+        assert!(
+            message.contains(
+                "property 'value' of 'test.constant' is the integer constant `4294967297 : i64`, \
+                 which the type map changes to type `i32`, and no rewrite of integer constants \
+                 was given"
+            ),
+            "{message}"
+        );
+        let constant = constant.borrow();
+        assert_eq!(constant.results()[0].borrow().ty(), context.i64());
+        let value_after = constant.get_attribute(Symbol::intern("value")).unwrap();
+        assert!(AttributeRef::ptr_eq(&value_before, &value_after));
+        let typed = constant.downcast_ref::<Constant>().unwrap();
+        assert_eq!(crate::Attribute::ty(&*typed.value()), context.i64());
+        constant.verify().expect("the constant is as it was");
+    }
+
+    /// A rewrite of integer constants that answers a value of the wrong width is an error, and
+    /// the operation is left as it was.
+    #[test]
+    fn a_constant_rewritten_to_the_wrong_width_is_an_error() {
+        let (context, module) = parse::<Module>(MODULE).expect("the module parses");
+        let root = module.as_operation_ref();
+        let mut constant = find(root, "test.constant");
+        let mut rewrite = ElementRewrite::types(i64_to_i32(&context))
+            .with_int_constants(|value, _, _| Ok(*value));
+        let err = replace_elements_in(&mut constant.borrow_mut(), &mut rewrite)
+            .expect_err("a 64-bit value at type i32");
+        let message = crate::testing::label_messages(err.as_diagnostic()).join(" | ");
+        assert!(
+            message.contains(
+                "property 'value' of 'test.constant' is the integer constant `4294967297 : i64`, \
+                 which the rewrite of integer constants gave the 64-bit value 4294967297 at type \
+                 `i32`, but a constant of that type is 32 bits wide"
+            ),
+            "{message}"
+        );
+        assert_eq!(constant.borrow().results()[0].borrow().ty(), context.i64());
+    }
+
+    /// A recursive struct type in a signature is mapped to a member of a new group, built from
+    /// the mapped body, which refers to itself.
+    #[test]
+    fn a_recursive_type_in_a_signature_is_mapped_to_its_new_group() {
+        let node_of = |context: &Context, field: Type| {
+            let body = context.struct_type(StructType::named(
+                Symbol::intern("node"),
+                [field.into(), context.ptr_type(context.rec_var(0)).into()],
+            ));
+            context.rec_group(&[body]).expect("a valid group")[0]
+        };
+        let test = Test::new("f", |cx| ([cx.ptr_type(node_of(cx, cx.i64()))], []));
+        let context = test.context_rc();
+        let function = test.function();
+        let old = context.ptr_type(node_of(&context, context.i64()));
+
+        let mut rewrite = ElementRewrite::types(i64_to_i32(&context));
+        let changed = recursively_replace_elements_in(function.as_operation_ref(), &mut rewrite)
+            .expect("the rewrite");
+        assert!(changed);
+        drop(rewrite);
+
+        let function = function.borrow();
+        let param = function.signature().params()[0].ty;
+        assert_ne!(param, old);
+        let node = param.pointee().expect("a pointer");
+        assert_eq!(node, node_of(&context, context.i32()));
+        assert!(node.rec_group().is_some());
+        let fields = node.as_struct().unwrap().fields();
+        assert_eq!(fields[0].ty, context.i32());
+        assert_eq!(fields[1].ty.pointee(), Some(node));
+        let arg = test.entry_block().borrow().arguments()[0].borrow().ty();
+        assert_eq!(arg, param);
+        function.as_operation().recursively_verify().expect("the function verifies");
+    }
+
+    /// One attribute installed on two operations: rewriting one replaces it there, and the other
+    /// keeps the attribute, unchanged.
+    #[test]
+    fn a_shared_attribute_is_replaced_only_where_rewritten() {
+        let (context, module) = parse::<Module>(MODULE).expect("the module parses");
+        let root = module.as_operation_ref();
+        let shared = context.create_attribute::<TypeAttr, _>(context.i64()).as_attribute_ref();
+        let mut global = find(root, "builtin.global_variable");
+        let mut function = find(root, "builtin.function");
+        global.borrow_mut().set_attribute("shared", shared);
+        function.borrow_mut().set_attribute("shared", shared);
+
+        let mut rewrite = ElementRewrite::types(i64_to_i32(&context));
+        assert!(replace_elements_in(&mut global.borrow_mut(), &mut rewrite).expect("the rewrite"));
+
+        let rewritten = global.borrow().get_attribute(Symbol::intern("shared")).unwrap();
+        assert!(!AttributeRef::ptr_eq(&rewritten, &shared));
+        assert_eq!(
+            *rewritten.borrow().downcast_ref::<TypeAttr>().unwrap().as_value(),
+            context.i32()
+        );
+        let kept = function.borrow().get_attribute(Symbol::intern("shared")).unwrap();
+        assert!(AttributeRef::ptr_eq(&kept, &shared));
+        assert_eq!(*shared.borrow().downcast_ref::<TypeAttr>().unwrap().as_value(), context.i64());
+    }
+}
+
+/// A symbol reference held in a list that is rebuilt (because another entry changed) is still
+/// linked to its symbol: the operation verifies, and the symbol has one use.
+#[cfg(test)]
+mod rebuilt_list_tests {
+    use super::*;
+    use crate::{
+        AsSymbolRef, Op, Symbol as _, SymbolUse, Usable,
+        attributes::AttrList,
+        dialects::builtin::attributes::{List, ListAttr, SymbolRef, SymbolRefAttr, TypeAttr},
+        testing::Test,
+    };
+
+    #[test]
+    fn a_symbol_reference_in_a_rebuilt_list_stays_linked() {
+        let mut test = Test::named("elements").in_module("test");
+        let mut owner = test.define_function("owner", &[], &[]);
+        let g = test.define_function("g", &[], &[]);
+        let context = test.context_rc();
+        let path = g.borrow().path();
+        let mut reference =
+            context.create_attribute::<SymbolRefAttr, _>(SymbolRef::new(path, None));
+        let user = context.alloc_tracked(SymbolUse::new(owner.as_operation_ref(), reference));
+        reference.borrow_mut().set_user(user);
+        reference.borrow_mut().link(g.as_symbol_ref());
+        let ty = context.create_attribute::<TypeAttr, _>(context.i64()).as_attribute_ref();
+        let mut list = AttrList::new();
+        for entry in [reference.as_attribute_ref(), ty] {
+            list.push_back(entry.borrow().as_attr().as_attr_ref());
+        }
+        let list = context.create_attribute::<ListAttr, _>(List::from(list)).as_attribute_ref();
+        owner.borrow_mut().as_operation_mut().set_attribute("entries", list);
+        owner.borrow().as_operation().verify().expect("the operation verifies");
+        let mut rewrite = ElementRewrite::types(TypeMapper::new(&context, |cx, t| {
+            if t == cx.i64() { cx.i32() } else { t }
+        }));
+        assert!(replace_elements_in(owner.borrow_mut().as_operation_mut(), &mut rewrite).unwrap());
+        drop(rewrite);
+        let entries = owner
+            .borrow()
+            .as_operation()
+            .get_attribute(crate::interner::Symbol::intern("entries"));
+        assert!(!AttributeRef::ptr_eq(&entries.unwrap(), &list), "the list is rebuilt");
+        assert_eq!(g.borrow().iter_uses().count(), 1);
+        if let Err(err) = owner.borrow().as_operation().verify() {
+            panic!("the rewritten operation does not verify: {err:?}");
+        }
     }
 }

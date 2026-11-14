@@ -44,7 +44,10 @@ pub use self::{
         DialectRegistration, DialectRegistrationHook, DialectRegistrationHookInfo,
         DialectRegistrationInfo,
     },
-    elements::{ElementSite, walk_nested_attributes},
+    elements::{
+        ElementRewrite, ElementSite, recursively_replace_elements_in, replace_elements_in,
+        walk_nested_attributes,
+    },
     entity::{
         Entity, EntityGroup, EntityId, EntityList, EntityListCursor, EntityListCursorMut,
         EntityListItem, EntityListIter, EntityMap, EntityMapCursor, EntityMapCursorMut,
