@@ -88,12 +88,21 @@ pub trait Attribute:
     fn as_attr(&self) -> &Attr;
     fn as_attr_mut(&mut self) -> &mut Attr;
     /// Calls `visitor` with each type and attribute this attribute holds directly: those of its
-    /// value ([AttributeElements::visit_elements](super::AttributeElements::visit_elements)), then its own type, unless that is the unknown
-    /// type, which means the attribute has no type of its own.
+    /// value ([AttributeElements::visit_elements](super::AttributeElements::visit_elements)), then
+    /// its own type when that is an element.
+    ///
+    /// The own type is not an element when it is the unknown type (the attribute has no type of
+    /// its own), nor when the kind takes its type from its value's Rust type (`BoolAttr`, `I8Attr`
+    /// to `I128Attr`, `I32ArrayAttr`). [AttributeElements](super::AttributeElements) states the
+    /// rule.
     fn visit_elements(&self, visitor: &mut dyn ElementVisitor);
     /// A new attribute of this kind, holding `replacer`'s answer for each element in the order of
     /// [Self::visit_elements] (a new value and/or a new type), or `None` when the replacer changed
     /// nothing.
+    ///
+    /// An own type that is not an element is not offered to the replacer: an unknown type is
+    /// kept, and a kind that takes its type from its value gets the type inferred from the new
+    /// value.
     ///
     /// This attribute is not touched, so a holder that shares it keeps it as it was. The new
     /// attribute is built with the kind's own constructor and is not checked: an `IntAttr` given a

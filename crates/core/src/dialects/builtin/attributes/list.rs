@@ -72,9 +72,9 @@ impl PartialEq for List {
 /// A list holds its attributes, in order.
 ///
 /// A list owns its entries: an attribute is linked into one list at a time. A replaced list is a
-/// new one, holding each replacement where the replacer gave one, and a copy of the entry where
-/// it kept it. A replacement that is already linked into a list (as the entries of the original
-/// are) is copied too, so the new list never takes an entry from another.
+/// new one, holding a copy of each replacement where the replacer gave one, and a copy of the
+/// entry where it kept it. The new list never adopts an attribute it was given, so an answer the
+/// replacer also gives to another holder is never taken from it.
 impl AttributeComponent for AttrList {
     fn visit_elements(&self, visitor: &mut dyn ElementVisitor) {
         for entry in self.iter() {
@@ -96,11 +96,7 @@ impl AttributeComponent for AttrList {
         }
         let mut list = AttrList::new();
         for (entry, new) in entries {
-            let attr = match new {
-                Some(new) if !new.borrow().as_attr().as_attr_ref().is_linked() => new,
-                Some(new) => new.borrow().dyn_clone(),
-                None => entry.borrow().dyn_clone(),
-            };
+            let attr = new.unwrap_or(entry).borrow().dyn_clone();
             let attr = attr.borrow().as_attr().as_attr_ref();
             list.push_back(attr);
         }

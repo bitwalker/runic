@@ -3,7 +3,8 @@
 //! An attribute's value is walked through [AttributeElements], which `#[derive(DialectAttribute)]`
 //! implements field by field over [AttributeComponent]s, as `#[derive(DialectType)]` walks a
 //! type's value over [TypeComponent](crate::types::TypeComponent)s. Through a `dyn Attribute`,
-//! [Attribute::visit_elements] and [Attribute::replace_elements] add the attribute's own type.
+//! [Attribute::visit_elements] and [Attribute::replace_elements] add the attribute's own type,
+//! when it is an element (see [AttributeElements]).
 //!
 //! Nothing here edits an attribute in place: a replacement is a new attribute, and the old one,
 //! which another holder may share, is left as it was.
@@ -14,7 +15,9 @@ use core::num::{NonZeroU8, NonZeroU16, NonZeroU32, NonZeroU64, NonZeroU128, NonZ
 use compact_str::CompactString;
 use smallvec::SmallVec;
 
-use super::{Attribute, AttributeRef, AttributeRegistration, IntoAttributeRef};
+use super::{
+    Attribute, AttributeRef, AttributeRegistration, IntoAttributeRef, MaybeInferAttributeType,
+};
 use crate::{
     Align, CallConv, Int, SymbolPath, SymbolUseRef, Type, UnsafeIntrusiveEntityRef,
     diagnostics::{ColumnNumber, LineNumber, SourceSpan},
@@ -37,6 +40,10 @@ pub trait ElementReplacer {
     /// The type to hold instead of `ty` (`ty` itself to keep it).
     fn replace_type(&mut self, ty: Type) -> Type;
     /// The attribute to hold instead of `attr`; `None` keeps it.
+    ///
+    /// The holder may install a copy of the answer rather than the answer itself (a list, whose
+    /// entries belong to it, always does), so a replacer must not rely on the identity of the
+    /// attribute it returned.
     fn replace_attribute(&mut self, attr: &AttributeRef) -> Option<AttributeRef>;
 }
 
@@ -64,6 +71,22 @@ pub trait ElementReplacer {
 /// ```
 ///
 /// A value given with `remote = ".."` implements it by hand, next to the value's type.
+///
+/// Through a `dyn Attribute`, [Attribute::visit_elements] and [Attribute::replace_elements] list
+/// the value's elements and then the attribute's own type, when that is an element:
+///
+/// - The unknown type is not an element: it means the attribute has no type of its own.
+/// - A kind that takes its type from its value's Rust type (`BoolAttr` is `i1`, `I8Attr` to
+///   `I128Attr` are `iN`, `I32ArrayAttr` is `i32`) holds no own type as an element: it is not
+///   visited, not offered to a replacer, and an attribute rebuilt because its value changed takes
+///   the type inferred from the new value.
+/// - Otherwise the own type is an element, after the value's: `IntAttr`'s (its width is in its
+///   value, but its type may be `isize`), an unbound `LocalVariableAttr`'s.
+///
+/// Some kinds' choices, as built: a signature's elements are, per parameter, its type then its
+/// attributes, then the same per result; a bound `LocalVariableAttr` holds no type (its type is in
+/// its function's `locals`); a `SymbolRefAttr` holds nothing, so it is never rebuilt by a
+/// replacement and stays linked to its symbol.
 ///
 /// Both methods are pure: they do not create attributes, intern types, or use the context.
 pub trait AttributeElements: Sized {
@@ -102,17 +125,27 @@ pub trait AttributeComponent: Sized {
     fn replace_elements(&self, replacer: &mut dyn ElementReplacer) -> Option<Self>;
 }
 
+/// The type a kind of attribute takes from its value, whatever the value: `i1` for `BoolAttr`,
+/// `iN` for the fixed-width integer kinds, `i32` for `I32ArrayAttr`. `None` for a kind whose type
+/// does not follow from its value's Rust type alone: `IntAttr` (whose width the value carries, and
+/// which may be `isize`) and every kind that infers nothing.
+fn inferred_own_type<A>(context: &crate::Context) -> Option<Type>
+where
+    A: MaybeInferAttributeType,
+{
+    A::maybe_infer_type(context).filter(|ty| !ty.is_unknown())
+}
+
 /// What [Attribute::visit_elements] does for every derived attribute kind: the elements of its
-/// value, then its own type, unless that is the unknown type, which means the attribute has no
-/// type of its own.
+/// value, then its own type, when that is an element (see [AttributeElements]).
 #[doc(hidden)]
 pub fn visit_attribute_elements<A>(attr: &A, visitor: &mut dyn ElementVisitor)
 where
-    A: AttributeRegistration,
+    A: AttributeRegistration + MaybeInferAttributeType,
 {
     A::underlying_value(attr).visit_elements(visitor);
     let ty = Attribute::ty(attr);
-    if !ty.is_unknown() {
+    if !ty.is_unknown() && inferred_own_type::<A>(attr.context()).is_none() {
         visitor.visit_type(ty);
     }
 }
@@ -121,18 +154,24 @@ where
 /// kind `A`, built with `A`'s constructor from the replaced value (or a clone of the value, when
 /// only the type changed) and the replaced type, or `None` when nothing changed. `attr` is not
 /// touched.
+///
+/// The own type is offered to the replacer only when it is an element (see [AttributeElements]).
+/// For a kind that takes its type from its value, the new attribute's type is the one inferred
+/// from the new value.
 #[doc(hidden)]
 pub fn replace_attribute_elements<A>(
     attr: &A,
     replacer: &mut dyn ElementReplacer,
 ) -> Option<AttributeRef>
 where
-    A: AttributeRegistration,
+    A: AttributeRegistration + MaybeInferAttributeType,
     A::Value: Clone,
 {
+    let context = attr.context();
     let value = A::underlying_value(attr).replace_elements(replacer);
     let ty = Attribute::ty(attr);
-    let new_ty = if ty.is_unknown() {
+    let inferred = inferred_own_type::<A>(context).is_some();
+    let new_ty = if ty.is_unknown() || inferred {
         ty
     } else {
         replacer.replace_type(ty)
@@ -141,6 +180,13 @@ where
         return None;
     }
     let value = value.unwrap_or_else(|| A::underlying_value(attr).clone());
+    let new_ty = if inferred {
+        A::maybe_infer_type_from_value(context, &value)
+            .filter(|ty| !ty.is_unknown())
+            .unwrap_or(new_ty)
+    } else {
+        new_ty
+    };
     Some(A::create(&attr.context_rc(), value, new_ty).into_attribute_ref())
 }
 
@@ -464,8 +510,7 @@ mod tests {
     fn rows(test: &Test) -> Vec<Row> {
         let context = test.context_rc();
         let cx = &context;
-        let (i1, i8, i16, i32, i64, i128) =
-            (cx.i1(), cx.i8(), cx.i16(), cx.i32(), cx.i64(), cx.i128());
+        let (i8, i16, i32, i64) = (cx.i8(), cx.i16(), cx.i32(), cx.i64());
         let symbol = Symbol::intern;
 
         let zext = cx.get_marker::<ZextAttr>().as_attribute_ref();
@@ -494,16 +539,16 @@ mod tests {
 
         vec![
             Row::new(
-                "i32 array: its own type, the elements' type",
+                "i32 array: its type follows from its value",
                 cx.create_attribute::<I32ArrayAttr, _>(Array::from([1, 2])),
-                [ty(i32)],
+                [],
             ),
             Row::new(
                 "type array",
                 cx.create_attribute::<TypeArrayAttr, _>(Array::from([i8, i16])),
                 [ty(i8), ty(i16)],
             ),
-            Row::new("bool", cx.create_attribute::<BoolAttr, _>(true), [ty(i1)]),
+            Row::new("bool", cx.create_attribute::<BoolAttr, _>(true), []),
             Row::new(
                 "bytes",
                 cx.create_attribute::<BytesAttr, _>(Arc::new(ConstantData::from([1u8, 2]))),
@@ -519,11 +564,11 @@ mod tests {
                 )),
                 [],
             ),
-            Row::new("i8", cx.create_attribute::<I8Attr, _>(1i8), [ty(i8)]),
-            Row::new("i16", cx.create_attribute::<I16Attr, _>(1i16), [ty(i16)]),
-            Row::new("i32", cx.create_attribute::<I32Attr, _>(1i32), [ty(i32)]),
-            Row::new("i64", cx.create_attribute::<I64Attr, _>(1i64), [ty(i64)]),
-            Row::new("i128", cx.create_attribute::<I128Attr, _>(1i128), [ty(i128)]),
+            Row::new("i8", cx.create_attribute::<I8Attr, _>(1i8), []),
+            Row::new("i16", cx.create_attribute::<I16Attr, _>(1i16), []),
+            Row::new("i32", cx.create_attribute::<I32Attr, _>(1i32), []),
+            Row::new("i64", cx.create_attribute::<I64Attr, _>(1i64), []),
+            Row::new("i128", cx.create_attribute::<I128Attr, _>(1i128), []),
             Row::new("int: its own type only", cx.int_attr(Int::from(7i64), i64), [ty(i64)]),
             Row::new(
                 "list of attributes",
@@ -635,10 +680,10 @@ mod tests {
         check_every_kind(&test.context_rc(), &["builtin", "di", "test"], &rows(&test));
     }
 
-    /// A list's replaced entries are the replacer's own attributes where it can take them, and
-    /// copies of the kept entries; the original list keeps its entries, linked to it.
+    /// A list's replaced entries are copies of the replacer's answers and of the kept entries;
+    /// the original list keeps its entries, linked to it.
     #[test]
-    fn a_replaced_list_takes_fresh_replacements_and_copies_kept_entries() {
+    fn a_replaced_list_copies_replacements_and_kept_entries() {
         let context = Rc::new(Context::default());
         let (one, two, three) = (int(&context, 1), int(&context, 2), int(&context, 3));
         let mut entries = AttrList::new();
@@ -661,18 +706,38 @@ mod tests {
         let [Element::Attribute(kept), Element::Attribute(replaced)] = elements(&new)[..] else {
             panic!("two entries");
         };
-        assert!(AttributeRef::ptr_eq(&replaced, &three), "a fresh replacement is taken as it is");
+        assert!(!AttributeRef::ptr_eq(&replaced, &three), "a replacement is copied");
+        assert!(replaced == three);
+        assert!(!three.borrow().as_attr().as_attr_ref().is_linked(), "the answer is not adopted");
         assert!(!AttributeRef::ptr_eq(&kept, &one), "a kept entry is copied");
         assert!(kept == one);
         assert_eq!(elements(&list), [attr(one), attr(two)]);
         assert!(one.borrow().as_attr().as_attr_ref().is_linked());
+    }
 
-        // `three` is now linked into the new list, so a second replacement with it is copied.
-        let again = list.borrow().replace_elements(&mut ReplaceTwo(two, three)).unwrap();
-        let [_, Element::Attribute(copied)] = elements(&again)[..] else {
-            panic!("two entries");
-        };
-        assert!(!AttributeRef::ptr_eq(&copied, &three) && copied == three);
+    /// A kind that takes its type from its value holds no own type as an element: a replacer
+    /// that changes every type leaves it alone, though its own type is a known type. (No kind
+    /// holds a type in its value and also takes its own type from that value, so no rebuilt
+    /// attribute gets a newly inferred type here.)
+    #[test]
+    fn an_own_type_inferred_from_the_value_is_not_an_element() {
+        let context = Rc::new(Context::default());
+        let cases = [
+            (context.create_attribute::<BoolAttr, _>(true).as_attribute_ref(), context.i1()),
+            (context.create_attribute::<I32Attr, _>(1i32).as_attribute_ref(), context.i32()),
+            (
+                context
+                    .create_attribute::<I32ArrayAttr, _>(Array::from([1, 2]))
+                    .as_attribute_ref(),
+                context.i32(),
+            ),
+        ];
+        for (attr, own) in cases {
+            assert_eq!(attr.borrow().ty(), own);
+            assert_eq!(elements(&attr), []);
+            let mut markers = Markers::new(&context);
+            assert!(attr.borrow().replace_elements(&mut markers).is_none(), "{}", attr.name());
+        }
     }
 
     /// A shared attribute is never edited: replacing what it holds leaves every holder's handle

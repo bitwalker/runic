@@ -6,6 +6,10 @@ use crate::{
     parse::ParserExt,
 };
 
+/// A function's local variable: its function and its index in that function's locals.
+///
+/// As an attribute ([LocalVariableAttr]), a bound local holds no element: its type is in its
+/// function's `locals`, not in the attribute. An unbound one's own type is its only element.
 #[derive(DialectAttribute, Copy, Clone, PartialEq, Eq, Hash)]
 #[attribute(
     dialect = BuiltinDialect,

@@ -10,9 +10,9 @@ use crate::{
     print::AsmPrinter,
 };
 
-/// The logical HIR slot that supplies a frame base.
+/// The logical slot that supplies a frame base.
 ///
-/// These slots are independent of both the source DWARF encoding and the final Miden frame layout.
+/// These slots are independent of both the source DWARF encoding and the target's frame layout.
 /// The backend resolves them after the function's aligned frame size and global layout are known.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, AttributeComponent)]
 pub enum FrameBase {
@@ -22,19 +22,19 @@ pub enum FrameBase {
     GlobalSlot(Symbol),
 }
 
-/// Represents target-neutral HIR operations for describing variable locations and values.
+/// Represents target-neutral operations for describing variable locations and values.
 ///
 /// Bare slots contain values; Deref reads memory at those values. Address and FrameBase produce
 /// byte-address locations with an implicit final memory read, unless StackValue requests a scalar.
 /// Deref preserves that address/value distinction. Source DWARF is normalized to this convention
 /// by the frontend. Arithmetic retains DW_OP names; target-neutral slots use DI_OP names.
 ///
-/// This is an in-memory/textual HIR representation, not a package wire format.
+/// This is an in-memory and textual IR representation, not a package wire format.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, AttributeComponent)]
 pub enum ExpressionOp {
     /// Variable is in a logical function-local slot.
     LocalSlot(u32),
-    /// Variable is in a logical operand-stack slot.
+    /// Variable is in a logical value slot, numbered by the target, that holds it outside memory.
     OperandStackSlot(u32),
     /// DW_OP_constu - Unsigned constant value
     ConstU64(u64),
@@ -54,11 +54,11 @@ pub enum ExpressionOp {
     Piece(u64),
     /// DW_OP_bit_piece - Describes a piece of a variable in bits
     BitPiece { size: u64, offset: u64 },
-    /// DW_OP_addr - pushes memory address `address` on the expression operand stack
+    /// DW_OP_addr - pushes memory address `address` on the expression stack
     Address { address: u64 },
     /// Logical frame-base slot + byte offset.
     FrameBase { base: FrameBase, byte_offset: i64 },
-    /// Variable is in a logical module-global slot identified by its HIR symbol.
+    /// Variable is in a logical module-global slot identified by its symbol.
     GlobalSlot(Symbol),
     /// Placeholder for unsupported operations
     Unsupported(Symbol),
@@ -242,7 +242,7 @@ impl ExpressionOp {
     }
 }
 
-/// Describes how to compute or locate a variable's value using target-neutral HIR operations.
+/// Describes how to compute or locate a variable's value using target-neutral operations.
 #[derive(DialectAttribute, Clone, Debug, Default, PartialEq, Eq, Hash)]
 #[attribute(dialect = DebugInfoDialect, implements(AttrPrinter))]
 pub struct Expression {

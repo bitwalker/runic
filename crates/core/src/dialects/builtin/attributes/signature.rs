@@ -273,6 +273,9 @@ impl core::error::Error for InvalidSignature {}
 /// A function signature provides us with all of the necessary detail to correctly
 /// validate and emit code for a function, whether from the perspective of a caller,
 /// or the callee.
+///
+/// As an attribute ([SignatureAttr]), its elements ([crate::Attribute::visit_elements]) are, for
+/// each parameter, its type then its attributes, then the same for each result.
 #[derive(DialectAttribute, Default, Debug, Clone, PartialEq, Eq, Hash)]
 #[attribute(
     dialect = BuiltinDialect,

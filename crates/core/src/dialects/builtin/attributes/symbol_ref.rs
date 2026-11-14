@@ -16,6 +16,11 @@ use crate::{
 /// operations under two different symbol tables may name two different symbols. Operations holding
 /// references are therefore comparable only under one nearest symbol table; a consumer that compares
 /// operations across symbol tables must resolve the references.
+///
+/// As an attribute ([SymbolRefAttr]), a reference holds no element: its path is data, its use is
+/// its link to the symbol, and it has no type of its own. A replacement of an attribute's
+/// elements ([crate::Attribute::replace_elements]) therefore never rebuilds a `SymbolRefAttr`,
+/// and the reference stays linked to its symbol.
 #[derive(DialectAttribute, Debug, Clone)]
 #[attribute(name = "symbol", dialect = BuiltinDialect, implements(AttrPrinter))]
 pub struct SymbolRef {
