@@ -3,7 +3,7 @@
 //! Designed for use with [`log`](log-crate-url).
 //!
 //! This crate is inspired by [`runic_log`](https://crates.io/crates/runic_log), but provides
-//! additional features specific to the Miden compiler that make it more useful when diagnosing
+//! additional features for compilers built with Runic that make it more useful when diagnosing
 //! issues in a pipeline that has an enormous quantity of verbose trace logs that are emitted for
 //! a large number of different entities in the compilation graph. Typically, we're interested in
 //! output related to a specific function, possibly refined to specific components of the compiler,

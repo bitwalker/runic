@@ -445,7 +445,7 @@ mod tests {
             .expect_err("the result is a pointer");
         assert!(err.contains("expected pointer type, got 'i32'"), "{err}");
 
-        // A byte offset is no longer part of the operation
+        // The operation names a global and has no byte offset: `@g+8` does not parse
         let err = parse_text(&module("        %p = builtin.global_symbol @g+8 : ptr<i32>;"))
             .map(|_| ())
             .expect_err("an offset is not accepted");
