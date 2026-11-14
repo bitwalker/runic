@@ -194,11 +194,9 @@ impl FullConversionDriver<'_> {
         }
 
         if self.config.reconcile_unrealized_casts() {
-            let before = self.count_unrealized_conversion_casts();
-            let remaining = reconcile_unrealized_casts(self.root);
-            // Every fold leaves a cast unused, which is then erased, so the IR changed exactly
-            // when fewer casts remain.
-            self.result.changed |= remaining.len() < before;
+            let reconciled = reconcile_unrealized_casts(self.root);
+            self.result.changed |= reconciled.changed;
+            let remaining = reconciled.remaining;
             // The casts reconciliation erased leave the table.
             let live = remaining.iter().copied().collect::<FxHashSet<_>>();
             self.casts.borrow_mut().retain(|cast, _| live.contains(cast));
@@ -433,16 +431,6 @@ impl FullConversionDriver<'_> {
     /// Whether `op` is a cast the driver inserted.
     fn is_driver_cast(&self, op: OperationRef) -> bool {
         self.casts.borrow().contains_key(&op)
-    }
-
-    fn count_unrealized_conversion_casts(&self) -> usize {
-        let mut count = 0;
-        self.root.borrow().prewalk_all(|op: &crate::Operation| {
-            if op.as_operation_ref() != self.root && op.is::<UnrealizedConversionCast>() {
-                count += 1;
-            }
-        });
-        count
     }
 
     fn verify_full_conversion_legality(&self) -> Result<(), Report> {

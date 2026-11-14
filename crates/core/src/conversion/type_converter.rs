@@ -86,6 +86,9 @@ impl TypeConversion {
 /// recently added first. The first callback that answers builds, before the cast, the operations
 /// that compute the cast's results; they replace the cast's results and the cast is erased. The
 /// operations a callback builds are not offered to patterns: they must be legal in the target.
+/// The folding assumes that casts compose (a cast from one type list to a second followed by one
+/// from the second to a third means a cast from the first to the third, and a cast from a type
+/// list to itself is the identity), so the materializations of a conversion must agree with that.
 ///
 /// The converter remembers what the type callbacks answered for a type, so each type is asked
 /// about once. The memo is shared by the clones of a converter, and a clone that is given another

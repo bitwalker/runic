@@ -52,6 +52,7 @@ pub struct UnrealizedConversionCast {
 }
 
 /// A cast has at least one result.
+// An op's checks run only as the verifier of a listed trait or interface; the cast lists no trait.
 impl crate::Verify<dyn MemoryEffectOpInterface> for UnrealizedConversionCast {
     fn verify(&self, _context: &Context) -> Result<(), Report> {
         if self.as_operation().num_results() != 0 {
@@ -92,8 +93,8 @@ impl InferIntRangeInterface for UnrealizedConversionCast {
     /// The cast says nothing about how values of some types become values of others (a zero
     /// extension, a sign extension, a truncation, a split or anything else), so the input's range
     /// is a fact about the result only when there is one input and one result, and both are
-    /// integers of one width. A single result of another width has the range of its type; the
-    /// results of any other cast are given no range.
+    /// integers of one width. The results of any other cast are given no range; the analysis
+    /// gives a result it is not told about the range of its type.
     fn infer_result_ranges(
         &self,
         operands: &[crate::IntegerValueRange],
@@ -103,14 +104,12 @@ impl InferIntRangeInterface for UnrealizedConversionCast {
         let ([range], 1) = (operands, op.num_results()) else {
             return;
         };
+        let input = op.operands()[0].borrow().ty();
         let result = op.results()[0].borrow().as_value_ref();
-        let top = crate::ConstantIntRange::max_for_type(result.borrow().ty());
-        let range = match range.range() {
-            None => range.clone(),
-            Some(source) if !top.is_untracked() && source.width() == top.width() => range.clone(),
-            Some(_) => crate::IntegerValueRange::new(top),
-        };
-        set_result_range(result, range);
+        let width = crate::Int::width_for_type;
+        if width(input).is_some() && width(input) == width(result.borrow().ty()) {
+            set_result_range(result, range.clone());
+        }
     }
 }
 
@@ -374,8 +373,8 @@ mod tests {
         assert_eq!(folds, [Some(true), None, None, None]);
     }
 
-    /// The input's range is the result's for one input and one result of one width; a result of
-    /// another width has the range of its type, and any other cast gives its results no range.
+    /// The input's range is the result's for one input and one result of one width; any other
+    /// cast, one between widths included, gives its results no range.
     #[test]
     fn the_range_of_a_cast() {
         use crate::ConstantIntRange;
@@ -406,7 +405,6 @@ mod tests {
                 set.into_iter().map(|(_, range)| range).collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
-        let top = IntegerValueRange::new(ConstantIntRange::max_for_type(context.i64()));
-        assert_eq!(ranges, [alloc::vec![seven.clone()], alloc::vec![top], Vec::new(), Vec::new()]);
+        assert_eq!(ranges, [alloc::vec![seven.clone()], Vec::new(), Vec::new(), Vec::new()]);
     }
 }
