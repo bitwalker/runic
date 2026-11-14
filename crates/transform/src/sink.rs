@@ -177,8 +177,12 @@ pub struct ControlFlowSink;
 
 runic_core::inventory::submit!(::runic_core::pass::registry::PassInfo::new::<ControlFlowSink>(
     "control-flow-sink",
-    "control flow sinking"
+    CONTROL_FLOW_SINK_DESCRIPTION
 ));
+
+const CONTROL_FLOW_SINK_DESCRIPTION: &str = "Moves an effect-free operation into the region that \
+                                             holds all of its users, when that region runs at \
+                                             most once";
 
 impl Pass for ControlFlowSink {
     type Target = Operation;
@@ -189,6 +193,10 @@ impl Pass for ControlFlowSink {
 
     fn argument(&self) -> &'static str {
         "control-flow-sink"
+    }
+
+    fn description(&self) -> &'static str {
+        CONTROL_FLOW_SINK_DESCRIPTION
     }
 
     fn can_schedule_on(&self, _name: &OperationName) -> bool {
@@ -276,12 +284,14 @@ impl Pass for ControlFlowSink {
 pub struct SinkOperandDefs;
 
 impl SinkOperandDefs {
+    const DESCRIPTION: &str =
+        "Moves the definitions of an operation's operands to just before the operation";
     const NAME: &str = "sink-operand-defs";
 }
 
 runic_core::inventory::submit!(::runic_core::pass::registry::PassInfo::new::<SinkOperandDefs>(
     "sink-operand-defs",
-    "operand definition sinking"
+    SinkOperandDefs::DESCRIPTION
 ));
 
 impl Pass for SinkOperandDefs {
@@ -293,6 +303,10 @@ impl Pass for SinkOperandDefs {
 
     fn argument(&self) -> &'static str {
         Self::NAME
+    }
+
+    fn description(&self) -> &'static str {
+        Self::DESCRIPTION
     }
 
     fn can_schedule_on(&self, _name: &OperationName) -> bool {

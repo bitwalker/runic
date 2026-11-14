@@ -20,8 +20,11 @@ pub struct DeadCodeElimination;
 
 runic_core::inventory::submit!(::runic_core::pass::registry::PassInfo::new::<DeadCodeElimination>(
     "dce",
-    "dead code elimination"
+    DESCRIPTION
 ));
+
+const DESCRIPTION: &str =
+    "Erases operations whose results are all unused and that have no side effects";
 
 impl Pass for DeadCodeElimination {
     type Target = Operation;
@@ -32,6 +35,10 @@ impl Pass for DeadCodeElimination {
 
     fn argument(&self) -> &'static str {
         "dce"
+    }
+
+    fn description(&self) -> &'static str {
+        DESCRIPTION
     }
 
     fn can_schedule_on(&self, _name: &OperationName) -> bool {

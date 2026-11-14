@@ -36,7 +36,7 @@ pub struct Canonicalizer {
 
 runic_core::inventory::submit!(::runic_core::pass::registry::PassInfo::new::<Canonicalizer>(
     Canonicalizer::NAME,
-    "canonicalization"
+    Canonicalizer::DESCRIPTION
 ));
 
 impl Default for Canonicalizer {
@@ -54,6 +54,8 @@ impl Default for Canonicalizer {
 }
 
 impl Canonicalizer {
+    const DESCRIPTION: &str = "Applies the canonicalization patterns of all loaded dialects, and \
+                               folds operations, to a fixpoint";
     const NAME: &str = "canonicalizer";
 
     /// Creates an instance of this pass with the given rewrite config; `require_convergence`
@@ -99,7 +101,7 @@ impl Pass for Canonicalizer {
     }
 
     fn description(&self) -> &'static str {
-        "Performs canonicalization over a set of operations"
+        Self::DESCRIPTION
     }
 
     fn can_schedule_on(&self, _name: &OperationName) -> bool {

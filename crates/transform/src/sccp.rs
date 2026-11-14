@@ -24,7 +24,10 @@ pub struct SparseConditionalConstantPropagation;
 
 runic_core::inventory::submit!(::runic_core::pass::registry::PassInfo::new::<
     SparseConditionalConstantPropagation,
->("sccp", "sparse conditional constant propagation"));
+>("sccp", DESCRIPTION));
+
+const DESCRIPTION: &str =
+    "Replaces values proven constant by constants, following only the branches that can execute";
 
 impl Pass for SparseConditionalConstantPropagation {
     type Target = Operation;
@@ -35,6 +38,10 @@ impl Pass for SparseConditionalConstantPropagation {
 
     fn argument(&self) -> &'static str {
         "sccp"
+    }
+
+    fn description(&self) -> &'static str {
+        DESCRIPTION
     }
 
     fn can_schedule_on(&self, _name: &OperationName) -> bool {

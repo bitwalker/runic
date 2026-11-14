@@ -195,8 +195,11 @@ pub struct Local2Reg;
 
 runic_core::inventory::submit!(::runic_core::pass::registry::PassInfo::new::<Local2Reg>(
     "local2reg",
-    "promote single-use locals to SSA registers"
+    DESCRIPTION
 ));
+
+const DESCRIPTION: &str = "Replaces a local stored once and loaded once by the stored value, and \
+                           erases stores to unread locals";
 
 impl Pass for Local2Reg {
     type Target = Function;
@@ -207,6 +210,10 @@ impl Pass for Local2Reg {
 
     fn argument(&self) -> &'static str {
         "local2reg"
+    }
+
+    fn description(&self) -> &'static str {
+        DESCRIPTION
     }
 
     fn can_schedule_on(&self, name: &OperationName) -> bool {

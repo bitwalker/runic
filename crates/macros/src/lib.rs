@@ -10,7 +10,7 @@ mod tests;
 
 use heck::ToKebabCase;
 use quote::{ToTokens, format_ident, quote};
-use syn::{DeriveInput, Ident, Token, parse_macro_input, spanned::Spanned};
+use syn::{DeriveInput, Ident, parse_macro_input, spanned::Spanned};
 
 #[proc_macro_derive(Dialect, attributes(dialect))]
 pub fn derive_dialect(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
@@ -373,78 +373,6 @@ pub fn derive_analysis_key(item: proc_macro::TokenStream) -> proc_macro::TokenSt
 
             fn key(&self) -> Self::Key { self.#field_id }
         }
-    };
-
-    proc_macro::TokenStream::from(quoted)
-}
-
-#[proc_macro_derive(RewritePassRegistration)]
-pub fn derive_rewrite_pass_registration(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    let derive_input = parse_macro_input!(item as DeriveInput);
-    let id = derive_input.ident.clone();
-    let generics = derive_input.generics;
-    let mut params = syn::punctuated::Punctuated::<_, Token![,]>::new();
-    for gp in generics.params.iter() {
-        match gp {
-            syn::GenericParam::Lifetime(lt) => {
-                if !lt.bounds.empty_or_trailing() {
-                    return syn::Error::new(
-                        gp.span(),
-                        "cannot derive RewritePassRegistration on a type with lifetime bounds",
-                    )
-                    .into_compile_error()
-                    .into();
-                }
-                params.push(syn::GenericArgument::Lifetime(syn::Lifetime {
-                    apostrophe: lt.span(),
-                    ident: Ident::new("_", lt.span()),
-                }));
-            }
-            syn::GenericParam::Type(ty) => {
-                if !ty.bounds.empty_or_trailing() {
-                    return syn::Error::new(
-                        gp.span(),
-                        "cannot derive RewritePassRegistration on a generic type with type bounds",
-                    )
-                    .into_compile_error()
-                    .into();
-                }
-                let param_ty: syn::Type = syn::parse_quote_spanned! { ty.span() => () };
-                params.push(syn::GenericArgument::Type(param_ty));
-            }
-            syn::GenericParam::Const(_) => {
-                return syn::Error::new(
-                    gp.span(),
-                    "cannot derive RewritePassRegistration on a generic type with const arguments",
-                )
-                .into_compile_error()
-                .into();
-            }
-        }
-    }
-
-    let quoted = if params.empty_or_trailing() {
-        quote! {
-            inventory::submit!(runic_core::pass::RewritePassRegistration::new::<#id>());
-        }
-    } else {
-        quote! {
-            inventory::submit!(runic_core::pass::RewritePassRegistration::new::<#id<#params>>());
-        }
-    };
-
-    proc_macro::TokenStream::from(quoted)
-}
-
-#[proc_macro_derive(ModuleRewritePassAdapter)]
-pub fn derive_module_rewrite_pass_adapter(
-    item: proc_macro::TokenStream,
-) -> proc_macro::TokenStream {
-    let derive_input = parse_macro_input!(item as DeriveInput);
-    let id = derive_input.ident.clone();
-
-    let quoted = quote! {
-        inventory::submit!(runic_core::pass::RewritePassRegistration::new::<runic_core::pass::ModuleRewritePassAdapter::<#id>>());
     };
 
     proc_macro::TokenStream::from(quoted)

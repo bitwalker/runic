@@ -19,7 +19,10 @@ pub struct CommonSubexpressionElimination;
 
 runic_core::inventory::submit!(::runic_core::pass::registry::PassInfo::new::<
     CommonSubexpressionElimination,
->("cse", "common subexpression elimintation"));
+>("cse", DESCRIPTION));
+
+const DESCRIPTION: &str =
+    "Replaces an operation by an equivalent operation that dominates it, within each region";
 
 impl Pass for CommonSubexpressionElimination {
     type Target = Operation;
@@ -30,6 +33,10 @@ impl Pass for CommonSubexpressionElimination {
 
     fn argument(&self) -> &'static str {
         "cse"
+    }
+
+    fn description(&self) -> &'static str {
+        DESCRIPTION
     }
 
     fn can_schedule_on(&self, _name: &OperationName) -> bool {

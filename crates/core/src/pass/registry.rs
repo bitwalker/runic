@@ -1,4 +1,9 @@
-use alloc::{boxed::Box, collections::BTreeMap};
+use alloc::{
+    boxed::Box,
+    collections::{BTreeMap, btree_map::Entry},
+    format,
+    vec::Vec,
+};
 use core::any::TypeId;
 
 use runic_symbol::sync::{LazyLock, RwLock};
@@ -21,37 +26,43 @@ impl Default for PassRegistry {
     }
 }
 impl PassRegistry {
-    /// Create a new [PassRegistry] instance.
+    /// Create a new [PassRegistry] instance from the passes and pipelines submitted with
+    /// `inventory`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if two submissions share one name and are not the same pass; the message names both
+    /// types. A name taken twice
+    /// is a defect in the linked crates, and the registry has no caller to return it to, so the
+    /// first use of the registry reports it.
     pub fn new() -> Self {
-        let mut passes = BTreeMap::default();
-        let mut pipelines = BTreeMap::default();
-        for pass in inventory::iter::<PassInfo>() {
-            passes.insert(
-                pass.0.arg,
-                PassRegistryEntry {
-                    arg: pass.0.arg,
-                    description: pass.0.description,
-                    type_id: pass.0.type_id,
-                    builder: pass.0.builder,
-                },
-            );
+        match Self::from_entries(
+            inventory::iter::<PassInfo>().map(|pass| pass.0.clone()),
+            inventory::iter::<PassPipelineInfo>().map(|pipeline| pipeline.0.clone()),
+        ) {
+            Ok(registry) => registry,
+            Err(error) => panic!("{error}"),
         }
-        for pipeline in inventory::iter::<PassPipelineInfo>() {
-            pipelines.insert(
-                pipeline.0.arg,
-                PassRegistryEntry {
-                    arg: pipeline.0.arg,
-                    description: pipeline.0.description,
-                    type_id: pipeline.0.type_id,
-                    builder: pipeline.0.builder,
-                },
-            );
-        }
+    }
 
-        Self {
-            passes: RwLock::new(passes),
-            pipelines: RwLock::new(pipelines),
+    /// Build a registry from the given passes and pipelines, or report the first name that two of
+    /// them share.
+    fn from_entries(
+        passes: impl IntoIterator<Item = PassRegistryEntry>,
+        pipelines: impl IntoIterator<Item = PassRegistryEntry>,
+    ) -> Result<Self, Report> {
+        let mut registered_passes = BTreeMap::default();
+        for pass in passes {
+            insert("pass", &mut registered_passes, pass)?;
         }
+        let mut registered_pipelines = BTreeMap::default();
+        for pipeline in pipelines {
+            insert("pass pipeline", &mut registered_pipelines, pipeline)?;
+        }
+        Ok(Self {
+            passes: RwLock::new(registered_passes),
+            pipelines: RwLock::new(registered_pipelines),
+        })
     }
 
     /// Get the pass information for the pass whose argument name is `name`
@@ -64,50 +75,55 @@ impl PassRegistry {
         self.pipelines.read().get(name).cloned().map(PassPipelineInfo)
     }
 
-    /// Register the given pass
-    pub fn register_pass(&self, info: PassInfo) {
-        use alloc::collections::btree_map::Entry;
-
-        let mut passes = self.passes.write();
-        match passes.entry(info.argument()) {
-            Entry::Vacant(entry) => {
-                entry.insert(info.0);
-            }
-            Entry::Occupied(entry) => {
-                assert_eq!(
-                    entry.get().type_id,
-                    info.0.type_id,
-                    "cannot register pass '{}': name already registered by a different type",
-                    info.argument()
-                );
-            }
-        }
+    /// Every registered pass, sorted by its argument name.
+    pub fn passes(&self) -> Vec<PassInfo> {
+        self.passes.read().values().cloned().map(PassInfo).collect()
     }
 
-    /// Register the given pass pipeline
-    pub fn register_pipeline(&self, info: PassPipelineInfo) {
-        use alloc::collections::btree_map::Entry;
-
-        let mut pipelines = self.pipelines.write();
-        match pipelines.entry(info.argument()) {
-            Entry::Vacant(entry) => {
-                entry.insert(info.0);
-            }
-            Entry::Occupied(entry) => {
-                assert_eq!(
-                    entry.get().type_id,
-                    info.0.type_id,
-                    "cannot register pass pipeline '{}': name already registered by a different \
-                     type",
-                    info.argument()
-                );
-                assert!(core::ptr::addr_eq(
-                    entry.get().builder as *const (),
-                    info.0.builder as *const ()
-                ));
-            }
-        }
+    /// Every registered pass pipeline, sorted by its argument name.
+    pub fn pipelines(&self) -> Vec<PassPipelineInfo> {
+        self.pipelines.read().values().cloned().map(PassPipelineInfo).collect()
     }
+
+    /// Register the given pass.
+    ///
+    /// Registering the same pass again does nothing; a name that a different pass has taken is
+    /// an error.
+    pub fn register_pass(&self, info: PassInfo) -> Result<(), Report> {
+        insert("pass", &mut self.passes.write(), info.0)
+    }
+
+    /// Register the given pass pipeline.
+    ///
+    /// Registering the same pipeline again does nothing; a name that a different pipeline has
+    /// taken is an error.
+    pub fn register_pipeline(&self, info: PassPipelineInfo) -> Result<(), Report> {
+        insert("pass pipeline", &mut self.pipelines.write(), info.0)
+    }
+}
+
+/// Inserts `entry`. An entry already there under the same name that is the same pass or pipeline
+/// is left alone; one that is another is reported.
+fn insert(
+    kind: &str,
+    entries: &mut BTreeMap<&'static str, PassRegistryEntry>,
+    entry: PassRegistryEntry,
+) -> Result<(), Report> {
+    match entries.entry(entry.arg) {
+        Entry::Vacant(slot) => {
+            slot.insert(entry);
+            Ok(())
+        }
+        Entry::Occupied(taken) if taken.get().is_same_as(&entry) => Ok(()),
+        Entry::Occupied(taken) => Err(duplicate(kind, taken.get(), &entry)),
+    }
+}
+
+fn duplicate(kind: &str, first: &PassRegistryEntry, second: &PassRegistryEntry) -> Report {
+    Report::msg(format!(
+        "cannot register {kind} '{}' for '{}': the name is already registered for '{}'",
+        first.arg, second.type_name, first.type_name
+    ))
 }
 
 inventory::collect!(PassInfo);
@@ -145,9 +161,28 @@ struct PassRegistryEntry {
     description: &'static str,
     /// The type id of the concrete pass type
     type_id: Option<TypeId>,
+    /// The name of the concrete pass type, for error messages
+    type_name: &'static str,
     /// Function that registers this entry with a pass manager pipeline
     builder: PassAllocatorFunction,
 }
+impl PassRegistryEntry {
+    /// Whether `self` and `other` register the same pass type or the same pipeline builder.
+    ///
+    /// Two copies of one crate in a program (a test binary that links the crate under test through
+    /// a dependency of its own) submit the same pass twice, as two types of one path; these are
+    /// one pass.
+    fn is_same_as(&self, other: &Self) -> bool {
+        match (self.type_id, other.type_id) {
+            (Some(a), Some(b)) => a == b || self.type_name == other.type_name,
+            (None, None) => {
+                core::ptr::addr_eq(self.builder as *const (), other.builder as *const ())
+            }
+            _ => false,
+        }
+    }
+}
+
 impl RegistryEntry for PassRegistryEntry {
     #[inline]
     fn add_to_pipeline(&self, pm: &mut OpPassManager, options: &str) -> Result<(), Report> {
@@ -168,7 +203,7 @@ impl RegistryEntry for PassRegistryEntry {
 /// Information about a registered pass pipeline
 pub struct PassPipelineInfo(PassRegistryEntry);
 impl PassPipelineInfo {
-    pub fn new<B>(
+    pub fn new(
         arg: &'static str,
         description: &'static str,
         builder: PassAllocatorFunction,
@@ -177,8 +212,14 @@ impl PassPipelineInfo {
             arg,
             description,
             type_id: None,
+            type_name: arg,
             builder,
         })
+    }
+
+    /// Every registered pass pipeline, sorted by its command-line name.
+    pub fn registered() -> Vec<PassPipelineInfo> {
+        PASS_REGISTRY.pipelines()
     }
 
     /// Find the [PassInfo] for a registered pass pipeline named `name`
@@ -211,6 +252,7 @@ impl PassInfo {
             arg,
             description,
             type_id: Some(type_id),
+            type_name: core::any::type_name::<P>(),
             builder: default_instance::<P>,
         })
     }
@@ -225,6 +267,7 @@ impl PassInfo {
             arg,
             description,
             type_id: Some(type_id),
+            type_name: core::any::type_name::<P>(),
             builder,
         })
     }
@@ -232,6 +275,39 @@ impl PassInfo {
     /// Find the [PassInfo] for a registered pass named `name`
     pub fn lookup(name: &str) -> Option<PassInfo> {
         PASS_REGISTRY.get_pass(name)
+    }
+
+    /// Every registered pass, sorted by its command-line name.
+    pub fn registered() -> Vec<PassInfo> {
+        PASS_REGISTRY.passes()
+    }
+
+    /// The command-line name of this pass.
+    pub fn argument(&self) -> &'static str {
+        self.0.arg
+    }
+
+    /// A one-line description of what this pass does.
+    pub fn description(&self) -> &'static str {
+        self.0.description
+    }
+
+    /// The registered pass names closest to `name`, for "did you mean" messages: best first, ties
+    /// by name, at most three.
+    ///
+    /// A name is close when its edit distance (insertions, deletions and substitutions of one
+    /// character) from `name` is at most a third of the length of `name`, and at least 1.
+    pub fn similar_to(name: &str) -> Vec<&'static str> {
+        let mut close = Vec::<(usize, &'static str)>::new();
+        for pass in PASS_REGISTRY.passes() {
+            let candidate = pass.argument();
+            let distance = edit_distance(name, candidate);
+            if distance <= (name.chars().count() / 3).max(1) {
+                close.push((distance, candidate));
+            }
+        }
+        close.sort();
+        close.into_iter().take(3).map(|(_, candidate)| candidate).collect()
     }
 }
 impl RegistryEntry for PassInfo {
@@ -280,13 +356,8 @@ pub fn register_pass_pipeline(
     arg: &'static str,
     description: &'static str,
     builder: PassAllocatorFunction,
-) {
-    PASS_REGISTRY.register_pipeline(PassPipelineInfo(PassRegistryEntry {
-        arg,
-        description,
-        type_id: None,
-        builder,
-    }));
+) -> Result<(), Report> {
+    PASS_REGISTRY.register_pipeline(PassPipelineInfo::new(arg, description, builder))
 }
 
 /// Register a specific dialect pass allocator function with the system.
@@ -300,7 +371,9 @@ pub fn register_pass_pipeline(
 /// NOTE: The allocator function provided is required to be `Send + Sync + 'static`, as it is
 /// stored in the global registry for the lifetime of the program, and may be accessed from any
 /// thread.
-pub fn register_pass(builder: PassAllocatorFunction) {
+///
+/// Returns an error if the name of the pass is already registered for another type or builder.
+pub fn register_pass(builder: PassAllocatorFunction) -> Result<(), Report> {
     let pass = builder();
     let type_id = pass.as_any().type_id();
     let arg = pass.argument();
@@ -314,8 +387,25 @@ pub fn register_pass(builder: PassAllocatorFunction) {
         arg,
         description,
         type_id: Some(type_id),
+        type_name: pass.name(),
         builder,
-    }));
+    }))
+}
+
+/// The number of insertions, deletions and substitutions of one character that turn `a` into `b`.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b = b.chars().collect::<Vec<_>>();
+    let mut row = (0..=b.len()).collect::<Vec<_>>();
+    for (i, ca) in a.chars().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, &cb) in b.iter().enumerate() {
+            let above = row[j + 1];
+            row[j + 1] = (diagonal + usize::from(ca != cb)).min(above + 1).min(row[j] + 1);
+            diagonal = above;
+        }
+    }
+    row[b.len()]
 }
 
 /// A default implementation of a pass pipeline registration function.
@@ -356,3 +446,6 @@ fn add_with_options(
 fn default_instance<P: Pass + Default>() -> Box<dyn OperationPass> {
     Box::<P>::default() as Box<dyn OperationPass>
 }
+
+#[cfg(test)]
+mod tests;

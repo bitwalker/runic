@@ -29,11 +29,11 @@ use crate::*;
 pub struct LiftControlFlowToSCF;
 
 runic_core::inventory::submit!(
-    ::runic_core::pass::registry::PassInfo::new::<LiftControlFlowToSCF>(
-        "cfg-to-scf",
-        "Lift unstructured control flow graphs to structured control flow"
-    )
+    ::runic_core::pass::registry::PassInfo::new::<LiftControlFlowToSCF>("cfg-to-scf", DESCRIPTION)
 );
+
+const DESCRIPTION: &str =
+    "Replaces unstructured control flow (cf) by structured control flow (scf) where it can";
 
 impl Pass for LiftControlFlowToSCF {
     type Target = Operation;
@@ -47,7 +47,7 @@ impl Pass for LiftControlFlowToSCF {
     }
 
     fn description(&self) -> &'static str {
-        "Lifts unstructured control flow to structured control flow"
+        DESCRIPTION
     }
 
     fn can_schedule_on(&self, _name: &OperationName) -> bool {
