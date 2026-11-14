@@ -7,7 +7,10 @@
 //! converted parameters and results, which is the function type of the converted signature
 //! ([convert_signature]). It must have no value callbacks ([TypeConverter::has_value_conversions]):
 //! a signature is converted by type, and a callback that answered differently for a value would
-//! make a call and the entry block of its callee disagree.
+//! make a call and the entry block of its callee disagree. Each type it gives for a parameter, a
+//! result or a local must itself be legal (convert to itself): the function pattern and the call
+//! patterns check the answers they use, and return an error that names the type and what it was
+//! the answer for.
 //!
 //! The patterns work under a target that judges their operations by type,
 //! [add_builtin_legality_by_type]. That is a requirement, not a convenience: the legalization
@@ -119,7 +122,7 @@ use crate::{
             LoadLocal, Ret, RetImm, StoreLocal,
             attributes::{
                 DeclaredEffects, DeclaredEffectsAttr, IntAttr, LocalVariable, LocalVariableAttr,
-                SignatureAttr, TypeArrayAttr, remap_declared_effects,
+                Signature, SignatureAttr, TypeArrayAttr, remap_declared_effects,
             },
         },
         debuginfo::{
@@ -348,6 +351,7 @@ impl ConversionPattern for FunctionPattern {
             )
         };
         let converted = convert_signature(&context, &signature, converter);
+        check_answers_are_legal(&context, converter, &signature, &converted, op)?;
         check_effects_within_signature(&op.borrow(), &effects, &converted)?;
         if converted.signature != signature
             && let Some(root) = rewriter.root()
@@ -361,8 +365,11 @@ impl ConversionPattern for FunctionPattern {
             total: 0,
         };
         let mut new_locals = Vec::with_capacity(locals.len());
-        for ty in &locals {
+        for (index, ty) in locals.iter().enumerate() {
             let parts = converter.convert_type(&context, *ty);
+            check_answer_is_legal(&context, converter, *ty, &parts, || {
+                format!("local {index} of {}", describe_op(op))
+            })?;
             let count = local_index(parts.len());
             map.starts.push(map.total);
             map.counts.push(count);
@@ -515,6 +522,59 @@ fn check_effects_within_signature(
         }
     }
     Ok(())
+}
+
+/// An error when a type the converter gives for a parameter or a result of `signature`, the
+/// signature of `owner` converted to `converted`, is itself not legal under the converter.
+fn check_answers_are_legal(
+    context: &Context,
+    converter: &TypeConverter,
+    signature: &Signature,
+    converted: &ConvertedSignature,
+    owner: OperationRef,
+) -> Result<(), Report> {
+    let sides = [
+        ("parameter", signature.params(), converted.signature.params(), &converted.params),
+        (
+            "result",
+            signature.declared_results(),
+            converted.signature.declared_results(),
+            &converted.results,
+        ),
+    ];
+    for (what, old, new, ranges) in sides {
+        for (index, range) in ranges.iter().enumerate() {
+            let parts = new[range.start as usize..range.end as usize]
+                .iter()
+                .map(|param| param.ty)
+                .collect::<SmallVec<[Type; 2]>>();
+            check_answer_is_legal(context, converter, old[index].ty, &parts, || {
+                format!("{what} {index} of the signature of {}", describe_op(owner))
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// An error, naming the type and what it was the answer for (`what`), when one of `parts`, the
+/// types the converter gives for `old`, is not legal under the converter: it would be converted
+/// again, and the conversion would not end.
+fn check_answer_is_legal(
+    context: &Context,
+    converter: &TypeConverter,
+    old: Type,
+    parts: &[Type],
+    what: impl FnOnce() -> alloc::string::String,
+) -> Result<(), Report> {
+    let Some(illegal) = parts.iter().find(|ty| !converter.is_legal_type(context, **ty)) else {
+        return Ok(());
+    };
+    let answer = parts.iter().map(|ty| format!("{ty}")).collect::<Vec<_>>().join(", ");
+    Err(Report::msg(format!(
+        "the type converter answers ({answer}) for `{old}`, {}, but `{illegal}` is not legal \
+         under the converter: each type it gives must convert to itself",
+        what()
+    )))
 }
 
 /// An error, naming the function and the user, when `function`, whose signature the conversion
@@ -1040,6 +1100,7 @@ impl ConversionPattern for CallPattern {
             .get_signature()
             .clone();
         let converted = convert_signature(&context, &signature, &self.converter);
+        check_answers_are_legal(&context, &self.converter, &signature, &converted, op)?;
         if converted.signature == signature
             && operands_are_themselves(&op.borrow(), operands.iter())
         {
@@ -1096,6 +1157,7 @@ impl ConversionPattern for CallIndirectPattern {
             (call.get_signature().clone(), CopiedAttributes::of(&op_ref), op_ref.span())
         };
         let converted = convert_signature(&context, &signature, &self.converter);
+        check_answers_are_legal(&context, &self.converter, &signature, &converted, op)?;
         if converted.signature == signature
             && operands_are_themselves(&op.borrow(), operands.iter())
         {

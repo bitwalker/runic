@@ -1236,3 +1236,59 @@ fn a_conversion_rooted_at_the_world_converts_every_module() {
         world.borrow().recursively_verify().expect("the world verifies");
     }
 }
+
+/// `i128` becomes `(i128, i64)`: an answer that holds a type that is not itself legal.
+fn answer_that_is_not_legal(context: &Context) -> TypeConverter {
+    let (i64, i128) = (context.i64(), context.i128());
+    let mut converter = TypeConverter::new();
+    converter.add_conversion(move |_, ty| (ty == i128).then(|| TypeConversion::many([i128, i64])));
+    converter.with_function_types()
+}
+
+/// A converter whose answer for a type is not legal is an error that names the type and what it
+/// was the answer for: a parameter of a definition, a result of a declaration, a local, and a
+/// parameter of a call whose function is converted after it.
+#[test]
+fn an_answer_that_is_not_legal_is_an_error_that_says_so() {
+    let cases = [
+        (
+            "    builtin.function public extern(\"C\") @id(%a: i128) -> i128 {
+        builtin.ret %a : (i128);
+    };",
+            "parameter 0 of the signature of 'builtin.function' ::m::id",
+        ),
+        (
+            "    builtin.function public extern(\"C\") @far(i64) -> i128;",
+            "result 0 of the signature of 'builtin.function' ::m::far",
+        ),
+        (
+            "    builtin.function public extern(\"C\") @f() locals(i64, i128) {
+        builtin.ret;
+    };",
+            "local 1 of 'builtin.function' ::m::f",
+        ),
+        (
+            "    builtin.function public extern(\"C\") @user(%a: i64) {
+        %b = builtin.unrealized_conversion_cast %a : i64 to i128;
+        builtin.call @far(%b) : extern(\"C\") (i128);
+        builtin.ret;
+    };
+    builtin.function public extern(\"C\") @far(i128);",
+            "parameter 0 of the signature of 'builtin.call' in ::m::user",
+        ),
+    ];
+    for (body, what) in cases {
+        let (context, module) = parse_module(body);
+        let converter = answer_that_is_not_legal(&context);
+        let err =
+            convert_full(module, by_type_target(&context, &converter), &converter).expect_err(what);
+        let err = describe(&err);
+        assert!(
+            err.contains(&format!(
+                "the type converter answers (i128, i64) for `i128`, {what}, but `i128` is not \
+                 legal under the converter"
+            )),
+            "{err}"
+        );
+    }
+}
