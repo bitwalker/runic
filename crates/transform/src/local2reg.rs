@@ -716,7 +716,7 @@ mod tests {
             output,
             r#"
 // CHECK-LABEL: builtin.function public extern("C") @preserves_transformed_debug_value
-// CHECK-NEXT: builtin.store_local %0 <{ local = #builtin.local_variable<0, i32> }> : (i32);
+// CHECK-NEXT: builtin.store_local 0, %0;
 // CHECK-NEXT: di.debug_value %0 <{ variable = #di.variable<{ name = "x", file = "test.rs", line = 1 }>, expression = #di.expression<[DI_OP_local_slot(0), DW_OP_deref]> }> : (i32);
             "#
         );
@@ -777,9 +777,9 @@ mod tests {
             output,
             r#"
 // CHECK-LABEL: builtin.function public extern("C") @ignores_multiple_loads
-// CHECK-NEXT: builtin.store_local %1 <{ local = #builtin.local_variable<1, i32> }> : (i32);
-// CHECK-NEXT: [[V3:%\d+]] = builtin.load_local <{ local = #builtin.local_variable<1, i32> }>;
-// CHECK-NEXT: [[V4:%\d+]] = builtin.load_local <{ local = #builtin.local_variable<1, i32> }>;
+// CHECK-NEXT: builtin.store_local 1, %1;
+// CHECK-NEXT: [[V3:%\d+]] = builtin.load_local 1 : i32;
+// CHECK-NEXT: [[V4:%\d+]] = builtin.load_local 1 : i32;
 // CHECK-NEXT: [[V5:%\d+]] = arith.add %0, [[V3]];
 // CHECK-NEXT: [[V6:%\d+]] = arith.add [[V5]], [[V4]]
 // CHECK-NEXT: builtin.ret [[V6]] : (i32);
@@ -817,9 +817,9 @@ mod tests {
             output,
             r#"
 // CHECK-LABEL: builtin.function public extern("C") @ignores_multiple_stores
-// CHECK-NEXT: builtin.store_local %1 <{ local = #builtin.local_variable<1, i32> }> : (i32);
-// CHECK-NEXT: [[V3:%\d+]] = builtin.load_local <{ local = #builtin.local_variable<1, i32> }>;
-// CHECK-NEXT: builtin.store_local %1 <{ local = #builtin.local_variable<1, i32> }> : (i32);
+// CHECK-NEXT: builtin.store_local 1, %1;
+// CHECK-NEXT: [[V3:%\d+]] = builtin.load_local 1 : i32;
+// CHECK-NEXT: builtin.store_local 1, %1;
 // CHECK-NEXT: [[V4:%\d+]] = arith.add %0, [[V3]];
 // CHECK-NEXT: builtin.ret [[V4]] : (i32);
             "#
@@ -847,7 +847,7 @@ mod tests {
             output,
             r#"
 // CHECK-LABEL: builtin.function public extern("C") @ignores_poison_loads
-// CHECK-NEXT: [[V2:%\d+]] = builtin.load_local <{ local = #builtin.local_variable<0, i32> }>;
+// CHECK-NEXT: [[V2:%\d+]] = builtin.load_local 0 : i32;
 // CHECK-NEXT: [[V3:%\d+]] = arith.add %0, [[V2]];
 // CHECK-NEXT: builtin.ret [[V3]] : (i32);
             "#
@@ -880,9 +880,9 @@ mod tests {
             output,
             r#"
 // CHECK-LABEL: builtin.function public extern("C") @ignores_load_before_store
-// CHECK-NEXT: [[V1:%\d+]] = builtin.load_local <{ local = #builtin.local_variable<0, i32> }>;
+// CHECK-NEXT: [[V1:%\d+]] = builtin.load_local 0 : i32;
 // CHECK-NEXT: [[V2:%\d+]] = arith.add %0, %0;
-// CHECK-NEXT: builtin.store_local [[V2]] <{ local = #builtin.local_variable<0, i32> }> : (i32);
+// CHECK-NEXT: builtin.store_local 0, [[V2]];
 // CHECK-NEXT: [[V3:%\d+]] = arith.mul [[V1]], %0;
             "#
         );
@@ -914,10 +914,10 @@ mod tests {
             output,
             r#"
 // CHECK-LABEL: builtin.function public extern("C") @ignores_use_before_store
-// CHECK-NEXT: [[V1:%\d+]] = builtin.load_local <{ local = #builtin.local_variable<0, i32> }>;
+// CHECK-NEXT: [[V1:%\d+]] = builtin.load_local 0 : i32;
 // CHECK-NEXT: [[V2:%\d+]] = arith.mul [[V1]], %0;
 // CHECK-NEXT: [[V3:%\d+]] = arith.add %0, %0;
-// CHECK-NEXT: builtin.store_local [[V3]] <{ local = #builtin.local_variable<0, i32> }> : (i32);
+// CHECK-NEXT: builtin.store_local 0, [[V3]];
             "#
         );
     }
@@ -946,8 +946,8 @@ mod tests {
             output,
             r#"
 // CHECK-LABEL: builtin.function public extern("C") @ignores_self_store
-// CHECK-NEXT: [[V1:%\d+]] = builtin.load_local <{ local = #builtin.local_variable<0, i32> }>;
-// CHECK-NEXT: builtin.store_local [[V1]] <{ local = #builtin.local_variable<0, i32> }> : (i32);
+// CHECK-NEXT: [[V1:%\d+]] = builtin.load_local 0 : i32;
+// CHECK-NEXT: builtin.store_local 0, [[V1]];
 // CHECK-NEXT: [[V2:%\d+]] = arith.add [[V1]], %0;
 // CHECK-NEXT: builtin.ret [[V2]] : (i32);
             "#
@@ -984,10 +984,10 @@ mod tests {
             output,
             r#"
 // CHECK-LABEL: builtin.function public extern("C") @ignores_inter_block_candidates
-// CHECK-NEXT: builtin.store_local %0 <{ local = #builtin.local_variable<0, i32> }> : (i32);
+// CHECK-NEXT: builtin.store_local 0, %0;
 // CHECK-NEXT: cf.br ^block1;
 // CHECK-LABEL: ^block1:
-// CHECK-NEXT: [[V1:%\d+]] = builtin.load_local <{ local = #builtin.local_variable<0, i32> }>;
+// CHECK-NEXT: [[V1:%\d+]] = builtin.load_local 0 : i32;
 // CHECK-NEXT: [[V2:%\d+]] = arith.add %0, [[V1]];
 // CHECK-NEXT: builtin.ret [[V2]] : (i32);
             "#
@@ -1047,7 +1047,7 @@ mod tests {
             output,
             r#"
 // CHECK-LABEL: builtin.function public extern("C") @ignores_intervening_scf
-// CHECK-NEXT: builtin.store_local %0 <{ local = #builtin.local_variable<0, i32> }> : (i32);
+// CHECK-NEXT: builtin.store_local 0, %0;
 // CHECK-NEXT: [[V2:%\d+]] = scf.if %1 then {
 // CHECK-NEXT: [[V3:%\d+]] = arith.constant 1 : i32;
 // CHECK-NEXT: scf.yield [[V3]] : (i32);
@@ -1055,7 +1055,7 @@ mod tests {
 // CHECK-NEXT: [[V4:%\d+]] = arith.constant 2 : i32;
 // CHECK-NEXT: scf.yield [[V4]] : (i32);
 // CHECK-NEXT: } : (i1) -> (i32);
-// CHECK-NEXT: [[V5:%\d+]] = builtin.load_local <{ local = #builtin.local_variable<0, i32> }>;
+// CHECK-NEXT: [[V5:%\d+]] = builtin.load_local 0 : i32;
 // CHECK-NEXT: [[V6:%\d+]] = arith.add [[V5]], [[V2]];
 // CHECK-NEXT: builtin.ret [[V6]] : (i32);
             "#
@@ -1090,9 +1090,9 @@ mod tests {
         let body = |attributes: &str| {
             format!(
                 "{HEADER} @f(%0: i32) -> (i32, i32) locals(i32) {{
-    builtin.store_local %0 <{{ local = #builtin.local_variable<0, i32> }}> : (i32);
+    builtin.store_local 0, %0;
     %1 = test.effects <{{ known = #builtin.bool<false> }}>{attributes};
-    %2 = builtin.load_local <{{ local = #builtin.local_variable<0, i32> }}>;
+    %2 = builtin.load_local 0 : i32;
     builtin.ret %1, %2 : (i32, i32);
 }};"
             )
@@ -1122,7 +1122,7 @@ mod tests {
         let body = |touch: &str| {
             format!(
                 "{HEADER} @f(%0: i32) -> i32 locals(i32) {{
-    builtin.store_local %0 <{{ local = #builtin.local_variable<0, i32> }}> : (i32);{touch}
+    builtin.store_local 0, %0;{touch}
     builtin.ret %0 : (i32);
 }};"
             )
@@ -1150,8 +1150,8 @@ mod tests {
     }} else {{
         scf.yield : ();
     }} : (i1) -> ();
-    builtin.store_local %0 <{{ local = #builtin.local_variable<0, i32> }}> : (i32);
-    %2 = builtin.load_local <{{ local = #builtin.local_variable<0, i32> }}>;
+    builtin.store_local 0, %0;
+    %2 = builtin.load_local 0 : i32;
     builtin.ret %2 : (i32);
 }};"
             )
@@ -1173,11 +1173,11 @@ mod tests {
     fn a_parsed_operation_that_names_a_local_pins_only_that_local() {
         let source = format!(
             "{HEADER} @f(%0: i32) -> (i32, i32) locals(i32, i32) {{
-    builtin.store_local %0 <{{ local = #builtin.local_variable<0, i32> }}> : (i32);
-    builtin.store_local %0 <{{ local = #builtin.local_variable<1, i32> }}> : (i32);
+    builtin.store_local 0, %0;
+    builtin.store_local 1, %0;
     test.touch_local <{{ local = #builtin.local_variable<1, i32> }}>;
-    %1 = builtin.load_local <{{ local = #builtin.local_variable<0, i32> }}>;
-    %2 = builtin.load_local <{{ local = #builtin.local_variable<1, i32> }}>;
+    %1 = builtin.load_local 0 : i32;
+    %2 = builtin.load_local 1 : i32;
     builtin.ret %1, %2 : (i32, i32);
 }};"
         );
@@ -1187,9 +1187,9 @@ mod tests {
             output,
             r#"
 // CHECK-LABEL: builtin.function public extern("C") @f
-// CHECK-NEXT: builtin.store_local %0 <{ local = #builtin.local_variable<1, i32> }> : (i32);
+// CHECK-NEXT: builtin.store_local 1, %0;
 // CHECK-NEXT: test.touch_local <{ local = #builtin.local_variable<1, i32> }>;
-// CHECK-NEXT: [[V2:%\d+]] = builtin.load_local <{ local = #builtin.local_variable<1, i32> }>;
+// CHECK-NEXT: [[V2:%\d+]] = builtin.load_local 1 : i32;
 // CHECK-NEXT: builtin.ret %0, [[V2]] : (i32, i32);
             "#
         );
@@ -1231,9 +1231,9 @@ mod tests {
             built,
             r#"
 // CHECK-LABEL: builtin.function public extern("C") @f
-// CHECK-NEXT: builtin.store_local %1 <{ local = #builtin.local_variable<1, i32> }> : (i32);
-// CHECK-NEXT: [[B:%\d+]] = builtin.load_local <{ local = #builtin.local_variable<1, i32> }>;
-// CHECK-NEXT: [[C:%\d+]] = builtin.load_local <{ local = #builtin.local_variable<1, i32> }>;
+// CHECK-NEXT: builtin.store_local 1, %1;
+// CHECK-NEXT: [[B:%\d+]] = builtin.load_local 1 : i32;
+// CHECK-NEXT: [[C:%\d+]] = builtin.load_local 1 : i32;
 // CHECK-NEXT: [[E:%\d+]] = arith.add [[B]], [[C]];
 // CHECK-NEXT: [[F:%\d+]] = arith.add [[E]], %0;
 // CHECK-NEXT: builtin.ret [[F]] : (i32);

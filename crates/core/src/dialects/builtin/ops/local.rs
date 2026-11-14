@@ -1,11 +1,14 @@
 use alloc::{format, string::String};
 
 use crate::{
-    Context, Op, OpPrinter, Operation, Report, Spanned, Type, UnsafeIntrusiveEntityRef, Value,
-    derive::{EffectOpInterface, OpParser, OpPrinter, operation},
+    AsValueRange, Context, Op, OpParser, OpPrinter, Operation, OperationState, Report, Spanned,
+    Type, UnsafeIntrusiveEntityRef, Value,
+    derive::{EffectOpInterface, operation},
     diagnostics::report,
     dialects::builtin::{BuiltinDialect, Function, attributes::LocalVariableAttr},
     effects::{MemoryEffect, MemoryEffectOpInterface, Resource},
+    parse::{ParseResult, ParserExt},
+    print::AsmPrinter,
     traits::{AnyType, InferTypeOpInterface},
 };
 
@@ -27,8 +30,11 @@ impl Resource for LocalsResource {
     }
 }
 
-/// A read of a local variable of the enclosing function:
-/// `%v = builtin.load_local <{ local = #builtin.local_variable<0, i32> }>;`.
+/// A read of a local variable of the enclosing function: `%v = builtin.load_local 0 : i32;`.
+///
+/// The text gives the index of the local and its type, which is the type of the result. An
+/// `attributes {..}` dictionary may follow. The generic form states the local as an attribute:
+/// `<{ local = #builtin.local_variable<0, i32> }>`.
 ///
 /// The result has the local's type. A local is not memory: it has no address and needs no data
 /// layout, so it may hold a value of any type. The load reads `local` in [LocalsResource], and has
@@ -41,7 +47,7 @@ impl Resource for LocalsResource {
 ///
 /// Inside a function, the local is one of the function's `locals(..)`, of the type the function
 /// gives it.
-#[derive(EffectOpInterface, OpPrinter, OpParser)]
+#[derive(EffectOpInterface)]
 #[operation(
     dialect = BuiltinDialect,
     implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
@@ -54,6 +60,45 @@ pub struct LoadLocal {
     /// The value read
     #[result]
     result: AnyType,
+}
+
+impl OpPrinter for LoadLocal {
+    fn print(&self, printer: &mut AsmPrinter<'_>) {
+        use crate::formatter::const_text;
+
+        printer.print_space();
+        printer.print_decimal_integer(self.local().as_value().as_usize() as u16);
+        *printer += const_text(" : ");
+        printer.print_type(self.local().local_type());
+        print_attributes(printer, self.as_operation());
+    }
+}
+
+/// Reads `INDEX : type`, then an optional `attributes {..}`. The index is a decimal integer that
+/// fits a `u16`; the type is the local's type and the result's.
+impl OpParser for LoadLocal {
+    fn parse(state: &mut OperationState, parser: &mut dyn crate::OpAsmParser<'_>) -> ParseResult {
+        let index = parser.parse_decimal_integer::<u16>()?.into_inner();
+        let ty = parser.parse_colon_type()?.into_inner();
+        parser.parse_optional_attribute_dict_with_keyword(&mut state.attrs)?;
+
+        let local = LocalVariableAttr::create_unbound(&parser.context_rc(), index, ty);
+        state.add_attribute("local", local);
+        state.results.push(ty);
+        Ok(())
+    }
+}
+
+/// Prints the `attributes {..}` dictionary of `op`, if it has attributes.
+fn print_attributes(printer: &mut AsmPrinter<'_>, op: &Operation) {
+    if op.has_attributes() {
+        printer.print_space();
+        printer.print_keyword("attributes");
+        printer.print_space();
+        printer.print_attribute_dictionary(
+            op.attributes().iter().map(|attr| *attr.as_named_attribute()),
+        );
+    }
 }
 
 /// A result whose type is not yet known gets the local's type. A result that already has a type
@@ -102,15 +147,18 @@ impl crate::Verify<dyn MemoryEffectOpInterface> for LoadLocal {
     }
 }
 
-/// A write of `value` to a local variable of the enclosing function:
-/// `builtin.store_local %v <{ local = #builtin.local_variable<0, i32> }> : (i32);`.
+/// A write of `value` to a local variable of the enclosing function: `builtin.store_local 0, %v;`.
+///
+/// The text gives the index of the local and the value; the local's type is the value's type. An
+/// `attributes {..}` dictionary may follow. The generic form states the local as an attribute:
+/// `<{ local = #builtin.local_variable<0, i32> }>`.
 ///
 /// The value has the local's type. The store writes `local` in [LocalsResource], so it is never
 /// removed by a generic pass, and no read of a local moves or merges across it.
 ///
 /// Inside a function, the local is one of the function's `locals(..)`, of the type the function
 /// gives it.
-#[derive(EffectOpInterface, OpPrinter, OpParser)]
+#[derive(EffectOpInterface)]
 #[operation(
     dialect = BuiltinDialect,
     implements(MemoryEffectOpInterface, OpPrinter)
@@ -123,6 +171,37 @@ pub struct StoreLocal {
     /// The value written
     #[operand]
     value: AnyType,
+}
+
+impl OpPrinter for StoreLocal {
+    fn print(&self, printer: &mut AsmPrinter<'_>) {
+        use crate::formatter::const_text;
+
+        printer.print_space();
+        printer.print_decimal_integer(self.local().as_value().as_usize() as u16);
+        *printer += const_text(", ");
+        printer.print_value_uses(self.as_operation().operands().group(0).as_value_range());
+        print_attributes(printer, self.as_operation());
+    }
+}
+
+/// Reads `INDEX, %value`, then an optional `attributes {..}`. The index is a decimal integer that
+/// fits a `u16`; the local's type is the value's.
+impl OpParser for StoreLocal {
+    fn parse(state: &mut OperationState, parser: &mut dyn crate::OpAsmParser<'_>) -> ParseResult {
+        let index = parser.parse_decimal_integer::<u16>()?.into_inner();
+        parser.parse_comma()?;
+        let value = parser.parse_operand(/*allow_result_number=*/ true)?;
+        parser.parse_optional_attribute_dict_with_keyword(&mut state.attrs)?;
+
+        let unknown = parser.context().unknown_type();
+        let value = parser.resolve_operand(value, unknown)?;
+        let ty = value.borrow().ty();
+        let local = LocalVariableAttr::create_unbound(&parser.context_rc(), index, ty);
+        state.add_attribute("local", local);
+        state.add_operand(value);
+        Ok(())
+    }
 }
 
 /// The local is one of the enclosing function's, and the value has its type.
@@ -237,6 +316,29 @@ mod tests {
         text.split_whitespace().collect::<Vec<_>>().join(" ")
     }
 
+    /// Parses `source` (a function), which must not parse: the text each label of the error covers.
+    fn error_spans(source: &str) -> Vec<alloc::string::String> {
+        use crate::diagnostics::{Diagnostic, Label, VisitDiagnostic};
+
+        struct Spans<'a>(&'a str, Vec<alloc::string::String>);
+        impl VisitDiagnostic for Spans<'_> {
+            fn label(&mut self, label: Label<'_>) {
+                let range = label.span.range().into_slice_index();
+                self.1.push(self.0.get(range).unwrap_or("<out of range>").into());
+            }
+        }
+
+        let context = Rc::new(Context::default());
+        let config = ParserConfig::new(context);
+        let Err(report) = parse::parse::<Function>(config, "locals", source).into_result() else {
+            return Vec::new();
+        };
+        let mut spans = Spans(source, Vec::new());
+        let diagnostic: &dyn Diagnostic = report.as_diagnostic();
+        diagnostic.visit(&mut spans);
+        spans.1
+    }
+
     /// A function built with a local of type `i32`, stored from its argument and loaded back.
     fn built() -> (Test, LocalVariable, UnsafeIntrusiveEntityRef<StoreLocal>, ValueRef) {
         let mut test = Test::new("locals", |cx| ([cx.i32()], [cx.i32()]));
@@ -264,8 +366,8 @@ mod tests {
         let printed = function.borrow().as_operation().to_string();
         let expected = alloc::format!(
             "{HEADER} @locals(%0: i32) -> i32 locals(i32) {{
-    builtin.store_local %0 <{{ local = #builtin.local_variable<0, i32> }}> : (i32);
-    %1 = builtin.load_local <{{ local = #builtin.local_variable<0, i32> }}>;
+    builtin.store_local 0, %0;
+    %1 = builtin.load_local 0 : i32;
     builtin.ret %1 : (i32);
 }};"
         );
@@ -293,9 +395,8 @@ mod tests {
     fn a_local_may_hold_a_function_value() {
         let source = alloc::format!(
             "{HEADER} @f(%0: (i32) -> i32) -> ((i32) -> i32) locals((i32) -> i32) {{
-    builtin.store_local %0 <{{ local = #builtin.local_variable<0, (i32) -> i32> }}> : ((i32) -> \
-             i32);
-    %1 = builtin.load_local <{{ local = #builtin.local_variable<0, (i32) -> i32> }}>;
+    builtin.store_local 0, %0;
+    %1 = builtin.load_local 0 : (i32) -> i32;
     builtin.ret %1 : ((i32) -> i32);
 }};"
         );
@@ -348,33 +449,29 @@ mod tests {
     /// value read or written has that type.
     #[test]
     fn a_local_that_is_not_the_functions_does_not_verify() {
-        let load = |local: &str| {
-            alloc::format!(
-                "    %1 = builtin.load_local <{{ local = #builtin.local_variable<{local}> }}>;"
-            )
-        };
+        let load = |local: &str| alloc::format!("    %1 = builtin.load_local {local};");
         for (locals, body, reason) in [
             (
                 " locals(i32)",
-                load("1, i32"),
+                load("1 : i32"),
                 "this names local 1, but the function has 1 local(s)",
             ),
-            ("", load("0, i32"), "this names local 0, but the function has 0 local(s)"),
+            ("", load("0 : i32"), "this names local 0, but the function has 0 local(s)"),
             (
                 " locals(i32)",
-                load("0, i64"),
+                load("0 : i64"),
                 "this states that local 0 has type `i64`, but the function gives it type `i32`",
             ),
             (
                 " locals(i32)",
-                "    builtin.store_local %0 <{ local = #builtin.local_variable<0, i32> }> : (i64);"
+                "    \"builtin.store_local\"(%0) <{ local = #builtin.local_variable<0, i32> }> : \
+                 (i64) -> ();"
                     .to_string(),
                 "the value has type `i64`, but local 0 has type `i32`",
             ),
             (
                 " locals(i32)",
-                "    builtin.store_local %0 <{ local = #builtin.local_variable<0, i64> }> : (i64);"
-                    .to_string(),
+                "    builtin.store_local 0, %0;".to_string(),
                 "this states that local 0 has type `i64`, but the function gives it type `i32`",
             ),
         ] {
@@ -409,7 +506,7 @@ mod tests {
                 "builtin.module public @m {{
     builtin.global_variable public @g : i32 {{
         %0 = test.constant 0 : {ty};
-        builtin.store_local %0 <{{ local = #builtin.local_variable<0, i32> }}> : ({ty});
+        \"builtin.store_local\"(%0) <{{ local = #builtin.local_variable<0, i32> }}> : ({ty}) -> ();
     }};
 }};"
             )
@@ -470,5 +567,86 @@ mod tests {
             ),
             "{labels}"
         );
+    }
+
+    /// Both operations print the index first and, for a load, the local's type, for a local built
+    /// through the function (bound) and one parsed from text (unbound) alike.
+    #[test]
+    fn the_short_form_round_trips_for_a_bound_and_an_unbound_local() {
+        let (test, _local, _store, _loaded) = built();
+        let function = test.function();
+        let printed = function.borrow().as_operation().to_string();
+        assert!(printed.contains("    builtin.store_local 0, %0;\n"), "{printed}");
+        assert!(printed.contains("    %1 = builtin.load_local 0 : i32;\n"), "{printed}");
+
+        let (_context, parsed) = parse_text::<Function>(&printed).expect("the text parses");
+        let parsed = parsed.borrow();
+        for op in parsed.entry_block().borrow().body().iter() {
+            if let Some(load) = op.downcast_ref::<LoadLocal>() {
+                assert!(!load.get_local().is_bound());
+            }
+            if let Some(store) = op.downcast_ref::<StoreLocal>() {
+                assert!(!store.get_local().is_bound());
+                assert_eq!(store.local().local_type(), store.value().ty());
+            }
+        }
+        assert_eq!(parsed.as_operation().to_string(), printed);
+    }
+
+    /// An attribute dictionary follows the short form, as it follows `builtin.call`.
+    #[test]
+    fn the_short_form_takes_an_attribute_dictionary() {
+        let source = alloc::format!(
+            "{HEADER} @f(%0: i32) locals(i32) {{
+    builtin.store_local 0, %0 attributes {{ note = #builtin.i32<1> }};
+    %1 = builtin.load_local 0 : i32 attributes {{ note = #builtin.i32<2> }};
+    builtin.ret;
+}};"
+        );
+        let (_context, function) = parse_text::<Function>(&source).expect("the text parses");
+        assert_eq!(function.borrow().as_operation().to_string(), source);
+    }
+
+    /// The generic form of both operations states the local as an attribute; it parses to the same
+    /// operations as the short form, and the same attribute.
+    #[test]
+    fn the_generic_form_parses_to_the_short_form() {
+        let generic = alloc::format!(
+            "{HEADER} @f(%0: i32) locals(i32) {{
+    \"builtin.store_local\"(%0) <{{ local = #builtin.local_variable<0, i32> }}> : (i32) -> ();
+    %1 = \"builtin.load_local\"() <{{ local = #builtin.local_variable<0, i32> }}> : () -> i32;
+    builtin.ret;
+}};"
+        );
+        let short = alloc::format!(
+            "{HEADER} @f(%0: i32) locals(i32) {{
+    builtin.store_local 0, %0;
+    %1 = builtin.load_local 0 : i32;
+    builtin.ret;
+}};"
+        );
+        let (_context, function) = parse_text::<Function>(&generic).expect("the text parses");
+        assert_eq!(function.borrow().as_operation().to_string(), short);
+    }
+
+    /// Text that is not `load_local INDEX : TYPE` or `store_local INDEX, VALUE` is a diagnostic: a
+    /// missing, negative or too large index, a missing type or value.
+    #[test]
+    fn malformed_short_forms_are_diagnostics() {
+        for (body, token) in [
+            ("%1 = builtin.load_local : i32;", ":"),
+            ("%1 = builtin.load_local 70000 : i32;", "70000"),
+            ("%1 = builtin.load_local -1 : i32;", "-"),
+            ("%1 = builtin.load_local 0;", ""),
+            ("builtin.store_local 0;", ""),
+            ("builtin.store_local %0;", "0"),
+        ] {
+            let source = alloc::format!(
+                "{HEADER} @f(%0: i32) locals(i32) {{\n    {body}\n    builtin.ret;\n}};"
+            );
+            let spans = error_spans(&source);
+            assert!(!spans.is_empty(), "`{body}` does not parse");
+            assert!(spans.iter().any(|span| span == token), "{body}\n{spans:?}");
+        }
     }
 }

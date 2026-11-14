@@ -76,13 +76,13 @@ impl Gen<'_> {
             let choice = self.rng.below(100);
             let kind = match choice {
                 0..=29 => {
-                    out.push(format!("{pad}builtin.store_local {v} {} : (i32);", local(k)));
+                    out.push(format!("{pad}builtin.store_local {k}, {v};"));
                     self.uses.stores.entry(k).or_default().push((path.to_string(), pos));
                     Kind::Plain
                 }
                 30..=59 => {
                     let r = self.fresh();
-                    out.push(format!("{pad}{r} = builtin.load_local {};", local(k)));
+                    out.push(format!("{pad}{r} = builtin.load_local {k} : i32;"));
                     self.uses.loads.entry(k).or_default().push((path.to_string(), pos));
                     ints.push(r);
                     Kind::Plain
@@ -117,7 +117,7 @@ impl Gen<'_> {
                 }
                 84..=86 => {
                     // a store, sometimes something between, then a load of the same local
-                    out.push(format!("{pad}builtin.store_local {v} {} : (i32);", local(k)));
+                    out.push(format!("{pad}builtin.store_local {k}, {v};"));
                     self.uses.stores.entry(k).or_default().push((path.to_string(), pos));
                     kinds.push(Kind::Plain);
                     match self.rng.below(4) {
@@ -135,7 +135,7 @@ impl Gen<'_> {
                         _ => (),
                     }
                     let r = self.fresh();
-                    out.push(format!("{pad}{r} = builtin.load_local {};", local(k)));
+                    out.push(format!("{pad}{r} = builtin.load_local {k} : i32;"));
                     self.uses.loads.entry(k).or_default().push((path.to_string(), kinds.len()));
                     ints.push(r);
                     Kind::Plain
@@ -283,8 +283,10 @@ impl Program {
 }
 
 fn count(text: &str, op: &str, k: u64) -> usize {
-    let needle = format!("local_variable<{k}, i32>");
-    text.lines().filter(|line| line.contains(op) && line.contains(&needle)).count()
+    let (load, store) = (format!("{op} {k} :"), format!("{op} {k},"));
+    text.lines()
+        .filter(|line| line.contains(&load) || line.contains(&store))
+        .count()
 }
 
 /// `Local2Reg` on 2000 random functions: each local meets the fate the rule gives it, the result

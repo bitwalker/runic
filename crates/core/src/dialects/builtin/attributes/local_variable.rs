@@ -102,6 +102,26 @@ impl LocalVariableAttr {
     }
 }
 
+impl LocalVariableAttr {
+    /// Creates the attribute of an unbound local with index `index` and type `ty`: what the
+    /// attribute's own text form (`#builtin.local_variable<0, i32>`) and the short form of
+    /// `builtin.load_local` and `builtin.store_local` (`0 : i32`) parse to.
+    pub(in crate::dialects::builtin) fn create_unbound(
+        context: &alloc::rc::Rc<crate::Context>,
+        index: u16,
+        ty: Type,
+    ) -> crate::AttributeRef {
+        context.create_attribute_with_type::<LocalVariableAttr, _>(
+            LocalVariable {
+                index,
+                function: FunctionRef::dangling(),
+                is_uninit: true,
+            },
+            ty,
+        )
+    }
+}
+
 impl AttrPrinter for LocalVariableAttr {
     fn print(&self, printer: &mut crate::print::AsmPrinter<'_>) {
         use crate::formatter::*;
@@ -120,15 +140,6 @@ impl AttrParser for LocalVariableAttr {
         parser.parse_comma()?;
         let ty = parser.parse_type()?.into_inner();
 
-        let attr = parser.context_rc().create_attribute_with_type::<LocalVariableAttr, _>(
-            LocalVariable {
-                index,
-                function: FunctionRef::dangling(),
-                is_uninit: true,
-            },
-            ty,
-        );
-
-        Ok(attr)
+        Ok(LocalVariableAttr::create_unbound(&parser.context_rc(), index, ty))
     }
 }

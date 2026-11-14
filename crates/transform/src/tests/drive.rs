@@ -49,10 +49,7 @@ fn module(body: &str) -> String {
     )
 }
 
-const L0: &str = "<{ local = #builtin.local_variable<0, i32> }>";
-const L1: &str = "<{ local = #builtin.local_variable<1, i32> }>";
-
-/// The fixtures: (name, body). `{L0}` and `{L1}` are replaced by the two locals.
+/// The fixtures: (name, body).
 const FIXTURES: [(&str, &str); 12] = [
     (
         "every operation, unused",
@@ -66,12 +63,12 @@ const FIXTURES: [(&str, &str); 12] = [
     %x7 = mem.ptrtoint %p;
     %x8 = mem.inttoptr %n : ptr<i32>;
     %x9 = mem.ptrcast %p : ptr<i8>;
-    %x10 = builtin.load_local {L0};
+    %x10 = builtin.load_local 0 : i32;
     mem.store %a, %p;
     mem.memcpy %p, %q, %n;
     mem.memmove %p, %q, %n;
     mem.memset %p, %z, %n;
-    builtin.store_local %a {L1} : (i32);
+    builtin.store_local 1, %a;
     cf.assert %c, "one";
     builtin.ret %a : (i32);"#,
     ),
@@ -92,10 +89,10 @@ const FIXTURES: [(&str, &str); 12] = [
     mem.memmove %p, %q, %n;
     mem.memset %p, %z, %n;
     mem.memset %p, %z, %n;
-    %x3 = builtin.load_local {L0};
-    %y3 = builtin.load_local {L0};
-    builtin.store_local %x3 {L0} : (i32);
-    builtin.store_local %y3 {L0} : (i32);
+    %x3 = builtin.load_local 0 : i32;
+    %y3 = builtin.load_local 0 : i32;
+    builtin.store_local 0, %x3;
+    builtin.store_local 0, %y3;
     cf.assert %c, "one";
     cf.assert %c, "one";
     %s1 = arith.add %x1, %y1;
@@ -119,9 +116,9 @@ const FIXTURES: [(&str, &str); 12] = [
         "a load defined before a store and used only in a region after it",
         r#"
     %x = mem.load %p;
-    %l = builtin.load_local {L0};
+    %l = builtin.load_local 0 : i32;
     mem.store %a, %p;
-    builtin.store_local %b {L0} : (i32);
+    builtin.store_local 0, %b;
     %r = scf.if %c then {
         %s = arith.add %x, %l;
         scf.yield %s : (i32);
@@ -158,16 +155,16 @@ const FIXTURES: [(&str, &str); 12] = [
         "loads around an if that stores",
         r#"
     %x = mem.load %p;
-    %l = builtin.load_local {L0};
+    %l = builtin.load_local 0 : i32;
     scf.if %c then {
         mem.store %a, %q;
-        builtin.store_local %a {L0} : (i32);
+        builtin.store_local 0, %a;
         scf.yield : ();
     } else {
         scf.yield : ();
     } : (i1) -> ();
     %y = mem.load %p;
-    %m = builtin.load_local {L0};
+    %m = builtin.load_local 0 : i32;
     %s = arith.add %x, %y;
     %t = arith.add %l, %m;
     %u = arith.add %s, %t;
@@ -205,8 +202,8 @@ const FIXTURES: [(&str, &str); 12] = [
         %y = mem.load %p;
         mem.memmove %q, %p, %n;
         cf.assert %c, "body";
-        %l = builtin.load_local {L0};
-        builtin.store_local %y {L0} : (i32);
+        %l = builtin.load_local 0 : i32;
+        builtin.store_local 0, %y;
         %one = arith.constant 1 : i32;
         %next = arith.add %j, %one;
         scf.yield %next : (i32);
@@ -225,16 +222,16 @@ const FIXTURES: [(&str, &str); 12] = [
     %xt = mem.load %p;
     mem.store %b, %p;
     cf.assert %d, "then";
-    builtin.store_local %xt {L0} : (i32);
+    builtin.store_local 0, %xt;
     cf.br ^m(%xt : i32);
 ^f:
     %xf = mem.load %p;
     mem.memset %p, %z, %n;
-    builtin.store_local %xf {L0} : (i32);
+    builtin.store_local 0, %xf;
     cf.br ^m(%xf : i32);
 ^m(%r: i32):
     %xm = mem.load %p;
-    %l = builtin.load_local {L0};
+    %l = builtin.load_local 0 : i32;
     %s = arith.add %r, %xm;
     %t = arith.add %s, %x;
     %u = arith.add %t, %l;
@@ -260,13 +257,13 @@ const FIXTURES: [(&str, &str); 12] = [
         "calls between loads",
         r#"
     %x = mem.load %p;
-    %l = builtin.load_local {L0};
+    %l = builtin.load_local 0 : i32;
     %k = builtin.call @pure(%a) : extern("C") (i32) -> i32;
     %y = mem.load %p;
-    %m = builtin.load_local {L0};
+    %m = builtin.load_local 0 : i32;
     %u = builtin.call @unknown(%a) : extern("C") (i32) -> i32;
     %w = mem.load %p;
-    %o = builtin.load_local {L0};
+    %o = builtin.load_local 0 : i32;
     %ra = builtin.call @reads_any(%a) : extern("C") (i32) -> i32;
     mem.store %a, %q;
     %rb = builtin.call @reads_any(%a) : extern("C") (i32) -> i32;
@@ -291,9 +288,9 @@ const FIXTURES: [(&str, &str); 12] = [
     %x = mem.load %p2;
     mem.store %a, %c2;
     %y = mem.load %p;
-    builtin.store_local %y {L0} : (i32);
-    %l = builtin.load_local {L0};
-    builtin.store_local %x {L1} : (i32);
+    builtin.store_local 0, %y;
+    %l = builtin.load_local 0 : i32;
+    builtin.store_local 1, %x;
     %s = arith.add %x, %l;
     builtin.ret %s : (i32);"#,
     ),
@@ -326,9 +323,8 @@ fn every_pass_keeps_every_effectful_operation_in_every_position() {
     let mut failures = Vec::new();
     let mut interpreted = 0;
     for (fixture, body) in FIXTURES {
-        let body = body.replace("{L0}", L0).replace("{L1}", L1);
         for (pass, make) in PASSES {
-            let (before, after) = match run_passes(&module(&body), alloc::vec![make()]) {
+            let (before, after) = match run_passes(&module(body), alloc::vec![make()]) {
                 Ok(texts) => texts,
                 Err(err) => {
                     failures.push(format!("{pass} on '{fixture}' failed: {err}"));
@@ -396,7 +392,6 @@ fn every_pass_keeps_every_effectful_operation_in_every_position() {
 fn the_whole_pipeline_keeps_every_effectful_operation() {
     let mut rng = Rng(super::seed(0x919e));
     for (fixture, body) in FIXTURES {
-        let body = body.replace("{L0}", L0).replace("{L1}", L1);
         let mut passes = Vec::new();
         for _ in 0..2 {
             for (pass, make) in PASSES {
@@ -406,7 +401,7 @@ fn the_whole_pipeline_keeps_every_effectful_operation() {
             }
         }
         let (before, after) =
-            run_passes(&module(&body), passes).unwrap_or_else(|err| panic!("'{fixture}': {err}"));
+            run_passes(&module(body), passes).unwrap_or_else(|err| panic!("'{fixture}': {err}"));
         let mut expected = kept_operations(&before, "");
         let mut actual = kept_operations(&after, "");
         if fixture == "bulk operations of constant lengths" {
@@ -444,7 +439,7 @@ fn cse_merges_loads_across_an_if_that_asserts_but_not_one_that_stores() {
     };
     let body = |name: &str| {
         let (_, body) = FIXTURES.iter().find(|(fixture, _)| *fixture == name).unwrap();
-        module(&body.replace("{L0}", L0).replace("{L1}", L1))
+        module(body)
     };
     let (_, after) = run_passes(&body("loads around an if that stores"), cse()).unwrap();
     assert_eq!(after.matches("mem.load").count(), 2, "{after}");

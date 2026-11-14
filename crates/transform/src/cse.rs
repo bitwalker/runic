@@ -1580,21 +1580,21 @@ cf.assert %c, "between";"#;
         let text = cse_in_module_with_locals(
             "i32",
             r#"
-    %1 = builtin.load_local <{ local = #builtin.local_variable<0, i32> }>;
+    %1 = builtin.load_local 0 : i32;
     mem.store %v, %p;
-    %2 = builtin.load_local <{ local = #builtin.local_variable<0, i32> }>;
+    %2 = builtin.load_local 0 : i32;
     builtin.ret %1, %2 : (i32, i32);"#,
         )?;
         filecheck!(
             text,
             r#"
-// CHECK: [[V:%\d+]] = builtin.load_local <{ local = #builtin.local_variable<0, i32> }>;
+// CHECK: [[V:%\d+]] = builtin.load_local 0 : i32;
 // CHECK-NEXT: mem.store %1, %0;
 // CHECK-NEXT: builtin.ret [[V]], [[V]] : (i32, i32);
             "#
         );
 
-        let store = "builtin.store_local %v <{ local = #builtin.local_variable<0, i32> }> : (i32);";
+        let store = "builtin.store_local 0, %v;";
         let text = cse_in_module_with_locals(
             "i32",
             &format!(
@@ -1625,9 +1625,9 @@ cf.assert %c, "between";"#;
                 "i32, i32",
                 &format!(
                     r#"
-    %1 = builtin.load_local <{{ local = #builtin.local_variable<0, i32> }}>;
-    builtin.store_local %v <{{ local = #builtin.local_variable<{stored}, i32> }}> : (i32);
-    %2 = builtin.load_local <{{ local = #builtin.local_variable<0, i32> }}>;
+    %1 = builtin.load_local 0 : i32;
+    builtin.store_local {stored}, %v;
+    %2 = builtin.load_local 0 : i32;
     builtin.ret %1, %2 : (i32, i32);"#
                 ),
             )?;

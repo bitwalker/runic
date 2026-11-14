@@ -82,10 +82,6 @@ pub struct Program {
 
 const PARAMS: &str = "%p0: ptr<i32>, %p1: ptr<i32>, %q: ptr, %v0: i32, %v1: i32, %n: isize, %b: i8";
 
-fn local(k: u64) -> String {
-    format!("<{{ local = #builtin.local_variable<{k}, i32> }}>")
-}
-
 pub fn generate(rng: &mut Rng, len: usize) -> Program {
     generate_returning(rng, len, 1)
 }
@@ -185,7 +181,7 @@ pub fn generate_returning(rng: &mut Rng, len: usize, one_in: u64) -> Program {
                 }
             }
             9..=11 => GenOp {
-                text: format!("{r} = builtin.load_local {};", local(k)),
+                text: format!("{r} = builtin.load_local {k} : i32;"),
                 result: Some((r, "i32")),
                 key: format!("load_local{k}"),
                 operands: alloc::vec![],
@@ -193,7 +189,7 @@ pub fn generate_returning(rng: &mut Rng, len: usize, one_in: u64) -> Program {
                 class: Class::Read(Res::Locals),
             },
             12 => GenOp {
-                text: format!("builtin.store_local {v} {} : (i32);", local(k)),
+                text: format!("builtin.store_local {k}, {v};"),
                 result: None,
                 key: "store_local".into(),
                 operands: alloc::vec![v],

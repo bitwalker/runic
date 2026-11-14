@@ -46,8 +46,8 @@ const LINES: &[&str] = &[
     "%x = mem.inttoptr %n : ptr<i32>;",
     "%x = mem.ptrcast %p : ptr<i8>;",
     "%x = mem.ptrcast %r : ptr<i64, 1>;",
-    "%x = builtin.load_local <{ local = #builtin.local_variable<0, i32> }>;",
-    "builtin.store_local %v <{ local = #builtin.local_variable<0, i32> }> : (i32);",
+    "%x = builtin.load_local 0 : i32;",
+    "builtin.store_local 0, %v;",
     "%x = builtin.global_symbol @g : ptr<struct<i32, i8>>;",
     "%x = builtin.bytes \"0201\" : array<i8; 2>;",
     "%x = \"mem.load\"(%p) <{ ty = #builtin.type<?>, align = #mem.align<natural> }> : ptr<i32> -> \

@@ -277,10 +277,17 @@ impl Machine {
         values(text).iter().map(|v| self.get(v)).collect()
     }
 
+    /// The index of the local an operation names: `test.touch_local` states it as an attribute,
+    /// `builtin.load_local` and `builtin.store_local` as their first token (`0 : i32`, `0, %v`).
     fn local_index(text: &str) -> u64 {
-        let at = text.find("local_variable<").expect("a local") + "local_variable<".len();
-        let end = at + text[at..].find(',').unwrap();
-        text[at..end].trim().parse().unwrap()
+        if let Some(at) = text.find("local_variable<") {
+            let at = at + "local_variable<".len();
+            let end = at + text[at..].find(',').unwrap();
+            return text[at..end].trim().parse().unwrap();
+        }
+        let text = text.trim_start();
+        let end = text.find(|c: char| !c.is_ascii_digit()).unwrap_or(text.len());
+        text[..end].parse().expect("a local index")
     }
 
     fn exec_nodes(&mut self, nodes: &[Node]) -> Result<Flow, String> {
@@ -417,7 +424,7 @@ impl Machine {
             }
             "builtin.store_local" => {
                 let k = Self::local_index(text);
-                let a = self.args(text.split("<{").next().unwrap())?;
+                let a = self.args(text)?;
                 self.locals.insert(k, a[0]);
             }
             "builtin.call" => {
