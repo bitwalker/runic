@@ -756,6 +756,42 @@ builtin.function public extern("C") @simple_constant() -> (i32, i32) {
         );
     }
 
+    /// Two loads of one local, one naming the local the function allocated and one a local made
+    /// with `LocalVariable::new` of the same index and type, are the same operation: CSE merges
+    /// them.
+    #[test]
+    fn cse_merges_loads_of_a_local_however_the_local_was_made() {
+        use runic_core::dialects::builtin::attributes::LocalVariable;
+
+        let mut test = Test::new("loads_of_a_local", |cx| ([cx.i32()], [cx.i32(), cx.i32()]));
+        let i32 = test.context().i32();
+        {
+            let mut builder = test.function_builder();
+            let allocated = builder.alloc_local(i32);
+            let made = LocalVariable::new(0, i32);
+            let argument = builder.entry_block().borrow().arguments()[0] as ValueRef;
+            builder.store_local(allocated, argument, SourceSpan::UNKNOWN).unwrap();
+            let first = builder.load_local(allocated, SourceSpan::UNKNOWN).unwrap();
+            let second = builder.load_local(made, SourceSpan::UNKNOWN).unwrap();
+            builder.ret([first, second], SourceSpan::UNKNOWN).unwrap();
+        }
+
+        test.apply_pass::<CommonSubexpressionElimination>(true).expect("invalid ir");
+
+        let flags = Default::default();
+        let mut printer = AsmPrinter::root(test.context_rc(), &flags);
+        printer.print_operation(test.function().borrow());
+        let output = format!("{}", printer.finish());
+        filecheck!(
+            output,
+            r#"
+// CHECK: builtin.store_local 0, %0;
+// CHECK-NEXT: [[LOAD:%\d+]] = builtin.load_local 0 : i32;
+// CHECK-NEXT: builtin.ret [[LOAD]], [[LOAD]] : (i32, i32);
+            "#
+        );
+    }
+
     #[test]
     fn cse_eliminates_redundant_memory_reads_in_ssa_region() {
         use runic_core::dialects::test::TestOpBuilder;

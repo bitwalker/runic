@@ -1,11 +1,14 @@
-use alloc::{format, string::String};
+use alloc::format;
 
 use crate::{
     AsValueRange, Context, Op, OpParser, OpPrinter, Operation, OperationState, Report, Spanned,
     Type, UnsafeIntrusiveEntityRef, Value,
     derive::{EffectOpInterface, operation},
     diagnostics::report,
-    dialects::builtin::{BuiltinDialect, Function, attributes::LocalVariableAttr},
+    dialects::builtin::{
+        BuiltinDialect,
+        attributes::{LocalVariable, LocalVariableAttr},
+    },
     effects::{MemoryEffect, MemoryEffectOpInterface, Resource},
     parse::{ParseResult, ParserExt},
     print::AsmPrinter,
@@ -66,27 +69,39 @@ impl OpPrinter for LoadLocal {
     fn print(&self, printer: &mut AsmPrinter<'_>) {
         use crate::formatter::const_text;
 
+        let local = *self.get_local();
         printer.print_space();
-        printer.print_decimal_integer(self.local().as_value().as_usize() as u16);
+        printer.print_decimal_integer(local.index());
         *printer += const_text(" : ");
-        printer.print_type(self.local().local_type());
+        printer.print_type(local.ty());
         print_attributes(printer, self.as_operation());
     }
 }
 
 /// Reads `INDEX : type`, then an optional `attributes {..}`. The index is a decimal integer that
-/// fits a `u16`; the type is the local's type and the result's.
+/// fits a `u32`; the type is the local's type and the result's.
 impl OpParser for LoadLocal {
     fn parse(state: &mut OperationState, parser: &mut dyn crate::OpAsmParser<'_>) -> ParseResult {
-        let index = parser.parse_decimal_integer::<u16>()?.into_inner();
+        let index = parser.parse_decimal_integer::<u32>()?.into_inner();
         let ty = parser.parse_colon_type()?.into_inner();
         parser.parse_optional_attribute_dict_with_keyword(&mut state.attrs)?;
 
-        let local = LocalVariableAttr::create_unbound(&parser.context_rc(), index, ty);
+        let local = local_attribute(parser, LocalVariable::new(index, ty));
         state.add_attribute("local", local);
         state.results.push(ty);
         Ok(())
     }
+}
+
+/// The attribute of `local`.
+fn local_attribute(
+    parser: &mut dyn crate::OpAsmParser<'_>,
+    local: LocalVariable,
+) -> crate::AttributeRef {
+    parser
+        .context_rc()
+        .create_attribute::<LocalVariableAttr, _>(local)
+        .as_attribute_ref()
 }
 
 /// Prints the `attributes {..}` dictionary of `op`, if it has attributes.
@@ -102,48 +117,25 @@ fn print_attributes(printer: &mut AsmPrinter<'_>, op: &Operation) {
 }
 
 /// A result whose type is not yet known gets the local's type. A result that already has a type
-/// keeps it, and the verifier checks it. A local bound to a function that has no local of its
-/// index is an error.
+/// keeps it, and the verifier checks it.
 impl InferTypeOpInterface for LoadLocal {
     fn infer_return_types(&mut self, _context: &Context) -> Result<(), Report> {
         if !self.result().ty().is_unknown() {
             return Ok(());
         }
-        let local = self.local();
-        let ty = if local.as_value().is_bound() {
-            let index = local.as_value().as_usize();
-            let function = local.as_value().function();
-            let function = function.borrow();
-            let locals = function.get_locals();
-            match locals.iter().nth(index) {
-                Some(ty) => *ty,
-                None => {
-                    return Err(report!(
-                        message: "invalid operation builtin.load_local",
-                        labels: [primary(
-                            self.span(),
-                            format!(
-                                "this names local {index}, but its function has {} local(s)",
-                                locals.len()
-                            )
-                        )],
-                    ));
-                }
-            }
-        } else {
-            local.local_type()
-        };
-        drop(local);
+        let ty = self.get_local().ty();
         self.result_mut().set_type(ty);
         Ok(())
     }
 }
 
-/// The local is one of the enclosing function's, and the result has its type.
+/// The result has the local's type. That the local is one of the enclosing function's, of the
+/// type the function gives it, is checked by the function's verifier
+/// ([Function](crate::dialects::builtin::Function)).
 impl crate::Verify<dyn MemoryEffectOpInterface> for LoadLocal {
     fn verify(&self, _context: &Context) -> Result<(), Report> {
         let ty = self.result().ty();
-        verify_local(self.as_operation(), &self.local(), ty, "the result")
+        verify_local(self.as_operation(), *self.get_local(), ty, "the result")
     }
 }
 
@@ -178,7 +170,7 @@ impl OpPrinter for StoreLocal {
         use crate::formatter::const_text;
 
         printer.print_space();
-        printer.print_decimal_integer(self.local().as_value().as_usize() as u16);
+        printer.print_decimal_integer(self.get_local().index());
         *printer += const_text(", ");
         printer.print_value_uses(self.as_operation().operands().group(0).as_value_range());
         print_attributes(printer, self.as_operation());
@@ -186,10 +178,10 @@ impl OpPrinter for StoreLocal {
 }
 
 /// Reads `INDEX, %value`, then an optional `attributes {..}`. The index is a decimal integer that
-/// fits a `u16`; the local's type is the value's.
+/// fits a `u32`; the local's type is the value's.
 impl OpParser for StoreLocal {
     fn parse(state: &mut OperationState, parser: &mut dyn crate::OpAsmParser<'_>) -> ParseResult {
-        let index = parser.parse_decimal_integer::<u16>()?.into_inner();
+        let index = parser.parse_decimal_integer::<u32>()?.into_inner();
         parser.parse_comma()?;
         let value = parser.parse_operand(/*allow_result_number=*/ true)?;
         parser.parse_optional_attribute_dict_with_keyword(&mut state.attrs)?;
@@ -197,88 +189,35 @@ impl OpParser for StoreLocal {
         let unknown = parser.context().unknown_type();
         let value = parser.resolve_operand(value, unknown)?;
         let ty = value.borrow().ty();
-        let local = LocalVariableAttr::create_unbound(&parser.context_rc(), index, ty);
+        let local = local_attribute(parser, LocalVariable::new(index, ty));
         state.add_attribute("local", local);
         state.add_operand(value);
         Ok(())
     }
 }
 
-/// The local is one of the enclosing function's, and the value has its type.
+/// The value has the local's type. That the local is one of the enclosing function's, of the
+/// type the function gives it, is checked by the function's verifier
+/// ([Function](crate::dialects::builtin::Function)).
 impl crate::Verify<dyn MemoryEffectOpInterface> for StoreLocal {
     fn verify(&self, _context: &Context) -> Result<(), Report> {
         let ty = self.value().ty();
-        verify_local(self.as_operation(), &self.local(), ty, "the value")
+        verify_local(self.as_operation(), *self.get_local(), ty, "the value")
     }
 }
 
-/// Checks the local named by `op`, whose value (`role`) has type `ty`.
-///
-/// A local built through a function ([Function::alloc_local]) is bound to that function, and must
-/// be inside it. Inside a function, the local's index is one of the function's locals, and a local
-/// parsed from text (unbound, its type on the attribute) has the type the function gives that
-/// local. Outside a function only the type of an unbound local is checked against `ty`.
-fn verify_local(
-    op: &Operation,
-    attr: &LocalVariableAttr,
-    ty: Type,
-    role: &str,
-) -> Result<(), Report> {
-    let invalid = |reason: String| {
-        if op.is::<LoadLocal>() {
-            report!(
-                message: "invalid operation builtin.load_local",
-                labels: [primary(op.span(), reason)],
-            )
-        } else {
-            report!(
-                message: "invalid operation builtin.store_local",
-                labels: [primary(op.span(), reason)],
-            )
-        }
-    };
-
-    let local = attr.as_value();
-    let index = local.as_usize();
-    let function = op.nearest_parent_op::<Function>();
-    if local.is_bound()
-        && function.is_none_or(|function| {
-            function.as_operation_ref() != local.function().as_operation_ref()
-        })
-    {
-        return Err(invalid(format!(
-            "local {index} is a local of another function than the one this operation is in"
-        )));
+/// Checks that the value of `op` that is `role` (its result or its operand), of type `ty`, has
+/// the type of `local`.
+fn verify_local(op: &Operation, local: LocalVariable, ty: Type, role: &str) -> Result<(), Report> {
+    if ty == local.ty() {
+        return Ok(());
     }
-
-    let local_ty = match function {
-        Some(function) => {
-            let function = function.borrow();
-            let locals = function.get_locals();
-            if index >= locals.len() {
-                return Err(invalid(format!(
-                    "this names local {index}, but the function has {} local(s)",
-                    locals.len()
-                )));
-            }
-            let declared = locals[index];
-            let stated = crate::Attribute::ty(attr);
-            if !local.is_bound() && stated != declared {
-                return Err(invalid(format!(
-                    "this states that local {index} has type `{stated}`, but the function gives \
-                     it type `{declared}`"
-                )));
-            }
-            declared
-        }
-        None => crate::Attribute::ty(attr),
-    };
-    if ty != local_ty {
-        return Err(invalid(format!(
-            "{role} has type `{ty}`, but local {index} has type `{local_ty}`"
-        )));
-    }
-    Ok(())
+    let reason =
+        format!("{role} has type `{ty}`, but local {} has type `{}`", local.index(), local.ty());
+    Err(report!(
+        message: (format!("invalid operation {}", op.name())),
+        labels: [primary(op.span(), reason)],
+    ))
 }
 
 #[cfg(test)]
@@ -289,7 +228,7 @@ mod tests {
     use crate::{
         Context, SourceSpan, UnsafeIntrusiveEntityRef, ValueRef,
         dialects::{
-            builtin::{BuiltinOpBuilder, attributes::LocalVariable},
+            builtin::{BuiltinOpBuilder, Function},
             test::TestMemoryResource,
         },
         effects::{AutomaticAllocationScopeResource, DefaultResource},
@@ -356,8 +295,7 @@ mod tests {
     }
 
     /// A load and a store built through the builder print in the derived form, and the function
-    /// parses back to the same text: the parsed locals are unbound, and their type is the one
-    /// written on the attribute.
+    /// parses back to the same text: the parsed local has the index and the type written.
     #[test]
     fn locals_print_and_parse_back() {
         let (test, _local, _store, loaded) = built();
@@ -385,8 +323,8 @@ mod tests {
         let block = block.borrow();
         let load = block.body().iter().nth(1).unwrap();
         let load = load.downcast_ref::<LoadLocal>().expect("a load_local");
-        assert!(!load.get_local().is_bound());
-        assert_eq!(load.local().local_type(), parsed.as_operation().context().i32());
+        assert_eq!(load.get_local().index(), 0);
+        assert_eq!(load.get_local().ty(), parsed.as_operation().context().i32());
         assert_eq!(load.result().ty(), parsed.as_operation().context().i32());
     }
 
@@ -497,10 +435,10 @@ mod tests {
         assert!(text.contains("the result has type `i64`, but local 0 has type `i32`"), "{text}");
     }
 
-    /// Outside a function, an unbound local is checked only against the type it states: a store
-    /// of another type does not verify, and one of that type does.
+    /// Outside a function, a local is checked only against the type it states: a store of another
+    /// type does not verify, and one of that type does.
     #[test]
-    fn an_unbound_local_outside_a_function_is_checked_against_its_type() {
+    fn a_local_outside_a_function_is_checked_against_its_type() {
         let module = |ty: &str| {
             alloc::format!(
                 "builtin.module public @m {{
@@ -519,26 +457,35 @@ mod tests {
             .unwrap_or_else(|err| panic!("{err}"));
     }
 
-    /// The type of a load of a local bound to a function that no longer has a local of its index
-    /// is an error, not a panic.
+    /// A load of a local that its function no longer has is built (its type is the local's), and
+    /// the function does not verify.
     #[test]
-    fn a_load_of_a_bound_local_out_of_range_is_an_error() {
+    fn a_load_of_a_local_out_of_range_does_not_verify() {
         let mut test = Test::new("shrunk", |_cx| ([] as [Type; 0], [] as [Type; 0]));
         let i32 = test.context().i32();
         let local = test.function().borrow_mut().alloc_local(i32);
         test.function().borrow_mut().get_locals_mut().remove(0);
-        let mut builder = test.function_builder();
-        let err = builder
-            .load_local(local, SourceSpan::UNKNOWN)
+        {
+            let mut builder = test.function_builder();
+            let loaded = builder.load_local(local, SourceSpan::UNKNOWN).unwrap();
+            assert_eq!(loaded.borrow().ty(), i32);
+            builder.ret([], SourceSpan::UNKNOWN).unwrap();
+        }
+        let function = test.function();
+        let function = function.borrow();
+        let err = function
+            .as_operation()
+            .recursively_verify()
             .expect_err("the function has no local 0");
         let labels = label_messages(err.as_diagnostic()).join(" | ");
         assert!(
-            labels.contains("this names local 0, but its function has 0 local(s)"),
+            labels.contains("this names local 0, but the function has 0 local(s)"),
             "{labels}"
         );
     }
 
-    /// A local built through one function and used in another does not verify.
+    /// A local built through one function and used in another, which has no local of its index,
+    /// does not verify: it is checked against the function it is in.
     #[test]
     fn a_local_of_another_function_does_not_verify() {
         let mut test = Test::named("first").in_module("m");
@@ -562,17 +509,15 @@ mod tests {
             .expect_err("the function does not verify");
         let labels = label_messages(err.as_diagnostic()).join(" | ");
         assert!(
-            labels.contains(
-                "local 0 is a local of another function than the one this operation is in"
-            ),
+            labels.contains("this names local 0, but the function has 0 local(s)"),
             "{labels}"
         );
     }
 
     /// Both operations print the index first and, for a load, the local's type, for a local built
-    /// through the function (bound) and one parsed from text (unbound) alike.
+    /// through the function and one parsed from text alike.
     #[test]
-    fn the_short_form_round_trips_for_a_bound_and_an_unbound_local() {
+    fn the_short_form_round_trips_for_a_built_and_a_parsed_local() {
         let (test, _local, _store, _loaded) = built();
         let function = test.function();
         let printed = function.borrow().as_operation().to_string();
@@ -583,11 +528,10 @@ mod tests {
         let parsed = parsed.borrow();
         for op in parsed.entry_block().borrow().body().iter() {
             if let Some(load) = op.downcast_ref::<LoadLocal>() {
-                assert!(!load.get_local().is_bound());
+                assert_eq!(load.get_local().ty(), load.result().ty());
             }
             if let Some(store) = op.downcast_ref::<StoreLocal>() {
-                assert!(!store.get_local().is_bound());
-                assert_eq!(store.local().local_type(), store.value().ty());
+                assert_eq!(store.get_local().ty(), store.value().ty());
             }
         }
         assert_eq!(parsed.as_operation().to_string(), printed);
@@ -635,7 +579,7 @@ mod tests {
     fn malformed_short_forms_are_diagnostics() {
         for (body, token) in [
             ("%1 = builtin.load_local : i32;", ":"),
-            ("%1 = builtin.load_local 70000 : i32;", "70000"),
+            ("%1 = builtin.load_local 4294967296 : i32;", "4294967296"),
             ("%1 = builtin.load_local -1 : i32;", "-"),
             ("%1 = builtin.load_local 0;", ""),
             ("builtin.store_local 0;", ""),
@@ -648,5 +592,242 @@ mod tests {
             assert!(!spans.is_empty(), "`{body}` does not parse");
             assert!(spans.iter().any(|span| span == token), "{body}\n{spans:?}");
         }
+    }
+
+    /// The `local` property of `op`.
+    fn local_property(op: &Operation) -> crate::AttributeRef {
+        op.properties()
+            .find(|property| property.name.as_str() == "local")
+            .expect("a `local` property")
+            .value
+    }
+
+    /// A local from [Function::alloc_local], the same local parsed from text and one made with
+    /// [LocalVariable::new] are equal, as values and as attributes.
+    #[test]
+    fn a_local_is_the_same_however_it_was_made() {
+        let context = Rc::new(Context::default());
+        let parse_function = |source: &str| {
+            parse::parse::<Function>(ParserConfig::new(context.clone()), "locals", source)
+                .into_result()
+                .unwrap_or_else(|err| panic!("{source}\n{err:?}"))
+        };
+        let parsed = parse_function(&alloc::format!(
+            "{HEADER} @f() locals(i32) {{
+    %0 = builtin.load_local 0 : i32;
+    builtin.ret;
+}};"
+        ));
+        let mut other = parse_function(&alloc::format!("{HEADER} @g() {{\n    builtin.ret;\n}};"));
+        let allocated = other.borrow_mut().alloc_local(context.i32());
+        let made = LocalVariable::new(0, context.i32());
+
+        let parsed = parsed.borrow();
+        let entry = parsed.entry_block();
+        let entry = entry.borrow();
+        let load = entry.body().front().get().expect("a load");
+        let parsed_attr = local_property(&load);
+        let parsed_local =
+            *parsed_attr.borrow().downcast_ref::<LocalVariableAttr>().unwrap().as_value();
+
+        assert_eq!(parsed_local, made);
+        assert_eq!(allocated, made);
+        assert_eq!(other.borrow().iter_locals().collect::<Vec<_>>(), [made]);
+        assert_eq!(other.borrow().get_local(&made), Some(context.i32()));
+        for local in [allocated, made] {
+            let attr = context.create_attribute::<LocalVariableAttr, _>(local).as_attribute_ref();
+            assert!(attr == parsed_attr, "{local:?}");
+            assert!(crate::Attribute::ty(&*attr.borrow()).is_unknown());
+        }
+        let other_type = context
+            .create_attribute::<LocalVariableAttr, _>(LocalVariable::new(0, context.i64()))
+            .as_attribute_ref();
+        let other_index = context
+            .create_attribute::<LocalVariableAttr, _>(LocalVariable::new(1, context.i32()))
+            .as_attribute_ref();
+        assert!(other_type != parsed_attr && other_index != parsed_attr);
+    }
+
+    /// A local past the end of the function's locals, and one of another type than the function
+    /// gives it, are rejected wherever an operation holds it: in `builtin.load_local`, in
+    /// `builtin.store_local`, in the property of another operation, and nested in a list in an
+    /// operation's attributes. The error names the operation that holds the local.
+    #[test]
+    fn a_local_that_is_not_the_functions_is_rejected_wherever_it_is_held() {
+        use crate::{
+            attributes::AttrList,
+            dialects::builtin::attributes::{List, ListAttr},
+        };
+
+        for (index, ty, reason) in [
+            (1, "i32", "this names local 1, but the function has 1 local(s)"),
+            (
+                0,
+                "i64",
+                "this states that local 0 has type `i64`, but the function gives it type `i32`",
+            ),
+        ] {
+            let value = if ty == "i32" { "%0" } else { "%1" };
+            for (name, body) in [
+                ("builtin.load_local", alloc::format!("%2 = builtin.load_local {index} : {ty};")),
+                ("builtin.store_local", alloc::format!("builtin.store_local {index}, {value};")),
+                (
+                    "test.touch_local",
+                    alloc::format!(
+                        "test.touch_local <{{ local = #builtin.local_variable<{index}, {ty}> }}>;"
+                    ),
+                ),
+            ] {
+                let source = alloc::format!(
+                    "{HEADER} @f(%0: i32, %1: i64) locals(i32) {{\n    {body}\n    \
+                     builtin.ret;\n}};"
+                );
+                let text = verify_error(&source);
+                assert!(text.contains(&alloc::format!("invalid operation {name}")), "{text}");
+                assert!(text.contains(reason), "{source}\n{text}");
+            }
+
+            // nested in a list in the dictionary of the `builtin.ret`
+            let mut test = Test::new("listed", |_cx| ([] as [Type; 0], [] as [Type; 0]));
+            let context = test.context_rc();
+            let local_ty = if ty == "i32" {
+                context.i32()
+            } else {
+                context.i64()
+            };
+            {
+                let mut builder = test.function_builder();
+                builder.alloc_local(context.i32());
+                let mut ret = builder.ret([], SourceSpan::UNKNOWN).unwrap();
+                let local = context
+                    .create_attribute::<LocalVariableAttr, _>(LocalVariable::new(index, local_ty));
+                let mut entries = AttrList::new();
+                entries.push_back(crate::Attribute::as_attr(&*local.borrow()).as_attr_ref());
+                let list = context.create_attribute::<ListAttr, _>(List::from(entries));
+                ret.borrow_mut().as_operation_mut().set_attribute("locals", list);
+            }
+            let function = test.function();
+            let err = function
+                .borrow()
+                .as_operation()
+                .recursively_verify()
+                .expect_err("the listed local is not the function's");
+            let text = alloc::format!(
+                "{} {}",
+                err.display(),
+                label_messages(err.as_diagnostic()).join(" | ")
+            );
+            assert!(text.contains("invalid operation builtin.ret"), "{text}");
+            assert!(text.contains(reason), "{text}");
+        }
+    }
+
+    /// Outside a function a local is not checked against any function's locals: an operation
+    /// that names a local of any index verifies there.
+    #[test]
+    fn a_local_outside_a_function_names_no_functions_local() {
+        let source = "builtin.module public @m {
+    builtin.global_variable public @g : i32 {
+        test.touch_local <{ local = #builtin.local_variable<5, i32> }>;
+    };
+};";
+        parse_text::<crate::dialects::builtin::Module>(source)
+            .unwrap_or_else(|err| panic!("{err}"));
+    }
+
+    /// A type map applied to a function rewrites its `locals` and every local its body names
+    /// together, and the function still verifies.
+    #[test]
+    fn a_type_map_rewrites_the_locals_and_the_locals_named_together() {
+        use crate::{ElementRewrite, TypeMapper, recursively_replace_elements_in};
+
+        let source = alloc::format!(
+            "{HEADER} @f(%0: i64) -> i64 locals(i64, i8) {{
+    builtin.store_local 0, %0;
+    test.touch_local <{{ local = #builtin.local_variable<0, i64> }}>;
+    %1 = builtin.load_local 0 : i64;
+    builtin.ret %1 : (i64);
+}};"
+        );
+        let (context, function) = parse_text::<Function>(&source).expect("the text parses");
+        let mapper = TypeMapper::new(&context, |context, ty| {
+            if ty == context.i64() {
+                context.i32()
+            } else {
+                ty
+            }
+        });
+        let mut rewrite = ElementRewrite::types(mapper);
+        let changed = recursively_replace_elements_in(function.as_operation_ref(), &mut rewrite)
+            .expect("the rewrite");
+        assert!(changed);
+        drop(rewrite);
+
+        let function = function.borrow();
+        function
+            .as_operation()
+            .recursively_verify()
+            .unwrap_or_else(|err| panic!("{err:?}"));
+        assert_eq!(
+            function.as_operation().to_string(),
+            alloc::format!(
+                "{HEADER} @f(%0: i32) -> i32 locals(i32, i8) {{
+    builtin.store_local 0, %0;
+    test.touch_local <{{ local = #builtin.local_variable<0, i32> }}>;
+    %1 = builtin.load_local 0 : i32;
+    builtin.ret %1 : (i32);
+}};"
+            )
+        );
+    }
+
+    /// An operation moved into another function, which has fewer locals, is rejected by that
+    /// function; the one it left verifies.
+    #[test]
+    fn an_operation_moved_to_a_function_with_fewer_locals_is_rejected() {
+        use crate::{ProgramPoint, dialects::builtin::Module};
+
+        let source = "builtin.module public @m {
+    builtin.function public extern(\"C\") @f() locals(i32, i32) {
+        test.touch_local <{ local = #builtin.local_variable<1, i32> }>;
+        builtin.ret;
+    };
+    builtin.function public extern(\"C\") @g() locals(i32) {
+        builtin.ret;
+    };
+};";
+        let (_context, module) = parse_text::<Module>(source).expect("the module parses");
+        let mut touch = None;
+        let mut ret_of_g = None;
+        module.borrow().as_operation().prewalk_all(|op: &Operation| {
+            if op.name().to_string() == "test.touch_local" {
+                touch = Some(op.as_operation_ref());
+            }
+            if op.is::<super::super::Ret>()
+                && op
+                    .nearest_parent_op::<Function>()
+                    .is_some_and(|function| function.borrow().name().as_str() == "g")
+            {
+                ret_of_g = Some(op.as_operation_ref());
+            }
+        });
+        let (mut touch, ret_of_g) = (touch.unwrap(), ret_of_g.unwrap());
+        let source_function = touch.borrow().nearest_parent_op::<Function>().unwrap();
+        touch.borrow_mut().move_to(ProgramPoint::before(ret_of_g));
+
+        source_function
+            .borrow()
+            .as_operation()
+            .recursively_verify()
+            .expect("the function the operation left verifies");
+        let err = module
+            .borrow()
+            .as_operation()
+            .recursively_verify()
+            .expect_err("`@g` has no local 1");
+        let text =
+            alloc::format!("{} {}", err.display(), label_messages(err.as_diagnostic()).join(" | "));
+        assert!(text.contains("invalid operation test.touch_local"), "{text}");
+        assert!(text.contains("this names local 1, but the function has 1 local(s)"), "{text}");
     }
 }

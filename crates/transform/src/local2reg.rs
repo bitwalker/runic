@@ -30,13 +30,12 @@ fn stored_value(store: OperationRef) -> ValueRef {
         .as_value_ref()
 }
 
-/// The index, within its function, of the local `operation` names when it is a
-/// `builtin.load_local` or a `builtin.store_local`.
+/// The index, within its function, of the local `attr` names.
 ///
-/// Locals are keyed by index: a local built through the function is bound to it, and one parsed
-/// from text is not, so the two do not compare equal even when they name the same slot.
+/// Locals are keyed by index: the function's verifier ensures that every local of one index in a
+/// function has the type the function gives it.
 fn local_index(attr: &LocalVariableAttr) -> usize {
-    attr.as_value().as_usize()
+    attr.as_value().index() as usize
 }
 
 /// Adds to `pinned` the index of every local that `operation` names: a [LocalVariableAttr] it
@@ -1230,8 +1229,8 @@ mod tests {
         );
     }
 
-    /// A function parsed from text (its locals unbound) promotes exactly as the same function built
-    /// through the builder (its locals bound): the two print the same before and after the pass.
+    /// A function parsed from text promotes exactly as the same function built through the
+    /// builder: the two print the same before and after the pass.
     #[test]
     fn a_parsed_function_promotes_as_a_built_one() {
         let mut test = Test::new("f", |cx| ([cx.i32(), cx.i32()], [cx.i32()]));

@@ -21,7 +21,6 @@ use super::{
 use crate::{
     Align, CallConv, Int, SymbolPath, SymbolUseRef, Type, UnsafeIntrusiveEntityRef,
     diagnostics::{ColumnNumber, LineNumber, SourceSpan},
-    dialects::builtin::FunctionRef,
     effects::MemoryEffect,
     interner::Symbol,
 };
@@ -81,11 +80,11 @@ pub trait ElementReplacer {
 ///   visited, not offered to a replacer, and an attribute rebuilt because its value changed takes
 ///   the type inferred from the new value.
 /// - Otherwise the own type is an element, after the value's: `IntAttr`'s (its width is in its
-///   value, but its type may be `isize`), an unbound `LocalVariableAttr`'s.
+///   value, but its type may be `isize`).
 ///
 /// Some kinds' choices, as built: a signature's elements are, per parameter, its type then its
-/// attributes, then the same per result; a bound `LocalVariableAttr` holds no type (its type is in
-/// its function's `locals`); a `SymbolRefAttr` holds nothing, so it is never rebuilt by a
+/// attributes, then the same per result; a `LocalVariableAttr` holds its type (in its value; its
+/// own type is unknown); a `SymbolRefAttr` holds nothing, so it is never rebuilt by a
 /// replacement and stays linked to its symbol.
 ///
 /// Both methods are pure: they do not create attributes, intern types, or use the context.
@@ -312,8 +311,6 @@ plain_components!(
     SourceSpan,
     LineNumber,
     ColumnNumber,
-    // The function whose locals table a local variable indexes: the table is the function's.
-    FunctionRef,
     // The use that links a symbol reference to its symbol: the use is the reference's link, not
     // something it holds.
     SymbolUseRef,
@@ -506,7 +503,7 @@ mod tests {
     }
 
     /// One row for each attribute kind of `builtin`, `di` and `test`, and a second where the
-    /// value's shape matters (a bound local, a variable without a type).
+    /// value's shape matters (a local from a function, a variable without a type).
     fn rows(test: &Test) -> Vec<Row> {
         let context = test.context_rc();
         let cx = &context;
@@ -527,7 +524,7 @@ mod tests {
         }
 
         let mut function = test.function();
-        let bound = function.borrow_mut().alloc_local(i16);
+        let allocated = function.borrow_mut().alloc_local(i16);
 
         let fn_ty = cx.function_type([i32], [i64]);
         let mut subprogram = Subprogram::new(symbol("f"), symbol("f.rs"), 1, None);
@@ -576,17 +573,14 @@ mod tests {
                 [attr(one), attr(two)],
             ),
             Row::new(
-                "unbound local: its own type",
-                cx.create_attribute_with_type::<LocalVariableAttr, _>(
-                    LocalVariable::default(),
-                    i32,
-                ),
+                "local: its type",
+                cx.create_attribute::<LocalVariableAttr, _>(LocalVariable::new(0, i32)),
                 [ty(i32)],
             ),
             Row::new(
-                "bound local: the function holds its type",
-                cx.create_attribute::<LocalVariableAttr, _>(bound),
-                [],
+                "local from a function: its type, as for any other",
+                cx.create_attribute::<LocalVariableAttr, _>(allocated),
+                [ty(i16)],
             ),
             Row::new("location", cx.create_attribute::<LocationAttr, _>(Location::Synthetic), []),
             Row::new("overflow", cx.create_attribute::<OverflowAttr, _>(Overflow::Wrapping), []),

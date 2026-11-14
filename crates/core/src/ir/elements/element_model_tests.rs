@@ -48,7 +48,7 @@ pub(crate) enum Desc {
     Zext,
     Variable(Option<Type>),
     Subprogram(Option<Type>),
-    UnboundLocal(Type),
+    Local(Type),
 }
 
 /// What a built attribute holds directly, in order.
@@ -125,7 +125,7 @@ pub(crate) fn random_desc(rng: &mut Rng, pool: &[Type], depth: u32) -> Desc {
             if rng.below(2) == 0 {
                 Desc::Subprogram((rng.below(3) != 0).then(|| ty(rng)))
             } else {
-                Desc::UnboundLocal(ty(rng))
+                Desc::Local(ty(rng))
             }
         }
         10 | 11 => {
@@ -217,9 +217,9 @@ pub(crate) fn build(cx: &Rc<Context>, desc: &Desc) -> Built {
                 held: ty.iter().copied().map(Held::Ty).collect(),
             }
         }
-        Desc::UnboundLocal(ty) => Built {
+        Desc::Local(ty) => Built {
             attr: cx
-                .create_attribute_with_type::<LocalVariableAttr, _>(LocalVariable::default(), *ty)
+                .create_attribute::<LocalVariableAttr, _>(LocalVariable::new(0, *ty))
                 .as_attribute_ref(),
             held: vec![Held::Ty(*ty)],
         },
@@ -323,7 +323,7 @@ fn map_desc(cx: &Context, desc: &Desc, map: &dyn Fn(&Context, Type) -> Type) -> 
         Desc::Sig(params, results) => Desc::Sig(side(params), side(results)),
         Desc::Variable(ty) => Desc::Variable(ty.as_ref().map(m)),
         Desc::Subprogram(ty) => Desc::Subprogram(ty.as_ref().map(m)),
-        Desc::UnboundLocal(ty) => Desc::UnboundLocal(m(ty)),
+        Desc::Local(ty) => Desc::Local(m(ty)),
         other => other.clone(),
     }
 }

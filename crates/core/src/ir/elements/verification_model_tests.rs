@@ -233,6 +233,16 @@ fn faults(cx: &Rc<Context>, other: &Rc<Context>) -> Vec<Fault> {
         });
     }
 
+    let local = cx
+        .create_attribute::<LocalVariableAttr, _>(LocalVariable::new(0, open))
+        .as_attribute_ref();
+    out.push(Fault {
+        name: "a local of an open type",
+        attr: local,
+        held_type: true,
+        says: format!("holds type `{open}`, which is open"),
+    });
+
     // own types
     let mut flag = cx.create_attribute::<BoolAttr, _>(true).as_attribute_ref();
     flag.borrow_mut().as_attr_mut().set_type_unchecked(other.i1());
@@ -241,16 +251,6 @@ fn faults(cx: &Rc<Context>, other: &Rc<Context>) -> Vec<Fault> {
         attr: flag,
         held_type: false,
         says: "has type `i1`, which belongs to another context".into(),
-    });
-    let mut local = cx
-        .create_attribute_with_type::<LocalVariableAttr, _>(LocalVariable::default(), cx.i32())
-        .as_attribute_ref();
-    local.borrow_mut().as_attr_mut().set_type_unchecked(open);
-    out.push(Fault {
-        name: "an unbound local of an open type",
-        attr: local,
-        held_type: false,
-        says: format!("has type `{open}`, which is open"),
     });
 
     // effects

@@ -1,149 +1,79 @@
 use crate::{
-    AttrPrinter, Type,
-    attributes::AttrParser,
-    derive::DialectAttribute,
-    dialects::builtin::{BuiltinDialect, FunctionRef},
-    parse::ParserExt,
+    AttrPrinter, Type, attributes::AttrParser, derive::DialectAttribute,
+    dialects::builtin::BuiltinDialect, parse::ParserExt,
 };
 
-/// A function's local variable: its function and its index in that function's locals.
+/// A local variable of a function: its index in the function's `locals` and its type.
 ///
-/// As an attribute ([LocalVariableAttr]), a bound local holds no element: its type is in its
-/// function's `locals`, not in the attribute. An unbound one's own type is its only element.
-#[derive(DialectAttribute, Copy, Clone, PartialEq, Eq, Hash)]
+/// Two locals of the same index and type are equal, however they were made: by
+/// [Function::alloc_local](crate::dialects::builtin::Function::alloc_local), by [Self::new], or
+/// parsed from text. The value names no function: the function an operation is in is the one
+/// whose local it names, and that function's verifier checks the index and the type against its
+/// `locals`.
+///
+/// As an attribute ([LocalVariableAttr]), the type is the value's only element: it is visited,
+/// rewritten by a type map together with the function's `locals`, and verified like any type an
+/// attribute holds. The attribute's own type is unknown. It has no default: the text always gives
+/// the index and the type, `#builtin.local_variable<0, i32>`.
+#[derive(DialectAttribute, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[attribute(
     dialect = BuiltinDialect,
+    no_default,
     implements(AttrPrinter)
 )]
 pub struct LocalVariable {
-    function: FunctionRef,
-    index: u16,
-    is_uninit: bool,
-}
-
-impl Default for LocalVariable {
-    fn default() -> Self {
-        Self {
-            function: FunctionRef::dangling(),
-            index: 0,
-            is_uninit: true,
-        }
-    }
+    index: u32,
+    ty: Type,
 }
 
 impl LocalVariable {
-    pub(in crate::dialects::builtin) fn new(function: FunctionRef, id: usize) -> Self {
-        assert!(
-            id <= u16::MAX as usize,
-            "system limit: unable to allocate more than u16::MAX locals per function"
-        );
-        Self {
-            function,
-            index: id as u16,
-            is_uninit: false,
-        }
+    /// The local of index `index` and type `ty`.
+    pub fn new(index: u32, ty: Type) -> Self {
+        Self { index, ty }
     }
 
+    /// The local's index in its function's `locals`.
     #[inline(always)]
-    pub const fn as_usize(&self) -> usize {
-        self.index as usize
+    pub fn index(&self) -> u32 {
+        self.index
     }
 
-    /// Returns true if this local is bound to its containing function.
-    ///
-    /// Locals parsed from text are unbound: the local's type is carried by the attribute's type
-    /// slot instead of the function's locals table. Use
-    /// [`LocalVariableAttr::local_type`] to obtain the type regardless of binding.
+    /// The local's type.
     #[inline(always)]
-    pub const fn is_bound(&self) -> bool {
-        !self.is_uninit
-    }
-
-    #[inline(always)]
-    pub const fn function(&self) -> FunctionRef {
-        assert!(!self.is_uninit);
-        self.function
-    }
-
     pub fn ty(&self) -> Type {
-        assert!(!self.is_uninit);
-        *self.function.borrow().get_local(self)
-    }
-}
-
-impl core::fmt::Debug for LocalVariable {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("LocalVariable")
-            .field_with("function", |f| {
-                if self.is_uninit {
-                    f.write_str("<dangling>")
-                } else {
-                    write!(f, "{}", self.function.borrow().name().as_str())
-                }
-            })
-            .field("index", &self.index)
-            .finish()
+        self.ty
     }
 }
 
 impl core::fmt::Display for LocalVariable {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "local{}", self.as_usize())
+        write!(f, "local{}", self.index)
     }
 }
 
-impl LocalVariableAttr {
-    /// Get the type of this local variable.
-    ///
-    /// For locals bound to a function this reads the function's locals table; for locals
-    /// parsed from text (which are unbound), it reads the type recorded on the attribute itself.
-    pub fn local_type(&self) -> Type {
-        if self.value.is_bound() {
-            self.value.ty()
-        } else {
-            crate::Attribute::ty(self)
-        }
-    }
-}
-
-impl LocalVariableAttr {
-    /// Creates the attribute of an unbound local with index `index` and type `ty`: what the
-    /// attribute's own text form (`#builtin.local_variable<0, i32>`) and the short form of
-    /// `builtin.load_local` and `builtin.store_local` (`0 : i32`) parse to.
-    pub(in crate::dialects::builtin) fn create_unbound(
-        context: &alloc::rc::Rc<crate::Context>,
-        index: u16,
-        ty: Type,
-    ) -> crate::AttributeRef {
-        context.create_attribute_with_type::<LocalVariableAttr, _>(
-            LocalVariable {
-                index,
-                function: FunctionRef::dangling(),
-                is_uninit: true,
-            },
-            ty,
-        )
-    }
-}
-
+/// `INDEX, TYPE`: the index in decimal, then the type.
 impl AttrPrinter for LocalVariableAttr {
     fn print(&self, printer: &mut crate::print::AsmPrinter<'_>) {
         use crate::formatter::*;
 
         printer.print_decimal_integer(self.value.index);
         *printer += const_text(", ");
-        printer.print_type(self.local_type());
+        printer.print_type(self.value.ty);
     }
 }
 
+/// `INDEX, TYPE`: a decimal index that fits a `u32`, then the local's type.
 impl AttrParser for LocalVariableAttr {
     fn parse(
         parser: &mut dyn crate::parse::Parser<'_>,
     ) -> crate::parse::ParseResult<crate::AttributeRef> {
-        let index = parser.parse_decimal_integer::<u16>()?.into_inner();
+        let index = parser.parse_decimal_integer::<u32>()?.into_inner();
         parser.parse_comma()?;
         let ty = parser.parse_type()?.into_inner();
 
-        Ok(LocalVariableAttr::create_unbound(&parser.context_rc(), index, ty))
+        Ok(parser
+            .context_rc()
+            .create_attribute::<LocalVariableAttr, _>(LocalVariable::new(index, ty))
+            .as_attribute_ref())
     }
 }

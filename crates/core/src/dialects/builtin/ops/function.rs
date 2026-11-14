@@ -1,15 +1,15 @@
 use alloc::{format, string::String, vec::Vec};
 
 use crate::{
-    AsValueRange, BlockRef, CallConv, CallableOpInterface, CallableSymbol, EntityRef, IdentAttr,
-    Op, OpParser, OpPrinter, Operation, RegionKind, RegionKindInterface, RegionRef, SmallVec,
-    Symbol, SymbolUse, SymbolUseList, Type, UnsafeIntrusiveEntityRef, Usable, Visibility,
+    AsValueRange, BlockRef, CallConv, CallableOpInterface, CallableSymbol, IdentAttr, Op, OpParser,
+    OpPrinter, Operation, RegionKind, RegionKindInterface, RegionRef, SmallVec, Symbol, SymbolUse,
+    SymbolUseList, Type, UnsafeIntrusiveEntityRef, Usable, Visibility,
     derive::{EffectOpInterface, operation},
     dialects::builtin::{
         BuiltinDialect,
         attributes::{
-            AbiParam, DeclaredEffects, DeclaredEffectsAttr, IntAttr, LocalVariable, Signature,
-            SignatureAttr, TypeArrayAttr, VisibilityAttr,
+            AbiParam, DeclaredEffects, DeclaredEffectsAttr, IntAttr, LocalVariable,
+            LocalVariableAttr, Signature, SignatureAttr, TypeArrayAttr, VisibilityAttr,
             effects::{parse_effect_list, print_effect_list},
             signature::{
                 SignatureWriter, invalid_parameter_list, next_token_span, parse_optional_results,
@@ -383,26 +383,30 @@ impl Function {
         self.locals().len()
     }
 
-    pub fn get_local(&self, id: &LocalVariable) -> EntityRef<'_, Type> {
-        assert_eq!(
-            self.as_operation_ref(),
-            id.function().as_operation_ref(),
-            "attempted to use local variable reference from different function"
-        );
-        EntityRef::map(self.get_locals(), |locals| &locals[id.as_usize()])
+    /// The type this function declares for `local`'s index, or `None` when it has no local of
+    /// that index. It need not be `local`'s own type: the verifier checks that.
+    pub fn get_local(&self, local: &LocalVariable) -> Option<Type> {
+        self.get_locals().iter().nth(local.index() as usize).copied()
     }
 
+    /// Declares a new local of type `ty`, after the existing ones, and returns it.
     pub fn alloc_local(&mut self, ty: Type) -> LocalVariable {
         let mut locals = self.get_locals_mut();
-        let id = locals.len();
+        let index = u32::try_from(locals.len())
+            .expect("system limit: unable to allocate more than u32::MAX locals per function");
         locals.push(ty);
-        drop(locals);
-        LocalVariable::new(self.as_function_ref(), id)
+        LocalVariable::new(index, ty)
     }
 
+    /// This function's locals, in index order.
     pub fn iter_locals(&self) -> impl ExactSizeIterator<Item = LocalVariable> {
-        let fun = self.as_function_ref();
-        (0..self.locals().len()).map(move |i| LocalVariable::new(fun, i))
+        let locals = self.get_locals();
+        let locals = locals
+            .iter()
+            .enumerate()
+            .map(|(index, ty)| LocalVariable::new(index as u32, *ty))
+            .collect::<Vec<_>>();
+        locals.into_iter()
     }
 
     #[inline(always)]
@@ -496,6 +500,13 @@ impl CallableSymbol for Function {}
 ///
 /// The argument or result each effect in the function's declared effects names exists in the
 /// signature. A declaration has no locals: its `locals(..)` is empty.
+///
+/// Every local variable ([LocalVariableAttr]) held, at any depth, by an operation in the body
+/// outside nested callables is one of the function's: its index is below the number of locals,
+/// and its type is the one the function gives that local. The error names the operation that
+/// holds the local. A local held by an operation in no function is not checked against any
+/// `locals`; `builtin.load_local` and `builtin.store_local` check their own value against their
+/// local's type wherever they are.
 ///
 /// The signature itself, and that each declared effect names at most one of an argument and a
 /// result, are checked before this runs by [Operation::verify], which verifies every attribute an
@@ -593,6 +604,37 @@ impl crate::Verify<dyn CallableSymbol> for Function {
             ))
         };
 
+        let locals = self.get_locals().iter().copied().collect::<Vec<_>>();
+        let check_locals = |op: &Operation| -> Result<(), crate::Report> {
+            op.walk_attributes(&mut |_, attr| {
+                let Some(local) =
+                    attr.borrow().downcast_ref::<LocalVariableAttr>().map(|attr| *attr.as_value())
+                else {
+                    return WalkResult::Continue(());
+                };
+                let index = local.index();
+                let reason = match locals.get(index as usize) {
+                    None => format!(
+                        "this names local {index}, but the function has {} local(s)",
+                        locals.len()
+                    ),
+                    Some(declared) if *declared != local.ty() => format!(
+                        "this states that local {index} has type `{}`, but the function gives it \
+                         type `{declared}`",
+                        local.ty()
+                    ),
+                    Some(_) => return WalkResult::Continue(()),
+                };
+                WalkResult::Break(report!(
+                    message: (format!("invalid operation {}", op.name())),
+                    labels: [
+                        primary(op.span(), reason),
+                        context(span, "in this function"),
+                    ],
+                ))
+            })
+            .into_result()
+        };
         self.body()
             .prewalk(|op: &Operation| {
                 if op.implements::<dyn CallableOpInterface>() {
@@ -607,6 +649,7 @@ impl crate::Verify<dyn CallableSymbol> for Function {
                 } else {
                     Ok(())
                 };
+                let checked = checked.and_then(|()| check_locals(op));
                 match checked {
                     Ok(()) => WalkResult::Continue(()),
                     Err(err) => WalkResult::Break(err),
