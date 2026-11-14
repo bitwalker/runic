@@ -795,6 +795,7 @@ fn every_pass_over_the_golden_functions_verifies() {
 
 /// Every case of the corpora prints with [OpPrintingFlags::generic] without a panic, each of its
 /// operations on a line of its own in the generic form, and its default print is unchanged by it.
+/// A case that does not parse fails the test, unless the test lists it as known not to parse.
 ///
 /// [OpPrintingFlags::generic]: runic_core::print::OpPrintingFlags::generic
 #[test]
@@ -805,10 +806,22 @@ fn every_case_prints_in_the_generic_form() {
         generic: true,
         ..Default::default()
     };
+    // The cases known not to parse here: these golden files hold `test.debug_value`, an operation
+    // of the test dialect, which only core's own tests register.
+    const UNPARSABLE: [&str; 2] = [
+        "golden: transparent_ops_do_not_interfere_with_dce_after.hir",
+        "golden: transparent_ops_do_not_interfere_with_dce_before.hir",
+    ];
     let mut printed = 0;
+    let mut unparsed = Vec::new();
     for case in corpus() {
-        let Ok((context, root)) = parse_case(&case, &case.text, false) else {
-            continue;
+        let (context, root) = match parse_case(&case, &case.text, false) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                assert!(UNPARSABLE.contains(&case.name.as_str()), "{}: {error}", case.name);
+                unparsed.push(case.name.clone());
+                continue;
+            }
         };
         let before = root.borrow().to_string();
         let mut printer = AsmPrinter::fragment(context.clone(), &flags);
@@ -831,6 +844,8 @@ fn every_case_prints_in_the_generic_form() {
         assert_eq!(root.borrow().to_string(), before, "{}", case.name);
         printed += 1;
     }
+    // A case on the list that parses is taken off it.
+    assert_eq!(unparsed, UNPARSABLE, "the cases that do not parse");
     assert!(printed > 200, "{printed}");
 }
 

@@ -311,10 +311,9 @@ fn long_function(blocks: usize, casts: usize) -> Test {
     test
 }
 
-/// The text of a block of 50 operations, pinned before the printer joined the operations of a
-/// block as a balanced document.
+/// The printed text of a block of 50 operations: one operation a line, in order.
 #[test]
-fn a_block_of_fifty_operations_prints_as_before() {
+fn the_printed_text_of_a_block_of_fifty_operations() {
     let test = long_function(1, 49);
     assert_eq!(
         print_function(&test),
@@ -373,10 +372,9 @@ fn a_block_of_fifty_operations_prints_as_before() {
     );
 }
 
-/// The text of a region of 5 blocks, pinned before the printer joined the blocks of a region as a
-/// balanced document.
+/// The printed text of a region of 5 blocks: each block under its label, in order.
 #[test]
-fn a_region_of_five_blocks_prints_as_before() {
+fn the_printed_text_of_a_region_of_five_blocks() {
     let test = long_function(5, 2);
     assert_eq!(
         print_function(&test),

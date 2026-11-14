@@ -163,6 +163,20 @@ fn ir_is_printed_after_the_named_passes_only() {
     );
 }
 
+/// A pass without a command-line name is selected by `All` and named by its display name.
+#[test]
+fn a_pass_without_a_command_line_name_is_named_by_its_display_name() {
+    let config = IRPrintingConfig {
+        after: PassSelection::All,
+        ..Default::default()
+    };
+    let (text, _) = run(config, &[("", true)]);
+    assert_eq!(
+        text,
+        format!("// ----- IR after reporting pass on builtin.module -----\n{MODULE_TEXT}\n\n")
+    );
+}
+
 #[test]
 fn ir_is_printed_before_every_pass() {
     let config = IRPrintingConfig {

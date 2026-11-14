@@ -158,10 +158,10 @@ impl OpFilter {
 /// selects, to a stream; installed by [`PassManager::enable_ir_printing`].
 ///
 /// Each print is a header line, `// ----- IR before <pass> on <operation name> -----` (or
-/// `after`), where `<pass>` is the command-line name of the pass, followed by the operation
-/// printed with the configured [`crate::OpPrintingFlags`] and a blank line. With filters, each
-/// operation they select is printed under its own header instead. A pass manager adaptor (a
-/// nested pipeline) is never printed for: the passes it runs are.
+/// `after`), where `<pass>` is the command-line name of the pass (its display name when it has
+/// none), followed by the operation printed with the configured [`crate::OpPrintingFlags`] and a
+/// blank line. With filters, each operation they select is printed under its own header instead.
+/// A pass manager adaptor (a nested pipeline) is never printed for: the passes it runs are.
 ///
 /// The first write that fails is recorded in `error`, where [`PassManager::run`] finds it; nothing
 /// is written after it.
@@ -185,7 +185,11 @@ impl Print {
     }
 
     fn print(&mut self, phase: &str, pass: &dyn OperationPass, op: &OperationRef) {
-        let argument = pass.argument();
+        // A pass without a command-line name is named by its display name.
+        let argument = match pass.argument() {
+            "" => pass.name(),
+            argument => argument,
+        };
         let mut text = String::new();
         if self.config.filters.is_empty() {
             self.render(&mut text, phase, argument, &op.borrow());

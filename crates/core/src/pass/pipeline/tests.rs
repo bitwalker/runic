@@ -292,7 +292,7 @@ const TREE: &str = r#"builtin.world {
 fn run(text: &str, ir: &str) -> Vec<String> {
     register();
     let context = Rc::new(Context::default());
-    let root = parse_any(ParserConfig::new(context.clone()), "pipeline.hir", ir).unwrap();
+    let root = parse_any(ParserConfig::new(context.clone()), "pipeline.runic", ir).unwrap();
     let observed = Rc::new(RefCell::new(Vec::new()));
     let mut pm = parse(text).load(context, Nesting::Explicit).unwrap();
     assert_eq!(printed(&pm), text);

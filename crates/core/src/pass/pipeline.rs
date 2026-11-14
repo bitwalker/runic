@@ -31,7 +31,7 @@
 //! option value. For example:
 //!
 //! ```text
-//! builtin.module(cse,builtin.function(canonicalizer{enable-patterns="a;b"}),recursive(builtin.function(dce)))
+//! builtin.module(cse,builtin.function(canonicalizer{enable-patterns="a;b"}),recursive(any(dce)))
 //! ```
 
 use alloc::{

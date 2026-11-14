@@ -6825,12 +6825,25 @@ fn text_after_the_top_level_operation_is_an_error() {
 
         let test = ParserTest::default();
         let err = if source.starts_with("builtin.world") {
-            test.parse::<World>("trailing.hir", &source).map(|_| ())
+            test.parse::<World>("trailing.runic", &source).map(|_| ())
         } else {
-            test.parse::<Function>("trailing.hir", &source).map(|_| ())
+            test.parse::<Function>("trailing.runic", &source).map(|_| ())
         }
         .expect_err(&source);
         assert!(format!("{}", err.display()).contains(MESSAGE), "{source}");
+    }
+
+    // A token the lexer cannot read is text after the operation too, labelled from its first
+    // character to the end of the word it starts; a string literal is labelled with its quotes.
+    for (source, trailing) in [
+        (format!("{FUNCTION}\n\"a string\""), "\"a string\""),
+        (format!("{FUNCTION}\n\"unterminated"), "\"unterminated"),
+        (format!("{FUNCTION}\n`tick` more"), "`tick`"),
+        (format!("{FUNCTION} \u{7}"), "\u{7}"),
+    ] {
+        let (message, labels) = parse_error_labels(&source);
+        assert!(message.contains(MESSAGE), "{source:?}\n{message}");
+        assert_eq!(labels, [at(&source, trailing)], "{source:?}\n{message}");
     }
 
     // Comments and blank lines after the operation are not text.
@@ -6840,7 +6853,34 @@ fn text_after_the_top_level_operation_is_an_error() {
         format!("{FUNCTION}\n\n   \n// a comment\n\n// another\n"),
         format!("// before\n{WORLD_SOURCE}\n// after"),
     ] {
-        test.parse_any("trailing.hir", &source)
+        test.parse_any("trailing.runic", &source)
             .unwrap_or_else(|err| panic!("{source}\n{}", err.display()));
     }
+}
+
+/// A file entry point diagnoses text after the top-level operation as the source entry points do.
+#[cfg(feature = "std")]
+#[test]
+fn text_after_the_top_level_operation_of_a_file_is_an_error() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/ir/parse/testdata/text_after_the_operation.runic"
+    );
+    let source = std::fs::read_to_string(path).expect("the test file");
+    let context = Rc::new(Context::default());
+    let err = crate::parse::parse_file_any(ParserConfig::new(context), path)
+        .into_result()
+        .expect_err("a second operation follows the first");
+    assert!(
+        format!("{}", err.display())
+            .contains("expected the end of the input after the top-level operation"),
+        "{}",
+        err.display()
+    );
+    let labels = crate::testing::label_ranges(err.as_diagnostic())
+        .into_iter()
+        .map(|range| (range.start, range.end))
+        .collect::<Vec<_>>();
+    let start = source.rfind("builtin.module").unwrap();
+    assert_eq!(labels, [(start, start + "builtin.module".len())]);
 }

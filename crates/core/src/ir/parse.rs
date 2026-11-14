@@ -574,19 +574,21 @@ fn parse_anchored_source(
         let op = operation_parser.parse_operation().map_err(Report::from)?;
         // Only whitespace and comments may follow the top-level operation.
         let operation_end = operation_parser.token_stream().previous_end();
-        match operation_parser.token_stream_mut().next().map_err(Report::from)? {
-            None => (),
-            Some(token) if matches!(token.inner(), Token::Eof) => (),
-            Some(token) => {
-                // The span of a token can leave out its sigil (`%0` is lexed as `0`), so the label
-                // starts where the text after the operation does.
-                let end = token.span().range().end();
-                let start = skip_whitespace_and_comments(source, operation_end as usize) as u32;
-                return Err(Report::from(ParserError::TrailingInput {
-                    span: span!(source_id, start.min(end), end),
-                    token: String::from(&source[start.min(end) as usize..end as usize]),
-                }));
-            }
+        let start = skip_whitespace_and_comments(source, operation_end as usize) as u32;
+        let end = match operation_parser.token_stream_mut().next() {
+            Ok(None) => None,
+            Ok(Some(token)) if matches!(token.inner(), Token::Eof) => None,
+            // The span of a token can leave out its sigil (`%0` is lexed as `0`), so the label
+            // starts where the text after the operation does.
+            Ok(Some(token)) => Some(token.span().range().end().max(start)),
+            // Text the lexer cannot read is labelled to the end of the word it starts.
+            Err(_) => Some(end_of_word(source, start as usize) as u32),
+        };
+        if let Some(end) = end {
+            return Err(Report::from(ParserError::TrailingInput {
+                span: span!(source_id, start, end),
+                token: String::from(&source[start as usize..end as usize]),
+            }));
         }
         // See the note above: a parsed world is the root, not something to be rooted.
         //
@@ -641,6 +643,14 @@ fn parse_anchored_source(
 
 /// The byte offset of the first character of `text` at or after `at` that is neither whitespace
 /// nor part of a `//` comment, as the lexer skips them.
+/// The offset of the end of the word that starts at `at` in `text`: the first whitespace after
+/// it, or the end of the text. A word holds at least the character at `at`.
+fn end_of_word(text: &str, at: usize) -> usize {
+    let rest = &text[at..];
+    let first = rest.chars().next().map_or(0, char::len_utf8);
+    at + rest[first..].find(char::is_whitespace).map_or(rest.len(), |end| first + end)
+}
+
 fn skip_whitespace_and_comments(text: &str, mut at: usize) -> usize {
     loop {
         let rest = &text[at..];

@@ -32,8 +32,8 @@ impl PassRegistry {
     /// # Panics
     ///
     /// Panics if two submissions share one name and are not the same pass; the message names both
-    /// types. A name taken twice is a defect in the linked crates, and the registry has no caller to
-    /// return it to, so the first use of the registry reports it.
+    /// types. A name taken twice is a defect in the linked crates, and the registry has no caller
+    /// to return it to, so the first use of the registry reports it.
     pub fn new() -> Self {
         match Self::from_entries(
             inventory::iter::<PassInfo>().map(|pass| pass.0.clone()),

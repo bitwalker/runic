@@ -1,0 +1,5 @@
+// A function, then a module after it: the module is text after the top-level operation.
+builtin.function public extern("C") @f() {
+    builtin.ret;
+};
+builtin.module public @m {};

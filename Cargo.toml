@@ -157,9 +157,6 @@ lto = "fat"
 [profile.test.package.proptest]
 opt-level = 3
 
-[profile.test.package.rand_chacha]
-opt-level = 3
-
 # Build the workspace with release-like settings only when explicitly requested
 # via the `test-release` profile.
 [profile.test-release]
@@ -170,9 +167,6 @@ codegen-units = 1
 debug-assertions = false
 overflow-checks = false
 incremental = false
-
-[profile.dev.package.dissimilar]
-opt-level = 3
 
 [profile.dev.package.regex-syntax]
 opt-level = 3
