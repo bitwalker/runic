@@ -382,6 +382,7 @@ fn seed(default: u64) -> u64 {
 }
 
 mod calls;
+mod corpora;
 mod cse_model;
 mod drive;
 mod interp;

@@ -15,6 +15,21 @@ pub mod calls;
 pub mod elements;
 pub mod text;
 
+/// The seeds a randomized test of this crate runs: `CORE_TEST_SEED` if it is set (decimal, or hex
+/// with `0x`), else `count` fixed ones. A failing test prints the seed it failed with.
+#[cfg(test)]
+pub(crate) fn test_seeds(count: u64) -> alloc::vec::Vec<u64> {
+    if let Ok(seed) = std::env::var("CORE_TEST_SEED") {
+        let seed = seed.trim();
+        let seed = match seed.strip_prefix("0x") {
+            Some(hex) => u64::from_str_radix(hex, 16),
+            None => seed.parse(),
+        };
+        return alloc::vec![seed.expect("CORE_TEST_SEED is a u64")];
+    }
+    (1..=count).map(|i| 0x5e3e_1000 + i).collect()
+}
+
 /// Enable compiler-internal tracing and instrumentation during tests
 #[cfg(feature = "logging")]
 pub fn enable_compiler_instrumentation() {

@@ -41,7 +41,7 @@ const CALLEES: &str = r#"
     builtin.function public extern("C") @writes_any(i32) -> i32 effects(write);
     builtin.function public extern("C") @unknown(i32) -> i32;"#;
 
-fn module(body: &str) -> String {
+pub fn module(body: &str) -> String {
     format!(
         "builtin.module public @m {{\n{CALLEES}\nbuiltin.function public extern(\"C\") @f(%c: i1, \
          %d: i1, %a: i32, %b: i32, %p: ptr<i32>, %q: ptr<i32>, %n: isize, %z: i8) -> i32 \
@@ -50,7 +50,7 @@ fn module(body: &str) -> String {
 }
 
 /// The fixtures: (name, body).
-const FIXTURES: [(&str, &str); 12] = [
+pub const FIXTURES: [(&str, &str); 12] = [
     (
         "every operation, unused",
         r#"

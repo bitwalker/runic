@@ -3,8 +3,9 @@
 //! An operation holds attributes in its properties and its attribute dictionary, and an attribute
 //! holds attributes and types in turn (see
 //! [AttributeElements](crate::attributes::AttributeElements)). It holds types as the types of its
-//! results and of its regions' block arguments, in its attributes, and inside those types. [Operation::walk_attributes] and [Operation::walk_types]
-//! visit all of them, each once, with the place in the operation it was reached from.
+//! results and of its regions' block arguments, in its attributes, and inside those types.
+//! [Operation::walk_attributes] and [Operation::walk_types] visit all of them, each once, with the
+//! place in the operation it was reached from.
 //!
 //! An operand's type is not something the operation holds: it is the type of the value's
 //! definition.
@@ -1471,3 +1472,8 @@ mod nested_reference_tests {
         assert_eq!((uses(g), uses(h)), (0, 0));
     }
 }
+
+#[cfg(test)]
+mod element_model_tests;
+#[cfg(test)]
+mod verification_model_tests;

@@ -179,13 +179,13 @@ impl Gen<'_> {
     }
 }
 
-struct Program {
-    text: String,
+pub struct Program {
+    pub text: String,
     locals: u64,
     uses: Uses,
 }
 
-fn generate(rng: &mut Rng) -> Program {
+pub fn generate(rng: &mut Rng) -> Program {
     let locals = 1 + rng.below(12);
     let blocks = 1 + rng.below(4) as usize;
     let mut generator = Gen {
