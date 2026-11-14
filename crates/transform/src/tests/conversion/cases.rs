@@ -433,31 +433,31 @@ fn locals_on_both_sides_of_a_branch() {
                     builtin.store_local 4, %14;
                     cf.cond_br %15 ^block3, ^block4 : (i1);
                 ^block3:
-                    %26 = arith.add %11, %13;
-                    %27 = arith.cmpi ult %26, %11;
-                    %28 = arith.zext %27 <{ ty = #builtin.type<i64> }>;
-                    %29 = arith.add %12, %14;
-                    %30 = arith.add %29, %28;
-                    builtin.store_local 0, %26;
-                    builtin.store_local 1, %30;
+                    %18 = arith.add %11, %13;
+                    %19 = arith.cmpi ult %18, %11;
+                    %20 = arith.zext %19 <{ ty = #builtin.type<i64> }>;
+                    %21 = arith.add %12, %14;
+                    %22 = arith.add %21, %20;
+                    builtin.store_local 0, %18;
+                    builtin.store_local 1, %22;
                     cf.br ^block5;
                 ^block4:
-                    %18 = builtin.load_local 3 : i64;
-                    %19 = builtin.load_local 4 : i64;
-                    %32 = arith.band %18, %11;
-                    %33 = arith.band %19, %12;
-                    builtin.store_local 3, %32;
-                    builtin.store_local 4, %33;
+                    %24 = builtin.load_local 3 : i64;
+                    %25 = builtin.load_local 4 : i64;
+                    %27 = arith.band %24, %11;
+                    %28 = arith.band %25, %12;
+                    builtin.store_local 3, %27;
+                    builtin.store_local 4, %28;
                     %7 = arith.constant 9 : i64;
                     builtin.store_local 2, %7;
                     cf.br ^block5;
                 ^block5:
-                    %35 = builtin.load_local 0 : i64;
-                    %36 = builtin.load_local 1 : i64;
+                    %30 = builtin.load_local 0 : i64;
+                    %31 = builtin.load_local 1 : i64;
                     %9 = builtin.load_local 2 : i64;
-                    %23 = builtin.load_local 3 : i64;
-                    %24 = builtin.load_local 4 : i64;
-                    builtin.ret %35, %36, %9, %23, %24 : (i64, i64, i64, i64, i64);
+                    %33 = builtin.load_local 3 : i64;
+                    %34 = builtin.load_local 4 : i64;
+                    builtin.ret %30, %31, %9, %33, %34 : (i64, i64, i64, i64, i64);
                 };
             };"#]],
     );

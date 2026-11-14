@@ -31,7 +31,12 @@
 //! body outside nested callables gets the index `s_i` at once, keeping its type; every local slot
 //! of a debug expression ([ExpressionOp::LocalSlot], [FrameBase::LocalSlot]) does too, so a slot
 //! that names a local which became several names its first part. These are changes to
-//! attributes, which need no cast. An operation that names a local is afterwards unconverted
+//! attributes, which need no cast, and the pattern makes them directly, not through
+//! [ConversionPatternRewriter::modify_op_in_place]: each operation it renumbers comes later than
+//! the function in the order the driver collected, so it is legalized in its own turn, under a
+//! rewrite limit of its own, however many references the function holds. An operation under a
+//! recursively legal operation is renumbered too and, like everything there, not offered to a
+//! pattern. An operation that names a local is afterwards unconverted
 //! exactly when the local's type is not legal; converting it is the job of the local patterns (for
 //! `builtin.load_local` and `builtin.store_local`) or of its own dialect's patterns. Until it is
 //! converted it fails the function's verifier, as no cast can stand for a local.
@@ -417,8 +422,11 @@ impl ConversionPattern for FunctionPattern {
         for edit in body_edits {
             match edit {
                 BodyEdit::Erase(op) => rewriter.erase_op(op)?,
-                BodyEdit::Set { op, attributes } => {
-                    rewriter.modify_op_in_place(op, |op| install(op, attributes))??;
+                // Installed directly, not through the rewriter: an attribute edit needs no
+                // cast, and the operation is legalized in its own turn (it is later in the
+                // collected order than its function), under a limit of its own.
+                BodyEdit::Set { mut op, attributes } => {
+                    install(&mut op.borrow_mut(), attributes)?;
                 }
             }
             changed = true;

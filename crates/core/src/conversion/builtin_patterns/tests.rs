@@ -459,6 +459,38 @@ fn a_function_that_stays_illegal_is_renumbered_once() {
     );
 }
 
+/// A function with thousands of loads of a local whose index moves converts under the default
+/// rewrite limit: the renumbered loads are each legalized in their own turn, not as changes the
+/// function's pattern made.
+#[test]
+fn a_function_with_many_references_to_a_renumbered_local_converts_under_the_default_limit() {
+    for count in [1_100, 5_000] {
+        let mut body = alloc::string::String::from(
+            "    builtin.function public extern(\"C\") @big(%a: i128) -> i128 locals(i128, i128) {
+        builtin.store_local 0, %a;
+        builtin.store_local 1, %a;\n",
+        );
+        for index in 0..count {
+            body.push_str(&format!("        %l{index} = builtin.load_local 1 : i128;\n"));
+        }
+        body.push_str("        builtin.ret %l0 : (i128);\n    };");
+        let (context, module) = parse_module(&body);
+        let converter = wide_converter(&context);
+        convert_full(module, by_type_target(&context, &converter), &converter)
+            .unwrap_or_else(|err| panic!("{count} loads: {}", describe(&err)));
+        // Counted by a walk: printing a block of this length overflows a test thread's stack.
+        let mut loads = alloc::collections::BTreeMap::<(u32, alloc::string::String), usize>::new();
+        module.borrow().prewalk_all(|op: &Operation| {
+            if let Some(load) = op.downcast_ref::<LoadLocal>() {
+                let local = *load.get_local();
+                *loads.entry((local.index(), local.ty().to_string())).or_default() += 1;
+            }
+        });
+        let expected = [((2, "i64".to_string()), count), ((3, "i64".to_string()), count)];
+        assert_eq!(loads, expected.into_iter().collect(), "{count} loads");
+    }
+}
+
 /// The `local` property of the one `test.touch_local` in `region`'s first block.
 fn touched_local(region: crate::RegionRef) -> LocalVariable {
     let block = region.borrow().entry_block_ref().unwrap();
