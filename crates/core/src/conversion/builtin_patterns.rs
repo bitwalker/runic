@@ -12,6 +12,12 @@
 //! patterns check the answers they use, and return an error that names the type and what it was
 //! the answer for.
 //!
+//! The patterns are added once per conversion, with one converter. Added twice, under two
+//! converters (one that splits a type and one that drops another, say), they do not compose: a
+//! block is converted once per conversion and each set reads only its own converter's answers, so
+//! such a conversion ends in an error in most cases (never in a wrong result); one converter that
+//! answers for every type is the way to convert several types at once.
+//!
 //! The patterns work under a target that judges their operations by type,
 //! [add_builtin_legality_by_type]. That is a requirement, not a convenience: the legalization
 //! graph is built from operation names, and a pattern that builds operations of its own root's
@@ -45,10 +51,17 @@
 //! the function in the order the driver collected, so it is legalized in its own turn, under a
 //! rewrite limit of its own, however many references the function holds. An operation under a
 //! recursively legal operation is renumbered too and, like everything there, not offered to a
-//! pattern. An operation that names a local is afterwards unconverted
-//! exactly when the local's type is not legal; converting it is the job of the local patterns (for
-//! `builtin.load_local` and `builtin.store_local`) or of its own dialect's patterns. Until it is
-//! converted it fails the function's verifier, as no cast can stand for a local.
+//! pattern. An operation that names a local is afterwards unconverted exactly when the local's
+//! type is not legal; converting it is the job of the local patterns (for `builtin.load_local` and
+//! `builtin.store_local`) or of its own dialect's patterns. Until it is converted it fails the
+//! function's verifier, as no cast can stand for a local.
+//!
+//! Debug information follows the locals and nothing else. A debug expression of a local that
+//! became several names its first part: the parts are contiguous and in order, so the first is
+//! the base of the variable, but no pieces ([ExpressionOp::Piece]) are emitted for the others. A
+//! debug-info subprogram's parameter names, and a debug variable's argument index, are not
+//! remapped when a parameter splits or vanishes: they stay as they were, one per old parameter
+//! (nothing verifies them against the signature).
 //!
 //! A local that becomes no local leaves nothing to name. A `di.debug_declare` whose expression is
 //! exactly that local's slot is erased, and a `di.debug_value` whose expression is exactly that
@@ -238,6 +251,10 @@ pub fn populate_builtin_conversion_patterns(
 /// operations, and every operation that implements `BranchOpInterface`, legal exactly when
 /// `converter.is_legal_op` says so. (A rule for an operation or its dialect wins over the interface
 /// rule: a target that calls a branch operation or its dialect legal outright never offers it.)
+///
+/// It covers only the operations the builtin patterns convert. A target must itself call the
+/// structure around them legal: `builtin.module`, `builtin.function_alias`, `builtin.world`,
+/// `builtin.component`, global variables and segments, which no pattern converts.
 pub fn add_builtin_legality_by_type(target: &mut ConversionTarget, converter: &TypeConverter) {
     let converter = Rc::new(converter.clone());
     let by_type = move || {
