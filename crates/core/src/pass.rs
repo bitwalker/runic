@@ -5,6 +5,7 @@ mod instrumentation;
 mod manager;
 #[allow(clippy::module_inception)]
 mod pass;
+mod pipeline;
 pub mod registry;
 mod specialization;
 pub mod statistics;
@@ -18,6 +19,7 @@ pub use self::{
     instrumentation::{PassInstrumentation, PassInstrumentor, PipelineParentInfo},
     manager::{IRPrintingConfig, Nesting, OpPassManager, PassDisplayMode, PassManager},
     pass::{OperationPass, Pass, PassExecutionState, PostPassStatus},
+    pipeline::{Anchor, PassPipeline, PipelineElement, SelectedPass},
     registry::{PassInfo, PassPipelineInfo},
     specialization::PassTarget,
     statistics::{PassStatistic, Statistic, StatisticValue},

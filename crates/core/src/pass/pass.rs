@@ -220,9 +220,13 @@ pub trait Pass: Sized + Any {
     /// If command-line options are provided for this pass, implementations must parse the raw
     /// options here, returning `Err` if parsing fails for some reason.
     ///
-    /// By convention, the pass pipeline parser (see `hir-opt`) hands over the options of a pass
-    /// as a comma-separated list of `key=value` pairs, e.g. `key1=value1, key2=value2`, so a
-    /// value must not contain a comma and each key appears at most once.
+    /// A pipeline loaded from text ([`super::PassPipeline`]) hands over the options of a pass as
+    /// a comma-separated list of `key=value` pairs (or `key`, for a key given without a value),
+    /// e.g. `key1=value1, key2`, so a value never contains a comma and each key appears at most
+    /// once.
+    ///
+    /// A pass with options prints them back in [`Self::print_as_textual_pipeline`] in the form
+    /// of the pipeline text: `argument{key1="value1" key2}`.
     ///
     /// By default, a pass takes no options, so any option given is an error.
     fn initialize_options(&mut self, options: &str) -> Result<(), Report> {

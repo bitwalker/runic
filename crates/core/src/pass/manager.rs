@@ -402,7 +402,24 @@ impl OpPassManager {
     /// Recursive pipelines retain their stage boundaries: each completes its traversal before
     /// the next pipeline starts. They are not coalesced with adjacent nested pipelines.
     pub fn nest_recursive<T: OpRegistration>(&mut self) -> NestedOpPassManager<'_> {
-        let mut nested = OpToOpPassAdaptor::new(Self::on::<T>(self.nesting, self.context.clone()));
+        let nested = Self::on::<T>(self.nesting, self.context.clone());
+        self.nest_recursive_pass_manager(nested)
+    }
+
+    /// Like [`Self::nest_recursive`], for the operations named `nested_name`: `any`, or the name
+    /// of a registered operation.
+    ///
+    /// Returns an error when `nested_name` is neither.
+    pub fn nest_recursive_with_type(
+        &mut self,
+        nested_name: &str,
+    ) -> Result<NestedOpPassManager<'_>, Report> {
+        let nested = Self::new(nested_name, self.nesting, self.context.clone())?;
+        Ok(self.nest_recursive_pass_manager(nested))
+    }
+
+    fn nest_recursive_pass_manager(&mut self, nested: Self) -> NestedOpPassManager<'_> {
+        let mut nested = OpToOpPassAdaptor::new(nested);
         nested.recursive = true;
         NestedOpPassManager {
             parent: self,
@@ -600,7 +617,8 @@ impl OpPassManager {
         }
     }
 
-    /// Prints out the passes of the pass manager as the textual representation of pipelines.
+    /// Prints the passes of this pass manager as pipeline text: `anchor(pass,pass)`, in the
+    /// grammar that [`super::PassPipeline::parse`] reads.
     pub fn print_as_textual_pipeline(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         if let Some(anchor) = self.name() {
             write!(f, "{anchor}(")?;
