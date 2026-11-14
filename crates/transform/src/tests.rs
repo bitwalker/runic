@@ -418,5 +418,6 @@ mod cse_model;
 mod drive;
 mod interp;
 mod local2reg_model;
+mod nesting;
 mod printing;
 mod registry;

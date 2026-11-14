@@ -110,14 +110,34 @@ pub struct ParserConfig {
     pub context: Rc<Context>,
     /// Set to true if the parser should verify after parsing
     pub verify: bool,
+    /// How deeply regions may nest: text with a region inside this many enclosing regions is an
+    /// error. The default is [Self::DEFAULT_MAX_REGION_DEPTH].
+    pub max_region_depth: u32,
 }
 
 impl ParserConfig {
+    /// The default of [Self::max_region_depth]: 64.
+    ///
+    /// The parser recurses through an operation, its regions and their blocks, so each level of
+    /// nesting costs stack. In an unoptimized build a level costs from about 21 KB (nested
+    /// `builtin.module`) to about 29 KB (a module, a function and an `scf.if`, alternating), so 64
+    /// levels use at most about 1.8 MB: they fit the 2 MB stack of a spawned thread, the smallest
+    /// one a parse of IR is expected to run on. An optimized build uses much less.
+    pub const DEFAULT_MAX_REGION_DEPTH: u32 = 64;
+
     pub fn new(context: Rc<Context>) -> Self {
         Self {
             context,
             verify: true,
+            max_region_depth: Self::DEFAULT_MAX_REGION_DEPTH,
         }
+    }
+
+    /// Set how deeply regions may nest (see [Self::max_region_depth]). A parse that allows more
+    /// than the default needs a larger stack.
+    pub fn with_max_region_depth(mut self, depth: u32) -> Self {
+        self.max_region_depth = depth;
+        self
     }
 
     /// Set the flag that determines whether verification will be run after parsing
@@ -148,6 +168,9 @@ pub struct ParserState<'input> {
     pub default_dialect_stack: SmallVec<[interner::Symbol; 1]>,
     /// The number of types enclosing the one being parsed, which the type parser limits.
     type_nesting: u32,
+    /// The number of regions enclosing the text being parsed, which [ParserConfig::max_region_depth]
+    /// limits.
+    region_nesting: u32,
 }
 
 impl<'input> ParserState<'input> {
@@ -159,6 +182,7 @@ impl<'input> ParserState<'input> {
             asm_state: None,
             default_dialect_stack: smallvec![interner::Symbol::intern("builtin")],
             type_nesting: 0,
+            region_nesting: 0,
         }
     }
 

@@ -206,6 +206,12 @@ pub enum ParserError {
         span: SourceSpan,
         name: String,
     },
+    #[error("regions are nested more than {limit} deep; the limit is set by `ParserConfig`")]
+    RegionNestingTooDeep {
+        #[label(primary, "this region is nested more than {limit} deep")]
+        span: SourceSpan,
+        limit: u32,
+    },
     #[error("invalid type")]
     InvalidType {
         #[label(primary, "{reason}")]

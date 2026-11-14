@@ -1301,7 +1301,42 @@ where
     /// Parse a region into 'region' with the provided entry block arguments.
     ///
     /// 'isolated' indicates if the naming scope of this region is isolated from those above.
+    ///
+    /// Fails if the region would be nested in more regions than
+    /// [ParserConfig::max_region_depth](super::ParserConfig::max_region_depth) allows.
     pub fn parse_region(
+        &mut self,
+        region: RegionRef,
+        entry_arguments: &[Argument],
+        isolated: bool,
+    ) -> ParseResult {
+        let enclosing = self.parser.state().region_nesting;
+        let limit = self.parser.state().config.max_region_depth;
+        if enclosing >= limit {
+            return Err(self.region_nesting_too_deep(limit));
+        }
+        // Restored on every return from the nested parse, successful or not, so that the count
+        // always matches the regions actually being parsed.
+        self.parser.state_mut().region_nesting = enclosing + 1;
+        let result = self.parse_region_nested(region, entry_arguments, isolated);
+        self.parser.state_mut().region_nesting = enclosing;
+        result
+    }
+
+    /// The error for a region nested in more than `limit` regions, at the `{` that opens it.
+    #[cold]
+    #[inline(never)]
+    fn region_nesting_too_deep(&mut self, limit: u32) -> ParserError {
+        let span = match self.parser.token_stream_mut().peek() {
+            Ok(Some((start, _, end))) => span!(self.parser.source_id(), start, end),
+            Ok(None) => self.parser.current_location(),
+            Err(err) => return err,
+        };
+        ParserError::RegionNestingTooDeep { span, limit }
+    }
+
+    /// [Self::parse_region], once the nesting has been accounted for.
+    fn parse_region_nested(
         &mut self,
         region: RegionRef,
         entry_arguments: &[Argument],
