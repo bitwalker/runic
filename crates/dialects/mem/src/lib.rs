@@ -43,9 +43,9 @@
 //!
 //! **Folds.** Under a data layout: `mem.sizeof`, `mem.alignof` and `mem.offsetof` fold to `isize`
 //! constants when the answer fits the layout's `isize`; `mem.ptrtoint (mem.inttoptr x)` folds to
-//! `x` when the pointer of that address space is at least as wide as `isize`, and
-//! `mem.inttoptr (mem.ptrtoint p)` to `p` (cast back to `p`'s own type) when `isize` is at least
-//! as wide as the pointer. With or without one: a `mem.ptrcast` to its operand's type folds to
+//! `x` when a pointer of the `mem.inttoptr`'s address space is at least as wide as `isize`, and
+//! `mem.inttoptr (mem.ptrtoint p)` to `p` when the `mem.inttoptr`'s type is `p`'s type and `isize`
+//! is at least as wide as the pointer. With or without one: a `mem.ptrcast` to its operand's type folds to
 //! the operand, and a cast of a cast becomes one cast; a `mem.gep` with neither index nor path
 //! folds to its base, and one without an index whose base is a `mem.gep` becomes one gep; a copy
 //! or fill of the constant length 0 is erased.

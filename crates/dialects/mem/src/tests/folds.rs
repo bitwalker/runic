@@ -524,4 +524,7 @@ fn geps_select_the_modelled_element_and_merging_keeps_the_address() {
     }
     std::println!("{chains} chains, {merged} changed by the canonicalizer, {rejected} rejected");
     assert!(merged > 200, "{merged}");
+    // A chain is skipped only when its root type cannot be measured, which the generator makes
+    // rarely: a gep check that turned valid chains away would show here.
+    assert!(rejected * 20 <= chains, "{rejected} of {chains} chains were rejected");
 }
