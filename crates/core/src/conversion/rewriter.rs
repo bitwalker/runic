@@ -322,6 +322,14 @@ impl ConversionPatternRewriter {
         self.inner.context()
     }
 
+    /// The root of the conversion: the operation the conversion was applied to, under which every
+    /// operation it converts is. `None` for a rewriter not given to a pattern by the driver (one
+    /// made with [Self::new_with_type_converter], or the one a materialization callback is given).
+    #[inline]
+    pub fn root(&self) -> Option<OperationRef> {
+        self.state.root
+    }
+
     /// Set the insertion point before `op`.
     #[inline]
     pub fn set_insertion_point_before(&mut self, op: OperationRef) {

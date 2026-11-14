@@ -122,6 +122,11 @@
 //! [ConversionConfig::with_verify_after_conversion] is off). [TypeConverter::is_legal_op] can serve
 //! as a dynamic legality rule: an operation is legal when every type it uses converts to itself.
 //!
+//! What is verified is the root, and nothing outside it is converted. So the root must hold
+//! every operation that names a symbol whose signature the conversion changes: a call outside it
+//! would keep the old signature. The builtin function pattern refuses a function whose signature
+//! changes and that has such a user (below).
+//!
 //! # The rewrite limit
 //!
 //! The driver visits the operations under the root in the order it collected them (a pre-order
@@ -143,9 +148,11 @@
 //! `builtin.load_local` and `builtin.store_local` of a local whose type is not legal; the calls,
 //! `builtin.function_ref` and `builtin.ret`; and the forwarded operands of every operation that
 //! implements `BranchOpInterface`. A signature is converted by [convert_signature], for a callable
-//! and every call of it alike. They
-//! need a converter made with [TypeConverter::with_function_types] and no value callbacks, and a
-//! target that judges their operations by type ([add_builtin_legality_by_type]).
+//! and every call of it alike. They need a converter made with
+//! [TypeConverter::with_function_types] and no value callbacks, and a target that judges their
+//! operations by type ([add_builtin_legality_by_type]). The root of a conversion that uses them
+//! must hold every user of a function whose signature changes; the function pattern refuses a
+//! function with a user outside it.
 //!
 //! # What a pattern may rely on
 //!

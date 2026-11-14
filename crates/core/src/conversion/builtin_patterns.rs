@@ -25,6 +25,12 @@
 //! body. The terminators that branch to a converted block are not converted with it: the branch
 //! pattern (below) converts them.
 //!
+//! The root of the conversion must hold every operation that names a function whose signature
+//! the conversion changes. A function whose signature changes and that is named by an operation
+//! outside the root, directly or through an alias of it at any number of aliases, is refused
+//! before anything is changed: the pattern returns an error that names the function and the
+//! user. (A conversion rooted at one function, or at one module of a world, meets this.)
+//!
 //! Local `i` of type `T` becomes the locals `[s_i, s_i + n_i)`, of the types the converter gives
 //! for `T` (`n_i` of them, possibly none), where `s_i` is the sum of `n_k` for `k < i`: contiguous
 //! and in order. Every [LocalVariableAttr] held, at any depth of attribute, by an operation in the
@@ -109,8 +115,8 @@ use crate::{
     attributes::ElementReplacer,
     dialects::{
         builtin::{
-            Call, CallIndirect, CopiedAttributes, Function, FunctionReference, LoadLocal, Ret,
-            RetImm, StoreLocal,
+            Call, CallIndirect, CopiedAttributes, Function, FunctionAlias, FunctionReference,
+            LoadLocal, Ret, RetImm, StoreLocal,
             attributes::{
                 DeclaredEffects, DeclaredEffectsAttr, IntAttr, LocalVariable, LocalVariableAttr,
                 SignatureAttr, TypeArrayAttr, remap_declared_effects,
@@ -343,6 +349,11 @@ impl ConversionPattern for FunctionPattern {
         };
         let converted = convert_signature(&context, &signature, converter);
         check_effects_within_signature(&op.borrow(), &effects, &converted)?;
+        if converted.signature != signature
+            && let Some(root) = rewriter.root()
+        {
+            check_users_under_root(op, root)?;
+        }
         let new_effects = remap_declared_effects(&effects, &converted.params, &converted.results);
         let mut map = LocalMap {
             starts: Vec::with_capacity(locals.len()),
@@ -504,6 +515,59 @@ fn check_effects_within_signature(
         }
     }
     Ok(())
+}
+
+/// An error, naming the function and the user, when `function`, whose signature the conversion
+/// changes, is named by an operation that is not under `root`, directly or through an alias of it
+/// at any number of aliases: that operation would keep the old signature, and the IR around the
+/// root would not verify.
+fn check_users_under_root(function: OperationRef, root: OperationRef) -> Result<(), Report> {
+    let mut pending = alloc::vec![function];
+    let mut seen = alloc::vec![function];
+    while let Some(symbol) = pending.pop() {
+        let owners = {
+            let symbol = symbol.borrow();
+            let symbol = symbol.as_trait::<dyn Symbol>().expect("a function or an alias");
+            symbol
+                .iter_uses()
+                .map(|user| user.owner)
+                .collect::<SmallVec<[OperationRef; 4]>>()
+        };
+        for owner in owners {
+            if !root.borrow().is_ancestor_of(&owner.borrow()) {
+                return Err(Report::msg(format!(
+                    "the conversion changes the signature of function {}, which is named by {} \
+                     outside the root of the conversion, {}: the root must hold every operation \
+                     that names a function whose signature the conversion changes",
+                    describe_op(function),
+                    describe_op(owner),
+                    describe_op(root),
+                )));
+            }
+            if owner.borrow().is::<FunctionAlias>() && !seen.contains(&owner) {
+                seen.push(owner);
+                pending.push(owner);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `op` for a message: its name, and the path of the nearest symbol that is or holds it.
+fn describe_op(op: OperationRef) -> alloc::string::String {
+    let name = op.borrow().name();
+    let mut symbol = Some(op);
+    while let Some(current) = symbol {
+        if let Some(path) = current.borrow().as_trait::<dyn Symbol>().map(|symbol| symbol.path()) {
+            return if current == op {
+                format!("'{name}' {path}")
+            } else {
+                format!("'{name}' in {path}")
+            };
+        }
+        symbol = current.borrow().parent_op();
+    }
+    format!("'{name}'")
 }
 
 /// The message of the system limit on the number of locals of a function.

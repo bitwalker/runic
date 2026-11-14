@@ -1104,3 +1104,135 @@ fn a_converted_call_keeps_its_attributes() {
     assert_eq!(linked.borrow().name().as_str(), "f");
     assert_eq!(target.borrow().try_user().unwrap().borrow().owner, call);
 }
+
+/// A world of two modules: `@one` defines `@id`, an alias of it and an alias of that alias, and
+/// `@two` calls `@id` through `call`.
+fn two_modules(call: &str) -> alloc::string::String {
+    format!(
+        "builtin.world {{
+    builtin.module public @one {{
+        builtin.function public extern(\"C\") @id(%a: i128) -> i128 {{
+            builtin.ret %a : (i128);
+        }};
+        builtin.function_alias public @first -> @id;
+        builtin.function_alias public @second -> @first;
+    }};
+    builtin.module public @two {{
+        builtin.function public extern(\"C\") @user(%a: i128) -> i128 {{
+            %r = builtin.call {call}(%a) : extern(\"C\") (i128) -> i128;
+            builtin.ret %r : (i128);
+        }};
+    }};
+}};"
+    )
+}
+
+/// Parses `source` as a `builtin.world` and verifies it.
+fn parse_world(source: &str) -> (Rc<Context>, OperationRef) {
+    let context = Rc::new(Context::default());
+    let world = parse::<crate::dialects::builtin::World>(
+        ParserConfig::new(context.clone()),
+        "world",
+        source,
+    )
+    .into_result()
+    .unwrap_or_else(|err| panic!("{}", describe(&err)));
+    (context, world.as_operation_ref())
+}
+
+/// The operation `@name` under `root`.
+fn symbol_named(root: OperationRef, name: &str) -> OperationRef {
+    let mut found = None;
+    root.borrow().prewalk_all(|op: &Operation| {
+        if op.as_trait::<dyn Symbol>().is_some_and(|symbol| symbol.name().as_str() == name) {
+            found = Some(op.as_operation_ref());
+        }
+    });
+    found.unwrap_or_else(|| panic!("no @{name}"))
+}
+
+/// A conversion rooted at the callee's module, whose caller is in another module, is refused
+/// before anything changes: directly, and through an alias of an alias. The error names the
+/// function and the user outside the root.
+#[test]
+fn a_function_with_a_user_outside_the_root_is_refused() {
+    for (call, user) in [
+        ("::@one::@id", "'builtin.call' in ::two::user"),
+        ("::@one::@second", "'builtin.call' in ::two::user"),
+    ] {
+        let (context, world) = parse_world(&two_modules(call));
+        let before = world.borrow().to_string();
+        let converter = wide_converter(&context);
+        let one = symbol_named(world, "one");
+        let err = convert_full(one, by_type_target(&context, &converter), &converter).unwrap_err();
+        let err = describe(&err);
+        assert!(err.contains("function 'builtin.function' ::one::id"), "{err}");
+        assert!(err.contains(&format!("named by {user} outside the root")), "{err}");
+        assert!(err.contains("'builtin.module' ::one"), "{err}");
+        assert_str_eq!(world.borrow().to_string(), before);
+        world.borrow().recursively_verify().expect("the world verifies");
+    }
+}
+
+/// An alias outside the root that names the converted function is a user outside the root.
+#[test]
+fn an_alias_outside_the_root_is_a_user_outside_the_root() {
+    let source = "builtin.world {
+    builtin.module public @one {
+        builtin.function public extern(\"C\") @id(i128) -> i128;
+    };
+    builtin.module public @two {
+        builtin.function_alias public @far -> ::@one::@id;
+    };
+};";
+    let (context, world) = parse_world(source);
+    let before = world.borrow().to_string();
+    let converter = wide_converter(&context);
+    let one = symbol_named(world, "one");
+    let err = convert_full(one, by_type_target(&context, &converter), &converter).unwrap_err();
+    let err = describe(&err);
+    assert!(
+        err.contains("named by 'builtin.function_alias' ::two::far outside the root"),
+        "{err}"
+    );
+    assert_str_eq!(world.borrow().to_string(), before);
+}
+
+/// A conversion rooted at one function, whose caller is beside it in the module, is refused.
+#[test]
+fn a_conversion_rooted_at_a_function_with_a_caller_beside_it_is_refused() {
+    let (context, module) = parse_module(
+        "    builtin.function public extern(\"C\") @id(%a: i128, %n: i64) -> i128 locals(i128) {
+        builtin.store_local 0, %a;
+        %b = builtin.load_local 0 : i128;
+        builtin.ret %b : (i128);
+    };
+    builtin.function public extern(\"C\") @user(%a: i128, %n: i64) -> i128 {
+        %r = builtin.call @id(%a, %n) : extern(\"C\") (i128, i64) -> i128;
+        builtin.ret %r : (i128);
+    };",
+    );
+    let before = module.borrow().to_string();
+    let converter = wide_converter(&context);
+    let id = symbol_named(module, "id");
+    let err = convert_full(id, by_type_target(&context, &converter), &converter).unwrap_err();
+    let err = describe(&err);
+    assert!(err.contains("named by 'builtin.call' in ::m::user outside the root"), "{err}");
+    assert_str_eq!(module.borrow().to_string(), before);
+}
+
+/// The same world converted from its root: both modules, directly and through the aliases.
+#[test]
+fn a_conversion_rooted_at_the_world_converts_every_module() {
+    for call in ["::@one::@id", "::@one::@second"] {
+        let (context, world) = parse_world(&two_modules(call));
+        let converter = wide_converter(&context);
+        convert_full(world, by_type_target(&context, &converter), &converter)
+            .unwrap_or_else(|err| panic!("{}", describe(&err)));
+        let text = world.borrow().to_string();
+        assert!(text.contains(": i64) -> (i64, i64) {"), "{text}");
+        assert!(text.contains(&format!("{call}(")), "{text}");
+        assert!(text.contains(": extern(\"C\") (i64, i64) -> (i64, i64);"), "{text}");
+        world.borrow().recursively_verify().expect("the world verifies");
+    }
+}
