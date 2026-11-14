@@ -59,6 +59,10 @@ where
         self.value.pretty_print()
     }
 
+    fn value_as_any_mut(&mut self) -> &mut dyn Any {
+        self.value.value_as_any_mut()
+    }
+
     fn try_merge(&mut self, other: &mut dyn Any) -> Result<(), Report> {
         let lhs = &mut self.value;
         if let Some(rhs) = other.downcast_mut::<<V as StatisticValue>::Value>() {
@@ -93,6 +97,8 @@ pub trait Statistic {
     fn description(&self) -> &str;
     /// Pretty prints this statistic as a value
     fn pretty_print(&self) -> crate::formatter::Document;
+    /// The raw underlying value of this statistic, as [Self::try_merge] takes it
+    fn value_as_any_mut(&mut self) -> &mut dyn Any;
     /// Merges another instance of this statistic into this one, given a mutable reference to the
     /// raw underlying value of the other instance.
     ///

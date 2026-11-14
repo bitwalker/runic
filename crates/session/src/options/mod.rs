@@ -62,7 +62,7 @@ pub struct Options {
     pub print_ir_before_stage: Vec<String>,
     /// Print IR to stdout after each pass
     pub print_ir_after_all: bool,
-    /// Print IR to stdout each time the named passes are applied
+    /// Print IR to stdout each time the passes with these command-line names are applied
     pub print_ir_after_pass: Vec<String>,
     /// Only print the IR if the pass modified the IR structure.
     pub print_ir_after_modified: bool,
@@ -201,8 +201,12 @@ impl Options {
     }
 
     /// The IR printing configuration these options select.
+    ///
+    /// IR is printed after each pass (`print_ir_after_all`), or after the named passes
+    /// (`print_ir_after_pass`); `print_ir_after_modified` alone prints after each pass that changed
+    /// the IR.
     pub fn ir_printing_config(&self) -> Result<runic_core::pass::IRPrintingConfig, Report> {
-        use runic_core::pass::OpFilter;
+        use runic_core::pass::{OpFilter, PassSelection};
 
         let pass_filters = self.print_ir_after_pass.clone();
 
@@ -221,12 +225,20 @@ impl Options {
             .filter(|filter| !matches!(filter, OpFilter::All))
             .collect();
 
+        let after = if !pass_filters.is_empty() {
+            PassSelection::Named(pass_filters)
+        } else if self.print_ir_after_all || self.print_ir_after_modified {
+            PassSelection::All
+        } else {
+            PassSelection::None
+        };
+
         Ok(runic_core::pass::IRPrintingConfig {
-            print_ir_after_all: self.print_ir_after_all,
-            print_ir_after_pass: pass_filters.into(),
-            print_ir_after_modified: self.print_ir_after_modified,
-            print_ir_filters,
-            ..Default::default()
+            before: PassSelection::None,
+            after,
+            only_when_modified: self.print_ir_after_modified,
+            filters: print_ir_filters,
+            flags: self.op_printing_flags(),
         })
     }
 }
@@ -369,7 +381,40 @@ mod tests {
             ..Options::default()
         };
         let config = options.ir_printing_config().unwrap();
-        assert_eq!(config.print_ir_filters.len(), 1);
+        assert_eq!(config.filters.len(), 1);
+    }
+
+    #[test]
+    fn ir_printing_options_select_the_passes_printed_after() {
+        use runic_core::pass::PassSelection;
+
+        let config = Options::default().ir_printing_config().unwrap();
+        assert_eq!((config.before, config.after), (PassSelection::None, PassSelection::None));
+
+        let all = Options {
+            print_ir_after_all: true,
+            print_hir_source_locations: true,
+            ..Options::default()
+        };
+        let config = all.ir_printing_config().unwrap();
+        assert_eq!(config.after, PassSelection::All);
+        assert!(!config.only_when_modified);
+        assert!(config.flags.print_source_locations);
+
+        let named = Options {
+            print_ir_after_pass: vec!["cse".to_string()],
+            ..Options::default()
+        };
+        let config = named.ir_printing_config().unwrap();
+        assert_eq!(config.after, PassSelection::Named(vec!["cse".to_string()]));
+
+        let modified = Options {
+            print_ir_after_modified: true,
+            ..Options::default()
+        };
+        let config = modified.ir_printing_config().unwrap();
+        assert_eq!(config.after, PassSelection::All);
+        assert!(config.only_when_modified);
     }
 
     #[test]

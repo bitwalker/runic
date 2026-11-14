@@ -4,6 +4,7 @@ use alloc::{
     format,
     rc::Rc,
     string::{String, ToString},
+    vec::Vec,
 };
 
 use compact_str::{CompactString, ToCompactString};
@@ -11,7 +12,7 @@ use smallvec::{SmallVec, smallvec};
 
 use super::{
     AnalysisManager, OpFilter, OperationPass, Pass, PassExecutionState, PassInstrumentation,
-    PassInstrumentor, PipelineParentInfo, Statistic,
+    PassInstrumentor, PassOutput, PipelineParentInfo, Statistic, write_output,
 };
 use crate::{
     Context, EntityMut, Forward, OpPrintingFlags, OpRegistration, Operation, OperationName,
@@ -27,22 +28,43 @@ pub enum Nesting {
     Explicit,
 }
 
-#[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
-pub enum PassDisplayMode {
-    List,
+/// The passes IR is printed for, selected by their command-line names ([`Pass::argument`]).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub enum PassSelection {
+    /// No pass
     #[default]
-    Pipeline,
+    None,
+    /// Every pass
+    All,
+    /// The passes with these command-line names
+    Named(Vec<String>),
 }
 
+impl PassSelection {
+    /// Whether the pass whose command-line name is `argument` is selected.
+    pub fn selects(&self, argument: &str) -> bool {
+        match self {
+            Self::None => false,
+            Self::All => true,
+            Self::Named(names) => names.iter().any(|name| name == argument),
+        }
+    }
+}
+
+/// When and how [`PassManager::enable_ir_printing`] prints IR.
 #[derive(Default, Debug)]
 pub struct IRPrintingConfig {
-    pub print_module_scope: bool,
-    pub print_after_only_on_failure: bool,
-    // NOTE: Taken from the Options struct
-    pub print_ir_after_all: bool,
-    pub print_ir_after_pass: SmallVec<[String; 1]>,
-    pub print_ir_after_modified: bool,
-    pub print_ir_filters: SmallVec<[OpFilter; 1]>,
+    /// The passes before which the operation they run on is printed
+    pub before: PassSelection,
+    /// The passes after which the operation they ran on is printed
+    pub after: PassSelection,
+    /// Print after a pass only when the pass reported that it changed the IR (see
+    /// [`PassExecutionState::set_post_pass_status`]); printing before a pass is not affected
+    pub only_when_modified: bool,
+    /// When not empty, print only the operations these filters select, each on its own, instead of
+    /// the operation the pass ran on
+    pub filters: Vec<OpFilter>,
+    /// How operations are printed
     pub flags: OpPrintingFlags,
 }
 
@@ -56,10 +78,8 @@ pub struct PassManager {
     // An optional crash reproducer generator, if this pass manager is setup to
     // generate reproducers.
     //crash_reproducer_generator: Rc<PassCrashReproducerGenerator>,
-    /// Indicates whether to print pass statistics
-    statistics: Option<PassDisplayMode>,
-    /// Indicates whether or not pass timing is enabled
-    timing: bool,
+    /// Where pass statistics are written after a run, if they are
+    statistics: Option<Box<PassOutput>>,
     /// Indicates whether or not to run verification between passes
     verification: bool,
 }
@@ -93,7 +113,6 @@ impl PassManager {
             pm,
             instrumentor: Default::default(),
             statistics: None,
-            timing: false,
             verification: true,
         }
     }
@@ -148,12 +167,15 @@ impl PassManager {
         */
         let result = self.run_passes(op, analysis_manager);
 
-        // Dump all of the pass statistics if necessary.
-        #[cfg(feature = "std")]
-        if self.statistics.is_some() {
-            let mut output = alloc::string::String::new();
-            self.dump_statistics(&mut output).map_err(Report::msg)?;
-            std::println!("{output}");
+        // Write the pass statistics if they were asked for, whether or not the passes succeeded.
+        if let Some(out) = self.statistics.as_deref_mut() {
+            let mut text = String::new();
+            let written = self
+                .pm
+                .print_statistics(&mut text)
+                .map_err(Report::msg)
+                .and_then(|()| write_output(out, &text));
+            return result.and(written);
         }
 
         result
@@ -190,29 +212,26 @@ impl PassManager {
         self
     }
 
-    pub fn enable_ir_printing(mut self, config: IRPrintingConfig) -> Self {
-        let print = Print::new(&config);
-
-        if let Some(print) = print {
-            let print = Box::new(print);
-            self.add_instrumentation(print);
+    /// Prints the operation a pass ran on, before and after the selected passes, to `out`.
+    ///
+    /// A pass is selected by its command-line name; see [`IRPrintingConfig`] for what is printed.
+    /// Nothing is installed, and nothing written, when no pass is selected.
+    pub fn enable_ir_printing(
+        &mut self,
+        config: IRPrintingConfig,
+        out: Box<PassOutput>,
+    ) -> &mut Self {
+        if config.before != PassSelection::None || config.after != PassSelection::None {
+            self.add_instrumentation(Box::new(Print::new(config, out)));
         }
         self
     }
 
-    pub fn enable_timing(&mut self, yes: bool) -> &mut Self {
-        self.timing = yes;
+    /// Writes the statistics of the passes to `out` at the end of each run, in the form of
+    /// [`OpPassManager::print_statistics`].
+    pub fn enable_statistics(&mut self, out: Box<PassOutput>) -> &mut Self {
+        self.statistics = Some(out);
         self
-    }
-
-    pub fn enable_statistics(&mut self, mode: Option<PassDisplayMode>) -> &mut Self {
-        self.statistics = mode;
-        self
-    }
-
-    #[cfg(feature = "std")]
-    fn dump_statistics(&mut self, out: &mut dyn core::fmt::Write) -> core::fmt::Result {
-        self.pm.print_statistics(out, self.statistics.unwrap_or_default())
     }
 
     pub fn print_as_textual_pipeline(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -634,25 +653,19 @@ impl OpPassManager {
         f.write_str(")")
     }
 
-    pub fn print_statistics(
-        &self,
-        out: &mut dyn core::fmt::Write,
-        display_mode: PassDisplayMode,
-    ) -> core::fmt::Result {
+    /// Prints the statistics of the passes of this pass manager and of the pass managers nested in
+    /// it: a header, then each pass that has statistics, by name, with its statistics sorted by
+    /// name. The statistics of passes of one name are merged.
+    pub fn print_statistics(&self, out: &mut dyn core::fmt::Write) -> core::fmt::Result {
         const PASS_STATS_DESCRIPTION: &str = "... Pass statistics report ...";
 
-        // Print the stats header.
-        writeln!(out, "=={:-<73}==", "")?;
-        // Figure out how many spaces for the description name.
-        let padding = 80usize.saturating_sub(PASS_STATS_DESCRIPTION.len());
-        writeln!(out, "{PASS_STATS_DESCRIPTION: <padding$}")?;
-        writeln!(out, "=={:-<73}==", "")?;
+        // Print the stats header, with the description centered in 80 columns.
+        writeln!(out, "=={:-<76}==", "")?;
+        let padding = 80usize.saturating_sub(PASS_STATS_DESCRIPTION.len()) / 2;
+        writeln!(out, "{:padding$}{PASS_STATS_DESCRIPTION}", "")?;
+        writeln!(out, "=={:-<76}==", "")?;
 
-        // Defer to a specialized printer for each display mode.
-        match display_mode {
-            PassDisplayMode::List => self.print_statistics_as_list(out),
-            PassDisplayMode::Pipeline => self.print_statistics_as_pipeline(out),
-        }
+        self.print_statistics_as_list(out)
     }
 
     fn add_stats(
@@ -684,30 +697,25 @@ impl OpPassManager {
                     let prev_stats = entry.get_mut();
                     assert_eq!(prev_stats.len(), statistics.len());
                     for (index, mut stat) in statistics.into_iter().enumerate() {
-                        let _ = prev_stats[index].try_merge(&mut stat);
+                        let _ = prev_stats[index].try_merge(stat.value_as_any_mut());
                     }
                 }
             }
         }
     }
 
-    /// Print the statistics results in a list form, where each pass is sorted by name.
+    /// Prints the statistics of each pass, in the order of the names of the passes.
     fn print_statistics_as_list(&self, out: &mut dyn core::fmt::Write) -> core::fmt::Result {
         let mut merged_stats = BTreeMap::<&str, SmallVec<[Box<dyn Statistic>; 4]>>::default();
         for pass in self.passes.iter() {
             Self::add_stats(&**pass, &mut merged_stats);
         }
 
-        // Print the timing information sequentially.
         for (pass, stats) in merged_stats.iter() {
             self.print_pass_entry(out, 2, pass, stats)?;
         }
 
         Ok(())
-    }
-
-    fn print_statistics_as_pipeline(&self, _out: &mut dyn core::fmt::Write) -> core::fmt::Result {
-        todo!()
     }
 
     fn print_pass_entry(
@@ -719,7 +727,7 @@ impl OpPassManager {
     ) -> core::fmt::Result {
         use core::fmt::Write;
 
-        writeln!(out, "{pass: <indent$}")?;
+        writeln!(out, "{pass}")?;
         if stats.is_empty() {
             return Ok(());
         }
@@ -754,13 +762,12 @@ impl OpPassManager {
 
         // Print statistics
         for stat in rendered_stats {
-            write!(out, "{: <1$} (S) ", "", indent)?;
+            write!(out, "{:indent$}(S) ", "")?;
             write!(out, "{: <1$} ", stat.value, largest_value)?;
-            write!(out, "{: <1$}", stat.name, largest_name)?;
             if stat.description.is_empty() {
-                out.write_char('\n')?;
+                writeln!(out, "{}", stat.name)?;
             } else {
-                writeln!(out, " - {}", stat.description)?;
+                writeln!(out, "{: <1$} - {2}", stat.name, largest_name, stat.description)?;
             }
         }
 
@@ -1183,6 +1190,10 @@ impl Pass for OpToOpPassAdaptor {
 #[cfg(test)]
 #[path = "manager/tests.rs"]
 mod scheduling_tests;
+
+#[cfg(test)]
+#[path = "manager/printing_tests.rs"]
+mod printing_tests;
 
 #[cfg(test)]
 mod tests {

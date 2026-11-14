@@ -10,220 +10,152 @@ pub mod registry;
 mod specialization;
 pub mod statistics;
 
-use alloc::{borrow::Cow, string::String};
+use alloc::{borrow::Cow, boxed::Box, format, string::String};
 
 #[cfg(feature = "std")]
 pub use self::duration::HumanDuration;
 pub use self::{
     analysis::{Analysis, AnalysisManager, OperationAnalysis, PreservedAnalyses},
     instrumentation::{PassInstrumentation, PassInstrumentor, PipelineParentInfo},
-    manager::{IRPrintingConfig, Nesting, OpPassManager, PassDisplayMode, PassManager},
+    manager::{IRPrintingConfig, Nesting, OpPassManager, PassManager, PassSelection},
     pass::{OperationPass, Pass, PassExecutionState, PostPassStatus},
     pipeline::{Anchor, PassPipeline, PipelineElement, SelectedPass},
     registry::{PassInfo, PassPipelineInfo},
     specialization::PassTarget,
     statistics::{PassStatistic, Statistic, StatisticValue},
 };
-use crate::{EntityRef, Operation, OperationName, OperationRef, SmallVec, TraceTarget};
+use crate::{Forward, Operation, OperationRef, RawWalk, Report, WalkResult};
 
-/// Handles IR printing, based on the [`IRPrintingConfig`] passed in
-/// [Print::new]. Currently, this struct is managed by the [`PassManager`]'s [`PassInstrumentor`],
-/// which calls the Print struct via its [`PassInstrumentation`] trait implementation.
+/// The stream the pass manager writes printed IR and statistics to.
 ///
-/// The configuration passed by [`IRPrintingConfig`] controls *when* the IR gets displayed, rather
-/// than *how*. The display format itself depends on the `Display` implementation done by each
-/// [`Operation`].
+/// It is [`std::io::Write`] with the `std` feature, so that standard output or a file can be given
+/// as it is, and [`core::fmt::Write`] without it.
+#[cfg(feature = "std")]
+pub type PassOutput = dyn std::io::Write;
+/// The stream the pass manager writes printed IR and statistics to.
 ///
-/// The `selected_passes` field controls which passes are selected to be printable. This means that
-/// those selected passes will run all the configured filters; which will determine whether
-/// the pass displays the IR or not. The available options are [`SelectedPasses::All`] to enable all
-/// the passes and [`SelectedPasses::Just`] to enable a select set of passes.
-///
-/// The filters that run on the selected passes are:
-/// - `only_when_modified` will only print the IR if said pass modified the IR.
-/// - `op_filter` will only display a specific subset of operations.
-#[derive(Default)]
-pub struct Print {
-    selected_passes: Option<SelectedPasses>,
-    filters: SmallVec<[OpFilter; 1]>,
-    only_when_modified: bool,
+/// It is [`std::io::Write`] with the `std` feature, so that standard output or a file can be given
+/// as it is, and [`core::fmt::Write`] without it.
+#[cfg(not(feature = "std"))]
+pub type PassOutput = dyn core::fmt::Write;
+
+/// Writes `text` to `out`, and flushes it when it is a [`std::io::Write`].
+pub(crate) fn write_output(out: &mut PassOutput, text: &str) -> Result<(), Report> {
+    #[cfg(feature = "std")]
+    let result = out.write_all(text.as_bytes()).and_then(|_| out.flush());
+    #[cfg(not(feature = "std"))]
+    let result = out.write_str(text);
+    result.map_err(|error| Report::msg(format!("could not write pass output: {error}")))
 }
 
-/// Which passes are enabled for IR printing.
-#[derive(Debug)]
-pub enum SelectedPasses {
-    /// Enable all passes for IR Printing.
-    All,
-    /// Just select a subset of passes for IR printing.
-    Just(SmallVec<[String; 1]>),
-}
-
+/// Which operations under the operation a pass ran on are printed.
+///
+/// An operation is printed when one of the filters of [`IRPrintingConfig::filters`] matches it;
+/// the operations nested in a printed operation are not tried again.
 #[derive(Default, Debug, Clone)]
 pub enum OpFilter {
-    /// Print all operations
+    /// The operation the pass ran on
     #[default]
     All,
-    /// Print any `Symbol` operation, optionally filtering by symbols whose name contains a given
-    /// string.
-    ///
-    /// See [`Print::with_symbol_filter`] for more details.
+    /// Any `Symbol` operation, or, with a string, any whose symbol name contains it
     Symbol(Option<Cow<'static, str>>),
-    /// Print only operations of the given type
-    ///
-    /// NOTE: Currently marked as `dead_code` since it is not configured via the CLI.
-    ///
-    /// See [`Print::with_symbol_filter`] for more details.
+    /// Operations of the given dialect and opcode
     Type {
         dialect: crate::interner::Symbol,
         op: crate::interner::Symbol,
     },
 }
 
+impl OpFilter {
+    /// Whether this filter selects `op`, the operation a pass ran on (`root`) or one under it.
+    fn matches(&self, op: &Operation, root: bool) -> bool {
+        match self {
+            Self::All => root,
+            Self::Symbol(None) => op.as_symbol().is_some(),
+            Self::Symbol(Some(part)) => {
+                op.as_symbol().is_some_and(|sym| sym.name().as_str().contains(part.as_ref()))
+            }
+            Self::Type {
+                dialect,
+                op: opcode,
+            } => {
+                let name = op.name();
+                name.dialect() == *dialect && name.name() == *opcode
+            }
+        }
+    }
+}
+
+/// Prints the operation a pass runs on before and after the passes an [`IRPrintingConfig`]
+/// selects, to a stream; installed by [`PassManager::enable_ir_printing`].
+///
+/// Each print is a header line, `// ----- IR before <pass> on <operation name> -----` (or
+/// `after`), where `<pass>` is the command-line name of the pass, followed by the operation
+/// printed with the configured [`crate::OpPrintingFlags`] and a blank line. With filters, each
+/// operation they select is printed under its own header instead. A pass manager adaptor (a
+/// nested pipeline) is never printed for: the passes it runs are.
+struct Print {
+    config: IRPrintingConfig,
+    out: Box<PassOutput>,
+}
+
 impl Print {
-    pub fn new(config: &IRPrintingConfig) -> Option<Self> {
-        if config.print_ir_after_all
-            || !config.print_ir_after_pass.is_empty()
-            || config.print_ir_after_modified
+    fn new(config: IRPrintingConfig, out: Box<PassOutput>) -> Self {
+        Self { config, out }
+    }
+
+    fn print(&mut self, phase: &str, pass: &dyn OperationPass, op: &OperationRef) {
+        let argument = pass.argument();
+        let mut text = String::new();
+        if self.config.filters.is_empty() {
+            self.render(&mut text, phase, argument, &op.borrow());
+        } else {
+            let root = *op;
+            let _ = op.raw_prewalk::<Forward, _, ()>(|nested| {
+                let nested_op = nested.borrow();
+                let is_root = nested == root;
+                if self.config.filters.iter().any(|filter| filter.matches(&nested_op, is_root)) {
+                    self.render(&mut text, phase, argument, &nested_op);
+                    WalkResult::Skip
+                } else {
+                    WalkResult::Continue(())
+                }
+            });
+        }
+        if !text.is_empty()
+            && let Err(error) = write_output(&mut *self.out, &text)
         {
-            Some(Self::default().with_pass_filter(config).with_symbol_filter(config))
+            log::warn!(target: "pass", "{error}");
+        }
+    }
+
+    fn render(&self, text: &mut String, phase: &str, argument: &str, op: &Operation) {
+        use core::fmt::Write;
+
+        use crate::{OpPrinter, print::AsmPrinter};
+
+        let flags = &self.config.flags;
+        let context = op.context_rc();
+        let mut printer = if op.parent_op().is_none() {
+            AsmPrinter::root(context, flags)
         } else {
-            None
-        }
-    }
-
-    pub fn with_type_filter<T: crate::OpRegistration>(mut self) -> Self {
-        let dialect = <T as crate::OpRegistration>::dialect_name();
-        let op = <T as crate::OpRegistration>::name();
-        self.filters.push(OpFilter::Type { dialect, op });
-        self
-    }
-
-    /// Configure which operations are printed. This is set via the different variants present in
-    /// [`OpFilter`].
-    pub fn with_symbol_filter(mut self, config: &IRPrintingConfig) -> Self {
-        self.filters.extend(config.print_ir_filters.iter().cloned());
-        self
-    }
-
-    fn with_pass_filter(mut self, config: &IRPrintingConfig) -> Self {
-        let is_ir_filter_set = if config.print_ir_after_all {
-            self.selected_passes = Some(SelectedPasses::All);
-            true
-        } else if !config.print_ir_after_pass.is_empty() {
-            self.selected_passes = Some(SelectedPasses::Just(config.print_ir_after_pass.clone()));
-            true
-        } else {
-            false
+            AsmPrinter::fragment(context, flags)
         };
-
-        if config.print_ir_after_modified {
-            self.only_when_modified = true;
-            // NOTE: If the user specified the "print after modification" flag, but didn't specify
-            // any IR pass filter flag; then we assume that the desired behavior is to set the "all
-            // pass" filter.
-            if !is_ir_filter_set {
-                self.selected_passes = Some(SelectedPasses::All);
-            }
-        };
-
-        self
+        op.print(&mut printer);
+        let document = printer.finish();
+        let _ = writeln!(text, "// ----- IR {phase} {argument} on {} -----", op.name());
+        let _ = writeln!(text, "{document}\n");
     }
 
-    pub fn print_ir(&self, op: EntityRef<'_, Operation>, topic: &'static str, phase: &str) {
-        let target = TraceTarget::category("pass").with_topic(topic);
-        // Determine if any filter applies to `op`, and print accordingly
-        if self.filters.is_empty() {
-            let name = op.name();
-            if let Some(sym) = op.as_symbol() {
-                log::trace!(target: &target, symbol = sym.name().as_str(), dialect = name.dialect().as_str(), op = name.name().as_str(); "{phase}: {op}");
-            } else {
-                log::trace!(target: &target, dialect = name.dialect().as_str(), op = name.name().as_str(); "{phase}: {op}");
-            }
-            return;
-        }
-
-        for filter in self.filters.iter() {
-            match filter {
-                OpFilter::All => {
-                    let name = op.name();
-                    if let Some(sym) = op.as_symbol() {
-                        log::trace!(target: &target, symbol = sym.name().as_str(), dialect = name.dialect().as_str(), op = name.name().as_str(); "{phase}: {op}");
-                    } else {
-                        log::trace!(target: &target, dialect = name.dialect().as_str(), op = name.name().as_str(); "{phase}: {op}");
-                    }
-                    break;
-                }
-                OpFilter::Type {
-                    dialect,
-                    op: op_name,
-                } => {
-                    let name = op.name();
-                    if name.dialect() == *dialect && name.name() == *op_name {
-                        log::trace!(target: &target, dialect = dialect.as_str(), op = op_name.as_str(); "{phase}: {op}");
-                        break;
-                    }
-                }
-                OpFilter::Symbol(None) => {
-                    if let Some(sym) = op.as_symbol() {
-                        let name = op.name();
-                        log::trace!(target: &target, symbol = sym.name().as_str(), dialect = name.dialect().as_str(), op = name.name().as_str(); "{phase}: {}", sym.as_symbol_operation());
-                        break;
-                    }
-                }
-                OpFilter::Symbol(Some(filter)) => {
-                    if let Some(sym) =
-                        op.as_symbol().filter(|sym| sym.name().as_str().contains(filter.as_ref()))
-                    {
-                        let name = op.name();
-                        log::trace!(target: &target, symbol = sym.name().as_str(), dialect = name.dialect().as_str(), op = name.name().as_str(); "{phase}: {}", sym.as_symbol_operation());
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    fn pass_filter(&self, pass: &dyn OperationPass) -> bool {
-        match &self.selected_passes {
-            Some(SelectedPasses::All) => true,
-            Some(SelectedPasses::Just(passes)) => passes.iter().any(|p| pass.name() == *p),
-            None => false,
-        }
-    }
-
-    fn should_print(&self, pass: &dyn OperationPass, ir_changed: &PostPassStatus) -> bool {
-        let pass_filter = self.pass_filter(pass);
-
-        // Always print, unless "only_when_modified" has been set and there have not been changes.
-        let modification_filter =
-            !matches!(ir_changed, PostPassStatus::Unchanged if self.only_when_modified);
-
-        pass_filter && modification_filter
+    fn is_adaptor(pass: &dyn OperationPass) -> bool {
+        pass.as_any().is::<manager::OpToOpPassAdaptor>()
     }
 }
 
 impl PassInstrumentation for Print {
-    fn run_before_pipeline(
-        &mut self,
-        _name: Option<&OperationName>,
-        _parent_info: &PipelineParentInfo,
-        op: OperationRef,
-    ) {
-        if !self.only_when_modified {
-            return;
-        }
-
-        let op = op.borrow();
-        self.print_ir(op, "pipeline", "before");
-    }
-
     fn run_before_pass(&mut self, pass: &dyn OperationPass, op: &OperationRef) {
-        if self.only_when_modified {
-            return;
-        }
-        if self.pass_filter(pass) {
-            let op = op.borrow();
-            self.print_ir(op, pass.name(), "before");
+        if !Self::is_adaptor(pass) && self.config.before.selects(pass.argument()) {
+            self.print("before", pass, op);
         }
     }
 
@@ -233,11 +165,14 @@ impl PassInstrumentation for Print {
         op: &OperationRef,
         post_execution_state: &PassExecutionState,
     ) {
-        let changed = post_execution_state.post_pass_status();
-
-        if self.should_print(pass, changed) {
-            let op = op.borrow();
-            self.print_ir(op, pass.name(), "after");
+        if Self::is_adaptor(pass) || !self.config.after.selects(pass.argument()) {
+            return;
         }
+        if self.config.only_when_modified
+            && matches!(post_execution_state.post_pass_status(), PostPassStatus::Unchanged)
+        {
+            return;
+        }
+        self.print("after", pass, op);
     }
 }
