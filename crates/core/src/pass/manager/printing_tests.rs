@@ -433,7 +433,7 @@ fn a_failed_write_of_statistics_fails_the_run() {
 
 #[cfg(feature = "std")]
 mod io_output {
-    use alloc::{rc::Rc, string::ToString, vec::Vec};
+    use alloc::{boxed::Box, rc::Rc, string::ToString, vec::Vec};
     use core::{cell::RefCell, fmt::Write};
 
     use crate::pass::IoOutput;
@@ -467,7 +467,7 @@ mod io_output {
     #[test]
     fn an_io_output_flushes_each_write_and_keeps_the_first_error() {
         let log = Rc::new(RefCell::new(Vec::new()));
-        let mut out = IoOutput::new(Device {
+        let (mut out, error) = IoOutput::new(Device {
             accepted: 1,
             log: log.clone(),
             bytes: Vec::new(),
@@ -476,13 +476,60 @@ mod io_output {
         assert!(out.write_str("two").is_err());
         assert!(out.write_str("three").is_err());
         assert_eq!(
-            out.error().map(|error| error.to_string()).as_deref(),
+            error.error().map(|error| error.to_string()).as_deref(),
             Some("the device is full")
         );
-        // The third write never reaches the device.
+        // Taking the error does not let the output write again.
+        assert!(error.take().is_some());
+        assert!(error.error().is_none());
+        assert!(out.write_str("four").is_err());
+        // The third and fourth writes never reach the device.
         assert_eq!(*log.borrow(), ["write", "flush", "fail"]);
-        let (device, error) = out.into_inner();
-        assert_eq!(device.bytes, b"one");
-        assert!(error.is_some());
+        assert_eq!(out.into_inner().bytes, b"one");
+    }
+
+    /// A caller that gave the boxed output to the pass manager reads why its write failed from
+    /// the handle, and each stream fails on its own.
+    #[test]
+    fn the_reason_a_boxed_io_output_failed_is_read_from_its_handle() {
+        use crate::{
+            dialects::builtin::Module,
+            pass::{IRPrintingConfig, Nesting, PassManager, PassSelection},
+        };
+
+        let (context, module) = super::module();
+        let mut pm = PassManager::on::<Module>(context, Nesting::Explicit);
+        pm.add_pass(super::reporting("first", true)).unwrap();
+        pm.add_pass(Box::<super::Count>::default()).unwrap();
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let (ir, ir_error) = IoOutput::boxed(Device {
+            accepted: 0,
+            log: log.clone(),
+            bytes: Vec::new(),
+        });
+        let config = IRPrintingConfig {
+            after: PassSelection::All,
+            ..Default::default()
+        };
+        pm.enable_ir_printing(config, ir);
+        let statistics = Rc::new(RefCell::new(Vec::new()));
+        let (stats, stats_error) = IoOutput::boxed(Device {
+            accepted: usize::MAX,
+            log: statistics.clone(),
+            bytes: Vec::new(),
+        });
+        pm.enable_statistics(stats);
+        let report = pm.run(module).expect_err("the printed IR is not written");
+        assert!(report.to_string().contains("could not write pass output"), "{report}");
+        assert_eq!(
+            ir_error.error().map(|error| error.to_string()).as_deref(),
+            Some("the device is full")
+        );
+        // The statistics are written to their own stream after the IR stream failed.
+        assert!(stats_error.error().is_none());
+        assert_eq!(*statistics.borrow(), ["write", "flush"]);
+        // A later run writes nothing to the failed stream and does not report it again.
+        pm.run(module).expect("the failure was returned by the run that met it");
+        assert_eq!(*log.borrow(), ["fail"]);
     }
 }

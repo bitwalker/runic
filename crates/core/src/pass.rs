@@ -39,53 +39,86 @@ pub type PassOutput = dyn core::fmt::Write;
 
 /// A [`PassOutput`] that writes to a [`std::io::Write`], and flushes it after each write.
 ///
-/// A [`core::fmt::Error`] carries no message, so the first [`std::io::Error`] is kept here, and
-/// the [`core::fmt::Write::write_str`] that met it and every one after it fail without writing.
+/// A [`core::fmt::Error`] carries no message, so the first [`std::io::Error`] is kept in an
+/// [`IoErrorHandle`], which [`Self::new`] and [`Self::boxed`] also return. The
+/// [`core::fmt::Write::write_str`] that met it and every one after it fail without writing. A
+/// caller keeps the handle, gives the boxed output to the pass manager, and reads the handle when
+/// [`PassManager::run`] fails, to say why the stream could not be written.
 #[cfg(feature = "std")]
 pub struct IoOutput<W> {
     writer: W,
-    error: Option<std::io::Error>,
+    failed: bool,
+    error: IoErrorHandle,
+}
+
+/// The first [`std::io::Error`] an [`IoOutput`] met, shared with the output.
+///
+/// It is empty until a write fails, and is set at most once. Taking the error out of it does not
+/// let the output write again.
+#[cfg(feature = "std")]
+#[derive(Clone, Default)]
+pub struct IoErrorHandle(Rc<RefCell<Option<std::io::Error>>>);
+
+#[cfg(feature = "std")]
+impl IoErrorHandle {
+    /// The first error the writer returned, if it returned one and it was not taken.
+    pub fn error(&self) -> Option<core::cell::Ref<'_, std::io::Error>> {
+        core::cell::Ref::filter_map(self.0.borrow(), Option::as_ref).ok()
+    }
+
+    /// Takes the first error the writer returned, if it returned one and it was not taken.
+    pub fn take(&self) -> Option<std::io::Error> {
+        self.0.borrow_mut().take()
+    }
+}
+
+#[cfg(feature = "std")]
+impl core::fmt::Debug for IoErrorHandle {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_tuple("IoErrorHandle").field(&self.0.borrow()).finish()
+    }
 }
 
 #[cfg(feature = "std")]
 impl<W: std::io::Write> IoOutput<W> {
-    /// An output that writes to `writer`.
-    pub fn new(writer: W) -> Self {
-        Self {
+    /// An output that writes to `writer`, and the handle its first error is kept in.
+    pub fn new(writer: W) -> (Self, IoErrorHandle) {
+        let error = IoErrorHandle::default();
+        let output = Self {
             writer,
-            error: None,
-        }
+            failed: false,
+            error: error.clone(),
+        };
+        (output, error)
     }
 
-    /// An output that writes to `writer`, boxed as the pass manager takes it.
-    pub fn boxed(writer: W) -> Box<PassOutput>
+    /// An output that writes to `writer`, boxed as the pass manager takes it, and the handle its
+    /// first error is kept in.
+    pub fn boxed(writer: W) -> (Box<PassOutput>, IoErrorHandle)
     where
         W: 'static,
     {
-        Box::new(Self::new(writer))
+        let (output, error) = Self::new(writer);
+        (Box::new(output), error)
     }
 
-    /// The first error the writer returned, if it returned one.
-    pub fn error(&self) -> Option<&std::io::Error> {
-        self.error.as_ref()
-    }
-
-    /// The writer, and the first error it returned, if it returned one.
-    pub fn into_inner(self) -> (W, Option<std::io::Error>) {
-        (self.writer, self.error)
+    /// The writer.
+    pub fn into_inner(self) -> W {
+        self.writer
     }
 }
 
 #[cfg(feature = "std")]
 impl<W: std::io::Write> core::fmt::Write for IoOutput<W> {
     fn write_str(&mut self, text: &str) -> core::fmt::Result {
-        if self.error.is_some() {
+        if self.failed {
             return Err(core::fmt::Error);
         }
         match self.writer.write_all(text.as_bytes()).and_then(|()| self.writer.flush()) {
             Ok(()) => Ok(()),
             Err(error) => {
-                self.error = Some(error);
+                self.failed = true;
+                *self.error.0.borrow_mut() = Some(error);
                 Err(core::fmt::Error)
             }
         }

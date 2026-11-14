@@ -17,7 +17,7 @@ use super::{
 };
 use crate::{
     Context, EntityMut, Forward, OpPrintingFlags, OpRegistration, Operation, OperationName,
-    OperationRef, RawWalk, Report, WalkResult,
+    OperationRef, RawWalk, Report, SourceSpan, WalkResult,
     pass::{PostPassStatus, Print},
     traits::IsolatedFromAbove,
 };
@@ -229,9 +229,14 @@ impl PassManager {
     /// Prints the operation a pass ran on, before and after the selected passes, to `out`.
     ///
     /// A pass is selected by its command-line name; see [`IRPrintingConfig`] for what is printed.
-    /// Nothing is installed, and nothing written, when no pass is selected. After a write to `out`
-    /// fails, nothing more is written to it, and the next [`Self::run`] returns the failure when
-    /// its passes succeed.
+    /// Nothing is installed, and nothing written, when no pass is selected.
+    ///
+    /// After a write to `out` fails, nothing more is written to it. The run that met the failure
+    /// returns it when its passes succeed; every later run of this manager writes nothing to `out`
+    /// and does not report it again. The failure of `out` does not stop the stream of
+    /// [`Self::enable_statistics`], which is separate even when both write to the same device. The
+    /// reported error does not say why the write failed; an [`IoOutput`](crate::pass::IoOutput)
+    /// keeps the reason in the handle it returns.
     pub fn enable_ir_printing(
         &mut self,
         config: IRPrintingConfig,
@@ -245,8 +250,14 @@ impl PassManager {
     }
 
     /// Writes the statistics of the passes to `out` at the end of each run, in the form of
-    /// [`OpPassManager::print_statistics`]. A run whose passes succeed returns the failure to
-    /// write them; after a write fails, nothing more is written to `out`.
+    /// [`OpPassManager::print_statistics`].
+    ///
+    /// A run whose passes succeed returns the failure to write them. After a write fails, nothing
+    /// more is written to `out`: every later run of this manager writes no statistics and does not
+    /// report it again. The failure of `out` does not stop the stream of
+    /// [`Self::enable_ir_printing`], which is separate even when both write to the same device. The
+    /// reported error does not say why the write failed; an [`IoOutput`](crate::pass::IoOutput)
+    /// keeps the reason in the handle it returns.
     pub fn enable_statistics(&mut self, out: Box<PassOutput>) -> &mut Self {
         self.statistics = Some(OutputStream::new(out));
         self
@@ -977,6 +988,59 @@ impl OpToOpPassAdaptor {
         Ok(())
     }
 
+    /// The error for `pass`, which cannot run on an operation named `op_name` at `span`. The pass is
+    /// named by its command-line name, or its display name when it has none.
+    fn cannot_run_on(
+        pass: &dyn OperationPass,
+        op_name: &OperationName,
+        span: SourceSpan,
+    ) -> Report {
+        let pass_name = match pass.argument() {
+            "" => pass.name(),
+            argument => argument,
+        };
+        crate::diagnostics::report!(
+            message: (format!("pass '{pass_name}' cannot run on '{op_name}'")),
+            labels: [
+                primary(span, format!("pass '{pass_name}' does not run on this operation")),
+            ],
+        )
+    }
+
+    /// The error when a dynamic `pipeline` cannot be scheduled on `root`, if it cannot: its anchor
+    /// is another operation, `root` is not `IsolatedFromAbove`, or one of its passes does not run
+    /// on `root`.
+    fn cannot_schedule_pipeline(pipeline: &OpPassManager, root: &Operation) -> Option<Report> {
+        use crate::Spanned;
+
+        let root_name = root.name();
+        if pipeline.can_schedule_on(&root_name) {
+            return None;
+        }
+        let span = root.span();
+        if let Some(anchor) = pipeline.name() {
+            return Some(crate::diagnostics::report!(
+                message: (format!("a pipeline on '{anchor}' cannot run on '{root_name}'")),
+                labels: [
+                    primary(span, format!("the pipeline runs only on '{anchor}'")),
+                ],
+            ));
+        }
+        if !root_name.implements::<dyn IsolatedFromAbove>() {
+            return Some(crate::diagnostics::report!(
+                message: (format!("a pipeline cannot run on '{root_name}'")),
+                labels: [
+                    primary(span, "this operation does not implement `IsolatedFromAbove`"),
+                ],
+            ));
+        }
+        pipeline
+            .passes()
+            .iter()
+            .find(|pass| !pass.can_schedule_on(&root_name))
+            .map(|pass| Self::cannot_run_on(&**pass, &root_name, span))
+    }
+
     /// Run the given operation and analysis manager on a single pass.
     fn run(
         pass: &mut dyn OperationPass,
@@ -1003,12 +1067,7 @@ impl OpToOpPassAdaptor {
             ));
         }
         if !pass.can_schedule_on(&op_name) {
-            return Err(crate::diagnostics::report!(
-                message: "failed to execute pass",
-                labels: [
-                    primary(span, "trying to schedule a pass on an unsupported operation"),
-                ],
-            ));
+            return Err(Self::cannot_run_on(pass, &op_name, span));
         }
 
         // Initialize the pass state with a callback for the pass to dynamically execute a pipeline
@@ -1036,7 +1095,9 @@ impl OpToOpPassAdaptor {
                         ],
                     ));
                 }
-                assert!(pipeline.can_schedule_on(&root_op.name()));
+                if let Some(error) = Self::cannot_schedule_pipeline(pipeline, &root_op) {
+                    return Err(error);
+                }
                 // Before running, finalize the passes held by the pipeline
                 pipeline.finalize_pass_list()?;
 

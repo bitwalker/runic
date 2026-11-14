@@ -794,6 +794,87 @@ fn a_typed_pass_in_an_any_manager_is_scheduled_only_on_its_type() {
     assert_eq!(*events.borrow(), ["permissive:first", "permissive:last"]);
 }
 
+/// A root manager for any operation runs a typed pass on the operation it is given only when the
+/// pass runs on it; otherwise the error names the pass and the operation.
+#[test]
+fn a_typed_pass_on_another_type_in_a_root_any_manager_is_an_error_that_names_both() {
+    let (context, world) = tree();
+    let events = Events::default();
+    let mut pm = PassManager::new(context.clone(), "any", Nesting::Explicit).unwrap();
+    pm.add_pass(Box::new(Permissive(events.clone()))).unwrap();
+    let error = pm.run(world).expect_err("a function pass does not run on a world");
+    assert_eq!(error.to_string(), "pass 'permissive' cannot run on 'builtin.world'");
+    assert!(events.borrow().is_empty());
+}
+
+/// A pass that runs `pipeline` on the world it is given, as a dynamic pipeline.
+struct RunsPipeline(Option<OpPassManager>);
+
+impl Pass for RunsPipeline {
+    type Target = World;
+
+    fn name(&self) -> &'static str {
+        "runs-pipeline"
+    }
+
+    fn can_schedule_on(&self, _name: &OperationName) -> bool {
+        true
+    }
+
+    fn run_on_operation(
+        &mut self,
+        op: EntityMut<'_, World>,
+        state: &mut PassExecutionState,
+    ) -> Result<(), Report> {
+        let op = op.into_entity_ref();
+        let world = crate::Op::as_operation(&*op).as_operation_ref();
+        drop(op);
+        let mut pipeline = self.0.take().expect("the pass runs once");
+        state.set_post_pass_status(PostPassStatus::Unchanged);
+        state.run_pipeline(&mut pipeline, world)
+    }
+}
+
+/// A dynamic pipeline whose pass does not run on the operation it is given is an error that names
+/// the pass and the operation, as a pass scheduled by the pass manager is.
+#[test]
+fn a_dynamic_pipeline_with_a_pass_on_another_type_is_an_error_that_names_both() {
+    let (context, world) = tree();
+    let events = Events::default();
+    let mut any = OpPassManager::any(Nesting::Explicit, context.clone());
+    any.add_pass(Box::new(Permissive(events.clone()))).unwrap();
+    let mut pm = PassManager::on::<World>(context.clone(), Nesting::Explicit);
+    pm.add_pass(Box::new(RunsPipeline(Some(any)))).unwrap();
+    let error = pm.run(world).expect_err("a function pass does not run on a world");
+    assert_eq!(error.to_string(), "pass 'permissive' cannot run on 'builtin.world'");
+    assert!(events.borrow().is_empty());
+
+    // A pipeline anchored on another operation.
+    let module = OpPassManager::on::<Module>(Nesting::Explicit, context.clone());
+    let mut pm = PassManager::on::<World>(context, Nesting::Explicit);
+    pm.add_pass(Box::new(RunsPipeline(Some(module)))).unwrap();
+    let error = pm.run(world).expect_err("a module pipeline does not run on a world");
+    assert_eq!(
+        error.to_string(),
+        "a pipeline on 'builtin.module' cannot run on 'builtin.world'"
+    );
+}
+
+/// A typed pass run directly on an operation of another type, outside a pass manager, is an error
+/// that names the pass.
+#[test]
+fn a_typed_pass_run_directly_on_another_type_is_an_error() {
+    let (context, world) = tree();
+    let mut pass: Box<dyn OperationPass> = Box::new(Permissive(Events::default()));
+    let mut state =
+        PassExecutionState::new(world, context, AnalysisManager::new(world, None), None);
+    let error = pass.run_on_operation(world, &mut state).expect_err("a world is not a function");
+    assert!(
+        error.to_string().starts_with("pass 'permissive' cannot run on this operation"),
+        "{error}"
+    );
+}
+
 #[test]
 fn a_target_accepts_the_operations_of_its_type_or_interface() {
     let (context, _world) = tree();
