@@ -18,7 +18,7 @@ use crate::{
 pub struct ConversionConfig {
     reconcile_unrealized_casts: bool,
     verify_after_conversion: bool,
-    max_iterations: usize,
+    max_rewrites_per_operation: usize,
 }
 
 impl ConversionConfig {
@@ -34,10 +34,10 @@ impl ConversionConfig {
         self.reconcile_unrealized_casts
     }
 
-    /// Return the maximum number of pattern applications allowed during conversion.
+    /// Return the maximum number of pattern applications that may follow from one operation.
     #[inline]
-    pub const fn max_iterations(&self) -> usize {
-        self.max_iterations
+    pub const fn max_rewrites_per_operation(&self) -> usize {
+        self.max_rewrites_per_operation
     }
 
     /// Enable or disable recursive IR verification after conversion.
@@ -58,11 +58,18 @@ impl ConversionConfig {
         self
     }
 
-    /// Set the maximum number of successful pattern applications.
+    /// Set the maximum number of pattern applications that may follow from one operation (1,024
+    /// by default).
     ///
-    /// This guards against rewrite cycles in conversion patterns.
-    pub fn with_max_iterations(&mut self, max_iterations: usize) -> &mut Self {
-        self.max_iterations = max_iterations;
+    /// The driver visits the operations under the root in the order it collected them. The
+    /// applications that follow from one of them are those to the operation itself, to the
+    /// operations the patterns insert or change in place while it is legalized, and to the
+    /// operation again while it is still in the IR and not accepted; the count starts again at
+    /// the next operation of the order. So the limit bounds a pattern that never ends (one that
+    /// keeps changing an operation, or keeps building what it rewrites), not the size of what is
+    /// converted. Reaching it is an error that names the operation and the pattern.
+    pub fn with_max_rewrites_per_operation(&mut self, max: usize) -> &mut Self {
+        self.max_rewrites_per_operation = max;
         self
     }
 }
@@ -72,7 +79,7 @@ impl Default for ConversionConfig {
         Self {
             reconcile_unrealized_casts: true,
             verify_after_conversion: true,
-            max_iterations: 1024,
+            max_rewrites_per_operation: 1024,
         }
     }
 }
@@ -114,6 +121,11 @@ impl ConversionResult {
 /// the materialization callbacks of the type converter that caused it ([TypeConverter]); one that
 /// none realizes is an error (see [ConversionConfig::with_reconcile_unrealized_casts]).
 ///
+/// The pattern applications that follow from one operation are limited
+/// ([ConversionConfig::with_max_rewrites_per_operation], 1,024 by default; the count starts again
+/// at each operation the driver visits in order); reaching the limit is an error that names the
+/// operation and the pattern.
+///
 /// A pattern that returns `Ok(false)` must not mutate IR, and a pattern that returns `Ok(true)`
 /// must mutate IR. Violating either contract is reported as a conversion error because this
 /// driver intentionally does not roll changes back. An attempt that ends before its pattern
@@ -144,7 +156,8 @@ pub fn apply_full_conversion(
 ///   the pattern creates.
 ///
 /// A pattern that breaks the pattern contract, or fails, aborts the conversion as in
-/// [apply_full_conversion]. When the patterns have run, the casts are folded and realized as in a
+/// [apply_full_conversion], and the pattern applications that follow from one operation are
+/// limited as there ([ConversionConfig::with_max_rewrites_per_operation]). When the patterns have run, the casts are folded and realized as in a
 /// full conversion; a cast the driver inserted that no callback realizes stays when the target
 /// calls `builtin.unrealized_conversion_cast` legal, and is an error otherwise. The final check
 /// reports only an operation that a rule of the target calls illegal.
@@ -182,7 +195,10 @@ fn run_conversion(
         target: &target,
         graph,
         context: target.context(),
-        state: ConversionState::default(),
+        state: ConversionState {
+            root: Some(root),
+            ..ConversionState::default()
+        },
         config,
         result: ConversionResult {
             changed: false,
@@ -258,13 +274,20 @@ impl ConversionDriver<'_> {
     /// its turn, in the order the operations were collected, and one that was already visited
     /// reads the cast (which folds, or is realized). So an operation nested under a recursively
     /// legal operation, which is not collected, is never offered to a pattern.
+    ///
+    /// The applications that follow from `first` are counted against
+    /// [ConversionConfig::with_max_rewrites_per_operation].
     fn legalize_from(&mut self, first: OperationRef) -> Result<(), Report> {
+        let mut budget = RewriteBudget {
+            first: first.borrow().name(),
+            applications: 0,
+        };
         let mut pending = vec![first];
         while let Some(op) = pending.pop() {
             if !self.is_live(op) {
                 continue;
             }
-            let Some(mutations) = self.apply_one_pattern(op)? else {
+            let Some(mutations) = self.apply_one_pattern(op, &mut budget)? else {
                 continue;
             };
             pending.push(op);
@@ -278,7 +301,11 @@ impl ConversionDriver<'_> {
     /// Offers `op` to its candidate patterns, in order, until one applies. Returns what the
     /// pattern that applied changed; `None` when `op` is accepted as it is, is a cast that is not
     /// offered, or (when it need not be converted) no pattern applied.
-    fn apply_one_pattern(&mut self, op: OperationRef) -> Result<Option<TrackedMutations>, Report> {
+    fn apply_one_pattern(
+        &mut self,
+        op: OperationRef,
+        budget: &mut RewriteBudget,
+    ) -> Result<Option<TrackedMutations>, Report> {
         // The casts the driver inserts are not offered to patterns.
         if self.is_driver_cast(op)
             || (self.config.reconcile_unrealized_casts() && is_unrealized_conversion_cast(op))
@@ -354,7 +381,7 @@ impl ConversionDriver<'_> {
                         return Err(pattern_succeeded_without_mutation_error(pattern.as_ref(), op));
                     }
                     let mutations = rewriter.take_tracked_mutations();
-                    self.note_pattern_application(pattern.as_ref())?;
+                    self.note_pattern_application(pattern.as_ref(), op, budget)?;
                     self.validate_generated_ops(pattern.as_ref(), &mutations)?;
                     self.result.changed = true;
                     return Ok(Some(mutations));
@@ -388,16 +415,25 @@ impl ConversionDriver<'_> {
             .collect()
     }
 
-    fn note_pattern_application(&mut self, pattern: &dyn ConversionPattern) -> Result<(), Report> {
-        if self.result.converted_ops >= self.config.max_iterations() {
+    /// Counts an application of `pattern` to `op`; an error when it is one more than the limit
+    /// allows to follow from the operation of the collected order being legalized.
+    fn note_pattern_application(
+        &mut self,
+        pattern: &dyn ConversionPattern,
+        op: OperationRef,
+        budget: &mut RewriteBudget,
+    ) -> Result<(), Report> {
+        let limit = self.config.max_rewrites_per_operation();
+        if budget.applications >= limit {
             return Err(Report::msg(format!(
-                "dialect conversion exceeded the configured rewrite limit of {} while applying \
-                 pattern '{}'",
-                self.config.max_iterations(),
-                pattern.name()
+                "dialect conversion exceeded the limit of {limit} pattern applications that \
+                 follow from one operation, '{}', while applying pattern '{}' to '{}'",
+                budget.first,
+                pattern.name(),
+                op.borrow().name()
             )));
         }
-
+        budget.applications += 1;
         self.result.converted_ops += 1;
         Ok(())
     }
@@ -542,6 +578,13 @@ impl ConversionDriver<'_> {
     fn is_live(&self, op: OperationRef) -> bool {
         op == self.root || op.parent().is_some()
     }
+}
+
+/// The pattern applications that followed from one operation of the collected order.
+struct RewriteBudget {
+    /// The name of that operation (it may be gone by the time the limit is reached).
+    first: OperationName,
+    applications: usize,
 }
 
 /// One range of values per operand, and the sizes of the operand groups.

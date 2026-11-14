@@ -134,12 +134,13 @@ pub(super) type DriverCasts = Rc<RefCell<FxHashMap<OperationRef, DriverCast>>>;
 /// set.
 pub(super) type ConvertedBlocks = Rc<RefCell<FxHashSet<BlockRef>>>;
 
-/// What the rewriters of one conversion share: the casts the driver inserted and the blocks whose
-/// arguments were converted.
+/// What the rewriters of one conversion share: the casts the driver inserted, the blocks whose
+/// arguments were converted, and the root of the conversion, which cannot be erased.
 #[derive(Clone, Default)]
 pub(super) struct ConversionState {
     pub(super) casts: DriverCasts,
     pub(super) converted_blocks: ConvertedBlocks,
+    pub(super) root: Option<OperationRef>,
 }
 
 struct ConversionTrackingListener {
@@ -404,7 +405,8 @@ impl ConversionPatternRewriter {
     /// must have exactly the types the pattern's type converter says the result becomes; when the
     /// result still has users, they are given a many-to-one `builtin.unrealized_conversion_cast`
     /// of the range back to the result's type, inserted before `op`. A range of any other types,
-    /// or the wrong number of ranges, is an error raised before anything is changed.
+    /// the wrong number of ranges, or an `op` that is the root of the conversion, is an error
+    /// raised before anything is changed.
     ///
     /// Afterwards the insertion point is where it was before the call; when it was at `op`, it is
     /// at the position `op` occupied (before the operation that followed it, or at the end of its
@@ -414,6 +416,7 @@ impl ConversionPatternRewriter {
         op: OperationRef,
         values: &[&[ValueRef]],
     ) -> Result<(), Report> {
+        self.check_not_root(op, "replaced")?;
         let results = op
             .borrow()
             .results()
@@ -553,8 +556,8 @@ impl ConversionPatternRewriter {
     /// An `f` that changes nothing still counts as a modification: a pattern that answers
     /// `Ok(true)` after it passes the driver's check that a successful pattern changed the IR, and
     /// when the operation is still illegal it is offered to the patterns again, until the
-    /// conversion's limit on pattern applications ([super::ConversionConfig::with_max_iterations])
-    /// is reached.
+    /// conversion's limit on the pattern applications that follow from one operation
+    /// ([super::ConversionConfig::with_max_rewrites_per_operation]) is reached.
     pub fn modify_op_in_place<R>(
         &mut self,
         mut op: OperationRef,
@@ -850,11 +853,23 @@ impl ConversionPatternRewriter {
 
     /// Erase an operation with no remaining uses.
     ///
-    /// Callers are responsible for ensuring the operation can be erased without leaving dangling
-    /// uses or invalid control-flow edges.
-    #[inline]
+    /// Callers are responsible for ensuring the operation can be erased without leaving invalid
+    /// control-flow edges. Erasing the root of the conversion is an error, raised before anything
+    /// changes.
     pub fn erase_op(&mut self, op: OperationRef) -> Result<(), Report> {
+        self.check_not_root(op, "erased")?;
         self.inner.erase_op(op);
+        Ok(())
+    }
+
+    /// An error when `op` is the root of the conversion, which cannot be `what` (erased, replaced).
+    fn check_not_root(&self, op: OperationRef, what: &str) -> Result<(), Report> {
+        if self.state.root == Some(op) {
+            return Err(Report::msg(format!(
+                "'{}' is the root of the conversion, which cannot be {what}",
+                op.borrow().name()
+            )));
+        }
         Ok(())
     }
 

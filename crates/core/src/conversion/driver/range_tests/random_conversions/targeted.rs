@@ -229,17 +229,19 @@ fn a_value_callback_that_looks_at_the_definition_stops_answering_after_a_replace
         (value.ty() == i128 && defined_by_constant).then(|| TypeConversion::many([i64, i64]))
     });
     // The sink is given the cast's result as itself (the callback does not answer for it), so
-    // its pattern builds a sink of the same i128, which is illegal again: the pattern loops. The
-    // limit is lowered: at the default of 1024 the recursion overflows the stack of a test
-    // thread in the dev profile before the limit is reached.
+    // its pattern builds a sink of the same i128, which is illegal again: the pattern loops until
+    // the limit.
     let mut set = ConversionPatternSet::new(context.clone());
     set.push(split_constant(&context, &converter));
     set.push(flatten_sink(&context, &converter, Rc::default()));
-    let mut config = ConversionConfig::default();
-    config.with_max_iterations(50);
-    let err = apply_full_conversion(function, wide_target(&context), set, config).unwrap_err();
-    println!("{err}");
-    assert!(format!("{err}").contains("exceeded the configured rewrite limit"), "{err}");
+    let err =
+        apply_full_conversion(function, wide_target(&context), set, ConversionConfig::default())
+            .unwrap_err();
+    assert_eq!(
+        format!("{err}"),
+        "dialect conversion exceeded the limit of 1024 pattern applications that follow from one \
+         operation, 'test.sink', while applying pattern 'flatten-sink' to 'test.sink'"
+    );
 }
 
 /// The same callback when the user is converted first (it is not here: program order converts the

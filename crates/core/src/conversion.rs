@@ -111,6 +111,17 @@
 //! [ConversionConfig::with_verify_after_conversion] is off). [TypeConverter::is_legal_op] can serve
 //! as a dynamic legality rule: an operation is legal when every type it uses converts to itself.
 //!
+//! # The rewrite limit
+//!
+//! The driver visits the operations under the root in the order it collected them (a pre-order
+//! walk that does not enter a recursively legal operation). The pattern applications that follow
+//! from one of them, to the operation itself, to what the patterns insert or change in place while
+//! it is legalized, and to the operation again while it stays illegal, are counted, and the count
+//! starts again at the next operation. More than
+//! [ConversionConfig::with_max_rewrites_per_operation] (1,024 by default) is an error that names
+//! the operation and the pattern: the limit stops a pattern that never ends, not a large program.
+//! A pattern may not erase or replace the root of the conversion; the rewriter answers an error.
+//!
 //! # What a pattern may rely on
 //!
 //! A pattern may rely on: being offered only an operation the target does not call legal; its

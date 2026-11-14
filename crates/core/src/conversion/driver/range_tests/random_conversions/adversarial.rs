@@ -342,14 +342,19 @@ fn a_pattern_that_keeps_modifying_in_place_ends_at_the_limit() {
             Ok(true)
         }),
     );
-    assert!(outcome.is_error(), "{outcome:?}");
+    assert_eq!(
+        outcome.text(),
+        "dialect conversion exceeded the limit of 1024 pattern applications that follow from one \
+         operation, 'test.add', while applying pattern 'bad-add' to 'test.add'",
+        "{outcome:?}"
+    );
 }
 
 /// The same with a limit of 20,000.
 #[test]
 fn a_pattern_that_keeps_modifying_in_place_ends_at_a_large_limit() {
     let mut config = ConversionConfig::default();
-    config.with_max_iterations(20_000);
+    config.with_max_rewrites_per_operation(20_000);
     let outcome = outcome_of(
         "modify in place forever, at a limit of 20,000",
         "()",
@@ -581,9 +586,9 @@ fn wanted_a_callback_that_answers_the_cast_result_is_an_error() {
     assert!(outcome.is_error(), "{outcome:?}");
 }
 
-/// A pattern that erases the root of the conversion.
+/// A pattern that erases the root of the conversion: an error from the rewriter.
 #[test]
-fn erasing_the_root_is_reported_or_harmless() {
+fn erasing_the_root_is_an_error() {
     let outcome = outcome_of(
         "erase the root",
         "()",
@@ -610,6 +615,9 @@ fn erasing_the_root_is_reported_or_harmless() {
         |context| wide_converter(context),
         ConversionConfig::default(),
     );
-    println!("{outcome:?}");
-    assert!(!matches!(outcome, Outcome::Panicked(_)), "{outcome:?}");
+    assert!(outcome.is_error(), "{outcome:?}");
+    assert_eq!(
+        outcome.text(),
+        "'builtin.function' is the root of the conversion, which cannot be erased"
+    );
 }
