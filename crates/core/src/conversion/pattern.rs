@@ -1,7 +1,5 @@
 use super::{ConversionPatternRewriter, TypeConverter};
-use crate::{
-    Op, OperationRef, Report, SmallVec, UnsafeIntrusiveEntityRef, ValueRef, patterns::Pattern,
-};
+use crate::{OperationRef, Report, SmallVec, ValueRef, patterns::Pattern};
 
 /// The values each operand of the operation being converted became.
 ///
@@ -127,21 +125,6 @@ pub trait ConversionPattern: Pattern {
     fn match_and_rewrite(
         &self,
         op: OperationRef,
-        operands: ConvertedOperands<'_>,
-        rewriter: &mut ConversionPatternRewriter,
-    ) -> Result<bool, Report>;
-}
-
-/// Typed adapter trait for conversion patterns rooted on a concrete operation.
-pub trait OpConversionPattern<T: Op>: ConversionPattern {
-    /// Try to rewrite a statically typed root operation.
-    ///
-    /// This has the same mutation and result contract as
-    /// [`ConversionPattern::match_and_rewrite`], but lets pattern implementations work with their
-    /// concrete operation type after the caller has performed the root-type check.
-    fn match_and_rewrite_typed(
-        &self,
-        op: UnsafeIntrusiveEntityRef<T>,
         operands: ConvertedOperands<'_>,
         rewriter: &mut ConversionPatternRewriter,
     ) -> Result<bool, Report>;

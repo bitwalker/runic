@@ -30,6 +30,7 @@ mod visit;
 pub use runic_diagnostics::{Report, SourceSpan, Span, Spanned};
 pub use runic_symbol as interner;
 
+pub(crate) use self::elements::give_copied_references_their_own_uses;
 pub use self::{
     block::{
         Block, BlockCursor, BlockCursorMut, BlockId, BlockList, BlockOperand, BlockOperandRef,

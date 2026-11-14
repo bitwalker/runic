@@ -606,7 +606,7 @@ pub fn replace_elements_in(
 /// copy, made when a list holding the reference was rebuilt) a use of its own, owned by `op` and
 /// linked to the symbol the shared use is linked to, if any. The shared use stays with the
 /// reference it names.
-fn give_copied_references_their_own_uses(op: &mut Operation, attr: &AttributeRef) {
+pub(crate) fn give_copied_references_their_own_uses(op: &mut Operation, attr: &AttributeRef) {
     use crate::{
         SymbolUse, UnsafeIntrusiveEntityRef, dialects::builtin::attributes::SymbolRefAttr,
     };

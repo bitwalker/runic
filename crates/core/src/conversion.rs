@@ -136,6 +136,15 @@
 //! expands one operation into that many needs a higher limit.
 //! A pattern may not erase or replace the root of the conversion; the rewriter answers an error.
 //!
+//! # Builtin patterns
+//!
+//! [populate_builtin_conversion_patterns] adds the patterns that convert builtin operations by
+//! type: a `builtin.function` (its signature, entry block, declared effects and locals, together),
+//! and `builtin.load_local` and `builtin.store_local` of a local whose type is not legal. A
+//! signature is converted by [convert_signature], for a callable and every call of it alike. They
+//! need a converter made with [TypeConverter::with_function_types] and no value callbacks, and a
+//! target that judges their operations by type ([add_builtin_legality_by_type]).
+//!
 //! # What a pattern may rely on
 //!
 //! A pattern may rely on: being offered only an operation the target does not call legal; its
@@ -152,6 +161,7 @@
 //! being undone; the operation it is given being offered only once; or a change it makes to a
 //! nested operation being tracked.
 
+mod builtin_patterns;
 mod diagnostics;
 mod driver;
 mod legalization_graph;
@@ -164,6 +174,15 @@ mod target;
 mod type_converter;
 
 pub use self::{
-    diagnostics::*, driver::*, legalization_graph::*, pattern::*, pattern_set::*, reconcile::*,
-    rewriter::*, signature_conversion::*, target::*, type_converter::*,
+    builtin_patterns::{add_builtin_legality_by_type, populate_builtin_conversion_patterns},
+    diagnostics::*,
+    driver::*,
+    legalization_graph::*,
+    pattern::*,
+    pattern_set::*,
+    reconcile::*,
+    rewriter::*,
+    signature_conversion::*,
+    target::*,
+    type_converter::*,
 };
