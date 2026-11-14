@@ -47,7 +47,7 @@ impl Kind {
         }
     }
 
-    fn name(self, context: &Rc<Context>) -> OperationName {
+    pub(super) fn name(self, context: &Rc<Context>) -> OperationName {
         match self {
             Kind::Constant => registered::<arith::Constant>(context),
             Kind::Add => registered::<arith::Add>(context),
@@ -62,7 +62,7 @@ impl Kind {
 
     /// Adds a rule to `target` that calls an operation of this kind legal when `converter` calls
     /// it legal by type.
-    fn add_rule(self, target: &mut ConversionTarget, converter: &TypeConverter) {
+    pub(super) fn add_rule(self, target: &mut ConversionTarget, converter: &TypeConverter) {
         let converter = converter.clone();
         let by_type =
             move |op: &Operation| DynamicLegalityResult::legal_if(converter.is_legal_op(op));
@@ -137,7 +137,7 @@ fn wide_converter(context: &Context, materialize: bool) -> TypeConverter {
 }
 
 /// The `i64` constant 64, zero-extended to `ty`.
-fn sixty_four(
+pub(super) fn sixty_four(
     rewriter: &mut ConversionPatternRewriter,
     span: SourceSpan,
     ty: Type,
@@ -246,7 +246,7 @@ pub(super) struct Rule {
 }
 
 impl Rule {
-    fn new(
+    pub(super) fn new(
         context: &Rc<Context>,
         name: &'static str,
         kind: PatternKind,
@@ -291,7 +291,7 @@ impl ConversionPattern for Rule {
 }
 
 /// The one result of a new operation.
-fn result<T: Op>(op: &runic_core::UnsafeIntrusiveEntityRef<T>) -> ValueRef {
+pub(super) fn result<T: Op>(op: &runic_core::UnsafeIntrusiveEntityRef<T>) -> ValueRef {
     op.borrow().as_operation().results()[0].borrow().as_value_ref()
 }
 
@@ -321,7 +321,11 @@ fn halves<'a>(operands: &ConvertedOperands<'a>) -> Option<([ValueRef; 2], [Value
 
 /// The patterns `arith` would own for `i128 -> (i64, i64)`, for the kinds of `kinds`, and the
 /// pattern of `builtin.ret_imm`.
-fn wide_patterns(context: &Rc<Context>, converter: &TypeConverter, kinds: &[Kind]) -> Vec<Rule> {
+pub(super) fn wide_patterns(
+    context: &Rc<Context>,
+    converter: &TypeConverter,
+    kinds: &[Kind],
+) -> Vec<Rule> {
     let operation = |kind: Kind| PatternKind::Operation(kind.name(context));
     let (constant, add, cmpi, zext, band) = (
         Kind::Constant.name(context),

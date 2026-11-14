@@ -34,6 +34,10 @@
 //! - `patterns`: the converters, the targets and the patterns the test owns.
 //! - `cases`: modules written by hand, one per feature, whose converted text is pinned.
 //! - `random`: random modules, in both families and both modes.
+//! - `extended`: random modules of a richer shape (a type that vanishes, memory, external
+//!   functions, recursion, `cf.switch`, large modules), checked against a model of what each
+//!   function becomes and run through every pass of the crate after the conversion; and fixed
+//!   probes of what holds.
 //!
 //! [populate_builtin_conversion_patterns]: runic_core::conversion::populate_builtin_conversion_patterns
 //! [add_builtin_legality_by_type]: runic_core::conversion::add_builtin_legality_by_type
@@ -62,6 +66,7 @@ use self::{
 
 mod cases;
 mod eval;
+mod extended;
 mod patterns;
 mod random;
 

@@ -24,10 +24,10 @@ use std::println;
 use super::{Family, Input, Mode, Setup, check_counting, patterns::Kind};
 use crate::tests::{cases, seeds};
 
-struct Rng(u64);
+pub(super) struct Rng(pub(super) u64);
 
 impl Rng {
-    fn next(&mut self) -> u64 {
+    pub(super) fn next(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
         let mut z = self.0;
         z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
@@ -35,17 +35,17 @@ impl Rng {
         z ^ (z >> 31)
     }
 
-    fn below(&mut self, n: usize) -> usize {
+    pub(super) fn below(&mut self, n: usize) -> usize {
         (self.next() % n as u64) as usize
     }
 
     /// True with probability `percent` in 100.
-    fn chance(&mut self, percent: usize) -> bool {
+    pub(super) fn chance(&mut self, percent: usize) -> bool {
         self.below(100) < percent
     }
 
     /// A value of `width` bits, often one that reaches a carry or a boundary.
-    fn value(&mut self, width: u32) -> u128 {
+    pub(super) fn value(&mut self, width: u32) -> u128 {
         let bits = match self.below(8) {
             0 => 0,
             1 => 1,
