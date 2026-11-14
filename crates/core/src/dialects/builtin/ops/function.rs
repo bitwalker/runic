@@ -404,7 +404,12 @@ impl Function {
         let locals = locals
             .iter()
             .enumerate()
-            .map(|(index, ty)| LocalVariable::new(index as u32, *ty))
+            .map(|(index, ty)| {
+                let index = u32::try_from(index).expect(
+                    "system limit: unable to allocate more than u32::MAX locals per function",
+                );
+                LocalVariable::new(index, *ty)
+            })
             .collect::<Vec<_>>();
         locals.into_iter()
     }
@@ -503,8 +508,9 @@ impl CallableSymbol for Function {}
 ///
 /// Every local variable ([LocalVariableAttr]) held, at any depth, by an operation in the body
 /// outside nested callables is one of the function's: its index is below the number of locals,
-/// and its type is the one the function gives that local. The error names the operation that
-/// holds the local. A local held by an operation in no function is not checked against any
+/// and its type is the one the function gives that local. The error, like the others of this
+/// verifier, is an invalid `builtin.function`; its message and its primary label name the
+/// operation that holds the local. A local held by an operation in no function is not checked against any
 /// `locals`; `builtin.load_local` and `builtin.store_local` check their own value against their
 /// local's type wherever they are.
 ///
@@ -626,7 +632,11 @@ impl crate::Verify<dyn CallableSymbol> for Function {
                     Some(_) => return WalkResult::Continue(()),
                 };
                 WalkResult::Break(report!(
-                    message: (format!("invalid operation {}", op.name())),
+                    message: (format!(
+                        "invalid operation builtin.function: `{}` names a local that is not the \
+                         function's",
+                        op.name()
+                    )),
                     labels: [
                         primary(op.span(), reason),
                         context(span, "in this function"),

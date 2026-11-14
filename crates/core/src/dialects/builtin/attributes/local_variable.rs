@@ -13,12 +13,14 @@ use crate::{
 ///
 /// As an attribute ([LocalVariableAttr]), the type is the value's only element: it is visited,
 /// rewritten by a type map together with the function's `locals`, and verified like any type an
-/// attribute holds. The attribute's own type is unknown. It has no default: the text always gives
-/// the index and the type, `#builtin.local_variable<0, i32>`.
+/// attribute holds. The attribute's own type is unknown, and the kind's verifier rejects one that
+/// is not, so two attributes that name the same local cannot differ by it. It has no default: the
+/// text always gives the index and the type, `#builtin.local_variable<0, i32>`.
 #[derive(DialectAttribute, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[attribute(
     dialect = BuiltinDialect,
     no_default,
+    verify = "verify_local_variable",
     implements(AttrPrinter)
 )]
 pub struct LocalVariable {
@@ -43,6 +45,22 @@ impl LocalVariable {
     pub fn ty(&self) -> Type {
         self.ty
     }
+}
+
+/// A local's attribute has no type of its own: the local's type is the one its value holds.
+fn verify_local_variable(
+    local: &LocalVariable,
+    ty: Type,
+    _context: &crate::Context,
+) -> Result<(), crate::Report> {
+    if ty.is_unknown() {
+        return Ok(());
+    }
+    Err(crate::Report::msg(alloc::format!(
+        "a local variable with a type of its own, `{ty}`, but a local has only the type it holds, \
+         `{}`",
+        local.ty
+    )))
 }
 
 impl core::fmt::Display for LocalVariable {

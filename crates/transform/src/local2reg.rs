@@ -32,8 +32,8 @@ fn stored_value(store: OperationRef) -> ValueRef {
 
 /// The index, within its function, of the local `attr` names.
 ///
-/// Locals are keyed by index: the function's verifier ensures that every local of one index in a
-/// function has the type the function gives it.
+/// Locals are keyed by index: for operations outside nested callables, the function's verifier
+/// ensures that every local of one index in a function has the type the function gives it.
 fn local_index(attr: &LocalVariableAttr) -> usize {
     attr.as_value().index() as usize
 }

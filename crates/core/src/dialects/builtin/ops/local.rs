@@ -484,34 +484,44 @@ mod tests {
         );
     }
 
-    /// A local built through one function and used in another, which has no local of its index,
-    /// does not verify: it is checked against the function it is in.
+    /// A local names an index and a type, not a function: one made by `alloc_local` on one
+    /// function and used in another that has a local of that index and type verifies there, and
+    /// with another type at that index it is rejected.
     #[test]
-    fn a_local_of_another_function_does_not_verify() {
-        let mut test = Test::named("first").in_module("m");
-        let i32 = test.context().i32();
-        let module_body = test.module().borrow().body().entry_block_ref().unwrap();
-        test.with_function("first", &[i32], &[]);
-        let local = test.function().borrow_mut().alloc_local(i32);
-        crate::Builder::set_insertion_point_to_end(test.builder_mut(), module_body);
-        test.with_function("second", &[i32], &[]);
-        {
-            let mut builder = test.function_builder();
-            let argument = builder.entry_block().borrow().arguments()[0] as ValueRef;
-            builder.store_local(local, argument, SourceSpan::UNKNOWN).unwrap();
-            builder.ret([], SourceSpan::UNKNOWN).unwrap();
+    fn a_local_made_by_one_function_is_any_functions_local_of_its_index_and_type() {
+        for (second_ty, verifies) in [("i32", true), ("i64", false)] {
+            let mut test = Test::named("first").in_module("m");
+            let (i32, i64) = (test.context().i32(), test.context().i64());
+            let module_body = test.module().borrow().body().entry_block_ref().unwrap();
+            test.with_function("first", &[i32], &[]);
+            let local = test.function().borrow_mut().alloc_local(i32);
+            crate::Builder::set_insertion_point_to_end(test.builder_mut(), module_body);
+            test.with_function("second", &[i32], &[]);
+            let ty = if second_ty == "i32" { i32 } else { i64 };
+            let second_local = test.function().borrow_mut().alloc_local(ty);
+            assert_eq!(second_local.index(), local.index());
+            {
+                let mut builder = test.function_builder();
+                let argument = builder.entry_block().borrow().arguments()[0] as ValueRef;
+                builder.store_local(local, argument, SourceSpan::UNKNOWN).unwrap();
+                builder.ret([], SourceSpan::UNKNOWN).unwrap();
+            }
+            let function = test.function();
+            let function = function.borrow();
+            let verified = function.as_operation().recursively_verify();
+            if verifies {
+                verified.unwrap_or_else(|err| panic!("{}", err.display()));
+                continue;
+            }
+            let err = verified.expect_err("local 0 of `@second` has another type");
+            let labels = label_messages(err.as_diagnostic()).join(" | ");
+            assert!(
+                labels.contains(
+                    "this states that local 0 has type `i32`, but the function gives it type `i64`"
+                ),
+                "{labels}"
+            );
         }
-        let function = test.function();
-        let function = function.borrow();
-        let err = function
-            .as_operation()
-            .recursively_verify()
-            .expect_err("the function does not verify");
-        let labels = label_messages(err.as_diagnostic()).join(" | ");
-        assert!(
-            labels.contains("this names local 0, but the function has 0 local(s)"),
-            "{labels}"
-        );
     }
 
     /// Both operations print the index first and, for a load, the local's type, for a local built
@@ -683,7 +693,8 @@ mod tests {
                      builtin.ret;\n}};"
                 );
                 let text = verify_error(&source);
-                assert!(text.contains(&alloc::format!("invalid operation {name}")), "{text}");
+                assert!(text.contains("invalid operation builtin.function"), "{text}");
+                assert!(text.contains(&alloc::format!("`{name}` names a local")), "{text}");
                 assert!(text.contains(reason), "{source}\n{text}");
             }
 
@@ -717,7 +728,8 @@ mod tests {
                 err.display(),
                 label_messages(err.as_diagnostic()).join(" | ")
             );
-            assert!(text.contains("invalid operation builtin.ret"), "{text}");
+            assert!(text.contains("invalid operation builtin.function"), "{text}");
+            assert!(text.contains("`builtin.ret` names a local"), "{text}");
             assert!(text.contains(reason), "{text}");
         }
     }
@@ -827,7 +839,24 @@ mod tests {
             .expect_err("`@g` has no local 1");
         let text =
             alloc::format!("{} {}", err.display(), label_messages(err.as_diagnostic()).join(" | "));
-        assert!(text.contains("invalid operation test.touch_local"), "{text}");
+        assert!(text.contains("invalid operation builtin.function"), "{text}");
+        assert!(text.contains("`test.touch_local` names a local"), "{text}");
         assert!(text.contains("this names local 1, but the function has 1 local(s)"), "{text}");
+    }
+
+    /// A local's attribute has no type of its own: one given a type through `set_type` is rejected
+    /// by `Operation::verify`, with a message naming the operation that holds it.
+    #[test]
+    fn a_local_attribute_with_a_type_of_its_own_does_not_verify() {
+        let (test, _local, _store, loaded) = built();
+        let i32 = test.context().i32();
+        let mut load = loaded.borrow().get_defining_op().unwrap();
+        load.borrow().verify().expect("the load verifies before");
+        load.borrow_mut().get_property_mut("local").set_type(i32);
+        let err = load.borrow().verify().expect_err("the local has a type of its own");
+        let text =
+            alloc::format!("{} {}", err.display(), label_messages(err.as_diagnostic()).join(" | "));
+        assert!(text.contains("'builtin.load_local'"), "{text}");
+        assert!(text.contains("is a local variable with a type of its own, `i32`"), "{text}");
     }
 }
