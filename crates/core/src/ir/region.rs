@@ -17,7 +17,7 @@ pub use self::{
         ExitDefect, ExitDefectKind, ExitResolution, HasBreakingControlFlowOpInterface,
         LoopLikeOpInterface, PropagateControlFlowBreak, RegionBranchOpInterface,
         RegionBranchTerminatorOpInterface, RegionExitKind, RegionExitTerminatorOpInterface,
-        RegionKindInterface, ResolvedExit,
+        RegionKindInterface, ResolvedExit, verify_region_branch_entry_operands,
     },
     invocation_bounds::InvocationBounds,
     kind::RegionKind,

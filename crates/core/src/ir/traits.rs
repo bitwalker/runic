@@ -5,6 +5,8 @@ mod types;
 
 use alloc::format;
 
+use smallvec::SmallVec;
+
 pub(crate) use self::info::assert_trait_table_built_for;
 pub use self::{
     canonicalization::Canonicalizable,
@@ -64,7 +66,6 @@ pub trait GraphRegionNoTerminator:
 {
 }
 
-// TODO(pauls): Implement verifier
 /// This interface provides information for branching terminator operations, i.e. terminator
 /// operations with successors.
 ///
@@ -73,6 +74,14 @@ pub trait GraphRegionNoTerminator:
 /// corresponding successor operands and successor block arguments may have different types. In such
 /// cases, `are_types_compatible` can be implemented to compare types along control-flow edges. By
 /// default, type equality is used.
+///
+/// # Verification
+///
+/// The verifier checks, for each successor, that the operands [Self::get_successor_operands]
+/// states for it (produced and forwarded) are as many as the successor block's arguments, and that
+/// each forwarded operand's type is compatible, by [Self::are_types_compatible], with the type of
+/// the block argument it binds. A produced operand has no value to compare, so only its position
+/// is counted.
 pub trait BranchOpInterface: crate::Op {
     /// Returns the operands that correspond to the arguments of the successor at `index`.
     ///
@@ -170,6 +179,98 @@ pub trait BranchOpInterface: crate::Op {
             }
         }
     }
+}
+
+impl<T> crate::Verify<dyn BranchOpInterface> for T
+where
+    T: crate::Op + BranchOpInterface,
+{
+    fn verify(&self, _context: &Context) -> Result<(), Report> {
+        verify_branch_successor_operands(self)
+    }
+}
+
+/// Check every successor of `branch` against the arguments of the block it goes to.
+fn verify_branch_successor_operands(branch: &dyn BranchOpInterface) -> Result<(), Report> {
+    let op = branch.as_operation();
+    for index in 0..op.num_successors() {
+        let block = op.successor(index).successor();
+        let block = block.borrow();
+        let arguments = block.argument_types().collect::<SmallVec<[_; 4]>>();
+        verify_successor_operands(
+            op,
+            &format!("successor {index} ({block})"),
+            &branch.get_successor_operands(index),
+            "block argument",
+            &arguments,
+            |lhs, rhs| branch.are_types_compatible(lhs, rhs),
+        )?;
+    }
+    Ok(())
+}
+
+/// Check the operands `op` states for one control-flow edge against the types of the values they
+/// bind at its destination, `inputs`: there are as many operands as inputs, and each forwarded
+/// operand's type is compatible with its input's type by `are_types_compatible`.
+///
+/// `successor` names the edge in the diagnostic, and `input_kind` names what an input is there (a
+/// block argument, or a result).
+pub(crate) fn verify_successor_operands(
+    op: &Operation,
+    successor: &str,
+    operands: &crate::SuccessorOperandRange<'_>,
+    input_kind: &str,
+    inputs: &[crate::Type],
+    are_types_compatible: impl Fn(crate::Type, crate::Type) -> bool,
+) -> Result<(), Report> {
+    use crate::SuccessorOperands;
+
+    let name = op.name();
+    let num_produced = operands.num_produced();
+    if operands.len() != inputs.len() {
+        let given = if num_produced == 0 {
+            format!("{} operand(s)", operands.len())
+        } else {
+            format!(
+                "{} operand(s) ({num_produced} produced, {} forwarded)",
+                operands.len(),
+                operands.len() - num_produced
+            )
+        };
+        return Err(crate::diagnostics::report!(
+            message: (format!(
+                "invalid operation {name}: {successor} takes {} {input_kind}(s), but {name} gives \
+                 it {given}",
+                inputs.len()
+            )),
+            labels: [
+                primary(op.span(), format!("this gives {successor} {given}")),
+            ],
+        ));
+    }
+
+    let forwarded = operands.forwarded();
+    for (offset, (operand, &input_ty)) in
+        forwarded.iter().zip(inputs.iter().skip(num_produced)).enumerate()
+    {
+        let index = num_produced + offset;
+        let operand_ty = operand.borrow().ty();
+        if !are_types_compatible(operand_ty, input_ty) {
+            return Err(crate::diagnostics::report!(
+                message: (format!(
+                    "invalid operation {name}: operand {index} for {successor} has type \
+                     '{operand_ty}', but the {input_kind} it binds has type '{input_ty}'"
+                )),
+                labels: [
+                    primary(
+                        op.span(),
+                        format!("operand {index} for {successor} has the wrong type")
+                    ),
+                ],
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// This interface provides information for select-like operations, i.e., operations that forward
@@ -467,12 +568,14 @@ mod tests {
 
     use super::*;
     use crate::{
-        BuilderExt, Op, Report, SourceSpan, StructField, StructType, Type, Value, ValueRef,
-        derive::operation,
+        BlockRef, BuilderExt, Op, Report, SourceSpan, StructField, StructType, Type, Value,
+        ValueRef,
+        derive::{EffectOpInterface, operation},
         dialects::{
             builtin::{BuiltinOpBuilder, attributes::TypeAttr},
             test::TestDialect,
         },
+        effects::MemoryEffectOpInterface,
         testing::Test,
         traits::InferTypeOpInterface,
     };
@@ -632,5 +735,123 @@ mod tests {
             let message = rejection(types);
             assert!(message.contains("converts only pointers to pointers"), "{message}");
         }
+    }
+
+    /// A branch that forwards its operands to its one successor.
+    #[derive(EffectOpInterface)]
+    #[operation(
+        dialect = TestDialect,
+        traits(Terminator),
+        implements(BranchOpInterface, MemoryEffectOpInterface)
+    )]
+    pub struct BranchTestBr {
+        #[successor]
+        target: Successor,
+    }
+
+    impl BranchOpInterface for BranchTestBr {}
+
+    /// A branch that produces the first argument of its one successor itself, and forwards its
+    /// operands to the rest.
+    #[derive(EffectOpInterface)]
+    #[operation(
+        dialect = TestDialect,
+        traits(Terminator),
+        implements(BranchOpInterface, MemoryEffectOpInterface)
+    )]
+    pub struct BranchTestProducingBr {
+        #[successor]
+        target: Successor,
+    }
+
+    impl BranchOpInterface for BranchTestProducingBr {
+        fn get_successor_operands(&self, index: usize) -> crate::SuccessorOperandRange<'_> {
+            let op = self.as_operation();
+            let group = op.successors()[index].operand_group as usize;
+            crate::SuccessorOperandRange::new(1, op.operands().group(group))
+        }
+    }
+
+    /// Build a branch from the entry block of a function taking an `i32` and an `i64` to a block
+    /// whose arguments have the types `dest` returns, forwarding the function's arguments at the
+    /// positions in `forwarded`, and verify the branch. The branch is a [BranchTestProducingBr]
+    /// when `producing` is set, and a [BranchTestBr] otherwise.
+    fn verify_branch(
+        producing: bool,
+        dest: fn(&Context) -> alloc::vec::Vec<Type>,
+        forwarded: &[usize],
+    ) -> Result<(), Report> {
+        type Args = (BlockRef, alloc::vec::Vec<ValueRef>);
+
+        let span = SourceSpan::UNKNOWN;
+        let mut test = Test::named("verify_branch");
+        let (i32, i64) = (test.context().i32(), test.context().i64());
+        test.with_function("verify_branch", &[i32, i64], &[]);
+        let dest_types = dest(test.context());
+        let mut builder = test.function_builder();
+        let arguments = builder
+            .entry_block()
+            .borrow()
+            .arguments()
+            .iter()
+            .map(|arg| *arg as ValueRef)
+            .collect::<alloc::vec::Vec<_>>();
+        let block = builder.create_block();
+        for ty in dest_types {
+            builder.append_block_param(block, ty, span);
+        }
+        let operands =
+            forwarded.iter().map(|&index| arguments[index]).collect::<alloc::vec::Vec<_>>();
+        let branch = if producing {
+            let create = builder.builder_mut().create::<BranchTestProducingBr, Args>(span);
+            create(block, operands).unwrap().as_operation_ref()
+        } else {
+            let create = builder.builder_mut().create::<BranchTestBr, Args>(span);
+            create(block, operands).unwrap().as_operation_ref()
+        };
+        branch.borrow().verify()
+    }
+
+    #[test]
+    fn a_branch_forwards_as_many_operands_as_its_successor_takes() {
+        let err = verify_branch(false, |context| [context.i32()].into(), &[]).unwrap_err();
+        let err = format!("{err}");
+        assert!(err.contains("successor 0 (^block"), "{err}");
+        assert!(
+            err.contains("takes 1 block argument(s), but test.branch_test_br gives it 0"),
+            "{err}"
+        );
+
+        verify_branch(false, |context| [context.i32()].into(), &[0]).unwrap();
+    }
+
+    #[test]
+    fn a_branch_forwards_operands_of_its_successors_argument_types() {
+        let err = verify_branch(false, |context| [context.i32()].into(), &[1]).unwrap_err();
+        let err = format!("{err}");
+        assert!(err.contains("operand 0 for successor 0 (^block"), "{err}");
+        assert!(
+            err.contains("has type 'i64', but the block argument it binds has type 'i32'"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_produced_operand_counts_toward_the_successors_arguments_but_has_no_type_to_compare() {
+        // The produced first argument may have any type; the forwarded `i32` binds the second.
+        verify_branch(true, |context| [context.i1(), context.i32()].into(), &[0]).unwrap();
+
+        let err = verify_branch(true, |context| [context.i32()].into(), &[0]).unwrap_err();
+        let err = format!("{err}");
+        assert!(err.contains("gives it 2 operand(s) (1 produced, 1 forwarded)"), "{err}");
+
+        let err =
+            verify_branch(true, |context| [context.i1(), context.i32()].into(), &[1]).unwrap_err();
+        let err = format!("{err}");
+        assert!(err.contains("operand 1 for successor 0"), "{err}");
+        assert!(
+            err.contains("has type 'i64', but the block argument it binds has type 'i32'"),
+            "{err}"
+        );
     }
 }

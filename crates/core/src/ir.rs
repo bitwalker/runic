@@ -79,6 +79,7 @@ pub use self::{
         RegionCursor, RegionCursorMut, RegionExitKind, RegionExitTerminatorOpInterface, RegionKind,
         RegionKindInterface, RegionList, RegionRef, RegionSuccessor, RegionSuccessorInfo,
         RegionSuccessorIter, RegionSuccessorKind, RegionTransformFailed, ResolvedExit,
+        verify_region_branch_entry_operands,
     },
     successor::{
         KeyedSuccessor, KeyedSuccessorRange, KeyedSuccessorRangeMut, OpSuccessor, OpSuccessorMut,

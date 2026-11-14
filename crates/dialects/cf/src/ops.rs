@@ -1655,4 +1655,125 @@ builtin.function public extern(\"C\") @check(%c: i1, %sel: i32, %a: i32, %b: i32
         let printed = format!("{}", function.as_operation_ref().borrow());
         assert!(printed.contains("cf.assert %0, \"m\";"), "{printed}");
     }
+
+    /// Parse `body` as the body of a function taking `%x: i32`, `%w: i64`, `%c: i1` and `%s: i32`,
+    /// and return the error it must be rejected with. The parser does not keep block labels: it
+    /// numbers the blocks in the order they are written, the first after the entry being
+    /// `^block2`.
+    #[track_caller]
+    fn successor_rejection(name: &str, body: &str) -> String {
+        let context = Rc::new(Context::default());
+        let source = format!(
+            "builtin.function public extern(\"C\") @f(%x: i32, %w: i64, %c: i1, %s: i32) \
+             {{\n{body}\n}};"
+        );
+        match parse_function_fixpoint(&context, name, &source) {
+            Ok(_) => panic!("expected '{name}' to be rejected, but it was accepted"),
+            Err(err) => format!("{err}"),
+        }
+    }
+
+    #[test]
+    fn br_with_too_few_operands_for_its_successor_is_rejected() {
+        let err = successor_rejection(
+            "br_too_few.hir",
+            "    cf.br ^next;\n^next(%y: i32):\n    builtin.ret;",
+        );
+        assert!(
+            err.contains(
+                "invalid operation cf.br: successor 0 (^block2) takes 1 block argument(s), but \
+                 cf.br gives it 0 operand(s)"
+            ),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn br_with_too_many_operands_for_its_successor_is_rejected() {
+        let err = successor_rejection(
+            "br_too_many.hir",
+            "    cf.br ^next(%x, %w : i32, i64);\n^next(%y: i32):\n    builtin.ret;",
+        );
+        assert!(
+            err.contains(
+                "invalid operation cf.br: successor 0 (^block2) takes 1 block argument(s), but \
+                 cf.br gives it 2 operand(s)"
+            ),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn br_with_an_operand_of_the_wrong_type_for_its_successor_is_rejected() {
+        let err = successor_rejection(
+            "br_wrong_type.hir",
+            "    cf.br ^next(%x, %x : i32, i32);\n^next(%y: i32, %z: i64):\n    builtin.ret;",
+        );
+        assert!(
+            err.contains(
+                "invalid operation cf.br: operand 1 for successor 0 (^block2) has type 'i32', but \
+                 the block argument it binds has type 'i64'"
+            ),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn cond_br_with_a_fault_in_one_successor_is_rejected_naming_that_successor() {
+        let err = successor_rejection(
+            "cond_br_else_wrong.hir",
+            "    cf.cond_br %c ^then(%x : i32), ^else(%x : i32) : (i1);\n^then(%y: i32):\n    \
+             builtin.ret;\n^else(%z: i64):\n    builtin.ret;",
+        );
+        assert!(
+            err.contains(
+                "invalid operation cf.cond_br: operand 0 for successor 1 (^block3) has type \
+                 'i32', but the block argument it binds has type 'i64'"
+            ),
+            "{err}"
+        );
+
+        let err = successor_rejection(
+            "cond_br_then_short.hir",
+            "    cf.cond_br %c ^then, ^else(%w : i64) : (i1);\n^then(%y: i32):\n    \
+             builtin.ret;\n^else(%z: i64):\n    builtin.ret;",
+        );
+        assert!(
+            err.contains(
+                "invalid operation cf.cond_br: successor 0 (^block2) takes 1 block argument(s), \
+                 but cf.cond_br gives it 0 operand(s)"
+            ),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn switch_with_a_fault_in_one_successor_is_rejected_naming_that_successor() {
+        let err = successor_rejection(
+            "switch_case_wrong.hir",
+            "    cf.switch %s [#builtin.i32<0> -> ^zero(%x : i32), #builtin.i32<1> -> ^one(%x : \
+             i32)], ^other(%w : i64) : (i32);\n^zero(%a: i32):\n    builtin.ret;\n^one(%b: \
+             i64):\n    builtin.ret;\n^other(%d: i64):\n    builtin.ret;",
+        );
+        assert!(
+            err.contains(
+                "invalid operation cf.switch: operand 0 for successor 1 (^block3) has type 'i32', \
+                 but the block argument it binds has type 'i64'"
+            ),
+            "{err}"
+        );
+
+        let err = successor_rejection(
+            "switch_fallback_long.hir",
+            "    cf.switch %s [#builtin.i32<0> -> ^zero(%x : i32)], ^other(%w, %x : i64, i32) : \
+             (i32);\n^zero(%a: i32):\n    builtin.ret;\n^other(%d: i64):\n    builtin.ret;",
+        );
+        assert!(
+            err.contains(
+                "invalid operation cf.switch: successor 1 (^block3) takes 1 block argument(s), \
+                 but cf.switch gives it 2 operand(s)"
+            ),
+            "{err}"
+        );
+    }
 }

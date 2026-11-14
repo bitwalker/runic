@@ -549,7 +549,8 @@ pub struct IndexSwitch {
     default_region: Region,
 }
 
-/// The case values are distinct, and there is one region for each after the default region.
+/// The case values are distinct, and there is one region for each after the default region; and
+/// the interface's own rule, [verify_region_branch_entry_operands], holds.
 impl Verify<dyn RegionBranchOpInterface> for IndexSwitch {
     fn verify(&self, _context: &Context) -> Result<(), Report> {
         let op = self.as_operation();
@@ -574,7 +575,7 @@ impl Verify<dyn RegionBranchOpInterface> for IndexSwitch {
                 return Err(invalid(format!("the case value {case} is used more than once")));
             }
         }
-        Ok(())
+        verify_region_branch_entry_operands(self)
     }
 }
 
@@ -3046,5 +3047,140 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
             scf.continue effects=Some([]) free=true dead_if_unused=false
             scf.yield effects=Some([]) free=true dead_if_unused=false"#]]
         .assert_eq(&answers.join("\n"));
+    }
+
+    #[test]
+    fn if_whose_yield_gives_the_wrong_number_of_values_is_rejected() {
+        let err = rejection(
+            "if_yield_count.hir",
+            r#"
+builtin.function public extern("C") @f(%c: i1, %x: i32) -> i32 {
+    %r = scf.if %c then {
+        scf.yield %x, %x : (i32, i32);
+    } else {
+        scf.yield %x : (i32);
+    } : (i1) -> i32;
+    builtin.ret %r : (i32);
+};"#,
+        );
+        assert!(
+            err.contains(
+                "invalid operation scf.yield: successor 0 (the results of scf.if) takes 1 \
+                 result(s), but scf.yield gives it 2 operand(s)"
+            ),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn if_whose_yield_gives_a_value_of_the_wrong_type_is_rejected() {
+        let err = rejection(
+            "if_yield_type.hir",
+            r#"
+builtin.function public extern("C") @f(%c: i1, %x: i32, %w: i64) -> i32 {
+    %r = scf.if %c then {
+        scf.yield %x : (i32);
+    } else {
+        scf.yield %w : (i64);
+    } : (i1) -> i32;
+    builtin.ret %r : (i32);
+};"#,
+        );
+        assert!(
+            err.contains(
+                "invalid operation scf.yield: operand 0 for successor 0 (the results of scf.if) \
+                 has type 'i64', but the result it binds has type 'i32'"
+            ),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn index_switch_whose_case_yields_the_wrong_values_is_rejected() {
+        let err = rejection(
+            "index_switch_yield.hir",
+            r#"
+builtin.function public extern("C") @f(%s: i32, %x: i32) -> i32 {
+    %r = scf.index_switch %s
+    case 1 {
+        scf.yield : ();
+    }
+    default {
+        scf.yield %x : (i32);
+    } : (i32);
+    builtin.ret %r : (i32);
+};"#,
+        );
+        assert!(
+            err.contains(
+                "invalid operation scf.yield: successor 0 (the results of scf.index_switch) takes \
+                 1 result(s), but scf.yield gives it 0 operand(s)"
+            ),
+            "{err}"
+        );
+    }
+
+    /// A loop whose `scf.condition` forwards `%n` and whose body yields `%j`, both `i32`, with an
+    /// `i64` argument `%w` to put in their place.
+    const WHILE_TERMINATORS: &str = r#"
+builtin.function public extern("C") @f(%n: i32, %w: i64) -> i32 {
+    %r = scf.while %n before {
+    ^head(%i: i32):
+        %more = arith.cmpi ult %i, %n;
+        scf.condition %more, %i : (i1, i32);
+    } after {
+    ^body(%j: i32):
+        scf.yield %j : (i32);
+    } : (i32) -> i32;
+    builtin.ret %r : (i32);
+};"#;
+
+    /// Parse [WHILE_TERMINATORS], replace operand `operand` of the loop's terminator `T` with the
+    /// function's `i64` argument, and verify the terminator alone.
+    ///
+    /// The loop's own verifier also compares these lists, so parsing the faulty loop would report
+    /// the loop; verifying the terminator shows what the terminator's interface reports.
+    fn verify_while_terminator_with_an_i64_operand<T: OpRegistration>(operand: usize) -> String {
+        let context = Rc::new(Context::default());
+        let (function, _) =
+            parse_function_fixpoint(&context, "while_terminators.hir", WHILE_TERMINATORS).unwrap();
+        let function = function.borrow();
+        let wide = function.body().entry().arguments()[1] as ValueRef;
+        let while_op = find_op::<While>(&function);
+        let while_op = while_op.borrow();
+        let terminator = while_op
+            .regions()
+            .iter()
+            .find_map(|region| region.entry().terminator()?.try_downcast_op::<T>().ok())
+            .expect("expected the loop to hold the terminator");
+        let mut terminator = terminator.as_operation_ref();
+        let mut target = terminator.borrow().operands()[operand];
+        target.borrow_mut().set(wide);
+        let result = terminator.borrow_mut().verify();
+        format!("{}", result.unwrap_err())
+    }
+
+    #[test]
+    fn while_whose_condition_forwards_a_value_of_the_wrong_type_is_rejected() {
+        let err = verify_while_terminator_with_an_i64_operand::<Condition>(1);
+        assert!(
+            err.contains(
+                "invalid operation scf.condition: operand 0 for successor 0 (region 1 of \
+                 scf.while) has type 'i64', but the block argument it binds has type 'i32'"
+            ),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn while_whose_body_yields_a_value_of_the_wrong_type_is_rejected() {
+        let err = verify_while_terminator_with_an_i64_operand::<Yield>(0);
+        assert!(
+            err.contains(
+                "invalid operation scf.yield: operand 0 for successor 0 (region 0 of scf.while) \
+                 has type 'i64', but the block argument it binds has type 'i32'"
+            ),
+            "{err}"
+        );
     }
 }

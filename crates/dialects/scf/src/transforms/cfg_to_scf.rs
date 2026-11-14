@@ -747,7 +747,7 @@ mod tests {
 
         builder.switch_to_block(outer_loop_header);
         let end_of_rows = builder.ult(row_offset, num_rows, span)?;
-        builder.cond_br(end_of_rows, no_more_rows, [], has_more_rows, [row_sum], span)?;
+        builder.cond_br(end_of_rows, no_more_rows, [], has_more_rows, [], span)?;
 
         builder.switch_to_block(no_more_rows);
         builder.ret(Some(row_sum), span)?;
@@ -758,7 +758,7 @@ mod tests {
 
         builder.switch_to_block(inner_loop_header);
         let end_of_cols = builder.ult(col_offset, num_cols, span)?;
-        builder.cond_br(end_of_cols, no_more_columns, [], has_more_columns, [col_sum], span)?;
+        builder.cond_br(end_of_cols, no_more_columns, [], has_more_columns, [], span)?;
 
         builder.switch_to_block(no_more_columns);
         let new_row_offset_one = builder.i32(1, span);
@@ -854,7 +854,7 @@ mod tests {
 
         builder.switch_to_block(outer_loop_header);
         let more_rows = builder.ult(row_offset, num_rows, span)?;
-        builder.cond_br(more_rows, has_more_rows, [row_sum], no_more_rows, [], span)?;
+        builder.cond_br(more_rows, has_more_rows, [], no_more_rows, [], span)?;
 
         builder.switch_to_block(no_more_rows);
         builder.ret(Some(row_sum), span)?;
@@ -865,7 +865,7 @@ mod tests {
 
         builder.switch_to_block(inner_loop_header);
         let more_cols = builder.ult(col_offset, num_cols, span)?;
-        builder.cond_br(more_cols, has_more_columns, [col_sum], no_more_columns, [], span)?;
+        builder.cond_br(more_cols, has_more_columns, [], no_more_columns, [], span)?;
 
         builder.switch_to_block(no_more_columns);
         let new_row_offset_one = builder.i32(1, span);

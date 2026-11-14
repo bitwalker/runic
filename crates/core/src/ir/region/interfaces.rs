@@ -55,6 +55,18 @@ pub trait RegionKindInterface {
 /// `scf.for` has one region. The region has two region successors: the region itself and the
 /// `scf.for` op. `%b` is an entry successor operand. `%c` is a successor operand. `%a` is a
 /// successor block argument. `%r` is a successor result.
+///
+/// # Verification
+///
+/// The verifier checks each successor [Self::get_entry_successor_regions] reports when no operand
+/// is known to be constant: the operands [Self::get_entry_successor_operands] states for it are as
+/// many as the successor's inputs (the entry block's arguments of a region, or this operation's
+/// results), and each forwarded operand's type is compatible with its input's type by
+/// [Self::are_types_compatible]. The edges out of a region are checked by the region's terminator,
+/// as [RegionBranchTerminatorOpInterface] describes.
+///
+/// An operation that specializes this verifier calls [verify_region_branch_entry_operands] from its
+/// own.
 pub trait RegionBranchOpInterface: Op {
     /// Returns the operands of this operation that are forwarded to the region successor's block
     /// arguments or this operation's results when branching to `point`. `point` is guaranteed to
@@ -165,6 +177,20 @@ pub trait RegionBranchOpInterface: Op {
 /// This interface provides information for branching terminator operations in the presence of a
 /// parent [RegionBranchOpInterface] implementation. It specifies which operands are passed to which
 /// successor region.
+///
+/// # Verification
+///
+/// The parent operation implements [RegionBranchOpInterface]. For each successor
+/// [Self::get_successor_regions] reports when no operand is known to be constant, the operands
+/// [Self::get_successor_operands] states for it are as many as the successor's inputs (the entry
+/// block's arguments of a region, or the parent's results), and each forwarded operand's type is
+/// compatible with its input's type by the parent's
+/// [RegionBranchOpInterface::are_types_compatible].
+///
+/// A terminator that implements [RegionExitTerminatorOpInterface] need not be nested directly in a
+/// region branch operation, and its early-exit edges ([RegionSuccessorInfo::Exiting]) are checked
+/// by that interface's verifier. A terminator that does not implement it is checked here along an
+/// early-exit edge too, using the rule of the operation the exit addresses.
 pub trait RegionBranchTerminatorOpInterface: Op + Terminator {
     /// Get a range of operands corresponding to values that are semantically "returned" by passing
     /// them to the region successor indicated by `point`.
@@ -197,6 +223,176 @@ pub trait RegionBranchTerminatorOpInterface: Op + Terminator {
             .expect("invalid region terminator parent: must implement RegionBranchOpInterface")
             .get_successor_regions(RegionBranchPoint::Child(parent_region))
             .into_successor_infos()
+    }
+}
+
+impl<T> crate::Verify<dyn RegionBranchOpInterface> for T
+where
+    T: Op + RegionBranchOpInterface,
+{
+    default fn verify(&self, _context: &Context) -> Result<(), Report> {
+        verify_region_branch_entry_operands(self)
+    }
+}
+
+/// Check the operands `op` forwards on entry against each successor it may enter first: see the
+/// verification rules of [RegionBranchOpInterface].
+pub fn verify_region_branch_entry_operands(op: &dyn RegionBranchOpInterface) -> Result<(), Report> {
+    let operation = op.as_operation();
+    let constants = unknown_constants(operation.num_operands());
+    let successors = op.get_entry_successor_regions(&constants).into_successor_infos();
+    for (index, successor) in successors.iter().enumerate() {
+        let (description, input_kind, inputs) =
+            describe_region_successor(index, successor, operation)?;
+        crate::traits::verify_successor_operands(
+            operation,
+            &description,
+            &op.get_entry_successor_operands(successor.successor()),
+            input_kind,
+            &inputs,
+            |lhs, rhs| op.are_types_compatible(lhs, rhs),
+        )?;
+    }
+    Ok(())
+}
+
+impl<T> crate::Verify<dyn RegionBranchTerminatorOpInterface> for T
+where
+    T: Op + RegionBranchTerminatorOpInterface,
+{
+    fn verify(&self, _context: &Context) -> Result<(), Report> {
+        verify_region_branch_terminator_operands(self)
+    }
+}
+
+/// Check the operands `terminator` forwards against each successor it may branch to: see the
+/// verification rules of [RegionBranchTerminatorOpInterface].
+fn verify_region_branch_terminator_operands(
+    terminator: &dyn RegionBranchTerminatorOpInterface,
+) -> Result<(), Report> {
+    use crate::diagnostics::Spanned;
+
+    let op = terminator.as_operation();
+    let not_nested = || {
+        crate::diagnostics::report!(
+            message: (alloc::format!(
+                "invalid operation {}: a region branch terminator must be nested in an operation \
+                 that implements RegionBranchOpInterface",
+                op.name()
+            )),
+            labels: [
+                primary(op.span(), "this terminator has no region branch operation to return to"),
+            ],
+        )
+    };
+
+    // An early exit is verified by the exit interface: where it may appear, and the edges it
+    // takes out of its parent.
+    let is_exit = op.implements::<dyn RegionExitTerminatorOpInterface>();
+    let parent = op
+        .parent_op()
+        .filter(|parent| parent.borrow().implements::<dyn RegionBranchOpInterface>());
+    if parent.is_none() && !is_exit {
+        return Err(not_nested());
+    }
+
+    let constants = unknown_constants(op.num_operands());
+    let successors = terminator.get_successor_regions(&constants);
+    for (index, successor) in successors.iter().enumerate() {
+        if successor.is_exiting() && is_exit {
+            continue;
+        }
+        // The rule along an edge is that of the operation the edge belongs to: the parent, or the
+        // ancestor an early exit addresses.
+        let owner_ref = successor.target().or(parent).ok_or_else(not_nested)?;
+        let owner = owner_ref.borrow();
+        let Some(owner_branch) = owner.as_trait::<dyn RegionBranchOpInterface>() else {
+            return Err(crate::diagnostics::report!(
+                message: (alloc::format!(
+                    "invalid operation {}: it exits to {}, which does not implement \
+                     RegionBranchOpInterface",
+                    op.name(),
+                    owner.name()
+                )),
+                labels: [
+                    primary(op.span(), "this exit's target describes no region branches"),
+                ],
+            ));
+        };
+        let (description, input_kind, inputs) =
+            describe_region_successor(index, successor, &owner)?;
+        crate::traits::verify_successor_operands(
+            op,
+            &description,
+            &terminator.get_successor_operands(successor.successor()),
+            input_kind,
+            &inputs,
+            |lhs, rhs| owner_branch.are_types_compatible(lhs, rhs),
+        )?;
+    }
+    Ok(())
+}
+
+/// An entry for each of `num_operands` operands, none of them known to be constant.
+fn unknown_constants(num_operands: usize) -> SmallVec<[Option<AttributeRef>; 4]> {
+    core::iter::repeat_with(|| None).take(num_operands).collect()
+}
+
+/// Name the successor at `index` of a region branch for a diagnostic, and return what its inputs
+/// are and their types. `owner` is the operation the successor is relative to: the immediate
+/// parent for an entered region or a return, and the addressed ancestor for an early exit, which
+/// [RegionSuccessorInfo::Exiting] names itself.
+fn describe_region_successor(
+    index: usize,
+    successor: &RegionSuccessorInfo,
+    owner: &Operation,
+) -> Result<(alloc::string::String, &'static str, SmallVec<[Type; 4]>), Report> {
+    let values_types = |values: &[ValueRef]| {
+        values.iter().map(|value| value.borrow().ty()).collect::<SmallVec<[Type; 4]>>()
+    };
+    let entered = |region: RegionRef| {
+        let region = region.borrow();
+        let number = region.region_number();
+        let description = alloc::format!("successor {index} (region {number} of {})", owner.name());
+        let Some(entry) = region.entry_block_ref() else {
+            return Err(Report::msg(alloc::format!(
+                "invalid operation {}: {description} has no entry block",
+                owner.name()
+            )));
+        };
+        let types = entry
+            .borrow()
+            .arguments()
+            .iter()
+            .map(|arg| arg.borrow().ty())
+            .collect::<SmallVec<[Type; 4]>>();
+        Ok((description, "block argument", types))
+    };
+    match successor {
+        RegionSuccessorInfo::Entering(region) => entered(*region),
+        RegionSuccessorInfo::Returning(values) => Ok((
+            alloc::format!("successor {index} (the results of {})", owner.name()),
+            "result",
+            values_types(values),
+        )),
+        RegionSuccessorInfo::Exiting { target, to, values } => {
+            let target_name = target.borrow().name();
+            match to {
+                RegionBranchPoint::Parent => Ok((
+                    alloc::format!("successor {index} (the results of {target_name})"),
+                    "result",
+                    values_types(values),
+                )),
+                RegionBranchPoint::Child(region) => {
+                    let number = region.borrow().region_number();
+                    Ok((
+                        alloc::format!("successor {index} (region {number} of {target_name})"),
+                        "block argument",
+                        values_types(values),
+                    ))
+                }
+            }
+        }
     }
 }
 
@@ -765,5 +961,160 @@ impl dyn LoopLikeOpInterface {
     pub fn get_single_step(&self) -> Option<OpFoldResult> {
         let mut steps = self.get_loop_steps()?;
         if steps.len() == 1 { steps.pop() } else { None }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{format, vec::Vec};
+
+    use super::*;
+    use crate::{
+        BuilderExt, SourceSpan, SuccessorOperandRange, SuccessorOperandRangeMut,
+        derive::{EffectOpInterface, operation},
+        dialects::test::TestDialect,
+        effects::MemoryEffectOpInterface,
+        smallvec,
+        testing::Test,
+        traits::AnyType,
+    };
+
+    /// An operation that enters its one region and returns no values from it.
+    #[derive(EffectOpInterface)]
+    #[operation(
+        dialect = TestDialect,
+        implements(RegionBranchOpInterface, RegionKindInterface, MemoryEffectOpInterface)
+    )]
+    pub struct RegionBranchTestOp {
+        #[region]
+        body: Region,
+    }
+
+    impl RegionBranchOpInterface for RegionBranchTestOp {
+        fn get_successor_regions(&self, point: RegionBranchPoint) -> RegionSuccessorIter<'_> {
+            let successor = match point {
+                RegionBranchPoint::Parent => {
+                    RegionSuccessorInfo::Entering(self.body().as_region_ref())
+                }
+                RegionBranchPoint::Child(_) => RegionSuccessorInfo::Returning(SmallVec::new()),
+            };
+            RegionSuccessorIter::new(self.as_operation(), [successor])
+        }
+    }
+
+    impl RegionKindInterface for RegionBranchTestOp {
+        fn kind(&self) -> RegionKind {
+            RegionKind::SSA
+        }
+    }
+
+    /// A terminator that returns its operands to its parent.
+    #[derive(EffectOpInterface)]
+    #[operation(
+        dialect = TestDialect,
+        traits(Terminator),
+        implements(RegionBranchTerminatorOpInterface, MemoryEffectOpInterface)
+    )]
+    pub struct RegionBranchTestYield {
+        #[operands]
+        yielded: AnyType,
+    }
+
+    impl RegionBranchTerminatorOpInterface for RegionBranchTestYield {
+        fn get_successor_operands(&self, _point: RegionBranchPoint) -> SuccessorOperandRange<'_> {
+            SuccessorOperandRange::forward(self.yielded())
+        }
+
+        fn get_mutable_successor_operands(
+            &mut self,
+            _point: RegionBranchPoint,
+        ) -> SuccessorOperandRangeMut<'_> {
+            SuccessorOperandRangeMut::forward(self.yielded_mut())
+        }
+
+        fn get_successor_regions(
+            &self,
+            _operands: &[Option<AttributeRef>],
+        ) -> SmallVec<[RegionSuccessorInfo; 2]> {
+            smallvec![RegionSuccessorInfo::Returning(SmallVec::new())]
+        }
+    }
+
+    #[test]
+    fn a_region_branch_forwards_as_many_operands_on_entry_as_the_region_takes() {
+        let mut test = Test::new("region_branch_entry", |_| ([], []));
+        let op = {
+            let mut builder = test.function_builder();
+            let create =
+                builder.builder_mut().create::<RegionBranchTestOp, ()>(SourceSpan::UNKNOWN);
+            let op = create().unwrap();
+            let region = op.borrow().body().as_region_ref();
+            let i32 = builder.builder_mut().context().i32();
+            builder.builder_mut().create_block(region, None, &[i32]);
+            op
+        };
+
+        let err = op.borrow().as_operation().verify().unwrap_err();
+        let err = format!("{err}");
+        assert!(
+            err.contains(
+                "successor 0 (region 0 of test.region_branch_test_op) takes 1 block argument(s), \
+                 but test.region_branch_test_op gives it 0 operand(s)"
+            ),
+            "{err}"
+        );
+    }
+
+    /// Build a [RegionBranchTestOp] whose region returns the argument of a function taking an
+    /// `i32` with a [RegionBranchTestYield], and return the yield.
+    fn yield_in_region_branch(test: &mut Test) -> UnsafeIntrusiveEntityRef<RegionBranchTestYield> {
+        let i32 = test.context().i32();
+        test.with_function("region_branch_terminator", &[i32], &[]);
+        let mut builder = test.function_builder();
+        let arg = builder.entry_block().borrow().arguments()[0] as ValueRef;
+        let create = builder.builder_mut().create::<RegionBranchTestOp, ()>(SourceSpan::UNKNOWN);
+        let op = create().unwrap();
+        let region = op.borrow().body().as_region_ref();
+        let body = builder.builder_mut().create_block(region, None, &[]);
+        builder.builder_mut().set_insertion_point_to_end(body);
+        let create = builder
+            .builder_mut()
+            .create::<RegionBranchTestYield, ([ValueRef; 1],)>(SourceSpan::UNKNOWN);
+        create([arg]).unwrap()
+    }
+
+    #[test]
+    fn a_region_branch_terminator_forwards_as_many_operands_as_its_successor_takes() {
+        let mut test = Test::named("region_branch_terminator");
+        let terminator = yield_in_region_branch(&mut test);
+
+        let err = terminator.borrow().as_operation().verify().unwrap_err();
+        let err = format!("{err}");
+        assert!(
+            err.contains(
+                "successor 0 (the results of test.region_branch_test_op) takes 0 result(s), but \
+                 test.region_branch_test_yield gives it 1 operand(s)"
+            ),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_region_branch_terminator_is_nested_in_a_region_branch() {
+        let mut test = Test::named("stray_region_branch_terminator");
+        let i32 = test.context().i32();
+        test.with_function("stray_region_branch_terminator", &[i32], &[]);
+        let terminator = {
+            let mut builder = test.function_builder();
+            let arg = builder.entry_block().borrow().arguments()[0] as ValueRef;
+            let create = builder
+                .builder_mut()
+                .create::<RegionBranchTestYield, (Vec<ValueRef>,)>(SourceSpan::UNKNOWN);
+            create(alloc::vec![arg]).unwrap()
+        };
+
+        let err = terminator.borrow().as_operation().verify().unwrap_err();
+        let err = format!("{err}");
+        assert!(err.contains("must be nested in an operation that implements"), "{err}");
     }
 }
