@@ -4,8 +4,8 @@ use alloc::{boxed::Box, vec::Vec};
 
 use smallvec::SmallVec;
 
-use super::{RecGroup, RecGroupError, Type};
-use crate::{Context, FxHashMap, dialects::builtin::types::RecVarType};
+use super::{RecGroup, RecGroupError, Type, TypeInvariants};
+use crate::{Context, FxHashMap, Report, dialects::builtin::types::RecVarType};
 
 /// Maps every type reachable from a type, bottom-up: a type's held types are mapped first, the type is
 /// rebuilt from them, and `map` is applied to the rebuilt type.
@@ -13,19 +13,23 @@ use crate::{Context, FxHashMap, dialects::builtin::types::RecVarType};
 /// The rebuilt type is the type's value with each held type replaced by its result
 /// ([Context::map_subtypes]); the result of `map` on it is final and is not mapped again. Each
 /// type is mapped once per mapper: results are remembered by handle, so a type held in several
-/// places, or reached again by a later call to [Self::map], is passed to `map` once.
+/// places, or reached again by a later call to [Self::map], is passed to `map` once. A rebuilt type
+/// whose held types changed is checked with its kind's [TypeInvariants], if it has them.
 ///
-/// A member of a recursion group is not rebuilt from its value, which may hold the member itself.
-/// Its group is rebuilt instead: each of the group's bodies ([RecGroup::bodies]) is rebuilt from
-/// the results of the types it holds, the recursion variables in them staying as they are, and
-/// [Context::rec_group] builds the group of the rebuilt bodies; `map` is then applied to each of
-/// the new members, and the result for member `i` of the old group is `map` of member `i` of the
-/// new group. So a recursive type stays recursive, and its references to itself point at the new
-/// group. A group whose bodies are all unchanged is the same group, and the groups a group's
-/// bodies refer to are mapped before it. `map` is never passed a recursion variable or a body
-/// itself; it is passed the open types inside a body, and what it returns for them becomes part
-/// of the rebuilt body. If the rebuilt bodies of a group of one body hold no recursion variable,
-/// [Context::rec_group] gives back that body, an ordinary type, as the new member.
+/// A member of a recursion group is seen as its body. The group's bodies ([RecGroup::bodies]),
+/// open types in which a reference to a member is a recursion variable, are mapped like any other
+/// type, `map` included, and [Context::rec_group] builds a group from the mapped bodies. The result
+/// for member `i` of the old group is member `i` of the new group; `map` is not applied to it. So a
+/// recursive type stays recursive, and its references to itself point at the new member, even when
+/// `map` changes the body's kind, name or fields. A group none of whose bodies changed is the same
+/// group, and the groups a group's bodies refer to are mapped before it. `map` is never passed a
+/// group member or a bare recursion variable (a variable's result is itself); it is passed bodies
+/// and the open types inside them, and must handle open types. If the group of one body is built
+/// from a mapped body that holds no recursion variable, [Context::rec_group] gives back that body,
+/// an ordinary type, as the result.
+///
+/// Because `map` sees a recursive type as its open body, a map that matches a particular member by
+/// handle never matches: it must match on the body's shape or name instead.
 ///
 /// For a given `map`, the result for a type depends only on the type: not on the order in which
 /// types are mapped, nor on whether they are mapped by the same mapper (the context returns the
@@ -36,7 +40,8 @@ use crate::{Context, FxHashMap, dialects::builtin::types::RecVarType};
 pub struct TypeMapper<'a> {
     context: &'a Context,
     map: BoxedMap<'a>,
-    /// The result for each type mapped so far, members of rebuilt groups included.
+    /// The result for each type mapped so far: ordinary types, bodies, and members of rebuilt
+    /// groups.
     memo: FxHashMap<Type, Type>,
 }
 
@@ -44,17 +49,24 @@ pub struct TypeMapper<'a> {
 type BoxedMap<'a> = Box<dyn FnMut(&Context, Type) -> Type + 'a>;
 
 /// Why a type could not be mapped.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum TypeMapError {
-    /// The rebuilt bodies of `group` do not define a recursion group, as `error` says: for
-    /// example, `map` returned, for a type inside a body, a type that refers to a recursion
-    /// variable the group does not have.
+    /// The mapped bodies of `group` do not define a recursion group, as `error` says: for example,
+    /// `map` turned a body into a scalar in a group of several members, or returned, for a type
+    /// inside a body, a type that refers to a recursion variable the group does not have.
     #[error("the mapped bodies of recursion group {} do not form a group: {error}", group.id())]
     Group {
         group: RecGroup,
         #[source]
         error: RecGroupError,
     },
+    /// `ty`, rebuilt from the results of the types it holds, breaks an invariant of its kind
+    /// ([TypeInvariants]), as `error` says. `ty` is the type as it was before the map.
+    #[error("type '{ty}' is not valid once the types it holds are mapped: {error}")]
+    Invalid { ty: Type, error: Report },
+    /// `map` was given the closed type `from` and answered the open type `to`.
+    #[error("the map answered the open type '{to}' for the closed type '{from}'")]
+    OpenResult { from: Type, to: Type },
 }
 
 /// A step of the walk.
@@ -63,13 +75,19 @@ enum Step {
     Visit(Type),
     /// Rebuild this ordinary type from the results of the types it holds, and apply `map`.
     Rebuild(Type),
-    /// Rebuild this group from the results of the types its bodies hold, and apply `map` to the
-    /// new members.
+    /// Build this group again from the results of its bodies.
     RebuildGroup(RecGroup),
 }
 
 impl<'a> TypeMapper<'a> {
     /// A mapper that applies `map` to the types of `context`.
+    ///
+    /// `map` is given a type of `context` and answers a type of `context`. For a closed argument
+    /// it must answer a closed type: an open answer is [TypeMapError::OpenResult]. For an open
+    /// argument (a body, or a type inside one) it may answer an open type, whose recursion
+    /// variables refer to the members of the group being rebuilt; a variable the group does not
+    /// have, or a body the group cannot have (a bare variable, a member of another group, a scalar
+    /// in a group of several members), is [TypeMapError::Group].
     pub fn new(context: &'a Context, map: impl FnMut(&Context, Type) -> Type + 'a) -> Self {
         Self {
             context,
@@ -80,15 +98,17 @@ impl<'a> TypeMapper<'a> {
 
     /// The result of mapping `ty` and every type reachable from it; see [TypeMapper].
     ///
-    /// Fails if the rebuilt bodies of a group do not define a group. The results found before the
-    /// failure are kept, and those of the failing group and of the types that reach it are not.
+    /// Fails if the mapped bodies of a group do not define a group, if a rebuilt type breaks its
+    /// kind's invariants, or if `map` answers an open type for a closed one. The results found
+    /// before the failure are kept, and those of the failing type and of the types that reach it
+    /// are not.
     pub fn map(&mut self, ty: Type) -> Result<Type, TypeMapError> {
         self.context.debug_assert_owns_type(ty, "the type being mapped");
         let mut stack = alloc::vec![Step::Visit(ty)];
         while let Some(step) = stack.pop() {
             match step {
                 Step::Visit(ty) => self.visit(ty, &mut stack),
-                Step::Rebuild(ty) => self.rebuild(ty),
+                Step::Rebuild(ty) => self.rebuild(ty)?,
                 Step::RebuildGroup(group) => self.rebuild_group(group)?,
             }
         }
@@ -96,6 +116,12 @@ impl<'a> TypeMapper<'a> {
     }
 
     /// Schedules `ty`'s rebuild and, above it, what it holds, unless `ty` already has a result.
+    ///
+    /// Everything scheduled above a rebuild runs before it, so a type is rebuilt twice only if it
+    /// is visited again while its rebuild is pending, that is, if it is reachable from what it
+    /// holds. Outside recursion groups type storage is acyclic, and a group's bodies refer to its
+    /// members through variables, never by handle, so this does not happen: a later visit always
+    /// finds the result.
     fn visit(&self, ty: Type, stack: &mut Vec<Step>) {
         if self.memo.contains_key(&ty) || ty.is::<RecVarType>() {
             return;
@@ -104,19 +130,14 @@ impl<'a> TypeMapper<'a> {
             Some(group) => {
                 stack.push(Step::RebuildGroup(group));
                 for body in group.bodies() {
-                    Self::visit_held(*body, stack);
+                    stack.push(Step::Visit(*body));
                 }
             }
             None => {
                 stack.push(Step::Rebuild(ty));
-                Self::visit_held(ty, stack);
+                ty.visit_subtypes(&mut |held| stack.push(Step::Visit(held)));
             }
         }
-    }
-
-    /// Schedules a visit of each type `ty` holds.
-    fn visit_held(ty: Type, stack: &mut Vec<Step>) {
-        ty.visit_subtypes(&mut |held| stack.push(Step::Visit(held)));
     }
 
     /// The result for `ty`, which has one unless it is a recursion variable, which is its own.
@@ -127,37 +148,43 @@ impl<'a> TypeMapper<'a> {
         *self.memo.get(&ty).expect("a type held by a rebuilt type is mapped before it")
     }
 
-    /// `ty`'s value with each held type replaced by its result.
-    fn rebuild_from_results(&self, ty: Type) -> Type {
-        self.context.map_subtypes(ty, &mut |held| self.result(held))
-    }
-
-    fn rebuild(&mut self, ty: Type) {
-        // The same type may have been scheduled twice before its first rebuild ran.
-        if self.memo.contains_key(&ty) {
-            return;
+    fn rebuild(&mut self, ty: Type) -> Result<(), TypeMapError> {
+        debug_assert!(!self.memo.contains_key(&ty), "`{ty}` is rebuilt once (see `visit`)");
+        let rebuilt = self.context.map_subtypes(ty, &mut |held| self.result(held));
+        if rebuilt != ty
+            && let Some(invariants) = rebuilt.as_trait::<dyn TypeInvariants>()
+        {
+            invariants
+                .check_invariants(self.context)
+                .map_err(|error| TypeMapError::Invalid { ty, error })?;
         }
-        let rebuilt = self.rebuild_from_results(ty);
         let result = (self.map)(self.context, rebuilt);
         self.context.debug_assert_owns_type(result, "the result of a type map");
+        if !rebuilt.is_open() && result.is_open() {
+            return Err(TypeMapError::OpenResult {
+                from: rebuilt,
+                to: result,
+            });
+        }
         self.memo.insert(ty, result);
+        Ok(())
     }
 
     fn rebuild_group(&mut self, group: RecGroup) -> Result<(), TypeMapError> {
         let members = group.members();
-        if self.memo.contains_key(&members[0]) {
-            return Ok(());
-        }
+        debug_assert!(
+            !self.memo.contains_key(&members[0]),
+            "group {} is rebuilt once (see `visit`)",
+            group.id()
+        );
         let bodies: SmallVec<[Type; 4]> =
-            group.bodies().iter().map(|body| self.rebuild_from_results(*body)).collect();
+            group.bodies().iter().map(|body| self.result(*body)).collect();
         let new_members = self
             .context
             .rec_group(&bodies)
             .map_err(|error| TypeMapError::Group { group, error })?;
         for (member, new_member) in members.iter().zip(new_members) {
-            let result = (self.map)(self.context, new_member);
-            self.context.debug_assert_owns_type(result, "the result of a type map");
-            self.memo.insert(*member, result);
+            self.memo.insert(*member, new_member);
         }
         Ok(())
     }
@@ -292,11 +319,11 @@ mod tests {
         let context = Context::default();
         let mut mapper = TypeMapper::new(&context, |_, ty| ty);
         for ty in table(&context) {
-            assert_eq!(mapper.map(ty), Ok(ty), "{ty}");
+            assert_eq!(mapper.map(ty).unwrap(), ty, "{ty}");
         }
         // A fresh mapper, with nothing remembered, gives the same answer.
         for ty in table(&context).into_iter().rev() {
-            assert_eq!(TypeMapper::new(&context, |_, ty| ty).map(ty), Ok(ty), "{ty}");
+            assert_eq!(TypeMapper::new(&context, |_, ty| ty).map(ty).unwrap(), ty, "{ty}");
         }
     }
 
@@ -312,13 +339,13 @@ mod tests {
                     .struct_type(StructType::new([int.into(), context.array_type(int, 4).into()])),
             )
         };
-        assert_eq!(mapper.map(nested(isize)), Ok(nested(i32)));
+        assert_eq!(mapper.map(nested(isize)).unwrap(), nested(i32));
         assert_eq!(format!("{}", nested(i32)), "ptr<struct<i32, array<i32; 4>>>");
 
         let function = |int: Type| {
             context.function_type([int, context.ptr_type(int)], [context.array_type(int, 2)])
         };
-        assert_eq!(mapper.map(function(isize)), Ok(function(i32)));
+        assert_eq!(mapper.map(function(isize)).unwrap(), function(i32));
 
         let option = |int: Type| {
             context.enum_type(
@@ -336,8 +363,8 @@ mod tests {
                 .unwrap(),
             )
         };
-        assert_eq!(mapper.map(option(isize)), Ok(option(i32)));
-        assert_eq!(mapper.map(isize), Ok(i32));
+        assert_eq!(mapper.map(option(isize)).unwrap(), option(i32));
+        assert_eq!(mapper.map(isize).unwrap(), i32);
     }
 
     #[test]
@@ -412,7 +439,7 @@ mod tests {
         }
         // One mapper, mapping one type at a time from scratch, agrees too.
         for (ty, expected) in types.iter().zip(results[0]) {
-            assert_eq!(TypeMapper::new(&context, isize_to_i32).map(*ty), Ok(expected));
+            assert_eq!(TypeMapper::new(&context, isize_to_i32).map(*ty).unwrap(), expected);
         }
         let [new_a, new_b, new_c, new_through] = results[0];
         assert_eq!(new_through.pointee(), Some(new_c));
@@ -438,30 +465,96 @@ mod tests {
         };
         let mut mapper = TypeMapper::new(&context, f64_to_f32);
         for member in [list, a, b] {
-            assert_eq!(mapper.map(member), Ok(member));
+            assert_eq!(mapper.map(member).unwrap(), member);
         }
         let holder = |float: Type| {
             context.struct_type(StructType::new([float.into(), context.ptr_type(list).into()]))
         };
-        assert_eq!(mapper.map(holder(context.f64())), Ok(holder(context.f32())));
+        assert_eq!(mapper.map(holder(context.f64())).unwrap(), holder(context.f32()));
     }
 
     #[test]
-    fn map_results_for_members_are_final() {
-        // A map that turns every closed struct into a scalar: the group is rebuilt from its
-        // bodies, which `map` never sees, and then each new member becomes `i32`.
+    fn a_map_that_reshapes_a_recursive_type_reshapes_its_references_to_itself() {
+        // Gives every struct named `list` a leading `i8` field. `map` sees the list as its body,
+        // `struct list<isize, ptr<rec.0>>`, so the field is added where the list refers to itself
+        // too.
+        let context = Context::default();
+        let (i8, isize) = (context.i8(), context.isize());
+        let old = list(&context, isize);
+        let prepend_i8 = |context: &Context, ty: Type| match ty.as_struct() {
+            Some(value) if value.name() == Some(sym("list")) => {
+                context.struct_type(StructType::named(
+                    sym("list"),
+                    core::iter::once(StructField::new(context.i8()))
+                        .chain(value.fields().iter().cloned()),
+                ))
+            }
+            _ => ty,
+        };
+        let new = TypeMapper::new(&context, prepend_i8).map(old).unwrap();
+
+        let body = context.struct_type(StructType::named(
+            sym("list"),
+            [i8.into(), isize.into(), context.ptr_type(context.rec_var(0)).into()],
+        ));
+        assert_eq!(new, context.rec_group(&[body]).unwrap()[0]);
+        assert_eq!(new.rec_index(), Some(0));
+        assert_eq!(field(new, 0), i8);
+        assert_eq!(field(new, 1), isize);
+        assert_eq!(field(new, 2).pointee(), Some(new), "the member reached is the result itself");
+        assert!(!reachable(new).contains(&old));
+    }
+
+    #[test]
+    fn a_map_that_turns_a_body_into_a_scalar_is_an_error() {
+        // Every struct, the bodies of the group included, becomes `i32`: a group of two members
+        // cannot have scalar members.
         let context = Context::default();
         let (a, b) = mutual(&context);
-        let structs_to_i32 = |context: &Context, ty: Type| {
-            if ty.as_struct().is_some() && !ty.is_open() {
-                context.i32()
-            } else {
-                ty
-            }
-        };
+        let group = a.rec_group().unwrap();
+        let structs_to_i32 =
+            |context: &Context, ty: Type| if ty.is_struct() { context.i32() } else { ty };
         let mut mapper = TypeMapper::new(&context, structs_to_i32);
-        assert_eq!(mapper.map(a), Ok(context.i32()));
-        assert_eq!(mapper.map(context.ptr_type(b)), Ok(context.ptr_type(context.i32())));
+        for ty in [a, context.ptr_type(b)] {
+            match mapper.map(ty) {
+                Err(TypeMapError::Group {
+                    group: failed,
+                    error: RecGroupError::ScalarMember { member: 0 },
+                }) => assert_eq!(failed, group),
+                other => panic!("`{ty}`: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_one_body_group_whose_mapped_body_is_closed_is_an_ordinary_type() {
+        // `ptr<rec.0>` becomes `ptr<i8>`: the list no longer refers to itself.
+        let context = Context::default();
+        let (i8, isize) = (context.i8(), context.isize());
+        let open = context.ptr_type(context.rec_var(0));
+        let closed = context.ptr_type(i8);
+        let mut mapper =
+            TypeMapper::new(&context, move |_, ty| if ty == open { closed } else { ty });
+        let new = mapper.map(list(&context, isize)).unwrap();
+        let expected =
+            context.struct_type(StructType::named(sym("list"), [isize.into(), closed.into()]));
+        assert_eq!(new, expected);
+        assert_eq!(new.rec_group(), None);
+    }
+
+    /// Asserts that `result` is [TypeMapError::Group] for `group` with `error`.
+    fn assert_group_error(
+        result: Result<Type, TypeMapError>,
+        group: RecGroup,
+        error: RecGroupError,
+    ) {
+        match result {
+            Err(TypeMapError::Group {
+                group: failed,
+                error: found,
+            }) => assert_eq!((failed, found), (group, error)),
+            other => panic!("expected a group error, got {other:?}"),
+        }
     }
 
     #[test]
@@ -474,18 +567,102 @@ mod tests {
         let target = context.ptr_type(context.rec_var(1));
         let mut mapper =
             TypeMapper::new(&context, move |_, ty| if ty == target { out_of_range } else { ty });
-        let error = TypeMapError::Group {
-            group,
-            error: RecGroupError::VariableOutOfRange {
-                member: 0,
-                index: 5,
-                len: 2,
-            },
+        let error = RecGroupError::VariableOutOfRange {
+            member: 0,
+            index: 5,
+            len: 2,
         };
-        assert_eq!(mapper.map(context.ptr_type(b)), Err(error.clone()));
-        assert_eq!(mapper.map(a), Err(error.clone()), "the failing group is not remembered");
-        let message = format!("{error}");
+        assert_group_error(mapper.map(context.ptr_type(b)), group, error.clone());
+        // The failing group is not remembered.
+        let failure = mapper.map(a).unwrap_err();
+        let message = format!("{failure}");
         assert!(message.starts_with("the mapped bodies of recursion group"), "{message}");
+        assert_group_error(Err(failure), group, error);
+    }
+
+    #[test]
+    fn a_closed_type_must_not_map_to_an_open_one() {
+        let context = Context::default();
+        let (isize, var) = (context.isize(), context.rec_var(0));
+        let isize_to_var = move |_: &Context, ty: Type| if ty == isize { var } else { ty };
+        for root in [context.ptr_type(isize), list(&context, isize)] {
+            // Inside the list's body too: `isize` is closed wherever it is.
+            match TypeMapper::new(&context, isize_to_var).map(root) {
+                Err(TypeMapError::OpenResult { from, to }) => assert_eq!((from, to), (isize, var)),
+                other => panic!("`{root}`: {other:?}"),
+            }
+        }
+        let message = format!(
+            "{}",
+            TypeMapError::OpenResult {
+                from: isize,
+                to: var
+            }
+        );
+        assert_eq!(message, "the map answered the open type 'rec.0' for the closed type 'isize'");
+    }
+
+    /// `enum<discriminant; variants>`, without a name and with no payloads.
+    fn plain_enum(context: &Context, discriminant: Type, variants: &[(&str, u128)]) -> Type {
+        let variants = variants
+            .iter()
+            .map(|(name, value)| EnumVariant::new(sym(name)).with_value(*value));
+        context.enum_type(EnumType::new(None, discriminant, variants).unwrap())
+    }
+
+    /// Asserts that `result` is [TypeMapError::Invalid] for `ty`.
+    fn assert_invalid(result: Result<Type, TypeMapError>, ty: Type) {
+        match result {
+            Err(TypeMapError::Invalid { ty: invalid, error }) => {
+                assert_eq!(invalid, ty, "{error}");
+                let message = format!("{}", TypeMapError::Invalid { ty, error });
+                assert!(message.starts_with(&format!("type '{ty}' is not valid")), "{message}");
+            }
+            other => panic!("expected `{ty}` to be invalid, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_rebuilt_type_that_breaks_its_kinds_invariants_is_an_error() {
+        let context = Context::default();
+        let (i8, i32, isize) = (context.i8(), context.i32(), context.isize());
+
+        // A value that does not fit the new discriminant.
+        let wide = plain_enum(&context, isize, &[("a", 1 << 40)]);
+        assert_invalid(TypeMapper::new(&context, isize_to_i32).map(wide), wide);
+        assert_invalid(TypeMapper::new(&context, isize_to_i32).map(context.ptr_type(wide)), wide);
+        // Values that do.
+        let small = |int| plain_enum(&context, int, &[("a", 1), ("b", 2)]);
+        let narrowed = TypeMapper::new(&context, isize_to_i32).map(small(isize)).unwrap();
+        assert_eq!(narrowed, small(i32));
+        assert_eq!(format!("{narrowed}"), "enum<i32; a = 1, b = 2>");
+
+        // A discriminant that is no longer an integer.
+        let i8_to_struct = |context: &Context, ty: Type| {
+            if ty == context.i8() {
+                context.struct_type(StructType::new([context.i1().into()]))
+            } else {
+                ty
+            }
+        };
+        let flag = plain_enum(&context, i8, &[("off", 0), ("on", 1)]);
+        assert_invalid(TypeMapper::new(&context, i8_to_struct).map(flag), flag);
+
+        // The same in the body of a recursion group: `rec { type !e = enum e<i8; nil, cons: ptr<!e>>; }`.
+        let body = context.enum_type(
+            EnumType::new(
+                Some(sym("e")),
+                i8,
+                [
+                    EnumVariant::new(sym("nil")),
+                    EnumVariant::new(sym("cons"))
+                        .with_payload(context.ptr_type(context.rec_var(0))),
+                ],
+            )
+            .unwrap(),
+        );
+        let member = context.rec_group(&[body]).unwrap()[0];
+        assert_invalid(TypeMapper::new(&context, i8_to_struct).map(member), body);
     }
 
     #[test]
@@ -512,23 +689,28 @@ mod tests {
             isize_to_i32(context, ty)
         });
         let first = mapper.map(root).unwrap();
-        assert_eq!(mapper.map(root), Ok(first));
-        assert_eq!(mapper.map(list), mapper.map(list_ptr).map(|ptr| ptr.pointee().unwrap()));
+        assert_eq!(mapper.map(root).unwrap(), first);
+        assert_eq!(mapper.map(list).unwrap(), mapper.map(list_ptr).unwrap().pointee().unwrap());
         drop(mapper);
 
         let calls = calls.into_inner();
         let distinct: FxHashSet<Type> = calls.iter().copied().collect();
+        // `map` is passed rebuilt types, and two different types rebuild to the same one when
+        // they differ only by `isize` and `i32` (`ptr<isize>` and `ptr<i32>` both rebuild to
+        // `ptr<i32>`). The root holds no `i32`, so here each rebuilt type is passed once.
         assert_eq!(distinct.len(), calls.len(), "no type is passed twice: {calls:?}");
         let i32 = context.i32();
         let new_list = first.as_struct().unwrap().fields()[3].ty.pointee().unwrap();
-        // The rebuilt forms of `isize`, `ptr<isize>`, `array<ptr<isize>; 2>`, `ptr<rec.0>` (inside
-        // the list's body), the list, the pointer to it, and the root.
+        // The rebuilt forms of `isize`, `ptr<isize>`, `array<ptr<isize>; 2>`, `ptr<rec.0>` and the
+        // body `struct list<isize, ptr<rec.0>>`, the pointer to the list, and the root.
+        let new_body =
+            context.struct_type(StructType::named(sym("list"), [i32.into(), open_ptr.into()]));
         let expected: FxHashSet<Type> = [
             isize,
             context.ptr_type(i32),
             context.array_type(context.ptr_type(i32), 2),
             open_ptr,
-            new_list,
+            new_body,
             context.ptr_type(new_list),
             context.struct_type(StructType::new([
                 context.ptr_type(i32).into(),
@@ -542,9 +724,9 @@ mod tests {
         .into_iter()
         .collect();
         assert_eq!(distinct, expected);
+        assert_eq!(new_list.rec_group().unwrap().bodies(), [new_body]);
         assert!(!calls.contains(&context.rec_var(0)), "a recursion variable is not passed");
-        let body = list.rec_group().unwrap().bodies()[0];
-        assert!(!calls.contains(&body), "a body is not passed");
+        assert!(!calls.contains(&list) && !calls.contains(&new_list), "a member is not passed");
     }
 
     #[test]
@@ -555,7 +737,7 @@ mod tests {
             before = context.ptr_type(before);
             after = context.ptr_type(after);
         }
-        assert_eq!(TypeMapper::new(&context, isize_to_i32).map(before), Ok(after));
+        assert_eq!(TypeMapper::new(&context, isize_to_i32).map(before).unwrap(), after);
     }
 
     /// A splitmix64 generator: the randomized test is deterministic for a seed.
@@ -704,8 +886,8 @@ mod tests {
                     changed_members += 1;
                 }
                 assert_eq!(
-                    back.map(mapped),
-                    Ok(ty),
+                    back.map(mapped).ok(),
+                    Some(ty),
                     "seed {seed:#x} (set TYPE_MAP_TEST_SEED to rerun): type {index} `{ty}` maps \
                      to `{mapped}`"
                 );

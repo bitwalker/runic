@@ -3,12 +3,12 @@ use core::fmt::{self, Write};
 
 use super::print_name;
 use crate::{
-    FxHashMap, FxHashSet, Int,
+    Context, FxHashMap, FxHashSet, Int, Report,
     derive::{DialectType, TypeComponent},
     dialects::builtin::BuiltinDialect,
     interner::Symbol,
     layout::{AggregateType, TypeLayout},
-    types::{Type, TypeAliasName, TypeFormatter, TypePrinter},
+    types::{Type, TypeAliasName, TypeFormatter, TypeInvariants, TypePrinter},
 };
 
 /// A variant of an [EnumType]: a name, a discriminant value and an optional payload type.
@@ -93,10 +93,15 @@ pub enum InvalidEnumType {
 /// is part of its identity.
 ///
 /// `replace_subtypes` replaces the discriminant and payload types and keeps the variants as they
-/// are, with their resolved values; it does not run the checks of [Self::new], so the caller must
-/// replace the discriminant only with a valid one of the same width.
+/// are, with their resolved values; it does not run the checks of [Self::new]. The enum's
+/// [TypeInvariants] run the checks that depend on the discriminant, so code that replaces it
+/// checks the result with them.
 #[derive(Debug, PartialEq, Eq, Hash, DialectType)]
-#[ty(dialect = BuiltinDialect, name = "enum", implements(TypeLayout, AggregateType))]
+#[ty(
+    dialect = BuiltinDialect,
+    name = "enum",
+    implements(TypeLayout, AggregateType, TypeInvariants)
+)]
 pub struct EnumType {
     name: Option<Symbol>,
     discriminant: Type,
@@ -151,7 +156,25 @@ impl EnumType {
             variant.value = Some(bits);
             previous = Some(bits);
         }
+        Self::check(discriminant, &variants)?;
 
+        Ok(Self {
+            name,
+            discriminant,
+            variants,
+        })
+    }
+
+    /// Checks that `discriminant` is a valid discriminant type, that the resolved value of every
+    /// variant fits it, and that names and values are distinct.
+    fn check(discriminant: Type, variants: &[EnumVariant]) -> Result<(), InvalidEnumType> {
+        let width = Self::discriminant_width(discriminant)
+            .ok_or(InvalidEnumType::InvalidDiscriminantType)?;
+        if let Some(variant) = variants.iter().find(|v| !Self::value_fits(v.value(), width)) {
+            return Err(InvalidEnumType::ValueOutOfRange {
+                variant: variant.name,
+            });
+        }
         let mut names = FxHashSet::default();
         for variant in variants.iter() {
             if !names.insert(variant.name) {
@@ -169,12 +192,7 @@ impl EnumType {
                 });
             }
         }
-
-        Ok(Self {
-            name,
-            discriminant,
-            variants,
-        })
+        Ok(())
     }
 
     pub fn name(&self) -> Option<Symbol> {
@@ -188,6 +206,14 @@ impl EnumType {
     /// The variants in declaration order, each with its resolved value.
     pub fn variants(&self) -> &[EnumVariant] {
         &self.variants
+    }
+}
+
+/// The checks of [EnumType::new] that depend on the discriminant: it is a valid discriminant type,
+/// every variant's value fits it, and names and values stay distinct.
+impl TypeInvariants for EnumType {
+    fn check_invariants(&self, _context: &Context) -> Result<(), Report> {
+        Self::check(self.discriminant, &self.variants).map_err(Report::msg)
     }
 }
 
@@ -518,5 +544,34 @@ mod tests {
         let replaced =
             context.enum_type(ty.as_enum().unwrap().replace_subtypes(&mut |_| context.i16()));
         assert_eq!(format!("{replaced}"), "enum<i16; a: i16, b, c: i16>");
+    }
+
+    #[test]
+    fn invariants_are_the_checks_of_new_on_the_types_held_now() {
+        let context = Context::default();
+        let check = |value: EnumType| {
+            context
+                .enum_type(value)
+                .as_trait::<dyn TypeInvariants>()
+                .expect("an enum has invariants")
+                .check_invariants(&context)
+                .map_err(|report| format!("{report}"))
+        };
+        let wide = EnumType::new(
+            None,
+            context.isize(),
+            [EnumVariant::new(sym("a")).with_value(1 << 40), EnumVariant::new(sym("b"))],
+        )
+        .unwrap();
+        let narrow = |to: Type| wide.replace_subtypes(&mut |_| to);
+        assert_eq!(check(narrow(context.i64())), Ok(()));
+        assert_eq!(
+            check(narrow(context.i32())),
+            Err(format!("{}", InvalidEnumType::ValueOutOfRange { variant: sym("a") }))
+        );
+        let invalid = format!("{}", InvalidEnumType::InvalidDiscriminantType);
+        assert_eq!(check(narrow(context.f32())), Err(invalid.clone()));
+        assert_eq!(check(narrow(context.rec_var(0))), Err(invalid), "a variable is invalid");
+        assert!(context.i8().as_trait::<dyn TypeInvariants>().is_none());
     }
 }

@@ -2,6 +2,7 @@
 
 mod alias;
 mod component;
+mod invariants;
 mod mapper;
 mod name;
 pub(crate) mod rec;
@@ -24,6 +25,7 @@ pub(crate) use self::{
 pub use self::{
     alias::TypeAliases,
     component::TypeComponent,
+    invariants::TypeInvariants,
     mapper::{TypeMapError, TypeMapper},
     name::TypeName,
     rec::{RecGroup, RecGroupError, collect_rec_groups},
