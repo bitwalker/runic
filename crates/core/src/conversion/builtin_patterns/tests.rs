@@ -10,7 +10,7 @@ use pretty_assertions::assert_str_eq;
 
 use super::*;
 use crate::{
-    AttributeRef, EntityWithId, OpPrinter,
+    AttributeRef, EntityWithId, OpPrinter, RegionKind, RegionKindInterface,
     attributes::AttrList,
     conversion::{
         ConversionConfig, ConversionResult, TypeConversion, UnknownOpPolicy, apply_full_conversion,
@@ -31,7 +31,7 @@ use crate::{
     effects::MemoryEffectOpInterface,
     parse::{ParserConfig, parse},
     testing::text::describe,
-    traits::Terminator,
+    traits::{NoTerminator, SingleBlock, Terminator},
 };
 
 /// A branch that forwards its operands to its one successor: `test.pass_br ^bb1(%0 : i32);`.
@@ -392,6 +392,205 @@ fn a_type_another_attribute_of_the_function_holds_is_converted() {
     let err = convert_full(module, by_type_target(&context, &converter), &converter).unwrap_err();
     let err = describe(&err);
     assert!(err.contains("failed to legalize operation 'builtin.function'"), "{err}");
+    assert!(
+        err.contains(
+            "the function still holds a type that is not legal after its signature, locals and \
+             attributes were converted: `i128`, held by attribute 'wide'"
+        ),
+        "{err}"
+    );
+}
+
+/// An integer constant in the function's dictionary is not given the type its type converts to,
+/// which would give it a value of the wrong width: it is left as it is, the function stays
+/// illegal, and the conversion reports the constant's type and where it is held. The function
+/// still verifies.
+#[test]
+fn an_integer_constant_the_function_holds_is_left_as_it_is() {
+    let (context, module) = parse_module("    builtin.function public extern(\"C\") @f(i16);");
+    let (i16, i32) = (context.i16(), context.i32());
+    let mut converter = TypeConverter::new();
+    converter.add_conversion(move |_, ty| (ty == i16).then(|| TypeConversion::one(i32)));
+    let converter = converter.with_function_types();
+    let mut function = function_of(module);
+    let constant = context.int_attr(crate::Int::from(1i16), i16).as_attribute_ref();
+    function.borrow_mut().set_attribute("c", constant);
+
+    let err = convert_full(module, by_type_target(&context, &converter), &converter).unwrap_err();
+    let err = describe(&err);
+    assert!(err.contains("failed to legalize operation 'builtin.function'"), "{err}");
+    assert!(
+        err.contains(
+            "is not legal after its signature, locals and attributes were converted: `i16`, held \
+             by attribute 'c'"
+        ),
+        "{err}"
+    );
+    let held = function.borrow().get_attribute("c").unwrap();
+    let held = held.borrow();
+    let held = held.downcast_ref::<IntAttr>().unwrap();
+    assert_eq!(crate::Attribute::ty(held), i16, "the constant keeps its type");
+    function.borrow().verify().unwrap_or_else(|err| panic!("{}", describe(&err)));
+}
+
+/// A function that stays illegal after its first application, because a dictionary entry holds a
+/// type that converts to two, is renumbered once: its reference to local 1 names local 2 after
+/// the first application, and the second offer, which finds nothing to change, reports it.
+#[test]
+fn a_function_that_stays_illegal_is_renumbered_once() {
+    let (context, module) = parse_module(
+        "    builtin.function public extern(\"C\") @f() locals(i128, i32) {
+        test.touch_local <{ local = #builtin.local_variable<1, i32> }>;
+        builtin.ret;
+    };",
+    );
+    let converter = wide_converter(&context);
+    let wide = context.create_attribute::<TypeAttr, _>(context.i128()).as_attribute_ref();
+    function_of(module).borrow_mut().set_attribute("wide", wide);
+    let err = convert_full(module, by_type_target(&context, &converter), &converter).unwrap_err();
+    let err = describe(&err);
+    assert!(err.contains("failed to legalize operation 'builtin.function'"), "{err}");
+    assert!(err.contains("`i128`, held by attribute 'wide'"), "{err}");
+    let text = module.borrow().to_string();
+    assert!(text.contains("locals(i64, i64, i32)"), "{text}");
+    assert!(
+        text.contains("test.touch_local <{ local = #builtin.local_variable<2, i32> }>;"),
+        "{text}"
+    );
+}
+
+/// The `local` property of the one `test.touch_local` in `region`'s first block.
+fn touched_local(region: crate::RegionRef) -> LocalVariable {
+    let block = region.borrow().entry_block_ref().unwrap();
+    let block = block.borrow();
+    let op = block
+        .body()
+        .iter()
+        .find(|op| op.is::<crate::dialects::test::TouchLocal>())
+        .expect("a touch_local")
+        .as_operation_ref();
+    let op = op.borrow();
+    *op.downcast_ref::<crate::dialects::test::TouchLocal>().unwrap().get_local()
+}
+
+/// An operation with one region that is not a callable.
+#[derive(EffectOpInterface)]
+#[operation(
+    dialect = TestDialect,
+    traits(SingleBlock, NoTerminator),
+    implements(RegionKindInterface, MemoryEffectOpInterface)
+)]
+pub struct Holder {
+    #[region]
+    body: Region,
+}
+
+impl RegionKindInterface for Holder {
+    fn kind(&self) -> RegionKind {
+        RegionKind::SSA
+    }
+}
+
+/// A callable with one region that is not a symbol (a function cannot be nested in a function
+/// in a module: a symbol must be a child of its symbol table).
+#[derive(EffectOpInterface)]
+#[operation(
+    dialect = TestDialect,
+    traits(SingleBlock, NoTerminator),
+    implements(RegionKindInterface, MemoryEffectOpInterface, CallableOpInterface)
+)]
+pub struct Lambda {
+    #[region]
+    body: Region,
+}
+
+impl RegionKindInterface for Lambda {
+    fn kind(&self) -> RegionKind {
+        RegionKind::SSA
+    }
+}
+
+impl CallableOpInterface for Lambda {
+    fn get_callable_region(&self) -> Option<crate::RegionRef> {
+        Some(self.body().as_region_ref())
+    }
+
+    fn signature(&self) -> crate::dialects::builtin::attributes::Signature {
+        crate::dialects::builtin::attributes::Signature::new(
+            &self.as_operation().context_rc(),
+            [],
+            [],
+        )
+    }
+}
+
+/// A reference to a local in a region of an operation that is not a callable is renumbered with
+/// the function's; one in a callable nested in the body is the callable's own, and is left alone.
+#[test]
+fn references_in_nested_regions_are_renumbered_unless_the_region_is_a_callable() {
+    use crate::{Builder, BuilderExt, OpBuilder, dialects::test::TouchLocal};
+
+    let (context, module) = parse_module(
+        "    builtin.function public extern(\"C\") @f() locals(i128, i32) {
+        builtin.ret;
+    };",
+    );
+    let function = function_of(module);
+    let ret = function.borrow().regions().front().get().unwrap().entry_block_ref().unwrap();
+    let ret = ret.borrow().body().back().as_pointer().unwrap();
+    let span = crate::SourceSpan::UNKNOWN;
+    let i32 = context.i32();
+    let local = LocalVariable::new(1, i32);
+    let mut builder = OpBuilder::new(context.clone());
+    builder.set_insertion_point_before(ret);
+    let holder = builder.create::<Holder, ()>(span)().unwrap();
+    let holder_body = holder.borrow().body().as_region_ref();
+    builder.set_insertion_point_before(ret);
+    let lambda = builder.create::<Lambda, ()>(span)().unwrap();
+    let lambda_body = lambda.borrow().body().as_region_ref();
+    for body in [holder_body, lambda_body] {
+        let block = builder.create_block(body, None, &[]);
+        builder.set_insertion_point_to_end(block);
+        builder.create::<TouchLocal, _>(span)(local).unwrap();
+    }
+    module
+        .borrow()
+        .recursively_verify()
+        .unwrap_or_else(|err| panic!("{}", describe(&err)));
+
+    let converter = wide_converter(&context);
+    convert_full(module, by_type_target(&context, &converter), &converter)
+        .unwrap_or_else(|err| panic!("{}", describe(&err)));
+    assert_eq!(touched_local(holder_body), LocalVariable::new(2, i32));
+    assert_eq!(touched_local(lambda_body), LocalVariable::new(1, i32));
+    function
+        .borrow()
+        .recursively_verify()
+        .unwrap_or_else(|err| panic!("{}", describe(&err)));
+}
+
+/// The declared effects of a definition whose parameter and result split are remapped with its
+/// signature, and its body returns the halves.
+#[test]
+fn the_effects_of_a_definition_are_remapped() {
+    let (context, module) = parse_module(
+        "    builtin.function public extern(\"C\") @f(%0: i128, %1: i32) -> i128 effects(read(arg \
+         1), write(result 0)) {
+        builtin.ret %0 : (i128);
+    };",
+    );
+    let converter = wide_converter(&context);
+    convert_full(module, by_type_target(&context, &converter), &converter)
+        .unwrap_or_else(|err| panic!("{}", describe(&err)));
+    assert_str_eq!(
+        converted_text(module),
+        module_text(
+            "    builtin.function public extern(\"C\") @f(%2: i64, %3: i64, %4: i32) -> (i64, \
+             i64) effects(read(arg 2), write(result 0), write(result 1)) {
+        builtin.ret %2, %3 : (i64, i64);
+    };"
+        )
+    );
 }
 
 /// In a partial conversion whose target calls the function legal, the function is not converted,
@@ -456,8 +655,8 @@ fn debug_record(op: &str, name: &str, expression: &str) -> alloc::string::String
 
 /// The local slots of debug expressions follow their locals: a frame base in local 1 names slot
 /// 2 after local 0 split. Of a local that became no local, a declaration that is exactly its slot
-/// is erased, a value record that is exactly its slot loses the slot, and a longer expression
-/// names the local that follows it.
+/// is erased, and a value record that is exactly its slot loses the slot while its other
+/// attributes are renumbered.
 #[test]
 fn debug_expressions_follow_their_locals() {
     let (context, module) = parse_module(&format!(
@@ -466,14 +665,25 @@ fn debug_expressions_follow_their_locals() {
 {}
 {}
 {}
-{}
         builtin.ret;
     }};",
         debug_record("di.debug_declare", "a", "DI_OP_frame_base(local_slot, 1+8)"),
         debug_record("di.debug_declare", "b", "DI_OP_local_slot(2)"),
         debug_record("di.debug_value %0", "c", "DI_OP_local_slot(2)"),
-        debug_record("di.debug_declare", "d", "DI_OP_local_slot(2), DW_OP_deref"),
     ));
+    // The value record of the vanished local also names local 1 in its dictionary.
+    let mut value_record = None;
+    module.borrow().prewalk_all(|op: &Operation| {
+        if op.is::<DebugValue>() {
+            value_record = Some(op.as_operation_ref());
+        }
+    });
+    let mut value_record = value_record.unwrap();
+    let local = context
+        .create_attribute::<LocalVariableAttr, _>(LocalVariable::new(1, context.i32()))
+        .as_attribute_ref();
+    value_record.borrow_mut().set_attribute("home", local);
+
     let converter = wide_converter(&context);
     convert_full(module, by_type_target(&context, &converter), &converter)
         .unwrap_or_else(|err| panic!("{}", describe(&err)));
@@ -483,33 +693,51 @@ fn debug_expressions_follow_their_locals() {
             "    builtin.function public extern(\"C\") @f(%0: i32) locals(i64, i64, i32, i32) {{
 {}
 {}
-{}
         builtin.ret;
     }};",
             debug_record("di.debug_declare", "a", "DI_OP_frame_base(local_slot, 2+8)"),
-            debug_record("di.debug_value %0", "c", ""),
-            debug_record("di.debug_declare", "d", "DI_OP_local_slot(3), DW_OP_deref"),
+            debug_record("di.debug_value %0", "c", "").replace(
+                " : (i32);",
+                " attributes { home = #builtin.local_variable<2, i32> } : (i32);"
+            ),
         ))
     );
 }
 
-/// A longer debug expression that names a local which became no local, with no local after it,
-/// cannot be renumbered: the conversion fails before the function is changed.
+/// A debug expression that names a local which became no local, other than exactly its slot,
+/// is refused wherever the local is among the function's locals: the conversion fails, naming the
+/// operation and the local, before the function is changed.
 #[test]
-fn a_debug_expression_of_a_vanished_last_local_is_an_error() {
-    let source = format!(
-        "    builtin.function public extern(\"C\") @f() locals(i32, array<i8; 0>) {{
+fn a_debug_expression_of_a_vanished_local_is_an_error() {
+    for (locals, expression, index) in [
+        // The vanished local is the last.
+        ("i32, array<i8; 0>", "DI_OP_local_slot(1), DW_OP_deref", 1),
+        // A local follows the vanished one.
+        ("i128, i32, array<i8; 0>, i32", "DI_OP_local_slot(2), DW_OP_deref", 2),
+        // A frame base in the vanished local.
+        ("array<i8; 0>, i128", "DI_OP_frame_base(local_slot, 0+8)", 0),
+    ] {
+        let source = format!(
+            "    builtin.function public extern(\"C\") @f() locals({locals}) {{
 {}
         builtin.ret;
     }};",
-        debug_record("di.debug_declare", "a", "DI_OP_local_slot(1), DW_OP_deref"),
-    );
-    let (context, module) = parse_module(&source);
-    let converter = wide_converter(&context);
-    let err = convert_full(module, by_type_target(&context, &converter), &converter).unwrap_err();
-    let err = describe(&err);
-    assert!(err.contains("names local 1, which becomes no local"), "{err}");
-    assert_str_eq!(module.borrow().to_string(), module_text(&source));
+            debug_record("di.debug_declare", "a", expression),
+        );
+        let (context, module) = parse_module(&source);
+        let converter = wide_converter(&context);
+        let err =
+            convert_full(module, by_type_target(&context, &converter), &converter).unwrap_err();
+        let err = describe(&err);
+        assert!(
+            err.contains(&format!(
+                "a debug expression of 'di.debug_declare' names local {index}, which becomes no \
+                 local"
+            )),
+            "{err}"
+        );
+        assert_str_eq!(module.borrow().to_string(), module_text(&source));
+    }
 }
 
 /// A store of a local in no function does not match: there is no function whose locals it could

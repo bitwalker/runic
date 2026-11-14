@@ -40,16 +40,20 @@
 //! exactly that local's slot is erased, and a `di.debug_value` whose expression is exactly that
 //! slot loses it (its expression becomes empty), as `Local2Reg` treats the debug records of a
 //! local it removes; `Local2Reg` also records each stored value, which does not carry over here,
-//! since the stored values become no value. Any other debug expression that names such a local
-//! names `s_i` afterwards, the local that follows it, when the function has a local there, and is
-//! an error otherwise.
+//! since the stored values become no value. Such a `di.debug_value`'s other attributes are
+//! renumbered like any operation's. Any other debug expression that names such a local, wherever
+//! the local is among the function's locals, is refused, as `Local2Reg` refuses to remove a local
+//! such an expression names: the pattern returns an error, naming the operation and the local,
+//! before anything is changed.
 //!
 //! Last, each type that another attribute of the function (a property other than the three, or
 //! an entry of its dictionary) holds directly, at any depth of attribute, and that converts to one
 //! other type is replaced by it (a debug-info subprogram holds the function's type), so that the
 //! function is legal by [TypeConverter::is_legal_op] afterwards and the pattern runs once. A type
-//! held there that converts to several types or none is left as it is: the function stays
-//! illegal, and the conversion reports it.
+//! held there that converts to several types or none is left as it is, and so is an integer
+//! constant (its value has the width of its type, so it cannot be given another type here): the
+//! function stays illegal, and the conversion reports it, naming the first type that is not legal
+//! and where the function holds it.
 //!
 //! # The local patterns
 //!
@@ -103,7 +107,7 @@ use crate::{
             Call, CallIndirect, CopiedAttributes, Function, FunctionReference, LoadLocal, Ret,
             RetImm, StoreLocal,
             attributes::{
-                DeclaredEffects, DeclaredEffectsAttr, LocalVariable, LocalVariableAttr,
+                DeclaredEffects, DeclaredEffectsAttr, IntAttr, LocalVariable, LocalVariableAttr,
                 SignatureAttr, TypeArrayAttr, remap_declared_effects,
             },
         },
@@ -121,6 +125,8 @@ use crate::{
 const SIGNATURE: &str = "signature";
 const MEMORY_EFFECTS: &str = "memory_effects";
 const LOCALS: &str = "locals";
+/// The property of a debug record that holds its expression.
+const EXPRESSION: &str = "expression";
 
 /// Adds the patterns of this part to `patterns`, all driven by `converter`. Fails when the converter
 /// does not convert function types.
@@ -341,9 +347,10 @@ impl ConversionPattern for FunctionPattern {
         let mut new_locals = Vec::with_capacity(locals.len());
         for ty in &locals {
             let parts = converter.convert_type(&context, *ty);
+            let count = local_index(parts.len());
             map.starts.push(map.total);
-            map.counts.push(local_index(parts.len()));
-            map.total += local_index(parts.len());
+            map.counts.push(count);
+            map.total = map.total.checked_add(count).expect(LOCALS_LIMIT);
             new_locals.extend(parts);
         }
         let body_edits = match body {
@@ -418,16 +425,36 @@ impl ConversionPattern for FunctionPattern {
         }
 
         if !changed {
-            rewriter.notify_match_failure(
-                op,
-                Report::msg(
-                    "an attribute of the function holds a type that converts to several types or \
-                     none, which the function pattern cannot replace",
-                ),
+            let mut reason = alloc::string::String::from(
+                "the function still holds a type that is not legal after its signature, locals \
+                 and attributes were converted",
             );
+            if let Some(first) = first_illegal_type(&context, &op.borrow(), converter) {
+                reason.push_str(": ");
+                reason.push_str(&first);
+            }
+            rewriter.notify_match_failure(op, Report::msg(reason));
         }
         Ok(changed)
     }
+}
+
+/// The first type `op` holds that is not legal under `converter`, and where it holds it, in the
+/// order of [Operation::walk_types]: "`T`, held by <site>".
+fn first_illegal_type(
+    context: &Context,
+    op: &Operation,
+    converter: &TypeConverter,
+) -> Option<alloc::string::String> {
+    let mut found = None;
+    let _ = op.walk_types(&mut |site, ty| {
+        if converter.is_legal_type(context, ty) {
+            return WalkResult::Skip;
+        }
+        found = Some(format!("`{ty}`, held by {site}"));
+        WalkResult::Break(Report::msg("found"))
+    });
+    found
 }
 
 /// An error, naming the function and the effect, when a declared effect of `function` names a
@@ -471,10 +498,13 @@ fn check_effects_within_signature(
     Ok(())
 }
 
+/// The message of the system limit on the number of locals of a function.
+const LOCALS_LIMIT: &str =
+    "system limit: unable to allocate more than u32::MAX locals per function";
+
 /// `count` as a number of locals.
 fn local_index(count: usize) -> u32 {
-    u32::try_from(count)
-        .expect("system limit: unable to allocate more than u32::MAX locals per function")
+    u32::try_from(count).expect(LOCALS_LIMIT)
 }
 
 /// Installs `attributes` on `op`: each `(name, is_property, value)` as a property or a dictionary
@@ -494,33 +524,54 @@ fn install(
     Ok(())
 }
 
+/// What [DeepReplacer]'s `leaf` answers for an attribute.
+enum Leaf {
+    /// Hold this attribute instead; what the old one holds is not looked at.
+    Replace(AttributeRef),
+    /// Keep the attribute as it is, and do not look at what it holds.
+    Keep,
+    /// Look at what the attribute holds.
+    Enter,
+}
+
 /// Replaces what an attribute holds at any depth of attribute: `leaf` is asked about each
-/// attribute first (an answer replaces it, and what it holds is not looked at), and `ty` about each
-/// type held directly by an attribute it does not answer for.
+/// attribute first, and `ty` about each type held directly by an attribute it enters.
 struct DeepReplacer<'a> {
-    leaf: &'a mut dyn FnMut(&AttributeRef) -> Option<AttributeRef>,
+    leaf: &'a mut dyn FnMut(&AttributeRef) -> Leaf,
     ty: &'a mut dyn FnMut(Type) -> Type,
 }
 
 impl DeepReplacer<'_> {
     /// The attribute to hold instead of `attr`, or `None` to keep it.
     fn replace(&mut self, attr: &AttributeRef) -> Option<AttributeRef> {
-        if let Some(new) = (self.leaf)(attr) {
-            return Some(new);
+        match (self.leaf)(attr) {
+            Leaf::Replace(new) => Some(new),
+            Leaf::Keep => None,
+            Leaf::Enter => attr.borrow().replace_elements(self),
         }
-        attr.borrow().replace_elements(self)
     }
 
-    /// The properties and dictionary entries of `op` that change: `(name, is_property, new)`.
-    fn replacements(&mut self, op: &Operation) -> Vec<(interner::Symbol, bool, AttributeRef)> {
+    /// The properties and dictionary entries of `op` that change: `(name, is_property, new)`. A
+    /// property or entry for which `skip(name, is_property)` is true is not looked at.
+    fn replacements(
+        &mut self,
+        op: &Operation,
+        skip: &dyn Fn(&str, bool) -> bool,
+    ) -> Vec<(interner::Symbol, bool, AttributeRef)> {
         let mut changes = Vec::new();
         for property in op.properties() {
+            if skip(property.name.as_str(), true) {
+                continue;
+            }
             if let Some(new) = self.replace(&property.value) {
                 changes.push((property.name, true, new));
             }
         }
         for entry in op.attributes() {
             let entry = entry.as_named_attribute();
+            if skip(entry.name.as_str(), false) {
+                continue;
+            }
             if let Some(new) = self.replace(&entry.value) {
                 changes.push((entry.name, false, new));
             }
@@ -541,13 +592,20 @@ impl ElementReplacer for DeepReplacer<'_> {
 
 /// The changes to the function's attributes other than its signature, declared effects and
 /// locals: each type held directly, at any depth of attribute, that converts to one other type is
-/// replaced by it. A type that converts to several or none is kept.
+/// replaced by it. A type that converts to several or none is kept, and so is an integer constant,
+/// whose value has the width of its type.
 fn replace_held_types(
     context: &Context,
     function: &Operation,
     converter: &TypeConverter,
 ) -> Vec<(interner::Symbol, bool, AttributeRef)> {
-    let mut leaf = |_: &AttributeRef| None;
+    let mut leaf = |attr: &AttributeRef| {
+        if attr.borrow().downcast_ref::<IntAttr>().is_some() {
+            Leaf::Keep
+        } else {
+            Leaf::Enter
+        }
+    };
     let mut ty = |ty: Type| match converter.convert_type(context, ty).as_slice() {
         [one] => *one,
         _ => ty,
@@ -556,18 +614,14 @@ fn replace_held_types(
         leaf: &mut leaf,
         ty: &mut ty,
     };
-    replacer
-        .replacements(function)
-        .into_iter()
-        .filter(|(name, is_property, _)| {
-            !*is_property || ![SIGNATURE, MEMORY_EFFECTS, LOCALS].contains(&name.as_str())
-        })
-        .collect()
+    replacer.replacements(function, &|name, is_property| {
+        is_property && [SIGNATURE, MEMORY_EFFECTS, LOCALS].contains(&name)
+    })
 }
 
 /// The edits that give every reference to a local in `body`, outside nested callables, its new
 /// index under `map`. An error, before anything is changed, for a debug expression that names a
-/// local which became no local where nothing follows it.
+/// local which became no local and is not exactly that local's slot.
 fn renumber_locals(
     context: &Rc<Context>,
     body: crate::RegionRef,
@@ -602,6 +656,9 @@ fn renumber_locals(
                 _ => None,
             }
         };
+        // A declaration of such a slot is erased; a value record of it loses the slot, and its
+        // other attributes are renumbered below like any operation's.
+        let mut attributes = Vec::new();
         match vanished_slot {
             Some(true) => {
                 edits.push(BodyEdit::Erase(op));
@@ -611,39 +668,42 @@ fn renumber_locals(
                 let empty = context
                     .create_attribute::<ExpressionAttr, _>(Expression::new())
                     .as_attribute_ref();
-                edits.push(BodyEdit::Set {
-                    op,
-                    attributes: alloc::vec![(interner::Symbol::intern("expression"), true, empty)],
-                });
-                continue;
+                attributes.push((interner::Symbol::intern(EXPRESSION), true, empty));
             }
             None => (),
         }
+        let skip_expression = vanished_slot.is_some();
 
-        let mut leaf = |attr: &AttributeRef| -> Option<AttributeRef> {
+        let mut leaf = |attr: &AttributeRef| -> Leaf {
             let attr = attr.borrow();
             if let Some(local) = attr.downcast_ref::<LocalVariableAttr>() {
                 let local = *local.as_value();
-                let index = map.start(local.index()).filter(|index| *index != local.index())?;
-                return Some(
-                    context
-                        .create_attribute::<LocalVariableAttr, _>(LocalVariable::new(
-                            index,
-                            local.ty(),
-                        ))
-                        .as_attribute_ref(),
-                );
+                return match map.start(local.index()).filter(|index| *index != local.index()) {
+                    Some(index) => Leaf::Replace(
+                        context
+                            .create_attribute::<LocalVariableAttr, _>(LocalVariable::new(
+                                index,
+                                local.ty(),
+                            ))
+                            .as_attribute_ref(),
+                    ),
+                    None => Leaf::Keep,
+                };
             }
-            let expression = attr.downcast_ref::<ExpressionAttr>()?;
+            let Some(expression) = attr.downcast_ref::<ExpressionAttr>() else {
+                return Leaf::Enter;
+            };
             let mut slot = |index: &mut u32| {
-                if map.vanished(*index) && map.start(*index) == Some(map.total) && error.is_none() {
-                    error = Some(Report::msg(format!(
-                        "a debug expression of '{}' names local {index}, which becomes no local, \
-                         and no local follows it",
-                        op.borrow().name()
-                    )));
-                }
-                if let Some(start) = map.start(*index) {
+                if map.vanished(*index) {
+                    if error.is_none() {
+                        error = Some(Report::msg(format!(
+                            "a debug expression of '{}' names local {index}, which becomes no \
+                             local: only an expression that is exactly the local's slot can \
+                             follow a local that becomes no local",
+                            op.borrow().name()
+                        )));
+                    }
+                } else if let Some(start) = map.start(*index) {
                     *index = start;
                 }
             };
@@ -658,15 +718,22 @@ fn renumber_locals(
                     _ => (),
                 }
             }
-            (new != *expression.as_value())
-                .then(|| context.create_attribute::<ExpressionAttr, _>(new).as_attribute_ref())
+            if new == *expression.as_value() {
+                Leaf::Keep
+            } else {
+                Leaf::Replace(context.create_attribute::<ExpressionAttr, _>(new).as_attribute_ref())
+            }
         };
         let mut ty = |ty: Type| ty;
-        let attributes = DeepReplacer {
-            leaf: &mut leaf,
-            ty: &mut ty,
-        }
-        .replacements(&op.borrow());
+        attributes.extend(
+            DeepReplacer {
+                leaf: &mut leaf,
+                ty: &mut ty,
+            }
+            .replacements(&op.borrow(), &|name, is_property| {
+                skip_expression && is_property && name == EXPRESSION
+            }),
+        );
         if !attributes.is_empty() {
             edits.push(BodyEdit::Set { op, attributes });
         }
@@ -699,7 +766,6 @@ fn converted_local(
     let locals = function.get_locals();
     let start = local.index() as usize;
     let converted = locals.iter().skip(start).take(parts.len()).eq(parts.iter())
-        && locals.len() >= start + parts.len()
         && locals.iter().nth(start) != Some(&local.ty());
     drop(locals);
     drop(function);
@@ -786,6 +852,17 @@ impl ConversionPattern for StoreLocalPattern {
         };
         let values = operands.get(0);
         if values.len() != parts.len() {
+            rewriter.notify_match_failure(
+                op,
+                Report::msg(format!(
+                    "the stored value became {} value(s), but local {} of type '{}' becomes {} \
+                     local(s)",
+                    values.len(),
+                    local.index(),
+                    local.ty(),
+                    parts.len()
+                )),
+            );
             return Ok(false);
         }
         let span = op.borrow().span();
