@@ -103,6 +103,6 @@ pub use crate::{
     },
     types::{
         RecGroup, RecGroupError, Type, TypeAliasName, TypeComponent, TypeFormatter, TypeImpl,
-        TypeName, TypeParser, TypePrinter, TypeRegistration,
+        TypeMapError, TypeMapper, TypeName, TypeParser, TypePrinter, TypeRegistration,
     },
 };

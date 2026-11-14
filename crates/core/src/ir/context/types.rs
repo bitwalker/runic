@@ -187,6 +187,9 @@ impl Context {
     /// visited. Mapping with the identity returns `ty` itself, unless `ty` is a recursion-group
     /// member: mapping a member, even with the identity, yields an ordinary type with the
     /// member's name and the mapped value, never a member.
+    ///
+    /// To map every type reachable from a type, recursion groups included, use
+    /// [TypeMapper](crate::types::TypeMapper).
     pub fn map_subtypes(
         &self,
         ty: crate::types::Type,

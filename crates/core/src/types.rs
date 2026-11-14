@@ -2,6 +2,7 @@
 
 mod alias;
 mod component;
+mod mapper;
 mod name;
 pub(crate) mod rec;
 mod registration;
@@ -23,6 +24,7 @@ pub(crate) use self::{
 pub use self::{
     alias::TypeAliases,
     component::TypeComponent,
+    mapper::{TypeMapError, TypeMapper},
     name::TypeName,
     rec::{RecGroup, RecGroupError, collect_rec_groups},
     registration::{
