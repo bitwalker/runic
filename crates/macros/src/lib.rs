@@ -157,7 +157,7 @@ pub fn operation_trait(
 ///
 /// ```text
 /// #[operation(
-///     dialect = HirDialect,
+///     dialect = CfDialect,
 ///     traits(Terminator),
 ///     implements(BranchOpInterface),
 /// )]

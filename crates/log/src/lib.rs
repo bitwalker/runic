@@ -20,7 +20,7 @@
 //! 5. Any of the above, but only for an operation which matches a given filter:
 //!    a. Match any op that implements Symbol, e.g. `RUNIC_TRACE=trace RUNIC_TRACE_FILTER=symbol:*`
 //!    b. Match a symbol whose name matches a regular expression, e.g. `RUNIC_TRACE=trace RUNIC_TRACE_FILTER=symbol:foo`
-//!    c. Match a specific operation type, e.g. `RUNIC_TRACE=trace RUNIC_TRACE_FILTER=op:hir.function`
+//!    c. Match a specific operation type, e.g. `RUNIC_TRACE=trace RUNIC_TRACE_FILTER=op:builtin.function`
 //! 6. Negated filters, e.g. emit all logs which match any positive filters and are not also matched
 //!    by the negative filter, e.g.:
 //!    a. Emit everything except logs for the "dataflow" component: `RUNIC_TRACE=trace,-dataflow`

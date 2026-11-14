@@ -7,7 +7,7 @@ use super::ops::*;
 
 /// Builder trait for creating debug info operations.
 ///
-/// This trait follows the same pattern as other dialect builders (`ArithOpBuilder`, `HirOpBuilder`,
+/// This trait follows the same pattern as other dialect builders (`ArithOpBuilder`, `MemOpBuilder`,
 /// etc.) and can be implemented for any type that wraps a [Builder].
 ///
 /// # Usage

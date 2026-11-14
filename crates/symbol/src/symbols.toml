@@ -101,7 +101,6 @@ extend = {}
 arith = {}
 builtin = {}
 cf = {}
-hir = {}
 scf = {}
 test = {}
 ub = {}

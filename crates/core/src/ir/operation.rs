@@ -1719,6 +1719,15 @@ impl Operation {
     /// from the symbols they name, so an erased operation is no longer a use of any symbol. If this
     /// operation, or an operation nested in it, is a symbol, the references to it from outside the
     /// erased operation are unlinked too: they no longer resolve, and verification reports them.
+    ///
+    /// # Panics
+    ///
+    /// Erasing borrows other operations mutably, which panics if the caller holds a borrow of one
+    /// of them: the symbol table the operation is registered in, when it is a symbol (it is
+    /// removed from that table); every symbol nested in it (their use lists are emptied); and every
+    /// symbol a reference held by it or by an operation nested in it is linked to (the use is
+    /// unlinked from it). In particular, the caller must not hold a borrow of the enclosing symbol
+    /// table when the operation is a symbol or contains one.
     pub fn erase(&mut self) {
         self.unlink_symbol_uses();
 
@@ -1790,6 +1799,11 @@ impl Operation {
     }
 
     /// Remove the operation from its parent block, but don't delete it.
+    ///
+    /// A symbol is removed from the symbol table it was registered in (the nearest one above its
+    /// block), which borrows that table mutably: when the operation is a symbol, the caller must
+    /// not hold a borrow of the enclosing symbol table, or this panics. The symbols nested in the
+    /// operation stay in its own symbol tables, and the references to it are left linked.
     pub fn remove(&mut self) {
         if let Some(mut parent) = self.parent() {
             let mut block = parent.borrow_mut();
@@ -1806,6 +1820,10 @@ impl Operation {
     ///
     /// This function will panic if the given program point is unset, or refers to an orphaned op,
     /// i.e. an op that has no parent block.
+    ///
+    /// It also panics if the operation is a symbol and the caller holds a borrow of the symbol
+    /// table it leaves or of the one it enters: moving a symbol removes it from the first and
+    /// registers it in the second, each borrowed mutably (see [Self::remove]).
     pub fn move_to(&mut self, mut ip: ProgramPoint) {
         let this = self.as_operation_ref();
         if let Some(op) = ip.operation() {

@@ -530,14 +530,12 @@ fn parse_anchored_source(
         let op = operation_parser.parse_operation().map_err(Report::from)?;
         // See the note above: a parsed world is the root, not something to be rooted.
         //
-        // The mutable borrow held across `remove` is safe *because* the operation is a `World`, and
-        // that is not incidental. `remove` reaches `EntityListItem::on_removed`
-        // (`ir/operation.rs:234`), which re-borrows the operation immutably to unregister it from
-        // its parent's symbol table — but only inside `if this.name().implements::<dyn Symbol>()`.
-        // A `World` implements `SymbolTable` and not `Symbol`, so that branch is skipped and no
-        // second borrow is taken. If `World` ever gains `Symbol`, this line becomes a runtime
-        // aliasing panic with no compile error to warn you, and it would need to drop the borrow
-        // first.
+        // Holding the world mutably borrowed across `remove` is safe. `remove` reaches
+        // `EntityListItem::on_removed` for `Operation`, which does nothing for an operation that is
+        // not a `Symbol`, and a `World` is a `SymbolTable`, not a `Symbol`. For a symbol it would
+        // only try to borrow the operation (to read its name, and it does without the name when the
+        // operation is borrowed mutably), and it would borrow the enclosing symbol table, here the
+        // anchor, mutably; nothing borrows the anchor at this point.
         let root = if op.borrow().is::<World>() {
             let mut parsed_world = op;
             parsed_world.borrow_mut().remove();

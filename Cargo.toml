@@ -13,7 +13,6 @@ members = [
     "crates/diagnostics-macros",
     "crates/dialects/arith",
     "crates/dialects/cf",
-    #"crates/dialects/hir",
     "crates/dialects/mem",
     "crates/dialects/scf",
     "crates/dialects/ub",
@@ -122,7 +121,6 @@ runic-core = { version = "0.1.0", path = "crates/core" }
 runic-diagnostics = { version = "0.1.0", path = "crates/diagnostics", default-features = false }
 runic-diagnostics-macros = { version = "0.1.0", path = "crates/diagnostics-macros" }
 runic-dialect-arith = { version = "0.1.0", path = "crates/dialects/arith" }
-runic-dialect-hir = { version = "0.1.0", path = "crates/dialects/hir" }
 runic-dialect-mem = { version = "0.1.0", path = "crates/dialects/mem" }
 runic-dialect-scf = { version = "0.1.0", path = "crates/dialects/scf" }
 runic-dialect-cf = { version = "0.1.0", path = "crates/dialects/cf" }

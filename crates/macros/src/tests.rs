@@ -47,7 +47,7 @@ fn derive_attribute_test() {
         /// A simple boolean attribute
         #[derive(DialectAttribute, Debug, Copy, Clone, PartialEq, Eq)]
         #[attribute(
-            dialect = HirDialect,
+            dialect = TestDialect,
             traits(BooleanLikeAttr),
             implements(AttrPrinter)
         )]
@@ -72,7 +72,7 @@ fn derive_remote_attribute_test() {
         /// A simple boolean attribute
         #[derive(DialectAttribute, Debug, Copy, Clone, PartialEq, Eq)]
         #[attribute(
-            dialect = HirDialect,
+            dialect = TestDialect,
             remote = "bool",
             default = "bool::default",
             traits(BooleanLikeAttr),
@@ -219,7 +219,7 @@ fn operation_impl_test() {
     let item_input: syn::DeriveInput = syn::parse_quote! {
         /// Two's complement sum
         #[operation(
-            dialect = HirDialect,
+            dialect = TestDialect,
             traits(BinaryOp, Commutative, SameTypeOperands),
             implements(InferTypeOpInterface),
         )]
