@@ -103,8 +103,13 @@ impl TypeConversion {
 /// The converter remembers what the type callbacks answered for a type, so each type is asked
 /// about once. The memo is shared by the clones of a converter, and a clone that is given another
 /// callback starts a memo of its own. An answer of a value callback is not remembered.
+///
+/// A converter made with [Self::with_function_types] answers for a builtin function type itself,
+/// before any callback is asked: the function type of the converted parameters and results. This
+/// is the one exception to "a converter is flat", and the builtin conversion patterns require it.
 #[derive(Clone, Default)]
 pub struct TypeConverter {
+    function_types: bool,
     conversions: Vec<TypeConversionFn>,
     value_conversions: Vec<ValueConversionFn>,
     source_materializations: Vec<SourceMaterializationFn>,
@@ -154,6 +159,28 @@ impl TypeConverter {
         self
     }
 
+    /// Makes this converter answer, for a builtin function type, the function type of its converted
+    /// parameters and results (each flattened), before any registered conversion is asked. This
+    /// is a case inside [Self::convert_type] (a callback is not given the converter); it starts a
+    /// new memo, as adding a conversion does.
+    ///
+    /// Each parameter and result is converted with [Self::convert_type], so a function type held
+    /// by a function type converts too; a `never` result stays `never`, as it does in
+    /// [super::convert_signature]. So for every signature `s`, the function type of
+    /// `convert_signature(s)` is what this converter answers for the function type of `s`.
+    pub fn with_function_types(mut self) -> Self {
+        self.function_types = true;
+        self.forget_answers();
+        self
+    }
+
+    /// Whether the converter answers for builtin function types itself
+    /// ([Self::with_function_types]).
+    #[inline]
+    pub fn converts_function_types(&self) -> bool {
+        self.function_types
+    }
+
     /// Whether the converter has a value conversion callback ([Self::add_value_conversion]).
     #[inline]
     pub fn has_value_conversions(&self) -> bool {
@@ -201,18 +228,51 @@ impl TypeConverter {
     }
 
     /// The types a value of type `ty` becomes: itself alone when it is legal, several, or none.
+    ///
+    /// Under [Self::with_function_types], a builtin function type becomes one function type,
+    /// whatever the callbacks say about it.
     pub fn convert_type(&self, context: &Context, ty: Type) -> SmallVec<[Type; 2]> {
         if let Some(types) = self.memo.borrow().get(&ty) {
             return types.clone();
         }
-        let types = self
-            .conversions
-            .iter()
-            .rev()
-            .find_map(|convert| convert(context, ty))
-            .map_or_else(|| smallvec::smallvec![ty], TypeConversion::into_types);
+        let types = match ty.as_function().filter(|_| self.function_types) {
+            Some(function) => {
+                let (params, results) = (function.params().to_vec(), function.results().to_vec());
+                smallvec::smallvec![self.convert_function_type(context, &params, &results)]
+            }
+            None => self
+                .conversions
+                .iter()
+                .rev()
+                .find_map(|convert| convert(context, ty))
+                .map_or_else(|| smallvec::smallvec![ty], TypeConversion::into_types),
+        };
         self.memo.borrow_mut().insert(ty, types.clone());
         types
+    }
+
+    /// The function type of `params` and `results`, each converted and flattened; a `never`
+    /// result stays `never`.
+    fn convert_function_type(&self, context: &Context, params: &[Type], results: &[Type]) -> Type {
+        let params = params
+            .iter()
+            .flat_map(|param| self.convert_type(context, *param))
+            .collect::<SmallVec<[Type; 4]>>();
+        let results = results
+            .iter()
+            .flat_map(|result| self.convert_result_type(context, *result))
+            .collect::<SmallVec<[Type; 2]>>();
+        context.function_type(params, results)
+    }
+
+    /// The types a declared result of type `ty` becomes: `never` stays `never`, whatever the
+    /// callbacks say about it; any other type is [Self::convert_type].
+    pub(super) fn convert_result_type(&self, context: &Context, ty: Type) -> SmallVec<[Type; 2]> {
+        if ty.is_never() {
+            smallvec::smallvec![ty]
+        } else {
+            self.convert_type(context, ty)
+        }
     }
 
     /// The types `value` becomes: what the most recently added value callback that answers says,
@@ -509,6 +569,127 @@ mod tests {
         assert!(converter.convert_value(&context, first).is_empty());
         assert_eq!(converter.convert_value(&context, second).as_slice(), [context.i32()]);
         assert_eq!(calls.get(), 3);
+    }
+
+    /// `i128` becomes `(i64, i64)`, the marker `array<i8; 0>` becomes nothing, `i16` becomes
+    /// `i32`; function types convert by their parts.
+    fn function_type_converter(context: &Context) -> TypeConverter {
+        let (i16, i32, i64, i128) = (context.i16(), context.i32(), context.i64(), context.i128());
+        let marker = context.array_type(context.i8(), 0);
+        let mut converter = TypeConverter::new();
+        converter.add_conversion(move |_, ty| match ty {
+            ty if ty == i128 => Some(TypeConversion::many([i64, i64])),
+            ty if ty == marker => Some(TypeConversion::Drop),
+            ty if ty == i16 => Some(TypeConversion::One(i32)),
+            _ => None,
+        });
+        converter.with_function_types()
+    }
+
+    /// A function type converts to the function type of its converted parameters and results,
+    /// each flattened, and a function type held by a function type converts too. Without
+    /// `with_function_types`, a function type no callback answers for is itself.
+    #[test]
+    fn a_function_type_converts_by_its_parts() {
+        let context = Context::default();
+        let (i16, i32, i64, i128) = (context.i16(), context.i32(), context.i64(), context.i128());
+        let marker = context.array_type(context.i8(), 0);
+        let converter = function_type_converter(&context);
+        assert!(converter.converts_function_types());
+
+        let function = context.function_type([i128, marker, i32], [i16, i128]);
+        let expected = context.function_type([i64, i64, i32], [i32, i64, i64]);
+        assert_eq!(converter.convert_type(&context, function).as_slice(), [expected]);
+        assert!(!converter.is_legal_type(&context, function));
+
+        let inner = context.function_type([i128], [marker]);
+        let outer = context.function_type([inner, i32], [inner]);
+        let inner_converted = context.function_type([i64, i64], []);
+        let outer_converted = context.function_type([inner_converted, i32], [inner_converted]);
+        assert_eq!(converter.convert_type(&context, outer).as_slice(), [outer_converted]);
+
+        let legal = context.function_type([i32], [i64]);
+        assert!(converter.is_legal_type(&context, legal));
+
+        let mut flat = TypeConverter::new();
+        flat.add_conversion(move |_, ty| (ty == i128).then(|| TypeConversion::many([i64, i64])));
+        assert!(!flat.converts_function_types());
+        assert!(flat.is_legal_type(&context, function));
+    }
+
+    /// `with_function_types` answers for a function type before the callbacks: a callback that
+    /// claims function types is not asked about them. It starts a memo of its own.
+    #[test]
+    fn function_types_are_answered_before_the_callbacks() {
+        let context = Context::default();
+        let (i32, i64) = (context.i32(), context.i64());
+        let function = context.function_type([i64], []);
+        let mut converter = TypeConverter::new();
+        converter.add_conversion(move |_, ty| {
+            if ty.is_function() {
+                Some(TypeConversion::Drop)
+            } else {
+                (ty == i64).then_some(TypeConversion::One(i32))
+            }
+        });
+        assert!(converter.convert_type(&context, function).is_empty());
+        let converter = converter.with_function_types();
+        assert_eq!(
+            converter.convert_type(&context, function).as_slice(),
+            [context.function_type([i32], [])]
+        );
+    }
+
+    /// For every signature `s`, the function type of `convert_signature(s)` is what the converter
+    /// answers for the function type of `s` (one type), `never` included, under a converter that
+    /// drops `never` as a value type.
+    #[test]
+    fn the_function_type_of_a_converted_signature_is_the_converted_function_type() {
+        use crate::{
+            dialects::builtin::{attributes::Signature, function_type_of},
+            testing::{test_seeds, text::Rng},
+        };
+
+        for seed in test_seeds(3) {
+            let context = Rc::new(Context::default());
+            // A converter that drops `never` must leave a `never` result alone on both sides.
+            let mut converter = function_type_converter(&context);
+            let never = context.never_type();
+            converter.add_conversion(move |_, ty| (ty == never).then_some(TypeConversion::Drop));
+            let (i16, i32, i64, i128) =
+                (context.i16(), context.i32(), context.i64(), context.i128());
+            let marker = context.array_type(context.i8(), 0);
+            let nested = context.function_type([i128, marker], [i16]);
+            let leaves = [i16, i32, i64, i128, marker, nested];
+            let mut rng = Rng(seed | 1);
+            for case in 0..500 {
+                let pick = |rng: &mut Rng| {
+                    let ty = rng.pick(&leaves);
+                    if rng.below(6) == 0 {
+                        let inner = rng.pick(&leaves);
+                        context.function_type([inner, ty], [rng.pick(&leaves)])
+                    } else {
+                        ty
+                    }
+                };
+                let params = (0..rng.below(5)).map(|_| pick(&mut rng)).collect::<Vec<_>>();
+                let results = if rng.below(5) == 0 {
+                    alloc::vec![context.never_type()]
+                } else {
+                    (0..rng.below(4)).map(|_| pick(&mut rng)).collect::<Vec<_>>()
+                };
+                let signature = Signature::new(&context, params, results);
+                let converted = super::super::convert_signature(&context, &signature, &converter);
+                let of_converted = function_type_of(&context, &converted.signature);
+                let converted_of =
+                    converter.convert_type(&context, function_type_of(&context, &signature));
+                assert_eq!(
+                    converted_of.as_slice(),
+                    [of_converted],
+                    "seed {seed:#x} (set CORE_TEST_SEED to rerun), case {case}: {signature}"
+                );
+            }
+        }
     }
 
     mod legality {

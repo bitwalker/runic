@@ -1,11 +1,12 @@
-use alloc::{format, string::ToString, vec::Vec};
+use alloc::{format, vec::Vec};
+use core::ops::Range;
 
 use smallvec::SmallVec;
 
 use super::TypeConverter;
 use crate::{
-    BlockRef, CallOpInterface, CallableOpInterface, Context, Operation, OperationRef, Report, Type,
-    Value, ValueRef, dialects::builtin::attributes::Signature,
+    BlockRef, CallOpInterface, Context, Operation, Report, Type, Value, ValueRef,
+    dialects::builtin::attributes::{AbiParam, Signature},
 };
 
 /// How the arguments of a block change.
@@ -164,56 +165,84 @@ impl SignatureConversion {
     }
 }
 
-/// Convert a builtin ABI signature of `context` 1:1, preserving ABI metadata on each
-/// parameter/result.
+/// A signature converted by type ([convert_signature]): the new signature, and for each old
+/// parameter and each old result the indices of the new ones it became.
 ///
-/// This updates only parameter and result types. Calling convention and other ABI metadata remain
-/// unchanged.
-pub fn convert_signature_1_to_1(
+/// `params[i]` is the range of new parameters old parameter `i` became (empty for one that became
+/// none), and `results[j]` the same for old result `j`. The results are those a call produces
+/// ([Signature::results]): a signature that never returns has none, and neither does its
+/// conversion. The ranges are contiguous and in order, as [remap_declared_effects] and
+/// [SignatureConversion::add_inputs] take them.
+///
+/// [remap_declared_effects]: crate::dialects::builtin::attributes::remap_declared_effects
+#[derive(Clone, Debug)]
+pub struct ConvertedSignature {
+    /// The converted signature.
+    pub signature: Signature,
+    /// For each old parameter, the new parameters it became.
+    pub params: Vec<Range<u32>>,
+    /// For each old result, the new results it became.
+    pub results: Vec<Range<u32>>,
+}
+
+/// Each parameter and result becomes one `AbiParam` per type the converter gives for it. One that stays
+/// one value keeps its attributes; the parts of one that becomes several carry none. The calling
+/// convention is kept.
+///
+/// Each type is asked about with [TypeConverter::convert_type]: a signature is converted by type,
+/// so equal signatures convert to equal signatures, and a callable and every call of it agree. A
+/// parameter or result that becomes no type disappears, and one that becomes one type keeps its
+/// attributes on the new type. A `never` result (a function that never returns) stays `never`,
+/// whatever the converter says about it, as it does in the function types of a converter made
+/// with [TypeConverter::with_function_types]; so the function type of the converted signature is
+/// what such a converter answers for the function type of `signature`.
+pub fn convert_signature(
     context: &Context,
     signature: &Signature,
-    type_converter: &TypeConverter,
-) -> Result<Signature, Report> {
-    let mut converted = signature.clone();
-    for param in converted.params_mut().iter_mut() {
-        param.ty = type_converter.convert_type_1_to_1(context, param.ty)?;
+    converter: &TypeConverter,
+) -> ConvertedSignature {
+    let (params, param_ranges) =
+        convert_abi_params(signature.params(), |ty| converter.convert_type(context, ty));
+    let (results, mut result_ranges) = convert_abi_params(signature.declared_results(), |ty| {
+        converter.convert_result_type(context, ty)
+    });
+    if signature.never_returns() {
+        // The declared `never` is not a value a call produces.
+        result_ranges.clear();
     }
-    for result in converted.declared_results_mut().iter_mut() {
-        result.ty = type_converter.convert_type_1_to_1(context, result.ty)?;
+    ConvertedSignature {
+        signature: Signature::from_parts(signature.calling_convention(), params, results),
+        params: param_ranges,
+        results: result_ranges,
     }
-    Ok(converted)
 }
 
-/// Return the converted callable signature for `op`, if it implements `CallableOpInterface`.
-///
-/// The operation is not mutated. Concrete conversion patterns can use the returned signature to
-/// rewrite dialect-specific callable storage.
-pub fn converted_callable_signature_1_to_1(
-    op: OperationRef,
-    type_converter: &TypeConverter,
-) -> Result<Option<Signature>, Report> {
-    let op = op.borrow();
-    let Some(callable) = op.as_trait::<dyn CallableOpInterface>() else {
-        return Ok(None);
-    };
-    convert_signature_1_to_1(op.context(), &callable.signature(), type_converter).map(Some)
+/// Each of `params` converted with `convert`: the new parameters, and the range of new ones each
+/// old one became.
+fn convert_abi_params(
+    params: &[AbiParam],
+    convert: impl Fn(Type) -> SmallVec<[Type; 2]>,
+) -> (Vec<AbiParam>, Vec<Range<u32>>) {
+    let mut converted = Vec::with_capacity(params.len());
+    let mut ranges = Vec::with_capacity(params.len());
+    for param in params {
+        let start = new_index(converted.len());
+        match convert(param.ty).as_slice() {
+            [ty] => {
+                let mut param = param.clone();
+                param.ty = *ty;
+                converted.push(param);
+            }
+            types => converted.extend(types.iter().copied().map(AbiParam::new)),
+        }
+        ranges.push(start..new_index(converted.len()));
+    }
+    (converted, ranges)
 }
 
-/// Resolve a call-like operation and return the converted callee signature.
-///
-/// This helper intentionally does not rewrite call operands, result values, or callee attributes.
-/// Different dialects store those pieces differently, so concrete conversion patterns should use
-/// this to drive operation-specific rewrites.
-pub fn converted_resolved_call_signature_1_to_1(
-    op: OperationRef,
-    type_converter: &TypeConverter,
-) -> Result<Option<Signature>, Report> {
-    let op = op.borrow();
-    let Some(call) = op.as_trait::<dyn CallOpInterface>() else {
-        return Ok(None);
-    };
-    let signature = resolve_call_signature(op.name().to_string(), call)?;
-    convert_signature_1_to_1(op.context(), &signature, type_converter).map(Some)
+/// `index` as the index of a parameter or result of a signature.
+fn new_index(index: usize) -> u32 {
+    u32::try_from(index).expect("system limit: a signature has at most u32::MAX parameters")
 }
 
 /// Verify that the arguments and results of `op`, a call-like operation, agree with `signature`
@@ -278,28 +307,12 @@ pub fn verify_call_signature_operands_and_results(
     Ok(())
 }
 
-fn resolve_call_signature(
-    op_name: alloc::string::String,
-    call: &dyn CallOpInterface,
-) -> Result<Signature, Report> {
-    let callee = call.callable_for_callee();
-    let Some(resolved) = call.resolve() else {
-        return Err(Report::msg(format!(
-            "operation '{op_name}' references unresolved callee '{callee}'"
-        )));
-    };
-    Ok(resolved.signature())
-}
-
 #[cfg(test)]
 mod tests {
     use alloc::{format, vec};
 
     use super::*;
-    use crate::{
-        Context, SourceSpan, conversion::ConversionPatternRewriter,
-        dialects::builtin::attributes::Signature, testing::Test,
-    };
+    use crate::{Context, SourceSpan, conversion::ConversionPatternRewriter, testing::Test};
 
     fn i32_to_i64_converter(context: &Context) -> TypeConverter {
         let (from, to) = (context.i32(), context.i64());
@@ -388,34 +401,98 @@ mod tests {
         );
     }
 
-    #[test]
-    fn converts_builtin_signature_1_to_1() {
-        let context = alloc::rc::Rc::new(Context::default());
-        let signature = Signature::new(&context, [context.i32()], [context.i32()]);
-
-        let converted =
-            convert_signature_1_to_1(&context, &signature, &i32_to_i64_converter(&context))
-                .unwrap();
-
-        assert_eq!(converted.params()[0].ty, context.i64());
-        assert_eq!(converted.results()[0].ty, context.i64());
-        assert_eq!(converted.calling_convention(), signature.calling_convention());
+    /// `i128` becomes `(i64, i64)`, the marker `array<i8; 0>` becomes nothing, `i16` becomes
+    /// `i32`, and every other type is itself.
+    fn by_type_converter(context: &Context) -> TypeConverter {
+        let (i16, i32, i64, i128) = (context.i16(), context.i32(), context.i64(), context.i128());
+        let marker = context.array_type(context.i8(), 0);
+        let mut converter = TypeConverter::new();
+        converter.add_conversion(move |_, ty| match ty {
+            ty if ty == i128 => Some(super::super::TypeConversion::many([i64, i64])),
+            ty if ty == marker => Some(super::super::TypeConversion::Drop),
+            ty if ty == i16 => Some(super::super::TypeConversion::One(i32)),
+            _ => None,
+        });
+        converter
     }
 
+    fn ranges(ranges: &[Range<u32>]) -> Vec<(u32, u32)> {
+        ranges.iter().map(|range| (range.start, range.end)).collect()
+    }
+
+    /// A parameter or result that stays keeps its attributes; one that changes one to one keeps
+    /// them on its new type; the parts of one that splits carry none; one that vanishes is gone.
+    /// The calling convention is kept, and the ranges say where each old one went.
     #[test]
-    fn converts_callable_signature_1_to_1() {
-        let mut test = Test::named("converts_callable_signature_1_to_1");
-        let i32 = test.context().i32();
-        test.with_function("converts_callable_signature_1_to_1", &[i32], &[i32]);
+    fn a_signature_is_converted_by_type() {
+        let context = alloc::rc::Rc::new(Context::default());
+        let (i16, i32, i64, i128) = (context.i16(), context.i32(), context.i64(), context.i128());
+        let marker = context.array_type(context.i8(), 0);
+        let signature = Signature::from_parts(
+            crate::CallConv::new("fast"),
+            vec![
+                AbiParam::zext(i32, &context),
+                AbiParam::sext(i16, &context),
+                AbiParam::zext(i128, &context),
+                AbiParam::zext(marker, &context),
+                AbiParam::new(i32),
+            ],
+            vec![AbiParam::new(i128), AbiParam::new(marker), AbiParam::sext(i16, &context)],
+        );
 
-        let converted = converted_callable_signature_1_to_1(
-            test.function().as_operation_ref(),
-            &i32_to_i64_converter(test.context()),
-        )
-        .unwrap()
-        .expect("function should implement CallableOpInterface");
+        let converted = convert_signature(&context, &signature, &by_type_converter(&context));
 
-        assert_eq!(converted.params()[0].ty, test.context().i64());
-        assert_eq!(converted.results()[0].ty, test.context().i64());
+        let expected = Signature::from_parts(
+            crate::CallConv::new("fast"),
+            vec![
+                AbiParam::zext(i32, &context),
+                AbiParam::sext(i32, &context),
+                AbiParam::new(i64),
+                AbiParam::new(i64),
+                AbiParam::new(i32),
+            ],
+            vec![AbiParam::new(i64), AbiParam::new(i64), AbiParam::sext(i32, &context)],
+        );
+        assert_eq!(converted.signature, expected);
+        assert!(converted.signature.params()[2].attributes().is_empty());
+        assert_eq!(ranges(&converted.params), [(0, 1), (1, 2), (2, 4), (4, 4), (4, 5)]);
+        assert_eq!(ranges(&converted.results), [(0, 2), (2, 2), (2, 3)]);
+    }
+
+    /// Equal signatures convert to equal signatures, and a signature of legal types to itself.
+    #[test]
+    fn equal_signatures_convert_to_equal_signatures() {
+        let context = alloc::rc::Rc::new(Context::default());
+        let converter = by_type_converter(&context);
+        let make = || Signature::new(&context, [context.i128(), context.i16()], [context.i128()]);
+        assert_eq!(
+            convert_signature(&context, &make(), &converter).signature,
+            convert_signature(&context, &make(), &converter).signature
+        );
+        let legal = Signature::new(&context, [context.i32()], [context.i64()]);
+        assert_eq!(convert_signature(&context, &legal, &converter).signature, legal);
+    }
+
+    /// A `never` result stays `never`, even under a converter that drops `never`, and a signature
+    /// that never returns has no results to range over.
+    #[test]
+    fn a_never_result_stays_never() {
+        let context = alloc::rc::Rc::new(Context::default());
+        let never = context.never_type();
+        let mut converter = by_type_converter(&context);
+        converter.add_conversion(move |_, ty| {
+            (ty == never).then_some(super::super::TypeConversion::Drop)
+        });
+        let signature = Signature::new(&context, [context.i128()], [never]);
+
+        let converted = convert_signature(&context, &signature, &converter);
+
+        assert_eq!(
+            converted.signature,
+            Signature::new(&context, [context.i64(), context.i64()], [never])
+        );
+        assert!(converted.signature.never_returns());
+        assert_eq!(ranges(&converted.params), [(0, 2)]);
+        assert!(converted.results.is_empty());
     }
 }
