@@ -1570,7 +1570,7 @@ cf.assert %c, "between";"#;
     }
 
     /// Locals are not memory: two loads of one local merge across a `mem.store`, and two
-    /// `test.load`s merge across a store of a local.
+    /// `test.load`s, and two `mem.load`s, merge across a store of a local.
     #[test]
     fn loads_of_locals_and_of_memory_merge_across_writes_of_the_other()
     -> Result<(), runic_core::Report> {
@@ -1602,6 +1602,15 @@ cf.assert %c, "between";"#;
             ),
         )?;
         assert_eq!(text.matches("test.load").count(), 1, "{text}");
+        assert!(text.contains("builtin.store_local"), "{text}");
+
+        let text = cse_in_module_with_locals(
+            "i32",
+            &format!(
+                "%1 = mem.load %p;\n{store}\n%2 = mem.load %p;\nbuiltin.ret %1, %2 : (i32, i32);"
+            ),
+        )?;
+        assert_eq!(text.matches("mem.load").count(), 1, "{text}");
         assert!(text.contains("builtin.store_local"), "{text}");
         Ok(())
     }

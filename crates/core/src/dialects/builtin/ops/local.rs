@@ -35,6 +35,10 @@ impl Resource for LocalsResource {
 /// no other effect: an unused load is removed, and two loads of one local with no write of a local
 /// between them are merged.
 ///
+/// A load of a local that has not been stored yields an unspecified value; `Local2Reg` does not
+/// promote such a load. A frontend whose source language zero-initializes its locals stores a
+/// zero first.
+///
 /// Inside a function, the local is one of the function's `locals(..)`, of the type the function
 /// gives it.
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
@@ -53,13 +57,38 @@ pub struct LoadLocal {
 }
 
 /// A result whose type is not yet known gets the local's type. A result that already has a type
-/// keeps it, and the verifier checks it.
+/// keeps it, and the verifier checks it. A local bound to a function that has no local of its
+/// index is an error.
 impl InferTypeOpInterface for LoadLocal {
     fn infer_return_types(&mut self, _context: &Context) -> Result<(), Report> {
         if !self.result().ty().is_unknown() {
             return Ok(());
         }
-        let ty = self.local().local_type();
+        let local = self.local();
+        let ty = if local.as_value().is_bound() {
+            let index = local.as_value().as_usize();
+            let function = local.as_value().function();
+            let function = function.borrow();
+            let locals = function.get_locals();
+            match locals.iter().nth(index) {
+                Some(ty) => *ty,
+                None => {
+                    return Err(report!(
+                        message: "invalid operation builtin.load_local",
+                        labels: [primary(
+                            self.span(),
+                            format!(
+                                "this names local {index}, but its function has {} local(s)",
+                                locals.len()
+                            )
+                        )],
+                    ));
+                }
+            }
+        } else {
+            local.local_type()
+        };
+        drop(local);
         self.result_mut().set_type(ty);
         Ok(())
     }
@@ -354,6 +383,62 @@ mod tests {
             let text = verify_error(&source);
             assert!(text.contains(reason), "{source}\n{text}");
         }
+    }
+
+    /// A load whose result (stated in the generic form) has another type than its local does not
+    /// verify.
+    #[test]
+    fn a_load_of_another_type_than_its_local_does_not_verify() {
+        let source = alloc::format!(
+            "{HEADER} @f() locals(i32) {{
+    %1 = \"builtin.load_local\"() <{{ local = #builtin.local_variable<0, i32> }}> : () -> i64;
+    builtin.ret;
+}};"
+        );
+        let text = verify_error(&source);
+        assert!(text.contains("invalid operation builtin.load_local"), "{source}\n{text}");
+        assert!(text.contains("the result has type `i64`, but local 0 has type `i32`"), "{text}");
+    }
+
+    /// Outside a function, an unbound local is checked only against the type it states: a store
+    /// of another type does not verify, and one of that type does.
+    #[test]
+    fn an_unbound_local_outside_a_function_is_checked_against_its_type() {
+        let module = |ty: &str| {
+            alloc::format!(
+                "builtin.module public @m {{
+    builtin.global_variable public @g : i32 {{
+        %0 = test.constant 0 : {ty};
+        builtin.store_local %0 <{{ local = #builtin.local_variable<0, i32> }}> : ({ty});
+    }};
+}};"
+            )
+        };
+        let err = parse_text::<crate::dialects::builtin::Module>(&module("i64"))
+            .map(|_| ())
+            .expect_err("the value is not of the local's type");
+        assert!(err.contains("the value has type `i64`, but local 0 has type `i32`"), "{err}");
+        parse_text::<crate::dialects::builtin::Module>(&module("i32"))
+            .unwrap_or_else(|err| panic!("{err}"));
+    }
+
+    /// The type of a load of a local bound to a function that no longer has a local of its index
+    /// is an error, not a panic.
+    #[test]
+    fn a_load_of_a_bound_local_out_of_range_is_an_error() {
+        let mut test = Test::new("shrunk", |_cx| ([] as [Type; 0], [] as [Type; 0]));
+        let i32 = test.context().i32();
+        let local = test.function().borrow_mut().alloc_local(i32);
+        test.function().borrow_mut().get_locals_mut().remove(0);
+        let mut builder = test.function_builder();
+        let err = builder
+            .load_local(local, SourceSpan::UNKNOWN)
+            .expect_err("the function has no local 0");
+        let labels = label_messages(err.as_diagnostic()).join(" | ");
+        assert!(
+            labels.contains("this names local 0, but its function has 0 local(s)"),
+            "{labels}"
+        );
     }
 
     /// A local built through one function and used in another does not verify.

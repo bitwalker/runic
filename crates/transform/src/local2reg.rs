@@ -55,7 +55,11 @@ fn pin_locals_named_by(operation: &Operation, pinned: &mut FxHashSet<usize>) {
     for attribute in operation.attributes() {
         pin(attribute.as_named_attribute().value);
     }
-    if let Some(effects) = operation.as_trait::<dyn MemoryEffectOpInterface>() {
+    // The effects of an operation whose effects are unknown are not read: such an operation pins
+    // through its properties and attributes, above
+    if let Some(effects) = operation.as_trait::<dyn MemoryEffectOpInterface>()
+        && effects.effects_are_known()
+    {
         for effect in effects.effects() {
             if let Some(attribute) = effect.attribute() {
                 pin(attribute);
@@ -1109,6 +1113,59 @@ mod tests {
 // CHECK-NEXT: builtin.ret [[V1]], %0 : (i32, i32);
             "#
         );
+    }
+
+    /// A pinned local that is only stored keeps its store: pinning stops the erasure of dead
+    /// stores as well as promotion. Without `test.touch_local` the same store is erased.
+    #[test]
+    fn a_pinned_local_that_is_only_stored_keeps_its_store() {
+        let body = |touch: &str| {
+            format!(
+                "{HEADER} @f(%0: i32) -> i32 locals(i32) {{
+    builtin.store_local %0 <{{ local = #builtin.local_variable<0, i32> }}> : (i32);{touch}
+    builtin.ret %0 : (i32);
+}};"
+            )
+        };
+        let pinned = body("\n    test.touch_local <{ local = #builtin.local_variable<0, i32> }>;");
+        let output = promote_parsed(&pinned);
+        std::println!("{output}");
+        assert_eq!(output, pinned);
+
+        let output = promote_parsed(&body(""));
+        std::println!("{output}");
+        assert!(!output.contains("builtin.store_local"), "{output}");
+    }
+
+    /// An operation nested in a region pins the local it names: `test.touch_local` inside an
+    /// `scf.if` before the store keeps the store and the load. With the `scf.if` holding nothing
+    /// else, the local is promoted.
+    #[test]
+    fn an_operation_in_a_region_pins_the_local_it_names() {
+        let body = |touch: &str| {
+            format!(
+                "{HEADER} @f(%0: i32, %1: i1) -> i32 locals(i32) {{
+    scf.if %1 then {{{touch}
+        scf.yield : ();
+    }} else {{
+        scf.yield : ();
+    }} : (i1) -> ();
+    builtin.store_local %0 <{{ local = #builtin.local_variable<0, i32> }}> : (i32);
+    %2 = builtin.load_local <{{ local = #builtin.local_variable<0, i32> }}>;
+    builtin.ret %2 : (i32);
+}};"
+            )
+        };
+        let pinned =
+            body("\n        test.touch_local <{ local = #builtin.local_variable<0, i32> }>;");
+        let output = promote_parsed(&pinned);
+        std::println!("{output}");
+        assert_eq!(output, pinned);
+
+        let output = promote_parsed(&body(""));
+        std::println!("{output}");
+        assert!(!output.contains("_local"), "{output}");
+        assert!(output.contains("builtin.ret %0 : (i32);"), "{output}");
     }
 
     /// `test.touch_local`, parsed, pins the local it names, and only that local.
