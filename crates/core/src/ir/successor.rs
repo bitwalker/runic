@@ -38,7 +38,7 @@ pub trait SuccessorOperands {
             Some(SuccessorOperand::Produced)
         } else {
             self.forwarded()
-                .get(index)
+                .get(index - self.num_produced())
                 .map(|op_operand| SuccessorOperand::Forwarded(op_operand.borrow().as_value_ref()))
         }
     }
@@ -50,7 +50,9 @@ pub trait SuccessorOperands {
         if self.is_operand_produced(index) {
             SuccessorOperand::Produced
         } else {
-            SuccessorOperand::Forwarded(self.forwarded()[index].borrow().as_value_ref())
+            SuccessorOperand::Forwarded(
+                self.forwarded()[index - self.num_produced()].borrow().as_value_ref(),
+            )
         }
     }
 
@@ -60,7 +62,7 @@ pub trait SuccessorOperands {
     /// Panics if the given block argument index does not correspond to a forwarded operand.
     fn get_operand_index(&self, block_argument_index: usize) -> usize {
         assert!(
-            self.is_operand_produced(block_argument_index),
+            !self.is_operand_produced(block_argument_index),
             "cannot map operands produced by the operation"
         );
         let base_index = self.forwarded()[0].borrow().index as usize;
@@ -602,5 +604,56 @@ where
     #[inline(always)]
     pub fn arguments_mut(&mut self) -> &mut OpOperandRangeMut<'a> {
         &mut self.operands
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        Operation, OperationRef, SuccessorOperandRange, ValueRef, dialects::builtin::Function,
+        testing::text::parse,
+    };
+
+    const TWO_OPERANDS: &str = r#"builtin.function public extern("C") @f(%a: i32, %b: i32) -> i32 {
+    %0 = test.add %a, %b;
+    builtin.ret %0 : (i32);
+};"#;
+
+    fn find(root: OperationRef, name: &str) -> OperationRef {
+        let mut found = None;
+        root.borrow().prewalk_all(|op: &Operation| {
+            if found.is_none() && alloc::string::ToString::to_string(&op.name()) == name {
+                found = Some(op.as_operation_ref());
+            }
+        });
+        found.unwrap_or_else(|| panic!("no {name}"))
+    }
+
+    /// The operands of a successor that takes one produced operand and then forwards the two
+    /// operands of the `test.add` of [TWO_OPERANDS]: positions 0 (produced), 1 (`%a`), 2 (`%b`).
+    #[test]
+    fn get_accounts_for_the_produced_operands() {
+        let (_context, function) = parse::<Function>(TWO_OPERANDS).expect("parses");
+        let add = find(function.as_operation_ref(), "test.add");
+        let add = add.borrow();
+        let forwarded = add.operands().group(0);
+        let [a, b]: [ValueRef; 2] =
+            [forwarded[0].borrow().as_value_ref(), forwarded[1].borrow().as_value_ref()];
+        let range = SuccessorOperandRange::new(1, forwarded);
+        let value_of = |operand: Option<SuccessorOperand>| {
+            operand.and_then(|operand| operand.into_value_ref())
+        };
+
+        assert_eq!(range.len(), 3);
+        assert!(matches!(range.get(0), Some(SuccessorOperand::Produced)));
+        assert_eq!(value_of(range.get(1)), Some(a));
+        assert_eq!(value_of(range.get(2)), Some(b));
+        assert!(range.get(3).is_none());
+        assert!(matches!(range.get_unchecked(0), SuccessorOperand::Produced));
+        assert_eq!(range.get_unchecked(2).into_value_ref(), Some(b));
+        // the operand index of block argument 1 is that of `%a`
+        assert_eq!(range.get_operand_index(1), 0);
+        assert_eq!(range.get_operand_index(2), 1);
     }
 }
