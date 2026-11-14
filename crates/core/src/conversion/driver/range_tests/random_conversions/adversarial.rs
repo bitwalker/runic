@@ -534,7 +534,12 @@ fn remapping_an_argument_to_a_value_of_the_block_is_an_error() {
         Ok(true)
     });
     assert!(outcome.is_error(), "{outcome:?}");
-    assert!(outcome.text().contains("a value defined in the block itself"), "{outcome:?}");
+    assert!(
+        outcome
+            .text()
+            .contains("a value defined in the block or in a region nested in it"),
+        "{outcome:?}"
+    );
 }
 
 // --- Materialization callbacks that misbehave ---------------------------------------------------

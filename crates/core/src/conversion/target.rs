@@ -178,8 +178,10 @@ impl RecursiveLegalityRule {
 /// treats one that no rule matches and the policy does not call legal as an operation it may
 /// convert but need not.
 ///
-/// Conversion targets are owned by concrete passes; operations nested under a recursively legal
-/// operation are not visited by either conversion.
+/// Conversion targets are owned by concrete passes. Operations nested under a recursively legal
+/// operation are not collected by either conversion, and are not offered to a pattern because a
+/// value they read is replaced; one that a pattern inserts there, or changes in place, is offered
+/// like any operation a pattern inserts or changes.
 pub struct ConversionTarget {
     context: Rc<Context>,
     unknown_op_policy: UnknownOpPolicy,
@@ -295,8 +297,9 @@ impl ConversionTarget {
 
     /// Mark operation `Op` recursively legal.
     ///
-    /// Recursive legality only applies when `Op` itself is legal. When it applies, conversion
-    /// skips all nested operations under that operation.
+    /// Recursive legality only applies when `Op` itself is legal. When it applies, the conversion
+    /// does not collect the operations nested under that operation; one that a pattern inserts
+    /// there, or changes in place, is still offered ([ConversionTarget]).
     pub fn mark_op_recursively_legal<Op: OpRegistration>(&mut self) -> &mut Self {
         let name = self.registered_op_name::<Op>();
         self.recursive_legality.insert(name, RecursiveLegalityRule::Legal);

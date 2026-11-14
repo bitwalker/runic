@@ -115,9 +115,10 @@
 //!   answers legal) it is left alone and never offered; under [UnknownOpPolicy::Illegal] it is
 //!   offered and may stay.
 //!
-//! In both, the operations nested under a recursively legal operation are not visited and are
-//! never offered to a pattern, even when a value they read is replaced outside (they read it
-//! through a cast); and a conversion that succeeds leaves IR that verifies (unless
+//! In both, the operations nested under a recursively legal operation are not collected, and are
+//! not offered to a pattern because a value they read is replaced outside (they read it through a
+//! cast); one that a pattern inserts there, or changes in place, is offered like any operation a
+//! pattern inserts or changes. And a conversion that succeeds leaves IR that verifies (unless
 //! [ConversionConfig::with_verify_after_conversion] is off). [TypeConverter::is_legal_op] can serve
 //! as a dynamic legality rule: an operation is legal when every type it uses converts to itself.
 //!
@@ -130,6 +131,9 @@
 //! starts again at the next operation. More than
 //! [ConversionConfig::with_max_rewrites_per_operation] (1,024 by default) is an error that names
 //! the operation and the pattern: the limit stops a pattern that never ends, not a large program.
+//! It also bounds what one application may start: an application that inserts more operations
+//! that themselves need patterns than the limit allows ends at the limit, so a pattern that
+//! expands one operation into that many needs a higher limit.
 //! A pattern may not erase or replace the root of the conversion; the rewriter answers an error.
 //!
 //! # What a pattern may rely on

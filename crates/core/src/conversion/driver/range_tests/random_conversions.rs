@@ -8,7 +8,8 @@
 //! - `cost`: termination and cost: chains of uses, the rewrite limit.
 //! - `casts`: the text of the cast, fuzzed; reconciliation over random DAGs and cyclic graphs.
 //! - `targeted`: recursively legal operations, two converters, value callbacks, the partial mode's
-//!   reading of the unknown operation policy, where a source cast is placed.
+//!   reading of the unknown operation policy, where a source cast is placed, and the replacements
+//!   and remaps that no placement can satisfy.
 //!
 //! The randomized tests run fixed seeds; `RANDOM_CONVERSIONS_TEST_SEED` (decimal, or hex with
 //! `0x`) runs one seed instead, and `RANDOM_CONVERSIONS_TEST_CASES` sets the number of cases per

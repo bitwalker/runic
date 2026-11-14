@@ -6,11 +6,12 @@ use std::println;
 
 use super::{ops::*, *};
 use crate::{
-    Builder, BuilderExt, RegionKind, RegionKindInterface, SourceSpan,
+    Builder, BuilderExt, OpBuilder, RegionKind, RegionKindInterface, SourceSpan,
+    conversion::SignatureConversion,
     derive::{EffectOpInterface, operation},
     effects::MemoryEffectOpInterface,
     testing::Test,
-    traits::{NoTerminator, SingleBlock},
+    traits::{AnyType, InferTypeOpInterface, NoTerminator, SingleBlock},
 };
 
 /// An operation with one region whose operations may use the values around it.
@@ -28,6 +29,33 @@ pub struct Scope {
 impl RegionKindInterface for Scope {
     fn kind(&self) -> RegionKind {
         RegionKind::SSA
+    }
+}
+
+/// An operation with one region and one `i128` result.
+#[derive(EffectOpInterface)]
+#[operation(
+    dialect = TestDialect,
+    traits(SingleBlock, NoTerminator),
+    implements(RegionKindInterface, MemoryEffectOpInterface, InferTypeOpInterface)
+)]
+pub struct Wrap {
+    #[region]
+    body: Region,
+    #[result]
+    result: AnyType,
+}
+
+impl RegionKindInterface for Wrap {
+    fn kind(&self) -> RegionKind {
+        RegionKind::SSA
+    }
+}
+
+impl InferTypeOpInterface for Wrap {
+    fn infer_return_types(&mut self, context: &Context) -> Result<(), Report> {
+        self.result_mut().set_type(context.i128());
+        Ok(())
     }
 }
 
@@ -387,13 +415,12 @@ fn a_replacement_built_after_the_operation_is_read_after_it() {
     );
     let mut converter = wide_converter(&context);
     join_callbacks(&mut converter);
-    let legal = |op: &Operation| DynamicLegalityResult::legal_if(has_no_wide_types(op));
-    let mut target = ConversionTarget::new(context.clone());
-    target
-        .set_unknown_op_policy(UnknownOpPolicy::Legal)
-        .add_dynamically_legal_op::<Constant, _>(legal);
-    convert(function, target, [split_constant_after(&context, &converter)])
-        .unwrap_or_else(|err| panic!("{}", describe(&err)));
+    convert(
+        function,
+        sink_legal_target(&context),
+        [split_constant_after(&context, &converter)],
+    )
+    .unwrap_or_else(|err| panic!("{}", describe(&err)));
     defined_before_use(function).unwrap_or_else(|err| panic!("{err}\n{}", function.borrow()));
 }
 
@@ -481,4 +508,219 @@ fn in_partial_mode_the_operations_under_a_recursively_legal_one_are_not_offered(
     assert_eq!(offers.borrow().len(), 0, "the nested sink is not offered");
     assert_eq!(result.converted_ops(), 0, "the nested constant is not offered");
     assert_str_eq!(function.borrow().to_string(), before);
+}
+
+/// A target under which a constant without an `i128` is legal and every other operation is: the
+/// sink stays, reading the old type.
+fn sink_legal_target(context: &Rc<Context>) -> ConversionTarget {
+    let legal = |op: &Operation| DynamicLegalityResult::legal_if(has_no_wide_types(op));
+    let mut target = ConversionTarget::new(context.clone());
+    target
+        .set_unknown_op_policy(UnknownOpPolicy::Legal)
+        .add_dynamically_legal_op::<Constant, _>(legal);
+    target
+}
+
+/// The halves built after the user that stays (before `builtin.ret`): no placement of the cast
+/// can satisfy that user, and the replacement is an error that names it, raised before anything
+/// changes.
+#[test]
+fn a_replacement_built_after_a_user_is_an_error() {
+    let (context, function) = parse_function(
+        "()",
+        "    %0 = test.constant 5 : i128;
+    test.sink %0 : (i128);
+    builtin.ret;",
+    );
+    let before = function.borrow().to_string();
+    let mut converter = wide_converter(&context);
+    join_callbacks(&mut converter);
+    let i128 = context.i128();
+    let built_late = Rule::new::<Constant>(
+        &context,
+        "split-constant-late",
+        Some(converter.clone()),
+        [registered::<Constant>(&context)],
+        move |op, _operands, rewriter| {
+            let constant = op.try_downcast_op::<Constant>().unwrap();
+            if constant.borrow().result().ty() != i128 {
+                return Ok(false);
+            }
+            let bits = constant.borrow().get_value().unsigned();
+            let span = op.borrow().span();
+            let last = op.parent().unwrap().borrow().body().back().as_pointer().unwrap();
+            rewriter.set_insertion_point_before(last);
+            let low = rewriter.create_op::<Constant, _>(span, (Int::from_bits(64, bits),))?;
+            let high =
+                rewriter.create_op::<Constant, _>(span, (Int::from_bits(64, bits >> 64),))?;
+            let low = low.borrow().result().as_value_ref();
+            let high = high.borrow().result().as_value_ref();
+            // Nothing is changed by the failing replacement: the halves are erased by hand so that
+            // the IR can be compared with what it was.
+            let result = rewriter.replace_op_with_multiple(op, &[&[low, high]]);
+            for half in [high, low] {
+                let half = half.borrow().get_defining_op().unwrap();
+                rewriter.erase_op(half)?;
+            }
+            result?;
+            Ok(true)
+        },
+    );
+    let err = convert(function, sink_legal_target(&context), [built_late]).unwrap_err();
+    let err = describe(&err);
+    assert!(
+        err.contains(
+            "result 0 of 'test.constant' is replaced by a range defined after it, the last value \
+             by 'test.constant', but its user 'test.sink' comes before that definition"
+        ),
+        "{err}"
+    );
+    assert_str_eq!(function.borrow().to_string(), before);
+}
+
+/// Replacing an operation by a value defined inside its own region, which is erased with it: an
+/// error raised before anything changes.
+#[test]
+fn a_replacement_from_the_operations_own_region_is_an_error() {
+    let mut test = Test::new("f", |_| ([], []));
+    let context = test.context_rc();
+    {
+        let mut builder = test.function_builder();
+        let b = builder.builder_mut();
+        const S: SourceSpan = SourceSpan::UNKNOWN;
+        let wrap = b.create::<Wrap, ()>(S)().unwrap();
+        let region = wrap.borrow().body().as_region_ref();
+        let body = b.create_block(region, None, &[]);
+        let after = wrap.as_operation_ref();
+        let wrapped = wrap.borrow().result().as_value_ref();
+        b.set_insertion_point_to_end(body);
+        b.create::<Constant, _>(S)(Int::from_bits(128, 7)).unwrap();
+        b.set_insertion_point_after(after);
+        b.create::<Sink, (ValueRef, Vec<ValueRef>)>(S)(wrapped, vec![]).unwrap();
+        b.create::<crate::dialects::builtin::Ret, (Vec<ValueRef>,)>(S)(vec![]).unwrap();
+    }
+    let function = test.function().as_operation_ref();
+    let before = function.borrow().to_string();
+    let mut target = ConversionTarget::new(context.clone());
+    target.set_unknown_op_policy(UnknownOpPolicy::Legal).add_illegal_op::<Wrap>();
+    let unwrap = Rule::new::<Wrap>(&context, "unwrap", None, [], |op, _, rewriter| {
+        let inner = {
+            let op = op.borrow();
+            let region = op.regions().front().get().unwrap();
+            let entry = region.entry();
+            let inner = entry.body().front().as_pointer().unwrap();
+            inner.borrow().results()[0].borrow().as_value_ref()
+        };
+        rewriter.replace_op(op, &[inner])?;
+        Ok(true)
+    });
+    let err = convert(function, target, [unwrap]).unwrap_err();
+    let err = describe(&err);
+    assert!(
+        err.contains(
+            "result 0 of 'test.wrap' is replaced by a range that holds '%1', a value defined \
+             inside the operation being replaced, which is erased with it"
+        ),
+        "{err}"
+    );
+    assert_str_eq!(function.borrow().to_string(), before);
+}
+
+/// An argument remapped to an argument of a block nested in the block being converted (in the
+/// region of one of its operations): an error raised before anything changes.
+#[test]
+fn remapping_to_an_argument_of_a_block_nested_in_the_block_is_an_error() {
+    let (context, function) = parse_function(
+        "(%0: i128)",
+        "    test.forward_br ^bb1(%0 : i128);
+^bb1(%1: i128):
+    test.sink %1 : (i128);
+    builtin.ret;",
+    );
+    let function_op = function.try_downcast_op::<Function>().unwrap();
+    let block = function_op.borrow().entry_block().next().unwrap();
+    let nested_argument = {
+        let mut b = OpBuilder::new(context.clone());
+        b.set_insertion_point_to_start(block);
+        let scope = b.create::<Scope, ()>(SourceSpan::UNKNOWN)().unwrap();
+        let region = scope.borrow().body().as_region_ref();
+        let inner = b.create_block(region, None, &[context.i128()]);
+        inner.borrow().arguments()[0] as ValueRef
+    };
+    let before = function.borrow().to_string();
+    let mut rewriter = ConversionPatternRewriter::new_with_type_converter(
+        context.clone(),
+        Some(wide_converter(&context)),
+    );
+    let mut conversion = SignatureConversion::new(1);
+    conversion.remap_input(0, &[nested_argument]).unwrap();
+    let err = rewriter.apply_signature_conversion(block, &conversion).unwrap_err();
+    assert_eq!(
+        format!("{err}"),
+        "argument 0 of a block of 'builtin.function' is remapped to '%2: i128', a value defined \
+         in the block or in a region nested in it, which does not dominate its start"
+    );
+    assert_str_eq!(function.borrow().to_string(), before);
+    assert_eq!(rewriter.mutation_count(), 0);
+}
+
+/// A pattern for an outer constant that changes in place a sink nested under a recursively legal
+/// operation: the sink is then offered to its pattern, like any operation a pattern changes.
+#[test]
+fn an_in_place_change_under_a_recursively_legal_operation_is_offered() {
+    let mut test = Test::new("f", |_| ([], []));
+    let context = test.context_rc();
+    let nested_sink;
+    {
+        let mut builder = test.function_builder();
+        let b = builder.builder_mut();
+        const S: SourceSpan = SourceSpan::UNKNOWN;
+        let outer = b.create::<Constant, _>(S)(Int::from_bits(128, 7)).unwrap();
+        let outer = outer.borrow().result().as_value_ref();
+        let scope = b.create::<Scope, ()>(S)().unwrap();
+        let region = scope.borrow().body().as_region_ref();
+        let body = b.create_block(region, None, &[]);
+        let after = scope.as_operation_ref();
+        b.set_insertion_point_to_end(body);
+        let inner = b.create::<Constant, _>(S)(Int::from_bits(128, 9)).unwrap();
+        let inner = inner.borrow().result().as_value_ref();
+        nested_sink = b.create::<Sink, (ValueRef, Vec<ValueRef>)>(S)(outer, vec![inner])
+            .unwrap()
+            .as_operation_ref();
+        b.set_insertion_point_after(after);
+        b.create::<crate::dialects::builtin::Ret, (Vec<ValueRef>,)>(S)(vec![]).unwrap();
+    }
+    let function = test.function().as_operation_ref();
+    let mut converter = wide_converter(&context);
+    join_callbacks(&mut converter);
+    let mut target = wide_target(&context);
+    target.add_legal_op::<Scope>().mark_op_recursively_legal::<Scope>();
+    let i128 = context.i128();
+    let poke = Rule::new::<Constant>(
+        &context,
+        "split-and-poke",
+        Some(converter.clone()),
+        [registered::<Constant>(&context)],
+        move |op, _, rewriter| {
+            let constant = op.try_downcast_op::<Constant>().unwrap();
+            if constant.borrow().result().ty() != i128 {
+                return Ok(false);
+            }
+            let bits = constant.borrow().get_value().unsigned();
+            let span = op.borrow().span();
+            let low = rewriter.create_op::<Constant, _>(span, (Int::from_bits(64, bits),))?;
+            let high =
+                rewriter.create_op::<Constant, _>(span, (Int::from_bits(64, bits >> 64),))?;
+            let low = low.borrow().result().as_value_ref();
+            let high = high.borrow().result().as_value_ref();
+            rewriter.replace_op_with_multiple(op, &[&[low, high]])?;
+            rewriter.modify_op_in_place(nested_sink, |_| ())?;
+            Ok(true)
+        },
+    );
+    let seen: Seen<Vec<Ranges>> = Rc::default();
+    let result =
+        convert(function, target, [poke, flatten_sink(&context, &converter, seen.clone())]);
+    assert!(result.is_ok(), "{}", function.borrow());
+    assert_eq!(seen.borrow().len(), 1, "the nested sink is offered once");
 }

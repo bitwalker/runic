@@ -135,8 +135,8 @@ impl TypeConverter {
 
     /// Add a value conversion callback.
     ///
-    /// Value callbacks are tried before type callbacks, most recently added first, and may look at
-    /// the value's defining operation, its uses, or its type. What they answer is not remembered.
+    /// Value callbacks are tried before type callbacks, most recently added first, and are given
+    /// the value; what they answer is not remembered.
     ///
     /// A callback is asked about the value an operation reads now, and the driver keeps no map
     /// from old values to new ones: after the producer of a value was replaced, what its users

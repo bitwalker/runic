@@ -7,7 +7,7 @@ use super::{InputMapping, SignatureConversion, TypeConverter};
 use crate::{
     BlockRef, BuildableOp, Builder, BuilderExt, Context, FxHashMap, FxHashSet, Listener,
     ListenerType, Operation, OperationRef, ProgramPoint, RegionRef, Report, SourceSpan, Spanned,
-    Type, UnsafeIntrusiveEntityRef, Usable, Value, ValueRef,
+    Type, UnsafeIntrusiveEntityRef, Value, ValueRef,
     dialects::builtin::BuiltinOpBuilder,
     patterns::{PatternRewriter, Rewriter, RewriterExt, RewriterListener},
     traits::Terminator,
@@ -408,11 +408,16 @@ impl ConversionPatternRewriter {
     /// that is defined last, when that definition is in `op`'s block after `op` (a replacement
     /// built after `op`); otherwise before `op`.
     ///
-    /// The values of a range must dominate the users of the result they replace: nothing checks
-    /// it (the verifier has no dominance check), so a range defined after a user leaves IR that
-    /// reads a value before its definition. A range of any other types,
-    /// the wrong number of ranges, or an `op` that is the root of the conversion, is an error
-    /// raised before anything is changed.
+    /// The values of a range must dominate the users of the result they replace. When the cast
+    /// goes after a definition in `op`'s block, a user of the result in that block (or nested in an
+    /// operation of it) that is not after that definition is an error; nothing else is checked
+    /// (the verifier has no dominance check), so a range defined elsewhere that does not dominate
+    /// a user leaves IR that reads a value before its definition.
+    ///
+    /// An error is raised before anything is changed for the wrong number of ranges, an `op` that
+    /// is the root of the conversion, a range of any other types, a range that holds a result of
+    /// `op`, a range that holds a value defined inside `op` (in one of its regions, at any depth),
+    /// and a user that comes before the definition the cast must follow.
     ///
     /// Afterwards the insertion point is where it was before the call; when it was at `op`, it is
     /// at the position `op` occupied (before the operation that followed it, or at the end of its
@@ -441,7 +446,8 @@ impl ConversionPatternRewriter {
 
         // Check every range before changing anything.
         let context = self.inner.context_rc();
-        let mut casts = SmallVec::<[bool; 2]>::new();
+        // Per result: `None` when the range replaces it directly, else where its cast goes.
+        let mut casts = SmallVec::<[Option<ProgramPoint>; 2]>::new();
         for (index, (result, range)) in results.iter().zip(values).enumerate() {
             if let Some(own) = range.iter().find(|value| results.contains(*value)) {
                 return Err(Report::msg(format!(
@@ -451,11 +457,19 @@ impl ConversionPatternRewriter {
                     own.borrow()
                 )));
             }
+            if let Some(inner) = range.iter().find(|value| is_defined_inside(**value, op)) {
+                return Err(Report::msg(format!(
+                    "result {index} of '{}' is replaced by a range that holds '{}', a value \
+                     defined inside the operation being replaced, which is erased with it",
+                    op.borrow().name(),
+                    inner.borrow()
+                )));
+            }
             let result_ty = result.borrow().ty();
             if let [value] = range
                 && value.borrow().ty() == result_ty
             {
-                casts.push(false);
+                casts.push(None);
                 continue;
             }
             let range_types = types_of(range);
@@ -477,7 +491,20 @@ impl ConversionPatternRewriter {
                     type_list(&range_types)
                 )));
             }
-            casts.push(true);
+            let last = last_definition_after(op, range);
+            if let Some(last) = last
+                && let Some(user) = user_not_after(*result, last)
+            {
+                return Err(Report::msg(format!(
+                    "result {index} of '{}' is replaced by a range defined after it, the last \
+                     value by '{}', but its user '{}' comes before that definition, where the \
+                     range is not yet defined",
+                    op.borrow().name(),
+                    last.borrow().name(),
+                    user.borrow().name()
+                )));
+            }
+            casts.push(Some(last.map_or_else(|| ProgramPoint::before(op), ProgramPoint::after)));
         }
 
         // Each cast is inserted before `op`, or after its range when the range is defined after
@@ -494,15 +521,15 @@ impl ConversionPatternRewriter {
         let span = op.borrow().span();
         let mut replacements = SmallVec::<[Option<ValueRef>; 2]>::new();
         for ((result, range), cast) in results.iter().zip(values).zip(casts) {
-            if !cast {
+            let Some(point) = cast else {
                 replacements.push(Some(range[0]));
                 continue;
-            }
+            };
             if !result.borrow().is_used() {
                 replacements.push(None);
                 continue;
             }
-            self.inner.set_insertion_point(source_cast_point(op, range));
+            self.inner.set_insertion_point(point);
             let result_ty = result.borrow().ty();
             let (_, outputs) =
                 self.insert_cast(CastKind::Source, range.iter().copied(), [result_ty], span)?;
@@ -680,15 +707,16 @@ impl ConversionPatternRewriter {
     /// block and the old ones erased: the block keeps its identity and its operations. The types an
     /// old argument becomes are taken as the conversion gives them; under a type converter they
     /// must be what the converter answers for the old argument. Values an argument is remapped to
-    /// stand for it as given; they must dominate the start of the block (one defined in the block
-    /// itself is an error; nothing else is checked). The casts are
+    /// stand for it as given; they must dominate the start of the block (one defined under the
+    /// block itself is an error; nothing else is checked). The casts are
     /// recorded like any the driver inserts, and the change counts as a mutation of the block's
     /// parent operation; of a block without a parent operation, as a mutation of the block.
     ///
     /// An error is raised before anything changes when the conversion does not map every old
     /// argument, when it maps one to types the converter does not answer for it, when an argument
-    /// is remapped to an argument of the block itself or to a value defined in it (by one of its
-    /// operations, or in a region nested in one), when a cast is needed and the pattern has no
+    /// is remapped to an argument of the block itself or to a value defined under it (a result of
+    /// one of its operations, or an argument or result in a region nested in one, at any depth),
+    /// when a cast is needed and the pattern has no
     /// type converter, or when the block was already converted in this conversion.
     pub fn apply_signature_conversion(
         &mut self,
@@ -747,18 +775,18 @@ impl ConversionPatternRewriter {
                     SmallVec::<[Type; 2]>::from(types)
                 }
                 InputMapping::Values(values) => {
-                    if let Some(value) = values.iter().find(|value| is_defined_in(**value, block)) {
-                        return Err(Report::msg(format!(
-                            "argument {index} of {} is remapped to '{}', a value defined in the \
-                             block itself, which does not dominate its start",
-                            describe(),
-                            value.borrow()
-                        )));
-                    }
                     if let Some(value) = values.iter().find(|value| old.contains(value)) {
                         return Err(Report::msg(format!(
                             "argument {index} of {} is remapped to '{}', an argument of the same \
                              block, which the conversion erases",
+                            describe(),
+                            value.borrow()
+                        )));
+                    }
+                    if let Some(value) = values.iter().find(|value| is_defined_in(**value, block)) {
+                        return Err(Report::msg(format!(
+                            "argument {index} of {} is remapped to '{}', a value defined in the \
+                             block or in a region nested in it, which does not dominate its start",
                             describe(),
                             value.borrow()
                         )));
@@ -868,12 +896,13 @@ impl ConversionPatternRewriter {
     /// Erase an operation with no remaining uses.
     ///
     /// Callers are responsible for ensuring the operation can be erased without leaving invalid
-    /// control-flow edges. Erasing an operation a result of which still has users, or the root of
-    /// the conversion, is an error, raised before anything changes.
+    /// control-flow edges. Erasing an operation a result of which still has real users (users that
+    /// are not `Transparent`), or the root of the conversion, is an error, raised before anything
+    /// changes. Transparent users are erased with the operation.
     pub fn erase_op(&mut self, op: OperationRef) -> Result<(), Report> {
         self.check_not_root(op, "erased")?;
         if let Some(index) =
-            op.borrow().results().iter().position(|result| result.borrow().is_used())
+            op.borrow().results().iter().position(|result| result.borrow().has_real_uses())
         {
             return Err(Report::msg(format!(
                 "'{}' cannot be erased: its result {index} still has users (replace it instead)",
@@ -932,26 +961,39 @@ impl ConversionPatternRewriter {
     }
 }
 
-/// Whether `value` is defined by an operation of `block`, or of a region nested in one.
+/// Whether `value` is defined under `block`: an argument of it, a result of one of its operations,
+/// or an argument or result in a region nested in one of its operations, at any depth.
 fn is_defined_in(value: ValueRef, block: BlockRef) -> bool {
-    let mut op = value.borrow().get_defining_op();
-    while let Some(current) = op {
-        let parent = current.parent();
-        if parent == Some(block) {
+    let mut current = value.borrow().parent_block();
+    while let Some(candidate) = current {
+        if candidate == block {
             return true;
         }
-        op = parent.and_then(|parent| parent.borrow().parent_op());
+        current = candidate.borrow().parent_op().and_then(|op| op.parent());
     }
     false
 }
 
-/// Where the source cast of `range`, which stands for a result of `op`, is placed: after the value
-/// of `range` defined last, when that definition is in `op`'s block after `op`; otherwise before
-/// `op`.
-fn source_cast_point(op: OperationRef, range: &[ValueRef]) -> ProgramPoint {
-    let Some(block) = op.parent() else {
-        return ProgramPoint::before(op);
-    };
+/// Whether `value` is defined inside `op`: in a block of one of its regions, at any depth.
+fn is_defined_inside(value: ValueRef, op: OperationRef) -> bool {
+    let mut current = value.borrow().parent_block();
+    while let Some(block) = current {
+        let Some(parent) = block.borrow().parent_op() else {
+            return false;
+        };
+        if parent == op {
+            return true;
+        }
+        current = parent.parent();
+    }
+    false
+}
+
+/// The operation that defines the value of `range` defined last, when that definition is in `op`'s
+/// block after `op`: the source cast of `range`, which stands for a result of `op`, goes after it.
+/// `None` when no value of `range` is defined there; the cast then goes before `op`.
+fn last_definition_after(op: OperationRef, range: &[ValueRef]) -> Option<OperationRef> {
+    let block = op.parent()?;
     let mut last = op;
     for value in range {
         let Some(definition) = value.borrow().get_defining_op() else {
@@ -961,11 +1003,25 @@ fn source_cast_point(op: OperationRef, range: &[ValueRef]) -> ProgramPoint {
             last = definition;
         }
     }
-    if last == op {
-        ProgramPoint::before(op)
-    } else {
-        ProgramPoint::after(last)
-    }
+    (last != op).then_some(last)
+}
+
+/// A user of `result` in the block of `last` (directly, or nested in one of its operations) that is
+/// not after `last`, and so cannot read a cast placed after `last`.
+fn user_not_after(result: ValueRef, last: OperationRef) -> Option<OperationRef> {
+    let block = last.parent()?;
+    let result = result.borrow();
+    result.iter_uses().find_map(|user| {
+        let mut ancestor = user.owner;
+        loop {
+            let parent = ancestor.parent()?;
+            if parent == block {
+                break;
+            }
+            ancestor = parent.borrow().parent_op()?;
+        }
+        (!last.borrow().is_before_in_block(&ancestor)).then_some(user.owner)
+    })
 }
 
 /// The blocks of the regions of `op`, in order.

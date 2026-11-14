@@ -312,6 +312,27 @@ mod tests {
         assert!(err.contains("there are 2 operands, but 1 types"), "{err}");
     }
 
+    /// The derived builder, given only inputs, builds a cast without a result; nothing stops it
+    /// until the verifier, which rejects it. It is the builder `create_op` reaches.
+    #[test]
+    fn the_derived_builder_builds_a_cast_without_a_result() {
+        use crate::BuilderExt;
+
+        let mut test = Test::new("f", |cx| ([cx.i64()], []));
+        let arg = test.entry_block().borrow().arguments()[0] as ValueRef;
+        let cast = {
+            let mut builder = test.function_builder();
+            let b = builder.builder_mut();
+            b.create::<UnrealizedConversionCast, (Vec<ValueRef>,)>(SourceSpan::UNKNOWN)(
+                alloc::vec![arg],
+            )
+            .unwrap()
+        };
+        assert_eq!(cast.borrow().as_operation().num_results(), 0);
+        let err = cast.borrow().as_operation().verify().map(|_| ()).unwrap_err();
+        assert!(describe(&err).contains("a cast has at least one result"), "{}", describe(&err));
+    }
+
     /// The cast has no effects: dead-code elimination removes an unused one and keeps a used one.
     #[test]
     fn an_unused_cast_is_dead_code() {

@@ -109,7 +109,9 @@ impl ConversionResult {
 ///
 /// An operation the target does not call legal ([ConversionTarget::legality], the unknown
 /// operation policy included) is converted by the patterns, and one that no pattern converts is an
-/// error. Operations nested under a recursively legal operation are not visited. The module
+/// error. Operations nested under a recursively legal operation are not collected, and are not
+/// offered to a pattern because a value they read is replaced; one that a pattern inserts there, or
+/// changes in place, is offered like any operation a pattern inserts or changes. The module
 /// documentation ([crate::conversion]) states what a pattern may rely on.
 ///
 /// Patterns are tried according to the legalization graph derived from the target and each
@@ -279,7 +281,8 @@ impl ConversionDriver<'_> {
     /// The users a replacement redirected to a cast are not legalized here: each is legalized in
     /// its turn, in the order the operations were collected, and one that was already visited
     /// reads the cast (which folds, or is realized). So an operation nested under a recursively
-    /// legal operation, which is not collected, is never offered to a pattern.
+    /// legal operation, which is not collected, is not offered because a value it reads was
+    /// replaced; it is offered only when a pattern inserts it or changes it in place.
     ///
     /// The applications that follow from `first` are counted against
     /// [ConversionConfig::with_max_rewrites_per_operation].
