@@ -17,9 +17,8 @@ use runic_core::{
 #[derive(Debug, Parser)]
 #[command(name = "runic-opt", version)]
 pub struct Options {
-    /// The textual IR to read, or `-` for standard input (the default).
-    ///
-    /// Regions may be nested at most 1,000 deep; deeper text is an error.
+    /// The textual IR to read, or `-` for standard input (the default). Regions may be nested at
+    /// most 1,000 deep; deeper text is an error.
     #[arg(value_name = "FILE")]
     pub input: Option<String>,
 

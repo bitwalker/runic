@@ -3,8 +3,6 @@
 
 use std::{io, process::ExitCode};
 
-use runic_core::diagnostics::{PanicHookOptions, install_panic_hook};
-
 fn main() -> ExitCode {
     // `RUNIC_TRACE` selects what is logged.
     match runic_log::runic_logger() {
@@ -18,9 +16,9 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     }
-    // A panic is a defect of the tool; the hook reports it as one.
-    let _ = install_panic_hook(PanicHookOptions::DEFAULT);
-
+    // A panic is a defect of the tool. `run` reports one on the thread of an input itself, on the
+    // standard error it is given; the diagnostics crate's panic hook is not installed, since it
+    // would print that panic too and hide the report the panic carries.
     let mut stdin = io::stdin().lock();
     let mut stdout = io::BufWriter::new(io::stdout().lock());
     let mut stderr = io::stderr().lock();

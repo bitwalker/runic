@@ -313,7 +313,7 @@ use super::{OpOperandRange, OpResultRange, Operation, Region, RegionList, ValueR
 use crate::{EntityWithId, Location, Value, formatter::Document};
 
 /// Options which configure how IR entities are printed to IR assembly
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone, Copy)]
 pub struct OpPrintingFlags {
     /// When `true`, forces printing of entry block headers for all regions
     pub print_entry_block_headers: bool,

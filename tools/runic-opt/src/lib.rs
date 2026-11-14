@@ -28,6 +28,7 @@ use std::{
     io::{self, Read, Write},
     process::ExitCode,
     rc::Rc,
+    sync::{Arc, Mutex, Once, PoisonError},
 };
 
 use clap::Parser;
@@ -39,8 +40,8 @@ use runic_core::{
     },
     parse::{ParserConfig, parse_any},
     pass::{
-        IRPrintingConfig, IoOutput, Nesting, OperationPass, PassInfo, PassInstrumentation,
-        PassManager, PassPipeline, PipelineElement,
+        IRPrintingConfig, IoOutput, Nesting, OpPassManager, OperationPass, PassInfo,
+        PassInstrumentation, PassManager, PassPipeline, PipelineElement, registry::RegistryEntry,
     },
     print::AsmPrinter,
 };
@@ -62,6 +63,10 @@ pub const MAX_REGION_DEPTH: u32 = 1_000;
 /// [`MAX_REGION_DEPTH`] deep need in every build.
 const CHUNK_STACK_SIZE: usize = 256 << 20;
 
+/// The name of the thread an input is processed on. A panic on it is reported by the tool, as an
+/// internal error on the standard error it was given, and the panic hook says nothing of it.
+const CHUNK_THREAD: &str = "runic-opt chunk";
+
 /// How diagnostics are rendered: plain text of a fixed width, with the source lines each one is
 /// about rather than the whole source, so that the output does not depend on the terminal.
 const RENDER_CONFIG: RenderConfig = RenderConfig {
@@ -76,6 +81,7 @@ pub fn run(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> ExitCode {
+    silence_chunk_panics();
     let mut failed = false;
     let mut out = String::new();
     let mut err = String::new();
@@ -100,6 +106,20 @@ pub fn run(
     } else {
         ExitCode::SUCCESS
     }
+}
+
+/// Installs, once in the process, a panic hook that says nothing of a panic on a chunk's thread
+/// (the tool reports it) and hands any other to the hook installed before it.
+fn silence_chunk_panics() {
+    static INSTALL: Once = Once::new();
+    INSTALL.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if std::thread::current().name() != Some(CHUNK_THREAD) {
+                previous(info);
+            }
+        }));
+    });
 }
 
 /// What ends the tool before it reads its input.
@@ -355,31 +375,39 @@ struct ChunkOutput {
 impl Chunk {
     /// Processes the chunk on a thread with a stack of [`CHUNK_STACK_SIZE`]. Everything made from
     /// it, the context first, lives and dies on that thread. A panic there is an internal error.
+    ///
+    /// What the chunk wrote to its standard error survives a panic: it is kept, and followed by
+    /// the internal error, and the chunk failed (and, when diagnostics are checked, mismatched).
     fn process_on_its_own_thread(self) -> Result<ChunkOutput, Report> {
-        let thread = std::thread::Builder::new()
-            .name(String::from("runic-opt"))
-            .stack_size(CHUNK_STACK_SIZE)
-            .spawn(move || self.process())
-            .map_err(|error| Report::msg(format!("could not start a thread: {error}")))?;
-        thread.join().map_err(|payload| {
-            let message = payload
-                .downcast_ref::<&str>()
-                .copied()
-                .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
-                .unwrap_or("a panic without a message");
-            Report::msg(format!("internal error: {message}"))
-        })
-    }
-
-    fn process(self) -> ChunkOutput {
         let stderr = SharedBuffer::default();
-        let mut stdout = String::new();
-        let (succeeded, mismatched) = self.check_into(&mut stdout, &stderr);
-        ChunkOutput {
-            stdout,
-            stderr: stderr.take(),
-            succeeded,
-            mismatched,
+        let chunk_stderr = stderr.clone();
+        let thread = std::thread::Builder::new()
+            .name(String::from(CHUNK_THREAD))
+            .stack_size(CHUNK_STACK_SIZE)
+            .spawn(move || {
+                let mut stdout = String::new();
+                let (succeeded, mismatched) = self.check_into(&mut stdout, &chunk_stderr);
+                (stdout, succeeded, mismatched)
+            })
+            .map_err(|error| Report::msg(format!("could not start a thread: {error}")))?;
+        match thread.join() {
+            Ok((stdout, succeeded, mismatched)) => Ok(ChunkOutput {
+                stdout,
+                stderr: stderr.take(),
+                succeeded,
+                mismatched,
+            }),
+            Err(payload) => {
+                let message = panic_message(payload.as_ref());
+                let mut written = stderr.take();
+                written += &render(Report::msg(format!("internal error: {message}")).display());
+                Ok(ChunkOutput {
+                    stdout: String::new(),
+                    stderr: written,
+                    succeeded: false,
+                    mismatched: true,
+                })
+            }
         }
     }
 
@@ -544,7 +572,7 @@ impl Chunk {
         }
         pm.enable_verifier(self.verification == Verification::EachPass);
         let printing = IRPrintingConfig {
-            flags: copy_flags(&self.flags),
+            flags: self.flags,
             ..self.printing.take().unwrap_or_default()
         };
         // The buffer never fails a write, so the handle of the first error is not kept.
@@ -569,24 +597,29 @@ impl Chunk {
         let runs = runs.borrow();
         let mut named = Vec::new();
         pass_names(pipeline.elements(), &mut named);
-        named.dedup();
         let mut warned = Vec::new();
         for name in named {
-            if runs.get(name).copied().unwrap_or(0) == 0 && !warned.contains(&name) {
-                warned.push(name);
-                let warning = diagnostic!(
-                    severity: Warning,
-                    message: (format!("pass '{name}' ran on no operation")),
-                    notes: [
-                        help(format!(
-                            "implicit nesting runs a pass on the operations of its type directly \
-                             inside '{anchor}', not deeper; to reach deeper, write \
-                             'recursive(<operation>({name}))' or name the operations in between"
-                        )),
-                    ],
-                );
-                diagnostics.owned(OwnedDiagnostic::new(warning));
+            if runs.get(name).copied().unwrap_or(0) > 0 || warned.contains(&name) {
+                continue;
             }
+            warned.push(name);
+            let help = match target_of(context, name) {
+                Some(target) => format!(
+                    "implicit nesting runs a pass on the operations of its type directly inside \
+                     '{anchor}', not deeper; to reach deeper, write 'recursive({target}({name}))' \
+                     or name the operations in between"
+                ),
+                None => String::from(
+                    "it runs on any operation, but the pipeline it is in is nested under \
+                     operations the input does not hold where the pipeline looks for them",
+                ),
+            };
+            let warning = diagnostic!(
+                severity: Warning,
+                message: (format!("pass '{name}' ran on no operation")),
+                notes: [help(help)],
+            );
+            diagnostics.owned(OwnedDiagnostic::new(warning));
         }
         true
     }
@@ -635,11 +668,24 @@ fn pass_names<'a>(elements: &'a [PipelineElement], names: &mut Vec<&'a str>) {
     }
 }
 
-fn copy_flags(flags: &OpPrintingFlags) -> OpPrintingFlags {
-    OpPrintingFlags {
-        print_entry_block_headers: flags.print_entry_block_headers,
-        print_source_locations: flags.print_source_locations,
-        generic: flags.generic,
+/// The operation the registered pass `name` runs on, or `None` when it runs on any.
+fn target_of(context: &Rc<Context>, name: &str) -> Option<runic_core::OperationName> {
+    // A manager for `any` takes a pass as it is, so the pass it holds is the one asked about.
+    let mut pm = OpPassManager::any(Nesting::Explicit, context.clone());
+    PassInfo::lookup(name)?.add_to_pipeline(&mut pm, "").ok()?;
+    pm.passes().first()?.target_name(context)
+}
+
+/// The message of a panic: its text, or the rendered report it carries.
+fn panic_message(payload: &(dyn core::any::Any + Send)) -> String {
+    if let Some(text) = payload.downcast_ref::<&str>() {
+        String::from(*text)
+    } else if let Some(text) = payload.downcast_ref::<String>() {
+        text.clone()
+    } else if let Some(report) = payload.downcast_ref::<Report>() {
+        render(report.display()).trim_end().to_owned()
+    } else {
+        String::from("a panic without a message")
     }
 }
 
@@ -673,23 +719,29 @@ impl PassInstrumentation for CountRuns {
 }
 
 /// What the chunk writes to standard error, shared with the pass manager's IR printing so that
-/// everything stays in the order it was written.
+/// everything stays in the order it was written, and with the thread that started the chunk so
+/// that it survives a panic.
 #[derive(Clone, Default)]
-struct SharedBuffer(Rc<RefCell<Vec<u8>>>);
+struct SharedBuffer(Arc<Mutex<Vec<u8>>>);
 
 impl SharedBuffer {
     fn push(&self, text: &str) {
-        self.0.borrow_mut().extend_from_slice(text.as_bytes());
+        self.bytes().extend_from_slice(text.as_bytes());
     }
 
     fn take(&self) -> String {
-        String::from_utf8_lossy(&self.0.take()).into_owned()
+        String::from_utf8_lossy(&core::mem::take(&mut *self.bytes())).into_owned()
+    }
+
+    /// The bytes, also after a panic while they were held.
+    fn bytes(&self) -> std::sync::MutexGuard<'_, Vec<u8>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
 impl Write for SharedBuffer {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.0.borrow_mut().extend_from_slice(bytes);
+        self.bytes().extend_from_slice(bytes);
         Ok(bytes.len())
     }
 

@@ -1,6 +1,6 @@
 //! The command line: usage errors and help, files, printing switches and the listings.
 
-use std::path::PathBuf;
+use std::{ffi::OsString, io, path::PathBuf, process::ExitCode};
 
 use super::{REPEATED_ADD, opt};
 
@@ -182,4 +182,34 @@ fn print_ir_after_change_prints_after_the_passes_that_changed_the_ir() {
         output.stderr.matches("// ----- IR after cse on builtin.module -----").count(),
         1
     );
+}
+
+/// A standard output that fails every write.
+struct Broken;
+
+impl io::Write for Broken {
+    fn write(&mut self, _bytes: &[u8]) -> io::Result<usize> {
+        Err(io::Error::other("the stream is closed"))
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Err(io::Error::other("the stream is closed"))
+    }
+}
+
+#[test]
+fn a_standard_output_that_fails_to_write_is_an_error_on_stderr() {
+    let mut input = REPEATED_ADD.as_bytes();
+    let mut stderr = Vec::new();
+    let code = crate::run(std::iter::empty::<OsString>(), &mut input, &mut Broken, &mut stderr);
+    assert_eq!(code, ExitCode::FAILURE);
+    let stderr = String::from_utf8(stderr).unwrap();
+    assert_eq!(stderr, "error: could not write standard output: the stream is closed\n");
+}
+
+#[test]
+fn short_help_states_the_region_depth_limit() {
+    let output = opt(&["-h"], "");
+    output.succeeded();
+    assert!(output.stdout.contains("1,000 deep"), "{}", output.stdout);
 }

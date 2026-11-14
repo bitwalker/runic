@@ -127,6 +127,19 @@ fn regions_nested_900_deep_parse_and_print() {
 }
 
 #[test]
+fn regions_nested_exactly_1000_deep_parse_print_and_go_through_a_pass() {
+    let text = nested_modules(1_000);
+    let printed = opt(&[], &text);
+    printed.succeeded();
+    assert_eq!(printed.stderr, "");
+    assert!(printed.stdout.contains("@m999 {"));
+    let optimized = opt(&["-p", "cse"], &text);
+    optimized.succeeded();
+    assert_eq!(optimized.stderr, "");
+    assert_eq!(optimized.stdout, printed.stdout);
+}
+
+#[test]
 fn regions_nested_1001_deep_are_the_parsers_diagnostic() {
     let output = opt(&[], &nested_modules(1_001));
     output.failed();
@@ -184,6 +197,31 @@ fn an_operation_of_every_linked_dialect_parses() {
                 " -> i32",
                 "%x = ub.poison <{ value = #ub.poison<i32> }>;\nbuiltin.ret %x : (i32);",
             ),
+        ),
+        (
+            "builtin",
+            String::from(
+                "builtin.module public @m {\n    builtin.global_variable public @g : i32;\n    \
+                 builtin.function public extern(\"C\") @id(%a: i32) -> i32 {\n        builtin.ret \
+                 %a : (i32);\n    };\n    builtin.function public extern(\"C\") @f(%a: i32) -> \
+                 i32 locals(i32) {\n        builtin.store_local 0, %a;\n        %v = \
+                 builtin.load_local 0 : i32;\n        %r = builtin.call @id(%v) : extern(\"C\") \
+                 (i32) -> i32;\n        builtin.ret %r : (i32);\n    };\n};\n",
+            ),
+        ),
+        (
+            "di",
+            function(
+                "%a: i32",
+                " -> i32",
+                "di.debug_declare <{ variable = #di.variable<{ name = \"x\", file = \"x.rs\", \
+                 line = 1 }>, expression = #di.expression<[DI_OP_frame_base(local_slot, 0+0)]> \
+                 }>;\nbuiltin.ret %a : (i32);",
+            ),
+        ),
+        (
+            "test",
+            function("%a: i32", " -> i32", "%x = test.add %a, %a;\nbuiltin.ret %x : (i32);"),
         ),
     ];
     for (dialect, text) in cases {

@@ -144,6 +144,34 @@ fn a_pass_that_ran_on_no_operation_is_a_warning_that_says_recursive() {
     assert!(!reached.contains("load_local"), "{reached}");
     // A pass that ran is not warned about.
     assert_eq!(opt(&["-p", "builtin.module(local2reg)"], LOCALS).stderr, "");
+    // The help names the pass's own operation.
+    assert!(
+        output.stderr.contains("'recursive(builtin.function(local2reg))'"),
+        "{}",
+        output.stderr
+    );
+}
+
+#[test]
+fn a_pass_on_any_operation_that_ran_on_none_is_a_warning_without_recursive() {
+    // No function directly inside the world: the `dce` nested under them runs on nothing.
+    let output = opt(&["-p", "builtin.function(dce),cse"], WORLD);
+    output.succeeded();
+    assert!(
+        output.stderr.starts_with("warning: pass 'dce' ran on no operation"),
+        "{}",
+        output.stderr
+    );
+    assert!(output.stderr.contains("runs on any operation"), "{}", output.stderr);
+    assert!(!output.stderr.contains("recursive("), "{}", output.stderr);
+    assert_eq!(output.stderr.matches("warning:").count(), 1, "{}", output.stderr);
+}
+
+#[test]
+fn a_pass_named_twice_that_ran_on_nothing_is_warned_about_once() {
+    let output = opt(&["-p", "local2reg,cse,local2reg"], WORLD);
+    output.succeeded();
+    assert_eq!(output.stderr.matches("warning:").count(), 1, "{}", output.stderr);
 }
 
 #[test]
@@ -155,4 +183,31 @@ fn dump_pass_pipeline_prints_the_loaded_pipeline_to_stderr_before_running_it() {
     output.succeeded();
     assert_eq!(output.stderr, "builtin.module(builtin.function(local2reg),cse)\n");
     assert!(!output.stdout.contains("builtin.module("), "{}", output.stdout);
+}
+
+#[test]
+fn dump_pass_pipeline_without_a_pipeline_prints_the_empty_one_as_the_pass_manager_does() {
+    use std::rc::Rc;
+
+    use runic_core::{
+        Context,
+        parse::{ParserConfig, parse_any},
+        pass::{Nesting, PassPipeline},
+    };
+
+    let output = opt(&["--dump-pass-pipeline"], LOCALS);
+    output.succeeded();
+    let context = Rc::new(Context::default());
+    let op = parse_any(ParserConfig::new(context.clone()), "api.runic", LOCALS).unwrap();
+    let pm = PassPipeline::parse_elements(&op.borrow().name(), "")
+        .unwrap()
+        .load(context.clone(), Nesting::Implicit)
+        .unwrap();
+    struct Textual<'a>(&'a runic_core::pass::PassManager);
+    impl core::fmt::Display for Textual<'_> {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            self.0.print_as_textual_pipeline(f)
+        }
+    }
+    assert_eq!(output.stderr, format!("{}\n", Textual(&pm)));
 }
