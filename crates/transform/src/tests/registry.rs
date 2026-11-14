@@ -1,6 +1,12 @@
 //! The pass registry as seen by a program that links every pass of the workspace.
 
-use alloc::{boxed::Box, rc::Rc, string::ToString, vec::Vec};
+use alloc::{
+    boxed::Box,
+    format,
+    rc::Rc,
+    string::{String, ToString},
+    vec::Vec,
+};
 use core::fmt;
 
 use runic_core::{
@@ -117,5 +123,63 @@ fn invalid_options_leave_the_pass_manager_unchanged() {
         let error = canonicalizer.add_to_pipeline(&mut pm, options).unwrap_err().to_string();
         assert!(error.contains(options.split('=').next().unwrap()), "{error}");
         assert_eq!(Pipeline(&pm).to_string(), before, "after the options '{options}'");
+    }
+}
+
+/// Loading pipeline text and printing the manager gives the canonical text, which loads to a
+/// manager that prints it again, for every registered pass and for the canonicalizer's options
+/// in any order, spaced, with empty entries and with names that need escaping.
+#[test]
+fn loaded_pipelines_print_their_canonical_text() {
+    use runic_core::pass::PassPipeline;
+
+    fn load_and_print(text: &str) -> String {
+        let pipeline = PassPipeline::parse(text).unwrap_or_else(|error| panic!("{text}: {error}"));
+        let pm = pipeline
+            .load(Rc::new(Context::default()), Nesting::Implicit)
+            .unwrap_or_else(|error| panic!("{text}: {error}"));
+        struct Printed<'a>(&'a runic_core::pass::PassManager);
+        impl fmt::Display for Printed<'_> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.0.print_as_textual_pipeline(f)
+            }
+        }
+        Printed(&pm).to_string()
+    }
+
+    let mut cases = PassInfo::registered()
+        .iter()
+        .map(|pass| (format!("any({})", pass.argument()), None))
+        .collect::<Vec<_>>();
+    for (text, canonical) in [
+        (
+            r#"any(canonicalizer{disable-patterns="c" enable-patterns="a;b"})"#,
+            r#"any(canonicalizer{enable-patterns="a;b" disable-patterns="c"})"#,
+        ),
+        (
+            r#"any(canonicalizer{enable-patterns="a;b" disable-patterns="c"})"#,
+            r#"any(canonicalizer{enable-patterns="a;b" disable-patterns="c"})"#,
+        ),
+        (
+            r#"any(canonicalizer{enable-patterns=" a ;; b ; " disable-patterns=c;})"#,
+            r#"any(canonicalizer{enable-patterns="a;b" disable-patterns="c"})"#,
+        ),
+        (
+            r#"any(canonicalizer{disable-patterns="say \"hi\";back\\slash"})"#,
+            r#"any(canonicalizer{disable-patterns="say \"hi\";back\\slash"})"#,
+        ),
+        (
+            r#"builtin.module( canonicalizer { enable-patterns = x } , cse )"#,
+            r#"builtin.module(canonicalizer{enable-patterns="x"},cse)"#,
+        ),
+    ] {
+        cases.push((text.to_string(), Some(canonical)));
+    }
+    for (text, canonical) in cases {
+        let printed = load_and_print(&text);
+        if let Some(canonical) = canonical {
+            assert_eq!(printed, canonical, "loading '{text}'");
+        }
+        assert_eq!(load_and_print(&printed), printed, "loading '{printed}', printed from '{text}'");
     }
 }

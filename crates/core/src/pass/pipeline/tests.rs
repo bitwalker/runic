@@ -403,24 +403,98 @@ fn malformed_text_names_the_offset() {
     }
 }
 
-/// An empty nested pipeline is an error; the top-level pipeline may be empty, as an empty pass
-/// manager prints it.
+/// A pipeline may be empty at any depth, as a pass manager with no passes prints itself.
 #[test]
-fn only_the_top_level_pipeline_may_be_empty() {
-    let error = parse_error("builtin.module(builtin.function())");
-    assert!(
-        error.contains(
-            "expected a pass name, a nested pipeline or 'recursive(..)', found ')' at offset 32"
-        ),
-        "{error}"
-    );
-    let error = parse_error("builtin.module(recursive(builtin.function()))");
-    assert!(error.contains("found ')' at offset 42"), "{error}");
-
+fn an_empty_pipeline_reads_back_at_any_depth() {
     let empty = parse("builtin.module()");
     assert!(empty.elements().is_empty());
     let pm = empty.load(Rc::new(Context::default()), Nesting::Explicit).unwrap();
     assert_eq!(printed(&pm), "builtin.module()");
+
+    // A manager with empty nested and recursive managers, built through the API.
+    let context = Rc::new(Context::default());
+    let mut pm = PassManager::new(context.clone(), "builtin.module", Nesting::Explicit).unwrap();
+    pm.nest::<Function>();
+    pm.nest_recursive::<Function>();
+    {
+        let mut nested = pm.nest::<Module>();
+        nested.nest_any();
+    }
+    let text = printed(&pm);
+    assert_eq!(
+        text,
+        "builtin.module(builtin.function(),recursive(builtin.function()),builtin.module(any()))"
+    );
+    let loaded = parse(&text).load(context, Nesting::Explicit).unwrap();
+    assert_eq!(printed(&loaded), text);
+}
+
+/// The text of a manager whose adjacent nested managers were merged, and of one built with
+/// `nest_any`, parses and loads to the same text.
+#[test]
+fn merged_and_any_managers_read_back() {
+    register();
+    let context = Rc::new(Context::default());
+    let mut pm = PassManager::new(context.clone(), "builtin.world", Nesting::Explicit).unwrap();
+    pm.nest::<Module>().add_pass(boxed::<Generic>()).unwrap();
+    pm.nest::<Function>().add_pass(boxed::<OnFunctions>()).unwrap();
+    pm.nest::<Module>().add_pass(boxed::<Other>()).unwrap();
+    pm.nest_any().add_pass(boxed::<Generic>()).unwrap();
+    // The three adjacent adaptors merge into one, whose managers are sorted by anchor.
+    pm.op_pass_manager_mut().finalize_pass_list().unwrap();
+    let text = printed(&pm);
+    assert_eq!(
+        text,
+        "builtin.world(builtin.function(pipeline-test-function),builtin.\
+         module(pipeline-test-generic,pipeline-test-other),any(pipeline-test-generic))"
+    );
+    let loaded = parse(&text).load(context.clone(), Nesting::Explicit).unwrap();
+    assert_eq!(printed(&loaded), text);
+
+    let mut pm = PassManager::new(context.clone(), "any", Nesting::Explicit).unwrap();
+    pm.add_pass(boxed::<Other>()).unwrap();
+    {
+        let mut nested = pm.nest_any();
+        nested.add_pass(boxed::<Generic>()).unwrap();
+        nested.nest_any().add_pass(boxed::<WithOptions>()).unwrap();
+    }
+    let text = printed(&pm);
+    assert_eq!(
+        text,
+        "any(pipeline-test-other,any(pipeline-test-generic,any(pipeline-test-options)))"
+    );
+    let loaded = parse(&text).load(context, Nesting::Explicit).unwrap();
+    assert_eq!(printed(&loaded), text);
+}
+
+/// Option pairs are separated by whitespace: two pairs with nothing between them are an error at
+/// the second.
+#[test]
+fn option_pairs_are_separated_by_whitespace() {
+    for (text, expected) in [
+        (
+            r#"any(p{a="x"b="y"})"#,
+            "expected whitespace or '}' after option 'a', found 'b' at offset 11",
+        ),
+        (
+            r#"any(p{a=x"y"})"#,
+            "expected whitespace or '}' after option 'a', found a quoted string at offset 9",
+        ),
+        (
+            r#"any(p{a"y"})"#,
+            "expected whitespace or '}' after option 'a', found a quoted string at offset 7",
+        ),
+        (
+            "any(p{a=x",
+            "expected whitespace or '}' after option 'a', found the end of the pipeline at offset \
+             9",
+        ),
+    ] {
+        let error = parse_error(text);
+        assert!(error.contains(expected), "{text}: {error}");
+    }
+    let pipeline = parse(r#"any(p{a="x" b=y}, p{c})"#);
+    assert_eq!(pipeline.to_string(), r#"any(p{a="x" b="y"},p{c})"#);
 }
 
 #[test]

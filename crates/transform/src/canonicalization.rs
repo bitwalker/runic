@@ -3,7 +3,7 @@ use core::fmt;
 
 use runic_core::{
     Context, EntityMut, Operation, OperationName, Report, Spanned,
-    pass::{OperationPass, Pass, PassExecutionState, PostPassStatus},
+    pass::{OperationPass, Pass, PassExecutionState, PostPassStatus, write_pass_option},
     patterns::{self, FrozenRewritePatternSet, GreedyRewriteConfig, RewritePatternSet},
 };
 
@@ -18,12 +18,17 @@ use runic_core::{
 ///
 /// The set of patterns applied by the pass can be narrowed from a pass pipeline string with
 /// `enable-patterns` (only the listed patterns are applied) and `disable-patterns` (the listed
-/// patterns are skipped). Both take a non-empty `;`-separated list of pattern names, which must
-/// be quoted in a pipeline string when it has more than one name, e.g.
-/// `canonicalizer{enable-patterns="fold-redundant-yields;while-unused-result"}`. A name that
-/// matches no registered pattern is an error, and so is a name that appears in both lists. The
-/// greedy rewrite driver still folds operations, erases trivially dead ones and, when the rewrite
-/// config asks for it, simplifies regions whatever the filter says.
+/// patterns are skipped). Both take a non-empty `;`-separated list of pattern names, e.g.
+/// `canonicalizer{enable-patterns="fold-redundant-yields;while-unused-result"}`; spaces around a
+/// name are trimmed and empty entries are dropped. A name that matches no registered pattern is
+/// an error, and so is a name that appears in both lists. The greedy rewrite driver still folds
+/// operations, erases trivially dead ones and, when the rewrite config asks for it, simplifies
+/// regions whatever the filter says.
+///
+/// The pass prints its options in a canonical form: `enable-patterns` before `disable-patterns`
+/// whatever order they were written in, each list as its trimmed, non-empty names joined by `;`,
+/// and each value quoted and escaped as pipeline text quotes it
+/// ([runic_core::pass::write_pass_option]).
 pub struct Canonicalizer {
     config: GreedyRewriteConfig,
     rewrites: Option<Rc<FrozenRewritePatternSet>>,
@@ -162,8 +167,9 @@ impl Pass for Canonicalizer {
         Ok(())
     }
 
-    /// Prints the pass with its pattern filter, the only state settable from pipeline options;
-    /// the rewrite config given to [Canonicalizer::new] has no textual form.
+    /// Prints the pass with its pattern filter, the only state settable from pipeline options, in
+    /// the canonical form the [Canonicalizer] docs give; the rewrite config given to
+    /// [Canonicalizer::new] has no textual form.
     fn print_as_textual_pipeline(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", Self::NAME)?;
         if self.enabled_patterns.is_empty() && self.disabled_patterns.is_empty() {
@@ -176,7 +182,8 @@ impl Pass for Canonicalizer {
             ("disable-patterns", &self.disabled_patterns),
         ] {
             if !names.is_empty() {
-                write!(f, "{sep}{key}=\"{}\"", names.join(";"))?;
+                f.write_str(sep)?;
+                write_pass_option(f, key, Some(&names.join(";")))?;
                 sep = " ";
             }
         }

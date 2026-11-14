@@ -19,7 +19,7 @@ pub use self::{
     instrumentation::{PassInstrumentation, PassInstrumentor, PipelineParentInfo},
     manager::{IRPrintingConfig, Nesting, OpPassManager, PassManager, PassSelection},
     pass::{OperationPass, Pass, PassExecutionState, PostPassStatus},
-    pipeline::{Anchor, PassPipeline, PipelineElement, SelectedPass},
+    pipeline::{Anchor, PassPipeline, PipelineElement, SelectedPass, write_pass_option},
     registry::{PassInfo, PassPipelineInfo},
     specialization::PassTarget,
     statistics::{PassStatistic, Statistic, StatisticValue},

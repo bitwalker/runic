@@ -1,7 +1,7 @@
 //! Pass-pipeline text: a parser, its printed form, and the pass manager it builds.
 //!
 //! ```text
-//! pipeline ::= anchor '(' element (',' element)* ')'
+//! pipeline ::= anchor '(' (element (',' element)*)? ')'
 //! element  ::= pipeline | 'recursive' '(' pipeline ')' | pass-name options?
 //! options  ::= '{' (key ('=' value)?)* '}'        (pairs separated by spaces)
 //! anchor   ::= 'any' | dialect '.' operation
@@ -13,13 +13,18 @@
 //!   operations at any depth (see [`OpPassManager::nest_recursive`]).
 //! * A `pass-name` is the command-line name of a registered pass (see [`super::PassInfo`]), such as
 //!   `cse` or `canonicalizer`.
-//! * The `options` of a pass are pairs separated by whitespace. A key is a bare word given at most
-//!   once; a value is a bare word, a number or a string in double quotes (which may contain any
-//!   character but `,`; `\"` and `\\` are the escapes). The pairs are handed to
+//! * The `options` of a pass are pairs separated by whitespace (a pair is followed by whitespace
+//!   or the closing `}`). A key is a bare word given at most once.
+//! * A value is either a bare word (a run of characters that are not whitespace, `(){},=` or
+//!   `"`, such as `foo-bar`, `3`, `-1` or `a;b`) or a string in double quotes, which may contain
+//!   any character but `,`, with the escapes `\"` and `\\`. The value reaches the pass as it was
+//!   written, with the quotes and escapes removed: it is text, and nothing converts it (a number
+//!   is not read, so `0x10` arrives as `0x10`). The pairs are handed to
 //!   [`super::Pass::initialize_options`] joined by `, ` (`key=value` or `key`), so a value must not
-//!   contain `,`.
-//! * Whitespace may appear between any two tokens. The top-level pipeline may be empty
-//!   (`builtin.module()`); a nested one may not.
+//!   contain `,`; a pass prints its options back with [`write_pass_option`].
+//! * Whitespace may appear between any two tokens. A pipeline may be empty at any depth
+//!   (`builtin.module()`, `builtin.module(builtin.function())`), as a pass manager with no passes
+//!   prints itself.
 //!
 //! The text is the one that [`OpPassManager::print_as_textual_pipeline`] prints: the canonical form
 //! ([`PassPipeline`]'s `Display`) separates elements with `,` and no space, and quotes every
@@ -91,7 +96,7 @@ impl PassPipeline {
     /// offset of `text`, with the line of `text` and a caret under the fault.
     pub fn parse(text: &str) -> Result<Self, Report> {
         let mut parser = Parser::new(text);
-        let pipeline = parser.pipeline(0, true)?;
+        let pipeline = parser.pipeline(0)?;
         parser.expect_end()?;
         Ok(pipeline)
     }
@@ -138,6 +143,10 @@ impl PassPipeline {
     /// An anchor that names no registered operation is an error. With [`Nesting::Explicit`], a
     /// pass that runs on one operation type written under an anchor of another is an error; with
     /// [`Nesting::Implicit`] it is nested under a manager for its type.
+    ///
+    /// A pass may normalise the options it is given (for example, print them in a fixed order), so
+    /// the text the loaded manager prints is the canonical form of what was written rather than
+    /// the text itself; parsing that text and loading it again prints the same text.
     pub fn load(&self, context: Rc<Context>, nesting: Nesting) -> Result<PassManager, Report> {
         let mut pm = PassManager::new(context, self.anchor.to_string(), nesting)?;
         load_elements(&self.elements, pm.op_pass_manager_mut())?;
@@ -241,20 +250,35 @@ impl fmt::Display for SelectedPass {
             if i > 0 {
                 f.write_str(" ")?;
             }
-            f.write_str(key)?;
-            if let Some(value) = value {
-                f.write_str("=\"")?;
-                for c in value.chars() {
-                    if matches!(c, '"' | '\\') {
-                        f.write_str("\\")?;
-                    }
-                    write!(f, "{c}")?;
-                }
-                f.write_str("\"")?;
-            }
+            write_pass_option(f, key, value.as_deref())?;
         }
         f.write_str("}")
     }
+}
+
+/// Writes one option of a pass as pipeline text: `key="value"` with `"` and `\` escaped, or `key`
+/// when it has no value.
+///
+/// This is how a [`PassPipeline`] prints an option; a pass's
+/// [`super::Pass::print_as_textual_pipeline`] writes its options with it, separated by a space and
+/// enclosed in `{..}`, so that what it prints parses back to the same values.
+pub fn write_pass_option<W: fmt::Write + ?Sized>(
+    f: &mut W,
+    key: &str,
+    value: Option<&str>,
+) -> fmt::Result {
+    f.write_str(key)?;
+    if let Some(value) = value {
+        f.write_str("=\"")?;
+        for c in value.chars() {
+            if matches!(c, '"' | '\\') {
+                f.write_char('\\')?;
+            }
+            f.write_char(c)?;
+        }
+        f.write_char('"')?;
+    }
+    Ok(())
 }
 
 impl Anchor {
@@ -428,8 +452,8 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `anchor '(' element (',' element)* ')'`; `allow_empty` admits `anchor '(' ')'`.
-    fn pipeline(&mut self, depth: usize, allow_empty: bool) -> Result<PassPipeline, Report> {
+    /// `anchor '(' (element (',' element)*)? ')'`.
+    fn pipeline(&mut self, depth: usize) -> Result<PassPipeline, Report> {
         let token = self.next()?;
         let Kind::Word(word) = &token.kind else {
             return Err(self.unexpected(&token, "an anchor ('any' or '<dialect>.<operation>')"));
@@ -438,18 +462,13 @@ impl<'a> Parser<'a> {
             return Err(self.unexpected(&token, "an anchor ('any' or '<dialect>.<operation>')"));
         };
         self.expect(|kind| matches!(kind, Kind::LParen), "'(' after the anchor")?;
-        self.elements(anchor, depth, allow_empty)
+        self.elements(anchor, depth)
     }
 
     /// The elements of a pipeline after its `(`, through its `)`.
-    fn elements(
-        &mut self,
-        anchor: Anchor,
-        depth: usize,
-        allow_empty: bool,
-    ) -> Result<PassPipeline, Report> {
+    fn elements(&mut self, anchor: Anchor, depth: usize) -> Result<PassPipeline, Report> {
         let mut elements = Vec::new();
-        if allow_empty && matches!(self.peek()?.kind, Kind::RParen) {
+        if matches!(self.peek()?.kind, Kind::RParen) {
             self.next()?;
         } else {
             loop {
@@ -483,7 +502,7 @@ impl<'a> Parser<'a> {
             }
             if word == "recursive" {
                 self.next()?;
-                let pipeline = self.pipeline(depth + 1, false)?;
+                let pipeline = self.pipeline(depth + 1)?;
                 self.expect(|kind| matches!(kind, Kind::RParen), "')' to close 'recursive('")?;
                 return Ok(PipelineElement::Recursive(pipeline));
             }
@@ -495,7 +514,7 @@ impl<'a> Parser<'a> {
                 ));
             };
             self.next()?;
-            return Ok(PipelineElement::Nested(self.elements(anchor, depth + 1, false)?));
+            return Ok(PipelineElement::Nested(self.elements(anchor, depth + 1)?));
         }
         if !is_name(&word) {
             return Err(self.error(token.offset, EXPECTED, &format!("'{word}'")));
@@ -528,11 +547,15 @@ impl<'a> Parser<'a> {
                 ));
             }
             let mut value = None;
+            let mut end = token.offset + key.len();
             if matches!(self.peek()?.kind, Kind::Equal) {
                 self.next()?;
                 let token = self.next()?;
                 match token.kind {
-                    Kind::Word(word) => value = Some(word),
+                    Kind::Word(word) => {
+                        end = self.position;
+                        value = Some(word);
+                    }
                     Kind::Quoted(quoted) if quoted.contains(',') => {
                         return Err(self.error(
                             token.offset,
@@ -540,7 +563,10 @@ impl<'a> Parser<'a> {
                             "a value that contains ','",
                         ));
                     }
-                    Kind::Quoted(quoted) => value = Some(quoted),
+                    Kind::Quoted(quoted) => {
+                        end = self.position;
+                        value = Some(quoted);
+                    }
                     _ => {
                         return Err(self.unexpected(
                             &token,
@@ -551,6 +577,13 @@ impl<'a> Parser<'a> {
                     }
                 }
             }
+            // Pairs are separated by whitespace: `{a="x"b="y"}` is not two options.
+            let following = self.next()?;
+            if following.offset == end && !matches!(following.kind, Kind::RBrace) {
+                return Err(self
+                    .unexpected(&following, &format!("whitespace or '}}' after option '{key}'")));
+            }
+            self.peeked = Some(following);
             pass.options.push((key, value));
         }
     }
