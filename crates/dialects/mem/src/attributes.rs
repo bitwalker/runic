@@ -104,3 +104,36 @@ where
         ),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use alloc::{rc::Rc, vec};
+
+    use runic_core::{
+        Context,
+        testing::elements::{Row, check_every_kind},
+    };
+
+    use super::*;
+
+    /// Every attribute kind of `mem` lists and replaces what it holds: an alignment holds nothing.
+    #[test]
+    fn every_attribute_kind_lists_and_replaces_what_it_holds() {
+        let context = Rc::new(Context::default());
+        let rows = vec![
+            Row::new(
+                "natural",
+                context.create_attribute::<AlignmentAttr, _>(Alignment::Natural),
+                [],
+            ),
+            Row::new(
+                "bytes",
+                context.create_attribute::<AlignmentAttr, _>(Alignment::Bytes(
+                    Align::from_bytes(8).unwrap(),
+                )),
+                [],
+            ),
+        ];
+        check_every_kind(&context, &["mem"], &rows);
+    }
+}

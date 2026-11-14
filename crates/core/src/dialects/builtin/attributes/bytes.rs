@@ -2,7 +2,7 @@ use alloc::{string::ToString, sync::Arc};
 
 use crate::{
     AttrPrinter, AttributeRef,
-    attributes::AttrParser,
+    attributes::{AttrParser, AttributeElements, ElementReplacer, ElementVisitor},
     constants::ConstantData,
     derive::DialectAttribute,
     dialects::builtin::BuiltinDialect,
@@ -21,6 +21,17 @@ use crate::{
     implements(AttrPrinter)
 )]
 pub struct Bytes;
+
+/// A byte string holds no types or attributes.
+impl AttributeElements for Arc<ConstantData> {
+    #[inline]
+    fn visit_elements(&self, _visitor: &mut dyn ElementVisitor) {}
+
+    #[inline]
+    fn replace_elements(&self, _replacer: &mut dyn ElementReplacer) -> Option<Self> {
+        None
+    }
+}
 
 impl AttrPrinter for BytesAttr {
     fn print(&self, printer: &mut crate::print::AsmPrinter<'_>) {

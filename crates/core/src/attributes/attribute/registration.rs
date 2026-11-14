@@ -2,13 +2,14 @@ use alloc::{boxed::Box, format, rc::Rc};
 
 use super::AttributeValue;
 use crate::{
-    Attribute, Context, DialectRegistration, Type, UnsafeIntrusiveEntityRef, interner,
-    traits::TraitInfo,
+    Attribute, Context, DialectRegistration, Type, UnsafeIntrusiveEntityRef,
+    attributes::AttributeElements, interner, traits::TraitInfo,
 };
 
 pub trait AttributeRegistration: Attribute {
     type Dialect: DialectRegistration;
-    type Value: AttributeValue;
+    /// The value of the attribute. What it holds is walked through [AttributeElements].
+    type Value: AttributeValue + AttributeElements;
 
     /// False for an attribute kind without a default value, which is always written with a body
     /// (`#[attribute(.., no_default)]`); its [Self::create_default] panics. An operation property

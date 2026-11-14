@@ -3,6 +3,8 @@ use heck::ToSnakeCase;
 use quote::{format_ident, quote, quote_spanned};
 use syn::{Ident, parse_quote, parse_quote_spanned, spanned::Spanned};
 
+use super::elements::ElementsFieldwise;
+
 /// Represents the parsed struct definition for the operation we wish to define
 ///
 /// Only named structs are allowed at this time.
@@ -17,6 +19,8 @@ pub struct Attribute {
     #[allow(unused)]
     vis: syn::Visibility,
     generics: syn::Generics,
+    /// The value's fields, walked by the derived `AttributeElements` unless the value is `remote`.
+    data: darling::ast::Data<syn::Variant, syn::Field>,
     #[allow(unused)]
     attrs: Vec<syn::Attribute>,
     dialect: Ident,
@@ -75,6 +79,54 @@ impl Attribute {
     }
 }
 
+impl Attribute {
+    /// `AttributeElements` for the annotated value, field by field. A generic value requires each
+    /// field's type to be an `AttributeComponent` and `Clone`.
+    fn elements_impl(&self) -> proc_macro2::TokenStream {
+        let ident = &self.ident;
+        let (impl_generics, ty_generics, where_clause) = self.generics.split_for_impl();
+        let mut where_clause = where_clause.cloned();
+        if !self.generics.params.is_empty() {
+            let fields: Vec<&syn::Type> = match &self.data {
+                darling::ast::Data::Struct(fields) => {
+                    fields.iter().map(|field| &field.ty).collect()
+                }
+                darling::ast::Data::Enum(variants) => variants
+                    .iter()
+                    .flat_map(|variant| variant.fields.iter().map(|field| &field.ty))
+                    .collect(),
+            };
+            let clause = where_clause.get_or_insert_with(|| parse_quote!(where));
+            for ty in fields {
+                clause.predicates.push(parse_quote! {
+                    #ty: ::runic_core::attributes::AttributeComponent + ::core::clone::Clone
+                });
+            }
+        }
+        let ElementsFieldwise { visit, replace } = ElementsFieldwise::new(&self.data);
+        quote! {
+            #[automatically_derived]
+            impl #impl_generics ::runic_core::attributes::AttributeElements for #ident #ty_generics
+                #where_clause
+            {
+                fn visit_elements(
+                    &self,
+                    visitor: &mut dyn ::runic_core::attributes::ElementVisitor,
+                ) {
+                    #visit
+                }
+
+                fn replace_elements(
+                    &self,
+                    replacer: &mut dyn ::runic_core::attributes::ElementReplacer,
+                ) -> ::core::option::Option<Self> {
+                    #replace
+                }
+            }
+        }
+    }
+}
+
 impl quote::ToTokens for Attribute {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         let value_type_name = self.value_type_path();
@@ -119,6 +171,14 @@ impl quote::ToTokens for Attribute {
         if let Some(bounds) = self.bounds.as_ref() {
             let where_clause = attr_impl_generics.make_where_clause();
             where_clause.predicates.extend(bounds.iter().cloned());
+        }
+        if !self.generics.params.is_empty() {
+            // Replacing an attribute's elements builds a new value, cloning what did not change.
+            let where_clause = attr_impl_generics.make_where_clause();
+            where_clause.predicates.push(parse_quote! {
+                #value_type_name #ty_generics: ::runic_core::attributes::AttributeElements
+                    + ::core::clone::Clone
+            });
         }
         let (attr_impl_generics, attr_ty_generics, attr_where_clause) =
             attr_impl_generics.split_for_impl();
@@ -284,6 +344,15 @@ impl quote::ToTokens for Attribute {
                 fn set_type(&mut self, ty: ::runic_core::Type) {
                     self._attr.set_type(ty);
                 }
+                fn visit_elements(&self, visitor: &mut dyn ::runic_core::attributes::ElementVisitor) {
+                    ::runic_core::attributes::visit_attribute_elements(self, visitor)
+                }
+                fn replace_elements(
+                    &self,
+                    replacer: &mut dyn ::runic_core::attributes::ElementReplacer,
+                ) -> ::core::option::Option<::runic_core::AttributeRef> {
+                    ::runic_core::attributes::replace_attribute_elements(self, replacer)
+                }
             }
 
             impl #attr_impl_generics #attr_struct_name #attr_ty_generics #attr_where_clause {
@@ -365,6 +434,11 @@ impl quote::ToTokens for Attribute {
 
             ::runic_core::inventory::submit!(::runic_core::DialectAttributeRegistrationInfo::new::<#attr_struct_name #attr_ty_generics>());
         });
+
+        // impl AttributeElements, for a value defined here
+        if self.remote.is_none() {
+            tokens.extend(self.elements_impl());
+        }
 
         // impl $DerivedTrait
         for derived_trait in self.traits.iter() {

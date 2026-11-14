@@ -100,7 +100,7 @@ impl Fieldwise {
 }
 
 /// How each of `fields` is named: by its identifier, or by its index in a tuple.
-fn members(fields: &[syn::Field]) -> Vec<syn::Member> {
+pub(super) fn members(fields: &[syn::Field]) -> Vec<syn::Member> {
     fields
         .iter()
         .enumerate()
@@ -152,7 +152,7 @@ fn map_calls(fields: &[syn::Field], places: &[TokenStream], map: &Ident) -> Vec<
 
 /// `path { member: value, .. }`, `path(value, ..)` or `path`, as `style` says; used both as an
 /// expression and as a pattern.
-fn construct(
+pub(super) fn construct(
     path: TokenStream,
     style: Style,
     members: &[syn::Member],

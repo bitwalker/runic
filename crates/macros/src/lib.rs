@@ -36,6 +36,13 @@ pub fn derive_dialect_registration(input: proc_macro::TokenStream) -> proc_macro
     }
 }
 
+/// Defines an attribute kind `<Name>Attr` of a dialect whose value is the annotated struct or enum,
+/// or, with `remote = ".."`, the named type (the annotated item then only names the kind).
+///
+/// The derive implements `AttributeElements` for an annotated value field by field, as
+/// `#[derive(AttributeComponent)]` does, so every field's type must be an `AttributeComponent`
+/// (and `Clone`, when the value has more than one field). A `remote` value implements
+/// `AttributeElements` itself.
 #[proc_macro_derive(DialectAttribute, attributes(attribute))]
 pub fn derive_dialect_attribute(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     // Parse into syntax tree
@@ -83,6 +90,20 @@ pub fn derive_dialect_type(input: proc_macro::TokenStream) -> proc_macro::TokenS
 pub fn derive_type_component(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let derive = parse_macro_input!(input as DeriveInput);
     match dialect::derive_type_component(&derive) {
+        Ok(ts) => ts.into(),
+        Err(err) => err.into_compile_error().into(),
+    }
+}
+
+/// Implements `AttributeComponent` for a struct or enum, field by field: `visit_elements` visits
+/// each field in declaration order, and `replace_elements` asks each field for its replacement
+/// and rebuilds the value, cloning the unchanged fields, unless no field changed. Every field's
+/// type must itself be an `AttributeComponent`, and `Clone` when the value has more than one
+/// field. Generic types and unions are rejected.
+#[proc_macro_derive(AttributeComponent)]
+pub fn derive_attribute_component(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let derive = parse_macro_input!(input as DeriveInput);
+    match dialect::derive_attribute_component(&derive) {
         Ok(ts) => ts.into(),
         Err(err) => err.into_compile_error().into(),
     }

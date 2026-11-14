@@ -1,8 +1,12 @@
+use alloc::vec::Vec;
 use core::fmt;
 
 use crate::{
-    AttrPrinter, Attribute, OpPrintingFlags, attributes::AttrList, derive::DialectAttribute,
-    dialects::builtin::BuiltinDialect, print::AsmPrinter,
+    AttrPrinter, Attribute, OpPrintingFlags,
+    attributes::{AttrList, AttributeComponent, ElementReplacer, ElementVisitor},
+    derive::DialectAttribute,
+    dialects::builtin::BuiltinDialect,
+    print::AsmPrinter,
 };
 
 #[derive(DialectAttribute, Default)]
@@ -62,6 +66,45 @@ impl PartialEq for List {
             lhs.move_next();
             rhs.move_next();
         }
+    }
+}
+
+/// A list holds its attributes, in order.
+///
+/// A list owns its entries: an attribute is linked into one list at a time. A replaced list is a
+/// new one, holding each replacement where the replacer gave one, and a copy of the entry where
+/// it kept it. A replacement that is already linked into a list (as the entries of the original
+/// are) is copied too, so the new list never takes an entry from another.
+impl AttributeComponent for AttrList {
+    fn visit_elements(&self, visitor: &mut dyn ElementVisitor) {
+        for entry in self.iter() {
+            visitor.visit_attribute(&entry.as_attribute_ref());
+        }
+    }
+
+    fn replace_elements(&self, replacer: &mut dyn ElementReplacer) -> Option<Self> {
+        let entries: Vec<_> = self
+            .iter()
+            .map(|entry| {
+                let entry = entry.as_attribute_ref();
+                let new = replacer.replace_attribute(&entry);
+                (entry, new)
+            })
+            .collect();
+        if entries.iter().all(|(_, new)| new.is_none()) {
+            return None;
+        }
+        let mut list = AttrList::new();
+        for (entry, new) in entries {
+            let attr = match new {
+                Some(new) if !new.borrow().as_attr().as_attr_ref().is_linked() => new,
+                Some(new) => new.borrow().dyn_clone(),
+                None => entry.borrow().dyn_clone(),
+            };
+            let attr = attr.borrow().as_attr().as_attr_ref();
+            list.push_back(attr);
+        }
+        Some(list)
     }
 }
 

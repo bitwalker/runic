@@ -1,15 +1,20 @@
 use alloc::{format, vec::Vec};
 
 use crate::{
-    AttrPrinter, attributes::AttrParser, derive::DialectAttribute,
-    dialects::debuginfo::DebugInfoDialect, interner::Symbol, parse::ParserExt, print::AsmPrinter,
+    AttrPrinter,
+    attributes::AttrParser,
+    derive::{AttributeComponent, DialectAttribute},
+    dialects::debuginfo::DebugInfoDialect,
+    interner::Symbol,
+    parse::ParserExt,
+    print::AsmPrinter,
 };
 
 /// The logical HIR slot that supplies a frame base.
 ///
 /// These slots are independent of both the source DWARF encoding and the final Miden frame layout.
 /// The backend resolves them after the function's aligned frame size and global layout are known.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, AttributeComponent)]
 pub enum FrameBase {
     /// A function-local slot containing a byte address.
     LocalSlot(u32),
@@ -25,7 +30,7 @@ pub enum FrameBase {
 /// by the frontend. Arithmetic retains DW_OP names; target-neutral slots use DI_OP names.
 ///
 /// This is an in-memory/textual HIR representation, not a package wire format.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, AttributeComponent)]
 pub enum ExpressionOp {
     /// Variable is in a logical function-local slot.
     LocalSlot(u32),

@@ -7,7 +7,7 @@ use core::{
 use crate::{
     AttrPrinter, AttributeRef, CallConv, Context, NamedAttribute, OpPrintingFlags, SmallVec, Type,
     attributes::{AttrParser, Marker},
-    derive::DialectAttribute,
+    derive::{AttributeComponent, DialectAttribute},
     diagnostics::{SourceSpan, TextRange, report},
     dialects::builtin::BuiltinDialect,
     formatter, interner,
@@ -94,7 +94,7 @@ impl fmt::Display for ArgumentExtension {
 ///
 /// Two parameters are equal, and hash alike, when their types and the names and values of their
 /// attributes are; the handles need not be the same.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, AttributeComponent)]
 pub struct AbiParam {
     /// The type associated with this value
     pub ty: Type,

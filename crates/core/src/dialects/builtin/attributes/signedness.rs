@@ -1,8 +1,11 @@
 use core::{fmt, str::FromStr};
 
 use crate::{
-    AttrPrinter, SmallVec, attributes::AttrParser, derive::DialectAttribute,
-    dialects::builtin::BuiltinDialect, print::AsmPrinter,
+    AttrPrinter, SmallVec,
+    attributes::AttrParser,
+    derive::{AttributeComponent, DialectAttribute},
+    dialects::builtin::BuiltinDialect,
+    print::AsmPrinter,
 };
 
 /// How an operation reads the bits of an integer: as a two's complement signed number or as an
@@ -13,7 +16,7 @@ use crate::{
 ///
 /// Text: `signed` or `unsigned`. As an attribute, `#builtin.signedness<signed>`; a body-less
 /// `#builtin.signedness` is `signed`.
-#[derive(DialectAttribute, Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(DialectAttribute, AttributeComponent, Copy, Clone, Debug, PartialEq, Eq, Hash)]
 #[attribute(dialect = BuiltinDialect, default = "default_signedness", implements(AttrPrinter))]
 pub enum Signedness {
     /// The bits are a two's complement signed number.

@@ -32,7 +32,7 @@ impl PartialEq for AttributeDictEntryRef {
 /// not part of the code itself. For example, `cfg` flags in Rust are an example of something which
 /// you could represent using a [NamedAttribute]. They can also be used to store documentation,
 /// source locations, and more.
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, crate::derive::AttributeComponent)]
 pub struct NamedAttribute {
     /// The name of this attribute
     pub name: interner::Symbol,

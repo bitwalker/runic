@@ -5,7 +5,7 @@ use smallvec::SmallVec;
 use crate::{
     AttrPrinter,
     attributes::AttrParser,
-    derive::DialectAttribute,
+    derive::{AttributeComponent, DialectAttribute},
     dialects::builtin::BuiltinDialect,
     effects::MemoryEffect,
     formatter::const_text,
@@ -18,7 +18,7 @@ use crate::{
 /// Text: `read`, `write`, `allocate` or `free`, optionally followed by `(arg N)` or `(result N)`.
 /// At most one of `argument` and `result` is set. An index is at most 255: a callable whose
 /// effects fall on a later argument or result cannot state them per value.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, AttributeComponent)]
 pub struct MemoryEffectDescriptor {
     pub effect: MemoryEffect,
     pub argument: Option<u8>,

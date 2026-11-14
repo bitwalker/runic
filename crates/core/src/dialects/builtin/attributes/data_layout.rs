@@ -5,7 +5,7 @@ use smallvec::SmallVec;
 use super::signature::next_token_span;
 use crate::{
     AttrPrinter, AttributeRef, Type,
-    attributes::AttrParser,
+    attributes::{AttrParser, AttributeElements, ElementReplacer, ElementVisitor},
     derive::DialectAttribute,
     diagnostics::{SourceSpan, TextRange},
     dialects::builtin::{
@@ -56,6 +56,18 @@ use crate::{
 // Exists only to drive the derive, which names the attribute `<marker>Attr` and its text after the
 // marker: it is not `crate::layout::DataLayout`, and is never used as a value.
 struct DataLayout;
+
+/// A data layout holds no types or attributes: its entries are keyed by kinds of type (a pointer
+/// of an address space, an integer width, a float kind), not by types.
+impl AttributeElements for DataLayoutSpec {
+    #[inline]
+    fn visit_elements(&self, _visitor: &mut dyn ElementVisitor) {}
+
+    #[inline]
+    fn replace_elements(&self, _replacer: &mut dyn ElementReplacer) -> Option<Self> {
+        None
+    }
+}
 
 impl AttrPrinter for DataLayoutAttr {
     fn print(&self, printer: &mut AsmPrinter<'_>) {

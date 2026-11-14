@@ -199,6 +199,21 @@ mod tests {
 
     use super::*;
 
+    /// Every attribute kind of `arith` lists and replaces what it holds: a predicate holds
+    /// nothing.
+    #[test]
+    fn every_attribute_kind_lists_and_replaces_what_it_holds() {
+        use runic_core::testing::elements::{Row, check_every_kind};
+
+        let context = Rc::new(Context::default());
+        let rows = [Row::new(
+            "predicate",
+            context.create_attribute::<CmpPredicateAttr, _>(CmpPredicate::Ult),
+            [],
+        )];
+        check_every_kind(&context, &["arith"], &rows);
+    }
+
     #[test]
     fn text_round_trips() {
         for predicate in CmpPredicate::ALL {

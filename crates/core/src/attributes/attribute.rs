@@ -22,6 +22,7 @@ pub use self::{
     registration::AttributeRegistration,
     value::*,
 };
+use super::elements::{ElementReplacer, ElementVisitor};
 use crate::{
     Context, Dialect, Entity, EntityList, EntityListCursor, EntityListCursorMut, EntityListItem,
     Int, Type, UnsafeIntrusiveEntityRef,
@@ -86,6 +87,19 @@ pub trait Attribute:
     fn set_type(&mut self, ty: Type);
     fn as_attr(&self) -> &Attr;
     fn as_attr_mut(&mut self) -> &mut Attr;
+    /// Calls `visitor` with each type and attribute this attribute holds directly: those of its
+    /// value ([AttributeElements::visit_elements](super::AttributeElements::visit_elements)), then its own type, unless that is the unknown
+    /// type, which means the attribute has no type of its own.
+    fn visit_elements(&self, visitor: &mut dyn ElementVisitor);
+    /// A new attribute of this kind, holding `replacer`'s answer for each element in the order of
+    /// [Self::visit_elements] (a new value and/or a new type), or `None` when the replacer changed
+    /// nothing.
+    ///
+    /// This attribute is not touched, so a holder that shares it keeps it as it was. The new
+    /// attribute is built with the kind's own constructor and is not checked: an `IntAttr` given a
+    /// type of another width is replaced as asked, and whether the result is valid is the
+    /// verifier's business.
+    fn replace_elements(&self, replacer: &mut dyn ElementReplacer) -> Option<AttributeRef>;
 }
 
 impl core::hash::Hash for dyn Attribute {

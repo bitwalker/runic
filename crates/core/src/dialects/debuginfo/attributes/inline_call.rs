@@ -1,13 +1,18 @@
 use alloc::vec::Vec;
 
 use crate::{
-    AttrPrinter, attributes::AttrParser, derive::DialectAttribute,
-    dialects::debuginfo::DebugInfoDialect, interner::Symbol, parse::ParserExt, print::AsmPrinter,
+    AttrPrinter,
+    attributes::AttrParser,
+    derive::{AttributeComponent, DialectAttribute},
+    dialects::debuginfo::DebugInfoDialect,
+    interner::Symbol,
+    parse::ParserExt,
+    print::AsmPrinter,
 };
 
 pub const INLINE_CALL_CHAIN_ATTR_NAME: &str = "di.inline_call_chain";
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, AttributeComponent)]
 pub struct InlineCallFrame {
     pub name: Symbol,
     pub linkage_name: Option<Symbol>,

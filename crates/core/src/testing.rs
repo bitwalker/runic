@@ -12,6 +12,7 @@ use crate::{
 };
 
 pub mod calls;
+pub mod elements;
 pub mod text;
 
 /// Enable compiler-internal tracing and instrumentation during tests

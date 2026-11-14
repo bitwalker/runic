@@ -4,7 +4,10 @@ use smallvec::SmallVec;
 
 use crate::{
     AttrPrinter,
-    attributes::{AttrParser, InferAttributeValueType},
+    attributes::{
+        AttrParser, AttributeComponent, AttributeElements, ElementReplacer, ElementVisitor,
+        InferAttributeValueType,
+    },
     derive::DialectAttribute,
     dialects::builtin::BuiltinDialect,
     formatter::DisplayValues,
@@ -36,6 +39,18 @@ struct TypeArray;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Array<T>(SmallVec<[T; 2]>);
+
+/// An array holds what its elements hold, in order: each type of a `TypeArrayAttr`, nothing for
+/// an `I32ArrayAttr`.
+impl<T: AttributeComponent + Clone> AttributeElements for Array<T> {
+    fn visit_elements(&self, visitor: &mut dyn ElementVisitor) {
+        self.0.visit_elements(visitor);
+    }
+
+    fn replace_elements(&self, replacer: &mut dyn ElementReplacer) -> Option<Self> {
+        self.0.replace_elements(replacer).map(Self)
+    }
+}
 
 impl<T> Array<T> {
     pub fn is_empty(&self) -> bool {

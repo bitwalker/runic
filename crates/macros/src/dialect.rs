@@ -1,11 +1,12 @@
 mod attribute;
+mod elements;
 mod ty;
 mod type_component;
 
 use darling::FromDeriveInput;
 
-pub use self::type_component::derive_type_component;
 use self::{attribute::Attribute, ty::DialectType};
+pub use self::{elements::derive_attribute_component, type_component::derive_type_component};
 
 pub fn derive_attribute(input: &syn::DeriveInput) -> darling::Result<Attribute> {
     Attribute::from_derive_input(input)?.validate()
