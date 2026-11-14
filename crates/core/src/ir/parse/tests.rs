@@ -338,9 +338,9 @@ fn parse_module_with_intra_function_symbol_references() -> TestResult {
     builtin.module public @test {
         builtin.global_variable public @var : i32;
 
-        builtin.function public extern(\"C\") @entrypoint(%a: i32) -> ptr<i8> {
-            %ptr = builtin.global_symbol ::@test::@var+8 : ptr<i8>;
-            builtin.ret %ptr : (ptr<i8>);
+        builtin.function public extern(\"C\") @entrypoint(%a: i32) -> ptr<i32> {
+            %ptr = builtin.global_symbol ::@test::@var : ptr<i32>;
+            builtin.ret %ptr : (ptr<i32>);
         };
     };";
 

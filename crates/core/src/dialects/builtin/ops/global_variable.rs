@@ -4,15 +4,16 @@ use crate::{
     AsSymbolRef, Context, IdentAttr, OpParser, OpPrinter, Operation, Report, Spanned, Symbol,
     SymbolName, SymbolRef, SymbolUseList, UnsafeIntrusiveEntityRef, Usable, Value, Visibility,
     derive::{EffectOpInterface, operation},
+    diagnostics::report,
     dialects::builtin::{
         BuiltinDialect,
-        attributes::{I32Attr, TypeAttr, VisibilityAttr},
+        attributes::{TypeAttr, VisibilityAttr},
     },
     effects::{AlwaysSpeculatable, ConditionallySpeculatable, MemoryEffectOpInterface, Pure},
-    parse::{ParserError, ParserExt},
+    parse::ParserError,
     print::AsmPrinter,
     traits::{
-        InferTypeOpInterface, Int8, IsolatedFromAbove, NoRegionArguments, PointerOf, SingleBlock,
+        AnyPointer, InferTypeOpInterface, IsolatedFromAbove, NoRegionArguments, SingleBlock,
         SingleRegion,
     },
 };
@@ -182,12 +183,16 @@ impl OpParser for GlobalVariable {
     }
 }
 
-/// A [GlobalSymbol] reifies the address of a [GlobalVariable] as a value.
+/// A [GlobalSymbol] reifies the address of a [GlobalVariable] as a value:
+/// `%p = builtin.global_symbol @g : ptr<i32>;` for a global `@g : i32`.
 ///
-/// An optional signed offset value may also be provided, which will be applied by the operation
-/// internally.
+/// The result is a pointer to the global's declared type, in the address space written in the text
+/// (address space 0 when the operation is built). An address inside the global is a `mem.gep` (or a
+/// `mem.ptrcast`) of the result. A reference that names nothing is reported by the check every symbol
+/// use gets ([Operation::verify_symbol_refs]), which runs before the verifier of the operation.
 ///
-/// The result type is always a pointer, whose pointee type is derived from the referenced symbol.
+/// The operation is pure: it has no effects, is removed when unused, and two that name the same
+/// global with the same type are merged.
 #[derive(EffectOpInterface)]
 #[operation(
     dialect = BuiltinDialect,
@@ -198,12 +203,19 @@ pub struct GlobalSymbol {
     /// The name of the global variable that is referenced
     #[symbol]
     symbol: GlobalVariable,
-    /// A constant offset, in bytes, from the address of the symbol
-    #[attr]
-    #[default]
-    offset: I32Attr,
+    /// The address of the global
     #[result]
-    addr: PointerOf<Int8>,
+    addr: AnyPointer,
+}
+
+impl GlobalSymbol {
+    /// The global variable the reference is linked to, or `None` if it is not linked to one.
+    pub fn global(&self) -> Option<GlobalVariableRef> {
+        let symbol = self.symbol().resolve()?;
+        let symbol = symbol.borrow();
+        let global = symbol.as_symbol_operation().downcast_ref::<GlobalVariable>()?;
+        Some(global.as_global_var_ref())
+    }
 }
 
 impl OpPrinter for GlobalSymbol {
@@ -212,15 +224,6 @@ impl OpPrinter for GlobalSymbol {
 
         printer.print_space();
         printer.print_symbol_path(self.get_symbol().path());
-        let offset = *self.get_offset();
-        match offset {
-            0 => (),
-            n if n > 0 => {
-                *printer += const_text("+") + display(n);
-            }
-            n => *printer += display(n),
-        };
-
         *printer += const_text(" : ");
         printer.print_type(self.addr().ty());
 
@@ -233,26 +236,14 @@ impl OpPrinter for GlobalSymbol {
     }
 }
 
+/// Reads `@symbol : type`, then an optional `attributes {..}`; the type must be a pointer type.
 impl OpParser for GlobalSymbol {
     fn parse(
         state: &mut crate::OperationState,
         parser: &mut dyn crate::OpAsmParser<'_>,
     ) -> crate::ParseResult {
-        use crate::parse::Token;
-
         let symbol = parser.parse_symbol_ref()?.into_inner();
         state.add_attribute("symbol", symbol);
-
-        let offset = if parser.token_stream_mut().next_if_eq(Token::Plus)? {
-            parser.parse_decimal_integer::<i32>()?.into_inner()
-        } else {
-            parser
-                .parse_optional_decimal_integer::<i32>()?
-                .map(|spanned| spanned.into_inner())
-                .unwrap_or(0)
-        };
-        let offset = parser.context_rc().create_attribute::<I32Attr, _>(offset);
-        state.add_attribute("offset", offset);
 
         let ty = parser.parse_colon_type()?;
 
@@ -277,9 +268,235 @@ impl ConditionallySpeculatable for GlobalSymbol {
     }
 }
 
+/// A result whose type is not yet known gets the type `ptr<T>`, where `T` is the declared type of
+/// the global the reference is linked to. A result that already has a type (the text writes one)
+/// keeps it, and the verifier checks it against the global.
 impl InferTypeOpInterface for GlobalSymbol {
     fn infer_return_types(&mut self, context: &Context) -> Result<(), Report> {
-        self.addr_mut().set_type(context.ptr_type(context.i8()));
+        if !self.addr().ty().is_unknown() {
+            return Ok(());
+        }
+        let Some(global) = self.global() else {
+            return Err(report!(
+                message: "invalid operation builtin.global_symbol",
+                labels: [primary(
+                    self.op.span(),
+                    format!(
+                        "the result type cannot be inferred: '{}' is not linked to a global \
+                         variable",
+                        self.get_symbol().path()
+                    )
+                )],
+            ));
+        };
+        let ty = *global.borrow().get_ty();
+        self.addr_mut().set_type(context.ptr_type(ty));
         Ok(())
+    }
+}
+
+/// The result is a pointer to the declared type of the global the reference is linked to.
+///
+/// A reference that is not linked to a symbol has already been reported by
+/// [Operation::verify_symbol_refs], which runs before this.
+impl crate::Verify<dyn InferTypeOpInterface> for GlobalSymbol {
+    fn verify(&self, _context: &Context) -> Result<(), Report> {
+        let span = self.op.span();
+        let Some(global) = self.global() else {
+            return Err(report!(
+                message: "invalid operation builtin.global_symbol",
+                labels: [primary(
+                    span,
+                    format!(
+                        "'{}' is not linked to a global variable",
+                        self.get_symbol().path()
+                    )
+                )],
+            ));
+        };
+        let global = global.borrow();
+        let declared = *global.get_ty();
+        let ty = self.addr().ty();
+        if ty.pointee() == Some(declared) {
+            return Ok(());
+        }
+        Err(report!(
+            message: "invalid operation builtin.global_symbol",
+            labels: [
+                primary(
+                    span,
+                    format!(
+                        "the result has type `{ty}`, but a pointer to the global has type \
+                         `ptr<{declared}>` (in any address space)"
+                    )
+                ),
+                context(global.op.span(), format!("the global is declared `{declared}`")),
+            ],
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{
+        rc::Rc,
+        string::{String, ToString},
+        vec::Vec,
+    };
+
+    use super::*;
+    use crate::{
+        Builder, Ident, Op, OperationRef, SourceSpan,
+        dialects::builtin::{
+            BuiltinOpBuilder, Module,
+            types::{StructField, StructType},
+        },
+        parse::{ParserConfig, parse_any},
+        testing::{
+            Test,
+            text::{describe, print_generic, round_trip},
+        },
+    };
+
+    /// A module of a scalar and a struct global, and a function `@f` with `body`.
+    fn module(body: &str) -> String {
+        format!(
+            "builtin.module public @m {{
+    builtin.global_variable public @g : i32;
+    builtin.global_variable private @s : struct<i32, i8>;
+    builtin.function public extern(\"C\") @f() {{
+{body}
+        builtin.ret;
+    }};
+}};"
+        )
+    }
+
+    fn parse_text(source: &str) -> Result<(Rc<Context>, OperationRef), String> {
+        let context = Rc::new(Context::default());
+        let config = ParserConfig::new(context.clone());
+        match parse_any(config, "globals", source).into_result() {
+            Ok(op) => Ok((context, op)),
+            Err(report) => Err(describe(&report)),
+        }
+    }
+
+    /// The pointer to a global has the global's type, in the address space written; the module
+    /// round trips in both forms.
+    #[test]
+    fn a_global_symbol_points_to_its_globals_type() {
+        let source = module(
+            "        %p = builtin.global_symbol @g : ptr<i32>;
+        %q = builtin.global_symbol @s : ptr<struct<i32, i8>, 3>;
+        %r = builtin.global_symbol ::@m::@g : ptr<i32>;",
+        );
+        let (_context, module) = parse_text(&source).unwrap_or_else(|err| panic!("{err}"));
+        let mut types = Vec::new();
+        module.borrow().prewalk_all(|op: &Operation| {
+            if let Some(symbol) = op.downcast_ref::<GlobalSymbol>() {
+                types.push(symbol.addr().ty().to_string());
+            }
+        });
+        assert_eq!(types, ["ptr<i32>", "ptr<struct<i32, i8>, 3>", "ptr<i32>"]);
+
+        let mut skipped = Vec::new();
+        let failures = round_trip::<Module>(module, true, &mut skipped);
+        assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+        assert!(skipped.is_empty(), "skipped: {skipped:#?}");
+    }
+
+    /// A pointer to another type, an opaque pointer and a type that is not a pointer are each
+    /// rejected, in the custom form and in the generic form.
+    #[test]
+    fn a_global_symbol_of_another_type_is_an_error() {
+        let err = parse_text(&module("        %p = builtin.global_symbol @g : ptr<i8>;"))
+            .map(|_| ())
+            .expect_err("the pointee is not the global's type");
+        assert!(err.contains("invalid operation builtin.global_symbol"), "{err}");
+        assert!(
+            err.contains(
+                "the result has type `ptr<i8>`, but a pointer to the global has type `ptr<i32>`"
+            ),
+            "{err}"
+        );
+        assert!(err.contains("the global is declared `i32`"), "{err}");
+
+        let err = parse_text(&module("        %p = builtin.global_symbol @s : ptr;"))
+            .map(|_| ())
+            .expect_err("an opaque pointer has no pointee");
+        assert!(err.contains("the result has type `ptr`"), "{err}");
+
+        let err = parse_text(&module("        %p = builtin.global_symbol @g : i32;"))
+            .map(|_| ())
+            .expect_err("the result is a pointer");
+        assert!(err.contains("expected pointer type, got 'i32'"), "{err}");
+
+        // A byte offset is no longer part of the operation
+        let err = parse_text(&module("        %p = builtin.global_symbol @g+8 : ptr<i32>;"))
+            .map(|_| ())
+            .expect_err("an offset is not accepted");
+        assert!(!err.is_empty());
+
+        // The generic form states the result type itself, and the verifier checks it
+        let (_context, parsed) =
+            parse_text(&module("        %p = builtin.global_symbol @g : ptr<i32>;")).unwrap();
+        let mut generic = None;
+        parsed.borrow().prewalk_all(|op: &Operation| {
+            if op.is::<GlobalSymbol>() {
+                generic = Some((op.to_string(), print_generic(op)));
+            }
+        });
+        let (custom, generic) = generic.unwrap();
+        assert!(generic.contains("-> ptr<i32>"), "{generic}");
+        let text = parsed
+            .borrow()
+            .to_string()
+            .replace(custom.trim(), &generic.replace("-> ptr<i32>", "-> ptr<i8>"));
+        let err = parse_text(&text).map(|_| ()).expect_err("the generic form is checked");
+        assert!(err.contains("the result has type `ptr<i8>`"), "{err}");
+        let text = parsed
+            .borrow()
+            .to_string()
+            .replace(custom.trim(), &generic.replace("-> ptr<i32>", "-> i32"));
+        let err = parse_text(&text).map(|_| ()).expect_err("the generic form is checked");
+        assert!(err.contains("builtin.global_symbol"), "{err}");
+    }
+
+    /// The builder types the result from the global: a pointer to its type in address space 0.
+    #[test]
+    fn the_builder_types_the_result_from_the_global() {
+        let mut test = Test::named("f").in_module("m");
+        let context = test.context_rc();
+        let s = context
+            .struct_type(StructType::new([context.i32(), context.i8()].map(StructField::new)));
+        let module = test.module();
+        let global = {
+            let b = test.builder_mut();
+            let body = module.borrow().body().entry_block_ref().unwrap();
+            b.set_insertion_point_to_end(body);
+            b.create_global_variable(Ident::with_empty_span("s".into()), Visibility::Public, s)
+                .unwrap()
+        };
+        test.with_function("f", &[], &[]);
+        let symbol = {
+            let mut builder = test.function_builder();
+            let symbol = builder.global_symbol(global, SourceSpan::UNKNOWN).unwrap();
+            builder.ret([], SourceSpan::UNKNOWN).unwrap();
+            symbol
+        };
+        test.module().borrow().as_operation().recursively_verify().unwrap();
+        let symbol = symbol.borrow();
+        assert_eq!(symbol.addr().ty(), context.ptr_type(s));
+        assert_eq!(symbol.addr().ty().as_pointer().unwrap().addrspace(), 0);
+        assert!(symbol.global() == Some(global));
+        assert!(symbol.as_operation().is_memory_effect_free());
+        assert!(
+            symbol
+                .as_operation()
+                .to_string()
+                .contains("builtin.global_symbol ::@m::@s : ptr<struct<i32, i8>>"),
+            "{}",
+            symbol.as_operation()
+        );
     }
 }

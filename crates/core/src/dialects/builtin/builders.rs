@@ -83,6 +83,17 @@ pub trait BuiltinOpBuilder<'f, B: ?Sized + Builder> {
         op_builder(offset as i64, data, readonly)
     }
 
+    /// Create a [GlobalSymbol] of `global`: its address, a `ptr<T>` in address space 0, where `T`
+    /// is the declared type of the global.
+    fn global_symbol(
+        &mut self,
+        global: GlobalVariableRef,
+        span: SourceSpan,
+    ) -> Result<UnsafeIntrusiveEntityRef<GlobalSymbol>, Report> {
+        let op_builder = self.builder_mut().create::<GlobalSymbol, (GlobalVariableRef,)>(span);
+        op_builder(global)
+    }
+
     fn unrealized_conversion_cast(
         &mut self,
         value: ValueRef,

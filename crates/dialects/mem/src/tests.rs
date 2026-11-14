@@ -757,6 +757,38 @@ fn a_gep_points_to_the_element_its_path_selects() {
     }
 }
 
+/// The address of a struct global is a pointer to the struct; a gep of it reaches a field, and a
+/// load of that field reads the field's type.
+#[test]
+fn a_gep_of_a_global_reaches_its_fields() {
+    let source = "\
+builtin.module public @m {
+    builtin.global_variable public @g : struct<i32, i8>;
+    builtin.function public extern(\"C\") @f() -> i8 {
+        %p = builtin.global_symbol @g : ptr<struct<i32, i8>>;
+        %q = mem.gep %p, [1];
+        %v = mem.load %q;
+        builtin.ret %v : (i8);
+    };
+};";
+    let (_context, module) = parse::<Module>(source).unwrap_or_else(|err| panic!("{err}"));
+    let mut types = Vec::new();
+    module.borrow().as_operation().prewalk_all(|op: &runic_core::Operation| {
+        if op.num_results() == 1 {
+            types.push((op.name().to_string(), runic_core::Value::ty(&*op.results()[0].borrow())));
+        }
+    });
+    let types = types.into_iter().map(|(name, ty)| format!("{name}: {ty}")).collect::<Vec<_>>();
+    assert_eq!(
+        types,
+        [
+            "builtin.global_symbol: ptr<struct<i32, i8>>",
+            "mem.gep: ptr<i8>",
+            "mem.load: i8"
+        ]
+    );
+}
+
 /// A path into a scalar, past the end, into a variant without a payload, or with a negative step,
 /// and a gep through an opaque pointer, are diagnostics; so is an index that is not an `isize`.
 #[test]
