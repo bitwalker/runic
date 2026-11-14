@@ -377,6 +377,9 @@ impl Region {
                             child_op.name(),
                             child_regions.len()
                         );
+                        // Erasing an operation in the child regions may unlink a use of the
+                        // symbol this operation is, which borrows it mutably.
+                        drop(child_op);
                         erased_anything |=
                             Self::cleanup_dead_code(&child_regions, rewriter, live_map).is_ok();
                     }
@@ -596,5 +599,37 @@ mod tests {
         assert!(!after.contains("di.debug_value"));
         assert!(!after.contains("test.add"));
         assert_eq!(after.matches("di.debug_kill").count(), 1);
+    }
+
+    /// Cleaning a module's region erases, inside a function's body, a dead call of that same
+    /// function: the call's symbol use is unlinked from the function while the clean-up is
+    /// inside it.
+    #[test]
+    fn a_dead_call_of_the_enclosing_function_is_erased_from_a_module() {
+        use crate::{dialects::builtin::Module, parse::ParserConfig};
+
+        let context = alloc::rc::Rc::new(crate::Context::default());
+        let source = r#"builtin.module public @m {
+    builtin.function public extern("C") @down(%n: i64) -> i64 effects() {
+        %r = builtin.call @down(%n) : extern("C") (i64) -> i64;
+        builtin.ret %n : (i64);
+    };
+};"#;
+        let module = crate::parse::parse::<Module>(ParserConfig::new(context.clone()), "m", source)
+            .into_result()
+            .expect("the module parses");
+        let region = module.borrow().body().as_region_ref();
+        {
+            let mut rewriter = RewriterImpl::<NoopRewriterListener>::new(context.clone());
+            Region::dead_code_elimination(&[region], &mut rewriter)
+                .expect("the dead call is erased");
+        }
+        let after = format!("{}", module.borrow().as_operation());
+        assert!(!after.contains("builtin.call"), "{after}");
+        module
+            .borrow()
+            .as_operation()
+            .recursively_verify()
+            .expect("the module verifies");
     }
 }
