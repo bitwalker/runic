@@ -55,6 +55,23 @@ pub struct Options {
     )]
     pub verify_each: bool,
 
+    /// Split the input at the lines that hold only MARKER (`// -----` when none is given) and
+    /// process each part, a case, as an input of its own, in a context of its own.
+    ///
+    /// The results of the cases that succeeded are printed in order, with a line holding MARKER
+    /// between them; a case that fails prints nothing and does not stop the others. Diagnostics
+    /// show the line numbers of the whole file. A case that holds only whitespace and `//`
+    /// comments is skipped. The value is given with `=`.
+    #[arg(
+        long,
+        value_name = "MARKER",
+        num_args = 0..=1,
+        require_equals = true,
+        value_parser = clap::builder::NonEmptyStringValueParser::new(),
+        default_missing_value = crate::split::DEFAULT_MARKER,
+    )]
+    pub split_input_file: Option<String>,
+
     /// Print operations in the generic form. The generic text is not guaranteed to parse back.
     #[arg(long)]
     pub print_generic: bool,

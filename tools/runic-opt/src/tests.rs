@@ -2,6 +2,7 @@
 
 mod cli;
 mod pipeline;
+mod splitting;
 mod text;
 mod verification;
 

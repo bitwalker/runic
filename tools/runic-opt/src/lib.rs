@@ -1,7 +1,7 @@
 //! `runic-opt` reads textual IR, runs a pass pipeline named on the command line on it, verifies
 //! and prints the result.
 //!
-//! The input is one top-level operation. It is parsed in a context of its own, on a thread with
+//! The input is one top-level operation, or with `--split-input-file` several, one per case. It is parsed in a context of its own, on a thread with
 //! a stack large enough for regions nested [`MAX_REGION_DEPTH`] deep; the pass manager is anchored
 //! on the operation with implicit nesting. Standard output holds only what was asked for: the
 //! printed IR, or a listing. Every diagnostic, and every print of IR between passes, goes to
@@ -12,6 +12,7 @@
 #![deny(warnings)]
 
 mod options;
+mod split;
 
 use std::{
     cell::RefCell,
@@ -128,13 +129,11 @@ fn run_to_buffers(
         return Ok(true);
     }
 
-    let printing = match options.ir_printing() {
-        Ok(printing) => printing,
-        Err(error) => {
-            *err += &render(error.display());
-            return Ok(false);
-        }
-    };
+    // A pass named wrongly is an error before anything is read.
+    if let Err(error) = options.ir_printing() {
+        *err += &render(error.display());
+        return Ok(false);
+    }
 
     let (name, text) = match read_input(&options, stdin) {
         Ok(input) => input,
@@ -144,39 +143,58 @@ fn run_to_buffers(
         }
     };
 
-    let chunk = Chunk {
-        name,
-        text,
-        pipeline: options.pass_pipeline.clone(),
-        verification: options.verification(),
-        dump_pass_pipeline: options.dump_pass_pipeline,
-        printing: Some(printing),
-        flags: options.printing_flags(),
+    let pieces = match options.split_input_file.as_deref() {
+        Some(marker) => split::split(&text, marker),
+        None => vec![split::Piece { text }],
     };
-    let output = match chunk.process_on_its_own_thread() {
-        Ok(output) => output,
-        Err(error) => {
-            *err += &render(error.display());
+    let mut written = Vec::new();
+    let mut succeeded = true;
+    for piece in pieces {
+        let Ok(printing) = options.ir_printing() else {
             return Ok(false);
+        };
+        let chunk = Chunk {
+            name: name.clone(),
+            text: piece.text,
+            pipeline: options.pass_pipeline.clone(),
+            verification: options.verification(),
+            dump_pass_pipeline: options.dump_pass_pipeline,
+            printing: Some(printing),
+            flags: options.printing_flags(),
+        };
+        match chunk.process_on_its_own_thread() {
+            Ok(output) => {
+                *err += &output.stderr;
+                if output.succeeded {
+                    written.push(output.stdout);
+                } else {
+                    succeeded = false;
+                }
+            }
+            Err(error) => {
+                *err += &render(error.display());
+                succeeded = false;
+            }
         }
-    };
-    *err += &output.stderr;
-    if !output.succeeded {
-        return Ok(false);
     }
 
+    let separator = match options.split_input_file.as_deref() {
+        Some(marker) => format!("{marker}\n"),
+        None => String::new(),
+    };
+    let result = written.join(separator.as_str());
     match &options.output {
         Some(path) => {
-            if let Err(error) = fs::write(path, output.stdout.as_bytes()) {
+            if let Err(error) = fs::write(path, result.as_bytes()) {
                 *err += &render(
                     Report::msg(format!("could not write '{}': {error}", path.display())).display(),
                 );
                 return Ok(false);
             }
         }
-        None => *out += &output.stdout,
+        None => *out += &result,
     }
-    Ok(true)
+    Ok(succeeded)
 }
 
 /// `name  description`, a line for each registered pass, sorted by name.
