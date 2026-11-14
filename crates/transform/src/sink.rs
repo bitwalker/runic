@@ -1,8 +1,8 @@
 use alloc::vec::Vec;
 
 use runic_core::{
-    Backward, Builder, EntityMut, Forward, FxHashSet, OpBuilder, Operation, OperationName,
-    OperationRef, ProgramPoint, RawWalk, Region, RegionBranchOpInterface,
+    Backward, BlockRef, Builder, EntityMut, Forward, FxHashSet, OpBuilder, Operation,
+    OperationName, OperationRef, ProgramPoint, RawWalk, Region, RegionBranchOpInterface,
     RegionExitTerminatorOpInterface, RegionRef, Report, SmallVec, Usable, Value, ValueRef,
     adt::SmallDenseMap,
     dominance::DominanceInfo,
@@ -438,6 +438,7 @@ impl Pass for SinkOperandDefs {
                     erase_transparent_users(value);
                 }
                 operation.borrow_mut().erase();
+                changed = PostPassStatus::Changed;
                 continue;
             }
 
@@ -524,12 +525,17 @@ impl Pass for SinkOperandDefs {
                         // The original op can be moved
                         drop(def);
                         drop(value);
+                        let place = place_of(defining_op);
                         let mut def_op = defining_op.borrow_mut();
                         def_op.move_to(*builder.insertion_point());
                         sink_state.replacements.insert(operand_value, operand_value);
 
                         // Move any transparent users of `defining_op` after it
                         move_transparent_users_to(&def_op, &[operation]);
+                        drop(def_op);
+                        if place_of(defining_op) != place {
+                            changed = PostPassStatus::Changed;
+                        }
                     }
                 } else if !is_sole_user
                     || def.num_results() != 1
@@ -549,6 +555,7 @@ impl Pass for SinkOperandDefs {
                     drop(def);
                     drop(value);
                     log::trace!(target: Self::NAME, "    defining op can be moved and has no other uses, moving into place");
+                    let place = place_of(defining_op);
                     let mut def_op = defining_op.borrow_mut();
                     def_op.move_to(*builder.insertion_point());
                     sink_state.replacements.insert(operand_value, operand_value);
@@ -556,6 +563,9 @@ impl Pass for SinkOperandDefs {
                     // Move any transparent users of `defining_op` after it
                     move_transparent_users_to(&def_op, &[operation]);
                     drop(def_op);
+                    if place_of(defining_op) != place {
+                        changed = PostPassStatus::Changed;
+                    }
 
                     // Enqueue the defining op to be visited before continuing with this op's operands
                     log::trace!(target: Self::NAME, "    enqueing defining op for immediate processing");
@@ -570,6 +580,12 @@ impl Pass for SinkOperandDefs {
         state.set_post_pass_status(changed);
         Ok(())
     }
+}
+
+/// Where `op` is: its block and its neighbours there, so that a move that leaves it in place is
+/// not reported as a change.
+fn place_of(op: OperationRef) -> (Option<BlockRef>, Option<OperationRef>, Option<OperationRef>) {
+    (op.parent(), op.prev(), op.next())
 }
 
 fn move_transparent_users_to(op: &Operation, exclude: &[OperationRef]) {

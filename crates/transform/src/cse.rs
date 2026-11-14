@@ -70,7 +70,9 @@ impl Pass for CommonSubexpressionElimination {
             mem_effects_cache: Default::default(),
         };
 
+        // Changed when an operation was erased or a use replaced.
         let status = driver.simplify(op);
+        state.set_post_pass_status(status);
 
         if status.ir_changed() {
             // CSE only replaces uses and erases operations; it does not change the CFG of
