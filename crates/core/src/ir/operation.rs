@@ -520,24 +520,25 @@ impl Operation {
 
     /// Run any verifiers for this operation
     ///
-    /// The generic checks run first, for every operation. The first is that every attribute the
-    /// operation holds, at any depth, is well formed by itself: its type may be used in IR of this
-    /// context, and its kind's verifier
-    /// ([AttributeRegistration::verify](crate::AttributeRegistration::verify)) accepts it. The
-    /// second is that every type the operation holds, at any depth (see [Self::walk_types]),
-    /// belongs to this context, is closed, and satisfies its kind's
-    /// [TypeInvariants](crate::TypeInvariants) if it has any. The third is that every symbol
-    /// reference it holds, at any depth, is linked to the symbol its path names; see
-    /// [Self::verify_symbol_refs]. The operation's own verifiers run after these, so they may
-    /// assume the operation's attributes, types and symbol references are valid.
+    /// The generic checks run first, for every operation. The first, in one walk of the
+    /// attributes, is that every attribute the operation holds, at any depth, is well formed by
+    /// itself: its type may be used in IR of this context, and its kind's verifier
+    /// ([AttributeRegistration::verify](crate::AttributeRegistration::verify)) accepts it; and
+    /// that every symbol reference among them is linked to the symbol its path names (see
+    /// [Self::verify_symbol_refs]). The second is that every type the operation holds, at any
+    /// depth (see [Self::walk_types]), belongs to this context, is closed, and satisfies its
+    /// kind's [TypeInvariants](crate::TypeInvariants) if it has any; a type found valid once, with
+    /// everything it holds, is remembered by the context and not checked again. The operation's
+    /// own verifiers run after these, so they may assume the operation's attributes, types and
+    /// symbol references are valid.
     ///
     /// An attribute can be edited after it is built, and the constructors that skip the checks
     /// (and in-place mutation) do not check anything, so these checks are what catch an invalid
     /// attribute or type in every build.
     pub fn verify(&self) -> Result<(), Report> {
+        // One walk of the attributes checks the attributes and the symbol references among them
         self.verify_held_attributes()?;
         self.verify_held_types()?;
-        self.verify_symbol_refs()?;
         let dyn_op: &dyn Op = self.as_ref();
         dyn_op.verify(self.context())
     }
@@ -563,6 +564,18 @@ impl Operation {
     /// another attribute, or belongs to another operation (a copy that shares the use of the
     /// reference it was copied from), is reported as well.
     pub fn verify_symbol_refs(&self) -> Result<(), Report> {
+        self.walk_attributes(&mut |_, attr| match attr.try_downcast_attr::<SymbolRefAttr>() {
+            Ok(reference) => self.verify_symbol_ref(reference).into(),
+            Err(_) => WalkResult::Continue(()),
+        })
+        .into_result()
+    }
+
+    /// Check one symbol reference this operation holds: see [Self::verify_symbol_refs].
+    fn verify_symbol_ref(
+        &self,
+        attr: UnsafeIntrusiveEntityRef<SymbolRefAttr>,
+    ) -> Result<(), Report> {
         let print_path = |path: &crate::SymbolPath| {
             let flags = crate::OpPrintingFlags::default();
             let mut printer = crate::print::AsmPrinter::fragment(self.context_rc(), &flags);
@@ -585,72 +598,65 @@ impl Operation {
             )
         };
 
-        let owner = self.as_operation_ref();
-        self.walk_attributes(&mut |_, attr| {
-            let Ok(attr) = attr.try_downcast_attr::<SymbolRefAttr>() else {
-                return WalkResult::Continue(());
-            };
-            let user = attr.borrow().try_user();
-            if let Some(user) = user {
-                let symbol_use = user.borrow();
-                if symbol_use.attr != attr || symbol_use.owner != owner {
-                    let printed = print_path(attr.borrow().path());
-                    return WalkResult::Break(crate::diagnostics::report!(
-                        message: (alloc::format!(
-                            "symbol '{printed}' shares the use of another reference"
-                        )),
-                        labels: [
-                            primary(
-                                self.span(),
-                                alloc::format!(
-                                    "this reference, held by '{}', is tracked by a use that \
-                                     belongs to another attribute or operation",
-                                    self.name()
-                                )
-                            ),
-                        ],
-                    ));
-                }
-            }
-            let linked = user.and_then(|user| user.linked_symbol());
-            let path = attr.borrow().path().clone();
-            let named = lookup(&path);
-            if named.is_some() && named == linked {
-                return WalkResult::Continue(());
-            }
-            let printed = print_path(&path);
-            let Some(named) = named else {
-                return WalkResult::Break(crate::diagnostics::report!(
-                    message: (alloc::format!("symbol '{printed}' does not resolve")),
+        let user = attr.borrow().try_user();
+        if let Some(user) = user {
+            let symbol_use = user.borrow();
+            if symbol_use.attr != attr || symbol_use.owner != self.as_operation_ref() {
+                let printed = print_path(attr.borrow().path());
+                return Err(crate::diagnostics::report!(
+                    message: (alloc::format!(
+                        "symbol '{printed}' shares the use of another reference"
+                    )),
                     labels: [
                         primary(
                             self.span(),
-                            alloc::format!("no symbol visible to '{}' has this path", self.name())
+                            alloc::format!(
+                                "this reference, held by '{}', is tracked by a use that belongs \
+                                 to another attribute or operation",
+                                self.name()
+                            )
                         ),
                     ],
                 ));
-            };
-            let linked = match linked {
-                Some(linked) => alloc::format!("linked to {}", symbol_description(linked)),
-                None => "linked to no symbol".into(),
-            };
-            WalkResult::Break(crate::diagnostics::report!(
-                message: (alloc::format!(
-                    "symbol '{printed}' is not linked to the symbol its path names"
-                )),
+            }
+        }
+        let linked = user.and_then(|user| user.linked_symbol());
+        let path = attr.borrow().path().clone();
+        let named = lookup(&path);
+        if named.is_some() && named == linked {
+            return Ok(());
+        }
+        let printed = print_path(&path);
+        let Some(named) = named else {
+            return Err(crate::diagnostics::report!(
+                message: (alloc::format!("symbol '{printed}' does not resolve")),
                 labels: [
                     primary(
                         self.span(),
-                        alloc::format!(
-                            "this path names {} from '{}', but the reference is {linked}",
-                            symbol_description(named),
-                            self.name()
-                        )
+                        alloc::format!("no symbol visible to '{}' has this path", self.name())
                     ),
                 ],
-            ))
-        })
-        .into_result()
+            ));
+        };
+        let linked = match linked {
+            Some(linked) => alloc::format!("linked to {}", symbol_description(linked)),
+            None => "linked to no symbol".into(),
+        };
+        Err(crate::diagnostics::report!(
+            message: (alloc::format!(
+                "symbol '{printed}' is not linked to the symbol its path names"
+            )),
+            labels: [
+                primary(
+                    self.span(),
+                    alloc::format!(
+                        "this path names {} from '{}', but the reference is {linked}",
+                        symbol_description(named),
+                        self.name()
+                    )
+                ),
+            ],
+        ))
     }
 
     /// Check every attribute this operation holds, at any depth, in one walk
@@ -660,6 +666,9 @@ impl Operation {
     ///
     /// The own type is checked here, not only by [Self::verify_held_types], because a kind that
     /// takes its type from its value (`BoolAttr`'s `i1`) does not list it among the types it holds.
+    ///
+    /// Each symbol reference is also checked as [Self::verify_symbol_refs] checks it, after its
+    /// kind has accepted it, so that one walk does both.
     fn verify_held_attributes(&self) -> Result<(), Report> {
         let context = self.context();
         let invalid = |role: &ElementRole<'_>, problem: &dyn fmt::Display| {
@@ -672,6 +681,7 @@ impl Operation {
         };
         self.walk_attributes_and_depth(&mut |site, attr, nested| {
             let role = ElementRole { site, nested };
+            let reference = attr.try_downcast_attr::<SymbolRefAttr>().ok();
             let attr = attr.borrow();
             let ty = attr.ty();
             if let Some(problem) = context.ir_type_problem(ty) {
@@ -680,9 +690,13 @@ impl Operation {
                     &format_args!("has type `{ty}`, {problem}"),
                 ));
             }
-            match attr.verify(context) {
-                Ok(()) => WalkResult::Continue(()),
-                Err(err) => WalkResult::Break(invalid(&role, &format_args!("is {err}"))),
+            if let Err(err) = attr.verify(context) {
+                return WalkResult::Break(invalid(&role, &format_args!("is {err}")));
+            }
+            drop(attr);
+            match reference {
+                Some(reference) => self.verify_symbol_ref(reference).into(),
+                None => WalkResult::Continue(()),
             }
         })
         .into_result()
@@ -697,9 +711,20 @@ impl Operation {
     /// stored; this check is what catches them in every build, wherever the type is held: as the
     /// type of a result or a block argument, as an attribute's type, or inside an attribute's value
     /// (the type of a type attribute, a parameter of a signature, ..).
+    ///
+    /// The context remembers the types found valid ([Context::is_verified_type]), each with
+    /// everything it holds, so a type held by many operations is checked once.
     fn verify_held_types(&self) -> Result<(), Report> {
         let context = self.context();
-        self.walk_types(&mut |site, ty| {
+        // A type found valid before, with everything it holds, is neither checked nor walked into
+        // again. The types checked here are remembered only if all of them are valid: then each
+        // was checked with everything it holds (a type the walk skipped is valid already).
+        let mut checked = SmallVec::<[crate::Type; 8]>::new();
+        let result = self.walk_types(&mut |site, ty| {
+            if context.is_verified_type(ty) {
+                return WalkResult::Skip;
+            }
+            checked.push(ty);
             let problem = match context.ir_type_problem(ty) {
                 Some(problem) => alloc::borrow::Cow::Borrowed(problem),
                 None => match ty.as_trait::<dyn crate::TypeInvariants>() {
@@ -740,7 +765,11 @@ impl Operation {
                 ],
             ))
         })
-        .into_result()
+        .into_result();
+        if result.is_ok() {
+            context.remember_verified_types(checked);
+        }
+        result
     }
 
     /// Run any verifiers for this operation, and all of its nested operations, recursively.

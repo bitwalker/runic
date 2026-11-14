@@ -195,6 +195,24 @@ impl Context {
         }
     }
 
+    /// Whether verification has found `ty` valid in IR of this context, with every type it holds
+    /// ([Self::remember_verified_types]).
+    ///
+    /// A type is immutable and interned, so the answer cannot change: a type remembered here need
+    /// not be checked, nor walked into, again.
+    pub(crate) fn is_verified_type(&self, ty: crate::types::Type) -> bool {
+        self.verified_types.borrow().contains(&ty)
+    }
+
+    /// Remembers `types` as valid in IR of this context. Each of them must have been checked
+    /// together with every type it holds, at any depth, and found valid.
+    pub(crate) fn remember_verified_types(
+        &self,
+        types: impl IntoIterator<Item = crate::types::Type>,
+    ) {
+        self.verified_types.borrow_mut().extend(types);
+    }
+
     /// Returns the type denoted by `value`, interning it on first use.
     pub fn intern_type<T: TypeRegistration>(&self, value: T) -> crate::types::Type {
         self.type_tables().intern_type(value)

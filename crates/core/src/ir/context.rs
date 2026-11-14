@@ -60,6 +60,9 @@ pub struct Context {
     /// One shared copy of each data layout specification a [DataLayout](crate::layout::DataLayout)
     /// has been made for, keyed by the specification's value. See [Context::data_layout_cache].
     data_layouts: RefCell<FxHashMap<DataLayoutSpec, Rc<LayoutCache>>>,
+    /// The types [Operation::verify](crate::Operation::verify) has found valid in IR of this
+    /// context, each together with every type it holds. See [Context::is_verified_type].
+    verified_types: RefCell<crate::FxHashSet<crate::Type>>,
     next_block_id: Cell<u32>,
     next_value_id: Cell<u32>,
 }
@@ -184,6 +187,7 @@ impl Context {
             uniqued_attr_cache: Default::default(),
             default_attrs: Default::default(),
             data_layouts: Default::default(),
+            verified_types: Default::default(),
             next_block_id: Cell::new(0),
             next_value_id: Cell::new(0),
         }

@@ -58,6 +58,42 @@ impl fmt::Display for ElementSite<'_> {
     }
 }
 
+/// The elements a walk has seen: an inline list searched in order while there are at most eight,
+/// which most operations never outgrow, so their walks allocate nothing; a hash set after that.
+struct Visited<T> {
+    small: SmallVec<[T; 8]>,
+    large: Option<FxHashSet<T>>,
+}
+
+impl<T> Default for Visited<T> {
+    fn default() -> Self {
+        Self {
+            small: SmallVec::new(),
+            large: None,
+        }
+    }
+}
+
+impl<T: Copy + Eq + core::hash::Hash> Visited<T> {
+    /// Adds `value`, answering whether it was not there yet.
+    fn insert(&mut self, value: T) -> bool {
+        if let Some(large) = self.large.as_mut() {
+            return large.insert(value);
+        }
+        if self.small.contains(&value) {
+            return false;
+        }
+        if self.small.len() == self.small.inline_size() {
+            let mut large: FxHashSet<T> = self.small.iter().copied().collect();
+            large.insert(value);
+            self.large = Some(large);
+        } else {
+            self.small.push(value);
+        }
+        true
+    }
+}
+
 /// The types and attributes one attribute holds directly, in the order it lists them.
 #[derive(Default)]
 struct Held {
@@ -95,7 +131,7 @@ fn identity(attr: &AttributeRef) -> usize {
 /// another way; [WalkResult::Break] ends the walk with it.
 fn walk_attribute_tree(
     root: &AttributeRef,
-    visited: &mut FxHashSet<usize>,
+    visited: &mut Visited<usize>,
     f: &mut dyn FnMut(&AttributeRef, bool) -> WalkResult,
 ) -> WalkResult {
     let mut stack: SmallVec<[(AttributeRef, bool); 8]> = smallvec![(*root, false)];
@@ -122,7 +158,7 @@ pub fn walk_nested_attributes(
     attr: &AttributeRef,
     f: &mut dyn FnMut(&AttributeRef) -> WalkResult,
 ) -> WalkResult {
-    walk_attribute_tree(attr, &mut FxHashSet::default(), &mut |attr, _| f(attr))
+    walk_attribute_tree(attr, &mut Visited::default(), &mut |attr, _| f(attr))
 }
 
 /// Calls `f` with `root` and each type it holds at any depth that is not in `visited`, a holder
@@ -131,7 +167,7 @@ pub fn walk_nested_attributes(
 fn walk_type_tree(
     site: ElementSite<'_>,
     root: Type,
-    visited: &mut FxHashSet<Type>,
+    visited: &mut Visited<Type>,
     f: &mut dyn FnMut(ElementSite<'_>, Type) -> WalkResult,
 ) -> WalkResult {
     let mut stack: SmallVec<[Type; 8]> = smallvec![root];
@@ -176,7 +212,7 @@ impl Operation {
         &self,
         f: &mut dyn FnMut(ElementSite<'_>, &AttributeRef, bool) -> WalkResult,
     ) -> WalkResult {
-        let mut visited = FxHashSet::default();
+        let mut visited = Visited::default();
         for property in self.properties() {
             let site = ElementSite::Property(property.name.as_str());
             walk_attribute_tree(&property.value, &mut visited, &mut |attr, nested| {
@@ -208,7 +244,7 @@ impl Operation {
     /// [WalkResult::Skip] from `f` leaves out the types that type holds (unless they are reached
     /// another way); [WalkResult::Break] ends the walk and is returned.
     pub fn walk_types(&self, f: &mut dyn FnMut(ElementSite<'_>, Type) -> WalkResult) -> WalkResult {
-        let mut visited = FxHashSet::default();
+        let mut visited = Visited::default();
         for (index, result) in self.results().iter().enumerate() {
             let ty = result.borrow().ty();
             walk_type_tree(ElementSite::Result(index), ty, &mut visited, f)?;
