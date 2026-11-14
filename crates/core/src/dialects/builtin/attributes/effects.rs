@@ -159,18 +159,17 @@ fn verify_declared_effects(
     _ty: crate::Type,
     _context: &crate::Context,
 ) -> Result<(), crate::Report> {
-    match effects
-        .known()
-        .unwrap_or_default()
-        .iter()
-        .find(|effect| effect.argument.is_some() && effect.result.is_some())
+    if let Some(effects) = effects.known()
+        && let Some(effect) = effects
+            .iter()
+            .find(|effect| effect.argument.is_some() && effect.result.is_some())
     {
-        None => Ok(()),
-        Some(effect) => Err(crate::Report::msg(alloc::format!(
+        return Err(crate::Report::msg(alloc::format!(
             "an invalid effect declaration: the effect `{effect}` names both an argument and a \
              result"
-        ))),
+        )));
     }
+    Ok(())
 }
 
 impl AttrPrinter for DeclaredEffectsAttr {

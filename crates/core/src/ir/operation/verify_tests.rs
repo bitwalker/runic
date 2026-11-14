@@ -4,7 +4,7 @@
 use alloc::{format, rc::Rc, string::String, vec};
 
 use crate::{
-    AttributeRef, CallConv, Context, Int, Op, Operation,
+    AttributeRef, BuilderExt, CallConv, Context, Int, Op, Operation, SourceSpan, Type,
     attributes::AttrList,
     dialects::{
         builtin::{
@@ -13,12 +13,16 @@ use crate::{
                 AbiParam, BoolAttr, DeclaredEffects, DeclaredEffectsAttr, IntAttr, List, ListAttr,
                 MemoryEffectDescriptor, Signature, SignatureAttr, TypeArrayAttr, TypeAttr,
             },
+            types::{EnumType, EnumVariant},
         },
         debuginfo::attributes::{Variable, VariableAttr},
+        test::Constant,
     },
     effects::MemoryEffect,
     interner::Symbol,
+    ir::value::Value as _,
     testing::{Test, label_messages},
+    types::TypeImpl,
 };
 
 /// A list attribute holding `entries`.
@@ -259,6 +263,139 @@ fn a_fixed_own_type_of_another_context_is_rejected() {
             "an attribute held by attribute 'flag' of 'builtin.function' has type `i1`, which \
              belongs to another context"
         ),
+        "{message}"
+    );
+}
+
+/// An interned enum that breaks its invariants: its discriminant type was narrowed after the
+/// variants were given their values, so the value of `a` no longer fits.
+fn broken_enum(context: &Context) -> Type {
+    let wide = EnumType::new(
+        None,
+        context.isize(),
+        [
+            EnumVariant::new(Symbol::intern("a")).with_value(1 << 40),
+            EnumVariant::new(Symbol::intern("b")),
+        ],
+    )
+    .unwrap();
+    context.enum_type(wide.replace_subtypes(&mut |_| context.i32()))
+}
+
+/// A type attribute edited to hold `ty`.
+fn type_attr_holding(context: &Rc<Context>, ty: Type) -> AttributeRef {
+    let mut attr = context.create_attribute::<TypeAttr, _>(context.i32());
+    *attr.borrow_mut().as_value_mut() = ty;
+    attr.as_attribute_ref()
+}
+
+/// A signature `(ty)`, held as an attribute: the parameter is edited to `ty` after the signature
+/// is built, as debug builds refuse an open type or one of another context where it is stored.
+fn signature_taking(context: &Rc<Context>, ty: Type) -> AttributeRef {
+    let signature =
+        Signature::from_parts(CallConv::default(), vec![AbiParam::new(context.i32())], vec![]);
+    let mut attr = context.create_attribute::<SignatureAttr, _>(signature);
+    attr.borrow_mut().as_value_mut().params_mut()[0].ty = ty;
+    attr.as_attribute_ref()
+}
+
+/// An enum that breaks its invariants is rejected as the type an operation holds in an attribute,
+/// directly or in a list.
+#[test]
+fn a_type_attribute_holding_a_broken_enum_is_rejected() {
+    let (test, function) = function();
+    let context = test.context_rc();
+    let broken = broken_enum(&context);
+    let expected =
+        format!("attribute 'ty' of 'builtin.function' holds type `{broken}`, which is invalid: ");
+    let message = error_with(function, "ty", type_attr_holding(&context, broken));
+    assert!(message.contains(&expected), "{message}");
+    let message = error_with(function, "ty", list(&context, [type_attr_holding(&context, broken)]));
+    assert!(message.contains(&expected), "{message}");
+}
+
+/// An enum that breaks its invariants is rejected as a block argument's type and as a result's.
+#[test]
+fn a_block_argument_or_result_of_a_broken_enum_is_rejected() {
+    let (mut test, function) = function();
+    let context = test.context_rc();
+    let broken = broken_enum(&context);
+
+    let mut arg = function.borrow().entry_block().borrow().arguments()[0];
+    arg.borrow_mut().set_type(broken);
+    let message = verify_error(function.borrow().as_operation());
+    assert!(
+        message.contains(&format!(
+            "block argument 0 of 'builtin.function' has type `{broken}`, which is invalid: "
+        )),
+        "{message}"
+    );
+    arg.borrow_mut().set_type(context.i32());
+    assert!(function.borrow().as_operation().verify().is_ok());
+
+    let constant = {
+        let mut builder = test.function_builder();
+        let create = builder.builder_mut().create::<Constant, _>(SourceSpan::UNKNOWN);
+        create(Int::from(1i32)).unwrap()
+    };
+    let op = constant.as_operation_ref();
+    let mut result = op.borrow().results()[0];
+    result.borrow_mut().set_type(broken);
+    let message = verify_error(&op.borrow());
+    assert!(
+        message.contains(&format!(
+            "result 0 of 'test.constant' has type `{broken}`, which is invalid: "
+        )),
+        "{message}"
+    );
+}
+
+/// An enum that breaks its invariants nested in a pointer, in a signature's parameter, is
+/// rejected.
+#[test]
+fn a_broken_enum_in_a_pointer_in_a_signature_parameter_is_rejected() {
+    let (test, function) = function();
+    let context = test.context_rc();
+    let broken = broken_enum(&context);
+    let pointer = context.ptr_type(broken);
+    let message = error_with(function, "sig", signature_taking(&context, pointer));
+    assert!(
+        message.contains(&format!(
+            "attribute 'sig' of 'builtin.function' holds type `{broken}`, which is invalid: "
+        )),
+        "{message}"
+    );
+}
+
+/// An open type and a type of another context are rejected in a signature's parameter held by a
+/// list, and as an element of a type array held by a list.
+#[test]
+fn invalid_types_in_attributes_nested_in_a_list_are_rejected() {
+    let (test, function) = function();
+    let context = test.context_rc();
+    let other = Rc::new(Context::default());
+    for (ty, problem) in [
+        (context.ptr_type(context.rec_var(0)), "which is open"),
+        (other.i64(), "which belongs to another context"),
+    ] {
+        let message = error_with(function, "sig", list(&context, [signature_taking(&context, ty)]));
+        assert!(
+            message.contains(&format!(
+                "an attribute held by attribute 'sig' of 'builtin.function' is an invalid \
+                 signature: parameter 0 has type `{ty}`, {problem}"
+            )),
+            "{message}"
+        );
+    }
+
+    let open = context.ptr_type(context.rec_var(0));
+    let mut types = context.create_attribute::<TypeArrayAttr, _>([context.i32()]);
+    types.borrow_mut().as_value_mut().push(open);
+    let message = error_with(function, "types", list(&context, [types.as_attribute_ref()]));
+    assert!(
+        message.contains(&format!(
+            "attribute 'types' of 'builtin.function' holds type `{open}`, which is open"
+        )),
         "{message}"
     );
 }

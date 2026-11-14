@@ -51,7 +51,8 @@ pub trait AttributeRegistration: Attribute {
     /// any depth, so it catches a value edited after it was built. It checks the value alone:
     /// what depends on the operation holding the attribute is that operation's business. The
     /// types the value holds need not be checked for ownership or openness; the verifier checks
-    /// every type an operation holds.
+    /// every type an operation holds. A kind may still check them itself when it can say more
+    /// precisely where the fault is, as `SignatureAttr` does with "parameter N".
     ///
     /// The error's message describes the attribute as a noun phrase, which the verifier puts
     /// after "is": "an integer constant of type `i8` holding a 32-bit value, but ..". A kind
