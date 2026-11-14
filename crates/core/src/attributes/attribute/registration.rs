@@ -2,7 +2,7 @@ use alloc::{boxed::Box, format, rc::Rc};
 
 use super::AttributeValue;
 use crate::{
-    Attribute, Context, DialectRegistration, Type, UnsafeIntrusiveEntityRef,
+    Attribute, Context, DialectRegistration, Report, Type, UnsafeIntrusiveEntityRef,
     attributes::AttributeElements, interner, traits::TraitInfo,
 };
 
@@ -44,4 +44,21 @@ pub trait AttributeRegistration: Attribute {
     fn underlying_value(attr: &Self) -> &Self::Value;
     /// Get a mutable reference the concrete value of this attribute
     fn underlying_value_mut(attr: &mut Self) -> &mut Self::Value;
+    /// Whether `value`, with the attribute type `ty`, is well formed by itself. The default accepts.
+    ///
+    /// [Operation::verify](crate::Operation::verify) calls this (through
+    /// [Attribute::verify](crate::Attribute::verify)) for every attribute an operation holds, at
+    /// any depth, so it catches a value edited after it was built. It checks the value alone:
+    /// what depends on the operation holding the attribute is that operation's business. The
+    /// types the value holds need not be checked for ownership or openness; the verifier checks
+    /// every type an operation holds.
+    ///
+    /// The error's message describes the attribute as a noun phrase, which the verifier puts
+    /// after "is": "an integer constant of type `i8` holding a 32-bit value, but ..". A kind
+    /// states its check with `#[attribute(.., verify = "path")]`, naming a function of this
+    /// signature.
+    fn verify(value: &Self::Value, ty: Type, context: &Context) -> Result<(), Report> {
+        let _ = (value, ty, context);
+        Ok(())
+    }
 }

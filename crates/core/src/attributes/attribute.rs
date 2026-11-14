@@ -109,6 +109,9 @@ pub trait Attribute:
     /// type of another width is replaced as asked, and whether the result is valid is the
     /// verifier's business.
     fn replace_elements(&self, replacer: &mut dyn ElementReplacer) -> Option<AttributeRef>;
+    /// Whether this attribute's value, with its type, is well formed by itself: its kind's
+    /// [AttributeRegistration::verify], checked against `context`.
+    fn verify(&self, context: &Context) -> Result<(), crate::Report>;
 }
 
 impl core::hash::Hash for dyn Attribute {

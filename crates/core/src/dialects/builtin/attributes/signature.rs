@@ -276,9 +276,14 @@ impl core::error::Error for InvalidSignature {}
 ///
 /// As an attribute ([SignatureAttr]), its elements ([crate::Attribute::visit_elements]) are, for
 /// each parameter, its type then its attributes, then the same for each result.
+///
+/// A signature attribute is valid when [Signature::validate] accepts it and the type of each
+/// parameter and declared result belongs to the context and is closed; [crate::Operation::verify]
+/// checks it wherever an operation holds one.
 #[derive(DialectAttribute, Default, Debug, Clone, PartialEq, Eq, Hash)]
 #[attribute(
     dialect = BuiltinDialect,
+    verify = "verify_signature",
     implements(AttrPrinter)
 )]
 pub struct Signature {
@@ -419,6 +424,31 @@ impl Signature {
         }
         Ok(())
     }
+}
+
+/// A signature is valid ([Signature::validate]), and the type of each of its parameters and
+/// declared results may be used in IR of `context`.
+///
+/// The verifier checks every type an operation holds; the parameter types are checked here too so
+/// that the error says which parameter or result is the problem.
+fn verify_signature(
+    signature: &Signature,
+    _ty: Type,
+    context: &Context,
+) -> Result<(), crate::Report> {
+    let invalid = |problem: &dyn fmt::Display| {
+        crate::Report::msg(alloc::format!("an invalid signature: {problem}"))
+    };
+    signature.validate().map_err(|err| invalid(&err))?;
+    let params = signature.params().iter().enumerate().map(|(i, p)| ("parameter", i, p));
+    let results = signature.declared_results().iter().enumerate().map(|(i, r)| ("result", i, r));
+    for (kind, index, param) in params.chain(results) {
+        let ty = param.ty;
+        if let Some(problem) = context.ir_type_problem(ty) {
+            return Err(invalid(&format_args!("{kind} {index} has type `{ty}`, {problem}")));
+        }
+    }
+    Ok(())
 }
 
 impl AttrPrinter for SignatureAttr {

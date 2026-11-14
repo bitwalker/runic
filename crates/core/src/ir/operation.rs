@@ -2,6 +2,8 @@ mod builder;
 pub mod equivalence;
 mod name;
 mod state;
+#[cfg(test)]
+mod verify_tests;
 
 use alloc::rc::Rc;
 use core::{
@@ -518,17 +520,23 @@ impl Operation {
 
     /// Run any verifiers for this operation
     ///
-    /// The first check, run for every operation, is that every type the operation holds was
-    /// interned by its context; see [Self::verify_type_ownership]. The second is that every
-    /// integer constant it holds, at any depth, is valid; see [Self::verify_int_attributes]. The
-    /// third is that every signature it holds, at any depth, is valid; see
-    /// [Self::verify_signature_attributes]. The fourth is that every symbol reference it holds, at
-    /// any depth, is linked to the symbol its path names; see [Self::verify_symbol_refs]. The operation's own verifiers run after these, so
-    /// they may assume the operation's symbol references are linked.
+    /// The generic checks run first, for every operation. The first is that every attribute the
+    /// operation holds, at any depth, is well formed by itself: its type may be used in IR of this
+    /// context, and its kind's verifier
+    /// ([AttributeRegistration::verify](crate::AttributeRegistration::verify)) accepts it. The
+    /// second is that every type the operation holds, at any depth (see [Self::walk_types]),
+    /// belongs to this context, is closed, and satisfies its kind's
+    /// [TypeInvariants](crate::TypeInvariants) if it has any. The third is that every symbol
+    /// reference it holds, at any depth, is linked to the symbol its path names; see
+    /// [Self::verify_symbol_refs]. The operation's own verifiers run after these, so they may
+    /// assume the operation's attributes, types and symbol references are valid.
+    ///
+    /// An attribute can be edited after it is built, and the constructors that skip the checks
+    /// (and in-place mutation) do not check anything, so these checks are what catch an invalid
+    /// attribute or type in every build.
     pub fn verify(&self) -> Result<(), Report> {
-        self.verify_type_ownership()?;
-        self.verify_int_attributes()?;
-        self.verify_signature_attributes()?;
+        self.verify_held_attributes()?;
+        self.verify_held_types()?;
         self.verify_symbol_refs()?;
         let dyn_op: &dyn Op = self.as_ref();
         dyn_op.verify(self.context())
@@ -620,166 +628,92 @@ impl Operation {
         .into_result()
     }
 
-    /// Check that the types of this operation's results, of the arguments of the blocks in its
-    /// regions, and of its properties and attributes (the type each attribute has, as given by
-    /// [Attribute::ty](crate::Attribute::ty)) were all interned by its context and are not open.
+    /// Check every attribute this operation holds, at any depth, in one walk
+    /// ([Self::walk_attributes]): the attribute's own type ([Attribute::ty](crate::Attribute::ty))
+    /// may be used in IR of this context, and the attribute's kind accepts it
+    /// ([Attribute::verify](crate::Attribute::verify)).
     ///
-    /// Types held inside attribute values, such as the value of a type attribute, are not checked
-    /// here; the parameter and result types of a signature are checked by
-    /// [Self::verify_signature_attributes].
-    ///
-    /// A type may only be used with the context that interned it, and an open type (one holding a
-    /// recursion variable) may not be used in IR at all. Debug builds check both where a type is
-    /// stored; this check is what catches the types it covers in every build.
-    pub fn verify_type_ownership(&self) -> Result<(), Report> {
+    /// The own type is checked here, not only by [Self::verify_held_types], because a kind that
+    /// takes its type from its value (`BoolAttr`'s `i1`) does not list it among the types it holds.
+    fn verify_held_attributes(&self) -> Result<(), Report> {
         let context = self.context();
-        let check = |role: &dyn fmt::Display, ty: Type| {
-            let problem = if !context.owns_type(ty) {
-                "which belongs to another context: a type may only be used with the context that \
-                 interned it"
-            } else if ty.is_open() {
-                "which is open: a recursion variable is only meaningful inside the definition of a \
-                 recursion group"
-            } else {
-                return Ok(());
-            };
-            Err(crate::diagnostics::report!(
+        let invalid = |role: &ElementRole<'_>, problem: &dyn fmt::Display| {
+            crate::diagnostics::report!(
                 message: "invalid operation",
                 labels: [
-                    primary(
-                        self.span(),
-                        alloc::format!(
-                            "{role} of '{}' has type `{ty}`, {problem}",
-                            self.name()
-                        )
-                    ),
+                    primary(self.span(), alloc::format!("{role} of '{}' {problem}", self.name())),
                 ],
-            ))
-        };
-        for (index, result) in self.results().iter().enumerate() {
-            check(&format_args!("result {index}"), result.borrow().ty())?;
-        }
-        for region in self.regions().iter() {
-            for block in region.body() {
-                for (index, arg) in block.arguments().iter().enumerate() {
-                    check(&format_args!("block argument {index}"), arg.borrow().ty())?;
-                }
-            }
-        }
-        for prop in self.properties() {
-            check(&format_args!("property '{}'", prop.name), prop.value().ty())?;
-        }
-        for attr in self.attributes() {
-            let attr = attr.as_named_attribute();
-            check(&format_args!("attribute '{}'", attr.name), attr.value().ty())?;
-        }
-        Ok(())
-    }
-
-    /// Check that every integer constant ([IntAttr]) among this operation's properties and
-    /// attributes is valid: its value is exactly as wide as a constant of its type, as given by
-    /// [Int::width_for_type](crate::Int::width_for_type) (`N` bits for `iN`, 64 for `isize`).
-    ///
-    /// [crate::Context::int_attr] checks this when it creates a constant; the unchecked
-    /// constructors, the generated setters and in-place mutation do not, so this check is what
-    /// catches an invalid constant in every build.
-    ///
-    /// Every integer constant the operation holds is checked, at any depth (see
-    /// [Self::walk_attributes]): one nested in a list, say, is checked too.
-    ///
-    /// [IntAttr]: crate::dialects::builtin::attributes::IntAttr
-    pub fn verify_int_attributes(&self) -> Result<(), Report> {
-        use crate::dialects::builtin::attributes::IntAttr;
-
-        let check = |role: &dyn fmt::Display, attr: &AttributeRef| -> Result<(), Report> {
-            let attr = attr.borrow();
-            let Some(attr) = attr.downcast_ref::<IntAttr>() else {
-                return Ok(());
-            };
-            let ty = attr.ty();
-            let width = attr.as_value().width();
-            let problem = match crate::Int::width_for_type(ty) {
-                Some(expected) if expected == width => return Ok(()),
-                Some(expected) => alloc::format!("a constant of that type is {expected} bits wide"),
-                None => "no integer constant has that type".into(),
-            };
-            Err(crate::diagnostics::report!(
-                message: "invalid operation",
-                labels: [
-                    primary(
-                        self.span(),
-                        alloc::format!(
-                            "{role} of '{}' is an integer constant of type `{ty}` holding a \
-                             {width}-bit value, but {problem}",
-                            self.name()
-                        )
-                    ),
-                ],
-            ))
+            )
         };
         self.walk_attributes_and_depth(&mut |site, attr, nested| {
-            check(&ElementRole { site, nested }, attr).into()
+            let role = ElementRole { site, nested };
+            let attr = attr.borrow();
+            let ty = attr.ty();
+            if let Some(problem) = context.ir_type_problem(ty) {
+                return WalkResult::Break(invalid(
+                    &role,
+                    &format_args!("has type `{ty}`, {problem}"),
+                ));
+            }
+            match attr.verify(context) {
+                Ok(()) => WalkResult::Continue(()),
+                Err(err) => WalkResult::Break(invalid(&role, &format_args!("is {err}"))),
+            }
         })
         .into_result()
     }
 
-    /// Check that every signature ([SignatureAttr]) among this operation's properties and
-    /// attributes is valid: [Signature::validate] accepts it, and the type of each of its
-    /// parameters and declared results was interned by the operation's context and is not open.
+    /// Check every type this operation holds, at any depth, in one walk ([Self::walk_types]): it
+    /// was interned by this context, it is not open, and its kind's
+    /// [TypeInvariants](crate::TypeInvariants), if it has any, accept it.
     ///
-    /// Nothing checks a signature when it is built or read: a parameter has no context to check
-    /// its type against, and the parser reads `never` anywhere. This check is what catches an
-    /// invalid signature in every build, whichever operation holds it.
-    ///
-    /// Every signature the operation holds is checked, at any depth (see
-    /// [Self::walk_attributes]): one nested in a list, say, is checked too.
-    ///
-    /// [SignatureAttr]: crate::dialects::builtin::attributes::SignatureAttr
-    /// [Signature::validate]: crate::dialects::builtin::attributes::Signature::validate
-    pub fn verify_signature_attributes(&self) -> Result<(), Report> {
-        use crate::dialects::builtin::attributes::SignatureAttr;
-
+    /// A type may only be used with the context that interned it, and an open type (one holding a
+    /// recursion variable) may not be used in IR at all. Debug builds check both where a type is
+    /// stored; this check is what catches them in every build, wherever the type is held: as the
+    /// type of a result or a block argument, as an attribute's type, or inside an attribute's value
+    /// (the type of a type attribute, a parameter of a signature, ..).
+    fn verify_held_types(&self) -> Result<(), Report> {
         let context = self.context();
-        let invalid = |role: &dyn fmt::Display, problem: &dyn fmt::Display| {
-            crate::diagnostics::report!(
+        self.walk_types(&mut |site, ty| {
+            let problem = match context.ir_type_problem(ty) {
+                Some(problem) => alloc::borrow::Cow::Borrowed(problem),
+                None => match ty.as_trait::<dyn crate::TypeInvariants>() {
+                    Some(invariants) => match invariants.check_invariants(context) {
+                        Ok(()) => return WalkResult::Continue(()),
+                        Err(err) => alloc::format!("which is invalid: {err}").into(),
+                    },
+                    None => return WalkResult::Continue(()),
+                },
+            };
+            // a result's or block argument's own type keeps the wording of its role
+            let (role, held_type) = match site {
+                crate::ElementSite::Result(index) => {
+                    (alloc::format!("result {index}"), self.results()[index].borrow().ty() != ty)
+                }
+                crate::ElementSite::BlockArgument {
+                    region,
+                    block,
+                    index,
+                } => {
+                    let region = self.regions().iter().nth(region).expect("the walk's region");
+                    let block = region.body().iter().nth(block).expect("the walk's block");
+                    let arg_ty = block.arguments()[index].borrow().ty();
+                    (alloc::format!("block argument {index}"), arg_ty != ty)
+                }
+                crate::ElementSite::Property(_) | crate::ElementSite::Attribute(_) => {
+                    (alloc::format!("{site}"), true)
+                }
+            };
+            let verb = if held_type { "holds" } else { "has" };
+            WalkResult::Break(crate::diagnostics::report!(
                 message: "invalid operation",
                 labels: [
                     primary(
                         self.span(),
-                        alloc::format!("{role} of '{}' is an invalid signature: {problem}", self.name())
+                        alloc::format!("{role} of '{}' {verb} type `{ty}`, {problem}", self.name())
                     ),
                 ],
-            )
-        };
-        let check = |role: &dyn fmt::Display, attr: &AttributeRef| -> Result<(), Report> {
-            let attr = attr.borrow();
-            let Some(signature) = attr.downcast_ref::<SignatureAttr>() else {
-                return Ok(());
-            };
-            signature.validate().map_err(|err| invalid(role, &err))?;
-            let params = signature.params().iter().enumerate().map(|(i, p)| ("parameter", i, p));
-            let results =
-                signature.declared_results().iter().enumerate().map(|(i, r)| ("result", i, r));
-            for (kind, index, param) in params.chain(results) {
-                let ty = param.ty;
-                let problem = if !context.owns_type(ty) {
-                    "which belongs to another context: a type may only be used with the context \
-                     that interned it"
-                } else if ty.is_open() {
-                    "which is open: a recursion variable is only meaningful inside the definition \
-                     of a recursion group"
-                } else {
-                    continue;
-                };
-                return Err(invalid(
-                    role,
-                    &format_args!("{kind} {index} has type `{ty}`, {problem}"),
-                ));
-            }
-            Ok(())
-        };
-        self.walk_attributes_and_depth(&mut |site, attr, nested| {
-            check(&ElementRole { site, nested }, attr).into()
+            ))
         })
         .into_result()
     }

@@ -36,6 +36,11 @@ pub struct Attribute {
     /// given together with `default`.
     #[darling(default)]
     no_default: bool,
+    /// A function `fn(&Value, Type, &Context) -> Result<(), Report>` checking that a value, with
+    /// the attribute's type, is well formed: the kind's `AttributeRegistration::verify`. Without
+    /// it every value is accepted.
+    #[darling(default)]
+    verify: Option<syn::Path>,
     #[darling(default)]
     bounds: Option<Vec<syn::WherePredicate>>,
     #[darling(default)]
@@ -283,6 +288,18 @@ impl quote::ToTokens for Attribute {
             }
         };
 
+        let verify_impl: Option<syn::ImplItemFn> = self.verify.as_ref().map(|verify| {
+            parse_quote_spanned! { verify.span() =>
+                fn verify(
+                    value: &Self::Value,
+                    ty: ::runic_core::Type,
+                    context: &::runic_core::Context,
+                ) -> ::core::result::Result<(), ::runic_core::Report> {
+                    #verify(value, ty, context)
+                }
+            }
+        });
+
         let no_default = self.no_default;
         let dialect = &self.dialect;
         let attr_name_str =
@@ -353,6 +370,12 @@ impl quote::ToTokens for Attribute {
                 ) -> ::core::option::Option<::runic_core::AttributeRef> {
                     ::runic_core::attributes::replace_attribute_elements(self, replacer)
                 }
+                fn verify(
+                    &self,
+                    context: &::runic_core::Context,
+                ) -> ::core::result::Result<(), ::runic_core::Report> {
+                    <Self as ::runic_core::AttributeRegistration>::verify(&self.value, self._attr.ty(), context)
+                }
             }
 
             impl #attr_impl_generics #attr_struct_name #attr_ty_generics #attr_where_clause {
@@ -420,6 +443,8 @@ impl quote::ToTokens for Attribute {
                 }
 
                 #create_default_impl
+
+                #verify_impl
 
                 #[inline(always)]
                 fn underlying_value(attr: &Self) -> &Self::Value {

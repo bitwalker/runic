@@ -85,7 +85,7 @@ impl Dialect for ArithDialect {
             (integer.as_int(), integer.ty(), attr.try_downcast_attr::<IntAttr>().ok())
         };
         // An `IntAttr` whose value is not as wide as a constant of its type is invalid (see
-        // `Operation::verify_int_attributes`); it is not materialized either.
+        // `IntAttr`'s verifier); it is not materialized either.
         if value_ty != ty || Int::width_for_type(ty) != Some(value.width()) {
             return None;
         }

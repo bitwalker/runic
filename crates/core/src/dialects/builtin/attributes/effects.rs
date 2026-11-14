@@ -78,8 +78,16 @@ impl fmt::Display for MemoryEffectDescriptor {
 /// whose failure to return must be observed declares nothing, or a write. The one case the IR sees
 /// for itself is a signature that never returns (`-> never`): a call made with such a signature has
 /// unknown effects whatever its callee declares.
+///
+/// As an attribute it is valid when each effect names at most one of an argument and a result.
+/// Whether the argument or result it names exists is a question for the callable that declares
+/// it.
 #[derive(DialectAttribute, Clone, Debug, Default, PartialEq, Eq, Hash)]
-#[attribute(dialect = BuiltinDialect, implements(AttrPrinter))]
+#[attribute(
+    dialect = BuiltinDialect,
+    verify = "verify_declared_effects",
+    implements(AttrPrinter)
+)]
 pub enum DeclaredEffects {
     /// The callable states nothing: calling it may have any effect.
     #[default]
@@ -142,6 +150,26 @@ impl fmt::Display for DeclaredEffects {
 impl crate::formatter::PrettyPrint for DeclaredEffects {
     fn render(&self) -> crate::formatter::Document {
         crate::formatter::display(self)
+    }
+}
+
+/// Each effect names at most one of an argument and a result.
+fn verify_declared_effects(
+    effects: &DeclaredEffects,
+    _ty: crate::Type,
+    _context: &crate::Context,
+) -> Result<(), crate::Report> {
+    match effects
+        .known()
+        .unwrap_or_default()
+        .iter()
+        .find(|effect| effect.argument.is_some() && effect.result.is_some())
+    {
+        None => Ok(()),
+        Some(effect) => Err(crate::Report::msg(alloc::format!(
+            "an invalid effect declaration: the effect `{effect}` names both an argument and a \
+             result"
+        ))),
     }
 }
 

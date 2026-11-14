@@ -174,6 +174,27 @@ impl Context {
         crate::types::debug_assert_closed(ty, role);
     }
 
+    /// Why `ty` may not be used in IR of this context, as a clause that follows the type in a
+    /// diagnostic ("..has type `T`, which is open: .."), or `None` when it may: it belongs to
+    /// another context, or it is open (holds a recursion variable).
+    ///
+    /// This is what [Self::debug_assert_ir_type] asserts; the verifier reports it in every build.
+    pub(crate) fn ir_type_problem(&self, ty: crate::types::Type) -> Option<&'static str> {
+        if !self.owns_type(ty) {
+            Some(
+                "which belongs to another context: a type may only be used with the context that \
+                 interned it",
+            )
+        } else if ty.is_open() {
+            Some(
+                "which is open: a recursion variable is only meaningful inside the definition of \
+                 a recursion group",
+            )
+        } else {
+            None
+        }
+    }
+
     /// Returns the type denoted by `value`, interning it on first use.
     pub fn intern_type<T: TypeRegistration>(&self, value: T) -> crate::types::Type {
         self.type_tables().intern_type(value)

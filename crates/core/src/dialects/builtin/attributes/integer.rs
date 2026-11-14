@@ -61,19 +61,38 @@ define_integer_attr!(I128, i128, 128);
 ///
 /// An `IntAttr` whose type is not `iN` of its value's width (or `isize` with 64 bits) is invalid;
 /// [crate::Int::width_for_type] states the rule. It is checked in two places: by `int_attr`, which
-/// panics rather than create an invalid constant, and by the verifier
-/// ([crate::Operation::verify_int_attributes]), which rejects an operation holding one among its
-/// properties and attributes. `create_attribute_with_type::<IntAttr, _>`, the setters generated for
-/// an operation's `IntAttr` field, and mutation in place do not check it.
+/// panics rather than create an invalid constant, and by the kind's verifier
+/// ([crate::AttributeRegistration::verify]), which [crate::Operation::verify] runs for every
+/// constant an operation holds, at any depth. `create_attribute_with_type::<IntAttr, _>`, the
+/// setters generated for an operation's `IntAttr` field, and mutation in place do not check it.
 #[derive(DialectAttribute)]
 #[attribute(
     dialect = BuiltinDialect,
     remote = "crate::Int",
     default = "default_int",
+    verify = "verify_int",
     implements(IntegerLikeAttr, AttrPrinter),
 )]
 #[allow(unused)]
 struct Int;
+
+/// An integer constant is exactly as wide as a constant of its type
+/// ([crate::Int::width_for_type]).
+fn verify_int(
+    value: &crate::Int,
+    ty: crate::Type,
+    _context: &crate::Context,
+) -> Result<(), crate::Report> {
+    let width = value.width();
+    let problem = match crate::Int::width_for_type(ty) {
+        Some(expected) if expected == width => return Ok(()),
+        Some(expected) => alloc::format!("a constant of that type is {expected} bits wide"),
+        None => "no integer constant has that type".into(),
+    };
+    Err(crate::Report::msg(alloc::format!(
+        "an integer constant of type `{ty}` holding a {width}-bit value, but {problem}"
+    )))
+}
 
 /// The value of a body-less `#builtin.int`: a 32-bit zero.
 fn default_int(_context: &crate::Context) -> crate::Int {

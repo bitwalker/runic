@@ -494,12 +494,12 @@ impl CallableSymbol for Function {}
 /// in the body, outside nested callables, returns exactly the results of the signature (none may
 /// appear in a function that never returns).
 ///
-/// Every effect in the function's declared effects names at most one of an argument and a result,
-/// and the one it names exists in the signature. A declaration has no locals: its `locals(..)` is
-/// empty.
+/// The argument or result each effect in the function's declared effects names exists in the
+/// signature. A declaration has no locals: its `locals(..)` is empty.
 ///
-/// The signature itself is checked before this runs, by
-/// [Operation::verify_signature_attributes], as for every operation that holds one.
+/// The signature itself, and that each declared effect names at most one of an argument and a
+/// result, are checked before this runs by [Operation::verify], which verifies every attribute an
+/// operation holds.
 impl crate::Verify<dyn CallableSymbol> for Function {
     fn verify(&self, _context: &crate::Context) -> Result<(), crate::Report> {
         use crate::{Spanned, ValueRef, WalkResult, diagnostics::report};
@@ -516,9 +516,6 @@ impl crate::Verify<dyn CallableSymbol> for Function {
         if let Some(effects) = self.get_memory_effects().known() {
             for effect in effects {
                 let target = match (effect.argument, effect.result) {
-                    (Some(_), Some(_)) => Some(format!(
-                        "the declared effect `{effect}` names both an argument and a result"
-                    )),
                     (Some(index), None) if usize::from(index) >= signature.params().len() => {
                         Some(format!(
                             "the declared effect `{effect}` names argument {index}, but the \

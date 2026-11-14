@@ -14,7 +14,8 @@ impl<T: AsAny + CloneToUninit> AttributeValue for T {}
 ///
 /// It runs once, when the attribute is created: a value changed afterwards is not checked again,
 /// and neither is a type held in any other shape (a public field such as an `AbiParam`'s type, or
-/// a type inside a signature). The verifier does not look inside attribute values either.
+/// a type inside a signature). [Operation::verify](crate::Operation::verify) checks every type an
+/// operation's attributes hold, in every build.
 #[doc(hidden)]
 pub trait DebugAssertIrValue {
     fn debug_assert_ir_value(&self, context: &Context);

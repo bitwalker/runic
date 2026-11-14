@@ -51,7 +51,7 @@ impl Dialect for TestDialect {
             (attr.as_int(), attr.ty())
         };
         // An `IntAttr` whose value is not as wide as a constant of its type is invalid (see
-        // `Operation::verify_int_attributes`); it is not materialized either.
+        // `IntAttr`'s verifier); it is not materialized either.
         if value_ty != ty || crate::Int::width_for_type(ty) != Some(value.width()) {
             return None;
         }

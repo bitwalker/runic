@@ -5428,7 +5428,7 @@ fn verify_error_text(function: UnsafeIntrusiveEntityRef<Function>) -> String {
 }
 
 /// `never` is the single result of a function that never returns, and nothing else. The
-/// signature is checked by `Operation::verify_signature_attributes`, which runs before the
+/// signature is checked by `SignatureAttr`'s verifier, which `Operation::verify` runs before the
 /// function's own verifier: the message is the generic one, naming the property.
 #[test]
 fn never_as_a_parameter_or_among_results_does_not_verify() {
