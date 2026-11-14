@@ -31,6 +31,7 @@ use crate::{
     testing::text::describe,
 };
 
+mod error_tests;
 mod in_place_tests;
 mod signature_tests;
 
@@ -985,4 +986,67 @@ fn after_a_replacement_the_insertion_point_is_where_it_was() {
             "at the replaced operation: {at_op}"
         );
     }
+}
+
+/// A target whose rule for the test operations is that the converter finds them legal
+/// ([TypeConverter::is_legal_op]) converts exactly the operations that touch an `i128`; those over
+/// `i32` are left as they were.
+#[test]
+fn a_target_ruled_by_the_converter_converts_exactly_the_operations_that_touch_an_i128() {
+    let (context, function) = parse_function(
+        "(%0: i32, %1: i32)",
+        "    %2 = test.constant 1 : i128;
+    %3 = test.constant 2 : i128;
+    %4 = test.add %2, %3;
+    %5 = test.add %0, %1;
+    %6 = test.constant 7 : i32;
+    test.sink %4 : (i128);
+    test.sink %5, %6 : (i32, i32);
+    builtin.ret;",
+    );
+    let converter = wide_converter(&context);
+    let legal = {
+        let converter = converter.clone();
+        move |op: &Operation| DynamicLegalityResult::legal_if(converter.is_legal_op(op))
+    };
+    let mut target = ConversionTarget::new(context.clone());
+    target
+        .set_unknown_op_policy(UnknownOpPolicy::Legal)
+        .add_dynamically_legal_op::<Constant, _>(legal.clone())
+        .add_dynamically_legal_op::<Add, _>(legal.clone())
+        .add_dynamically_legal_op::<Sink, _>(legal);
+    let adds = Rc::new(RefCell::new(vec![]));
+    let sinks = Rc::new(RefCell::new(vec![]));
+
+    let result = convert(
+        function,
+        target,
+        [
+            split_constant(&context, &converter),
+            split_add(&context, &converter, adds.clone()),
+            flatten_sink(&context, &converter, sinks.clone()),
+        ],
+    )
+    .unwrap_or_else(|err| panic!("{}", describe(&err)));
+
+    assert_eq!(result.converted_ops(), 4, "two constants, an add and a sink");
+    assert_eq!(adds.borrow().len(), 1);
+    assert_eq!(sinks.borrow().len(), 1);
+    assert_str_eq!(
+        function.borrow().to_string(),
+        function_text(
+            "(%0: i32, %1: i32)",
+            "    %7 = test.constant 1 : i64;
+    %8 = test.constant 0 : i64;
+    %15 = test.constant 2 : i64;
+    %16 = test.constant 0 : i64;
+    %12 = test.add %7, %15;
+    %13 = test.add %8, %16;
+    %5 = test.add %0, %1;
+    %6 = test.constant 7 : i32;
+    test.sink %12, %13 : (i64, i64);
+    test.sink %5, %6 : (i32, i32);
+    builtin.ret;"
+        )
+    );
 }

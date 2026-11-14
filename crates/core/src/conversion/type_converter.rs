@@ -4,7 +4,7 @@ use core::cell::RefCell;
 use smallvec::SmallVec;
 
 use super::ConversionPatternRewriter;
-use crate::{Context, FxHashMap, Report, SourceSpan, Type, ValueRef};
+use crate::{Context, FxHashMap, Operation, Report, SourceSpan, Type, ValueRef, WalkResult};
 
 type TypeConversionFn = Rc<dyn Fn(&Context, Type) -> Option<TypeConversion>>;
 type ValueConversionFn = Rc<dyn Fn(&Context, ValueRef) -> Option<TypeConversion>>;
@@ -211,6 +211,34 @@ impl TypeConverter {
     #[inline]
     pub fn is_legal_type(&self, context: &Context, ty: Type) -> bool {
         self.convert_type(context, ty).as_slice() == [ty]
+    }
+
+    /// Whether every type the operation has or holds converts to itself: its operands' and results'
+    /// types, the argument types of its regions' blocks, and each type held directly by one of its
+    /// attributes at any depth of attribute (types held inside other types are not asked about).
+    ///
+    /// Each type is asked about with [Self::is_legal_type], so through the type callbacks and what
+    /// the converter remembers of them; the value callbacks are not asked. The types visited are
+    /// those of [Operation::walk_types] without descending into a type, plus the operand types. As
+    /// that walk does, it leaves out the type an attribute's kind fixes (the `i1` of a `BoolAttr`,
+    /// the `i32` of an `I32Attr`) and the types held by the key of a keyed successor; the operations
+    /// nested in the regions are not looked at.
+    pub fn is_legal_op(&self, op: &Operation) -> bool {
+        let context = op.context();
+        let operands_legal = op
+            .operands()
+            .iter()
+            .all(|operand| self.is_legal_type(context, operand.borrow().ty()));
+        operands_legal
+            && !op
+                .walk_types(&mut |_, ty| {
+                    if self.is_legal_type(context, ty) {
+                        WalkResult::Skip
+                    } else {
+                        WalkResult::Break(Report::msg("illegal type"))
+                    }
+                })
+                .was_interrupted()
     }
 
     /// The one type `ty` converts to, or an error when it converts to several or none.
@@ -464,5 +492,194 @@ mod tests {
         assert!(converter.convert_value(&context, first).is_empty());
         assert_eq!(converter.convert_value(&context, second).as_slice(), [context.i32()]);
         assert_eq!(calls.get(), 3);
+    }
+
+    mod legality {
+        use alloc::{format, string::String, vec::Vec};
+
+        use super::*;
+        use crate::{
+            AttributeRef, OperationRef,
+            attributes::AttrList,
+            dialects::{
+                builtin::{
+                    Function, Module,
+                    attributes::{BoolAttr, I32Attr, List, ListAttr, TypeAttr},
+                },
+                test::TestDialect,
+            },
+            parse::{ParserConfig, parse},
+            testing::text::describe,
+        };
+
+        /// `i128` becomes `(i64, i64)`; every other type is itself. The converter is flat: it is
+        /// not asked about the types inside a type.
+        fn wide_converter(context: &Context) -> TypeConverter {
+            let (i64, i128) = (context.i64(), context.i128());
+            let mut converter = TypeConverter::new();
+            converter.add_conversion(move |_, ty| {
+                (ty == i128).then(|| TypeConversion::many([i64, i64]))
+            });
+            converter
+        }
+
+        /// Parses `body` as the body of `builtin.module @m`, in a context with the test dialect.
+        fn parse_module(body: &str) -> (Rc<Context>, OperationRef) {
+            let context = Rc::new(Context::default());
+            context.get_or_register_dialect::<TestDialect>();
+            let source = format!("builtin.module public @m {{\n{body}\n}};");
+            let module = parse::<Module>(ParserConfig::new(context.clone()), "legality", &source)
+                .into_result()
+                .unwrap_or_else(|err| panic!("{}", describe(&err)));
+            (context, module.as_operation_ref())
+        }
+
+        /// The operations nested in `root`, in program order, with what each prints as its first
+        /// line.
+        fn nested_ops(root: OperationRef) -> Vec<(String, OperationRef)> {
+            let mut ops = Vec::new();
+            root.borrow().prewalk_all(|op| {
+                if op.as_operation_ref() != root {
+                    let text = format!("{op}");
+                    let line = String::from(text.lines().next().unwrap_or_default());
+                    ops.push((line, op.as_operation_ref()));
+                }
+            });
+            ops
+        }
+
+        /// The one nested operation whose first printed line starts with `prefix`.
+        fn op_starting(root: OperationRef, prefix: &str) -> OperationRef {
+            let found = nested_ops(root)
+                .into_iter()
+                .filter(|(line, _)| line.trim_start().starts_with(prefix))
+                .map(|(_, op)| op)
+                .collect::<Vec<_>>();
+            assert_eq!(found.len(), 1, "one operation starting with '{prefix}'");
+            found[0]
+        }
+
+        /// An operation is illegal when an operand, a result, the argument of a block of one of
+        /// its regions, a `TypeAttr` property or a parameter of a signature property has a type
+        /// the converter changes; each counterpart over a legal type is legal.
+        #[test]
+        fn an_operation_is_illegal_when_a_type_it_has_or_holds_is_illegal() {
+            let (context, module) = parse_module(
+                "    builtin.global_variable public @wide_global : i128;
+    builtin.global_variable public @narrow_global : i64;
+    builtin.function public extern(\"C\") @wide_decl(i128);
+    builtin.function public extern(\"C\") @narrow_decl(i64);
+    builtin.function public extern(\"C\") @f(%0: i128, %1: i64, %2: i64) {
+        test.sink %0 : (i128);
+        test.sink %1 : (i64);
+        %3 = test.join %1, %2;
+        %4 = test.low %3;
+        builtin.ret;
+    };
+    builtin.function public extern(\"C\") @g() {
+        builtin.ret;
+    };",
+            );
+            let converter = wide_converter(&context);
+            let legal = |prefix: &str| converter.is_legal_op(&op_starting(module, prefix).borrow());
+
+            assert!(!legal("test.sink %0"), "an illegal operand");
+            assert!(legal("test.sink %1"));
+            assert!(!legal("%3 = test.join"), "an illegal result");
+            assert!(!legal("%4 = test.low"), "an illegal operand, a legal result");
+            assert!(!legal("builtin.global_variable public @wide_global"), "a TypeAttr property");
+            assert!(legal("builtin.global_variable public @narrow_global"));
+            assert!(!legal("builtin.function public extern(\"C\") @wide_decl"), "a signature");
+            assert!(legal("builtin.function public extern(\"C\") @narrow_decl"));
+            assert!(
+                !legal("builtin.function public extern(\"C\") @f"),
+                "a signature and arguments"
+            );
+
+            // A block argument alone: `@g` takes nothing, and its entry block is given an `i128`.
+            let g = op_starting(module, "builtin.function public extern(\"C\") @g");
+            assert!(converter.is_legal_op(&g.borrow()));
+            let entry = g.try_downcast_op::<Function>().unwrap().borrow().entry_block();
+            context.append_block_argument(entry, context.i128(), Default::default());
+            assert!(!converter.is_legal_op(&g.borrow()), "an illegal block argument");
+        }
+
+        /// A type held by an attribute is asked about at any depth of attribute: a `TypeAttr`
+        /// inside a list makes the operation illegal.
+        #[test]
+        fn a_type_inside_a_list_attribute_is_asked_about() {
+            let (context, module) = parse_module(
+                "    builtin.function public extern(\"C\") @f(%0: i64) {
+        test.sink %0 : (i64);
+        builtin.ret;
+    };",
+            );
+            let converter = wide_converter(&context);
+            let mut sink = op_starting(module, "test.sink");
+            assert!(converter.is_legal_op(&sink.borrow()));
+
+            let narrow = context.create_attribute::<TypeAttr, _>(context.i64()).as_attribute_ref();
+            sink.borrow_mut().set_attribute("narrow", list_of(&context, &[narrow]));
+            assert!(converter.is_legal_op(&sink.borrow()), "a list of a legal type");
+
+            let wide = context.create_attribute::<TypeAttr, _>(context.i128()).as_attribute_ref();
+            sink.borrow_mut().set_attribute("wide", list_of(&context, &[wide]));
+            assert!(!converter.is_legal_op(&sink.borrow()), "a list of an illegal type");
+        }
+
+        fn list_of(context: &Rc<Context>, entries: &[AttributeRef]) -> AttributeRef {
+            let mut list = AttrList::new();
+            for entry in entries {
+                list.push_back(entry.borrow().as_attr().as_attr_ref());
+            }
+            context.create_attribute::<ListAttr, _>(List::from(list)).as_attribute_ref()
+        }
+
+        /// The converter is flat: `ptr<i128>` converts to itself under a converter that changes
+        /// `i128`, so a value of it, a block argument of it and a signature of it are legal.
+        #[test]
+        fn a_pointer_to_an_illegal_type_is_legal() {
+            let (context, module) = parse_module(
+                "    builtin.global_variable public @p : ptr<i128>;
+    builtin.function public extern(\"C\") @f(%0: ptr<i128>) {
+        test.sink %0 : (ptr<i128>);
+        builtin.ret;
+    };",
+            );
+            let converter = wide_converter(&context);
+            for (line, op) in nested_ops(module) {
+                assert!(converter.is_legal_op(&op.borrow()), "{line}");
+            }
+        }
+
+        /// The type an attribute's kind fixes is not asked about: an operation whose only `i32`
+        /// is an `I32Attr`, and whose only `i1` is a `BoolAttr`, is legal under a converter that
+        /// changes `i32` and `i1`.
+        #[test]
+        fn the_type_an_attribute_kind_fixes_is_not_asked_about() {
+            let (context, module) = parse_module(
+                "    builtin.function public extern(\"C\") @f(%0: i64, %1: i32) {
+        test.sink %0 : (i64);
+        test.sink %1 : (i32);
+        builtin.ret;
+    };",
+            );
+            let (i1, i32, i64) = (context.i1(), context.i32(), context.i64());
+            let mut converter = TypeConverter::new();
+            converter.add_conversion(move |_, ty| {
+                (ty == i32 || ty == i1).then_some(TypeConversion::One(i64))
+            });
+
+            let mut narrow = op_starting(module, "test.sink %0");
+            let levels = context.create_attribute::<I32Attr, _>(1i32).as_attribute_ref();
+            let flag = context.create_attribute::<BoolAttr, _>(true).as_attribute_ref();
+            narrow.borrow_mut().set_attribute("levels", levels);
+            narrow.borrow_mut().set_attribute("flag", flag);
+            assert!(converter.is_legal_op(&narrow.borrow()));
+            assert!(
+                !converter.is_legal_op(&op_starting(module, "test.sink %1").borrow()),
+                "the converter changes i32"
+            );
+        }
     }
 }

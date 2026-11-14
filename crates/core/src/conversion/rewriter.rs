@@ -368,8 +368,9 @@ impl ConversionPatternRewriter {
 
     /// Erase framework materializations that are still unused.
     ///
-    /// Drivers call this after a pattern fails to match so temporary casts inserted while building
-    /// converted operands do not remain in the IR.
+    /// Drivers call this when an attempt to convert an operation ends before its pattern changed
+    /// anything, so the casts inserted while building converted operands do not remain in the IR.
+    /// A cast the driver inserted that is erased here leaves the table of the driver's casts.
     pub fn erase_unused_materializations(&mut self) -> Result<(), Report> {
         let materialized_ops = self.tracking.mutations.borrow().materialized_ops.clone();
         for op in materialized_ops.into_iter().rev() {

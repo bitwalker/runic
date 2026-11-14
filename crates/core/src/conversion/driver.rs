@@ -145,7 +145,10 @@ impl ConversionResult {
 ///
 /// A pattern that returns `Ok(false)` must not mutate IR, and a pattern that returns `Ok(true)`
 /// must mutate IR. Violating either contract is reported as a conversion error because this
-/// driver intentionally does not roll changes back.
+/// driver intentionally does not roll changes back. An attempt that ends before its pattern
+/// changed anything (the conversion of an operand fails, or the pattern answers `Ok(false)`, an
+/// error, or `Ok(true)` without a change) leaves the IR as it was: the casts made for its operands
+/// are erased.
 pub fn apply_full_conversion(
     root: OperationRef,
     target: ConversionTarget,
@@ -296,6 +299,7 @@ impl FullConversionDriver<'_> {
                 }
                 Ok(true) => {
                     if mutation_count == mutation_count_before_pattern {
+                        rewriter.erase_unused_materializations()?;
                         return Err(pattern_succeeded_without_mutation_error(pattern.as_ref(), op));
                     }
                     let mutations = rewriter.take_tracked_mutations();
@@ -494,6 +498,29 @@ fn converted_operands_for(
     type_converter: Option<&TypeConverter>,
     rewriter: &mut ConversionPatternRewriter,
 ) -> Result<OperandRanges, Report> {
+    converted_operands_with(op, type_converter, rewriter, &mut |rewriter, value, types, span| {
+        rewriter.insert_cast(CastKind::Target, [value], types, span)
+    })
+}
+
+/// How [converted_operands_with] makes the one-to-many cast of an operand to its converted types.
+type InsertTargetCast<'a> = dyn FnMut(
+        &mut ConversionPatternRewriter,
+        ValueRef,
+        SmallVec<[crate::Type; 2]>,
+        crate::SourceSpan,
+    ) -> Result<SmallVec<[ValueRef; 2]>, Report>
+    + 'a;
+
+/// [converted_operands_for], making each cast with `insert`. When `insert` fails, the casts made
+/// for the operands before it are erased, and so leave the table of the driver's casts, and its
+/// error is returned: the IR is as it was.
+fn converted_operands_with(
+    op: OperationRef,
+    type_converter: Option<&TypeConverter>,
+    rewriter: &mut ConversionPatternRewriter,
+    insert: &mut InsertTargetCast<'_>,
+) -> Result<OperandRanges, Report> {
     let (context, span, operands, group_sizes) = {
         let op = op.borrow();
         let operands = op
@@ -519,7 +546,13 @@ fn converted_operands_for(
         } else if types.is_empty() {
             ranges.push(SmallVec::new());
         } else {
-            ranges.push(rewriter.insert_cast(CastKind::Target, [value], types, span)?);
+            match insert(rewriter, value, types, span) {
+                Ok(outputs) => ranges.push(outputs),
+                Err(err) => {
+                    rewriter.erase_unused_materializations()?;
+                    return Err(err);
+                }
+            }
         }
     }
     Ok((ranges, group_sizes))
