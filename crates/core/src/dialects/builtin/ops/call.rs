@@ -8,7 +8,9 @@ use crate::{
     diagnostics::report,
     dialects::builtin::{
         BuiltinDialect,
-        attributes::{AbiParam, DeclaredEffects, Signature, SignatureAttr, TypeAttr},
+        attributes::{
+            AbiParam, DeclaredEffects, Signature, SignatureAttr, SymbolRefAttr, TypeAttr,
+        },
     },
     effects::{
         AlwaysSpeculatable, ConditionallySpeculatable, EffectInstance, EffectIterator,
@@ -333,6 +335,58 @@ pub(crate) fn function_type_of(context: &Context, signature: &Signature) -> Type
         signature.params().iter().map(|param| param.ty),
         signature.declared_results().iter().map(|result| result.ty),
     )
+}
+
+/// The attribute dictionary of an operation, taken to be given to an operation that replaces it.
+///
+/// A symbol reference held directly by an entry gets an attribute and a use of its own on the
+/// operation it is given to, linked to the same symbol by the path it was written with (or left
+/// unlinked, as the parser leaves a reference that names no symbol); the original's attribute and
+/// use go with the original when it is erased. Any other entry is shared.
+pub(crate) struct CopiedAttributes(SmallVec<[(crate::NamedAttribute, Option<CopiedReference>); 2]>);
+
+/// A symbol reference held by a copied entry: the symbol it is linked to, if any, and its path.
+type CopiedReference = (Option<crate::SymbolRef>, crate::SymbolPath);
+
+impl CopiedAttributes {
+    /// The dictionary of `op`.
+    pub(crate) fn of(op: &crate::Operation) -> Self {
+        Self(
+            op.attributes()
+                .iter()
+                .map(|attr| {
+                    let attr = *attr.as_named_attribute();
+                    let symbol =
+                        attr.value.try_downcast_attr::<SymbolRefAttr>().ok().map(|reference| {
+                            let reference = reference.borrow();
+                            (reference.resolve(), reference.path().clone())
+                        });
+                    (attr, symbol)
+                })
+                .collect(),
+        )
+    }
+
+    /// Sets each entry on `op`.
+    pub(crate) fn install(self, op: &mut crate::Operation) {
+        for (attr, symbol) in self.0 {
+            let Some((symbol, path)) = symbol else {
+                op.set_attribute(attr.name, attr.value);
+                continue;
+            };
+            let Some(symbol) = symbol else {
+                let reference = op.context_rc().create_attribute::<SymbolRefAttr, _>(
+                    crate::dialects::builtin::attributes::SymbolRef::new(path, None),
+                );
+                op.set_attribute(attr.name, reference.as_attribute_ref());
+                continue;
+            };
+            op.set_symbol_attribute(attr.name, symbol);
+            let reference = op.get_attribute(attr.name).unwrap();
+            let mut reference = reference.try_downcast_attr::<SymbolRefAttr>().ok().unwrap();
+            reference.borrow_mut().set_path(path);
+        }
+    }
 }
 
 pub type FunctionReferenceRef = UnsafeIntrusiveEntityRef<FunctionReference>;

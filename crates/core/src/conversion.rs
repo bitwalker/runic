@@ -139,9 +139,11 @@
 //! # Builtin patterns
 //!
 //! [populate_builtin_conversion_patterns] adds the patterns that convert builtin operations by
-//! type: a `builtin.function` (its signature, entry block, declared effects and locals, together),
-//! and `builtin.load_local` and `builtin.store_local` of a local whose type is not legal. A
-//! signature is converted by [convert_signature], for a callable and every call of it alike. They
+//! type: a `builtin.function` (its signature, entry block, declared effects and locals, together);
+//! `builtin.load_local` and `builtin.store_local` of a local whose type is not legal; the calls,
+//! `builtin.function_ref` and `builtin.ret`; and the forwarded operands of every operation that
+//! implements `BranchOpInterface`. A signature is converted by [convert_signature], for a callable
+//! and every call of it alike. They
 //! need a converter made with [TypeConverter::with_function_types] and no value callbacks, and a
 //! target that judges their operations by type ([add_builtin_legality_by_type]).
 //!

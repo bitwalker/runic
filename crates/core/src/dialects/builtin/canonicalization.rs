@@ -5,7 +5,6 @@ use alloc::rc::Rc;
 use super::{BuiltinDialect, BuiltinOpBuilder, CallIndirect, FunctionReference};
 use crate::{
     Context, OperationRef, Report, SmallVec, Spanned, ValueRef,
-    dialects::builtin::attributes::SymbolRefAttr,
     patterns::{Pattern, PatternBenefit, PatternInfo, PatternKind, RewritePattern, Rewriter},
 };
 
@@ -76,19 +75,7 @@ impl RewritePattern for CallIndirectOfFunctionRef {
             let path = reference.callee().path().clone();
             // A symbol reference in the dictionary gets an attribute and a use of its own on the
             // new call; the indirect call's attribute and use go with it when it is erased
-            let attributes = op
-                .attributes()
-                .iter()
-                .map(|attr| {
-                    let attr = *attr.as_named_attribute();
-                    let symbol =
-                        attr.value.try_downcast_attr::<SymbolRefAttr>().ok().map(|reference| {
-                            let reference = reference.borrow();
-                            (reference.resolve(), reference.path().clone())
-                        });
-                    (attr, symbol)
-                })
-                .collect::<SmallVec<[_; 2]>>();
+            let attributes = super::CopiedAttributes::of(&op);
             (resolved.named_symbol(), path, signature, arguments, op.span(), attributes)
         };
 
@@ -98,29 +85,7 @@ impl RewritePattern for CallIndirectOfFunctionRef {
         // function, so the path the reference was written with names the same symbol from the
         // call; keeping it keeps the text, and calls that CSE compares by path, as written.
         call.borrow_mut().callee_mut().set_path(path);
-        {
-            let mut call = call.borrow_mut();
-            let call = crate::Op::as_operation_mut(&mut *call);
-            for (attr, symbol) in attributes {
-                let Some((symbol, path)) = symbol else {
-                    call.set_attribute(attr.name, attr.value);
-                    continue;
-                };
-                let Some(symbol) = symbol else {
-                    // Unlinked, as the parser leaves a reference that names no symbol
-                    let reference = call.context_rc().create_attribute::<SymbolRefAttr, _>(
-                        crate::dialects::builtin::attributes::SymbolRef::new(path, None),
-                    );
-                    call.set_attribute(attr.name, reference.as_attribute_ref());
-                    continue;
-                };
-                // Linked to the same symbol, by the path it was written with, as the callee is
-                call.set_symbol_attribute(attr.name, symbol);
-                let reference = call.get_attribute(attr.name).unwrap();
-                let mut reference = reference.try_downcast_attr::<SymbolRefAttr>().ok().unwrap();
-                reference.borrow_mut().set_path(path);
-            }
-        }
+        attributes.install(crate::Op::as_operation_mut(&mut *call.borrow_mut()));
         rewriter.replace_op(operation, call.as_operation_ref());
         Ok(true)
     }
@@ -137,7 +102,7 @@ mod tests {
     use super::*;
     use crate::{
         CallOpInterface, Operation, SymbolTable,
-        dialects::builtin::{Call, Module},
+        dialects::builtin::{Call, Module, attributes::SymbolRefAttr},
         parse::{self, ParserConfig},
         patterns::RewriterImpl,
     };

@@ -20,7 +20,7 @@ use crate::{
     dialects::{
         builtin::{
             Module,
-            attributes::{List, ListAttr, TypeAttr},
+            attributes::{List, ListAttr, SymbolRefAttr, TypeAttr},
         },
         debuginfo::{
             DebugInfoDialect,
@@ -170,7 +170,7 @@ fn the_patterns_refuse_a_converter_they_cannot_be_driven_by() {
     assert!(patterns.patterns().is_empty());
 
     populate_builtin_conversion_patterns(&mut patterns, &wide_converter(&context)).unwrap();
-    assert_eq!(patterns.patterns().len(), 3);
+    assert_eq!(patterns.patterns().len(), 8);
 }
 
 /// A declaration's signature and declared effects are converted: an effect on parameter 1 follows
@@ -419,7 +419,8 @@ fn a_load_of_a_local_of_an_unconverted_function_is_left_alone() {
 
 /// A function with two blocks, under a target that calls the branch legal outright: the second
 /// block's arguments are converted with the function, the branch is not, and the conversion fails
-/// verification with the branch's error. (A branch pattern lifts this.)
+/// verification with the branch's error. (The branch pattern converts a branch the target judges
+/// by type; see [branches_forward_the_values_their_operands_became].)
 #[test]
 fn a_branch_to_a_converted_block_that_is_not_converted_fails_verification() {
     let (context, module) = parse_module(
@@ -548,4 +549,298 @@ fn an_effect_outside_the_signature_is_an_error() {
         assert!(err.contains(names), "{err}");
         assert_str_eq!(module.borrow().to_string(), module_text(&source));
     }
+}
+
+/// A terminator with two successors: the first takes its forwarded operands, the second takes one
+/// argument the branch produces itself, then its forwarded operands:
+/// `test.two_br ^bb1(%0 : i128), ^bb2(%1 : i32);`.
+#[derive(EffectOpInterface, OpPrinter, OpParser)]
+#[operation(
+    dialect = TestDialect,
+    traits(Terminator),
+    implements(BranchOpInterface, MemoryEffectOpInterface, OpPrinter)
+)]
+pub struct TwoBr {
+    #[successor]
+    first: Successor,
+    #[successor]
+    second: Successor,
+}
+
+impl BranchOpInterface for TwoBr {
+    fn get_successor_operands(&self, index: usize) -> crate::SuccessorOperandRange<'_> {
+        let op = self.as_operation();
+        let group = op.successors()[index].operand_group as usize;
+        crate::SuccessorOperandRange::new(index, op.operands().group(group))
+    }
+
+    fn get_successor_operands_mut(&mut self, index: usize) -> crate::SuccessorOperandRangeMut<'_> {
+        let op = self.as_operation_mut();
+        let group = op.successors()[index].operand_group as usize;
+        crate::SuccessorOperandRangeMut::new(index, op.operands_mut().group_mut(group))
+    }
+}
+
+/// The text of `module`, after checking that it verifies and holds neither an `i128` nor a cast.
+fn converted_text(module: OperationRef) -> alloc::string::String {
+    module
+        .borrow()
+        .recursively_verify()
+        .unwrap_or_else(|err| panic!("{}", describe(&err)));
+    let text = module.borrow().to_string();
+    assert!(!text.contains("i128"), "{text}");
+    assert!(!text.contains("unrealized_conversion_cast"), "{text}");
+    text
+}
+
+/// A whole module in one run: a definition, an alias of it, a declaration, and a caller that calls
+/// the definition directly, through the alias, through a function reference, and the declaration.
+/// The result verifies (each call's signature equals its callee's), and holds no `i128` and no
+/// cast.
+#[test]
+fn a_module_is_converted_in_one_run() {
+    let (context, module) = parse_module(
+        "    builtin.function public extern(\"C\") @f(%0: i128, %1: i32) -> i128 {
+        builtin.ret %0 : (i128);
+    };
+    builtin.function_alias public @g -> @f;
+    builtin.function public extern(\"C\") @decl(i128) -> i128;
+    builtin.function public extern(\"C\") @caller(%0: i128, %1: i32) -> i128 {
+        %2 = builtin.call @f(%0, %1) : extern(\"C\") (i128, i32) -> i128;
+        %3 = builtin.call @g(%2, %1) : extern(\"C\") (i128, i32) -> i128;
+        %4 = builtin.function_ref @f : (i128, i32) -> i128;
+        %5 = builtin.call_indirect %4(%3, %1) : extern(\"C\") (i128, i32) -> i128;
+        %6 = builtin.call @decl(%5) : extern(\"C\") (i128) -> i128;
+        builtin.ret %6 : (i128);
+    };",
+    );
+    let converter = wide_converter(&context);
+    convert_full(module, by_type_target(&context, &converter), &converter)
+        .unwrap_or_else(|err| panic!("{}", describe(&err)));
+    let text = converted_text(module);
+    assert_str_eq!(
+        text,
+        module_text(
+            "    builtin.function public extern(\"C\") @f(%9: i64, %10: i64, %11: i32) -> (i64, \
+             i64) {
+        builtin.ret %9, %10 : (i64, i64);
+    };
+    builtin.function_alias public @g -> @f;
+    builtin.function public extern(\"C\") @decl(i64, i64) -> (i64, i64);
+    builtin.function public extern(\"C\") @caller(%13: i64, %14: i64, %15: i32) -> (i64, i64) {
+        %17, %18 = builtin.call @f(%13, %14, %15) : extern(\"C\") (i64, i64, i32) -> (i64, i64);
+        %20, %21 = builtin.call @g(%17, %18, %15) : extern(\"C\") (i64, i64, i32) -> (i64, i64);
+        %23 = builtin.function_ref @f : (i64, i64, i32) -> (i64, i64);
+        %25, %26 = builtin.call_indirect %23(%20, %21, %15) : extern(\"C\") (i64, i64, i32) -> \
+             (i64, i64);
+        %28, %29 = builtin.call @decl(%25, %26) : extern(\"C\") (i64, i64) -> (i64, i64);
+        builtin.ret %28, %29 : (i64, i64);
+    };"
+        )
+    );
+    let again = convert_full(module, by_type_target(&context, &converter), &converter)
+        .unwrap_or_else(|err| panic!("{}", describe(&err)));
+    assert!(!again.changed(), "a second conversion changes nothing");
+}
+
+/// The results of a call are grouped as the signature's results: of `(i32, i128, i32)`, the
+/// call's results 1 and 2 stand for the old result 1, and a return of the old results in another
+/// order returns their parts in that order.
+#[test]
+fn the_results_of_a_call_are_grouped_by_the_signature() {
+    let (context, module) = parse_module(
+        "    builtin.function public extern(\"C\") @h() -> (i32, i128, i32);
+    builtin.function public extern(\"C\") @caller() -> (i128, i32, i32) {
+        %0, %1, %2 = builtin.call @h() : extern(\"C\") () -> (i32, i128, i32);
+        builtin.ret %1, %2, %0 : (i128, i32, i32);
+    };",
+    );
+    let converter = wide_converter(&context);
+    convert_full(module, by_type_target(&context, &converter), &converter)
+        .unwrap_or_else(|err| panic!("{}", describe(&err)));
+    assert_str_eq!(
+        converted_text(module),
+        module_text(
+            "    builtin.function public extern(\"C\") @h() -> (i32, i64, i64, i32);
+    builtin.function public extern(\"C\") @caller() -> (i64, i64, i32, i32) {
+        %3, %4, %5, %6 = builtin.call @h() : extern(\"C\") () -> (i32, i64, i64, i32);
+        builtin.ret %4, %5, %6, %3 : (i64, i64, i32, i32);
+    };"
+        )
+    );
+}
+
+/// A call is converted with its callee, by the same function: under a target that leaves the
+/// callee alone, the call's converted signature differs from its callee's, and verification
+/// fails with the call's error.
+#[test]
+fn a_call_converted_without_its_callee_does_not_verify() {
+    let (context, module) = parse_module(
+        "    builtin.function public extern(\"C\") @f(i128, i32) -> i128;
+    builtin.function public extern(\"C\") @caller(%0: i128, %1: i32) -> i128 {
+        %2 = builtin.call @f(%0, %1) : extern(\"C\") (i128, i32) -> i128;
+        builtin.ret %2 : (i128);
+    };",
+    );
+    let converter = wide_converter(&context);
+    let mut target = by_type_target(&context, &converter);
+    let only_the_caller = converter.clone();
+    target.add_dynamically_legal_op::<Function, _>(move |op: &Operation| {
+        let callee = op.as_trait::<dyn Symbol>().is_some_and(|f| f.name().as_str() == "f");
+        DynamicLegalityResult::legal_if(callee || only_the_caller.is_legal_op(op))
+    });
+    let err = convert_full(module, target, &converter).unwrap_err();
+    let err = describe(&err);
+    assert!(err.contains("invalid operation builtin.call"), "{err}");
+    assert!(err.contains("the call's signature differs from its callee's"), "{err}");
+}
+
+/// A marker-typed argument and result vanish from the call and its callee alike.
+#[test]
+fn a_marker_argument_and_result_vanish_from_call_and_callee() {
+    let (context, module) = parse_module(
+        "    builtin.function public extern(\"C\") @m(%0: array<i8; 0>, %1: i32) -> (array<i8; \
+         0>, i32) {
+        builtin.ret %0, %1 : (array<i8; 0>, i32);
+    };
+    builtin.function public extern(\"C\") @caller(%0: array<i8; 0>, %1: i32) -> i32 {
+        %2, %3 = builtin.call @m(%0, %1) : extern(\"C\") (array<i8; 0>, i32) -> (array<i8; 0>, \
+         i32);
+        builtin.ret %3 : (i32);
+    };",
+    );
+    let converter = wide_converter(&context);
+    convert_full(module, by_type_target(&context, &converter), &converter)
+        .unwrap_or_else(|err| panic!("{}", describe(&err)));
+    let text = converted_text(module);
+    assert!(!text.contains("array"), "{text}");
+    assert_str_eq!(
+        text,
+        module_text(
+            "    builtin.function public extern(\"C\") @m(%6: i32) -> i32 {
+        builtin.ret %6 : (i32);
+    };
+    builtin.function public extern(\"C\") @caller(%8: i32) -> i32 {
+        %10 = builtin.call @m(%8) : extern(\"C\") (i32) -> i32;
+        builtin.ret %10 : (i32);
+    };"
+        )
+    );
+}
+
+/// A return of `(i128, i32)` returns the three values they became.
+#[test]
+fn a_return_returns_the_flattened_ranges() {
+    let (context, module) = parse_module(
+        "    builtin.function public extern(\"C\") @r(%0: i128, %1: i32) -> (i128, i32) {
+        builtin.ret %0, %1 : (i128, i32);
+    };",
+    );
+    let converter = wide_converter(&context);
+    convert_full(module, by_type_target(&context, &converter), &converter)
+        .unwrap_or_else(|err| panic!("{}", describe(&err)));
+    assert_str_eq!(
+        converted_text(module),
+        module_text(
+            "    builtin.function public extern(\"C\") @r(%2: i64, %3: i64, %4: i32) -> (i64, \
+             i64, i32) {
+        builtin.ret %2, %3, %4 : (i64, i64, i32);
+    };"
+        )
+    );
+}
+
+/// The branch pattern flattens the forwarded `i128` values of each successor in place, leaves the
+/// argument the branch produces for its second successor alone, and leaves that successor's
+/// forwarded operands, which do not change, as they are; the block arguments the function
+/// pattern converted agree with them.
+#[test]
+fn branches_forward_the_values_their_operands_became() {
+    let (context, module) = parse_module(
+        "    builtin.function public extern(\"C\") @b(%0: i128, %1: i32) -> i128 {
+        test.two_br ^bb1(%0, %1 : i128, i32), ^bb2(%1 : i32);
+    ^bb1(%2: i128, %3: i32):
+        builtin.ret %2 : (i128);
+    ^bb2(%4: i32, %5: i32):
+        test.sink %4, %5 : (i32, i32);
+        builtin.ret %0 : (i128);
+    };",
+    );
+    let converter = wide_converter(&context);
+    convert_full(module, by_type_target(&context, &converter), &converter)
+        .unwrap_or_else(|err| panic!("{}", describe(&err)));
+    assert_str_eq!(
+        converted_text(module),
+        module_text(
+            "    builtin.function public extern(\"C\") @b(%6: i64, %7: i64, %8: i32) -> (i64, \
+             i64) {
+        test.two_br ^block3(%6, %7, %8 : i64, i64, i32), ^block4(%8 : i32);
+    ^block3(%10: i64, %11: i64, %12: i32):
+        builtin.ret %10, %11 : (i64, i64);
+    ^block4(%4: i32, %5: i32):
+        test.sink %4, %5 : (i32, i32);
+        builtin.ret %6, %7 : (i64, i64);
+    };"
+        )
+    );
+}
+
+/// A branch none of whose operands changes is not matched: under a target that calls it illegal
+/// outright, the pattern reports no match, and the conversion reports the branch instead of
+/// trying it again until the rewrite limit.
+#[test]
+fn a_branch_whose_operands_do_not_change_is_not_matched() {
+    let (context, module) = parse_module(
+        "    builtin.function public extern(\"C\") @b(%0: i32) {
+        test.two_br ^bb1(%0 : i32), ^bb2;
+    ^bb1(%1: i32):
+        builtin.ret;
+    ^bb2(%2: i32):
+        builtin.ret;
+    };",
+    );
+    let converter = wide_converter(&context);
+    let mut target = by_type_target(&context, &converter);
+    target.add_illegal_op::<TwoBr>();
+    let err = convert_full(module, target, &converter).unwrap_err();
+    let err = describe(&err);
+    assert!(err.contains("failed to legalize operation 'test.two_br'"), "{err}");
+    assert!(!err.contains("limit"), "{err}");
+}
+
+/// A converted call keeps its attribute dictionary, and a symbol reference in it gets a use of its
+/// own, linked to the same symbol.
+#[test]
+fn a_converted_call_keeps_its_attributes() {
+    let (context, module) = parse_module(
+        "    builtin.function public extern(\"C\") @f(i128);
+    builtin.function public extern(\"C\") @caller(%0: i128) {
+        builtin.call @f(%0) : extern(\"C\") (i128) attributes { note = #builtin.i32<7>, target = \
+         #builtin.symbol<@f> };
+        builtin.ret;
+    };",
+    );
+    let converter = wide_converter(&context);
+    convert_full(module, by_type_target(&context, &converter), &converter)
+        .unwrap_or_else(|err| panic!("{}", describe(&err)));
+    let text = converted_text(module);
+    assert!(
+        text.contains(
+            "builtin.call @f(%1, %2) : extern(\"C\") (i64, i64) attributes { note = \
+             #builtin.i32<7>, target = #builtin.symbol<@f> };"
+        ),
+        "{text}"
+    );
+    let mut call = None;
+    module.borrow().prewalk_all(|op: &Operation| {
+        if op.is::<Call>() {
+            call = Some(op.as_operation_ref());
+        }
+    });
+    let call = call.unwrap();
+    let target = call.borrow().get_attribute("target").unwrap();
+    let target = target.try_downcast_attr::<SymbolRefAttr>().ok().unwrap();
+    let linked = target.borrow().resolve().expect("the reference is linked");
+    assert_eq!(linked.borrow().name().as_str(), "f");
+    assert_eq!(target.borrow().try_user().unwrap().borrow().owner, call);
 }

@@ -22,7 +22,8 @@
 //! `locals`, its entry block (through a [SignatureConversion] built from the converted signature,
 //! not from the block, so the two cannot disagree), the arguments of its other blocks
 //! ([ConversionPatternRewriter::convert_region_types]), and every reference to a local in its
-//! body. The terminators that branch to a converted block are not converted with it.
+//! body. The terminators that branch to a converted block are not converted with it: the branch
+//! pattern (below) converts them.
 //!
 //! Local `i` of type `T` becomes the locals `[s_i, s_i + n_i)`, of the types the converter gives
 //! for `T` (`n_i` of them, possibly none), where `s_i` is the sum of `n_k` for `k < i`: contiguous
@@ -59,8 +60,32 @@
 //! converted: its `locals[s .. s + n]` has the converted types and its local `s` is no longer of
 //! type `T`. So a partial conversion that leaves the function alone does not write loads or stores
 //! against unconverted locals. An operation in no function does not match.
+//!
+//! # Calls, function references and returns
+//!
+//! A `builtin.call` becomes a call of the same callee, by the path it was written with, with the
+//! signature [convert_signature] gives for its own: the function the callee's pattern uses, so the
+//! two signatures stay equal (through an alias too, which holds no signature and needs no
+//! pattern). Its arguments are the values its operands became, flattened in order, and old result
+//! `j` is replaced by the new results [ConvertedSignature::results] gives for it. A
+//! `builtin.call_indirect` is converted the same way; its callee, a function value, becomes the
+//! one value of the converted function type. A `builtin.function_ref` becomes a reference to the
+//! same symbol of the converted function type. A `builtin.ret` becomes a return of the values its
+//! operands became, flattened. Each keeps its attribute dictionary. A call whose signature does not
+//! change and whose operands are themselves, a reference whose type does not change, and a return
+//! whose operands are themselves do not match. `builtin.ret_imm` is not converted here.
+//!
+//! # Branches
+//!
+//! The branch pattern is rooted on `BranchOpInterface`, so it applies to every operation that
+//! implements it and is registered when the pattern set is frozen. It changes the branch in
+//! place: for each successor, the forwarded operands are replaced by the values they became,
+//! flattened, which is what the block arguments of a converted successor take. The arguments a
+//! branch produces itself, its other operands and its successors' keys are not touched. A branch
+//! none of whose forwarded operands changes does not match.
 
 use alloc::{format, rc::Rc, vec::Vec};
+use core::any::TypeId;
 
 use smallvec::SmallVec;
 
@@ -70,12 +95,13 @@ use super::{
     TypeConverter, convert_signature,
 };
 use crate::{
-    AttributeRef, CallableOpInterface, Context, OpRegistration, Operation, OperationRef, Report,
-    Spanned, Symbol, Type, ValueRef, WalkResult,
+    AttributeRef, CallableOpInterface, Context, Op, OpRegistration, Operation, OperationRef,
+    Report, Spanned, SuccessorOperands, Symbol, Type, ValueRef, WalkResult,
     attributes::ElementReplacer,
     dialects::{
         builtin::{
-            Call, CallIndirect, Function, FunctionReference, LoadLocal, Ret, RetImm, StoreLocal,
+            Call, CallIndirect, CopiedAttributes, Function, FunctionReference, LoadLocal, Ret,
+            RetImm, StoreLocal,
             attributes::{
                 DeclaredEffects, DeclaredEffectsAttr, LocalVariable, LocalVariableAttr,
                 SignatureAttr, TypeArrayAttr, remap_declared_effects,
@@ -100,8 +126,15 @@ const LOCALS: &str = "locals";
 /// does not convert function types.
 ///
 /// It also fails for a converter with value callbacks. Either error is raised before anything is
-/// added. The patterns added are the function pattern and the patterns of `builtin.load_local`
-/// and `builtin.store_local` (see the module documentation).
+/// added. The patterns added are the function pattern, the patterns of `builtin.load_local` and
+/// `builtin.store_local`, of `builtin.call`, `builtin.call_indirect`, `builtin.function_ref` and
+/// `builtin.ret`, and the branch pattern, for every operation that implements `BranchOpInterface`
+/// and is registered when the pattern set is frozen (see the module documentation).
+///
+/// `builtin.ret_imm` gets no pattern: a constant of a type that is not legal belongs to the
+/// dialect that owns constants. Under [add_builtin_legality_by_type] a `builtin.ret_imm` of a type
+/// that is not legal stays illegal, and a conversion reports it as having no pattern unless
+/// another pattern set converts it.
 pub fn populate_builtin_conversion_patterns(
     patterns: &mut ConversionPatternSet,
     converter: &TypeConverter,
@@ -137,6 +170,45 @@ pub fn populate_builtin_conversion_patterns(
             "builtin-store-local-by-type",
             [registered::<StoreLocal>(&context)],
         ),
+        converter: converter.clone(),
+    });
+    patterns.push(CallPattern {
+        info: pattern_info::<Call>(
+            &context,
+            "builtin-call-by-type",
+            [registered::<Call>(&context)],
+        ),
+        converter: converter.clone(),
+    });
+    patterns.push(CallIndirectPattern {
+        info: pattern_info::<CallIndirect>(
+            &context,
+            "builtin-call-indirect-by-type",
+            [registered::<CallIndirect>(&context)],
+        ),
+        converter: converter.clone(),
+    });
+    patterns.push(FunctionReferencePattern {
+        info: pattern_info::<FunctionReference>(
+            &context,
+            "builtin-function-ref-by-type",
+            [registered::<FunctionReference>(&context)],
+        ),
+        converter: converter.clone(),
+    });
+    patterns.push(RetPattern {
+        info: pattern_info::<Ret>(&context, "builtin-ret-by-type", [registered::<Ret>(&context)]),
+        converter: converter.clone(),
+    });
+    let mut info = PatternInfo::new(
+        context.clone(),
+        "branch-by-type",
+        PatternKind::Trait(TypeId::of::<dyn BranchOpInterface>()),
+        PatternBenefit::new(1),
+    );
+    info.with_generated_ops([]);
+    patterns.push(BranchPattern {
+        info,
         converter: converter.clone(),
     });
     Ok(())
@@ -723,6 +795,332 @@ impl ConversionPattern for StoreLocalPattern {
             rewriter.create_op::<StoreLocal, _>(span, (part, *value))?;
         }
         rewriter.erase_op(op)?;
+        Ok(true)
+    }
+}
+
+/// Whether each range in `ranges` is exactly the operand of `op` it stands for.
+fn operands_are_themselves<'a>(
+    op: &Operation,
+    ranges: impl IntoIterator<Item = &'a [ValueRef]>,
+) -> bool {
+    op.operands()
+        .iter()
+        .zip(ranges)
+        .all(|(operand, range)| *range == [operand.borrow().as_value_ref()])
+}
+
+/// The results of `op` (a new call), grouped by the ranges of the old call's results.
+fn grouped_results(op: OperationRef, ranges: &[core::ops::Range<u32>]) -> Vec<Vec<ValueRef>> {
+    let op = op.borrow();
+    let results = op
+        .results()
+        .all()
+        .iter()
+        .map(|result| result.borrow().as_value_ref())
+        .collect::<Vec<_>>();
+    ranges
+        .iter()
+        .map(|range| results[range.start as usize..range.end as usize].to_vec())
+        .collect()
+}
+
+/// Replaces `old` by `new`'s results grouped by `ranges`, after giving `new` `old`'s attribute
+/// dictionary.
+fn replace_with_grouped_results(
+    rewriter: &mut ConversionPatternRewriter,
+    old: OperationRef,
+    mut new: OperationRef,
+    attributes: CopiedAttributes,
+    ranges: &[core::ops::Range<u32>],
+) -> Result<(), Report> {
+    attributes.install(&mut new.borrow_mut());
+    let groups = grouped_results(new, ranges);
+    let groups = groups.iter().map(Vec::as_slice).collect::<Vec<_>>();
+    rewriter.replace_op_with_multiple(old, &groups)
+}
+
+/// The symbol a direct reference names, and the path it names it by; `None`, with a reason
+/// recorded, when it does not resolve to a callable.
+fn named_callee(
+    op: OperationRef,
+    callee: &crate::dialects::builtin::attributes::SymbolRefAttr,
+    rewriter: &mut ConversionPatternRewriter,
+) -> Option<(crate::CallableSymbolRef, crate::SymbolPath)> {
+    match callee.resolve_callable() {
+        Ok(resolved) => Some((resolved.named_symbol(), callee.path().clone())),
+        Err(err) => {
+            rewriter.notify_match_failure(
+                op,
+                Report::msg(format!("the callee does not resolve to a callable: {err}")),
+            );
+            None
+        }
+    }
+}
+
+/// Converts a `builtin.call`: a call of the same callee, by the same path, with the converted
+/// signature and the operands' ranges flattened.
+struct CallPattern {
+    info: PatternInfo,
+    converter: TypeConverter,
+}
+
+impl Pattern for CallPattern {
+    fn info(&self) -> &PatternInfo {
+        &self.info
+    }
+}
+
+impl ConversionPattern for CallPattern {
+    fn type_converter(&self) -> Option<&TypeConverter> {
+        Some(&self.converter)
+    }
+
+    fn match_and_rewrite(
+        &self,
+        op: OperationRef,
+        operands: ConvertedOperands<'_>,
+        rewriter: &mut ConversionPatternRewriter,
+    ) -> Result<bool, Report> {
+        let context = op.borrow().context_rc();
+        let signature = op
+            .borrow()
+            .downcast_ref::<Call>()
+            .expect("rooted at builtin.call")
+            .get_signature()
+            .clone();
+        let converted = convert_signature(&context, &signature, &self.converter);
+        if converted.signature == signature
+            && operands_are_themselves(&op.borrow(), operands.iter())
+        {
+            return Ok(false);
+        }
+        let (callee, attributes, span) = {
+            let op_ref = op.borrow();
+            let call = op_ref.downcast_ref::<Call>().expect("rooted at builtin.call");
+            let callee = named_callee(op, &call.callee(), rewriter);
+            (callee, CopiedAttributes::of(&op_ref), op_ref.span())
+        };
+        let Some((callee, path)) = callee else {
+            return Ok(false);
+        };
+        let arguments = operands.group_flattened(0);
+        rewriter.set_insertion_point_before(op);
+        let mut call = rewriter
+            .create_op::<Call, _>(span, (callee, converted.signature.clone(), arguments))?;
+        call.borrow_mut().callee_mut().set_path(path);
+        let call = call.as_operation_ref();
+        replace_with_grouped_results(rewriter, op, call, attributes, &converted.results)?;
+        Ok(true)
+    }
+}
+
+/// Converts a `builtin.call_indirect`: a call of the callee's one converted value, with the
+/// converted signature and the arguments' ranges flattened.
+struct CallIndirectPattern {
+    info: PatternInfo,
+    converter: TypeConverter,
+}
+
+impl Pattern for CallIndirectPattern {
+    fn info(&self) -> &PatternInfo {
+        &self.info
+    }
+}
+
+impl ConversionPattern for CallIndirectPattern {
+    fn type_converter(&self) -> Option<&TypeConverter> {
+        Some(&self.converter)
+    }
+
+    fn match_and_rewrite(
+        &self,
+        op: OperationRef,
+        operands: ConvertedOperands<'_>,
+        rewriter: &mut ConversionPatternRewriter,
+    ) -> Result<bool, Report> {
+        let context = op.borrow().context_rc();
+        let (signature, attributes, span) = {
+            let op_ref = op.borrow();
+            let call = op_ref.downcast_ref::<CallIndirect>().expect("rooted at call_indirect");
+            (call.get_signature().clone(), CopiedAttributes::of(&op_ref), op_ref.span())
+        };
+        let converted = convert_signature(&context, &signature, &self.converter);
+        if converted.signature == signature
+            && operands_are_themselves(&op.borrow(), operands.iter())
+        {
+            return Ok(false);
+        }
+        let Some(callee) = operands.one(0) else {
+            rewriter.notify_match_failure(
+                op,
+                Report::msg("the callee, a function value, did not become exactly one value"),
+            );
+            return Ok(false);
+        };
+        let arguments = operands.group_flattened(1);
+        rewriter.set_insertion_point_before(op);
+        let call = rewriter
+            .create_op::<CallIndirect, _>(span, (callee, arguments, converted.signature.clone()))?;
+        let call = call.as_operation_ref();
+        replace_with_grouped_results(rewriter, op, call, attributes, &converted.results)?;
+        Ok(true)
+    }
+}
+
+/// Converts a `builtin.function_ref`: a reference to the same symbol, by the same path, whose
+/// type is the converted function type.
+struct FunctionReferencePattern {
+    info: PatternInfo,
+    converter: TypeConverter,
+}
+
+impl Pattern for FunctionReferencePattern {
+    fn info(&self) -> &PatternInfo {
+        &self.info
+    }
+}
+
+impl ConversionPattern for FunctionReferencePattern {
+    fn type_converter(&self) -> Option<&TypeConverter> {
+        Some(&self.converter)
+    }
+
+    fn match_and_rewrite(
+        &self,
+        op: OperationRef,
+        _operands: ConvertedOperands<'_>,
+        rewriter: &mut ConversionPatternRewriter,
+    ) -> Result<bool, Report> {
+        let context = op.borrow().context_rc();
+        let ty = *op
+            .borrow()
+            .downcast_ref::<FunctionReference>()
+            .expect("rooted at function_ref")
+            .get_ty();
+        // A converter with function types gives a function type exactly one type.
+        let new_ty = self.converter.convert_type_1_to_1(&context, ty)?;
+        if new_ty == ty {
+            return Ok(false);
+        }
+        let (callee, attributes, span) = {
+            let op_ref = op.borrow();
+            let reference =
+                op_ref.downcast_ref::<FunctionReference>().expect("rooted at function_ref");
+            let callee = named_callee(op, &reference.callee(), rewriter);
+            (callee, CopiedAttributes::of(&op_ref), op_ref.span())
+        };
+        let Some((callee, path)) = callee else {
+            return Ok(false);
+        };
+        rewriter.set_insertion_point_before(op);
+        let mut reference = rewriter.create_op::<FunctionReference, _>(span, (callee, new_ty))?;
+        reference.borrow_mut().callee_mut().set_path(path);
+        attributes.install(reference.borrow_mut().as_operation_mut());
+        let value = reference.borrow().function().as_value_ref();
+        rewriter.replace_op(op, &[value])?;
+        Ok(true)
+    }
+}
+
+/// Converts a `builtin.ret`: a return of the operands' ranges flattened.
+struct RetPattern {
+    info: PatternInfo,
+    converter: TypeConverter,
+}
+
+impl Pattern for RetPattern {
+    fn info(&self) -> &PatternInfo {
+        &self.info
+    }
+}
+
+impl ConversionPattern for RetPattern {
+    fn type_converter(&self) -> Option<&TypeConverter> {
+        Some(&self.converter)
+    }
+
+    fn match_and_rewrite(
+        &self,
+        op: OperationRef,
+        operands: ConvertedOperands<'_>,
+        rewriter: &mut ConversionPatternRewriter,
+    ) -> Result<bool, Report> {
+        if operands_are_themselves(&op.borrow(), operands.iter()) {
+            return Ok(false);
+        }
+        let (attributes, span) = {
+            let op_ref = op.borrow();
+            (CopiedAttributes::of(&op_ref), op_ref.span())
+        };
+        let values = operands.group_flattened(0);
+        rewriter.set_insertion_point_before(op);
+        let mut ret = rewriter.create_op::<Ret, _>(span, (values,))?;
+        attributes.install(ret.borrow_mut().as_operation_mut());
+        rewriter.erase_op(op)?;
+        Ok(true)
+    }
+}
+
+/// Converts the forwarded operands of a branch, in place: for each successor, they are replaced
+/// by their ranges flattened. Produced operands and successor keys are not touched.
+struct BranchPattern {
+    info: PatternInfo,
+    converter: TypeConverter,
+}
+
+impl Pattern for BranchPattern {
+    fn info(&self) -> &PatternInfo {
+        &self.info
+    }
+}
+
+impl ConversionPattern for BranchPattern {
+    fn type_converter(&self) -> Option<&TypeConverter> {
+        Some(&self.converter)
+    }
+
+    fn match_and_rewrite(
+        &self,
+        op: OperationRef,
+        operands: ConvertedOperands<'_>,
+        rewriter: &mut ConversionPatternRewriter,
+    ) -> Result<bool, Report> {
+        // Per successor, the values its forwarded operands became, flattened.
+        let mut forwarded = SmallVec::<[SmallVec<[ValueRef; 4]>; 2]>::new();
+        let mut changed = false;
+        {
+            let op = op.borrow();
+            let branch =
+                op.as_trait::<dyn BranchOpInterface>().expect("rooted at BranchOpInterface");
+            for index in 0..op.num_successors() {
+                let successor = branch.get_successor_operands(index);
+                let mut values = SmallVec::new();
+                for operand in successor.forwarded().iter() {
+                    let operand = operand.borrow();
+                    let range = operands.get(operand.index as usize);
+                    changed |= *range != [operand.as_value_ref()];
+                    values.extend_from_slice(range);
+                }
+                forwarded.push(values);
+            }
+        }
+        if !changed {
+            return Ok(false);
+        }
+        rewriter.modify_op_in_place(op, |op| {
+            let owner = op.as_operation_ref();
+            let context = op.context_rc();
+            let branch =
+                op.as_trait_mut::<dyn BranchOpInterface>().expect("rooted at BranchOpInterface");
+            for (index, values) in forwarded.into_iter().enumerate() {
+                branch
+                    .get_successor_operands_mut(index)
+                    .forwarded_mut()
+                    .set_operands(values, owner, &context);
+            }
+        })?;
         Ok(true)
     }
 }
