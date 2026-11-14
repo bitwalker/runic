@@ -210,20 +210,32 @@ impl SparseForwardDataFlowAnalysis for SparseConstantPropagation {
                     );
                 }
                 OpFoldResult::Value(value) => {
-                    let new_lattice = solver.get_or_create_mut::<Lattice<ConstantValue>, _>(value);
+                    // A fold to one of the operation's own operands reads that operand's lattice,
+                    // which `operands` already holds: it cannot be borrowed again.
+                    let operand = op
+                        .operands()
+                        .iter()
+                        .position(|operand| operand.borrow().as_value_ref() == value);
+                    let new_value = match operand {
+                        Some(index) => operands[index].value().clone(),
+                        None => solver
+                            .get_or_create_mut::<Lattice<ConstantValue>, _>(value)
+                            .value()
+                            .clone(),
+                    };
                     log::trace!(
                         target: self.debug_name(),
                         "setting lattice for {} to {} from {}",
                         lattice.anchor(),
-                        new_lattice.value(),
+                        new_value,
                         lattice.value()
                     );
-                    let change_result = lattice.join(new_lattice.value());
+                    let change_result = lattice.join(&new_value);
                     log::debug!(
                         target: self.debug_name(),
                         "setting constant value for {} to {}: {change_result} as {}",
                         lattice.anchor(),
-                        new_lattice.value(),
+                        new_value,
                         lattice.value()
                     );
                 }

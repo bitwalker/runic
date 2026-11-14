@@ -30,11 +30,11 @@ fn function_with_casts(
         let mut f = test.function_builder();
         let arg = f.entry_block().borrow().arguments()[0] as ValueRef;
         for ty in casts {
-            let result = f
+            let cast = f
                 .builder_mut()
-                .unrealized_conversion_cast(arg, ty, SourceSpan::UNKNOWN)
+                .unrealized_conversion_cast([arg], [ty], SourceSpan::UNKNOWN)
                 .unwrap();
-            ops.push(result.borrow().get_defining_op().unwrap());
+            ops.push(cast.as_operation_ref());
         }
         f.builder_mut().ret([], SourceSpan::UNKNOWN).unwrap();
     }
@@ -52,7 +52,7 @@ fn an_operation_without_recursive_types_prints_as_before() {
         print_function(&test),
         "\
 builtin.function public extern(\"C\") @f(%0: i32) {
-    %1 = builtin.unrealized_conversion_cast %0 <{ ty = #builtin.type<i64> }>;
+    %1 = builtin.unrealized_conversion_cast %0 : i32 to i64;
     builtin.ret;
 };"
     );
@@ -77,7 +77,7 @@ rec {
 }
 
 builtin.function public extern(\"C\") @f(%0: ptr<!list>) {
-    %1 = builtin.unrealized_conversion_cast %0 <{ ty = #builtin.type<!list> }>;
+    %1 = builtin.unrealized_conversion_cast %0 : ptr<!list> to !list;
     builtin.ret;
 };"
     );
@@ -142,8 +142,8 @@ rec {
 }
 
 builtin.function public extern(\"C\") @f(%0: !list) {
-    %1 = builtin.unrealized_conversion_cast %0 <{ ty = #builtin.type<!node> }>;
-    %2 = builtin.unrealized_conversion_cast %0 <{ ty = #builtin.type<!node> }>;
+    %1 = builtin.unrealized_conversion_cast %0 : !list to !node;
+    %2 = builtin.unrealized_conversion_cast %0 : !list to !node;
     builtin.ret;
 };"
     );
@@ -163,7 +163,7 @@ fn a_nested_operation_prints_no_declarations() {
     );
     assert_eq!(
         ops[0].borrow().to_string(),
-        "%1 = builtin.unrealized_conversion_cast %0 <{ ty = #builtin.type<ptr<!list>> }>;"
+        "%1 = builtin.unrealized_conversion_cast %0 : !list to ptr<!list>;"
     );
 }
 
@@ -215,7 +215,7 @@ fn op_print_declares_the_groups_of_a_root_only() {
         .unwrap();
     assert_eq!(
         cast.borrow().print(&flags).to_string(),
-        "%1 = builtin.unrealized_conversion_cast %0 <{ ty = #builtin.type<ptr<!list>> }>;"
+        "%1 = builtin.unrealized_conversion_cast %0 : !list to ptr<!list>;"
     );
 }
 
@@ -246,8 +246,8 @@ rec {
 }
 
 builtin.function public extern(\"C\") @f(%0: !list) {
-    %1 = builtin.unrealized_conversion_cast %0 <{ ty = #builtin.type<ptr<!list>> }> attributes { \
-         sig = #builtin.signature<extern(\"C\") (ptr<!list>) -> !list> };
+    %1 = builtin.unrealized_conversion_cast %0 : !list to ptr<!list> attributes { sig = \
+         #builtin.signature<extern(\"C\") (ptr<!list>) -> !list> };
     builtin.ret;
 };"
     );

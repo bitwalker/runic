@@ -15,10 +15,10 @@ builtin.function public extern("C") @cfg_to_scf_lift_multiple_exit_nested_while_
                 %10 = arith.cmpi ult %196, %2;
                 %207, %208, %209, %210 = scf.if %10 then {
                     %13 = arith.add %9, %196 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
-                    %14 = builtin.unrealized_conversion_cast %0 <{ ty = #builtin.type<i32> }>;
+                    %14 = builtin.unrealized_conversion_cast %0 : ptr<i32> to i32;
                     %15 = arith.add %14, %13 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
-                    %16 = builtin.unrealized_conversion_cast %15 <{ ty = #builtin.type<ptr<i32>> }>;
-                    %17 = builtin.unrealized_conversion_cast %16 <{ ty = #builtin.type<i32> }>;
+                    %16 = builtin.unrealized_conversion_cast %15 : i32 to ptr<i32>;
+                    %17 = builtin.unrealized_conversion_cast %16 : ptr<i32> to i32;
                     %19 = arith.add %196, %31;
                     %20, %21 = arith.add_overflowing %197, %17 <{ signedness = #builtin.signedness<unsigned> }>;
                     %178 = cf.select %20, %31, %23;

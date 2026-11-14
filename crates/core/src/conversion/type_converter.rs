@@ -3,9 +3,7 @@ use alloc::{format, rc::Rc, vec::Vec};
 use smallvec::SmallVec;
 
 use super::rewriter::ConversionPatternRewriter;
-use crate::{
-    Context, Report, SourceSpan, Type, ValueRef, dialects::builtin::UnrealizedConversionCast,
-};
+use crate::{Context, Report, SourceSpan, Type, ValueRef};
 
 type TypeConversionFn = Rc<dyn Fn(&Context, Type) -> Option<TypeConversion>>;
 type ValueConversionFn = Rc<dyn Fn(&Context, ValueRef) -> Option<TypeConversion>>;
@@ -256,9 +254,9 @@ impl TypeConverter {
             }
         }
 
-        let op = rewriter.create_op::<UnrealizedConversionCast, _>(span, (value, ty))?;
+        let op = rewriter.create_unrealized_conversion_cast([value], [ty], span)?;
         rewriter.mark_materialization_op(op.as_operation_ref());
-        let result = op.borrow().result().as_value_ref();
+        let result = op.borrow().outputs()[0] as ValueRef;
         if result.borrow().ty() != ty {
             return Err(Report::msg(format!(
                 "{kind} materialization produced type '{}', expected '{ty}'",

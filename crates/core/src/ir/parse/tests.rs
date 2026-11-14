@@ -612,7 +612,8 @@ fn derive_roundtrip_test() -> TestResult {
     {
         let mut f = test.function_builder();
         let v0 = f.entry_block().borrow().arguments()[0] as ValueRef;
-        let v1 = f.builder_mut().unrealized_conversion_cast(v0, i64, SourceSpan::UNKNOWN)?;
+        let v1 = f.builder_mut().unrealized_conversion_cast([v0], [i64], SourceSpan::UNKNOWN)?;
+        let v1 = v1.borrow().outputs()[0] as ValueRef;
         f.builder_mut().ret([v1], SourceSpan::UNKNOWN);
     }
 
@@ -634,7 +635,7 @@ fn derive_roundtrip_test() -> TestResult {
         &roundtripped,
         r#"
     // CHECK: builtin.function public extern("C") @derive_roundtrip_test([[V0:%\d+]]: i32) -> i64 {
-    // CHECK-NEXT: [[V1:%\d+]] = builtin.unrealized_conversion_cast [[V0]] <{ ty = #builtin.type<i64> }>;
+    // CHECK-NEXT: [[V1:%\d+]] = builtin.unrealized_conversion_cast [[V0]] : i32 to i64;
     // CHECK-NEXT: builtin.ret [[V1]] : (i64);
     // CHECK-NEXT: };
     "#
@@ -1944,9 +1945,9 @@ fn an_op_using_builtin_and_dialect_types_round_trips() -> TestResult {
 builtin.module public @types {
     builtin.function public extern(\"C\") @f(%0: i64, %1: isize, %2: ptr<struct point<x: i32, y: \
                   i32>>, %3: !test.vector<f32 x 4>) -> !test.vector<f32 x 4> {
-        %4 = builtin.unrealized_conversion_cast %0 <{ ty = #builtin.type<isize> }>;
-        %5 = builtin.unrealized_conversion_cast %2 <{ ty = #builtin.type<ptr<!test.vector<i8 x \
-                  16>>> }>;
+        %4 = builtin.unrealized_conversion_cast %0 : i64 to isize;
+        %5 = builtin.unrealized_conversion_cast %2 : ptr<struct point<x: i32, y: i32>> to \
+                  ptr<!test.vector<i8 x 16>>;
         builtin.ret %3 : (!test.vector<f32 x 4>);
     };
 };";
@@ -2607,8 +2608,8 @@ fn type_and_rec_remain_attribute_names() {
     let test = ParserTest::default();
     let source = "\
 builtin.function public extern(\"C\") @f(%0: i32) {
-    %1 = builtin.unrealized_conversion_cast %0 <{ ty = #builtin.type<i64> }> attributes { type = \
-                  true, rec = false };
+    %1 = builtin.unrealized_conversion_cast %0 : i32 to i64 attributes { type = true, rec = false \
+                  };
     builtin.ret;
 };";
     let function = test.parse::<Function>("names.hir", source).unwrap();
@@ -2948,23 +2949,42 @@ fn many_type_declarations_parse() {
 
 /// A function `f`, built in a test of its own with the test dialect registered, with an argument of
 /// each type `params` returns and, in its body, a cast of its first argument to each type `casts`
-/// returns. The casts' types are written inside an attribute, `#builtin.type<..>`.
+/// returns. Each cast also holds its type inside an attribute, `ty = #builtin.type<..>`.
 fn function_over(
     params: impl FnOnce(&Context) -> Vec<Type>,
     casts: impl FnOnce(&Context, &[Type]) -> Vec<Type>,
 ) -> Test {
+    function_over_with(params, |cx, params| {
+        casts(cx, params).into_iter().map(|ty| (ty, ty)).collect()
+    })
+}
+
+/// Like [function_over], but `casts` returns, for each cast, the type it casts to and the type its
+/// `ty` attribute holds.
+fn function_over_with(
+    params: impl FnOnce(&Context) -> Vec<Type>,
+    casts: impl FnOnce(&Context, &[Type]) -> Vec<(Type, Type)>,
+) -> Test {
+    use crate::dialects::builtin::attributes::TypeAttr;
+
     let mut test = Test::named("f");
     test.context_rc().get_or_register_dialect::<TestDialect>();
     let params = params(test.context());
     let casts = casts(test.context(), &params);
     test.with_function("f", &params, &[]);
     {
+        let context = test.context_rc();
         let mut f = test.function_builder();
         let arg = f.entry_block().borrow().arguments()[0] as ValueRef;
-        for ty in casts {
-            f.builder_mut()
-                .unrealized_conversion_cast(arg, ty, SourceSpan::UNKNOWN)
+        for (ty, held) in casts {
+            let cast = f
+                .builder_mut()
+                .unrealized_conversion_cast([arg], [ty], SourceSpan::UNKNOWN)
                 .unwrap();
+            let held = context.create_attribute::<TypeAttr, _>(held);
+            cast.as_operation_ref()
+                .borrow_mut()
+                .set_attribute("ty", held.as_attribute_ref());
         }
         f.builder_mut().ret([], SourceSpan::UNKNOWN).unwrap();
     }
@@ -3211,9 +3231,9 @@ fn unnamed_and_unusually_named_members_round_trip() {
 
 #[test]
 fn a_member_used_only_inside_an_attribute_round_trips() {
-    let test = function_over(
+    let test = function_over_with(
         |cx| [cx.i32()].into(),
-        |cx, _| [cx.ptr_type(self_recursive(cx, Some("list"), cx.i32()))].into(),
+        |cx, _| [(cx.i32(), cx.ptr_type(self_recursive(cx, Some("list"), cx.i32())))].into(),
     );
     let printed = assert_round_trips(&test);
     assert!(printed.starts_with("rec {\n  type !list = struct list<ptr<!list>, i32>;\n}\n\n"));
@@ -3898,10 +3918,9 @@ fn a_property_given_an_attribute_of_another_kind_is_a_diagnostic() {
 
     let generic = "builtin.function public extern(\"C\") @f() {\n    %0 = \"test.constant\"() { \
                    value = #builtin.i32<5> } : () -> i32;\n    builtin.ret;\n};";
-    let custom = "builtin.function public extern(\"C\") @f(%0: i32) -> i64 {\n    %1 = \
-                  builtin.unrealized_conversion_cast %0 <{ ty = #builtin.i32<5> }>;\n    \
-                  builtin.ret %1 : (i64);\n};";
-    for (source, property) in [(generic, "value"), (custom, "ty")] {
+    let custom = "builtin.function public extern(\"C\") @f() {\n    %1 = test.effects <{ known = \
+                  #builtin.i32<5> }>;\n    builtin.ret;\n};";
+    for (source, property) in [(generic, "value"), (custom, "known")] {
         let test = ParserTest::default();
         test.context().get_or_register_dialect::<TestDialect>();
         let err = test.parse::<Function>("g.hir", source).map(|_| ()).unwrap_err().to_string();
@@ -5881,9 +5900,9 @@ fn a_property_without_a_default_is_required() {
     let rendered = parse_error(&wrap("%1 = \"test.constant\"() : () -> i32;"));
     assert!(rendered.contains("missing required property 'value'"), "{rendered}");
 
-    // A cast's target type
-    let rendered = parse_error(&wrap("%1 = builtin.unrealized_conversion_cast %0;"));
-    assert!(rendered.contains("missing required property 'ty'"), "{rendered}");
+    // A range check's bounds, in its own form
+    let rendered = parse_error(&wrap("%1 = test.check_range %0;"));
+    assert!(rendered.contains("missing required property 'umin'"), "{rendered}");
 }
 
 /// `builtin.segment` has two required properties and `readonly`, which defaults to `false`: at
@@ -6699,5 +6718,59 @@ fn no_effects_never_becomes_unknown() {
         let parsed = parsed.downcast_ref::<Function>().expect("a function");
         assert_eq!(parsed.declared_effects(), DeclaredEffects::none(), "{form}: {text}");
         assert!(parsed.as_operation().is_memory_effect_free(), "{form}");
+    }
+}
+
+/// The casts nested in `root`, with their input and result counts.
+fn cast_shapes(root: OperationRef) -> Vec<(usize, usize)> {
+    let mut shapes = Vec::new();
+    root.borrow().prewalk_all(|op: &crate::Operation| {
+        if op.is::<UnrealizedConversionCast>() {
+            shapes.push((op.num_operands(), op.num_results()));
+        }
+    });
+    shapes
+}
+
+/// A value used before the text defines it parses: the parser stands the use on a placeholder
+/// until the definition, and no placeholder is left in what it returns. A cast with no inputs that
+/// the text writes is kept.
+#[test]
+fn a_forward_reference_leaves_no_placeholder() -> TestResult {
+    let test = ParserTest::default();
+    test.context().get_or_register_dialect::<TestDialect>();
+    let branch = test.context().get_registered_name::<VariadicSuccessors>();
+    let source = format!(
+        "\
+builtin.function public extern(\"C\") @f(%0: i32) -> i64 {{
+    %1 = builtin.unrealized_conversion_cast : () to i128;
+    \"{branch}\"()[^later] : () -> ();
+^earlier:
+    builtin.ret %3 : (i64);
+^later:
+    %3 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    \"{branch}\"()[^earlier] : () -> ();
+}};"
+    );
+    let function = test.parse::<Function>("forward.hir", &source)?;
+    let function = function.as_operation_ref();
+    assert_eq!(cast_shapes(function), [(0, 1), (1, 1)]);
+    let printed = function.borrow().to_string();
+    assert!(printed.contains("builtin.ret %3 : (i64);"), "{printed}");
+    Ok(())
+}
+
+/// A value that is used and never defined is the parser's diagnostic, whatever its use.
+#[test]
+fn an_undefined_value_is_the_parsers_diagnostic() {
+    for body in [
+        "builtin.ret %7 : (i64);",
+        "%1 = builtin.unrealized_conversion_cast %7 : i32 to i64;\n    builtin.ret %1 : (i64);",
+    ] {
+        let source =
+            format!("builtin.function public extern(\"C\") @f(%0: i32) -> i64 {{\n    {body}\n}};");
+        let test = ParserTest::default();
+        let err = test.parse::<Function>("undefined.hir", &source).map(|_| ()).unwrap_err();
+        assert!(format!("{err}").contains("use of undeclared values"), "{err}");
     }
 }

@@ -6,7 +6,7 @@ use crate::{
     InsertionGuard, Op, PendingSuccessorInfo, RawWalk, Value, WalkResult,
     adt::{SmallDenseMap, SmallSet},
     dialects::builtin::{
-        UnrealizedConversionCast, WorldRef,
+        WorldRef,
         attributes::{Location, LocationAttr},
     },
     traits::{IsolatedFromAbove, Terminator},
@@ -627,25 +627,22 @@ where
     }
 
     /// Create and remember a new placeholder for a forward reference.
+    ///
+    /// The placeholder is the one result, of type `ty`, of a `builtin.unrealized_conversion_cast`
+    /// with no inputs, built outside any block: it is only something with a def/use chain. The
+    /// text can write a cast of the same shape, so a placeholder is told apart by being in
+    /// `forward_ref_placeholders` (its result) and `forward_ref_ops` (the operation), never by its
+    /// shape. When the value is defined its uses move to the definition; a placeholder never
+    /// defined is reported by [Self::finalize], and every placeholder is erased when the parser is
+    /// dropped, so none survives a parse.
     fn create_forward_ref_placeholder(&mut self, loc: SourceSpan, ty: Type) -> ValueRef {
-        // Forward references are always created as operations, because we just need something with
-        // a def/use chain.
-        //
-        // We create these placeholders as having an empty name, which we know cannot be created
-        // through normal user input, allowing us to distinguish them.
-        let name = self.parser.context().get_registered_name::<UnrealizedConversionCast>();
-        // We create by hand here, as we're creating an op that expects an operand without one,
-        // if this turns out to be a problem, we may need to create a dedicated op for this.
-        let mut op_ref = UnrealizedConversionCast::alloc_default(self.parser.context_rc());
-        let result = {
-            let mut op = op_ref.borrow_mut();
-            op.set_span(loc);
-            op.set_ty(ty);
-            let mut op = op.as_operation_mut();
-            let result = op.context().make_result(loc, ty, op.as_operation_ref(), 0);
-            op.results_mut().group_mut(0).push(result);
-            result as ValueRef
-        };
+        use crate::dialects::builtin::BuiltinOpBuilder;
+
+        let mut builder = crate::OpBuilder::new(self.parser.context_rc());
+        let op_ref = builder
+            .unrealized_conversion_cast([], [ty], loc)
+            .unwrap_or_else(|err| unreachable!("a cast with one result is valid: {err}"));
+        let result = op_ref.borrow().outputs()[0] as ValueRef;
         self.forward_ref_placeholders.insert(result, loc);
         self.forward_ref_ops.insert(op_ref.as_operation_ref());
         result

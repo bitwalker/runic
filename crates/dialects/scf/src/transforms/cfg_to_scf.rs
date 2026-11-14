@@ -396,6 +396,17 @@ mod tests {
 
     use super::*;
 
+    /// The result of a `builtin.unrealized_conversion_cast` of `value` to `ty`.
+    fn cast(
+        builder: &mut builtin::FunctionBuilder<'_, runic_core::OpBuilder>,
+        value: ValueRef,
+        ty: runic_core::Type,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        let cast = builder.unrealized_conversion_cast([value], [ty], span)?;
+        Ok(cast.borrow().outputs()[0] as ValueRef)
+    }
+
     #[test]
     fn cfg_to_scf_combines_returns_from_distinct_inline_sites() -> Result<(), Report> {
         use runic_core::dialects::debuginfo::attributes::{
@@ -767,12 +778,12 @@ mod tests {
 
         builder.switch_to_block(has_more_columns);
         let addr_offset = builder.add_unchecked(offset, col_offset, Signedness::Unsigned, span)?;
-        let addr = builder.unrealized_conversion_cast(ptr, i32_ty, span)?;
+        let addr = cast(&mut builder, ptr, i32_ty, span)?;
         let cell_addr = builder.add_unchecked(addr, addr_offset, Signedness::Unsigned, span)?;
         // This represents a bitcast
-        let cell_ptr = builder.unrealized_conversion_cast(cell_addr, ptr_ty, span)?;
+        let cell_ptr = cast(&mut builder, cell_addr, ptr_ty, span)?;
         // This represents a load
-        let cell = builder.unrealized_conversion_cast(cell_ptr, i32_ty, span)?;
+        let cell = cast(&mut builder, cell_ptr, i32_ty, span)?;
         let new_col_offset_one = builder.i32(1, span);
         let new_col_offset = builder.add(col_offset, new_col_offset_one, span)?;
         let new_sum = builder.add_unchecked(col_sum, cell, Signedness::Unsigned, span)?;
@@ -874,12 +885,12 @@ mod tests {
 
         builder.switch_to_block(has_more_columns);
         let addr_offset = builder.add_unchecked(offset, col_offset, Signedness::Unsigned, span)?;
-        let addr = builder.unrealized_conversion_cast(ptr, i32_ty, span)?;
+        let addr = cast(&mut builder, ptr, i32_ty, span)?;
         let cell_addr = builder.add_unchecked(addr, addr_offset, Signedness::Unsigned, span)?;
         // This represents a bitcast
-        let cell_ptr = builder.unrealized_conversion_cast(cell_addr, ptr_ty, span)?;
+        let cell_ptr = cast(&mut builder, cell_addr, ptr_ty, span)?;
         // This represents a load
-        let cell = builder.unrealized_conversion_cast(cell_ptr, i32_ty, span)?;
+        let cell = cast(&mut builder, cell_ptr, i32_ty, span)?;
         let new_col_offset_one = builder.i32(1, span);
         let new_col_offset = builder.add(col_offset, new_col_offset_one, span)?;
         let (overflowed, new_sum) =

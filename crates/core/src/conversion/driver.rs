@@ -518,9 +518,17 @@ fn is_unrealized_conversion_cast(op: OperationRef) -> bool {
 }
 
 fn unrealized_conversion_cast_values(op: OperationRef) -> Option<(ValueRef, ValueRef)> {
-    let cast = op.try_downcast_op::<UnrealizedConversionCast>().ok()?;
-    let cast = cast.borrow();
-    Some((cast.operand().as_value_ref(), cast.result().as_value_ref()))
+    if !op.borrow().is::<UnrealizedConversionCast>() {
+        return None;
+    }
+    let op = op.borrow();
+    if op.num_operands() != 1 || op.num_results() != 1 {
+        return None;
+    }
+    Some((
+        op.operands()[0].borrow().as_value_ref(),
+        op.results()[0].borrow().as_value_ref(),
+    ))
 }
 
 fn legality_failure_reason(target: &ConversionTarget, op: &crate::Operation) -> Option<String> {
@@ -968,12 +976,14 @@ mod tests {
             let arg = block.borrow().arguments()[0] as ValueRef;
             let first = builder
                 .builder_mut()
-                .unrealized_conversion_cast(arg, middle, SourceSpan::default())
+                .unrealized_conversion_cast([arg], [middle], SourceSpan::default())
                 .unwrap();
+            let first = first.borrow().outputs()[0] as ValueRef;
             let second = builder
                 .builder_mut()
-                .unrealized_conversion_cast(first, result, SourceSpan::default())
+                .unrealized_conversion_cast([first], [result], SourceSpan::default())
                 .unwrap();
+            let second = second.borrow().outputs()[0] as ValueRef;
             builder.ret(Some(second), SourceSpan::default()).unwrap();
         }
         test
@@ -1122,8 +1132,8 @@ builtin.function public extern(\"C\") @full_conversion_rewrites_illegal_op_to_le
         assert_eq!(inherited, 4, "replacement plus operand and result materializations");
         let output = test.function().borrow().as_operation().to_string();
         assert!(output.contains("builtin.unrealized_conversion_cast"));
-        assert!(output.contains("#builtin.type<i64>"));
-        assert!(output.contains("#builtin.type<i32>"));
+        assert!(output.contains(": i32 to i64 "), "{output}");
+        assert!(output.contains(": i64 to i32 "), "{output}");
         assert!(output.contains("test.mul"));
         assert!(!output.contains("test.add"));
     }

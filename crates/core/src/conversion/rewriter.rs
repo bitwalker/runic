@@ -7,6 +7,7 @@ use super::TypeConverter;
 use crate::{
     BlockRef, BuildableOp, Builder, BuilderExt, Context, Listener, ListenerType, OperationRef,
     ProgramPoint, RegionRef, Report, SourceSpan, Spanned, Type, UnsafeIntrusiveEntityRef, ValueRef,
+    dialects::builtin::{BuiltinOpBuilder, UnrealizedConversionCast},
     patterns::{PatternRewriter, Rewriter, RewriterListener},
 };
 
@@ -273,6 +274,17 @@ impl ConversionPatternRewriter {
     {
         let builder = self.inner.create::<T, Args>(span);
         core::ops::FnOnce::call_once(builder, args)
+    }
+
+    /// Create a `builtin.unrealized_conversion_cast` of `inputs` to values of the types `results`
+    /// at the current insertion point.
+    pub(super) fn create_unrealized_conversion_cast(
+        &mut self,
+        inputs: impl IntoIterator<Item = ValueRef>,
+        results: impl IntoIterator<Item = Type>,
+        span: SourceSpan,
+    ) -> Result<UnsafeIntrusiveEntityRef<UnrealizedConversionCast>, Report> {
+        BuiltinOpBuilder::unrealized_conversion_cast(&mut *self.inner, inputs, results, span)
     }
 
     /// Mark `op` as a framework-owned materialization operation.

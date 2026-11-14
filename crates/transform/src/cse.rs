@@ -803,8 +803,10 @@ builtin.function public extern("C") @ssa_memory_reads(%0: ptr<i8>) -> (i8, i8) {
             builder.set_insertion_point_to_end(module_body);
 
             let addr = builder.i32(0, SourceSpan::UNKNOWN);
-            let ptr =
-                builder.unrealized_conversion_cast(addr, ptr_ty, SourceSpan::UNKNOWN).unwrap();
+            let ptr = builder
+                .unrealized_conversion_cast([addr], [ptr_ty], SourceSpan::UNKNOWN)
+                .unwrap();
+            let ptr = ptr.borrow().outputs()[0] as ValueRef;
             let first = TestOpBuilder::load(&mut builder, ptr, SourceSpan::UNKNOWN).unwrap();
             let second = TestOpBuilder::load(&mut builder, ptr, SourceSpan::UNKNOWN).unwrap();
             let same =
@@ -829,7 +831,7 @@ builtin.function public extern("C") @ssa_memory_reads(%0: ptr<i8>) -> (i8, i8) {
             r#"
 // CHECK-LABEL: builtin.module private @graph_memory_reads
     // CHECK: [[ADDR:%\d+]] = arith.constant 0 : i32;
-    // CHECK-NEXT: [[PTR:%\d+]] = builtin.unrealized_conversion_cast [[ADDR]] <{ ty = #builtin.type<ptr<i8>> }>;
+    // CHECK-NEXT: [[PTR:%\d+]] = builtin.unrealized_conversion_cast [[ADDR]] : i32 to ptr<i8>;
     // CHECK-NEXT: [[FIRST:%\d+]] = test.load [[PTR]];
     // CHECK-NEXT: [[SECOND:%\d+]] = test.load [[PTR]];
     // CHECK-NEXT: [[SAME:%\d+]] = arith.cmpi eq [[FIRST]], [[SECOND]];

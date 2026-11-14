@@ -9,9 +9,9 @@ use super::{
     ops::*,
 };
 use crate::{
-    AsCallableSymbolRef, Builder, BuilderExt, Ident, Int, OpBuilder, OpRegistration, Report,
-    SourceSpan, Spanned, SymbolName, SymbolTable, Type, UnsafeIntrusiveEntityRef, ValueRef,
-    Visibility, constants::ConstantData,
+    AsCallableSymbolRef, Builder, BuilderExt, Ident, Int, OpBuilder, OpRegistration,
+    OperationState, Report, SmallVec, SourceSpan, Spanned, SymbolName, SymbolTable, Type,
+    UnsafeIntrusiveEntityRef, ValueRef, Visibility, constants::ConstantData,
 };
 
 pub trait BuiltinOpBuilder<'f, B: ?Sized + Builder> {
@@ -106,15 +106,35 @@ pub trait BuiltinOpBuilder<'f, B: ?Sized + Builder> {
         op_builder(data)
     }
 
+    /// Create an [UnrealizedConversionCast] of `inputs` to values of the types `results`.
+    ///
+    /// Returns an error when `results` is empty: a cast has at least one result.
     fn unrealized_conversion_cast(
         &mut self,
-        value: ValueRef,
-        ty: Type,
+        inputs: impl IntoIterator<Item = ValueRef>,
+        results: impl IntoIterator<Item = Type>,
         span: SourceSpan,
-    ) -> Result<ValueRef, Report> {
-        let op_builder = self.builder_mut().create::<UnrealizedConversionCast, (_, _)>(span);
-        let op = op_builder(value, ty)?;
-        Ok(op.borrow().result().as_value_ref())
+    ) -> Result<UnsafeIntrusiveEntityRef<UnrealizedConversionCast>, Report> {
+        let results = results.into_iter().collect::<SmallVec<[Type; 4]>>();
+        if results.is_empty() {
+            return Err(crate::diagnostics::report!(
+                message: "invalid operation builtin.unrealized_conversion_cast",
+                labels: [primary(span, "a cast has at least one result")],
+            ));
+        }
+        let name = self
+            .builder()
+            .context()
+            .get_or_register_dialect::<super::BuiltinDialect>()
+            .expect_registered_name::<UnrealizedConversionCast>();
+        let mut state = OperationState::new(span, name);
+        state.operands.push(inputs.into_iter().collect());
+        state.results = results;
+        let op = self.builder_mut().create_operation(&mut state)?;
+        match op.try_downcast_op::<UnrealizedConversionCast>() {
+            Ok(op) => Ok(op),
+            Err(_) => unreachable!("the operation built is a cast"),
+        }
     }
 
     /// Create a [Call] of `callee` with `signature`, passing `args`.

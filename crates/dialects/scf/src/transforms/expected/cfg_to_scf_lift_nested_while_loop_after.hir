@@ -19,10 +19,10 @@ builtin.function public extern("C") @cfg_to_scf_lift_nested_while_loop(%0: ptr<i
                     scf.yield %29, %29, %30, %28 : (i32, i32, i32, i1);
                 } else {
                     %13 = arith.add %9, %5 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
-                    %14 = builtin.unrealized_conversion_cast %0 <{ ty = #builtin.type<i32> }>;
+                    %14 = builtin.unrealized_conversion_cast %0 : ptr<i32> to i32;
                     %15 = arith.add %14, %13 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
-                    %16 = builtin.unrealized_conversion_cast %15 <{ ty = #builtin.type<ptr<i32>> }>;
-                    %17 = builtin.unrealized_conversion_cast %16 <{ ty = #builtin.type<i32> }>;
+                    %16 = builtin.unrealized_conversion_cast %15 : i32 to ptr<i32>;
+                    %17 = builtin.unrealized_conversion_cast %16 : ptr<i32> to i32;
                     %18 = arith.constant 1 : i32;
                     %19 = arith.add %5, %18;
                     %20 = arith.add %6, %17 <{ overflow = #builtin.overflow<unchecked unsigned> }>;

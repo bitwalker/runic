@@ -271,6 +271,16 @@ mod tests {
         TestOpBuilder::check_range(builder, value, umin, umax, SPAN)
     }
 
+    /// The result of a `builtin.unrealized_conversion_cast` of `value` to `ty`.
+    fn cast(
+        builder: &mut FunctionBuilder<'_, OpBuilder>,
+        value: ValueRef,
+        ty: Type,
+    ) -> Result<ValueRef, Report> {
+        let cast = builder.unrealized_conversion_cast([value], [ty], SPAN)?;
+        Ok(cast.borrow().outputs()[0] as ValueRef)
+    }
+
     /// The entry block's argument `index`.
     fn argument(test: &Test, index: usize) -> ValueRef {
         test.entry_block().borrow().arguments()[index].borrow().as_value_ref()
@@ -425,7 +435,7 @@ mod tests {
             let i32 = test.context().i32();
             let mut builder = test.function_builder();
             let raw = builder.i32(7, SPAN);
-            let cast = builder.unrealized_conversion_cast(raw, i32, SPAN)?;
+            let cast = cast(&mut builder, raw, i32)?;
             builder.ret([cast], SPAN)?;
             cast
         };
@@ -446,9 +456,9 @@ mod tests {
             let i32 = test.context().i32();
             let mut builder = test.function_builder();
             let wide = builder.i64(1 << 32, SPAN);
-            let narrowed = builder.unrealized_conversion_cast(wide, i32, SPAN)?;
+            let narrowed = cast(&mut builder, wide, i32)?;
             let narrow = builder.i8(5, SPAN);
-            let widened = builder.unrealized_conversion_cast(narrow, i32, SPAN)?;
+            let widened = cast(&mut builder, narrow, i32)?;
             builder.ret([narrowed, widened], SPAN)?;
             (narrowed, widened)
         };
@@ -717,8 +727,8 @@ mod tests {
             let mut builder = test.function_builder();
             let lhs = builder.i64(u32::MAX as i64, SPAN);
             let rhs = builder.i64(1, SPAN);
-            let lhs = builder.unrealized_conversion_cast(lhs, i32, SPAN)?;
-            let rhs = builder.unrealized_conversion_cast(rhs, i32, SPAN)?;
+            let lhs = cast(&mut builder, lhs, i32)?;
+            let rhs = cast(&mut builder, rhs, i32)?;
             let comparison = builder.slt(lhs, rhs, SPAN)?;
             builder.ret([comparison], SPAN)?;
             comparison
@@ -738,7 +748,7 @@ mod tests {
             let i32 = test.context().i32();
             let mut builder = test.function_builder();
             let entry = builder.current_block();
-            let cast = builder.unrealized_conversion_cast(narrow, i32, SPAN)?;
+            let cast = cast(&mut builder, narrow, i32)?;
             let if_op = builder.r#if(cond, &[i32], SPAN)?;
             let joined = if_op.as_operation_ref().borrow().results()[0] as ValueRef;
             let (then_region, else_region) = {
@@ -789,7 +799,7 @@ mod tests {
             let narrow = argument(&test, 1);
             let i32 = test.context().i32();
             let mut builder = test.function_builder();
-            let cast = builder.unrealized_conversion_cast(narrow, i32, SPAN)?;
+            let cast = cast(&mut builder, narrow, i32)?;
             let from_cast = builder.create_block();
             let from_constant = builder.create_block();
             let join = builder.create_block();
