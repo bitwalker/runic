@@ -419,6 +419,8 @@ mod drive;
 mod interp;
 mod local2reg_model;
 mod nesting;
+mod pipeline_runs;
+mod pipeline_text;
 mod printing;
 mod registry;
 mod wide;

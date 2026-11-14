@@ -1217,6 +1217,10 @@ mod scheduling_tests;
 #[path = "manager/printing_tests.rs"]
 mod printing_tests;
 
+#[cfg(all(test, feature = "std"))]
+#[path = "manager/scheduling_model.rs"]
+mod scheduling_model;
+
 #[cfg(test)]
 mod tests {
     use alloc::boxed::Box;
