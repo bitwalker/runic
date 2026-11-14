@@ -35,9 +35,9 @@ impl MatchFailure {
 
 /// Mutations observed while applying a conversion pattern.
 ///
-/// The conversion driver uses this summary to legalize newly inserted or modified operations after
-/// a pattern succeeds. The lists contain each operation at most once, while `mutation_count`
-/// counts all listener notifications.
+/// The conversion driver uses this summary to legalize the operations a pattern inserted or
+/// changed in place after it succeeds. The lists contain each operation at most once, while
+/// `mutation_count` counts all listener notifications.
 #[derive(Default)]
 pub struct TrackedMutations {
     inserted_ops: Vec<OperationRef>,
@@ -45,6 +45,7 @@ pub struct TrackedMutations {
     replaced_ops: Vec<OperationRef>,
     erased_ops: Vec<OperationRef>,
     materialized_ops: Vec<OperationRef>,
+    in_place_ops: Vec<OperationRef>,
     block_mutations: usize,
     mutation_count: usize,
 }
@@ -56,7 +57,8 @@ impl TrackedMutations {
         &self.inserted_ops
     }
 
-    /// Return operations modified while the pattern ran.
+    /// Return operations modified while the pattern ran: those changed in place, and the users
+    /// whose operands a replacement redirected.
     #[inline]
     pub fn modified_ops(&self) -> &[OperationRef] {
         &self.modified_ops
@@ -78,6 +80,15 @@ impl TrackedMutations {
     #[inline]
     pub fn materialized_ops(&self) -> &[OperationRef] {
         &self.materialized_ops
+    }
+
+    /// Return the operations the pattern changed in place: those given to
+    /// [ConversionPatternRewriter::modify_op_in_place], and the parent operations of the blocks
+    /// given to [ConversionPatternRewriter::apply_signature_conversion]. Unlike
+    /// [Self::modified_ops], it leaves out the users a replacement redirected.
+    #[inline]
+    pub fn in_place_ops(&self) -> &[OperationRef] {
+        &self.in_place_ops
     }
 
     /// Return the number of block insertion/erasure notifications observed.
@@ -179,6 +190,11 @@ impl ConversionTrackingListener {
     fn record_materialized_op(&self, op: OperationRef) {
         let mut mutations = self.mutations.borrow_mut();
         push_unique(&mut mutations.materialized_ops, op);
+    }
+
+    fn record_in_place_op(&self, op: OperationRef) {
+        let mut mutations = self.mutations.borrow_mut();
+        push_unique(&mut mutations.in_place_ops, op);
     }
 
     fn record_block_mutation(&self) {
@@ -573,6 +589,7 @@ impl ConversionPatternRewriter {
             let _modification = self.inner.modify_op_in_place(op);
             f(&mut op.borrow_mut())
         };
+        self.tracking.record_in_place_op(op);
 
         let name = op.borrow().name();
         for (index, (block, before)) in blocks.iter().enumerate() {
@@ -788,7 +805,10 @@ impl ConversionPatternRewriter {
             block.borrow_mut().erase_argument(0);
         }
         match parent {
-            Some(parent) => self.inner.notify_operation_modified(parent),
+            Some(parent) => {
+                self.inner.notify_operation_modified(parent);
+                self.tracking.record_in_place_op(parent);
+            }
             // No operation is told of the change; it is still a mutation.
             None => self.tracking.record_block_mutation(),
         }

@@ -370,15 +370,15 @@ fn split_operations_take_and_give_ranges_and_no_cast_remains() {
             "()",
             "    %5 = test.constant 1 : i64;
     %6 = test.constant 0 : i64;
-    %21 = test.constant 2 : i64;
-    %22 = test.constant 0 : i64;
-    %10 = test.add %5, %21;
-    %11 = test.add %6, %22;
-    %15 = test.add %10, %21;
-    %16 = test.add %11, %22;
-    %18 = test.add %15, %10;
-    %19 = test.add %16, %11;
-    test.sink %18, %19 : (i64, i64);
+    %8 = test.constant 2 : i64;
+    %9 = test.constant 0 : i64;
+    %11 = test.add %5, %8;
+    %12 = test.add %6, %9;
+    %14 = test.add %11, %8;
+    %15 = test.add %12, %9;
+    %17 = test.add %14, %11;
+    %18 = test.add %15, %12;
+    test.sink %17, %18 : (i64, i64);
     builtin.ret;"
         )
     );
@@ -1040,13 +1040,13 @@ fn a_target_ruled_by_the_converter_converts_exactly_the_operations_that_touch_an
             "(%0: i32, %1: i32)",
             "    %7 = test.constant 1 : i64;
     %8 = test.constant 0 : i64;
-    %15 = test.constant 2 : i64;
-    %16 = test.constant 0 : i64;
-    %12 = test.add %7, %15;
-    %13 = test.add %8, %16;
+    %10 = test.constant 2 : i64;
+    %11 = test.constant 0 : i64;
+    %13 = test.add %7, %10;
+    %14 = test.add %8, %11;
     %5 = test.add %0, %1;
     %6 = test.constant 7 : i32;
-    test.sink %12, %13 : (i64, i64);
+    test.sink %13, %14 : (i64, i64);
     test.sink %5, %6 : (i32, i32);
     builtin.ret;"
         )

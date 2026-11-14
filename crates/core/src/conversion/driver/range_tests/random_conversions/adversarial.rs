@@ -331,12 +331,10 @@ fn wanted_replacing_by_values_that_do_not_dominate_fails_verification() {
 }
 
 /// A pattern that changes nothing through `modify_op_in_place` and reports success, for an
-/// operation that stays illegal: the driver offers it again until the limit, each time one call
-/// deeper.
+/// operation that stays illegal: the driver offers it again until the limit, on a stack that does
+/// not grow with the applications.
 #[test]
-#[ignore = "overflows the 2 MiB stack of a test thread in the dev profile before the default limit \
-            of 1024"]
-fn wanted_a_pattern_that_keeps_modifying_in_place_ends_at_the_limit() {
+fn a_pattern_that_keeps_modifying_in_place_ends_at_the_limit() {
     let outcome = outcome(
         "modify in place forever",
         with_add(|op, _, rewriter| {
@@ -347,10 +345,9 @@ fn wanted_a_pattern_that_keeps_modifying_in_place_ends_at_the_limit() {
     assert!(outcome.is_error(), "{outcome:?}");
 }
 
-/// The same with a limit of 20,000: the recursion is as deep as the limit.
+/// The same with a limit of 20,000.
 #[test]
-#[ignore = "overflows the stack: the operation is offered again by a recursive call"]
-fn wanted_a_pattern_that_keeps_modifying_in_place_ends_at_a_large_limit() {
+fn a_pattern_that_keeps_modifying_in_place_ends_at_a_large_limit() {
     let mut config = ConversionConfig::default();
     config.with_max_iterations(20_000);
     let outcome = outcome_of(

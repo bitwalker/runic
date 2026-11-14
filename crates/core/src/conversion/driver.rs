@@ -210,9 +210,7 @@ impl ConversionDriver<'_> {
     fn run(&mut self) -> Result<(), Report> {
         let ops = self.collect_conversion_order()?;
         for op in ops {
-            if self.is_live(op) {
-                self.legalize_operation(op)?;
-            }
+            self.legalize_from(op)?;
         }
 
         if self.config.reconcile_unrealized_casts() {
@@ -249,15 +247,46 @@ impl ConversionDriver<'_> {
         Ok(ops)
     }
 
-    fn legalize_operation(&mut self, op: OperationRef) -> Result<(), Report> {
+    /// Legalizes `first`, an operation of the collected order, and what follows from it: when a
+    /// pattern applies to an operation, the operations it inserted and those it changed in place
+    /// are legalized, in that order, and then the operation is offered again while it is still in
+    /// the IR and not accepted. This is a depth-first walk kept on an explicit stack, so neither
+    /// the number of applications to one operation nor the length of a chain of uses grows the
+    /// call stack.
+    ///
+    /// The users a replacement redirected to a cast are not legalized here: each is legalized in
+    /// its turn, in the order the operations were collected, and one that was already visited
+    /// reads the cast (which folds, or is realized). So an operation nested under a recursively
+    /// legal operation, which is not collected, is never offered to a pattern.
+    fn legalize_from(&mut self, first: OperationRef) -> Result<(), Report> {
+        let mut pending = vec![first];
+        while let Some(op) = pending.pop() {
+            if !self.is_live(op) {
+                continue;
+            }
+            let Some(mutations) = self.apply_one_pattern(op)? else {
+                continue;
+            };
+            pending.push(op);
+            pending.extend(
+                mutations.inserted_ops().iter().chain(mutations.in_place_ops()).rev().copied(),
+            );
+        }
+        Ok(())
+    }
+
+    /// Offers `op` to its candidate patterns, in order, until one applies. Returns what the
+    /// pattern that applied changed; `None` when `op` is accepted as it is, is a cast that is not
+    /// offered, or (when it need not be converted) no pattern applied.
+    fn apply_one_pattern(&mut self, op: OperationRef) -> Result<Option<TrackedMutations>, Report> {
         // The casts the driver inserts are not offered to patterns.
         if self.is_driver_cast(op)
             || (self.config.reconcile_unrealized_casts() && is_unrealized_conversion_cast(op))
         {
-            return Ok(());
+            return Ok(None);
         }
         if self.target.is_recursively_legal(&op.borrow()) || self.target.is_legal(&op.borrow()) {
-            return Ok(());
+            return Ok(None);
         }
         let required = self.must_be_converted(op);
 
@@ -271,7 +300,7 @@ impl ConversionDriver<'_> {
             return if required {
                 Err(self.no_legalization_path_error(op))
             } else {
-                Ok(())
+                Ok(None)
             };
         }
 
@@ -328,12 +357,7 @@ impl ConversionDriver<'_> {
                     self.note_pattern_application(pattern.as_ref())?;
                     self.validate_generated_ops(pattern.as_ref(), &mutations)?;
                     self.result.changed = true;
-
-                    self.legalize_tracked_ops(&mutations)?;
-                    if self.is_live(op) {
-                        self.legalize_operation(op)?;
-                    }
-                    return Ok(());
+                    return Ok(Some(mutations));
                 }
             }
         }
@@ -341,7 +365,7 @@ impl ConversionDriver<'_> {
         if required {
             Err(no_matching_pattern_error(op, match_failures))
         } else {
-            Ok(())
+            Ok(None)
         }
     }
 
@@ -395,15 +419,6 @@ impl ConversionDriver<'_> {
                     pattern.name(),
                     name
                 )));
-            }
-        }
-        Ok(())
-    }
-
-    fn legalize_tracked_ops(&mut self, mutations: &TrackedMutations) -> Result<(), Report> {
-        for op in mutations.inserted_ops().iter().chain(mutations.modified_ops().iter()).copied() {
-            if self.is_live(op) {
-                self.legalize_operation(op)?;
             }
         }
         Ok(())

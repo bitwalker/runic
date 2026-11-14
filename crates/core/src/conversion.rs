@@ -119,9 +119,9 @@
 //! after it succeeds; and the patterns rooted at one operation being tried in order of the
 //! estimated length of their path to legal operations, then benefit.
 //!
-//! A pattern may not rely on: the order in which operations are offered (it starts as a pre-order
-//! walk, but the operations a pattern creates or changes, including users redirected to a cast,
-//! are legalized at once, before the operations that follow); the operations around it being
+//! A pattern may not rely on: the order in which operations are offered (it is a pre-order walk,
+//! but the operations a pattern creates or changes in place are legalized at once, before the
+//! operations that follow; a user redirected to a cast waits for its turn); the operations around it being
 //! converted yet (an operand may be an old value read through a cast); a cast it sees in the IR
 //! staying there (casts are folded and realized at the end); a failed attempt's changes being
 //! undone; the operation it is given being offered only once; or a change it makes to a nested

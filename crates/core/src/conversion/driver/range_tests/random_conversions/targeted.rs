@@ -55,68 +55,10 @@ fn join_callbacks(converter: &mut TypeConverter) {
     });
 }
 
-/// The module documentation: "the operations nested under a recursively legal operation are not
-/// visited". An operation nested under one that uses a value converted outside is redirected to
-/// the cast, counted as modified, and offered to the patterns: it is converted.
+/// An operation nested under a recursively legal one is not offered to a pattern, even when a
+/// value it reads is replaced outside: it is left as it is, reading a realized cast.
 #[test]
-fn an_operation_under_a_recursively_legal_one_is_converted_when_its_operand_is_replaced() {
-    let mut test = Test::new("f", |_| ([], []));
-    let context = test.context_rc();
-    {
-        let mut builder = test.function_builder();
-        let b = builder.builder_mut();
-        const S: SourceSpan = SourceSpan::UNKNOWN;
-        let outer = b.create::<Constant, _>(S)(Int::from_bits(128, 7)).unwrap();
-        let outer = outer.borrow().result().as_value_ref();
-        let scope = b.create::<Scope, ()>(S)().unwrap();
-        let region = scope.borrow().body().as_region_ref();
-        let body = b.create_block(region, None, &[]);
-        let after = scope.as_operation_ref();
-        b.set_insertion_point_to_end(body);
-        // Uses the outer value: redirected when the constant is split.
-        b.create::<Sink, (ValueRef, Vec<ValueRef>)>(S)(outer, vec![]).unwrap();
-        // Uses only a value of the region: never redirected.
-        let inner = b.create::<Constant, _>(S)(Int::from_bits(128, 9)).unwrap();
-        let inner = inner.borrow().result().as_value_ref();
-        b.create::<Sink, (ValueRef, Vec<ValueRef>)>(S)(inner, vec![]).unwrap();
-        b.set_insertion_point_after(after);
-        b.create::<crate::dialects::builtin::Ret, (Vec<ValueRef>,)>(S)(vec![]).unwrap();
-    }
-    let function = test.function().as_operation_ref();
-    println!("{}", function.borrow());
-    let mut converter = wide_converter(&context);
-    join_callbacks(&mut converter);
-    let mut target = wide_target(&context);
-    target.add_legal_op::<Scope>().mark_op_recursively_legal::<Scope>();
-
-    convert(
-        function,
-        target,
-        [
-            split_constant(&context, &converter),
-            flatten_sink(&context, &converter, Rc::default()),
-        ],
-    )
-    .unwrap_or_else(|err| panic!("{}", describe(&err)));
-
-    let output = function.borrow().to_string();
-    println!("{output}");
-    // The inner constant and its sink are as they were: not visited.
-    assert!(output.contains("test.constant 9 : i128"), "{output}");
-    // The sink of the outer value was converted, though it is nested under the recursively
-    // legal operation: it reads the two halves, not a join of them.
-    let sinks = output.matches("test.sink").count();
-    assert_eq!(sinks, 2);
-    assert!(
-        output.contains(": (i64, i64);"),
-        "pinned: the nested sink is converted\n{output}"
-    );
-}
-
-/// What the documentation says: the nested user is left as it is, reading a realized cast.
-#[test]
-#[ignore = "the nested user of a converted value is offered to the patterns"]
-fn wanted_an_operation_under_a_recursively_legal_one_is_not_converted() {
+fn an_operation_under_a_recursively_legal_one_is_not_converted() {
     let mut test = Test::new("f", |_| ([], []));
     let context = test.context_rc();
     {
