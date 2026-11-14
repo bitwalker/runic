@@ -86,7 +86,7 @@ impl Pass for Fail {
 }
 
 /// Registers the passes of this module (again, which does nothing, when a test before did).
-fn register() {
+pub(super) fn register() {
     register_pass(|| Box::new(BreakReturns)).unwrap();
     register_pass(|| Box::new(Fail)).unwrap();
 }

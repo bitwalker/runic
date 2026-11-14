@@ -7,10 +7,16 @@
 //! printed IR, or a listing. Every diagnostic, and every print of IR between passes, goes to
 //! standard error. The exit code is 0 when everything succeeded and 1 otherwise.
 //!
+//! With `--verify-diagnostics` the diagnostics of each case are not rendered: they are checked
+//! against the expectations written in the case (see [`expect`]), and what does not match is
+//! rendered instead. The exit code is then 1 exactly when something did not match, and a case
+//! is printed only when it succeeded.
+//!
 //! [`run`] is the whole tool, given its arguments and streams; the binary calls it with the
 //! process's.
 #![deny(warnings)]
 
+mod expect;
 mod options;
 mod split;
 
@@ -27,7 +33,10 @@ use std::{
 use clap::Parser;
 use runic_core::{
     Context, OpPrinter, OpPrintingFlags, OperationRef, Report,
-    diagnostics::{DiagnosticDisplay, DiagnosticSet, OwnedDiagnostic, RenderConfig, diagnostic},
+    diagnostics::{
+        DiagnosticDisplay, DiagnosticSet, OwnedDiagnostic, RenderConfig, SourceSpan, TextRange,
+        diagnostic,
+    },
     parse::{ParserConfig, parse_any},
     pass::{
         IRPrintingConfig, IoOutput, Nesting, OperationPass, PassInfo, PassInstrumentation,
@@ -161,13 +170,21 @@ fn run_to_buffers(
             dump_pass_pipeline: options.dump_pass_pipeline,
             printing: Some(printing),
             flags: options.printing_flags(),
+            verify_diagnostics: options.verify_diagnostics,
         };
         match chunk.process_on_its_own_thread() {
             Ok(output) => {
                 *err += &output.stderr;
                 if output.succeeded {
                     written.push(output.stdout);
+                }
+                // When diagnostics are checked, a case fails only by not matching them.
+                let failed = if options.verify_diagnostics {
+                    output.mismatched
                 } else {
+                    !output.succeeded
+                };
+                if failed {
                     succeeded = false;
                 }
             }
@@ -256,10 +273,57 @@ fn render(display: DiagnosticDisplay<'_>) -> String {
     text
 }
 
-/// Renders each diagnostic of `diagnostics`.
-fn render_set(err: &mut String, diagnostics: &DiagnosticSet) {
-    for entry in diagnostics.iter() {
-        *err += &render(entry.diagnostic.display());
+/// Where the diagnostics of a chunk go: rendered to its standard error as they come, or, when
+/// they are checked, collected.
+struct Diagnostics {
+    context: Rc<Context>,
+    stderr: SharedBuffer,
+    /// What was collected, when diagnostics are checked
+    found: Option<Vec<expect::Found>>,
+}
+
+impl Diagnostics {
+    fn set(&mut self, diagnostics: &DiagnosticSet) {
+        match &mut self.found {
+            None => {
+                for entry in diagnostics.iter() {
+                    self.stderr.push(&render(entry.diagnostic.display()));
+                }
+            }
+            Some(found) => {
+                let sources = self.context.sources();
+                let mut collector = expect::Collector::new(&sources);
+                collector.set(diagnostics);
+                found.extend(collector.finish());
+            }
+        }
+    }
+
+    fn report(&mut self, report: Report) {
+        match &mut self.found {
+            None => {
+                let report = report.attach_session_sources(self.context.sources());
+                self.stderr.push(&render(report.display()));
+            }
+            Some(found) => {
+                let sources = self.context.sources();
+                let mut collector = expect::Collector::new(&sources);
+                collector.report(&report);
+                found.extend(collector.finish());
+            }
+        }
+    }
+
+    fn owned(&mut self, diagnostic: OwnedDiagnostic) {
+        match &mut self.found {
+            None => self.stderr.push(&render(diagnostic.display())),
+            Some(found) => {
+                let sources = self.context.sources();
+                let mut collector = expect::Collector::new(&sources);
+                collector.owned(&diagnostic, diagnostic.severity());
+                found.extend(collector.finish());
+            }
+        }
     }
 }
 
@@ -275,13 +339,17 @@ struct Chunk {
     /// How IR is printed between passes; taken by the pass manager
     printing: Option<IRPrintingConfig>,
     flags: OpPrintingFlags,
+    /// Whether diagnostics are checked against the expectations in the text
+    verify_diagnostics: bool,
 }
 
-/// What processing a chunk wrote, and whether it succeeded.
+/// What processing a chunk wrote, whether it succeeded, and whether its diagnostics did not
+/// match its expectations.
 struct ChunkOutput {
     stdout: String,
     stderr: String,
     succeeded: bool,
+    mismatched: bool,
 }
 
 impl Chunk {
@@ -306,27 +374,117 @@ impl Chunk {
     fn process(self) -> ChunkOutput {
         let stderr = SharedBuffer::default();
         let mut stdout = String::new();
-        let succeeded = self.process_into(&mut stdout, &stderr);
+        let (succeeded, mismatched) = self.check_into(&mut stdout, &stderr);
         ChunkOutput {
             stdout,
             stderr: stderr.take(),
             succeeded,
+            mismatched,
         }
     }
 
-    /// Parses, runs the pipeline on, verifies and prints the chunk; returns whether it succeeded.
-    fn process_into(mut self, stdout: &mut String, stderr: &SharedBuffer) -> bool {
+    /// Processes the chunk and, when diagnostics are checked, checks them; returns whether it
+    /// succeeded and whether its diagnostics did not match its expectations.
+    ///
+    /// An expectation that cannot be read is a mismatch, and the chunk is then not processed.
+    fn check_into(mut self, stdout: &mut String, stderr: &SharedBuffer) -> (bool, bool) {
         let context = Rc::new(Context::default());
+        let text = core::mem::take(&mut self.text);
+        let expectations = if self.verify_diagnostics {
+            match expect::scan(&text) {
+                Ok(expectations) => Some(expectations),
+                Err(malformed) => {
+                    let id = context.add_source(self.name.as_str(), text).ok();
+                    for malformed in malformed {
+                        let span = id.and_then(|id| span_of(id, malformed.range));
+                        let error = match span {
+                            Some(span) => diagnostic!(
+                                severity: Error,
+                                message: (malformed.message),
+                                labels: [primary(span)],
+                            ),
+                            None => diagnostic!(severity: Error, message: (malformed.message)),
+                        };
+                        stderr.push(&render(
+                            OwnedDiagnostic::new(error)
+                                .attach_session_sources(context.sources())
+                                .display(),
+                        ));
+                    }
+                    return (false, true);
+                }
+            }
+        } else {
+            None
+        };
+
+        let mut diagnostics = Diagnostics {
+            context: context.clone(),
+            stderr: stderr.clone(),
+            found: expectations.as_ref().map(|_| Vec::new()),
+        };
+        let succeeded = self.process_into(&context, text, stdout, &mut diagnostics);
+        let Some(expectations) = expectations else {
+            return (succeeded, false);
+        };
+
+        let found = diagnostics.found.unwrap_or_default();
+        let (unexpected, missing) = expect::unmatched(&expectations, &found);
+        let id = context.sources().find_by_name(self.name.as_str());
+        let mut mismatches = Vec::new();
+        for found in &unexpected {
+            let message =
+                format!("unexpected {}: {}", expect::kind_name(found.kind), found.message);
+            mismatches.push(match &found.primary {
+                Some((span, Some(label))) => diagnostic!(
+                    severity: Error,
+                    message: (message),
+                    labels: [primary(*span, (label.as_str()))],
+                ),
+                Some((span, None)) => {
+                    diagnostic!(severity: Error, message: (message), labels: [primary(*span)],)
+                }
+                None => diagnostic!(severity: Error, message: (message)),
+            });
+        }
+        for expectation in &missing {
+            let message = format!(
+                "expected {} \"{}\" was not produced",
+                expect::kind_name(expectation.kind),
+                expectation.text
+            );
+            mismatches.push(match id.and_then(|id| span_of(id, expectation.range.clone())) {
+                Some(span) => {
+                    diagnostic!(severity: Error, message: (message), labels: [primary(span)],)
+                }
+                None => diagnostic!(severity: Error, message: (message)),
+            });
+        }
+        let mismatched = !mismatches.is_empty();
+        for mismatch in mismatches {
+            stderr.push(&render(
+                OwnedDiagnostic::new(mismatch)
+                    .attach_session_sources(context.sources())
+                    .display(),
+            ));
+        }
+        (succeeded, mismatched)
+    }
+
+    /// Parses, runs the pipeline on, verifies and prints the chunk's `text`; returns whether it
+    /// succeeded.
+    fn process_into(
+        &mut self,
+        context: &Rc<Context>,
+        text: String,
+        stdout: &mut String,
+        diagnostics: &mut Diagnostics,
+    ) -> bool {
         let config = ParserConfig::new(context.clone())
             .with_max_region_depth(MAX_REGION_DEPTH)
             .verify_after_parse(self.verification != Verification::None);
-        let text = core::mem::take(&mut self.text);
         let parsed = parse_any(config, self.name.as_str(), text);
-        stderr.push(&{
-            let mut text = String::new();
-            render_set(&mut text, &parsed.diagnostics);
-            text
-        });
+        diagnostics.set(&parsed.diagnostics);
         let op = match parsed.result {
             Ok(op) if !parsed.diagnostics.has_errors() => op,
             _ => return false,
@@ -334,13 +492,13 @@ impl Chunk {
 
         match self.pipeline.take() {
             Some(pipeline) => {
-                if !self.run_pipeline(&context, op, &pipeline, stderr) {
+                if !self.run_pipeline(context, op, &pipeline, diagnostics) {
                     return false;
                 }
             }
             // Without a pipeline no pass runs: the pipeline is the empty one.
             None if self.dump_pass_pipeline => {
-                stderr.push(&format!("{}()\n", op.borrow().name()));
+                diagnostics.stderr.push(&format!("{}()\n", op.borrow().name()));
             }
             None => {}
         }
@@ -348,7 +506,7 @@ impl Chunk {
         if self.verification == Verification::Once
             && let Err(error) = op.borrow().recursively_verify()
         {
-            stderr.push(&render(error.attach_session_sources(context.sources()).display()));
+            diagnostics.report(error);
             return false;
         }
 
@@ -357,31 +515,30 @@ impl Chunk {
         true
     }
 
-    /// Loads `pipeline` for `op`, runs it, and writes what it reports to `stderr`; returns whether
-    /// it succeeded.
+    /// Loads `pipeline` for `op`, runs it, and gives what it reports to `diagnostics`; returns
+    /// whether it succeeded.
     fn run_pipeline(
         &mut self,
         context: &Rc<Context>,
         op: OperationRef,
         pipeline: &str,
-        stderr: &SharedBuffer,
+        diagnostics: &mut Diagnostics,
     ) -> bool {
-        let report =
-            |error: Report| render(error.attach_session_sources(context.sources()).display());
         let pipeline = match read_pipeline(op, pipeline) {
             Ok(pipeline) => pipeline,
             Err(error) => {
-                stderr.push(&report(error));
+                diagnostics.report(error);
                 return false;
             }
         };
         let mut pm = match pipeline.load(context.clone(), Nesting::Implicit) {
             Ok(pm) => pm,
             Err(error) => {
-                stderr.push(&report(error));
+                diagnostics.report(error);
                 return false;
             }
         };
+        let stderr = diagnostics.stderr.clone();
         if self.dump_pass_pipeline {
             stderr.push(&format!("{}\n", Textual(&pm)));
         }
@@ -396,13 +553,14 @@ impl Chunk {
         let runs = Rc::<RefCell<BTreeMap<&'static str, usize>>>::default();
         pm.add_instrumentation(Box::new(CountRuns(runs.clone())));
 
+        // What the passes emit on the context is collected apart from anything emitted before.
+        let scope = context.diagnostic_scope();
         let result = pm.run(op);
         drop(pm);
-        let mut text = String::new();
-        render_set(&mut text, &context.take_diagnostics());
-        stderr.push(&text);
+        let emitted = scope.finish().finish().attach_session_sources(context.sources());
+        diagnostics.set(&emitted);
         if let Err(error) = result {
-            stderr.push(&report(error));
+            diagnostics.report(error);
             return false;
         }
 
@@ -427,11 +585,21 @@ impl Chunk {
                         )),
                     ],
                 );
-                stderr.push(&render(OwnedDiagnostic::new(warning).display()));
+                diagnostics.owned(OwnedDiagnostic::new(warning));
             }
         }
         true
     }
+}
+
+/// The span of `range` in the source `id`.
+fn span_of(
+    id: runic_core::diagnostics::SourceId,
+    range: core::ops::Range<usize>,
+) -> Option<SourceSpan> {
+    TextRange::try_from_usize(range.start, range.end)
+        .ok()
+        .map(|range| SourceSpan::session(id, range))
 }
 
 /// Reads `text` for `op`: text that parses as one whole pipeline is anchored, and its anchor must

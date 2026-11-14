@@ -72,6 +72,27 @@ pub struct Options {
     )]
     pub split_input_file: Option<String>,
 
+    /// Check the diagnostics against the expectations written in the input instead of printing
+    /// them.
+    ///
+    /// An expectation is a `//` comment holding `expected-KIND {{TEXT}}`, KIND being `error`,
+    /// `warning`, `info` or `hint`: a diagnostic of that kind is expected on the comment's line
+    /// whose message, the text of one of its labels, or one of its context frames (such as
+    /// "pass 'cse' failed on ..") contains TEXT. `expected-KIND@+N` and `@-N` expect it N lines
+    /// below or above, `@above` and `@below` on the nearest line above or below that does not
+    /// hold only expectations, and `@unknown` without a location. With `expected-KIND-re`, TEXT
+    /// is a regular expression that must match. TEXT runs to the last `}}` before the next
+    /// expectation on the line, less the whitespace around it; a line may hold several.
+    ///
+    /// Each diagnostic matches one expectation at most, and each expectation one diagnostic.
+    /// Diagnostics that match none, and expectations that match none, are reported as errors;
+    /// the exit code is 1 exactly when there is one, or an expectation cannot be read (its case
+    /// is then not processed). A case is printed only when it succeeded. With
+    /// `--split-input-file` each case has its own expectations. The warning for a pass that ran
+    /// on no operation is a diagnostic like the others (expect it with `@unknown`).
+    #[arg(long)]
+    pub verify_diagnostics: bool,
+
     /// Print operations in the generic form. The generic text is not guaranteed to parse back.
     #[arg(long)]
     pub print_generic: bool,

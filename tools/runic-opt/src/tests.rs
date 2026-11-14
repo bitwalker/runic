@@ -1,6 +1,7 @@
 //! The tool's behaviour, through [`run`] with in-memory streams.
 
 mod cli;
+mod expectations;
 mod pipeline;
 mod splitting;
 mod text;

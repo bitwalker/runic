@@ -1441,6 +1441,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "log",
+ "regex",
  "runic-core",
  "runic-dialect-arith",
  "runic-dialect-cf",
