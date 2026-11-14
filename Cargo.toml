@@ -26,7 +26,7 @@ members = [
     "crates/transform",
     #"runic",
     "tools/expect-test",
-    #"tools/runic-opt",
+    "tools/runic-opt",
     #"tests/support",
     #"tests/integration",
 ]

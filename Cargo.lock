@@ -1436,6 +1436,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "runic-opt"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "log",
+ "runic-core",
+ "runic-dialect-arith",
+ "runic-dialect-cf",
+ "runic-dialect-mem",
+ "runic-dialect-scf",
+ "runic-dialect-ub",
+ "runic-log",
+ "runic-transform",
+ "tempfile",
+]
+
+[[package]]
 name = "runic-session"
 version = "0.1.0"
 dependencies = [

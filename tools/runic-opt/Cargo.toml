@@ -1,6 +1,6 @@
 [package]
 name = "runic-opt"
-description = "A tool for parsing and rewriting HIR"
+description = "Reads textual IR, runs a pass pipeline on it, verifies and prints the result"
 version.workspace = true
 rust-version.workspace = true
 authors.workspace = true
@@ -13,32 +13,24 @@ license.workspace = true
 readme.workspace = true
 edition.workspace = true
 
+[lib]
+doctest = false
+
 [[bin]]
-name = "hir-opt"
+name = "runic-opt"
 path = "src/main.rs"
 
 [dependencies]
-runic-compile.workspace = true
+clap.workspace = true
+log.workspace = true
 runic-core.workspace = true
 runic-dialect-arith.workspace = true
 runic-dialect-cf.workspace = true
-runic-dialect-hir.workspace = true
+runic-dialect-mem.workspace = true
 runic-dialect-scf.workspace = true
 runic-dialect-ub.workspace = true
-runic-dialect-wasm.workspace = true
-runic-session.workspace = true
 runic-log.workspace = true
-log.workspace = true
-clap.workspace = true
-anyhow.workspace = true
-thiserror.workspace = true
+runic-transform.workspace = true
 
-[package.metadata.cargo-shear]
-ignored = [
-    "runic-dialect-arith",
-    "runic-dialect-cf",
-    "runic-dialect-hir",
-    "runic-dialect-scf",
-    "runic-dialect-ub",
-    "runic-dialect-wasm",
-]
+[dev-dependencies]
+tempfile.workspace = true
