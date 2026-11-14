@@ -147,3 +147,130 @@ fn without_the_option_the_marker_is_only_a_comment() {
     output.failed();
     assert_eq!(output.stdout, "");
 }
+
+/// A case that does not parse: a return without its `;`, whose error is on its fourth line.
+const BAD: &str =
+    "builtin.module public @m {\n    builtin.function public extern(\"C\") @f() {\n        \
+     builtin.ret\n    };\n};\n";
+
+#[test]
+fn a_case_after_a_failed_one_has_its_lines_in_the_file_and_is_printed() {
+    // The third case does not verify: its error is at its third line.
+    let text = format!("{}{MARKER}\n{BAD}{MARKER}\n{INVALID}", case(1));
+    let output = opt(&["--split-input-file"], &text);
+    output.failed();
+    let third = case(1).lines().count() + 1 + BAD.lines().count() + 1;
+    assert!(
+        output.stderr.contains(&format!("--> <stdin>:{}:", third + 3)),
+        "{}",
+        output.stderr
+    );
+    // And a good case after a failed one is printed.
+    let text = format!("{BAD}{MARKER}\n{}", case(2));
+    let output = opt(&["--split-input-file"], &text);
+    output.failed();
+    assert_eq!(output.stdout, opt(&[], &case(2)).stdout);
+}
+
+#[test]
+fn the_separator_goes_between_the_cases_that_succeeded() {
+    let single = |n| opt(&[], &case(n)).stdout;
+    // The first fails.
+    let text = format!("{BAD}{MARKER}\n{}{MARKER}\n{}", case(2), case(3));
+    let output = opt(&["--split-input-file"], &text);
+    output.failed();
+    assert_eq!(output.stdout, format!("{}{MARKER}\n{}", single(2), single(3)));
+    // The middle one fails.
+    let text = format!("{}{MARKER}\n{BAD}{MARKER}\n{}", case(1), case(3));
+    let output = opt(&["--split-input-file"], &text);
+    output.failed();
+    assert_eq!(output.stdout, format!("{}{MARKER}\n{}", single(1), single(3)));
+}
+
+#[test]
+fn crlf_input_splits_and_reports_the_lines_of_the_file() {
+    let text = format!("{}{MARKER}\n{BAD}", case(1)).replace('\n', "\r\n");
+    let output = opt(&["--split-input-file"], &text);
+    output.failed();
+    let line = case(1).lines().count() + 1 + 4;
+    assert!(output.stderr.contains(&format!("--> <stdin>:{line}:")), "{}", output.stderr);
+    assert!(output.stdout.contains("arith.constant 1"), "{}", output.stdout);
+    let text = format!("{}{MARKER}\n{}", case(1), case(2)).replace('\n', "\r\n");
+    let output = opt(&["--split-input-file"], &text);
+    output.succeeded();
+    assert_eq!(output.stdout.matches(MARKER).count(), 1, "{}", output.stdout);
+}
+
+#[test]
+fn a_file_without_a_trailing_newline_splits() {
+    let text = format!("{}{MARKER}\n{}", case(1), case(2).trim_end());
+    let output = opt(&["--split-input-file"], &text);
+    output.succeeded();
+    assert_eq!(output.stdout.matches(MARKER).count(), 1, "{}", output.stdout);
+    // Nor after the marker.
+    let text = format!("{}{MARKER}", case(1));
+    let output = opt(&["--split-input-file"], &text);
+    output.succeeded();
+    assert_eq!(output.stdout, opt(&[], &case(1)).stdout);
+}
+
+#[test]
+fn a_marker_on_the_first_line_leaves_nothing_before_it() {
+    let text = format!("{MARKER}\n{}{MARKER}\n{}", case(1), case(2));
+    let output = opt(&["--split-input-file"], &text);
+    output.succeeded();
+    assert!(!output.stdout.starts_with(MARKER), "{}", output.stdout);
+    assert_eq!(output.stdout.matches(MARKER).count(), 1, "{}", output.stdout);
+}
+
+#[test]
+fn with_a_custom_marker_the_default_marker_does_not_split() {
+    // The default marker inside a function: a comment, unless it splits the function.
+    let text = case(1).replace("        builtin.ret", &format!("{MARKER}\n        builtin.ret"));
+    let custom = opt(&["--split-input-file=// ---"], &text);
+    custom.succeeded();
+    assert!(custom.stdout.contains("arith.constant 1"), "{}", custom.stdout);
+    let default = opt(&["--split-input-file"], &text);
+    default.failed();
+}
+
+#[test]
+fn the_marker_given_is_trimmed() {
+    let text = format!("{}// ---\n{}", case(1), case(2));
+    let output = opt(&["--split-input-file=  // ---  "], &text);
+    output.succeeded();
+    assert_eq!(
+        output.stdout,
+        format!("{}// ---\n{}", opt(&[], &case(1)).stdout, opt(&[], &case(2)).stdout)
+    );
+    let output = opt(&["--split-input-file=   "], &text);
+    output.failed();
+    assert_eq!(output.stdout, "");
+    assert!(output.stderr.contains("the marker is only whitespace"), "{}", output.stderr);
+}
+
+#[test]
+fn an_input_without_an_operation_is_an_error() {
+    for text in ["", "\n  \n", "// only a comment\n", "// a\n// -----\n// b\n"] {
+        let output = opt(&["--split-input-file"], text);
+        output.failed();
+        assert_eq!(output.stdout, "");
+        assert_eq!(output.stderr, "error: no operation found in <stdin>\n", "{text:?}");
+    }
+}
+
+#[test]
+fn a_marker_line_inside_a_string_that_would_span_lines_splits_it() {
+    // The text is not read as IR. (The lexer reads no string across lines, so neither half
+    // parses either way; split, the second half is a case of its own with its own error.)
+    let text = "builtin.module public @m {\n    builtin.function public extern(\"C\") @f(%c: i1) \
+                {\n        cf.assert %c, \"one\n// -----\ntwo\";\n        builtin.ret;\n    \
+                };\n};\n";
+    let whole = opt(&[], text);
+    whole.failed();
+    assert_eq!(whole.stderr.matches("error:").count(), 1, "{}", whole.stderr);
+    let split = opt(&["--split-input-file"], text);
+    split.failed();
+    assert_eq!(split.stderr.matches("error:").count(), 2, "{}", split.stderr);
+    assert!(split.stderr.contains("--> <stdin>:5:"), "{}", split.stderr);
+}

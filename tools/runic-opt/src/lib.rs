@@ -1,9 +1,9 @@
 //! `runic-opt` reads textual IR, runs a pass pipeline named on the command line on it, verifies
 //! and prints the result.
 //!
-//! The input is one top-level operation, or with `--split-input-file` several, one per case. It is parsed in a context of its own, on a thread with
-//! a stack large enough for regions nested [`MAX_REGION_DEPTH`] deep; the pass manager is anchored
-//! on the operation with implicit nesting. Standard output holds only what was asked for: the
+//! The input is one top-level operation, or with `--split-input-file` several, one per case. Each
+//! is parsed in a context of its own, on a thread with a stack large enough for regions nested
+//! [`MAX_REGION_DEPTH`] deep; the pass manager is anchored on the operation with implicit nesting. Standard output holds only what was asked for: the
 //! printed IR, or a listing. Every diagnostic, and every print of IR between passes, goes to
 //! standard error. The exit code is 0 when everything succeeded and 1 otherwise.
 //!
@@ -158,9 +158,17 @@ fn run_to_buffers(
         return Ok(true);
     }
 
-    // A pass named wrongly is an error before anything is read.
-    if let Err(error) = options.ir_printing() {
-        *err += &render(error.display());
+    // A pass named wrongly, or an empty marker, is an error before anything is read.
+    let printing = match options.ir_printing() {
+        Ok(printing) => printing,
+        Err(error) => {
+            *err += &render(error.display());
+            return Ok(false);
+        }
+    };
+    let marker = options.split_input_file.as_deref().map(str::trim);
+    if marker == Some("") {
+        *err += &render(Report::msg("--split-input-file: the marker is only whitespace").display());
         return Ok(false);
     }
 
@@ -172,23 +180,24 @@ fn run_to_buffers(
         }
     };
 
-    let pieces = match options.split_input_file.as_deref() {
+    let pieces = match marker {
         Some(marker) => split::split(&text, marker),
-        None => vec![split::Piece { text }],
+        None => vec![text],
     };
+    if pieces.is_empty() {
+        *err += &render(Report::msg(format!("no operation found in {name}")).display());
+        return Ok(false);
+    }
     let mut written = Vec::new();
     let mut succeeded = true;
-    for piece in pieces {
-        let Ok(printing) = options.ir_printing() else {
-            return Ok(false);
-        };
+    for text in pieces {
         let chunk = Chunk {
             name: name.clone(),
-            text: piece.text,
+            text,
             pipeline: options.pass_pipeline.clone(),
             verification: options.verification(),
             dump_pass_pipeline: options.dump_pass_pipeline,
-            printing: Some(printing),
+            printing: Some(printing.clone()),
             flags: options.printing_flags(),
             verify_diagnostics: options.verify_diagnostics,
         };
@@ -215,12 +224,14 @@ fn run_to_buffers(
         }
     }
 
-    let separator = match options.split_input_file.as_deref() {
+    let separator = match marker {
         Some(marker) => format!("{marker}\n"),
         None => String::new(),
     };
     let result = written.join(separator.as_str());
     match &options.output {
+        // The file is written only when everything succeeded: otherwise it is left as it was.
+        Some(_) if !succeeded => {}
         Some(path) => {
             if let Err(error) = fs::write(path, result.as_bytes()) {
                 *err += &render(

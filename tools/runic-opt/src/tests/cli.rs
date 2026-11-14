@@ -213,3 +213,50 @@ fn short_help_states_the_region_depth_limit() {
     output.succeeded();
     assert!(output.stdout.contains("1,000 deep"), "{}", output.stdout);
 }
+
+/// Three modules, each with a function `@f` returning `value`, the case `bad` of them failing.
+fn three_cases(bad: &[usize]) -> String {
+    let mut text = String::new();
+    for n in 0..3 {
+        if n > 0 {
+            text += "// -----\n";
+        }
+        let ret = if bad.contains(&n) {
+            "builtin.ret;"
+        } else {
+            "builtin.ret %x : (i32);"
+        };
+        text += &format!(
+            "builtin.module public @m {{\n    builtin.function public extern(\"C\") @f() -> i32 \
+             {{\n        %x = arith.constant {n} : i32;\n        {ret}\n    }};\n}};\n"
+        );
+    }
+    text
+}
+
+#[test]
+fn an_output_file_is_written_only_when_every_case_succeeded() {
+    let dir = scratch();
+    let path = dir.path().join("output.runic");
+    let file = path.to_str().unwrap();
+    // All succeed: the file holds what standard output would.
+    let all = opt(&["--split-input-file", "-o", file], &three_cases(&[]));
+    all.succeeded();
+    assert_eq!(all.stdout, "");
+    let expected = opt(&["--split-input-file"], &three_cases(&[])).stdout;
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+    // One of three fails: the existing file is left as it was.
+    std::fs::write(&path, "before").unwrap();
+    let one = opt(&["--split-input-file", "-o", file], &three_cases(&[1]));
+    one.failed();
+    assert_eq!(one.stdout, "");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "before");
+    // All fail: no file is made.
+    std::fs::remove_file(&path).unwrap();
+    let none = opt(&["--split-input-file", "-o", file], &three_cases(&[0, 1, 2]));
+    none.failed();
+    assert!(!path.exists());
+    let one = opt(&["--split-input-file", "-o", file], &three_cases(&[1]));
+    one.failed();
+    assert!(!path.exists());
+}

@@ -60,7 +60,8 @@ pub struct Options {
     /// The results of the cases that succeeded are printed in order, with a line holding MARKER
     /// between them; a case that fails prints nothing and does not stop the others. Diagnostics
     /// show the line numbers of the whole file. A case that holds only whitespace and `//`
-    /// comments is skipped. The value is given with `=`.
+    /// comments is skipped, and an input with no other case is an error. MARKER and the lines
+    /// are compared without the whitespace around them. The value is given with `=`.
     #[arg(
         long,
         value_name = "MARKER",

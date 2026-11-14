@@ -61,7 +61,7 @@ impl PassSelection {
 }
 
 /// When and how [`PassManager::enable_ir_printing`] prints IR.
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct IRPrintingConfig {
     /// The passes before which the operation they run on is printed
     pub before: PassSelection,
