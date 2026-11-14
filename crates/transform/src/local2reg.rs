@@ -1,7 +1,7 @@
 use runic_core::{
-    Backward, CallOpInterface, EntityMut, Forward, FxHashMap, FxHashSet, Op, Operation,
-    OperationName, OperationRef, ProgramPoint, RawWalk, RegionBranchOpInterface, Report, Rewriter,
-    SmallVec, Spanned, Symbol, ValueRef,
+    AttributeRef, Backward, CallOpInterface, EntityMut, Forward, FxHashMap, FxHashSet, Op,
+    Operation, OperationName, OperationRef, ProgramPoint, RawWalk, RegionBranchOpInterface, Report,
+    Rewriter, SmallVec, Spanned, Symbol, ValueRef, WalkResult,
     dialects::{
         builtin::{Function, LoadLocal, StoreLocal, attributes::LocalVariableAttr},
         debuginfo::{
@@ -13,6 +13,7 @@ use runic_core::{
     pass::{Pass, PassExecutionState, PostPassStatus},
     patterns::{RewriterImpl, TracingRewriterListener},
     traits::BranchOpInterface,
+    walk_nested_attributes,
 };
 
 /// The `log` target of this pass.
@@ -38,23 +39,20 @@ fn local_index(attr: &LocalVariableAttr) -> usize {
     attr.as_value().as_usize()
 }
 
-/// Adds to `pinned` the index of every local that `operation` names: in a property or attribute
-/// that is a [LocalVariableAttr], or as the attribute of one of its memory effects.
+/// Adds to `pinned` the index of every local that `operation` names: a [LocalVariableAttr] it
+/// holds at any depth (in a property or attribute, or inside one, such as an entry of a list), or
+/// held by the attribute of one of its memory effects.
 ///
 /// An operation may have unknown effects, so its effects alone do not show every operation that
 /// uses a local; one that holds a local in a property or attribute is taken to use it.
 fn pin_locals_named_by(operation: &Operation, pinned: &mut FxHashSet<usize>) {
-    let mut pin = |attr: runic_core::AttributeRef| {
+    let mut pin = |attr: &AttributeRef| {
         if let Some(local) = attr.borrow().downcast_ref::<LocalVariableAttr>() {
             pinned.insert(local_index(local));
         }
+        WalkResult::Continue(())
     };
-    for property in operation.properties() {
-        pin(property.value);
-    }
-    for attribute in operation.attributes() {
-        pin(attribute.as_named_attribute().value);
-    }
+    let _ = operation.walk_attributes(&mut |_, attr| pin(attr));
     // The effects of an operation whose effects are unknown are not read: such an operation pins
     // through its properties and attributes, above
     if let Some(effects) = operation.as_trait::<dyn MemoryEffectOpInterface>()
@@ -62,7 +60,7 @@ fn pin_locals_named_by(operation: &Operation, pinned: &mut FxHashSet<usize>) {
     {
         for effect in effects.effects() {
             if let Some(attribute) = effect.attribute() {
-                pin(attribute);
+                let _ = walk_nested_attributes(&attribute, &mut pin);
             }
         }
     }
@@ -461,6 +459,43 @@ mod tests {
         assert!(
             store.as_operation_ref().parent().is_some(),
             "an operation that names the local keeps the store live"
+        );
+        assert!(load.parent().is_some(), "and the load is not promoted");
+    }
+
+    /// A local named inside an attribute that another operation holds (here an entry of a list
+    /// in the dictionary of the `builtin.ret`) is pinned as if the operation named it directly.
+    #[test]
+    fn preserves_stores_of_a_local_named_inside_another_attribute() {
+        use runic_core::{
+            attributes::AttrList,
+            dialects::builtin::attributes::{List, ListAttr, LocalVariableAttr},
+        };
+
+        let mut test = Test::new("named_in_a_list", |cx| ([cx.i32()], [cx.i32()]));
+        let context = test.context_rc();
+        let i32 = context.i32();
+        let store;
+        let load;
+        {
+            let mut builder = test.function_builder();
+            let local = builder.alloc_local(i32);
+            let input = builder.entry_block().borrow().arguments()[0] as ValueRef;
+            store = builder.store_local(local, input, SourceSpan::UNKNOWN).unwrap();
+            let loaded = builder.load_local(local, SourceSpan::UNKNOWN).unwrap();
+            load = loaded.borrow().get_defining_op().unwrap();
+            let mut ret = builder.ret([loaded], SourceSpan::UNKNOWN).unwrap();
+
+            let local = context.create_attribute::<LocalVariableAttr, _>(local);
+            let mut entries = AttrList::new();
+            entries.push_back(runic_core::Attribute::as_attr(&*local.borrow()).as_attr_ref());
+            let list = context.create_attribute::<ListAttr, _>(List::from(entries));
+            ret.borrow_mut().as_operation_mut().set_attribute("locals", list);
+        }
+        test.apply_pass::<Local2Reg>(true).unwrap();
+        assert!(
+            store.as_operation_ref().parent().is_some(),
+            "an operation that names the local in a list keeps the store live"
         );
         assert!(load.parent().is_some(), "and the load is not promoted");
     }
