@@ -5,8 +5,9 @@ use smallvec::SmallVec;
 
 use super::TypeConverter;
 use crate::{
-    BlockRef, BuildableOp, Builder, BuilderExt, Context, Listener, ListenerType, OperationRef,
-    ProgramPoint, RegionRef, Report, SourceSpan, Spanned, Type, UnsafeIntrusiveEntityRef, ValueRef,
+    BlockRef, BuildableOp, Builder, BuilderExt, Context, FxHashMap, Listener, ListenerType,
+    OperationRef, ProgramPoint, RegionRef, Report, SourceSpan, Spanned, Type,
+    UnsafeIntrusiveEntityRef, ValueRef,
     dialects::builtin::BuiltinOpBuilder,
     patterns::{PatternRewriter, Rewriter, RewriterListener},
 };
@@ -97,14 +98,35 @@ impl TrackedMutations {
     }
 }
 
+/// Which way a cast the driver inserted relates values.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(super) enum CastKind {
+    /// New values to one value of the old type, for a user that expects the old value.
+    Source,
+    /// One old value to values of the new types, for a pattern that expects the new ones.
+    Target,
+}
+
+/// A cast the driver inserted: its kind and the type converter of the pattern that caused it.
+pub(super) struct DriverCast {
+    pub(super) kind: CastKind,
+    pub(super) converter: TypeConverter,
+}
+
+/// The casts the driver inserted during one conversion and that are still in the IR, shared by
+/// the rewriters of the conversion. A cast that is erased through a rewriter leaves the table.
+pub(super) type DriverCasts = Rc<RefCell<FxHashMap<OperationRef, DriverCast>>>;
+
 struct ConversionTrackingListener {
     mutations: RefCell<TrackedMutations>,
+    casts: DriverCasts,
 }
 
 impl ConversionTrackingListener {
-    fn new() -> Self {
+    fn new(casts: DriverCasts) -> Self {
         Self {
             mutations: RefCell::new(TrackedMutations::default()),
+            casts,
         }
     }
 
@@ -193,6 +215,7 @@ impl RewriterListener for ConversionTrackingListener {
     }
 
     fn notify_operation_erased(&self, op: OperationRef) {
+        self.casts.borrow_mut().remove(&op);
         self.record_erased_op(op);
     }
 }
@@ -212,6 +235,7 @@ pub struct ConversionPatternRewriter {
     inner: PatternRewriter<Rc<ConversionTrackingListener>>,
     tracking: Rc<ConversionTrackingListener>,
     type_converter: Option<TypeConverter>,
+    casts: DriverCasts,
     match_failures: Vec<MatchFailure>,
 }
 
@@ -231,12 +255,22 @@ impl ConversionPatternRewriter {
         context: Rc<Context>,
         type_converter: Option<TypeConverter>,
     ) -> Self {
-        let tracking = Rc::new(ConversionTrackingListener::new());
+        Self::new_for_conversion(context, type_converter, DriverCasts::default())
+    }
+
+    /// Create a conversion rewriter that records the casts it inserts in `casts`.
+    pub(super) fn new_for_conversion(
+        context: Rc<Context>,
+        type_converter: Option<TypeConverter>,
+        casts: DriverCasts,
+    ) -> Self {
+        let tracking = Rc::new(ConversionTrackingListener::new(Rc::clone(&casts)));
         let inner = PatternRewriter::new_with_listener(context, Rc::clone(&tracking));
         Self {
             inner,
             tracking,
             type_converter,
+            casts,
             match_failures: Vec::new(),
         }
     }
@@ -247,6 +281,12 @@ impl ConversionPatternRewriter {
             .borrow()
             .get_attribute(crate::dialects::debuginfo::attributes::INLINE_CALL_CHAIN_ATTR_NAME);
         self.inner.replace_inline_call_chain(chain);
+    }
+
+    /// The context of the IR being converted.
+    #[inline]
+    pub fn context(&self) -> &Context {
+        self.inner.context()
     }
 
     /// Set the insertion point before `op`.
@@ -276,16 +316,25 @@ impl ConversionPatternRewriter {
     }
 
     /// Insert a `builtin.unrealized_conversion_cast` of `inputs` to values of the types
-    /// `results` at the current insertion point, mark it as the driver's, and return its results.
+    /// `results` at the current insertion point, record it as the driver's cast of `kind` under
+    /// this rewriter's type converter, and return its results.
+    ///
+    /// The driver inserts a cast only for a pattern with a type converter.
     pub(super) fn insert_cast(
         &mut self,
+        kind: CastKind,
         inputs: impl IntoIterator<Item = ValueRef>,
         results: impl IntoIterator<Item = Type>,
         span: SourceSpan,
     ) -> Result<SmallVec<[ValueRef; 2]>, Report> {
+        let converter = self.type_converter.clone().ok_or_else(|| {
+            Report::msg("the driver inserts a cast only for a pattern with a type converter")
+        })?;
         let cast =
             BuiltinOpBuilder::unrealized_conversion_cast(&mut *self.inner, inputs, results, span)?;
-        self.mark_materialization_op(cast.as_operation_ref());
+        let cast_op = cast.as_operation_ref();
+        self.mark_materialization_op(cast_op);
+        self.casts.borrow_mut().insert(cast_op, DriverCast { kind, converter });
         let outputs = cast.borrow().outputs().iter().map(|output| *output as ValueRef).collect();
         Ok(outputs)
     }
@@ -294,6 +343,12 @@ impl ConversionPatternRewriter {
     #[inline]
     pub fn mark_materialization_op(&mut self, op: OperationRef) {
         self.tracking.record_materialized_op(op);
+    }
+
+    /// Replace the results of `cast` by `values` and erase it.
+    pub(super) fn replace_cast(&mut self, cast: OperationRef, values: &[ValueRef]) {
+        let values = values.iter().copied().map(Some).collect::<SmallVec<[_; 2]>>();
+        self.inner.replace_op_with_values(cast, &values);
     }
 
     /// Erase framework materializations that are still unused.
@@ -386,7 +441,8 @@ impl ConversionPatternRewriter {
             }
             self.set_insertion_point_before(op);
             let result_ty = result.borrow().ty();
-            let outputs = self.insert_cast(range.iter().copied(), [result_ty], span)?;
+            let outputs =
+                self.insert_cast(CastKind::Source, range.iter().copied(), [result_ty], span)?;
             replacements.push(Some(outputs[0]));
         }
         self.inner.replace_op_with_values(op, &replacements);

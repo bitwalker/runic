@@ -3,10 +3,27 @@ use core::cell::RefCell;
 
 use smallvec::SmallVec;
 
-use crate::{Context, FxHashMap, Report, Type, ValueRef};
+use super::ConversionPatternRewriter;
+use crate::{Context, FxHashMap, Report, SourceSpan, Type, ValueRef};
 
 type TypeConversionFn = Rc<dyn Fn(&Context, Type) -> Option<TypeConversion>>;
 type ValueConversionFn = Rc<dyn Fn(&Context, ValueRef) -> Option<TypeConversion>>;
+type SourceMaterializationFn = Rc<
+    dyn Fn(
+        &mut ConversionPatternRewriter,
+        &[ValueRef],
+        Type,
+        SourceSpan,
+    ) -> Result<Option<ValueRef>, Report>,
+>;
+type TargetMaterializationFn = Rc<
+    dyn Fn(
+        &mut ConversionPatternRewriter,
+        ValueRef,
+        &[Type],
+        SourceSpan,
+    ) -> Result<Option<SmallVec<[ValueRef; 2]>>, Report>,
+>;
 
 /// What a conversion callback answers for one type or value: the types it becomes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,6 +77,16 @@ impl TypeConversion {
 /// Each callback is given the context of the IR being converted, in which it builds the types it
 /// converts to.
 ///
+/// While a conversion runs, a value that became other values is related to them by a
+/// `builtin.unrealized_conversion_cast` the driver inserts: a source cast from the new values to
+/// the old type, for a user that still expects the old value, or a target cast from the old value
+/// to the new types, for a pattern that expects the new ones. When the patterns have run and the
+/// casts whose ends agree are folded away, each cast that remains is offered to the
+/// materialization callbacks of its kind of the converter of the pattern that caused it, most
+/// recently added first. The first callback that answers builds, before the cast, the operations
+/// that compute the cast's results; they replace the cast's results and the cast is erased. The
+/// operations a callback builds are not offered to patterns: they must be legal in the target.
+///
 /// The converter remembers what the type callbacks answered for a type, so each type is asked
 /// about once. The memo is shared by the clones of a converter, and a clone that is given another
 /// callback starts a memo of its own. An answer of a value callback is not remembered.
@@ -67,6 +94,8 @@ impl TypeConversion {
 pub struct TypeConverter {
     conversions: Vec<TypeConversionFn>,
     value_conversions: Vec<ValueConversionFn>,
+    source_materializations: Vec<SourceMaterializationFn>,
+    target_materializations: Vec<TargetMaterializationFn>,
     memo: Rc<RefCell<FxHashMap<Type, SmallVec<[Type; 2]>>>>,
 }
 
@@ -100,6 +129,44 @@ impl TypeConverter {
     {
         self.value_conversions.push(Rc::new(callback));
         self.forget_answers();
+        self
+    }
+
+    /// Add a source materialization callback: many new values to one value of the old type.
+    ///
+    /// It is given the values (none for a value that was dropped), the old type and the span of
+    /// the cast, and builds at the rewriter's insertion point the operations that compute a value
+    /// of the old type from them. `None`: this callback does not apply.
+    pub fn add_source_materialization<F>(&mut self, callback: F) -> &mut Self
+    where
+        F: Fn(
+                &mut ConversionPatternRewriter,
+                &[ValueRef],
+                Type,
+                SourceSpan,
+            ) -> Result<Option<ValueRef>, Report>
+            + 'static,
+    {
+        self.source_materializations.push(Rc::new(callback));
+        self
+    }
+
+    /// Add a target materialization callback: one old value to values of the new types.
+    ///
+    /// It is given the value, the new types and the span of the cast, and builds at the
+    /// rewriter's insertion point the operations that compute one value of each new type from it.
+    /// `None`: this callback does not apply.
+    pub fn add_target_materialization<F>(&mut self, callback: F) -> &mut Self
+    where
+        F: Fn(
+                &mut ConversionPatternRewriter,
+                ValueRef,
+                &[Type],
+                SourceSpan,
+            ) -> Result<Option<SmallVec<[ValueRef; 2]>>, Report>
+            + 'static,
+    {
+        self.target_materializations.push(Rc::new(callback));
         self
     }
 
@@ -143,6 +210,40 @@ impl TypeConverter {
         exactly_one(self.convert_value(context, value), || {
             format!("value '{}' of type '{}'", value.borrow(), value.borrow().ty())
         })
+    }
+
+    /// The value of type `ty` the first source materialization callback that answers, most
+    /// recently added first, builds from `inputs`; `None` when none answers.
+    pub(super) fn materialize_source(
+        &self,
+        rewriter: &mut ConversionPatternRewriter,
+        inputs: &[ValueRef],
+        ty: Type,
+        span: SourceSpan,
+    ) -> Result<Option<ValueRef>, Report> {
+        for materialize in self.source_materializations.iter().rev() {
+            if let Some(value) = materialize(rewriter, inputs, ty, span)? {
+                return Ok(Some(value));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The values of `types` the first target materialization callback that answers, most
+    /// recently added first, builds from `input`; `None` when none answers.
+    pub(super) fn materialize_target(
+        &self,
+        rewriter: &mut ConversionPatternRewriter,
+        input: ValueRef,
+        types: &[Type],
+        span: SourceSpan,
+    ) -> Result<Option<SmallVec<[ValueRef; 2]>>, Report> {
+        for materialize in self.target_materializations.iter().rev() {
+            if let Some(values) = materialize(rewriter, input, types, span)? {
+                return Ok(Some(values));
+            }
+        }
+        Ok(None)
     }
 
     /// Start a memo of this converter's own: its callbacks are no longer those of its clones.

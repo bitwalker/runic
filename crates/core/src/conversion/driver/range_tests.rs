@@ -24,7 +24,7 @@ use crate::{
     conversion::{DynamicLegalityResult, TypeConversion, UnknownOpPolicy},
     dialects::{
         builtin::Function,
-        test::{Add, Constant, Sink, Store, TestDialect},
+        test::{Add, Constant, High, Join, Load, Low, Sink, Store, TestDialect},
     },
     parse::{ParserConfig, parse},
     patterns::{Pattern, PatternBenefit, PatternInfo, PatternKind},
@@ -144,7 +144,7 @@ fn wide_target(context: &Rc<Context>) -> ConversionTarget {
         .add_dynamically_legal_op::<Constant, _>(legal)
         .add_dynamically_legal_op::<Add, _>(legal)
         .add_dynamically_legal_op::<Sink, _>(legal)
-        .add_dynamically_legal_op::<crate::dialects::test::Load, _>(legal)
+        .add_dynamically_legal_op::<Load, _>(legal)
         .add_dynamically_legal_op::<Store, _>(legal);
     target
 }
@@ -515,4 +515,266 @@ fn a_replacement_range_of_the_wrong_shape_is_an_error() {
         assert!(err.contains(message), "{name}: {err}");
         assert_str_eq!(function.borrow().to_string(), before, "{name}");
     }
+}
+
+/// A `test.load` of the marker loads nothing: its result is replaced by no values.
+fn drop_load(context: &Rc<Context>, converter: &TypeConverter) -> Rule {
+    Rule::new::<Load>(
+        context,
+        "drop-load",
+        Some(converter.clone()),
+        [],
+        move |op, _operands, rewriter| {
+            if has_no_wide_types(&op.borrow()) {
+                return Ok(false);
+            }
+            rewriter.replace_op_with_multiple(op, &[&[]])?;
+            Ok(true)
+        },
+    )
+}
+
+/// What a materialization callback was given: the types of its inputs and the types it was asked
+/// for.
+type Offer = (Vec<Type>, Vec<Type>);
+
+/// Adds to `converter` a source callback that joins two `i64` halves into an `i128`, recording
+/// what it is offered in `offers`.
+fn join_halves(converter: &mut TypeConverter, offers: Seen<Offer>) {
+    converter.add_source_materialization(move |rewriter, inputs, ty, span| {
+        offers.borrow_mut().push((types(inputs), vec![ty]));
+        let [low, high] = inputs else {
+            return Ok(None);
+        };
+        if ty != rewriter.context().i128() {
+            return Ok(None);
+        }
+        let join = rewriter.create_op::<Join, _>(span, (*low, *high))?;
+        Ok(Some(join.borrow().result().as_value_ref()))
+    });
+}
+
+/// Adds to `converter` a target callback that splits an `i128` into its low and high halves,
+/// recording what it is offered in `offers`.
+fn split_halves(converter: &mut TypeConverter, offers: Seen<Offer>) {
+    converter.add_target_materialization(move |rewriter, input, types, span| {
+        offers.borrow_mut().push((vec![input.borrow().ty()], types.to_vec()));
+        let i64 = rewriter.context().i64();
+        if types != [i64, i64] {
+            return Ok(None);
+        }
+        let low = rewriter.create_op::<Low, _>(span, (input,))?;
+        let high = rewriter.create_op::<High, _>(span, (input,))?;
+        let low = low.borrow().result().as_value_ref();
+        let high = high.borrow().result().as_value_ref();
+        Ok(Some(smallvec::smallvec![low, high]))
+    });
+}
+
+/// A user no pattern converts (`builtin.ret`, legal) reads the many-to-one cast a split constant
+/// left, and the source callback realizes it as a `test.join`.
+#[test]
+fn a_legal_user_reads_a_join_built_by_the_source_callback() {
+    let (context, function) = parse_function(
+        "() -> i128",
+        "    %0 = test.constant 5 : i128;
+    builtin.ret %0 : (i128);",
+    );
+    let mut converter = wide_converter(&context);
+    let offers = Rc::new(RefCell::new(vec![]));
+    join_halves(&mut converter, offers.clone());
+
+    let result = convert(function, wide_target(&context), [split_constant(&context, &converter)])
+        .unwrap_or_else(|err| panic!("{}", describe(&err)));
+
+    assert!(result.changed());
+    let (i64, i128) = (context.i64(), context.i128());
+    assert_eq!(*offers.borrow(), [(vec![i64, i64], vec![i128])]);
+    assert_str_eq!(
+        function.borrow().to_string(),
+        function_text(
+            "() -> i128",
+            "    %1 = test.constant 5 : i64;
+    %2 = test.constant 0 : i64;
+    %4 = test.join %1, %2;
+    builtin.ret %4 : (i128);"
+        )
+    );
+}
+
+/// A legal producer (a block argument) feeding a converted user: the one-to-two casts made for
+/// the operands are realized by a target callback as `test.low` and `test.high`, and the result's
+/// cast for the legal `builtin.ret` by a source callback as `test.join`. Callbacks are offered a
+/// cast most recently added first: the one that declines is asked before the one that answers.
+#[test]
+fn a_legal_producer_is_split_into_halves_by_the_target_callback() {
+    let (context, function) = parse_function(
+        "(%0: i128, %1: i128) -> i128",
+        "    %2 = test.add %0, %1;
+    builtin.ret %2 : (i128);",
+    );
+    let mut converter = wide_converter(&context);
+    let joins = Rc::new(RefCell::new(vec![]));
+    let splits = Rc::new(RefCell::new(vec![]));
+    let declined = Rc::new(RefCell::new(vec![]));
+    join_halves(&mut converter, joins.clone());
+    split_halves(&mut converter, splits.clone());
+    {
+        let declined = declined.clone();
+        let splits = splits.clone();
+        converter.add_target_materialization(move |_, input, _, _| {
+            declined.borrow_mut().push((input, splits.borrow().len()));
+            Ok(None)
+        });
+    }
+    let adds = Rc::new(RefCell::new(vec![]));
+
+    convert(function, wide_target(&context), [split_add(&context, &converter, adds)])
+        .unwrap_or_else(|err| panic!("{}", describe(&err)));
+
+    let arguments = defined_values(function);
+    let (i64, i128) = (context.i64(), context.i128());
+    // Asked first for each cast: before the splitting callback had seen it.
+    assert_eq!(*declined.borrow(), [(arguments[0], 0), (arguments[1], 1)]);
+    assert_eq!(*splits.borrow(), [(vec![i128], vec![i64, i64]), (vec![i128], vec![i64, i64])]);
+    assert_eq!(*joins.borrow(), [(vec![i64, i64], vec![i128])]);
+    assert_str_eq!(
+        function.borrow().to_string(),
+        function_text(
+            "(%0: i128, %1: i128) -> i128",
+            "    %10 = test.low %0;
+    %11 = test.high %0;
+    %12 = test.low %1;
+    %13 = test.high %1;
+    %7 = test.add %10, %12;
+    %8 = test.add %11, %13;
+    %14 = test.join %7, %8;
+    builtin.ret %14 : (i128);"
+        )
+    );
+}
+
+/// Without a callback, the many-to-one cast a split constant left for `builtin.ret` is an error
+/// that names the cast's types and its user.
+#[test]
+fn a_cast_without_a_callback_is_an_error() {
+    let (context, function) = parse_function(
+        "() -> i128",
+        "    %0 = test.constant 5 : i128;
+    builtin.ret %0 : (i128);",
+    );
+    let converter = wide_converter(&context);
+
+    let err = convert(function, wide_target(&context), [split_constant(&context, &converter)])
+        .unwrap_err();
+
+    assert_eq!(
+        format!("{err}"),
+        "failed to legalize operation 'builtin.unrealized_conversion_cast': no source \
+         materialization of the type converter realizes the cast of (i64, i64) to (i128), which \
+         is used by 'builtin.ret'"
+    );
+}
+
+/// A result whose type is dropped, and that still has a user, gets a cast with no inputs, which
+/// is offered to the source callback.
+#[test]
+fn a_dropped_result_with_a_user_is_offered_to_the_source_callback() {
+    let (context, function) = parse_function(
+        "(%0: ptr<array<i8; 0>>, %1: array<i8; 0>) -> array<i8; 0>",
+        "    %2 = test.load %0;
+    builtin.ret %2 : (array<i8; 0>);",
+    );
+    let marker_value = defined_values(function)[1];
+    let mut converter = wide_converter(&context);
+    let offers: Seen<Offer> = Rc::new(RefCell::new(vec![]));
+    {
+        let offers = offers.clone();
+        converter.add_source_materialization(move |_, inputs, ty, _| {
+            offers.borrow_mut().push((types(inputs), vec![ty]));
+            Ok(Some(marker_value))
+        });
+    }
+
+    convert(function, wide_target(&context), [drop_load(&context, &converter)])
+        .unwrap_or_else(|err| panic!("{}", describe(&err)));
+
+    assert_eq!(*offers.borrow(), [(vec![], vec![marker(&context)])]);
+    assert_str_eq!(
+        function.borrow().to_string(),
+        function_text(
+            "(%0: ptr<array<i8; 0>>, %1: array<i8; 0>) -> array<i8; 0>",
+            "    builtin.ret %1 : (array<i8; 0>);"
+        )
+    );
+}
+
+/// With reconciliation off, nothing is folded or realized: the cast the driver inserted stays,
+/// even in a target that calls it illegal, and no callback is asked.
+#[test]
+fn without_reconciliation_the_casts_stay_and_no_callback_is_asked() {
+    let (context, function) = parse_function(
+        "() -> i128",
+        "    %0 = test.constant 5 : i128;
+    builtin.ret %0 : (i128);",
+    );
+    let mut converter = wide_converter(&context);
+    let offers = Rc::new(RefCell::new(vec![]));
+    join_halves(&mut converter, offers.clone());
+    let mut target = wide_target(&context);
+    target.add_illegal_op::<UnrealizedConversionCast>();
+    let mut set = ConversionPatternSet::new(context.clone());
+    set.push(split_constant(&context, &converter));
+    let mut config = ConversionConfig::default();
+    config.with_reconcile_unrealized_casts(false);
+
+    apply_full_conversion(function, target, set, config)
+        .unwrap_or_else(|err| panic!("{}", describe(&err)));
+
+    assert!(offers.borrow().is_empty());
+    assert_str_eq!(
+        function.borrow().to_string(),
+        function_text(
+            "() -> i128",
+            "    %1 = test.constant 5 : i64;
+    %2 = test.constant 0 : i64;
+    %3 = builtin.unrealized_conversion_cast %1, %2 : (i64, i64) to i128;
+    builtin.ret %3 : (i128);"
+        )
+    );
+}
+
+/// A cast in the IR that the driver did not insert is not offered to any callback; it stays
+/// because the target calls it legal.
+#[test]
+fn a_cast_the_driver_did_not_insert_is_not_offered() {
+    let (context, function) = parse_function(
+        "(%0: i32) -> (i128, i64)",
+        "    %1 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    %2 = test.constant 5 : i128;
+    builtin.ret %2, %1 : (i128, i64);",
+    );
+    let mut converter = wide_converter(&context);
+    let joins = Rc::new(RefCell::new(vec![]));
+    let splits = Rc::new(RefCell::new(vec![]));
+    join_halves(&mut converter, joins.clone());
+    split_halves(&mut converter, splits.clone());
+
+    convert(function, wide_target(&context), [split_constant(&context, &converter)])
+        .unwrap_or_else(|err| panic!("{}", describe(&err)));
+
+    let (i64, i128) = (context.i64(), context.i128());
+    assert_eq!(*joins.borrow(), [(vec![i64, i64], vec![i128])]);
+    assert!(splits.borrow().is_empty());
+    assert_str_eq!(
+        function.borrow().to_string(),
+        function_text(
+            "(%0: i32) -> (i128, i64)",
+            "    %1 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    %3 = test.constant 5 : i64;
+    %4 = test.constant 0 : i64;
+    %6 = test.join %3, %4;
+    builtin.ret %6, %1 : (i128, i64);"
+        )
+    );
 }

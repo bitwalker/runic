@@ -6,9 +6,10 @@ use super::{
     ConversionPattern, ConversionPatternRewriter, ConversionPatternSet, ConversionTarget,
     ConvertedOperands, FrozenConversionPatternSet, Legality, LegalizationGraph, TrackedMutations,
     TypeConverter, reconcile_unrealized_casts,
+    rewriter::{CastKind, DriverCasts, type_list, types_of},
 };
 use crate::{
-    OperationName, OperationRef, Report, Spanned, ValueRef, WalkResult,
+    FxHashSet, OperationName, OperationRef, Report, Spanned, Usable, ValueRef, WalkResult,
     dialects::builtin::UnrealizedConversionCast,
 };
 
@@ -76,11 +77,12 @@ impl ConversionConfig {
         self
     }
 
-    /// Enable or disable reconciliation of temporary unrealized conversion casts.
+    /// Enable or disable the folding and realization of the casts the driver inserts.
     ///
-    /// When enabled, the driver may leave these casts in the IR during pattern application to keep
-    /// operands/results type-correct, but unreconciled casts must still be legal according to the
-    /// final conversion target.
+    /// When enabled (the default), the casts whose ends agree are folded away when the patterns
+    /// have run, and each cast the driver inserted that remains is realized by the type
+    /// converter's materialization callbacks; one that none realizes is an error. When disabled,
+    /// nothing is folded or realized, and the casts the driver inserted stay in the IR.
     pub fn with_reconcile_unrealized_casts(&mut self, yes: bool) -> &mut Self {
         self.reconcile_unrealized_casts = yes;
         self
@@ -133,7 +135,13 @@ impl ConversionResult {
 /// operations nested under recursively legal operations.
 ///
 /// Patterns are tried according to the legalization graph derived from the target and each
-/// pattern's generated-op metadata. A pattern that returns `Ok(false)` must not mutate IR, and a
+/// pattern's generated-op metadata. A pattern is given each operand as the values it became
+/// ([ConvertedOperands]) and may replace each result by a range of values
+/// ([ConversionPatternRewriter::replace_op_with_multiple]); the driver relates a value to the
+/// values it became by the `builtin.unrealized_conversion_cast`s it inserts. When the patterns
+/// have run, those casts whose ends agree are folded away and each that remains is realized by
+/// the materialization callbacks of the type converter that caused it ([TypeConverter]); one that
+/// none realizes is an error (see [ConversionConfig::with_reconcile_unrealized_casts]). A pattern that returns `Ok(false)` must not mutate IR, and a
 /// pattern that returns `Ok(true)` must mutate IR. Violating either contract is reported as a
 /// conversion error because this driver intentionally does not roll changes back.
 pub fn apply_full_conversion(
@@ -153,6 +161,7 @@ pub fn apply_full_conversion(
         target: &target,
         graph,
         context: target.context(),
+        casts: DriverCasts::default(),
         config,
         result: ConversionResult {
             changed: false,
@@ -169,6 +178,8 @@ struct FullConversionDriver<'a> {
     target: &'a ConversionTarget,
     graph: LegalizationGraph<'a>,
     context: Rc<crate::Context>,
+    /// The casts this conversion inserted that are still in the IR.
+    casts: DriverCasts,
     config: ConversionConfig,
     result: ConversionResult,
 }
@@ -183,7 +194,15 @@ impl FullConversionDriver<'_> {
         }
 
         if self.config.reconcile_unrealized_casts() {
-            self.result.changed |= self.reconcile_unrealized_conversion_casts();
+            let before = self.count_unrealized_conversion_casts();
+            let remaining = reconcile_unrealized_casts(self.root);
+            // Every fold leaves a cast unused, which is then erased, so the IR changed exactly
+            // when fewer casts remain.
+            self.result.changed |= remaining.len() < before;
+            // The casts reconciliation erased leave the table.
+            let live = remaining.iter().copied().collect::<FxHashSet<_>>();
+            self.casts.borrow_mut().retain(|cast, _| live.contains(cast));
+            self.result.changed |= self.realize_casts(&remaining)?;
         }
         self.verify_full_conversion_legality()?;
 
@@ -211,7 +230,10 @@ impl FullConversionDriver<'_> {
     }
 
     fn legalize_operation(&mut self, op: OperationRef) -> Result<(), Report> {
-        if self.config.reconcile_unrealized_casts() && is_unrealized_conversion_cast(op) {
+        // The casts the driver inserts are not offered to patterns.
+        if self.is_driver_cast(op)
+            || (self.config.reconcile_unrealized_casts() && is_unrealized_conversion_cast(op))
+        {
             return Ok(());
         }
         if self.target.is_recursively_legal(&op.borrow()) || self.target.is_legal(&op.borrow()) {
@@ -231,9 +253,10 @@ impl FullConversionDriver<'_> {
         let mut match_failures = vec![];
         for pattern in candidates {
             let type_converter = pattern.type_converter().cloned();
-            let mut rewriter = ConversionPatternRewriter::new_with_type_converter(
+            let mut rewriter = ConversionPatternRewriter::new_for_conversion(
                 Rc::clone(&self.context),
                 type_converter.clone(),
+                Rc::clone(&self.casts),
             );
             rewriter.inherit_inline_call_chain(op);
             if op.parent().is_some() {
@@ -340,21 +363,76 @@ impl FullConversionDriver<'_> {
     fn legalize_tracked_ops(&mut self, mutations: &TrackedMutations) -> Result<(), Report> {
         for op in mutations.inserted_ops().iter().chain(mutations.modified_ops().iter()).copied() {
             if self.is_live(op) {
-                if self.config.reconcile_unrealized_casts() && is_unrealized_conversion_cast(op) {
-                    continue;
-                }
                 self.legalize_operation(op)?;
             }
         }
         Ok(())
     }
 
-    /// Folds the casts under the root ([reconcile_unrealized_casts]); returns whether any cast
-    /// was folded or erased. Every fold leaves a cast unused, which is then erased, so the IR
-    /// changed exactly when fewer casts remain.
-    fn reconcile_unrealized_conversion_casts(&mut self) -> bool {
-        let before = self.count_unrealized_conversion_casts();
-        reconcile_unrealized_casts(self.root).len() < before
+    /// Realizes each of `casts` (in program order) that the driver inserted, through the
+    /// materialization callbacks of its kind of the converter in force when it was inserted;
+    /// returns whether any was realized. A cast the driver did not insert is left alone; one that
+    /// no callback realizes is an error.
+    fn realize_casts(&mut self, casts: &[OperationRef]) -> Result<bool, Report> {
+        let mut changed = false;
+        for &cast in casts {
+            let Some(driver_cast) = self.casts.borrow_mut().remove(&cast) else {
+                continue;
+            };
+            if !self.is_live(cast) {
+                continue;
+            }
+            let (inputs, result_types, span) = {
+                let op = cast.borrow();
+                let inputs = op
+                    .operands()
+                    .iter()
+                    .map(|operand| operand.borrow().as_value_ref())
+                    .collect::<SmallVec<[ValueRef; 2]>>();
+                let results = op
+                    .results()
+                    .iter()
+                    .map(|result| result.borrow().as_value_ref())
+                    .collect::<SmallVec<[ValueRef; 2]>>();
+                (inputs, types_of(&results), op.span())
+            };
+
+            let converter = driver_cast.converter;
+            let mut rewriter = ConversionPatternRewriter::new_with_type_converter(
+                Rc::clone(&self.context),
+                Some(converter.clone()),
+            );
+            rewriter.inherit_inline_call_chain(cast);
+            rewriter.set_insertion_point_before(cast);
+            let values = match driver_cast.kind {
+                CastKind::Source => converter
+                    .materialize_source(&mut rewriter, &inputs, result_types[0], span)?
+                    .map(|value| smallvec::smallvec![value]),
+                CastKind::Target => {
+                    converter.materialize_target(&mut rewriter, inputs[0], &result_types, span)?
+                }
+            };
+            let Some(values) = values else {
+                return Err(unrealized_cast_error(cast, driver_cast.kind, &inputs, &result_types));
+            };
+            if types_of(&values) != result_types {
+                return Err(Report::msg(format!(
+                    "a {} materialization of {} to {} gave values of types {}",
+                    kind_name(driver_cast.kind),
+                    type_list(&types_of(&inputs)),
+                    type_list(&result_types),
+                    type_list(&types_of(&values))
+                )));
+            }
+            rewriter.replace_cast(cast, &values);
+            changed = true;
+        }
+        Ok(changed)
+    }
+
+    /// Whether `op` is a cast the driver inserted.
+    fn is_driver_cast(&self, op: OperationRef) -> bool {
+        self.casts.borrow().contains_key(&op)
     }
 
     fn count_unrealized_conversion_casts(&self) -> usize {
@@ -375,7 +453,8 @@ impl FullConversionDriver<'_> {
                     return WalkResult::<Report>::Skip;
                 }
 
-                if self.target.is_legal(op) {
+                // A cast the driver inserted that remains is one reconciliation left alone (off).
+                if self.target.is_legal(op) || self.is_driver_cast(op.as_operation_ref()) {
                     WalkResult::<Report>::Continue(())
                 } else {
                     let op_ref = op.as_operation_ref();
@@ -447,7 +526,7 @@ fn converted_operands_for(
         } else if types.is_empty() {
             ranges.push(SmallVec::new());
         } else {
-            ranges.push(rewriter.insert_cast([value], types, span)?);
+            ranges.push(rewriter.insert_cast(CastKind::Target, [value], types, span)?);
         }
     }
     Ok((ranges, group_sizes))
@@ -480,6 +559,38 @@ fn collect_match_failures(failures: &mut Vec<String>, rewriter: &mut ConversionP
 
 fn is_unrealized_conversion_cast(op: OperationRef) -> bool {
     op.try_downcast_op::<UnrealizedConversionCast>().is_ok()
+}
+
+fn kind_name(kind: CastKind) -> &'static str {
+    match kind {
+        CastKind::Source => "source",
+        CastKind::Target => "target",
+    }
+}
+
+/// A cast the driver inserted that no materialization callback realized: names its types and
+/// one of its users.
+fn unrealized_cast_error(
+    cast: OperationRef,
+    kind: CastKind,
+    inputs: &[ValueRef],
+    result_types: &[crate::Type],
+) -> Report {
+    let user = cast
+        .borrow()
+        .results()
+        .iter()
+        .find_map(|result| result.borrow().iter_uses().next().map(|user| user.owner))
+        .map(|user| format!("'{}'", user.borrow().name()))
+        .unwrap_or_else(|| String::from("nothing"));
+    Report::msg(format!(
+        "failed to legalize operation '{}': no {} materialization of the type converter realizes \
+         the cast of {} to {}, which is used by {user}",
+        cast.borrow().name(),
+        kind_name(kind),
+        type_list(&types_of(inputs)),
+        type_list(result_types)
+    ))
 }
 
 fn legality_failure_reason(target: &ConversionTarget, op: &crate::Operation) -> Option<String> {
@@ -1025,9 +1136,12 @@ builtin.function public extern(\"C\") @full_conversion_rewrites_illegal_op_to_le
         assert!(!output.contains("test.add"));
     }
 
+    /// Without reconciliation, the casts the driver inserted for a 1:1 conversion stay in the IR
+    /// and are not an error, even in a target that calls them illegal; they inherit the
+    /// converted operation's inline call chain.
     #[test]
-    fn full_conversion_materializes_1_to_1_type_conversions() {
-        let test = add_function("full_conversion_materializes_1_to_1_type_conversions");
+    fn without_reconciliation_the_1_to_1_casts_stay() {
+        let test = add_function("without_reconciliation_the_1_to_1_casts_stay");
         use crate::dialects::debuginfo::attributes::{
             INLINE_CALL_CHAIN_ATTR_NAME, InlineCallChain, InlineCallChainAttr,
         };
@@ -1043,21 +1157,19 @@ builtin.function public extern(\"C\") @full_conversion_rewrites_illegal_op_to_le
         });
         add.unwrap().borrow_mut().set_attribute(INLINE_CALL_CHAIN_ATTR_NAME, chain);
         let target = target_with_test_ops(test.context_rc(), |target| {
-            target.add_legal_op::<Mul>().add_legal_op::<UnrealizedConversionCast>();
+            target.add_legal_op::<Mul>().add_illegal_op::<UnrealizedConversionCast>();
         });
         let mut patterns = ConversionPatternSet::new(test.context_rc());
         patterns.push(AddToMulWithTypeConversion::new(
             test.context_rc(),
             i32_to_i64_converter(test.context()),
         ));
+        let mut config = ConversionConfig::default();
+        config.with_reconcile_unrealized_casts(false);
 
-        let result = apply_full_conversion(
-            test.function().as_operation_ref(),
-            target,
-            patterns,
-            ConversionConfig::default(),
-        )
-        .unwrap();
+        let result =
+            apply_full_conversion(test.function().as_operation_ref(), target, patterns, config)
+                .unwrap();
 
         assert_eq!(result.converted_ops(), 1);
         let mut inherited = 0;
@@ -1076,6 +1188,37 @@ builtin.function public extern(\"C\") @full_conversion_rewrites_illegal_op_to_le
         assert!(output.contains(": i64 to i32 "), "{output}");
         assert!(output.contains("test.mul"));
         assert!(!output.contains("test.add"));
+    }
+
+    /// With reconciliation, a cast the driver inserted that no materialization callback realizes
+    /// is an error, even in a target that calls the cast legal; the error names the cast's types
+    /// and a user.
+    #[test]
+    fn a_cast_nobody_realizes_is_an_error() {
+        let test = add_function("a_cast_nobody_realizes_is_an_error");
+        let target = target_with_test_ops(test.context_rc(), |target| {
+            target.add_legal_op::<Mul>().add_legal_op::<UnrealizedConversionCast>();
+        });
+        let mut patterns = ConversionPatternSet::new(test.context_rc());
+        patterns.push(AddToMulWithTypeConversion::new(
+            test.context_rc(),
+            i32_to_i64_converter(test.context()),
+        ));
+
+        let err = apply_full_conversion(
+            test.function().as_operation_ref(),
+            target,
+            patterns,
+            ConversionConfig::default(),
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            format!("{err}"),
+            "failed to legalize operation 'builtin.unrealized_conversion_cast': no target \
+             materialization of the type converter realizes the cast of (i32) to (i64), which is \
+             used by 'test.mul'"
+        );
     }
 
     /// A pattern written for one value per operand does not match an operand that became two
