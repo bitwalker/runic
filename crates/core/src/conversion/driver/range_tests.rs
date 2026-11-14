@@ -32,6 +32,7 @@ use crate::{
 };
 
 mod in_place_tests;
+mod signature_tests;
 
 type Rewrite = dyn Fn(
     OperationRef,

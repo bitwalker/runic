@@ -1,13 +1,13 @@
-use alloc::{format, rc::Rc, vec::Vec};
+use alloc::{format, rc::Rc, string::String, vec::Vec};
 use core::cell::RefCell;
 
 use smallvec::SmallVec;
 
-use super::TypeConverter;
+use super::{InputMapping, SignatureConversion, TypeConverter};
 use crate::{
-    BlockRef, BuildableOp, Builder, BuilderExt, Context, FxHashMap, Listener, ListenerType,
-    Operation, OperationRef, ProgramPoint, RegionRef, Report, SourceSpan, Spanned, Type,
-    UnsafeIntrusiveEntityRef, Value, ValueRef,
+    BlockRef, BuildableOp, Builder, BuilderExt, Context, FxHashMap, FxHashSet, Listener,
+    ListenerType, Operation, OperationRef, ProgramPoint, RegionRef, Report, SourceSpan, Spanned,
+    Type, UnsafeIntrusiveEntityRef, Value, ValueRef,
     dialects::builtin::BuiltinOpBuilder,
     patterns::{PatternRewriter, Rewriter, RewriterExt, RewriterListener},
 };
@@ -117,10 +117,17 @@ pub(super) struct DriverCast {
 /// the rewriters of the conversion. A cast that is erased through a rewriter leaves the table.
 pub(super) type DriverCasts = Rc<RefCell<FxHashMap<OperationRef, DriverCast>>>;
 
-/// What the rewriters of one conversion share: the casts the driver inserted.
+/// The blocks whose arguments were converted during one conversion, shared by the rewriters of
+/// the conversion. A block is converted at most once per conversion; an erased block leaves the
+/// set.
+pub(super) type ConvertedBlocks = Rc<RefCell<FxHashSet<BlockRef>>>;
+
+/// What the rewriters of one conversion share: the casts the driver inserted and the blocks whose
+/// arguments were converted.
 #[derive(Clone, Default)]
 pub(super) struct ConversionState {
     pub(super) casts: DriverCasts,
+    pub(super) converted_blocks: ConvertedBlocks,
 }
 
 struct ConversionTrackingListener {
@@ -200,7 +207,8 @@ impl Listener for ConversionTrackingListener {
 }
 
 impl RewriterListener for ConversionTrackingListener {
-    fn notify_block_erased(&self, _block: BlockRef) {
+    fn notify_block_erased(&self, block: BlockRef) {
+        self.state.converted_blocks.borrow_mut().remove(&block);
         self.record_block_mutation();
     }
 
@@ -264,8 +272,8 @@ impl ConversionPatternRewriter {
         Self::new_for_conversion(context, type_converter.map(Rc::new), ConversionState::default())
     }
 
-    /// Create a conversion rewriter that records the casts it inserts in `state`, each under the
-    /// one shared handle of `type_converter`.
+    /// Create a conversion rewriter that records the casts it inserts, each under the one shared
+    /// handle of `type_converter`, and the blocks it converts, in `state`.
     pub(super) fn new_for_conversion(
         context: Rc<Context>,
         type_converter: Option<Rc<TypeConverter>>,
@@ -598,6 +606,186 @@ impl ConversionPatternRewriter {
             self.inner.set_insertion_point(saved);
         }
         Ok(answer)
+    }
+
+    /// Rewrites the block's arguments. Returns the new arguments. An old argument that still has
+    /// users is replaced by a many-to-one cast at the start of the block (of its new arguments, or
+    /// of the values it was remapped to; no cast when that is one value of its own type).
+    ///
+    /// The new arguments, of the types [SignatureConversion::converted_types], are appended to the
+    /// block and the old ones erased: the block keeps its identity and its operations. The types an
+    /// old argument becomes are taken as the conversion gives them; under a type converter they
+    /// must be what the converter answers for the old argument. Values an argument is remapped to
+    /// stand for it as given. The casts are recorded like any the driver inserts, and the change
+    /// counts as a mutation of the block's parent operation.
+    ///
+    /// An error is raised before anything changes when the conversion does not map every old
+    /// argument, when it maps one to types the converter does not answer for it, when an argument
+    /// is remapped to an argument of the block itself, when a cast is needed and the pattern has no
+    /// type converter, or when the block was already converted in this conversion.
+    pub fn apply_signature_conversion(
+        &mut self,
+        mut block: BlockRef,
+        conversion: &SignatureConversion,
+    ) -> Result<SmallVec<[ValueRef; 4]>, Report> {
+        let old = block.borrow().argument_values().collect::<SmallVec<[ValueRef; 4]>>();
+        let parent = block.borrow().parent_op();
+        let describe = || match parent {
+            Some(parent) => format!("a block of '{}'", parent.borrow().name()),
+            None => String::from("a block"),
+        };
+
+        // Check everything before changing anything.
+        if self.state.converted_blocks.borrow().contains(&block) {
+            return Err(Report::msg(format!(
+                "the arguments of {} were already converted in this conversion",
+                describe()
+            )));
+        }
+        if conversion.num_inputs() != old.len() {
+            return Err(Report::msg(format!(
+                "a signature conversion of {} inputs cannot be applied to {}, which has {} \
+                 arguments",
+                conversion.num_inputs(),
+                describe(),
+                old.len()
+            )));
+        }
+        let context = self.inner.context_rc();
+        let mut needs_cast = SmallVec::<[bool; 4]>::new();
+        for (index, argument) in old.iter().enumerate() {
+            let old_ty = argument.borrow().ty();
+            let Some(mapping) = conversion.mapping(index) else {
+                return Err(Report::msg(format!(
+                    "the signature conversion of {} does not map argument {index}",
+                    describe()
+                )));
+            };
+            let replacement = match mapping {
+                InputMapping::Arguments { new_index, count } => {
+                    let types = &conversion.converted_types()[*new_index..*new_index + *count];
+                    if let Some(converter) = self.type_converter.as_ref() {
+                        let expected = converter.convert_value(&context, *argument);
+                        if expected.as_slice() != types {
+                            return Err(Report::msg(format!(
+                                "argument {index} of {} has type '{old_ty}', which the type \
+                                 converter converts to {}, but the signature conversion gives it \
+                                 types {}",
+                                describe(),
+                                type_list(&expected),
+                                type_list(types)
+                            )));
+                        }
+                    }
+                    SmallVec::<[Type; 2]>::from(types)
+                }
+                InputMapping::Values(values) => {
+                    if let Some(value) = values.iter().find(|value| old.contains(value)) {
+                        return Err(Report::msg(format!(
+                            "argument {index} of {} is remapped to '{}', an argument of the same \
+                             block, which the conversion erases",
+                            describe(),
+                            value.borrow()
+                        )));
+                    }
+                    types_of(values)
+                }
+            };
+            let cast = argument.borrow().is_used() && replacement.as_slice() != [old_ty];
+            if cast && self.type_converter.is_none() {
+                return Err(Report::msg(format!(
+                    "argument {index} of {} of type '{old_ty}' becomes values of types {}, which \
+                     needs a cast, and the pattern has no type converter",
+                    describe(),
+                    type_list(&replacement)
+                )));
+            }
+            needs_cast.push(cast);
+        }
+
+        if let Some(parent) = parent {
+            self.inner.notify_operation_modification_started(&parent);
+        }
+        let block_span = parent.map_or_else(SourceSpan::default, |parent| parent.borrow().span());
+        let spans = old
+            .iter()
+            .map(|argument| argument.borrow().span())
+            .collect::<SmallVec<[_; 4]>>();
+        let mut new_arguments = SmallVec::<[ValueRef; 4]>::new();
+        for (new_index, ty) in conversion.converted_types().iter().enumerate() {
+            let span =
+                conversion.origin(new_index).map_or(block_span, |old_index| spans[old_index]);
+            new_arguments.push(context.append_block_argument(block, *ty, span));
+        }
+
+        let saved = *self.inner.insertion_point();
+        let mut ip = ProgramPoint::at_start_of(block);
+        for (index, argument) in old.iter().enumerate() {
+            if !argument.borrow().is_used() {
+                continue;
+            }
+            let values = match conversion.mapping(index).expect("checked above") {
+                InputMapping::Arguments { new_index, count } => {
+                    SmallVec::<[ValueRef; 2]>::from(&new_arguments[*new_index..*new_index + *count])
+                }
+                InputMapping::Values(values) => values.clone(),
+            };
+            let replacement = if needs_cast[index] {
+                self.inner.set_insertion_point(ip);
+                let old_ty = argument.borrow().ty();
+                let outputs = self.insert_cast(CastKind::Source, values, [old_ty], spans[index])?;
+                let cast = outputs[0]
+                    .borrow()
+                    .get_defining_op()
+                    .expect("a cast's result is defined by the cast");
+                ip = ProgramPoint::after(cast);
+                outputs[0]
+            } else {
+                values[0]
+            };
+            self.inner.replace_all_uses_of_value_with(*argument, replacement);
+        }
+        self.inner.set_insertion_point(saved);
+        for _ in 0..old.len() {
+            block.borrow_mut().erase_argument(0);
+        }
+        if let Some(parent) = parent {
+            self.inner.notify_operation_modified(parent);
+        }
+        self.state.converted_blocks.borrow_mut().insert(block);
+        Ok(new_arguments)
+    }
+
+    /// `SignatureConversion::for_block` applied to every block of the region that is not converted
+    /// yet.
+    ///
+    /// The conversion of each block is [SignatureConversion::for_block] under the pattern's type
+    /// converter, and it is applied with [Self::apply_signature_conversion]. A block whose
+    /// arguments all convert to themselves is left as it is. Returns whether any block changed.
+    /// Without a type converter this is an error.
+    pub fn convert_region_types(&mut self, region: RegionRef) -> Result<bool, Report> {
+        let converter = self.type_converter.as_ref().map(Rc::clone).ok_or_else(|| {
+            Report::msg("converting the types of a region needs a type converter")
+        })?;
+        let blocks = region
+            .borrow()
+            .body()
+            .iter()
+            .map(|block| block.as_block_ref())
+            .collect::<SmallVec<[BlockRef; 4]>>();
+        let mut changed = false;
+        for block in blocks {
+            if self.state.converted_blocks.borrow().contains(&block) {
+                continue;
+            }
+            let conversion = SignatureConversion::for_block(block, &converter)?;
+            if conversion.is_identity(block) {
+                continue;
+            }
+            self.apply_signature_conversion(block, &conversion)?;
+            changed = true;
+        }
+        Ok(changed)
     }
 
     /// Erase an operation with no remaining uses.

@@ -3252,4 +3252,103 @@ builtin.function public extern("C") @f() {
             "{error}"
         );
     }
+
+    /// A conversion pattern for `scf.while` that converts the types of the arguments of its
+    /// `before` region, and nothing else.
+    struct ConvertBeforeRegion {
+        info: runic_core::patterns::PatternInfo,
+        converter: runic_core::conversion::TypeConverter,
+    }
+
+    impl runic_core::patterns::Pattern for ConvertBeforeRegion {
+        fn info(&self) -> &runic_core::patterns::PatternInfo {
+            &self.info
+        }
+    }
+
+    impl runic_core::conversion::ConversionPattern for ConvertBeforeRegion {
+        fn type_converter(&self) -> Option<&runic_core::conversion::TypeConverter> {
+            Some(&self.converter)
+        }
+
+        fn match_and_rewrite(
+            &self,
+            op: OperationRef,
+            _operands: runic_core::conversion::ConvertedOperands<'_>,
+            rewriter: &mut runic_core::conversion::ConversionPatternRewriter,
+        ) -> Result<bool, Report> {
+            let before = op.borrow().regions().front().as_pointer().unwrap();
+            rewriter.convert_region_types(before)
+        }
+    }
+
+    /// Whether the entry block of the `before` region of the `scf.while` `op` takes no `i32`.
+    fn before_region_takes_no_i32(op: &Operation) -> bool {
+        let i32 = op.context().i32();
+        let before = op.regions().front().as_pointer().unwrap();
+        let before = before.borrow();
+        !before.entry().argument_types().any(|ty| ty == i32)
+    }
+
+    /// Converting the types of a region of a region-branch operation whose entry types change,
+    /// without a pattern for what branches to it, fails verification with the region-branch
+    /// error: the `scf.yield` of the `after` region forwards an `i32` to the `before` region,
+    /// which now takes an `i64` (and so does `scf.while` itself, on entry).
+    #[test]
+    fn a_converted_region_whose_entry_operands_are_not_converted_fails_verification() {
+        use runic_core::{
+            conversion::{
+                ConversionConfig, ConversionPatternSet, ConversionTarget, DynamicLegalityResult,
+                TypeConversion, TypeConverter, UnknownOpPolicy, apply_full_conversion,
+            },
+            patterns::{PatternBenefit, PatternInfo, PatternKind},
+            testing::text::parse,
+        };
+
+        let (context, function) = parse::<Function>(
+            "builtin.function public extern(\"C\") @f(%flag: i1, %value: i32) -> i32 {
+    %r = scf.while %value before {
+    ^head(%current: i32):
+        scf.condition %flag, %value : (i1, i32);
+    } after {
+    ^body(%next: i32):
+        scf.yield %next : (i32);
+    } : (i32) -> i32;
+    builtin.ret %r : (i32);
+};",
+        )
+        .unwrap();
+        let (i32, i64) = (context.i32(), context.i64());
+        let mut converter = TypeConverter::new();
+        converter.add_conversion(move |_, ty| (ty == i32).then_some(TypeConversion::One(i64)));
+        let scf = context.get_or_register_dialect::<crate::ScfDialect>();
+        let info = PatternInfo::new(
+            context.clone(),
+            "convert-before-region",
+            PatternKind::Operation(scf.expect_registered_name::<While>()),
+            PatternBenefit::new(1),
+        );
+        let mut patterns = ConversionPatternSet::new(context.clone());
+        patterns.push(ConvertBeforeRegion { info, converter });
+        let mut target = ConversionTarget::new(context.clone());
+        target
+            .set_unknown_op_policy(UnknownOpPolicy::Legal)
+            .add_dynamically_legal_op::<While, _>(|op: &Operation| {
+                DynamicLegalityResult::legal_if(before_region_takes_no_i32(op))
+            });
+
+        let err = apply_full_conversion(
+            function.as_operation_ref(),
+            target,
+            patterns,
+            ConversionConfig::default(),
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            format!("{err}"),
+            "invalid operation scf.yield: operand 0 for successor 0 (region 0 of scf.while) has \
+             type 'i32', but the block argument it binds has type 'i64'"
+        );
+    }
 }

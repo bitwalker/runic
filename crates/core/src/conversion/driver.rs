@@ -180,7 +180,7 @@ struct FullConversionDriver<'a> {
     target: &'a ConversionTarget,
     graph: LegalizationGraph<'a>,
     context: Rc<crate::Context>,
-    /// The casts this conversion inserted that are still in the IR.
+    /// The casts this conversion inserted that are still in the IR, and the blocks it converted.
     state: ConversionState,
     config: ConversionConfig,
     result: ConversionResult,

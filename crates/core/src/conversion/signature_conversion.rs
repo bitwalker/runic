@@ -8,188 +8,158 @@ use crate::{
     Value, ValueRef, dialects::builtin::attributes::Signature,
 };
 
-/// Describes how a block/callable signature maps original inputs to converted inputs.
+/// How the arguments of a block change.
 ///
-/// The current utilities support applying 1:1 block argument type updates in place. The mapping
-/// model also records replace/drop decisions for future or dialect-specific signature rewrites,
-/// but callers using those mappings must rewrite the affected block predecessors, call operands,
-/// and region successor operands themselves.
-#[derive(Debug)]
+/// Each old argument is mapped once: to new arguments ([Self::add_inputs]), or to existing values
+/// ([Self::remap_input]; with none, it is dropped). New arguments that replace nothing are added
+/// with [Self::add_new_inputs]. The new arguments are in the order of the `add_inputs` and
+/// `add_new_inputs` calls. A conversion is applied with
+/// [ConversionPatternRewriter::apply_signature_conversion].
+///
+/// [ConversionPatternRewriter::apply_signature_conversion]:
+///     super::ConversionPatternRewriter::apply_signature_conversion
+#[derive(Clone, Debug)]
 pub struct SignatureConversion {
     converted_types: SmallVec<[Type; 4]>,
-    mappings: Vec<InputMapping>,
+    /// For each new argument, the old argument it comes from, if any.
+    origins: SmallVec<[Option<usize>; 4]>,
+    mappings: Vec<Option<InputMapping>>,
+}
+
+/// What an old argument becomes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InputMapping {
+    /// becomes the new arguments `new_index .. new_index + count`
+    Arguments {
+        /// The first of the new arguments.
+        new_index: usize,
+        /// How many new arguments, at least one.
+        count: usize,
+    },
+    /// is replaced by existing values (none: dropped)
+    Values(SmallVec<[ValueRef; 2]>),
 }
 
 impl SignatureConversion {
-    /// Create an empty signature conversion.
-    pub fn new() -> Self {
+    /// A conversion of `num_inputs` old arguments, none of them mapped yet.
+    pub fn new(num_inputs: usize) -> Self {
         Self {
             converted_types: SmallVec::new(),
-            mappings: Vec::new(),
+            origins: SmallVec::new(),
+            mappings: alloc::vec![None; num_inputs],
         }
     }
 
-    /// Build a 1:1 signature conversion for a block's current arguments.
+    /// The number of old arguments.
+    #[inline]
+    pub fn num_inputs(&self) -> usize {
+        self.mappings.len()
+    }
+
+    /// The old argument becomes new arguments of these types (at least one), placed next.
     ///
-    /// Each block argument is converted with [`TypeConverter::convert_value_1_to_1`]. The result
-    /// can be applied in place with [`Self::apply_to_block_arguments_1_to_1`].
-    pub fn for_block_1_to_1(
-        block: BlockRef,
-        type_converter: &TypeConverter,
-    ) -> Result<Self, Report> {
-        let context = block.borrow().context_rc();
-        let arguments = block
-            .borrow()
-            .arguments()
-            .iter()
-            .copied()
-            .map(|arg| arg as ValueRef)
-            .collect::<SmallVec<[ValueRef; 4]>>();
-
-        let mut conversion = Self::new();
-        for (index, argument) in arguments.into_iter().enumerate() {
-            conversion.keep_input(index, type_converter.convert_value_1_to_1(&context, argument)?);
+    /// An error when `old_index` is not an old argument, is already mapped, or `types` is empty
+    /// (an argument that becomes no value is dropped with [Self::remap_input]).
+    pub fn add_inputs(&mut self, old_index: usize, types: &[Type]) -> Result<(), Report> {
+        self.check_unmapped(old_index)?;
+        if types.is_empty() {
+            return Err(Report::msg(format!(
+                "old argument {old_index} must become at least one new argument; an argument that \
+                 becomes no value is remapped to none"
+            )));
         }
-        Ok(conversion)
+        let new_index = self.converted_types.len();
+        self.converted_types.extend_from_slice(types);
+        self.origins.extend(core::iter::repeat_n(Some(old_index), types.len()));
+        self.mappings[old_index] = Some(InputMapping::Arguments {
+            new_index,
+            count: types.len(),
+        });
+        Ok(())
     }
 
-    /// Return the converted input types in new signature order.
+    /// New arguments that replace nothing, placed next.
+    pub fn add_new_inputs(&mut self, types: &[Type]) {
+        self.converted_types.extend_from_slice(types);
+        self.origins.extend(core::iter::repeat_n(None, types.len()));
+    }
+
+    /// The old argument is replaced by these values; with none it is dropped.
+    ///
+    /// The values stand for the argument as given: they are not checked against a type
+    /// converter, and they must be available at the start of the block. An error when
+    /// `old_index` is not an old argument or is already mapped.
+    pub fn remap_input(&mut self, old_index: usize, values: &[ValueRef]) -> Result<(), Report> {
+        self.check_unmapped(old_index)?;
+        self.mappings[old_index] = Some(InputMapping::Values(values.iter().copied().collect()));
+        Ok(())
+    }
+
+    /// The types of the new arguments, in order.
     #[inline]
     pub fn converted_types(&self) -> &[Type] {
         &self.converted_types
     }
 
-    /// Return mappings from old inputs to the converted signature.
-    #[inline]
-    pub fn mappings(&self) -> &[InputMapping] {
-        &self.mappings
+    /// What old argument `old_index` becomes; `None` while it is not mapped, or when there is no
+    /// such argument.
+    pub fn mapping(&self, old_index: usize) -> Option<&InputMapping> {
+        self.mappings.get(old_index).and_then(Option::as_ref)
     }
 
-    /// Keep old input `old_index` as one converted input with `new_type`.
-    pub fn keep_input(&mut self, old_index: usize, new_type: Type) -> &mut Self {
-        let new_index = self.converted_types.len();
-        self.converted_types.push(new_type);
-        self.mappings.push(InputMapping::Keep {
-            old_index,
-            new_index,
-            new_count: 1,
-        });
-        self
+    /// The old argument new argument `new_index` comes from; `None` for one that replaces nothing.
+    pub(super) fn origin(&self, new_index: usize) -> Option<usize> {
+        self.origins.get(new_index).copied().flatten()
     }
 
-    /// Replace old input `old_index` with existing values.
+    /// Each argument of `block` through the converter: several types become `add_inputs`, none
+    /// `remap_input(i, &[])`.
     ///
-    /// This records the mapping only. Generic in-place block argument conversion does not support
-    /// replacement mappings, so dialect-specific rewrites must update uses and control-flow
-    /// operands consistently before relying on this mapping.
-    pub fn replace_input(
-        &mut self,
-        old_index: usize,
-        values: impl IntoIterator<Item = ValueRef>,
-    ) -> &mut Self {
-        self.mappings.push(InputMapping::Replace {
-            old_index,
-            values: values.into_iter().collect(),
-        });
-        self
+    /// An argument is asked about with [TypeConverter::convert_value]; one that converts to its
+    /// own type becomes one new argument of that type.
+    pub fn for_block(block: BlockRef, converter: &TypeConverter) -> Result<Self, Report> {
+        let context = block.borrow().context_rc();
+        let arguments = block.borrow().argument_values().collect::<SmallVec<[ValueRef; 4]>>();
+        let mut conversion = Self::new(arguments.len());
+        for (index, argument) in arguments.into_iter().enumerate() {
+            let types = converter.convert_value(&context, argument);
+            if types.is_empty() {
+                conversion.remap_input(index, &[])?;
+            } else {
+                conversion.add_inputs(index, &types)?;
+            }
+        }
+        Ok(conversion)
     }
 
-    /// Drop old input `old_index` from the converted signature.
-    ///
-    /// This records the mapping only. Dropping a live block argument or callable parameter also
-    /// requires updating all branch/call/region successor operands that feed it.
-    pub fn drop_input(&mut self, old_index: usize) -> &mut Self {
-        self.mappings.push(InputMapping::Drop { old_index });
-        self
+    /// Whether applying this conversion to `block` would change nothing: each argument becomes
+    /// one new argument of its own type, in place, and there are no others.
+    pub fn is_identity(&self, block: BlockRef) -> bool {
+        let block = block.borrow();
+        let types = block.argument_types().collect::<SmallVec<[Type; 4]>>();
+        types.len() == self.mappings.len()
+            && self.converted_types.as_slice() == types.as_slice()
+            && self.mappings.iter().enumerate().all(|(index, mapping)| {
+                *mapping
+                    == Some(InputMapping::Arguments {
+                        new_index: index,
+                        count: 1,
+                    })
+            })
     }
 
-    /// Apply this conversion to block argument types in place.
-    ///
-    /// This is intentionally limited to 1:1 conversions. 1:N and drop conversions need a
-    /// replacement block plus successor rewrites, which should be implemented when a concrete
-    /// lowering needs it.
-    pub fn apply_to_block_arguments_1_to_1(&self, block: BlockRef) -> Result<bool, Report> {
-        let arguments = block.borrow().arguments().iter().copied().collect::<SmallVec<[_; 4]>>();
-        if arguments.len() != self.mappings.len() {
-            return Err(Report::msg(format!(
-                "cannot apply signature conversion to block: expected {} input mappings for the \
-                 block arguments, got {}",
-                arguments.len(),
+    fn check_unmapped(&self, old_index: usize) -> Result<(), Report> {
+        match self.mappings.get(old_index) {
+            None => Err(Report::msg(format!(
+                "old argument {old_index} does not exist: the conversion has {} old arguments",
                 self.mappings.len()
-            )));
-        }
-        if arguments.len() != self.converted_types.len() {
-            return Err(Report::msg(format!(
-                "cannot apply signature conversion to block: expected {} converted inputs for the \
-                 block arguments, got {}",
-                arguments.len(),
-                self.converted_types.len()
-            )));
-        }
-
-        for (expected_old_index, mapping) in self.mappings.iter().enumerate() {
-            match mapping {
-                InputMapping::Keep {
-                    old_index,
-                    new_index,
-                    new_count,
-                } if *old_index == expected_old_index
-                    && *new_index == expected_old_index
-                    && *new_count == 1 => {}
-                InputMapping::Keep { .. } => {
-                    return Err(Report::msg(
-                        "cannot apply non-identity input ordering to block arguments in place",
-                    ));
-                }
-                InputMapping::Replace { .. } | InputMapping::Drop { .. } => {
-                    return Err(Report::msg(
-                        "cannot apply replace/drop input mapping to block arguments in place",
-                    ));
-                }
+            ))),
+            Some(Some(_)) => {
+                Err(Report::msg(format!("old argument {old_index} is already mapped")))
             }
+            Some(None) => Ok(()),
         }
-
-        let mut changed = false;
-        for (mut argument, ty) in arguments.into_iter().zip(self.converted_types.iter()) {
-            if argument.borrow().ty() != *ty {
-                argument.borrow_mut().set_type(*ty);
-                changed = true;
-            }
-        }
-        Ok(changed)
     }
-}
-
-impl Default for SignatureConversion {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Mapping from one original input to the converted signature.
-#[derive(Clone, Debug)]
-pub enum InputMapping {
-    /// Preserve one original input as one converted input.
-    Keep {
-        /// Index of the original input.
-        old_index: usize,
-        /// First index of this input in the converted signature.
-        new_index: usize,
-        /// Number of converted inputs produced for this original input.
-        new_count: usize,
-    },
-    /// Replace an original input with existing values.
-    Replace {
-        /// Index of the original input.
-        old_index: usize,
-        /// Values that replace the original input.
-        values: SmallVec<[ValueRef; 2]>,
-    },
-    /// Remove an original input from the converted signature.
-    Drop {
-        /// Index of the original input.
-        old_index: usize,
-    },
 }
 
 /// Convert a builtin ABI signature of `context` 1:1, preserving ABI metadata on each
@@ -324,7 +294,10 @@ mod tests {
     use alloc::{format, vec};
 
     use super::*;
-    use crate::{Context, SourceSpan, dialects::builtin::attributes::Signature, testing::Test};
+    use crate::{
+        Context, SourceSpan, conversion::ConversionPatternRewriter,
+        dialects::builtin::attributes::Signature, testing::Test,
+    };
 
     fn i32_to_i64_converter(context: &Context) -> TypeConverter {
         let (from, to) = (context.i32(), context.i64());
@@ -339,26 +312,34 @@ mod tests {
         converter
     }
 
-    #[test]
-    fn applies_1_to_1_block_argument_conversion_in_place() {
-        let mut test = Test::named("applies_1_to_1_block_argument_conversion_in_place");
-        let (i32, i64) = (test.context().i32(), test.context().i64());
-        test.with_function("applies_1_to_1_block_argument_conversion_in_place", &[i32, i64], &[]);
-        let block = test.entry_block();
-
-        let conversion =
-            SignatureConversion::for_block_1_to_1(block, &i32_to_i64_converter(test.context()))
-                .expect("signature conversion failed");
-
-        assert!(conversion.apply_to_block_arguments_1_to_1(block).unwrap());
-        let types = block.borrow().argument_types().collect::<Vec<_>>();
-        assert_eq!(types, vec![i64, i64]);
+    /// Every argument of `block` under the `i32` to `i64` converter, applied by a rewriter.
+    fn convert_block(block: BlockRef, context: &Context) -> SmallVec<[ValueRef; 4]> {
+        let converter = i32_to_i64_converter(context);
+        let conversion = SignatureConversion::for_block(block, &converter).unwrap();
+        let mut rewriter = ConversionPatternRewriter::new_with_type_converter(
+            block.borrow().context_rc(),
+            Some(converter),
+        );
+        rewriter.apply_signature_conversion(block, &conversion).unwrap()
     }
 
     #[test]
-    fn applies_1_to_1_non_entry_block_argument_conversion_in_place() {
-        let mut test =
-            Test::new("applies_1_to_1_non_entry_block_argument_conversion_in_place", |_| ([], []));
+    fn converts_the_arguments_of_an_entry_block() {
+        let mut test = Test::named("converts_the_arguments_of_an_entry_block");
+        let (i32, i64) = (test.context().i32(), test.context().i64());
+        test.with_function("converts_the_arguments_of_an_entry_block", &[i32, i64], &[]);
+        let block = test.entry_block();
+
+        let new = convert_block(block, test.context());
+
+        let types = block.borrow().argument_types().collect::<Vec<_>>();
+        assert_eq!(types, vec![i64, i64]);
+        assert_eq!(new.as_slice(), block.borrow().argument_values().collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn converts_the_arguments_of_a_block_after_the_entry() {
+        let mut test = Test::new("converts_the_arguments_of_a_block_after_the_entry", |_| ([], []));
         let (i32, i64) = (test.context().i32(), test.context().i64());
         let block = {
             let mut builder = test.function_builder();
@@ -367,32 +348,42 @@ mod tests {
             block
         };
 
-        let conversion =
-            SignatureConversion::for_block_1_to_1(block, &i32_to_i64_converter(test.context()))
-                .expect("signature conversion failed");
+        convert_block(block, test.context());
 
-        assert!(conversion.apply_to_block_arguments_1_to_1(block).unwrap());
         let types = block.borrow().argument_types().collect::<Vec<_>>();
         assert_eq!(types, vec![i64]);
     }
 
+    /// An argument whose type converts to several types becomes that many arguments, and one whose
+    /// type converts to none is dropped.
     #[test]
-    fn rejects_non_1_to_1_block_argument_conversion() {
-        let mut test = Test::named("rejects_non_1_to_1_block_argument_conversion");
-        let i32 = test.context().i32();
-        test.with_function("rejects_non_1_to_1_block_argument_conversion", &[i32], &[]);
+    fn an_argument_becomes_several_or_none() {
+        let mut test = Test::named("an_argument_becomes_several_or_none");
+        let (i16, i32, i64) = (test.context().i16(), test.context().i32(), test.context().i64());
+        test.with_function("an_argument_becomes_several_or_none", &[i32, i16], &[]);
         let block = test.entry_block();
         let mut converter = TypeConverter::new();
-        converter.add_conversion(move |_, ty| {
-            if ty == i32 {
-                Some(super::super::TypeConversion::Drop)
-            } else {
-                None
-            }
+        converter.add_conversion(move |_, ty| match ty {
+            ty if ty == i32 => Some(super::super::TypeConversion::many([i64, i64])),
+            ty if ty == i16 => Some(super::super::TypeConversion::Drop),
+            _ => None,
         });
 
-        let err = SignatureConversion::for_block_1_to_1(block, &converter).unwrap_err();
-        assert!(format!("{err}").contains("1:1"));
+        let mut conversion = SignatureConversion::for_block(block, &converter).unwrap();
+
+        assert_eq!(conversion.converted_types(), [i64, i64]);
+        assert_eq!(
+            conversion.mapping(0),
+            Some(&InputMapping::Arguments {
+                new_index: 0,
+                count: 2
+            })
+        );
+        assert_eq!(conversion.mapping(1), Some(&InputMapping::Values(SmallVec::new())));
+        assert_eq!(
+            format!("{}", conversion.add_inputs(0, &[i64]).unwrap_err()),
+            "old argument 0 is already mapped"
+        );
     }
 
     #[test]
