@@ -364,11 +364,16 @@ mod tests {
 
     #[test]
     fn converted_operands_exposes_groups() {
-        let groups: [SmallVec<[ValueRef; 2]>; 1] = [SmallVec::new()];
-        let operands = ConvertedOperands::new(&groups);
+        let ranges: [SmallVec<[ValueRef; 2]>; 1] = [SmallVec::new()];
+        let operands = ConvertedOperands::new(&ranges, &[1]);
 
         assert_eq!(operands.len(), 1);
-        assert!(operands.get(0).is_some_and(|group| group.is_empty()));
+        assert_eq!(operands.num_groups(), 1);
+        assert!(operands.get(0).is_empty());
+        assert_eq!(operands.one(0), None);
+        assert_eq!(operands.all_one(), None);
+        assert_eq!(operands.group(0).count(), 1);
+        assert!(operands.group_flattened(0).is_empty());
     }
 
     #[test]

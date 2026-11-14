@@ -7,7 +7,7 @@ use super::TypeConverter;
 use crate::{
     BlockRef, BuildableOp, Builder, BuilderExt, Context, Listener, ListenerType, OperationRef,
     ProgramPoint, RegionRef, Report, SourceSpan, Spanned, Type, UnsafeIntrusiveEntityRef, ValueRef,
-    dialects::builtin::{BuiltinOpBuilder, UnrealizedConversionCast},
+    dialects::builtin::BuiltinOpBuilder,
     patterns::{PatternRewriter, Rewriter, RewriterListener},
 };
 
@@ -205,8 +205,8 @@ fn push_unique(ops: &mut Vec<OperationRef>, op: OperationRef) {
 
 /// Rewriter used by conversion patterns.
 ///
-/// This wraps the normal [`PatternRewriter`] with mutation tracking and type-conversion
-/// materialization support. Conversion patterns should perform all IR changes through this
+/// This wraps the normal [`PatternRewriter`] with mutation tracking and the replacement of a result
+/// by a range of values. Conversion patterns should perform all IR changes through this
 /// rewriter so the driver can validate the pattern contract and legalize generated operations.
 pub struct ConversionPatternRewriter {
     inner: PatternRewriter<Rc<ConversionTrackingListener>>,
@@ -224,9 +224,8 @@ impl ConversionPatternRewriter {
 
     /// Create a conversion rewriter with an optional type converter.
     ///
-    /// The type converter is used by helpers such as [`Self::replace_op`] to insert source
-    /// materializations when replacement values have converted result types but existing users
-    /// still expect the original result types.
+    /// The type converter says what types each result may be replaced by
+    /// ([Self::replace_op_with_multiple]).
     #[inline]
     pub fn new_with_type_converter(
         context: Rc<Context>,
@@ -276,15 +275,19 @@ impl ConversionPatternRewriter {
         core::ops::FnOnce::call_once(builder, args)
     }
 
-    /// Create a `builtin.unrealized_conversion_cast` of `inputs` to values of the types `results`
-    /// at the current insertion point.
-    pub(super) fn create_unrealized_conversion_cast(
+    /// Insert a `builtin.unrealized_conversion_cast` of `inputs` to values of the types
+    /// `results` at the current insertion point, mark it as the driver's, and return its results.
+    pub(super) fn insert_cast(
         &mut self,
         inputs: impl IntoIterator<Item = ValueRef>,
         results: impl IntoIterator<Item = Type>,
         span: SourceSpan,
-    ) -> Result<UnsafeIntrusiveEntityRef<UnrealizedConversionCast>, Report> {
-        BuiltinOpBuilder::unrealized_conversion_cast(&mut *self.inner, inputs, results, span)
+    ) -> Result<SmallVec<[ValueRef; 2]>, Report> {
+        let cast =
+            BuiltinOpBuilder::unrealized_conversion_cast(&mut *self.inner, inputs, results, span)?;
+        self.mark_materialization_op(cast.as_operation_ref());
+        let outputs = cast.borrow().outputs().iter().map(|output| *output as ValueRef).collect();
+        Ok(outputs)
     }
 
     /// Mark `op` as a framework-owned materialization operation.
@@ -307,34 +310,101 @@ impl ConversionPatternRewriter {
         Ok(())
     }
 
-    /// Replace `op` with the provided same-type replacement values.
+    /// Replace `op` by one range of values per result of `op`, and erase it.
     ///
-    /// The number of replacement values must match `op`'s result count. If a replacement value has
-    /// the converted result type while existing uses require the original result type, this method
-    /// asks the configured [`TypeConverter`] to materialize a source conversion.
-    pub fn replace_op(
+    /// A range that is one value of the result's own type replaces the result. Any other range
+    /// must have exactly the types the pattern's type converter says the result becomes; when the
+    /// result still has users, they are given a many-to-one `builtin.unrealized_conversion_cast`
+    /// of the range back to the result's type, inserted before `op`. A range of any other types,
+    /// or the wrong number of ranges, is an error raised before anything is changed.
+    pub fn replace_op_with_multiple(
         &mut self,
         op: OperationRef,
-        replacement_values: &[ValueRef],
+        values: &[&[ValueRef]],
     ) -> Result<(), Report> {
-        if op.borrow().num_results() != replacement_values.len() {
-            return Err(Report::msg("replacement value count does not match operation results"));
+        let results = op
+            .borrow()
+            .results()
+            .all()
+            .iter()
+            .map(|result| result.borrow().as_value_ref())
+            .collect::<SmallVec<[ValueRef; 2]>>();
+        if results.len() != values.len() {
+            return Err(Report::msg(format!(
+                "operation '{}' has {} results, but it is replaced by {} ranges of values",
+                op.borrow().name(),
+                results.len(),
+                values.len()
+            )));
         }
 
-        let replacement_values = self.materialize_source_replacements(op, replacement_values)?;
-        let values = replacement_values
-            .iter()
-            .copied()
-            .map(Some)
-            .collect::<SmallVec<[Option<ValueRef>; 2]>>();
-        self.inner.replace_op_with_values(op, &values);
+        // Check every range before changing anything.
+        let context = self.inner.context_rc();
+        let mut casts = SmallVec::<[bool; 2]>::new();
+        for (index, (result, range)) in results.iter().zip(values).enumerate() {
+            let result_ty = result.borrow().ty();
+            if let [value] = range
+                && value.borrow().ty() == result_ty
+            {
+                casts.push(false);
+                continue;
+            }
+            let range_types = types_of(range);
+            let Some(converter) = self.type_converter.as_ref() else {
+                return Err(Report::msg(format!(
+                        "result {index} of '{}' has type '{result_ty}', but it is replaced by \
+                         values                      of types {}, and the pattern has no type \
+                         converter",
+                        op.borrow().name(),
+                        type_list(&range_types)
+                    )));
+            };
+            let expected = converter.convert_value(&context, *result);
+            if range_types != expected {
+                return Err(Report::msg(format!(
+                            "result {index} of '{}' has type '{result_ty}', which the type \
+                             converter                      converts to {}, but it is replaced by \
+                             values of types {}",
+                            op.borrow().name(),
+                            type_list(&expected),
+                            type_list(&range_types)
+                        )));
+            }
+            casts.push(true);
+        }
+
+        let span = op.borrow().span();
+        let mut replacements = SmallVec::<[Option<ValueRef>; 2]>::new();
+        for ((result, range), cast) in results.iter().zip(values).zip(casts) {
+            if !cast {
+                replacements.push(Some(range[0]));
+                continue;
+            }
+            if !result.borrow().is_used() {
+                replacements.push(None);
+                continue;
+            }
+            self.set_insertion_point_before(op);
+            let result_ty = result.borrow().ty();
+            let outputs = self.insert_cast(range.iter().copied(), [result_ty], span)?;
+            replacements.push(Some(outputs[0]));
+        }
+        self.inner.replace_op_with_values(op, &replacements);
         Ok(())
+    }
+
+    /// Replace `op` by one value per result of `op`, and erase it.
+    ///
+    /// This is [Self::replace_op_with_multiple] with a range of one value per result.
+    pub fn replace_op(&mut self, op: OperationRef, values: &[ValueRef]) -> Result<(), Report> {
+        let ranges = values.iter().map(core::slice::from_ref).collect::<SmallVec<[_; 2]>>();
+        self.replace_op_with_multiple(op, &ranges)
     }
 
     /// Create a new operation before `op`, then replace `op` with the new operation's results.
     ///
     /// This is a convenience for the common single-operation legalization case. It uses
-    /// [`Self::replace_op`] for result replacement, so the same materialization behavior applies.
+    /// [`Self::replace_op`] for result replacement, so the same casts are inserted for users.
     pub fn replace_op_with_new_op<T, Args>(
         &mut self,
         op: OperationRef,
@@ -403,63 +473,24 @@ impl ConversionPatternRewriter {
     pub fn take_tracked_mutations(&mut self) -> TrackedMutations {
         self.tracking.take_mutations()
     }
+}
 
-    fn materialize_source_replacements(
-        &mut self,
-        op: OperationRef,
-        replacement_values: &[ValueRef],
-    ) -> Result<SmallVec<[ValueRef; 2]>, Report> {
-        let original_results = op
-            .borrow()
-            .results()
-            .all()
-            .iter()
-            .map(|result| {
-                let value = result.borrow().as_value_ref();
-                let value_ref = value.borrow();
-                let ty = value_ref.ty();
-                let is_used = value_ref.is_used();
-                drop(value_ref);
-                (value, ty, is_used)
-            })
-            .collect::<SmallVec<[(ValueRef, Type, bool); 2]>>();
+/// The types of `values`, in order.
+pub(super) fn types_of(values: &[ValueRef]) -> SmallVec<[Type; 2]> {
+    values.iter().map(|value| value.borrow().ty()).collect()
+}
 
-        let mut replacements = SmallVec::<[ValueRef; 2]>::new();
-        for ((original, original_ty, is_used), replacement) in
-            original_results.into_iter().zip(replacement_values.iter().copied())
-        {
-            let replacement_ty = replacement.borrow().ty();
-            if replacement_ty == original_ty || !is_used {
-                replacements.push(replacement);
-                continue;
-            }
-
-            let Some(type_converter) = self.type_converter.clone() else {
-                return Err(Report::msg(
-                    "replacement value type does not match original result type and no type \
-                     converter is available",
-                ));
-            };
-            let context = self.inner.context_rc();
-            let expected_ty = type_converter.convert_value_1_to_1(&context, original)?;
-            if expected_ty != replacement_ty {
-                return Err(Report::msg(format!(
-                    "replacement value type '{}' does not match converted result type '{}'",
-                    replacement_ty, expected_ty
-                )));
-            }
-
-            self.set_insertion_point_before(op);
-            replacements.push(type_converter.materialize_source_conversion(
-                self,
-                replacement,
-                original_ty,
-                op.borrow().span(),
-            )?);
+/// `types` written as a parenthesized list: `(i64, i64)`, `(i32)` or `()`.
+pub(super) fn type_list(types: &[Type]) -> alloc::string::String {
+    let mut list = alloc::string::String::from("(");
+    for (index, ty) in types.iter().enumerate() {
+        if index > 0 {
+            list.push_str(", ");
         }
-
-        Ok(replacements)
+        list.push_str(&format!("{ty}"));
     }
+    list.push(')');
+    list
 }
 
 #[cfg(test)]

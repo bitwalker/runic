@@ -240,10 +240,10 @@ impl FullConversionDriver<'_> {
                 rewriter.set_insertion_point_before(op);
             }
 
-            let operand_groups =
+            let (ranges, group_sizes) =
                 converted_operands_for(op, type_converter.as_ref(), &mut rewriter)?;
             let mutation_count_before_pattern = rewriter.mutation_count();
-            let operands = ConvertedOperands::new(&operand_groups);
+            let operands = ConvertedOperands::new(&ranges, &group_sizes);
             let applied = pattern.match_and_rewrite(op, operands, &mut rewriter);
             let mutation_count = rewriter.mutation_count();
 
@@ -406,46 +406,67 @@ impl FullConversionDriver<'_> {
     }
 }
 
+/// One range of values per operand, and the sizes of the operand groups.
+type OperandRanges = (Vec<SmallVec<[ValueRef; 2]>>, SmallVec<[usize; 4]>);
+
+/// The values each operand of `op` became, one range per operand, and the sizes of `op`'s operand
+/// groups.
+///
+/// Without a type converter an operand is itself. With one, an operand whose type converts to
+/// exactly itself is itself; otherwise, when it is the one result of a cast whose inputs have
+/// exactly the converted types, it is that cast's inputs; otherwise it is the results of a new
+/// one-to-many cast to the converted types, inserted at the rewriter's insertion point (none when
+/// the operand converts to no type: its range is empty).
 fn converted_operands_for(
     op: OperationRef,
     type_converter: Option<&TypeConverter>,
     rewriter: &mut ConversionPatternRewriter,
-) -> Result<Vec<SmallVec<[ValueRef; 2]>>, Report> {
-    let (context, span, operand_groups) = {
+) -> Result<OperandRanges, Report> {
+    let (context, span, operands, group_sizes) = {
         let op = op.borrow();
-        let span = op.span();
-        let operand_groups = op
+        let operands = op
             .operands()
-            .groups()
-            .map(|group| {
-                group
-                    .iter()
-                    .map(|operand| operand.borrow().as_value_ref())
-                    .collect::<SmallVec<[ValueRef; 2]>>()
-            })
+            .iter()
+            .map(|operand| operand.borrow().as_value_ref())
             .collect::<Vec<_>>();
-        (op.context_rc(), span, operand_groups)
+        let group_sizes = op.operands().groups().map(|group| group.len()).collect();
+        (op.context_rc(), op.span(), operands, group_sizes)
     };
 
-    let mut converted = vec![];
-    for group in operand_groups {
-        let mut converted_group = SmallVec::<[ValueRef; 2]>::new();
-        for value in group {
-            let Some(type_converter) = type_converter else {
-                converted_group.push(value);
-                continue;
-            };
-            let converted_ty = type_converter.convert_value_1_to_1(&context, value)?;
-            converted_group.push(type_converter.materialize_target_conversion(
-                rewriter,
-                value,
-                converted_ty,
-                span,
-            )?);
+    let mut ranges = Vec::with_capacity(operands.len());
+    for value in operands {
+        let Some(type_converter) = type_converter else {
+            ranges.push(smallvec::smallvec![value]);
+            continue;
+        };
+        let types = type_converter.convert_value(&context, value);
+        if types.as_slice() == [value.borrow().ty()] {
+            ranges.push(smallvec::smallvec![value]);
+        } else if let Some(inputs) = inputs_of_cast_from(value, &types) {
+            ranges.push(inputs);
+        } else if types.is_empty() {
+            ranges.push(SmallVec::new());
+        } else {
+            ranges.push(rewriter.insert_cast([value], types, span)?);
         }
-        converted.push(converted_group);
     }
-    Ok(converted)
+    Ok((ranges, group_sizes))
+}
+
+/// The inputs of the cast `value` is the one result of, when their types are exactly `types`.
+fn inputs_of_cast_from(value: ValueRef, types: &[crate::Type]) -> Option<SmallVec<[ValueRef; 2]>> {
+    let defining = value.borrow().get_defining_op()?;
+    let cast = defining.try_downcast_op::<UnrealizedConversionCast>().ok()?;
+    let cast = cast.borrow();
+    if cast.outputs().len() != 1 {
+        return None;
+    }
+    let inputs = cast
+        .inputs()
+        .iter()
+        .map(|input| input.borrow().as_value_ref())
+        .collect::<SmallVec<[ValueRef; 2]>>();
+    (super::rewriter::types_of(&inputs).as_slice() == types).then_some(inputs)
 }
 
 fn collect_match_failures(failures: &mut Vec<String>, rewriter: &mut ConversionPatternRewriter) {
@@ -529,6 +550,9 @@ fn no_matching_pattern_error(op: OperationRef, failures: Vec<String>) -> Report 
         failures.join("; ")
     ))
 }
+
+#[cfg(test)]
+mod range_tests;
 
 #[cfg(test)]
 mod tests {
@@ -685,13 +709,7 @@ mod tests {
                 return Ok(false);
             }
 
-            let Some(values) = operands.get(0) else {
-                return Ok(false);
-            };
-            let Some(lhs) = values.first().copied() else {
-                return Ok(false);
-            };
-            let Some(rhs) = values.get(1).copied() else {
+            let Some([lhs, rhs]) = operands.all_one().map(|values| [values[0], values[1]]) else {
                 return Ok(false);
             };
             let span = op.borrow().span();
@@ -740,13 +758,7 @@ mod tests {
             }
 
             let span = op.borrow().span();
-            let Some(values) = operands.get(0) else {
-                return Ok(false);
-            };
-            let Some(lhs) = values.first().copied() else {
-                return Ok(false);
-            };
-            let Some(_rhs) = values.get(1).copied() else {
+            let Some(lhs) = operands.one(0) else {
                 return Ok(false);
             };
             let constant = rewriter.create_op::<Constant, _>(span, (Int::from(2i32),))?;
@@ -844,10 +856,8 @@ mod tests {
         operands: ConvertedOperands<'_>,
     ) -> Option<(SourceSpan, ValueRef, ValueRef)> {
         op.try_downcast_op::<Add>().ok()?;
-        let values = operands.get(0)?;
-        let lhs = values.first().copied()?;
-        let rhs = values.get(1).copied()?;
-        Some((op.borrow().span(), lhs, rhs))
+        let values = operands.all_one()?;
+        Some((op.borrow().span(), values[0], values[1]))
     }
 
     fn add_function(name: &'static str) -> Test {
@@ -1068,9 +1078,14 @@ builtin.function public extern(\"C\") @full_conversion_rewrites_illegal_op_to_le
         assert!(!output.contains("test.add"));
     }
 
+    /// A pattern written for one value per operand does not match an operand that became two
+    /// values: the conversion fails because no pattern matched, and the casts made for the
+    /// operands are erased again.
     #[test]
-    fn full_conversion_rejects_non_1_to_1_operand_materialization() {
-        let test = add_function("full_conversion_rejects_non_1_to_1_operand_materialization");
+    fn a_pattern_for_one_value_per_operand_does_not_match_a_split_operand() {
+        let test =
+            add_function("a_pattern_for_one_value_per_operand_does_not_match_a_split_operand");
+        let before = test.function().borrow().as_operation().to_string();
         let target = target_with_test_ops(test.context_rc(), |target| {
             target.add_legal_op::<Mul>();
         });
@@ -1094,7 +1109,8 @@ builtin.function public extern(\"C\") @full_conversion_rewrites_illegal_op_to_le
         )
         .unwrap_err();
 
-        assert!(format!("{err}").contains("1:1"));
+        assert!(format!("{err}").contains("no conversion pattern matched"), "{err}");
+        assert_str_eq!(test.function().borrow().as_operation().to_string(), before);
     }
 
     #[test]
