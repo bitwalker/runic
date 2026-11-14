@@ -512,6 +512,19 @@ impl ConversionDriver<'_> {
                 }
                 return Err(unrealized_cast_error(cast, driver_cast.kind, &inputs, &result_types));
             };
+            if let Some(own) =
+                values.iter().find(|value| value.borrow().get_defining_op() == Some(cast))
+            {
+                return Err(Report::msg(format!(
+                    "failed to legalize operation '{}': the {} materialization of the cast of {} \
+                     to {} answered '{}', a result of the cast itself",
+                    cast.borrow().name(),
+                    kind_name(driver_cast.kind),
+                    type_list(&types_of(&inputs)),
+                    type_list(&result_types),
+                    own.borrow()
+                )));
+            }
             if types_of(&values) != result_types {
                 return Err(Report::msg(format!(
                     "failed to legalize operation '{}': the {} materialization of the cast of {} \

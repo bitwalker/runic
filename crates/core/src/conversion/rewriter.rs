@@ -7,7 +7,7 @@ use super::{InputMapping, SignatureConversion, TypeConverter};
 use crate::{
     BlockRef, BuildableOp, Builder, BuilderExt, Context, FxHashMap, FxHashSet, Listener,
     ListenerType, Operation, OperationRef, ProgramPoint, RegionRef, Report, SourceSpan, Spanned,
-    Type, UnsafeIntrusiveEntityRef, Value, ValueRef,
+    Type, UnsafeIntrusiveEntityRef, Usable, Value, ValueRef,
     dialects::builtin::BuiltinOpBuilder,
     patterns::{PatternRewriter, Rewriter, RewriterExt, RewriterListener},
     traits::Terminator,
@@ -443,6 +443,14 @@ impl ConversionPatternRewriter {
         let context = self.inner.context_rc();
         let mut casts = SmallVec::<[bool; 2]>::new();
         for (index, (result, range)) in results.iter().zip(values).enumerate() {
+            if let Some(own) = range.iter().find(|value| results.contains(*value)) {
+                return Err(Report::msg(format!(
+                    "result {index} of '{}' is replaced by a range that holds '{}', a result of \
+                     the operation being replaced",
+                    op.borrow().name(),
+                    own.borrow()
+                )));
+            }
             let result_ty = result.borrow().ty();
             if let [value] = range
                 && value.borrow().ty() == result_ty
@@ -673,14 +681,15 @@ impl ConversionPatternRewriter {
     /// block and the old ones erased: the block keeps its identity and its operations. The types an
     /// old argument becomes are taken as the conversion gives them; under a type converter they
     /// must be what the converter answers for the old argument. Values an argument is remapped to
-    /// stand for it as given; they must dominate the start of the block (in a debug build, a value
-    /// defined by an operation of the block itself is caught by an assertion). The casts are
+    /// stand for it as given; they must dominate the start of the block (one defined in the block
+    /// itself is an error; nothing else is checked). The casts are
     /// recorded like any the driver inserts, and the change counts as a mutation of the block's
     /// parent operation; of a block without a parent operation, as a mutation of the block.
     ///
     /// An error is raised before anything changes when the conversion does not map every old
     /// argument, when it maps one to types the converter does not answer for it, when an argument
-    /// is remapped to an argument of the block itself, when a cast is needed and the pattern has no
+    /// is remapped to an argument of the block itself or to a value defined in it (by one of its
+    /// operations, or in a region nested in one), when a cast is needed and the pattern has no
     /// type converter, or when the block was already converted in this conversion.
     pub fn apply_signature_conversion(
         &mut self,
@@ -739,15 +748,14 @@ impl ConversionPatternRewriter {
                     SmallVec::<[Type; 2]>::from(types)
                 }
                 InputMapping::Values(values) => {
-                    debug_assert!(
-                        values.iter().all(|value| {
-                            value.borrow().get_defining_op().and_then(|op| op.parent())
-                                != Some(block)
-                        }),
-                        "argument {index} of {} is remapped to a value defined in the block \
-                         itself, which does not dominate its start",
-                        describe()
-                    );
+                    if let Some(value) = values.iter().find(|value| is_defined_in(**value, block)) {
+                        return Err(Report::msg(format!(
+                            "argument {index} of {} is remapped to '{}', a value defined in the \
+                             block itself, which does not dominate its start",
+                            describe(),
+                            value.borrow()
+                        )));
+                    }
                     if let Some(value) = values.iter().find(|value| old.contains(value)) {
                         return Err(Report::msg(format!(
                             "argument {index} of {} is remapped to '{}', an argument of the same \
@@ -861,10 +869,18 @@ impl ConversionPatternRewriter {
     /// Erase an operation with no remaining uses.
     ///
     /// Callers are responsible for ensuring the operation can be erased without leaving invalid
-    /// control-flow edges. Erasing the root of the conversion is an error, raised before anything
-    /// changes.
+    /// control-flow edges. Erasing an operation a result of which still has users, or the root of
+    /// the conversion, is an error, raised before anything changes.
     pub fn erase_op(&mut self, op: OperationRef) -> Result<(), Report> {
         self.check_not_root(op, "erased")?;
+        if let Some(index) =
+            op.borrow().results().iter().position(|result| result.borrow().is_used())
+        {
+            return Err(Report::msg(format!(
+                "'{}' cannot be erased: its result {index} still has users (replace it instead)",
+                op.borrow().name()
+            )));
+        }
         self.inner.erase_op(op);
         Ok(())
     }
@@ -915,6 +931,19 @@ impl ConversionPatternRewriter {
     pub fn take_tracked_mutations(&mut self) -> TrackedMutations {
         self.tracking.take_mutations()
     }
+}
+
+/// Whether `value` is defined by an operation of `block`, or of a region nested in one.
+fn is_defined_in(value: ValueRef, block: BlockRef) -> bool {
+    let mut op = value.borrow().get_defining_op();
+    while let Some(current) = op {
+        let parent = current.parent();
+        if parent == Some(block) {
+            return true;
+        }
+        op = parent.and_then(|parent| parent.borrow().parent_op());
+    }
+    false
 }
 
 /// Where the source cast of `range`, which stands for a result of `op`, is placed: after the value

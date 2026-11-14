@@ -87,8 +87,10 @@ impl SignatureConversion {
     /// The old argument is replaced by these values; with none it is dropped.
     ///
     /// The values stand for the argument as given: they are not checked against a type
-    /// converter, and they must be available at the start of the block. An error when
-    /// `old_index` is not an old argument or is already mapped.
+    /// converter, and they must be available at the start of the block
+    /// ([super::ConversionPatternRewriter::apply_signature_conversion] answers an error for a value
+    /// defined in the block itself or for one of its arguments). An error when `old_index` is not
+    /// an old argument or is already mapped.
     pub fn remap_input(&mut self, old_index: usize, values: &[ValueRef]) -> Result<(), Report> {
         self.check_unmapped(old_index)?;
         self.mappings[old_index] = Some(InputMapping::Values(values.iter().copied().collect()));

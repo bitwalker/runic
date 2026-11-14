@@ -232,10 +232,9 @@ fn replacing_with_the_wrong_types_is_an_error() {
     }
 }
 
-/// Erasing the operation while its result still has users: `erase_op` returns a `Result`.
+/// Erasing the operation while its result still has users: an error from `erase_op`.
 #[test]
-#[ignore = "panics: 'expected op to have no real uses' (patterns/rewriter.rs:65)"]
-fn wanted_erasing_an_operation_that_has_users_is_an_error() {
+fn erasing_an_operation_that_has_users_is_an_error() {
     let outcome = outcome(
         "erase an operation with users",
         with_add(|op, _, rewriter| {
@@ -244,6 +243,10 @@ fn wanted_erasing_an_operation_that_has_users_is_an_error() {
         }),
     );
     assert!(outcome.is_error(), "{outcome:?}");
+    assert!(
+        outcome.text().contains("cannot be erased: its result 0 still has users"),
+        "{outcome:?}"
+    );
 }
 
 /// Erasing an operation the pattern does not own: the producer of an operand, which has users.
@@ -284,8 +287,7 @@ fn erasing_an_unused_operation_it_does_not_own_goes_unnoticed() {
 
 /// Replacing a result by a range that holds the result itself.
 #[test]
-#[ignore = "panics: AliasingViolationError (patterns/rewriter.rs:406)"]
-fn wanted_replacing_a_result_by_itself_is_an_error() {
+fn replacing_a_result_by_itself_is_an_error() {
     let outcome = outcome(
         "replace by its own result",
         with_add(|op, _, rewriter| {
@@ -295,6 +297,10 @@ fn wanted_replacing_a_result_by_itself_is_an_error() {
         }),
     );
     assert!(outcome.is_error(), "{outcome:?}");
+    assert!(
+        outcome.text().contains("a result of the operation being replaced"),
+        "{outcome:?}"
+    );
 }
 
 /// Replacing the same operation twice.
@@ -510,16 +516,11 @@ fn retyping_a_block_argument_behind_the_rewriter_is_caught_by_verification_or_no
     println!("{outcome:?}");
 }
 
-/// An argument remapped to a value defined in the block itself: a debug assertion, so a panic in
-/// a debug build and a dominance error from verification otherwise.
+/// An argument remapped to a value defined in the block itself: an error in every build.
 #[test]
-#[ignore = "panics in a debug build (debug_assert, conversion/rewriter.rs:715); not checked \
-            otherwise"]
-fn wanted_remapping_an_argument_to_a_value_of_the_block_is_an_error() {
+fn remapping_an_argument_to_a_value_of_the_block_is_an_error() {
     let outcome = block_outcome("remap to a value of the block", |op, rewriter| {
         let block = second_block(op);
-        let entry = op.try_downcast_op::<Function>().unwrap().borrow().entry_block();
-        let _ = entry;
         // The first operation of the block is the sink; build a constant in the block and remap
         // the argument to it.
         let first = block.borrow().body().front().as_pointer().unwrap();
@@ -533,6 +534,7 @@ fn wanted_remapping_an_argument_to_a_value_of_the_block_is_an_error() {
         Ok(true)
     });
     assert!(outcome.is_error(), "{outcome:?}");
+    assert!(outcome.text().contains("a value defined in the block itself"), "{outcome:?}");
 }
 
 // --- Materialization callbacks that misbehave ---------------------------------------------------
@@ -569,8 +571,7 @@ fn a_source_callback_that_gives_the_wrong_type_is_an_error() {
 
 /// A source callback that returns the result of the cast itself.
 #[test]
-#[ignore = "panics: AliasingViolationError (patterns/rewriter.rs:406)"]
-fn wanted_a_callback_that_answers_the_cast_result_is_an_error() {
+fn a_callback_that_answers_the_cast_result_is_an_error() {
     let outcome = callback_outcome("source callback answers the cast's own result", |context| {
         let mut converter = wide_converter(context);
         converter.add_source_materialization(|rewriter, inputs, _, span| {
@@ -584,6 +585,7 @@ fn wanted_a_callback_that_answers_the_cast_result_is_an_error() {
         converter
     });
     assert!(outcome.is_error(), "{outcome:?}");
+    assert!(outcome.text().contains("a result of the cast itself"), "{outcome:?}");
 }
 
 /// A pattern that erases the root of the conversion: an error from the rewriter.
