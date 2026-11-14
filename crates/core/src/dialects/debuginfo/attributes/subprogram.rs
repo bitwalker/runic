@@ -104,12 +104,12 @@ impl AttrPrinter for SubprogramAttr {
         }
 
         if !self.param_names.is_empty() {
-            let names = self
-                .param_names
-                .iter()
-                .map(|name| text(format!("\"{}\"", name.as_str().escape_default())))
-                .intersperse(const_text(", "))
-                .fold(Document::Empty, |acc, item| acc + item);
+            let names = join_balanced(
+                self.param_names
+                    .iter()
+                    .map(|name| text(format!("\"{}\"", name.as_str().escape_default()))),
+                || const_text(", "),
+            );
             let names = const_text("[") + names + const_text("]");
             *printer += const_text(", ");
             *printer += const_text("params") + const_text(" = ") + names;

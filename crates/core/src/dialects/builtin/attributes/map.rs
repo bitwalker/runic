@@ -93,10 +93,10 @@ where
     fn render(&self) -> crate::formatter::Document {
         use crate::formatter::*;
 
-        let entries = self.values.iter().fold(Document::Empty, |acc, (k, v)| match acc {
-            Document::Empty => k.render() + const_text(" = ") + v.render(),
-            _ => acc + const_text(", ") + k.render() + const_text(" = ") + v.render(),
-        });
+        let entries = join_balanced(
+            self.values.iter().map(|(k, v)| k.render() + const_text(" = ") + v.render()),
+            || const_text(", "),
+        );
         if self.values.is_empty() {
             const_text("{}")
         } else {

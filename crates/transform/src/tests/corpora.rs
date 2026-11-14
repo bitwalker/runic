@@ -834,6 +834,34 @@ fn every_case_prints_in_the_generic_form() {
     assert!(printed > 200, "{printed}");
 }
 
+/// In the generic form with [OpPrintingFlags::print_source_locations], as in the custom form, a
+/// space separates each operation's location from the type before it.
+///
+/// [OpPrintingFlags::print_source_locations]: runic_core::print::OpPrintingFlags::print_source_locations
+#[test]
+fn the_generic_form_separates_the_location() {
+    use runic_core::print::{AsmPrinter, OpPrinter, OpPrintingFlags};
+
+    let flags = OpPrintingFlags {
+        generic: true,
+        print_source_locations: true,
+        ..Default::default()
+    };
+    let mut locations = 0;
+    for case in corpus() {
+        let Ok((context, root)) = parse_case(&case, &case.text, false) else {
+            continue;
+        };
+        let mut printer = AsmPrinter::root(context.clone(), &flags);
+        OpPrinter::print(&*root.borrow(), &mut printer);
+        let generic = printer.finish().to_string();
+        let here = generic.matches("loc(\"").count();
+        assert_eq!(here, generic.matches(" loc(\"").count(), "{}:\n{generic}", case.name);
+        locations += here;
+    }
+    assert!(locations > 1000, "{locations}");
+}
+
 // ---------------------------------------------------------------------------------------------
 // Region terminators in the wrong place
 // ---------------------------------------------------------------------------------------------

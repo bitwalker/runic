@@ -6,7 +6,7 @@ use crate::{
     AsValueRange, Attribute, Block, Context, EntityList, FunctionType, Int, Location,
     NamedAttribute, OpSuccessorRange, SuccessorOperands, SymbolPath, Type, ValueRef,
     attributes::Marker,
-    formatter::Document,
+    formatter::{Document, concat_balanced},
     interner,
     types::{Aliased, TypeAliases, collect_rec_groups},
 };
@@ -26,7 +26,7 @@ use crate::{
 pub struct AsmPrinter<'a> {
     context: Rc<Context>,
     flags: &'a OpPrintingFlags,
-    document: Document,
+    document: Pieces,
     aliases: Rc<RefCell<TypeAliases>>,
     /// Whether [Self::finish] writes the print's recursion-group declarations.
     root: bool,
@@ -42,7 +42,7 @@ impl<'a> AsmPrinter<'a> {
         Self {
             context,
             flags,
-            document: Document::Empty,
+            document: Pieces::default(),
             aliases: Rc::default(),
             root: true,
         }
@@ -64,7 +64,7 @@ impl<'a> AsmPrinter<'a> {
         Self {
             context: self.context.clone(),
             flags: self.flags,
-            document: Document::Empty,
+            document: Pieces::default(),
             aliases: self.aliases.clone(),
             root: false,
         }
@@ -95,21 +95,21 @@ impl<'a> AsmPrinter<'a> {
     /// declarations in the middle. A root writes its declarations only in [Self::finish].
     #[inline]
     pub fn render(&mut self) -> Document {
-        core::mem::take(&mut self.document)
+        self.document.take()
     }
 
     /// Consume the printer, and render its state as a [Document].
     ///
     /// On a root printer (see [Self::root]) whose print refers to recursion groups, the document is
     /// [Self::rec_group_declarations], a blank line, then the printed text.
-    pub fn finish(self) -> Document {
+    pub fn finish(mut self) -> Document {
         use crate::formatter::nl;
 
         if !self.root || self.aliases.borrow().groups().is_empty() {
-            return self.document;
+            return self.document.take();
         }
         let declarations = self.rec_group_declarations();
-        declarations + nl() + nl() + self.document
+        declarations + nl() + nl() + self.document.take()
     }
 }
 
@@ -139,14 +139,15 @@ impl<'a> AsmPrinter<'a> {
         // delimited in the operand list, so an operation with more than one such group does not
         // read back with its groups.
         let operands: ValueRange<'static, 4> = if op.has_successors() {
-            let forwarded = op
-                .successors()
-                .all()
-                .iter()
-                .map(|successor| successor.successor_operand_group())
-                .collect::<crate::SmallVec<[usize; 4]>>();
+            // Indexed by group, so that a switch of many successors costs one pass over them.
+            let mut forwarded = alloc::vec![false; op.operands().num_groups()];
+            for successor in op.successors().all().iter() {
+                if let Some(group) = forwarded.get_mut(successor.successor_operand_group()) {
+                    *group = true;
+                }
+            }
             let mut operands = crate::SmallVec::<[ValueRef; 4]>::new();
-            for group in (0..op.operands().num_groups()).filter(|g| !forwarded.contains(g)) {
+            for group in (0..op.operands().num_groups()).filter(|&g| !forwarded[g]) {
                 operands.extend(
                     op.operands()
                         .group(group)
@@ -206,9 +207,10 @@ impl<'a> AsmPrinter<'a> {
             op.results().all().iter().map(|result| result.borrow().ty()),
         );
 
-        // Add source location if requested
+        // Add source location if requested, separated from the type as in the custom form
         if self.flags.print_source_locations {
             let loc = Location::from_span(op.span, context);
+            self.print_space();
             self.print_trailing_location_specifier(&loc);
         }
 
@@ -806,43 +808,31 @@ impl<'a> AsmPrinter<'a> {
     }
 }
 
+/// The pieces a printer has been given, in order. They are joined as a balanced tree when the
+/// document is taken ([AsmPrinter::render], [AsmPrinter::finish]), so that a printer which appends
+/// one piece per item of a long list does not build a document as deep as the list is long.
+#[derive(Default)]
+struct Pieces(alloc::vec::Vec<Document>);
+
+impl Pieces {
+    fn take(&mut self) -> Document {
+        let mut pieces = core::mem::take(&mut self.0);
+        concat_balanced(&mut pieces)
+    }
+}
+
+impl AddAssign<Document> for Pieces {
+    fn add_assign(&mut self, rhs: Document) {
+        if rhs.is_empty() {
+            return;
+        }
+        self.0.push(rhs);
+    }
+}
+
 impl AddAssign<Document> for AsmPrinter<'_> {
     fn add_assign(&mut self, rhs: Document) {
         self.document += rhs;
-    }
-}
-
-/// Joins `items` with `separator()` between them as a balanced tree, so that the depth of the
-/// document grows with the logarithm of the number of items rather than with the number.
-///
-/// The text is that of a left fold which starts with the first item and appends a separator and
-/// the next item to a non-empty result: a separator follows only a non-empty part.
-fn join_balanced(
-    items: impl IntoIterator<Item = Document>,
-    mut separator: impl FnMut() -> Document,
-) -> Document {
-    let mut parts = alloc::vec::Vec::new();
-    let mut has_content = false;
-    for item in items {
-        if has_content {
-            parts.push(separator());
-        }
-        has_content |= !item.is_empty();
-        parts.push(item);
-    }
-    concat_balanced(&mut parts)
-}
-
-/// Concatenates `parts` as a balanced tree, leaving them empty, so that a long list does not make
-/// a deep document.
-fn concat_balanced(parts: &mut [Document]) -> Document {
-    match parts {
-        [] => Document::Empty,
-        [part] => core::mem::take(part),
-        _ => {
-            let (left, right) = parts.split_at_mut(parts.len() / 2);
-            concat_balanced(left) + concat_balanced(right)
-        }
     }
 }
 

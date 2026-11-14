@@ -27,7 +27,6 @@
 #![feature(extend_one)]
 #![feature(extend_one_unchecked)]
 #![feature(iter_advance_by)]
-#![feature(iter_intersperse)]
 #![feature(iter_next_chunk)]
 #![feature(iter_collect_into)]
 #![feature(trusted_len)]

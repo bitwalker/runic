@@ -90,3 +90,37 @@ impl<T: fmt::Display> fmt::Debug for DisplayOptional<'_, T> {
         fmt::Display::fmt(self, f)
     }
 }
+
+/// Joins `items` with `separator()` between them as a balanced tree, so that the depth of the
+/// document grows with the logarithm of the number of items rather than with the number.
+///
+/// The text is that of a left fold which starts with the first item and appends a separator and
+/// the next item to a non-empty result: a separator follows only a non-empty part.
+pub fn join_balanced(
+    items: impl IntoIterator<Item = Document>,
+    mut separator: impl FnMut() -> Document,
+) -> Document {
+    let mut parts = alloc::vec::Vec::new();
+    let mut has_content = false;
+    for item in items {
+        if has_content {
+            parts.push(separator());
+        }
+        has_content |= !item.is_empty();
+        parts.push(item);
+    }
+    concat_balanced(&mut parts)
+}
+
+/// Concatenates `parts` as a balanced tree, leaving them empty, so that a long list does not make
+/// a deep document.
+pub fn concat_balanced(parts: &mut [Document]) -> Document {
+    match parts {
+        [] => Document::Empty,
+        [part] => core::mem::take(part),
+        _ => {
+            let (left, right) = parts.split_at_mut(parts.len() / 2);
+            concat_balanced(left) + concat_balanced(right)
+        }
+    }
+}

@@ -421,3 +421,4 @@ mod local2reg_model;
 mod nesting;
 mod printing;
 mod registry;
+mod wide;

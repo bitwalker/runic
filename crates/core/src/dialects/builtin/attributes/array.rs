@@ -148,10 +148,7 @@ where
     fn render(&self) -> crate::formatter::Document {
         use crate::formatter::*;
 
-        let entries = self.iter().fold(Document::Empty, |acc, v| match acc {
-            Document::Empty => v.render(),
-            _ => acc + const_text(", ") + v.render(),
-        });
+        let entries = join_balanced(self.iter().map(|v| v.render()), || const_text(", "));
         if self.is_empty() {
             const_text("[]")
         } else {
