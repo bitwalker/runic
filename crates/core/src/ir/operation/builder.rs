@@ -59,7 +59,12 @@ where
         self.op.borrow_mut().set_attribute(name.into(), attr)
     }
 
-    /// Set property `name` of this op, which is being built, to its first value
+    /// Set property `name` of this op, which is being built, to its first value: the property's
+    /// field holds no value yet, so nothing is read from it and nothing is unlinked. A property
+    /// of a built operation is replaced with [super::Operation::set_property].
+    ///
+    /// Public for the `create` that `#[operation]` derives and for [crate::Builder].
+    #[doc(hidden)]
     #[inline]
     pub fn with_property_boxed(
         &mut self,

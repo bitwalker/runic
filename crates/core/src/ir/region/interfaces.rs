@@ -310,7 +310,10 @@ fn verify_region_branch_terminator_operands(
                 parent_name
             )),
             labels: [
-                primary(op.span(), alloc::format!("this terminator states no successor under `{parent_name}`")),
+                primary(
+                    op.span(),
+                    alloc::format!("this terminator states no successor under `{parent_name}`")
+                ),
             ],
         ));
     }

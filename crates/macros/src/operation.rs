@@ -1454,7 +1454,11 @@ impl quote::ToTokens for OpAttrFns<'_> {
             let set_attr_doc = syn::Lit::Str(syn::LitStr::new(
                 &format!(
                     " Set the `{attr}` attribute to a value, or to an attribute that already \
-                     exists ([::runic_core::ReadyAttr])."
+                     exists ([::runic_core::ReadyAttr]).\n\n The old value is not read, because \
+                     this setter also gives an operation being allocated its first value: a \
+                     symbol reference the old value held stays linked. A property of a built \
+                     operation that may hold a symbol reference is replaced with \
+                     [::runic_core::Operation::set_property], which unlinks it."
                 ),
                 attr.span(),
             ));

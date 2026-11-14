@@ -955,8 +955,9 @@ impl Operation {
     /// Set the intrinsic attribute (i.e. property) `name` with `value`.
     ///
     /// Every symbol reference the old value holds, at any depth, whose use belongs to this
-    /// operation and that `value` does not hold (the same attribute, by handle) is unlinked from
-    /// its symbol, as erasing the operation would. The property must hold a value already, as
+    /// operation and that the operation no longer holds (by handle, in any property or entry,
+    /// `value` included) is unlinked from its symbol, as erasing the operation would. The
+    /// property must hold a value already, as
     /// every property of a built operation does; the builders set the first value without reading
     /// the field.
     ///
@@ -974,7 +975,7 @@ impl Operation {
         // SAFETY: the property of a built operation holds a valid attribute
         let old = unsafe { (prop.get_raw)(self.container(), prop) };
         unsafe { (prop.try_from)(self.container().cast_mut(), prop, value) }?;
-        self.unlink_replaced_symbol_refs(&old, Some(&value));
+        self.unlink_released_symbol_refs(&old);
         Ok(())
     }
 
@@ -1049,69 +1050,72 @@ impl Operation {
     /// Set the attribute `name` with `value` for this function.
     ///
     /// Every symbol reference the attribute it replaces holds, at any depth, whose use belongs to
-    /// this operation and that `value` does not hold (the same attribute, by handle) is unlinked
-    /// from its symbol, as erasing the operation would.
+    /// this operation and that the operation no longer holds (by handle, in any property or
+    /// entry, `value` included) is unlinked from its symbol, as erasing the operation would.
     pub fn set_attribute(&mut self, name: impl Into<interner::Symbol>, value: AttributeRef) {
         let name = name.into();
-        if let Some(old) = self.attrs.find(&name).get().map(|old| old.as_named_attribute().value) {
-            self.unlink_replaced_symbol_refs(&old, Some(&value));
-        }
+        let old = self.attrs.find(&name).get().map(|old| old.as_named_attribute().value);
         let attr = OpAttribute::from(NamedAttribute::new(name, value));
         let attr = self.context().alloc_map_item(attr);
-        if self.attrs.find(&name).is_null() {
+        if old.is_none() {
             self.attrs.insert(attr);
         } else {
             let mut existing = self.attrs.find_mut(&name);
             existing.replace_with(attr).expect("attribute cursor unexpectedly became null");
+        }
+        if let Some(old) = old {
+            self.unlink_released_symbol_refs(&old);
         }
     }
 
     /// Remove any attribute with the given name from this function
     ///
     /// Every symbol reference the removed attribute holds, at any depth, whose use belongs to this
-    /// operation is unlinked from its symbol, as erasing the operation would.
+    /// operation and that the operation no longer holds (by handle, in any property or entry) is
+    /// unlinked from its symbol, as erasing the operation would.
     pub fn remove_attribute(&mut self, name: impl Into<interner::Symbol>) {
         let name = name.into();
-        if let Some(old) = self.attrs.find(&name).get().map(|old| old.as_named_attribute().value) {
-            self.unlink_replaced_symbol_refs(&old, None);
-        }
+        let old = self.attrs.find(&name).get().map(|old| old.as_named_attribute().value);
         self.attrs.find_mut(&name).remove();
+        if let Some(old) = old {
+            self.unlink_released_symbol_refs(&old);
+        }
     }
 
     /// Unlinks the symbol references `old` holds, at any depth, whose use belongs to this
-    /// operation and names that reference, except those `new` holds (by handle): `old` is being
-    /// replaced by `new`, or removed (`None`).
+    /// operation and names that reference, except those the operation still holds (by handle, at
+    /// any depth of any property or dictionary entry): `old` has just been replaced or removed.
     ///
     /// A use that belongs to another operation (`old` is shared) or names another attribute is
-    /// left alone.
-    fn unlink_replaced_symbol_refs(&mut self, old: &AttributeRef, new: Option<&AttributeRef>) {
+    /// left alone. When `old` holds no such reference, the operation is not walked.
+    fn unlink_released_symbol_refs(&mut self, old: &AttributeRef) {
         use crate::walk_nested_attributes;
 
-        let references = |attr: &AttributeRef| {
-            let mut found = SmallVec::<[UnsafeIntrusiveEntityRef<SymbolRefAttr>; 2]>::new();
-            let _ = walk_nested_attributes(attr, &mut |attr| {
-                if let Ok(reference) = attr.try_downcast_attr::<SymbolRefAttr>() {
-                    found.push(reference);
-                }
-                WalkResult::Continue(())
-            });
-            found
-        };
-        let kept = new.map(references).unwrap_or_default();
         let owner = self.as_operation_ref();
-        let uses = references(old)
-            .into_iter()
-            .filter(|reference| !kept.contains(reference))
-            .filter_map(|reference| {
-                let user = reference.borrow().try_user()?;
-                let owned = {
-                    let symbol_use = user.borrow();
-                    symbol_use.owner == owner && symbol_use.attr == reference
-                };
-                owned.then_some(user)
-            })
-            .collect::<SmallVec<[crate::SymbolUseRef; 2]>>();
-        for symbol_use in uses {
+        let mut released = SmallVec::<[_; 2]>::new();
+        let _ = walk_nested_attributes(old, &mut |attr| {
+            if let Ok(reference) = attr.try_downcast_attr::<SymbolRefAttr>()
+                && let Some(user) = reference.borrow().try_user()
+            {
+                let symbol_use = user.borrow();
+                if symbol_use.owner == owner && symbol_use.attr == reference {
+                    released.push((reference, user));
+                }
+            }
+            WalkResult::Continue(())
+        });
+        if released.is_empty() {
+            return;
+        }
+        let _ = self.walk_attributes(&mut |_, attr| {
+            if !released.is_empty()
+                && let Ok(reference) = attr.try_downcast_attr::<SymbolRefAttr>()
+            {
+                released.retain(|(released, _)| *released != reference);
+            }
+            WalkResult::Continue(())
+        });
+        for (_, symbol_use) in released {
             self.unlink_symbol_use(symbol_use);
         }
     }

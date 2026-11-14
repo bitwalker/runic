@@ -547,10 +547,10 @@ fn replacements(op: &Operation, rewrite: &mut ElementRewrite<'_>) -> Result<Repl
 /// keeps its handle where it is held directly by the operation or by an attribute that is kept,
 /// and the identity map changes nothing and builds no attribute. The entries of a rebuilt list
 /// are copies, changed or not; a symbol reference copied this way is given a use of its own,
-/// linked to the symbol the original was linked to, and the original's use is unlinked when the
-/// attribute holding it is replaced. An attribute held twice by the operation is replaced by one
-/// new attribute. Because the result type and a type the operation keeps beside it in a property
-/// (a hidden `ty`, say) are mapped by one map, they change together.
+/// linked to the symbol the original was linked to, and the original's use is unlinked once the
+/// operation no longer holds the original. An attribute held twice by the operation is replaced by
+/// one new attribute. Because the result type and a type the operation keeps beside it in a
+/// property (a hidden `ty`, say) are mapped by one map, they change together.
 ///
 /// What an operation ties to the shape of a type is not revalued: under a map that changes the
 /// fields of an aggregate, the index paths of `mem.gep` and `mem.offsetof` keep their numbers and
@@ -1470,6 +1470,112 @@ mod nested_reference_tests {
 
         owner.borrow_mut().as_operation_mut().erase();
         assert_eq!((uses(g), uses(h)), (0, 0));
+    }
+
+    /// `@owner` holding one reference handle twice: in `refs = [@g, type i64]` and directly at
+    /// `direct`, then rewritten `i64 -> i32`, which rebuilds `refs`. Returns the test, `@owner`,
+    /// `@g` and the reference.
+    fn rebuilt_with_reference_held_twice()
+    -> (Test, FunctionRef, FunctionRef, UnsafeIntrusiveEntityRef<SymbolRefAttr>) {
+        let mut test = Test::named("elements").in_module("m");
+        let mut owner = test.define_function("owner", &[], &[]);
+        let g = test.define_function("g", &[], &[]);
+        let cx = test.context_rc();
+        let reference = linked(&cx, owner, g);
+        let ty = cx.create_attribute::<TypeAttr, _>(cx.i64()).as_attribute_ref();
+        let refs = list(&cx, [reference.as_attribute_ref(), ty]);
+        {
+            let mut owner = owner.borrow_mut();
+            owner.as_operation_mut().set_attribute("refs", refs);
+            owner.as_operation_mut().set_attribute("direct", reference.as_attribute_ref());
+        }
+        owner.borrow().as_operation().verify().expect("verifies before");
+        assert_eq!(uses(g), 1);
+
+        let mut rewrite = ElementRewrite::types(TypeMapper::new(&cx, i64_to_i32));
+        assert!(replace_elements_in(owner.borrow_mut().as_operation_mut(), &mut rewrite).unwrap());
+        drop(rewrite);
+        (test, owner, g, reference)
+    }
+
+    /// The same reference handle held directly and in a list the rewrite rebuilds: the reference
+    /// still held directly stays linked beside the copy's own use.
+    #[test]
+    fn rr_a_reference_held_twice_stays_linked_after_a_rebuild() {
+        let (_test, owner, g, reference) = rebuilt_with_reference_held_twice();
+        let direct_user = reference.borrow().try_user().unwrap();
+        assert!(direct_user.is_linked(), "the reference still held at `direct` was unlinked");
+        assert_eq!(uses(g), 2, "the copy and the kept reference");
+        if let Err(err) = owner.borrow().as_operation().verify() {
+            panic!("the rewritten operation does not verify: {err:?}");
+        }
+    }
+
+    /// The same reference handle held at two dictionary entries: replacing one entry does not
+    /// unlink the reference the other still holds.
+    #[test]
+    fn rr_replacing_one_of_two_holders_keeps_the_reference_linked() {
+        let mut test = Test::named("elements").in_module("m");
+        let mut owner = test.define_function("owner", &[], &[]);
+        let g = test.define_function("g", &[], &[]);
+        let cx = test.context_rc();
+        let reference = linked(&cx, owner, g).as_attribute_ref();
+        {
+            let mut owner = owner.borrow_mut();
+            owner.as_operation_mut().set_attribute("a", reference);
+            owner.as_operation_mut().set_attribute("b", list(&cx, [reference]));
+        }
+        owner.borrow().as_operation().verify().expect("verifies before");
+        let other = cx.create_attribute::<TypeAttr, _>(cx.i64()).as_attribute_ref();
+        owner.borrow_mut().as_operation_mut().set_attribute("b", other);
+        assert_eq!(uses(g), 1, "`a` still holds the reference");
+        if let Err(err) = owner.borrow().as_operation().verify() {
+            panic!("the operation does not verify after the replacement: {err:?}");
+        }
+
+        // removing the other holder unlinks it
+        owner.borrow_mut().as_operation_mut().remove_attribute("a");
+        assert_eq!(uses(g), 0, "nothing holds the reference");
+    }
+
+    /// A rename after the rebuild renames the reference still held directly.
+    #[test]
+    fn rr_rename_after_rebuild_with_reference_held_twice() {
+        let (test, owner, g, reference) = rebuilt_with_reference_held_twice();
+        let mut module = test.module();
+        module
+            .borrow_mut()
+            .symbol_manager_mut()
+            .rename_symbol(g.as_symbol_ref(), SymbolName::intern("renamed"))
+            .expect("renamed");
+        let direct = format!("{}", reference.borrow().path());
+        assert!(direct.contains("renamed"), "the directly held reference names `{direct}`");
+        owner.borrow().as_operation().verify().expect("the operation verifies");
+    }
+
+    /// A list shared by two operations: the one that does not own the use is rejected; rewriting
+    /// it gives it its own use and leaves the owner's alone, and both verify.
+    #[test]
+    fn rr_a_list_shared_by_two_operations() {
+        let mut test = Test::named("elements").in_module("m");
+        let mut a = test.define_function("a", &[], &[]);
+        let mut b = test.define_function("b", &[], &[]);
+        let g = test.define_function("g", &[], &[]);
+        let cx = test.context_rc();
+        let reference = linked(&cx, a, g);
+        let ty = cx.create_attribute::<TypeAttr, _>(cx.i64()).as_attribute_ref();
+        let refs = list(&cx, [reference.as_attribute_ref(), ty]);
+        a.borrow_mut().as_operation_mut().set_attribute("refs", refs);
+        b.borrow_mut().as_operation_mut().set_attribute("refs", refs);
+        a.borrow().as_operation().verify().expect("the owner verifies");
+        b.borrow().as_operation().verify().expect_err("the other is rejected");
+
+        let mut rewrite = ElementRewrite::types(TypeMapper::new(&cx, i64_to_i32));
+        assert!(replace_elements_in(b.borrow_mut().as_operation_mut(), &mut rewrite).unwrap());
+        drop(rewrite);
+        assert_eq!(uses(g), 2);
+        a.borrow().as_operation().verify().expect("a still verifies");
+        b.borrow().as_operation().verify().expect("b verifies after its rewrite");
     }
 }
 
