@@ -21,7 +21,9 @@ pub use self::{
     boolean::BoolAttr,
     bytes::{Bytes, BytesAttr},
     data_layout::DataLayoutAttr,
-    effects::{DeclaredEffects, DeclaredEffectsAttr, MemoryEffectDescriptor},
+    effects::{
+        DeclaredEffects, DeclaredEffectsAttr, MemoryEffectDescriptor, remap_declared_effects,
+    },
     integer::*,
     list::{List, ListAttr},
     local_variable::{LocalVariable, LocalVariableAttr},

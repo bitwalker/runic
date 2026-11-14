@@ -214,10 +214,10 @@ pub fn random_declared_effects(rng: &mut Rng, params: usize, results: usize) -> 
                 let effect = rng.pick(&EFFECTS);
                 match rng.below(3) {
                     0 if params > 0 => {
-                        MemoryEffectDescriptor::on_argument(effect, rng.below(params as u64) as u8)
+                        MemoryEffectDescriptor::on_argument(effect, rng.below(params as u64) as u32)
                     }
                     1 if results > 0 => {
-                        MemoryEffectDescriptor::on_result(effect, rng.below(results as u64) as u8)
+                        MemoryEffectDescriptor::on_result(effect, rng.below(results as u64) as u32)
                     }
                     _ => MemoryEffectDescriptor::new(effect),
                 }

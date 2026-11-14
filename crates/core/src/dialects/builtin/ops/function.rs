@@ -527,14 +527,14 @@ impl crate::Verify<dyn CallableSymbol> for Function {
         if let Some(effects) = self.get_memory_effects().known() {
             for effect in effects {
                 let target = match (effect.argument, effect.result) {
-                    (Some(index), None) if usize::from(index) >= signature.params().len() => {
+                    (Some(index), None) if index as usize >= signature.params().len() => {
                         Some(format!(
                             "the declared effect `{effect}` names argument {index}, but the \
                              function has {} parameter(s)",
                             signature.params().len()
                         ))
                     }
-                    (None, Some(index)) if usize::from(index) >= signature.results().len() => {
+                    (None, Some(index)) if index as usize >= signature.results().len() => {
                         Some(format!(
                             "the declared effect `{effect}` names result {index}, but the \
                              function has {} result(s)",

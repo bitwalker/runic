@@ -1,4 +1,4 @@
-use core::fmt;
+use core::{fmt, ops::Range};
 
 use smallvec::SmallVec;
 
@@ -16,13 +16,13 @@ use crate::{
 /// One memory effect a callable declares, optionally on one of its arguments or results.
 ///
 /// Text: `read`, `write`, `allocate` or `free`, optionally followed by `(arg N)` or `(result N)`.
-/// At most one of `argument` and `result` is set. An index is at most 255: a callable whose
-/// effects fall on a later argument or result cannot state them per value.
+/// At most one of `argument` and `result` is set. A descriptor with neither is an effect on no
+/// value in particular: it applies to the resource in general, and is what `read` alone means.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, AttributeComponent)]
 pub struct MemoryEffectDescriptor {
     pub effect: MemoryEffect,
-    pub argument: Option<u8>,
-    pub result: Option<u8>,
+    pub argument: Option<u32>,
+    pub result: Option<u32>,
 }
 
 impl MemoryEffectDescriptor {
@@ -36,7 +36,7 @@ impl MemoryEffectDescriptor {
     }
 
     /// `effect` on argument `index`
-    pub const fn on_argument(effect: MemoryEffect, index: u8) -> Self {
+    pub const fn on_argument(effect: MemoryEffect, index: u32) -> Self {
         Self {
             effect,
             argument: Some(index),
@@ -45,7 +45,7 @@ impl MemoryEffectDescriptor {
     }
 
     /// `effect` on result `index`
-    pub const fn on_result(effect: MemoryEffect, index: u8) -> Self {
+    pub const fn on_result(effect: MemoryEffect, index: u32) -> Self {
         Self {
             effect,
             argument: None,
@@ -114,6 +114,74 @@ impl DeclaredEffects {
             Self::Known(effects) => Some(effects.as_slice()),
         }
     }
+}
+
+/// The declared effects of a signature whose parameters and results changed: `params[i]` and
+/// `results[j]` are the new indices old parameter `i` and old result `j` became. An effect on a
+/// parameter or result that became several is repeated on each, in order; on one that became none
+/// it is an effect on no value. `Unknown` stays `Unknown`.
+///
+/// An effect on no value is a descriptor with neither `argument` nor `result`: it applies to the
+/// resource in general, and it is left as it is. An effect the remap makes equal to one already
+/// present is kept once, at its first position.
+///
+/// Every index a descriptor names must be in `params` (for an argument) or `results` (for a
+/// result): that is a precondition, checked with a `debug_assert!`. A function's verifier keeps
+/// its declared effects within its signature, so a caller that remaps a function's own effects
+/// with that signature's ranges meets it. In a build without debug assertions, an effect that
+/// names an index outside the ranges is treated as an effect on no value, which claims at least
+/// as much as the effect it replaces.
+pub fn remap_declared_effects(
+    effects: &DeclaredEffects,
+    params: &[Range<u32>],
+    results: &[Range<u32>],
+) -> DeclaredEffects {
+    let DeclaredEffects::Known(effects) = effects else {
+        return DeclaredEffects::Unknown;
+    };
+    let mut remapped = SmallVec::<[MemoryEffectDescriptor; 2]>::new();
+    let mut push = |descriptor: MemoryEffectDescriptor| {
+        if !remapped.contains(&descriptor) {
+            remapped.push(descriptor);
+        }
+    };
+    for descriptor in effects {
+        let effect = descriptor.effect;
+        match (descriptor.argument, descriptor.result) {
+            (Some(index), _) => match params.get(index as usize) {
+                Some(new) if !new.is_empty() => {
+                    new.clone().for_each(|i| push(MemoryEffectDescriptor::on_argument(effect, i)))
+                }
+                Some(_) => push(MemoryEffectDescriptor::new(effect)),
+                None => {
+                    debug_assert!(
+                        false,
+                        "the effect `{descriptor}` names argument {index}, but only {} \
+                         parameter(s) were remapped",
+                        params.len()
+                    );
+                    push(MemoryEffectDescriptor::new(effect))
+                }
+            },
+            (None, Some(index)) => match results.get(index as usize) {
+                Some(new) if !new.is_empty() => {
+                    new.clone().for_each(|i| push(MemoryEffectDescriptor::on_result(effect, i)))
+                }
+                Some(_) => push(MemoryEffectDescriptor::new(effect)),
+                None => {
+                    debug_assert!(
+                        false,
+                        "the effect `{descriptor}` names result {index}, but only {} result(s) \
+                         were remapped",
+                        results.len()
+                    );
+                    push(MemoryEffectDescriptor::new(effect))
+                }
+            },
+            (None, None) => push(MemoryEffectDescriptor::new(effect)),
+        }
+    }
+    DeclaredEffects::Known(remapped)
 }
 
 impl<const N: usize> From<[MemoryEffectDescriptor; N]> for DeclaredEffects {
@@ -252,7 +320,7 @@ pub(crate) fn parse_effect_list(
         let mut descriptor = MemoryEffectDescriptor::new(effect);
         if parser.token_stream_mut().next_if_eq(Token::Lparen)? {
             let target = parser.parse_keyword_from(&TARGETS)?;
-            let index = parser.parse_decimal_integer::<u8>()?.into_inner();
+            let index = parser.parse_decimal_integer::<u32>()?.into_inner();
             parser.parse_rparen()?;
             if target.as_str() == "arg" {
                 descriptor.argument = Some(index);
@@ -266,4 +334,121 @@ pub(crate) fn parse_effect_list(
         }
     }
     Ok(effects)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const R: MemoryEffect = MemoryEffect::Read;
+    const W: MemoryEffect = MemoryEffect::Write;
+    const A: MemoryEffect = MemoryEffect::Allocate;
+
+    /// The range `start..end`, built by a call so that a list of one range is not an array of
+    /// the one range's length
+    fn r(start: u32, end: u32) -> Range<u32> {
+        start..end
+    }
+
+    fn arg(effect: MemoryEffect, index: u32) -> MemoryEffectDescriptor {
+        MemoryEffectDescriptor::on_argument(effect, index)
+    }
+
+    fn res(effect: MemoryEffect, index: u32) -> MemoryEffectDescriptor {
+        MemoryEffectDescriptor::on_result(effect, index)
+    }
+
+    #[test]
+    fn identity_ranges_give_an_equal_value() {
+        let effects = DeclaredEffects::from([
+            MemoryEffectDescriptor::new(R),
+            arg(W, 1),
+            res(A, 0),
+            arg(R, 0),
+        ]);
+        assert_eq!(remap_declared_effects(&effects, &[0..1, 1..2], &[r(0, 1)]), effects);
+    }
+
+    #[test]
+    fn a_split_parameter_repeats_its_effect_in_order() {
+        let effects = DeclaredEffects::from([arg(R, 0), res(A, 0)]);
+        let remapped = remap_declared_effects(&effects, &[r(0, 3)], &[r(0, 2)]);
+        assert_eq!(
+            remapped,
+            DeclaredEffects::from([arg(R, 0), arg(R, 1), arg(R, 2), res(A, 0), res(A, 1)])
+        );
+    }
+
+    #[test]
+    fn a_dropped_parameter_or_result_becomes_an_effect_on_no_value() {
+        let effects = DeclaredEffects::from([arg(R, 0), res(A, 0), arg(W, 1)]);
+        let remapped = remap_declared_effects(&effects, &[0..0, 0..1], &[r(0, 0)]);
+        assert_eq!(
+            remapped,
+            DeclaredEffects::from([
+                MemoryEffectDescriptor::new(R),
+                MemoryEffectDescriptor::new(A),
+                arg(W, 0),
+            ])
+        );
+    }
+
+    #[test]
+    fn later_indices_shift() {
+        let effects = DeclaredEffects::from([arg(R, 2), res(W, 1)]);
+        let remapped = remap_declared_effects(&effects, &[0..2, 2..3, 3..4], &[0..1, 1..4]);
+        assert_eq!(remapped, DeclaredEffects::from([arg(R, 3), res(W, 1), res(W, 2), res(W, 3)]));
+    }
+
+    #[test]
+    fn duplicates_the_remap_produces_are_kept_once_in_first_occurrence_order() {
+        // both parameters became the same value, and a dropped one makes two effects on no value
+        let effects = DeclaredEffects::from([
+            arg(R, 1),
+            arg(R, 0),
+            arg(W, 2),
+            arg(W, 3),
+            MemoryEffectDescriptor::new(W),
+        ]);
+        let remapped = remap_declared_effects(&effects, &[0..2, 0..2, 2..2, 2..2], &[]);
+        assert_eq!(
+            remapped,
+            DeclaredEffects::from([arg(R, 0), arg(R, 1), MemoryEffectDescriptor::new(W)])
+        );
+    }
+
+    #[test]
+    fn unknown_and_empty_effects_are_unchanged() {
+        assert_eq!(
+            remap_declared_effects(&DeclaredEffects::Unknown, &[r(0, 2)], &[r(0, 1)]),
+            DeclaredEffects::Unknown
+        );
+        assert_eq!(
+            remap_declared_effects(&DeclaredEffects::none(), &[r(0, 2)], &[r(0, 1)]),
+            DeclaredEffects::none()
+        );
+    }
+
+    #[test]
+    fn an_effect_on_no_value_stays_on_no_value() {
+        let effects = DeclaredEffects::from([MemoryEffectDescriptor::new(R)]);
+        assert_eq!(remap_declared_effects(&effects, &[r(0, 3)], &[r(0, 3)]), effects);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "names argument 1")]
+    fn an_index_outside_the_ranges_is_a_caller_error_in_debug_builds() {
+        remap_declared_effects(&DeclaredEffects::from([arg(R, 1)]), &[r(0, 1)], &[]);
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn an_index_outside_the_ranges_is_an_effect_on_no_value_in_release_builds() {
+        let effects = DeclaredEffects::from([arg(R, 1), res(W, 0)]);
+        assert_eq!(
+            remap_declared_effects(&effects, &[r(0, 1)], &[]),
+            DeclaredEffects::from([MemoryEffectDescriptor::new(R), MemoryEffectDescriptor::new(W)])
+        );
+    }
 }

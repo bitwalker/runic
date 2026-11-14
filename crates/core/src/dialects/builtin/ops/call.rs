@@ -150,11 +150,11 @@ impl EffectOpInterface<MemoryEffect> for Call {
             // The callee's verifier keeps the indices within its signature; a call whose operands
             // or results disagree with it gets an effect on no value rather than a panic.
             if let Some(index) = descriptor.argument
-                && let Some(operand) = arguments.get(usize::from(index))
+                && let Some(operand) = arguments.get(index as usize)
             {
                 EffectInstance::new_for_value(effect, *operand)
             } else if let Some(index) = descriptor.result
-                && let Some(result) = results.get(usize::from(index))
+                && let Some(result) = results.get(index as usize)
             {
                 EffectInstance::new_for_value(effect, *result)
             } else {
@@ -1374,14 +1374,10 @@ builtin.module public @m {
                 .map(|descriptor| {
                     let value = match (descriptor.argument, descriptor.result) {
                         (Some(index), None) => Some(
-                            call.as_operation().operands()[usize::from(index)]
-                                .borrow()
-                                .as_value_ref(),
+                            call.as_operation().operands()[index as usize].borrow().as_value_ref(),
                         ),
                         (None, Some(index)) => Some(
-                            call.as_operation().results()[usize::from(index)]
-                                .borrow()
-                                .as_value_ref(),
+                            call.as_operation().results()[index as usize].borrow().as_value_ref(),
                         ),
                         _ => None,
                     };

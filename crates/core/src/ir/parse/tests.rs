@@ -4800,6 +4800,32 @@ fn declared_effects_and_locals_round_trip_on_declarations_and_definitions() {
     assert_eq!(locals[..], [test.context().i32(), test.context().i64()]);
 }
 
+/// An effect's index is not limited to a byte: `read(arg 300)` on a function of 301 parameters
+/// parses, verifies and round-trips, on a declaration and on a definition.
+#[test]
+fn a_declared_effect_on_a_parameter_beyond_255_round_trips() {
+    use crate::{
+        CallableOpInterface,
+        dialects::builtin::attributes::{DeclaredEffects, MemoryEffectDescriptor},
+        effects::MemoryEffect,
+    };
+
+    let header = "builtin.function public extern(\"C\")";
+    let types = ["i32"; 301];
+    let declaration = format!("{header} @f({}) effects(read(arg 300));", types.join(", "));
+    let names = (0..301).map(|i| format!("%{i}: i32")).collect::<Vec<_>>().join(", ");
+    let definition =
+        format!("{header} @f({names}) effects(read(arg 300)) {{\n    builtin.ret;\n}};");
+    let test = ParserTest::default();
+    for source in [declaration, definition] {
+        let function = assert_function_round_trips(&test, &source, &source);
+        assert_eq!(
+            function.borrow().declared_effects(),
+            DeclaredEffects::from([MemoryEffectDescriptor::on_argument(MemoryEffect::Read, 300)]),
+        );
+    }
+}
+
 /// A declaration has no body, so it has no locals: one that states `locals(..)` does not verify.
 #[test]
 fn a_declaration_with_locals_does_not_verify() {
@@ -4867,12 +4893,13 @@ fn declared_effects_attributes_round_trip_through_text() -> TestResult {
         ("#builtin.declared_effects<unknown>", DeclaredEffects::Unknown),
         ("#builtin.declared_effects<>", DeclaredEffects::none()),
         (
-            "#builtin.declared_effects<read, write(arg 0), allocate(result 0), free(arg 255)>",
+            "#builtin.declared_effects<read, write(arg 0), allocate(result 0), free(arg \
+             4294967295)>",
             DeclaredEffects::from([
                 MemoryEffectDescriptor::new(MemoryEffect::Read),
                 MemoryEffectDescriptor::on_argument(MemoryEffect::Write, 0),
                 MemoryEffectDescriptor::on_result(MemoryEffect::Allocate, 0),
-                MemoryEffectDescriptor::on_argument(MemoryEffect::Free, 255),
+                MemoryEffectDescriptor::on_argument(MemoryEffect::Free, u32::MAX),
             ]),
         ),
     ] {
@@ -4889,7 +4916,7 @@ fn declared_effects_attributes_round_trip_through_text() -> TestResult {
         "#builtin.declared_effects<read,>",
         "#builtin.declared_effects<touch>",
         "#builtin.declared_effects<read(arg)>",
-        "#builtin.declared_effects<read(arg 256)>",
+        "#builtin.declared_effects<read(arg 4294967296)>",
         "#builtin.declared_effects<read(param 0)>",
         "#builtin.declared_effects<unknown, read>",
     ] {
