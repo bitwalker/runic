@@ -1,6 +1,6 @@
 //! Single decisions of the dialect, each stated by one test: how a typed load is spelled, what a
 //! gep needs under a data layout, how large a path step may be, which copies of length zero are
-//! erased and which loads merge.
+//! erased, which loads merge, and that a forward-referenced address is a diagnostic.
 
 use alloc::{
     boxed::Box,
@@ -236,4 +236,30 @@ fn load_merging_decisions() {
     );
     assert_eq!(text.matches("mem.load").count(), 1, "{text}");
     assert_eq!(text.matches("mem.alloca").count(), 1, "{text}");
+}
+
+/// An operand used before its definition (legal in a block no path reaches) has no type when its
+/// user is built, so an operation whose constraint or inference needs the type is a diagnostic,
+/// never a panic: a cycle of casts or geps in dead code cannot be written.
+#[test]
+fn a_forward_referenced_address_is_a_diagnostic() {
+    for body in [
+        "    builtin.ret;\n^dead:\n    %a = mem.ptrcast %b : ptr<i8>;\n    %b = mem.ptrcast %a : \
+         ptr<i32>;\n    cf.br ^dead;",
+        "    builtin.ret;\n^dead:\n    %a = mem.gep %a, [0];\n    cf.br ^dead;",
+        "    builtin.ret;\n^dead:\n    %v = mem.load %a;\n    %a = mem.alloca i32;\n    cf.br \
+         ^dead;",
+    ] {
+        let context = alloc::rc::Rc::new(Context::default());
+        context.get_or_register_dialect::<runic_dialect_cf::ControlFlowDialect>();
+        let text = format!(
+            "builtin.module public @m {{\nbuiltin.function public extern(\"C\") @f() \
+             {{\n{body}\n}};\n}};"
+        );
+        let result = parse::parse::<Module>(ParserConfig::new(context.clone()), "mem", text)
+            .into_result()
+            .map(|_| ())
+            .map_err(|err| describe(&err));
+        assert!(result.is_err(), "{body}");
+    }
 }

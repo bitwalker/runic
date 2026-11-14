@@ -2325,8 +2325,8 @@ fn random_path(rng: &mut Rng, ty: Type) -> Vec<u32> {
     path
 }
 
-/// For 500 random pairs of a type with a layout and a path, valid and invalid, `element_at`
-/// selects the type `offset_of` selects, or fails as it does.
+/// Guards `element_at` and `offset_of`, which share code, against drifting apart: on 500 random
+/// pairs of a type with a layout and a path, valid and invalid, both select one type or fail alike.
 #[test]
 fn element_at_agrees_with_offset_of_on_random_paths() {
     const PAIRS: usize = 500;

@@ -370,4 +370,19 @@ fn a_switch_with_extreme_keys_lifts_and_folds_as_32_bit_patterns() {
     }
 }
 
+/// The seed of a randomized test: `TRANSFORM_TEST_SEED` if set, else `default`. It is printed, so
+/// a failing test shows the seed that reproduces it.
+fn seed(default: u64) -> u64 {
+    let seed = match std::env::var("TRANSFORM_TEST_SEED") {
+        Ok(seed) => seed.parse().expect("TRANSFORM_TEST_SEED is a u64"),
+        Err(_) => default,
+    };
+    std::eprintln!("seed {seed:#x} (TRANSFORM_TEST_SEED={seed})");
+    seed
+}
+
 mod calls;
+mod cse_model;
+mod drive;
+mod interp;
+mod local2reg_model;

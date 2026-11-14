@@ -27,7 +27,20 @@ use runic_transform::{Canonicalizer, CommonSubexpressionElimination, DeadCodeEli
 
 use crate::*;
 
+mod folds;
+mod fuzz;
 mod probes;
+
+/// The seed of a randomized test: `MEM_TEST_SEED` if set, else `default`. It is printed, so a
+/// failing test shows the seed that reproduces it.
+fn seed(default: u64) -> u64 {
+    let seed = match std::env::var("MEM_TEST_SEED") {
+        Ok(seed) => seed.parse().expect("MEM_TEST_SEED is a u64"),
+        Err(_) => default,
+    };
+    std::eprintln!("seed {seed:#x} (MEM_TEST_SEED={seed})");
+    seed
+}
 
 /// The data layout the tests that need one state on their module.
 const LAYOUT: &str = "#builtin.data_layout<little, ptr = 32>";
