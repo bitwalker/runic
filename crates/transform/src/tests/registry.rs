@@ -7,7 +7,7 @@ use runic_core::{
     Context,
     pass::{
         Nesting, OpPassManager, OperationPass,
-        registry::{PassInfo, RegistryEntry},
+        registry::{PassInfo, PassPipelineInfo, RegistryEntry, register_pass_pipeline},
     },
 };
 // `cfg-to-scf` is registered by the `scf` crate, which the test links by naming its pass.
@@ -39,10 +39,6 @@ fn the_registry_lists_the_passes_of_the_workspace() {
         assert!(names.contains(&expected), "pass '{expected}' is not registered: {names:?}");
     }
     assert!(names.is_sorted(), "{names:?}");
-    assert!(
-        names.windows(2).all(|pair| pair[0] != pair[1]),
-        "a name is registered twice: {names:?}"
-    );
     for pass in &registered {
         assert!(!pass.argument().is_empty());
         assert!(!pass.description().is_empty(), "pass '{}' has no description", pass.argument());
@@ -73,6 +69,23 @@ fn a_description_is_the_same_in_the_registry_and_in_the_pass() {
         assert_eq!(info.description(), pass.description(), "pass '{}'", pass.argument());
         assert!(EXPECTED.contains(&pass.argument()));
     }
+}
+
+#[test]
+fn a_dynamically_registered_pipeline_is_listed() {
+    fn build() -> Box<dyn OperationPass> {
+        Box::<DeadCodeElimination>::default()
+    }
+    for name in ["registry-test-pipeline-b", "registry-test-pipeline-a"] {
+        register_pass_pipeline(name, "a pipeline of the registry tests", build).unwrap();
+    }
+    let registered = PassPipelineInfo::registered();
+    let names = registered.iter().map(RegistryEntry::argument).collect::<Vec<_>>();
+    assert!(names.contains(&"registry-test-pipeline-a"), "{names:?}");
+    assert!(names.contains(&"registry-test-pipeline-b"), "{names:?}");
+    assert!(names.is_sorted(), "{names:?}");
+    let info = PassPipelineInfo::lookup("registry-test-pipeline-a").unwrap();
+    assert_eq!(info.description(), "a pipeline of the registry tests");
 }
 
 #[test]

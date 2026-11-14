@@ -5,6 +5,9 @@ use crate::{EntityMut, Operation, OperationName};
 
 macro_rules! test_pass {
     ($ty:ident, $argument:literal) => {
+        test_pass!($ty, stringify!($ty), $argument);
+    };
+    ($ty:ident, $name:expr, $argument:literal) => {
         #[derive(Default)]
         struct $ty;
 
@@ -12,7 +15,7 @@ macro_rules! test_pass {
             type Target = Operation;
 
             fn name(&self) -> &'static str {
-                stringify!($ty)
+                $name
             }
 
             fn argument(&self) -> &'static str {
@@ -41,6 +44,8 @@ macro_rules! test_pass {
 test_pass!(FirstOwner, "registry-test-owned");
 test_pass!(SecondOwner, "registry-test-owned");
 test_pass!(Lone, "registry-test-lone");
+test_pass!(Twin, "registry-test-twin", "registry-test-twin");
+test_pass!(OtherTwin, "registry-test-twin", "registry-test-twin");
 
 fn entry<P: Pass + Default>(arg: &'static str) -> PassRegistryEntry {
     PassInfo::new::<P>(arg, "a pass of the registry tests").0
@@ -59,6 +64,20 @@ fn a_dynamic_registration_of_a_taken_name_is_an_error() {
     // The first registration is untouched.
     let info = PassInfo::lookup("registry-test-owned").unwrap();
     assert_eq!(info.0.type_id, Some(TypeId::of::<FirstOwner>()));
+}
+
+#[test]
+fn two_dynamic_passes_of_one_name_are_two_passes() {
+    // `Twin` and `OtherTwin` are different types that call themselves by one name.
+    register_pass(default_instance::<Twin>).unwrap();
+    let error = register_pass(default_instance::<OtherTwin>).unwrap_err().to_string();
+    assert_eq!(
+        error,
+        "cannot register pass 'registry-test-twin' for 'registry-test-twin': the name is already \
+         registered for 'registry-test-twin'"
+    );
+    let info = PassInfo::lookup("registry-test-twin").unwrap();
+    assert_eq!(info.0.type_id, Some(TypeId::of::<Twin>()));
 }
 
 #[test]
@@ -103,14 +122,34 @@ fn a_pass_submitted_by_two_copies_of_its_crate_is_one_pass() {
 }
 
 #[test]
-fn two_pipelines_of_one_name_are_an_error() {
+fn a_dynamic_pipeline_under_a_taken_name_is_an_error() {
+    let registry = PassRegistry::from_entries([], []).ok().unwrap();
+    registry
+        .register_pipeline(PassPipelineInfo::new("pipe", "a pipeline", default_instance::<Lone>))
+        .unwrap();
+    // Even with the same builder: a pipeline records no type to tell two pipelines apart.
+    for builder in [
+        default_instance::<Lone> as PassAllocatorFunction,
+        default_instance::<FirstOwner>,
+    ] {
+        let error = registry
+            .register_pipeline(PassPipelineInfo::new("pipe", "a pipeline", builder))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("pass pipeline 'pipe'"), "{error}");
+    }
+    assert_eq!(registry.pipelines().len(), 1);
+}
+
+#[test]
+fn submitted_pipelines_of_one_name_are_one_pipeline() {
+    // Two copies of a crate submit its pipelines twice, and a pipeline records no type.
     let first = PassPipelineInfo::new("pipe", "a pipeline", default_instance::<Lone>).0;
     let second = PassPipelineInfo::new("pipe", "a pipeline", default_instance::<FirstOwner>).0;
-    let error = PassRegistry::from_entries([], [first, second])
-        .err()
-        .expect("a duplicate name")
-        .to_string();
-    assert!(error.contains("pass pipeline 'pipe'"), "{error}");
+    let Ok(registry) = PassRegistry::from_entries([], [first, second]) else {
+        panic!("two submissions of one pipeline name are one pipeline");
+    };
+    assert_eq!(registry.pipelines().len(), 1);
 }
 
 #[test]

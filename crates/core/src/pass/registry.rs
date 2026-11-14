@@ -32,9 +32,8 @@ impl PassRegistry {
     /// # Panics
     ///
     /// Panics if two submissions share one name and are not the same pass; the message names both
-    /// types. A name taken twice
-    /// is a defect in the linked crates, and the registry has no caller to return it to, so the
-    /// first use of the registry reports it.
+    /// types. A name taken twice is a defect in the linked crates, and the registry has no caller to
+    /// return it to, so the first use of the registry reports it.
     pub fn new() -> Self {
         match Self::from_entries(
             inventory::iter::<PassInfo>().map(|pass| pass.0.clone()),
@@ -87,18 +86,18 @@ impl PassRegistry {
 
     /// Register the given pass.
     ///
-    /// Registering the same pass again does nothing; a name that a different pass has taken is
-    /// an error.
+    /// Registering the same pass type again does nothing; a name that a pass of another type has
+    /// taken is an error.
     pub fn register_pass(&self, info: PassInfo) -> Result<(), Report> {
-        insert("pass", &mut self.passes.write(), info.0)
+        insert("pass", &mut self.passes.write(), info.0.dynamic())
     }
 
     /// Register the given pass pipeline.
     ///
-    /// Registering the same pipeline again does nothing; a name that a different pipeline has
-    /// taken is an error.
+    /// A name that is already taken is an error: a pipeline has no type to tell two registrations
+    /// of one pipeline from two pipelines.
     pub fn register_pipeline(&self, info: PassPipelineInfo) -> Result<(), Report> {
-        insert("pass pipeline", &mut self.pipelines.write(), info.0)
+        insert("pass pipeline", &mut self.pipelines.write(), info.0.dynamic())
     }
 }
 
@@ -165,19 +164,31 @@ struct PassRegistryEntry {
     type_name: &'static str,
     /// Function that registers this entry with a pass manager pipeline
     builder: PassAllocatorFunction,
+    /// Whether this entry was registered at run time (`register_pass`, `register_pass_pipeline`),
+    /// rather than submitted with `inventory`
+    dynamic: bool,
 }
 impl PassRegistryEntry {
-    /// Whether `self` and `other` register the same pass type or the same pipeline builder.
+    /// Marks this entry as registered at run time.
+    fn dynamic(mut self) -> Self {
+        self.dynamic = true;
+        self
+    }
+
+    /// Whether `self` and `other` register the same pass or pipeline.
     ///
-    /// Two copies of one crate in a program (a test binary that links the crate under test through
-    /// a dependency of its own) submit the same pass twice, as two types of one path; these are
-    /// one pass.
+    /// Two passes are the same when their `TypeId`s are equal. Two entries that were both submitted
+    /// with `inventory` are also the same when they name one type path (passes) or one name
+    /// (pipelines, which record no type): two copies of one crate in a program (a test binary that
+    /// links the crate under test through a dependency of its own) submit each of its passes twice,
+    /// as two types of one path, and these are one pass. That fallback is a heuristic, since
+    /// `core::any::type_name` is best effort and two types may share a path; it does not apply to
+    /// an entry registered at run time, whose type name is whatever its pass calls itself.
     fn is_same_as(&self, other: &Self) -> bool {
+        let submitted = !self.dynamic && !other.dynamic;
         match (self.type_id, other.type_id) {
-            (Some(a), Some(b)) => a == b || self.type_name == other.type_name,
-            (None, None) => {
-                core::ptr::addr_eq(self.builder as *const (), other.builder as *const ())
-            }
+            (Some(a), Some(b)) => a == b || (submitted && self.type_name == other.type_name),
+            (None, None) => submitted,
             _ => false,
         }
     }
@@ -214,6 +225,7 @@ impl PassPipelineInfo {
             type_id: None,
             type_name: arg,
             builder,
+            dynamic: false,
         })
     }
 
@@ -254,6 +266,7 @@ impl PassInfo {
             type_id: Some(type_id),
             type_name: core::any::type_name::<P>(),
             builder: default_instance::<P>,
+            dynamic: false,
         })
     }
 
@@ -269,6 +282,7 @@ impl PassInfo {
             type_id: Some(type_id),
             type_name: core::any::type_name::<P>(),
             builder,
+            dynamic: false,
         })
     }
 
@@ -352,6 +366,8 @@ impl RegistryEntry for PassInfo {
 /// NOTE: The functions/closures passed above are required to be `Send + Sync + 'static`, as they
 /// are stored in the global registry for the lifetime of the program, and may be accessed from any
 /// thread.
+///
+/// Returns an error if the name is already registered.
 pub fn register_pass_pipeline(
     arg: &'static str,
     description: &'static str,
@@ -372,7 +388,7 @@ pub fn register_pass_pipeline(
 /// stored in the global registry for the lifetime of the program, and may be accessed from any
 /// thread.
 ///
-/// Returns an error if the name of the pass is already registered for another type or builder.
+/// Returns an error if the name of the pass is already registered for another type.
 pub fn register_pass(builder: PassAllocatorFunction) -> Result<(), Report> {
     let pass = builder();
     let type_id = pass.as_any().type_id();
@@ -389,6 +405,7 @@ pub fn register_pass(builder: PassAllocatorFunction) -> Result<(), Report> {
         type_id: Some(type_id),
         type_name: pass.name(),
         builder,
+        dynamic: false,
     }))
 }
 
