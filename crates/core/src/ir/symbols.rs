@@ -337,8 +337,8 @@ impl Operation {
         SymbolUseRefsIter::from(uses)
     }
 
-    /// Walk the symbol references held directly by `op` that are linked to a symbol, skipping
-    /// those that are not.
+    /// Walk the symbol references held by `op`, at any depth, that are linked to a symbol,
+    /// skipping those that are not.
     fn walk_linked_symbol_refs<F>(op: &Operation, mut callback: F) -> WalkResult
     where
         F: FnMut(SymbolUseRef) -> WalkResult,
@@ -349,32 +349,22 @@ impl Operation {
         })
     }
 
-    /// Walk all of the symbol references held directly by the given operation (its properties and
-    /// attributes of type [SymbolRefAttr]), invoking the provided callback for each.
+    /// Walk all of the symbol references ([SymbolRefAttr]) held by the given operation, at any
+    /// depth (see [Operation::walk_attributes]): its properties and attributes, and the attributes
+    /// those hold, such as the entries of a list. The callback is invoked once for each.
     ///
     /// The callback receives `Ok` with the use for a reference linked to a symbol, and `Err` with
     /// the attribute for a reference that is not, such as one the parser could not resolve.
-    ///
-    /// References nested inside list or map attribute values are not visited.
     pub fn walk_symbol_refs<F>(op: &Operation, mut callback: F) -> WalkResult
     where
         F: FnMut(Result<SymbolUseRef, UnsafeIntrusiveEntityRef<SymbolRefAttr>>) -> WalkResult,
     {
-        let mut visit = |attr: crate::AttributeRef| match attr.try_downcast_attr::<SymbolRefAttr>()
-        {
+        op.walk_attributes(&mut |_, attr| match attr.try_downcast_attr::<SymbolRefAttr>() {
             Ok(attr) => {
                 let user = attr.borrow().try_user();
                 callback(user.filter(|user| user.is_linked()).ok_or(attr))
             }
             Err(_) => WalkResult::Continue(()),
-        };
-        for prop in op.properties() {
-            visit(prop.value)?;
-        }
-        for attr in op.attributes() {
-            visit(attr.as_named_attribute().value)?;
-        }
-
-        WalkResult::Continue(())
+        })
     }
 }

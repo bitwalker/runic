@@ -520,11 +520,10 @@ impl Operation {
     ///
     /// The first check, run for every operation, is that every type the operation holds was
     /// interned by its context; see [Self::verify_type_ownership]. The second is that every
-    /// integer constant among its properties and attributes is valid; see
-    /// [Self::verify_int_attributes]. The third is that every signature among its properties and
-    /// attributes is valid; see [Self::verify_signature_attributes]. The fourth is that every
-    /// symbol reference among its properties and attributes is linked to the symbol its path
-    /// names; see [Self::verify_symbol_refs]. The operation's own verifiers run after these, so
+    /// integer constant it holds, at any depth, is valid; see [Self::verify_int_attributes]. The
+    /// third is that every signature it holds, at any depth, is valid; see
+    /// [Self::verify_signature_attributes]. The fourth is that every symbol reference it holds, at
+    /// any depth, is linked to the symbol its path names; see [Self::verify_symbol_refs]. The operation's own verifiers run after these, so
     /// they may assume the operation's symbol references are linked.
     pub fn verify(&self) -> Result<(), Report> {
         self.verify_type_ownership()?;
@@ -551,9 +550,8 @@ impl Operation {
     /// Each reference's path is looked up once, which borrows this operation's nearest symbol
     /// table and the symbol tables on the path immutably.
     ///
-    /// Only the properties and attributes of the operation itself are visited, as by
-    /// [Self::walk_symbol_refs]: a reference nested inside a list or map attribute value is not
-    /// checked.
+    /// Every reference the operation holds is checked, at any depth, as [Self::walk_symbol_refs]
+    /// visits them: a reference nested in a list, say, is checked too.
     pub fn verify_symbol_refs(&self) -> Result<(), Report> {
         let print_path = |path: &crate::SymbolPath| {
             let flags = crate::OpPrintingFlags::default();
@@ -686,14 +684,14 @@ impl Operation {
     /// constructors, the generated setters and in-place mutation do not, so this check is what
     /// catches an invalid constant in every build.
     ///
-    /// Only the properties and attributes of the operation itself are visited: an `IntAttr`
-    /// nested inside a list or map attribute value is not checked.
+    /// Every integer constant the operation holds is checked, at any depth (see
+    /// [Self::walk_attributes]): one nested in a list, say, is checked too.
     ///
     /// [IntAttr]: crate::dialects::builtin::attributes::IntAttr
     pub fn verify_int_attributes(&self) -> Result<(), Report> {
         use crate::dialects::builtin::attributes::IntAttr;
 
-        let check = |role: &dyn fmt::Display, attr: &AttributeRef| {
+        let check = |role: &dyn fmt::Display, attr: &AttributeRef| -> Result<(), Report> {
             let attr = attr.borrow();
             let Some(attr) = attr.downcast_ref::<IntAttr>() else {
                 return Ok(());
@@ -719,14 +717,10 @@ impl Operation {
                 ],
             ))
         };
-        for prop in self.properties() {
-            check(&format_args!("property '{}'", prop.name), &prop.value)?;
-        }
-        for attr in self.attributes() {
-            let attr = attr.as_named_attribute();
-            check(&format_args!("attribute '{}'", attr.name), &attr.value)?;
-        }
-        Ok(())
+        self.walk_attributes_and_depth(&mut |site, attr, nested| {
+            check(&ElementRole { site, nested }, attr).into()
+        })
+        .into_result()
     }
 
     /// Check that every signature ([SignatureAttr]) among this operation's properties and
@@ -737,8 +731,8 @@ impl Operation {
     /// its type against, and the parser reads `never` anywhere. This check is what catches an
     /// invalid signature in every build, whichever operation holds it.
     ///
-    /// Only the properties and attributes of the operation itself are visited: a signature nested
-    /// inside a list or map attribute value, or in a parameter's own attributes, is not checked.
+    /// Every signature the operation holds is checked, at any depth (see
+    /// [Self::walk_attributes]): one nested in a list, say, is checked too.
     ///
     /// [SignatureAttr]: crate::dialects::builtin::attributes::SignatureAttr
     /// [Signature::validate]: crate::dialects::builtin::attributes::Signature::validate
@@ -757,7 +751,7 @@ impl Operation {
                 ],
             )
         };
-        let check = |role: &dyn fmt::Display, attr: &AttributeRef| {
+        let check = |role: &dyn fmt::Display, attr: &AttributeRef| -> Result<(), Report> {
             let attr = attr.borrow();
             let Some(signature) = attr.downcast_ref::<SignatureAttr>() else {
                 return Ok(());
@@ -784,14 +778,10 @@ impl Operation {
             }
             Ok(())
         };
-        for prop in self.properties() {
-            check(&format_args!("property '{}'", prop.name), &prop.value)?;
-        }
-        for attr in self.attributes() {
-            let attr = attr.as_named_attribute();
-            check(&format_args!("attribute '{}'", attr.name), &attr.value)?;
-        }
-        Ok(())
+        self.walk_attributes_and_depth(&mut |site, attr, nested| {
+            check(&ElementRole { site, nested }, attr).into()
+        })
+        .into_result()
     }
 
     /// Run any verifiers for this operation, and all of its nested operations, recursively.
@@ -800,6 +790,23 @@ impl Operation {
     /// run, it is known that all of its children have successfully verified.
     pub fn recursively_verify(&self) -> Result<(), Report> {
         self.postwalk(|op: &Operation| op.verify().into()).into_result()
+    }
+}
+
+/// How a check names an attribute it found by [Operation::walk_attributes]: by its property or
+/// dictionary entry, or as an attribute held by one.
+struct ElementRole<'a> {
+    site: crate::ElementSite<'a>,
+    nested: bool,
+}
+
+impl fmt::Display for ElementRole<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.nested {
+            write!(f, "an attribute held by {}", self.site)
+        } else {
+            write!(f, "{}", self.site)
+        }
     }
 }
 

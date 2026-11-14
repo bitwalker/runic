@@ -7,6 +7,7 @@ mod context;
 mod dialect;
 pub mod dominance;
 pub mod effects;
+mod elements;
 pub mod entity;
 mod ident;
 mod int;
@@ -43,6 +44,7 @@ pub use self::{
         DialectRegistration, DialectRegistrationHook, DialectRegistrationHookInfo,
         DialectRegistrationInfo,
     },
+    elements::{ElementSite, walk_nested_attributes},
     entity::{
         Entity, EntityGroup, EntityId, EntityList, EntityListCursor, EntityListCursorMut,
         EntityListItem, EntityListIter, EntityMap, EntityMapCursor, EntityMapCursorMut,
