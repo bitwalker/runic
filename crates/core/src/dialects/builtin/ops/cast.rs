@@ -30,7 +30,8 @@ use crate::{
 /// generic form states.
 ///
 /// A dialect conversion uses the cast to say that a value now stands for other values, and folds
-/// away the chains of casts whose ends agree.
+/// away the chains of casts whose ends agree
+/// ([reconcile_unrealized_casts](crate::conversion::reconcile_unrealized_casts)).
 /// The cast has no effects, so an unused one is removed. A cast of one value to its own type folds
 /// to that value. It is built with
 /// [BuiltinOpBuilder::unrealized_conversion_cast](crate::dialects::builtin::BuiltinOpBuilder::unrealized_conversion_cast),

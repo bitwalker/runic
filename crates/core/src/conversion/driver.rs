@@ -5,7 +5,7 @@ use smallvec::SmallVec;
 use super::{
     ConversionPattern, ConversionPatternRewriter, ConversionPatternSet, ConversionTarget,
     ConvertedOperands, FrozenConversionPatternSet, Legality, LegalizationGraph, TrackedMutations,
-    TypeConverter,
+    TypeConverter, reconcile_unrealized_casts,
 };
 use crate::{
     OperationName, OperationRef, Report, Spanned, ValueRef, WalkResult,
@@ -183,7 +183,7 @@ impl FullConversionDriver<'_> {
         }
 
         if self.config.reconcile_unrealized_casts() {
-            self.result.changed |= self.reconcile_unrealized_conversion_casts()?;
+            self.result.changed |= self.reconcile_unrealized_conversion_casts();
         }
         self.verify_full_conversion_legality()?;
 
@@ -349,78 +349,22 @@ impl FullConversionDriver<'_> {
         Ok(())
     }
 
-    fn reconcile_unrealized_conversion_casts(&mut self) -> Result<bool, Report> {
-        let mut reconciled = false;
-        loop {
-            let mut changed = false;
-            let casts = self.collect_unrealized_conversion_casts()?;
-            if casts.is_empty() {
-                return Ok(reconciled);
-            }
-
-            let mut rewriter = ConversionPatternRewriter::new(Rc::clone(&self.context));
-            for cast in casts {
-                if !self.is_live(cast) {
-                    continue;
-                }
-                if !cast.borrow().is_used() {
-                    rewriter.erase_op(cast)?;
-                    reconciled = true;
-                    changed = true;
-                    continue;
-                }
-
-                let Some((input, result)) = unrealized_conversion_cast_values(cast) else {
-                    continue;
-                };
-                let input_ty = input.borrow().ty();
-                let result_ty = result.borrow().ty();
-                if input_ty == result_ty {
-                    rewriter.replace_op(cast, &[input])?;
-                    reconciled = true;
-                    changed = true;
-                    continue;
-                }
-
-                let Some(previous_cast) = input
-                    .borrow()
-                    .get_defining_op()
-                    .filter(|op| is_unrealized_conversion_cast(*op))
-                else {
-                    continue;
-                };
-                let Some((previous_input, _)) = unrealized_conversion_cast_values(previous_cast)
-                else {
-                    continue;
-                };
-                if previous_input.borrow().ty() == result_ty {
-                    rewriter.replace_op(cast, &[previous_input])?;
-                    if self.is_live(previous_cast) && !previous_cast.borrow().is_used() {
-                        rewriter.erase_op(previous_cast)?;
-                    }
-                    reconciled = true;
-                    changed = true;
-                }
-            }
-
-            if !changed {
-                return Ok(reconciled);
-            }
-        }
+    /// Folds the casts under the root ([reconcile_unrealized_casts]); returns whether any cast
+    /// was folded or erased. Every fold leaves a cast unused, which is then erased, so the IR
+    /// changed exactly when fewer casts remain.
+    fn reconcile_unrealized_conversion_casts(&mut self) -> bool {
+        let before = self.count_unrealized_conversion_casts();
+        reconcile_unrealized_casts(self.root).len() < before
     }
 
-    fn collect_unrealized_conversion_casts(&self) -> Result<Vec<OperationRef>, Report> {
-        let mut casts = vec![];
-        self.root
-            .borrow()
-            .prewalk(|op| {
-                if is_unrealized_conversion_cast(op.as_operation_ref()) {
-                    casts.push(op.as_operation_ref());
-                }
-                WalkResult::<Report>::Continue(())
-            })
-            .into_result()?;
-        Ok(casts)
+    fn count_unrealized_conversion_casts(&self) -> usize {
+        let mut count = 0;
+        self.root.borrow().prewalk_all(|op: &crate::Operation| {
+            if op.as_operation_ref() != self.root && op.is::<UnrealizedConversionCast>() {
+                count += 1;
+            }
+        });
+        count
     }
 
     fn verify_full_conversion_legality(&self) -> Result<(), Report> {
@@ -515,20 +459,6 @@ fn collect_match_failures(failures: &mut Vec<String>, rewriter: &mut ConversionP
 
 fn is_unrealized_conversion_cast(op: OperationRef) -> bool {
     op.try_downcast_op::<UnrealizedConversionCast>().is_ok()
-}
-
-fn unrealized_conversion_cast_values(op: OperationRef) -> Option<(ValueRef, ValueRef)> {
-    if !op.borrow().is::<UnrealizedConversionCast>() {
-        return None;
-    }
-    let op = op.borrow();
-    if op.num_operands() != 1 || op.num_results() != 1 {
-        return None;
-    }
-    Some((
-        op.operands()[0].borrow().as_value_ref(),
-        op.results()[0].borrow().as_value_ref(),
-    ))
 }
 
 fn legality_failure_reason(target: &ConversionTarget, op: &crate::Operation) -> Option<String> {
