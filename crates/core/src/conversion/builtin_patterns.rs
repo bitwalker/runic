@@ -37,8 +37,11 @@
 //! The root of the conversion must hold every operation that names a function whose signature
 //! the conversion changes. A function whose signature changes and that is named by an operation
 //! outside the root, directly or through an alias of it at any number of aliases, is refused
-//! before anything is changed: the pattern returns an error that names the function and the
-//! user. (A conversion rooted at one function, or at one module of a world, meets this.)
+//! before the function pattern changes anything: it returns an error that names the function and
+//! the user. The operations the conversion converted earlier in its walk keep their changes, as
+//! after any error (the driver does not roll back), so the IR is not to be used after the error.
+//! An alias outside the root counts as a user, used or not. (A conversion rooted at one function,
+//! or at one module of a world, meets this.)
 //!
 //! Local `i` of type `T` becomes the locals `[s_i, s_i + n_i)`, of the types the converter gives
 //! for `T` (`n_i` of them, possibly none), where `s_i` is the sum of `n_k` for `k < i`: contiguous
@@ -459,7 +462,11 @@ impl ConversionPattern for FunctionPattern {
                 BodyEdit::Erase(op) => rewriter.erase_op(op)?,
                 // Installed directly, not through the rewriter: an attribute edit needs no
                 // cast, and the operation is legalized in its own turn (it is later in the
-                // collected order than its function), under a limit of its own.
+                // collected order than its function), under a limit of its own. This relies on
+                // the function being converted in its own turn, before the operations of its
+                // body are offered, which the driver's order guarantees for the builtin
+                // patterns; a pattern that made this one run later would have to offer the
+                // renumbered operations again.
                 BodyEdit::Set { mut op, attributes } => {
                     install(&mut op.borrow_mut(), attributes)?;
                 }
@@ -1234,6 +1241,9 @@ impl ConversionPattern for FunctionReferencePattern {
             .get_ty();
         // A converter with function types gives a function type exactly one type.
         let new_ty = self.converter.convert_type_1_to_1(&context, ty)?;
+        check_answer_is_legal(&context, &self.converter, ty, &[new_ty], || {
+            format!("the type of {}", op.borrow().name())
+        })?;
         if new_ty == ty {
             return Ok(false);
         }

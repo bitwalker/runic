@@ -125,7 +125,9 @@
 //! What is verified is the root, and nothing outside it is converted. So the root must hold
 //! every operation that names a symbol whose signature the conversion changes: a call outside it
 //! would keep the old signature. The builtin function pattern refuses a function whose signature
-//! changes and that has such a user (below).
+//! changes and that has such a user (below), before that pattern changes anything; what the
+//! conversion converted earlier in its walk keeps its changes, as after any error. An alias
+//! outside the root counts as a user, used or not.
 //!
 //! # The rewrite limit
 //!

@@ -1346,6 +1346,57 @@ fn an_answer_that_is_not_legal_is_an_error_that_says_so() {
     }
 }
 
+/// A `builtin.function_ref` whose function type has an answer that is not legal is an error that
+/// names the type, not a conversion that runs to the rewrite limit, even ahead of its callee.
+#[test]
+fn a_function_reference_under_an_answer_that_is_not_legal_is_an_error() {
+    let (context, module) = parse_module(
+        "    builtin.function public extern(\"C\") @g() {
+        %0 = builtin.function_ref @f : (i128) -> i128;
+        builtin.ret;
+    };
+    builtin.function public extern(\"C\") @f(i128) -> i128;",
+    );
+    let converter = answer_that_is_not_legal(&context);
+    let err = convert_full(module, by_type_target(&context, &converter), &converter)
+        .expect_err("the answer is not legal");
+    let err = describe(&err);
+    assert!(err.contains("the type of builtin.function_ref"), "{err}");
+    assert!(err.contains("is not legal under the converter"), "{err}");
+    assert!(!err.contains("exceeded the limit"), "{err}");
+}
+
+/// A caller inside the root that comes before the refused function in its module is converted
+/// before the refusal and keeps its change, as after any error: the conversion reports the
+/// refusal, and the IR is not to be used afterwards.
+#[test]
+fn a_refusal_after_earlier_changes_in_the_root_is_reported() {
+    let source = "builtin.world {
+    builtin.module public @one {
+        builtin.function public extern(\"C\") @a(%a: i128) -> i128 {
+            %r = builtin.call @id(%a) : extern(\"C\") (i128) -> i128;
+            builtin.ret %r : (i128);
+        };
+        builtin.function public extern(\"C\") @id(%a: i128) -> i128 {
+            builtin.ret %a : (i128);
+        };
+    };
+    builtin.module public @two {
+        builtin.function public extern(\"C\") @user(%a: i128) -> i128 {
+            %r = builtin.call ::@one::@id(%a) : extern(\"C\") (i128) -> i128;
+            builtin.ret %r : (i128);
+        };
+    };
+};";
+    let (context, world) = parse_world(source);
+    let converter = wide_converter(&context);
+    let one = symbol_named(world, "one");
+    let err = convert_full(one, by_type_target(&context, &converter), &converter).unwrap_err();
+    let err = describe(&err);
+    assert!(err.contains("function 'builtin.function' ::one::id"), "{err}");
+    assert!(err.contains("named by 'builtin.call' in ::two::user outside the root"), "{err}");
+}
+
 /// Each operation a pattern replaces (a `builtin.function_ref`, a `builtin.call_indirect`, a
 /// `builtin.call` and a `builtin.ret`) gives its replacement its attribute dictionary: a symbol
 /// reference held directly, and one held in a list, each get a use of their own, owned by the

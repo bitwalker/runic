@@ -292,7 +292,10 @@ fn check_effects(
         starts
     };
     let after = effects_of(module);
-    for ((name, params, results, effects), (_, _, _, converted)) in before.iter().zip(&after) {
+    for (name, params, results, effects) in before {
+        let Some((_, _, _, converted)) = after.iter().find(|(after, ..)| after == name) else {
+            return Err(format!("@{name} is missing from the converted module"));
+        };
         let expected = effects.as_ref().map(|effects| {
             let (params, results) = (starts(params), starts(results));
             let mut expected = Vec::<MemoryEffectDescriptor>::new();
