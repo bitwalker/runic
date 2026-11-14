@@ -822,7 +822,7 @@ mod tests {
         let function = parse::parse::<Function>(ParserConfig::new(context.clone()), "sink", text)
             .into_result()?;
         let mut passes = PassManager::on::<Function>(context, Nesting::Implicit);
-        passes.add_pass(pass);
+        passes.add_pass(pass).unwrap();
         passes.enable_verifier(true);
         passes.run(function.as_operation_ref())?;
         Ok(function.as_operation_ref().borrow().to_string())
@@ -852,7 +852,7 @@ mod tests {
             .into_result()?;
         let function = module.borrow().symbol_manager().lookup_op("f").unwrap();
         let mut passes = PassManager::on::<Function>(context, Nesting::Implicit);
-        passes.add_pass(pass);
+        passes.add_pass(pass).unwrap();
         passes.enable_verifier(true);
         passes.run(function)?;
         Ok(function.borrow().to_string())

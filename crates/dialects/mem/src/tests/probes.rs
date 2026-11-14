@@ -43,7 +43,7 @@ fn run(
     if let Some(pass) = pass {
         // the context must outlive every use of `function`: the pass manager gets a clone
         let mut passes = PassManager::on::<Function>(context.clone(), Nesting::Implicit);
-        passes.add_pass(pass);
+        passes.add_pass(pass).unwrap();
         passes.enable_verifier(true);
         passes.run(function).map_err(|err| describe(&err))?;
     }

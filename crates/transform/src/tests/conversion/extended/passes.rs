@@ -4,7 +4,7 @@ use alloc::{boxed::Box, rc::Rc, vec::Vec};
 
 use runic_core::{
     Context, OperationRef, Report,
-    dialects::builtin::{Function, Module},
+    dialects::builtin::Module,
     pass::{Nesting, OperationPass, PassManager},
 };
 
@@ -30,15 +30,9 @@ pub(super) fn run_pass(
     module: OperationRef,
     pass: Box<dyn OperationPass>,
 ) -> Result<(), Report> {
+    // A pass whose target is `Function` is nested under the module's functions implicitly.
     let mut manager = PassManager::on::<Module>(context.clone(), Nesting::Implicit);
-    // A pass whose target is `Function` is not nested implicitly (no concrete operation type
-    // states its name as a pass target), and panics when it is run on the module: it is nested
-    // by hand (see `probes::wanted_a_function_pass_on_a_module_is_nested_implicitly`).
-    if pass.name() == "local2reg" {
-        manager.add_nested_pass::<Function>(pass);
-    } else {
-        manager.add_pass(pass);
-    }
+    manager.add_pass(pass).unwrap();
     manager.enable_verifier(true);
     manager.run(module)
 }

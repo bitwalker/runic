@@ -674,36 +674,41 @@ fn wanted_canonicalizing_a_module_with_a_dead_call_of_the_enclosing_function() {
 }
 
 /// A pass whose target is `builtin.function` added to a pass manager anchored on a module with
-/// implicit nesting is run on the module itself, and panics (`PassTarget::target_name` names no
-/// concrete operation type, so `add_pass` never nests).
+/// implicit nesting is nested under the module's functions: `Local2Reg` promotes the locals of
+/// every function, and the module itself is not given to it.
 #[test]
-fn a_function_pass_on_a_module_is_not_nested_implicitly() {
+fn a_function_pass_on_a_module_is_nested_implicitly() {
     use runic_core::pass::{Nesting, PassManager};
-    let (context, module) = module(RECURSIVE);
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let mut manager = PassManager::on::<Module>(context.clone(), Nesting::Implicit);
-        manager.add_pass(alloc::boxed::Box::<crate::Local2Reg>::default());
-        manager.enable_verifier(true);
-        manager.run(module)
-    }));
-    println!(
-        "PROBE local2reg on a module, implicit nesting: {}",
-        if outcome.is_err() { "PANIC" } else { "ran" }
+    let (context, module) = module(
+        r#"builtin.function public extern("C") @f(%0: i32) -> i32 locals(i32) {
+    builtin.store_local 0, %0;
+    %1 = builtin.load_local 0 : i32;
+    builtin.ret %1 : (i32);
+};
+builtin.function public extern("C") @g(%0: i64) -> i64 locals(i64) {
+    builtin.store_local 0, %0;
+    %1 = builtin.load_local 0 : i64;
+    builtin.ret %1 : (i64);
+};"#,
     );
-    assert!(outcome.is_err());
-}
-
-/// What a fix should give. Left ignored: implicit nesting is a matter of the pass manager, which
-/// stage 4 takes up (`runic-opt` adds passes named on a command line to a module's manager).
-#[test]
-#[ignore = "wanted: a pass that targets builtin.function is nested under a module implicitly"]
-fn wanted_a_function_pass_on_a_module_is_nested_implicitly() {
-    use runic_core::pass::{Nesting, PassManager};
-    let (context, module) = module(RECURSIVE);
+    use runic_core::pass::Pass;
+    let local2reg = crate::Local2Reg;
+    assert!(local2reg.can_schedule_on(&context.get_registered_name::<Function>()));
+    assert!(!local2reg.can_schedule_on(&context.get_registered_name::<Module>()));
     let mut manager = PassManager::on::<Module>(context.clone(), Nesting::Implicit);
-    manager.add_pass(alloc::boxed::Box::<crate::Local2Reg>::default());
+    manager.add_pass(alloc::boxed::Box::new(local2reg)).unwrap();
     manager.enable_verifier(true);
     manager.run(module).unwrap();
+    let text = module.borrow().to_string();
+    println!("{text}");
+    assert!(!text.contains("_local"), "{text}");
+    // Each function returns its argument, which was stored to the local and loaded back.
+    for function in ["@f", "@g"] {
+        let body = &text[text.find(function).unwrap()..];
+        let argument = &body[body.find('(').unwrap() + 1..body.find(':').unwrap()];
+        let ret = &body[body.find("builtin.ret ").unwrap() + "builtin.ret ".len()..];
+        assert!(ret.starts_with(&format!("{argument} ")), "{function}: {text}");
+    }
 }
 
 /// A declaration under a converter whose answer is not legal: an error that names the type, at
@@ -788,11 +793,7 @@ fn costs_of_conversion_and_verification() {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     use runic_core::pass::{Nesting, PassManager};
                     let mut manager = PassManager::on::<Module>(context.clone(), Nesting::Implicit);
-                    if pass == "local2reg" {
-                        manager.add_nested_pass::<Function>(make());
-                    } else {
-                        manager.add_pass(make());
-                    }
+                    manager.add_pass(make()).unwrap();
                     manager.enable_verifier(false);
                     manager.run(module)
                 }));

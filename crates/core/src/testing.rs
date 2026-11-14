@@ -236,7 +236,7 @@ impl Test {
     /// If `verify` is true, then the verifier is run on the resulting IR.
     pub fn apply_pass<P: Pass + Default>(&self, verify: bool) -> Result<(), Report> {
         let mut pm = PassManager::on::<Function>(self.context_rc(), crate::pass::Nesting::Implicit);
-        pm.add_pass(Box::new(P::default()));
+        pm.add_pass(Box::new(P::default()))?;
         pm.enable_verifier(verify);
         pm.run(self.function().as_operation_ref())
     }
@@ -250,7 +250,7 @@ impl Test {
         verify: bool,
     ) -> Result<(), Report> {
         let mut pm = PassManager::on::<Function>(self.context_rc(), crate::pass::Nesting::Implicit);
-        pm.add_pass(pass);
+        pm.add_pass(pass)?;
         pm.enable_verifier(verify);
         pm.run(self.function().as_operation_ref())
     }
@@ -265,7 +265,7 @@ impl Test {
     ) -> Result<(), Report> {
         let mut pm = PassManager::on::<Function>(self.context_rc(), crate::pass::Nesting::Implicit);
         for pass in passes {
-            pm.add_pass(pass);
+            pm.add_pass(pass)?;
         }
         pm.enable_verifier(verify);
         pm.run(self.function().as_operation_ref())

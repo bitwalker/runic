@@ -773,7 +773,7 @@ fn every_pass_over_the_golden_functions_verifies() {
         for (pass, make) in drive::PASSES {
             let (context, root) = parse_case(&case, &case.text, true).unwrap();
             let mut manager = PassManager::on::<Function>(context.clone(), Nesting::Implicit);
-            manager.add_pass(make());
+            manager.add_pass(make()).unwrap();
             manager.enable_verifier(true);
             runs += 1;
             if let Err(err) = manager.run(root) {

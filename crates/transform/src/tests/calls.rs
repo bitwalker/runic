@@ -88,7 +88,7 @@ fn run(
     pass: Box<dyn OperationPass>,
 ) -> Result<(), Report> {
     let mut passes = PassManager::on::<Function>(context.clone(), Nesting::Implicit);
-    passes.add_pass(pass);
+    passes.add_pass(pass).unwrap();
     passes.enable_verifier(true);
     passes.run(function)
 }
@@ -615,7 +615,7 @@ builtin.world {
             .into_result()
             .unwrap_or_else(|err| panic!("{}", describe(&err)));
         let mut passes = PassManager::on::<World>(context.clone(), Nesting::Implicit);
-        passes.add_pass(PASSES[pass].1());
+        passes.add_pass(PASSES[pass].1()).unwrap();
         passes.enable_verifier(true);
         passes.run(world.as_operation_ref()).unwrap();
         let text = world.as_operation_ref().borrow().to_string();
@@ -1046,7 +1046,7 @@ fn fuzz_no_pass_panics_on_a_dangling_symbol() {
                     for function in functions {
                         let mut passes =
                             PassManager::on::<Function>(context.clone(), Nesting::Implicit);
-                        passes.add_pass(make_pass());
+                        passes.add_pass(make_pass()).unwrap();
                         passes.enable_verifier(false);
                         // an error is a diagnostic, which is fine; a panic is not
                         let _ = passes.run(function);
@@ -1093,7 +1093,7 @@ fn caller_after(pass: MakePass, callee: &str) -> String {
         .into_result()
         .unwrap_or_else(|err| panic!("{}", describe(&err)));
     let mut passes = PassManager::on::<Module>(context.clone(), Nesting::Implicit);
-    passes.add_pass(pass());
+    passes.add_pass(pass()).unwrap();
     passes.enable_verifier(true);
     passes.run(module.as_operation_ref()).unwrap();
     let caller = module.borrow().symbol_manager().lookup_op("caller").unwrap();
@@ -1153,7 +1153,7 @@ fn a_pass_erases_a_dead_recursive_call() {
             assert_eq!(uses(), 1);
             if on_module {
                 let mut passes = PassManager::on::<Module>(context.clone(), Nesting::Implicit);
-                passes.add_pass(pass());
+                passes.add_pass(pass()).unwrap();
                 passes.enable_verifier(true);
                 passes.run(module.as_operation_ref()).unwrap();
             } else {
@@ -1190,7 +1190,7 @@ fn sccp_leaves_calls_alone() {
             .into_result()
             .unwrap_or_else(|err| panic!("{}", describe(&err)));
         let mut passes = PassManager::on::<Module>(context.clone(), Nesting::Implicit);
-        passes.add_pass(Box::<SparseConditionalConstantPropagation>::default());
+        passes.add_pass(Box::<SparseConditionalConstantPropagation>::default()).unwrap();
         passes.enable_verifier(true);
         passes.run(module.as_operation_ref()).unwrap();
         let caller = module.borrow().symbol_manager().lookup_op("caller").unwrap();

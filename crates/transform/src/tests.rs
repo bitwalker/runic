@@ -65,7 +65,7 @@ fn run(
     pass: Box<dyn OperationPass>,
 ) -> Result<(), Report> {
     let mut passes = PassManager::on::<Function>(context.clone(), Nesting::Implicit);
-    passes.add_pass(pass);
+    passes.add_pass(pass).unwrap();
     passes.enable_verifier(true);
     passes.run(function.as_operation_ref())
 }

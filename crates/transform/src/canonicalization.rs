@@ -351,7 +351,7 @@ mod tests {
         )
         .into_result()?;
         let mut passes = PassManager::on::<Function>(context, Nesting::Implicit);
-        passes.add_pass(Box::<Canonicalizer>::default());
+        passes.add_pass(Box::<Canonicalizer>::default()).unwrap();
         passes.run(function.as_operation_ref())?;
         function.as_operation_ref().borrow().recursively_verify()?;
 
@@ -395,7 +395,7 @@ mod tests {
             .into_result()?;
         let caller = module.borrow().symbol_manager().lookup_op("caller").unwrap();
         let mut passes = PassManager::on::<Function>(context, Nesting::Implicit);
-        passes.add_pass(Box::<Canonicalizer>::default());
+        passes.add_pass(Box::<Canonicalizer>::default()).unwrap();
         passes.enable_verifier(true);
         passes.run(caller)?;
         Ok(caller.borrow().to_string())

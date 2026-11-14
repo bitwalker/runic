@@ -9,6 +9,7 @@ use crate::{
         test::TestDialect,
     },
     parse::{ParserConfig, parse_any},
+    pass::PassTarget,
     traits::{HasOnlyGraphRegion, NoTerminator},
 };
 
@@ -44,10 +45,6 @@ impl Pass for RecordFunctions {
         self.stage
     }
 
-    fn target_name(&self, context: &Context) -> Option<OperationName> {
-        Some(context.get_registered_name::<Function>())
-    }
-
     fn can_schedule_on(&self, name: &OperationName) -> bool {
         name.is::<Function>()
     }
@@ -75,8 +72,8 @@ fn incompatible_adjacent_adaptors_both_execute() {
     let (context, world) = tree();
     let events = Events::default();
     let mut pm = PassManager::on::<World>(context, Nesting::Explicit);
-    pm.nest::<Function>().add_pass(record("typed", &events));
-    pm.nest_any().add_pass(record("any", &events));
+    pm.nest::<Function>().add_pass(record("typed", &events)).unwrap();
+    pm.nest_any().add_pass(record("any", &events)).unwrap();
     pm.run(world).unwrap();
     assert_eq!(&*events.borrow(), &["typed:root", "any:root"]);
 }
@@ -88,8 +85,8 @@ fn trailing_adaptor_finalizes_its_nested_pipeline() {
     let mut pm = PassManager::on::<World>(context, Nesting::Explicit);
     {
         let mut modules = pm.nest::<Module>();
-        modules.nest::<Function>().add_pass(record("a", &events));
-        modules.nest::<Function>().add_pass(record("b", &events));
+        modules.nest::<Function>().add_pass(record("a", &events)).unwrap();
+        modules.nest::<Function>().add_pass(record("b", &events)).unwrap();
     }
     pm.run(world).unwrap();
     assert_eq!(&*events.borrow(), &["a:first", "b:first", "a:last", "b:last"]);
@@ -102,9 +99,9 @@ fn immediate_and_implicit_nesting_stay_immediate() {
         let events = Events::default();
         let mut pm = PassManager::on::<World>(context, Nesting::Implicit);
         if implicit {
-            pm.add_pass(record("visit", &events));
+            pm.add_pass(record("visit", &events)).unwrap();
         } else {
-            pm.nest::<Function>().add_pass(record("visit", &events));
+            pm.nest::<Function>().add_pass(record("visit", &events)).unwrap();
         }
         pm.run(world).unwrap();
         assert_eq!(&*events.borrow(), &["visit:root"]);
@@ -116,8 +113,8 @@ fn generic_before_typed_adaptors_keep_both_stages() {
     let (context, world) = tree();
     let events = Events::default();
     let mut pm = PassManager::on::<World>(context, Nesting::Explicit);
-    pm.nest_any().add_pass(record("any", &events));
-    pm.nest::<Function>().add_pass(record("typed", &events));
+    pm.nest_any().add_pass(record("any", &events)).unwrap();
+    pm.nest::<Function>().add_pass(record("typed", &events)).unwrap();
     pm.run(world).unwrap();
     assert_eq!(&*events.borrow(), &["any:root", "typed:root"]);
 }
@@ -203,8 +200,8 @@ fn immediate_scheduling_visits_all_regions_in_order() {
     builder.create::<Second, ()>(crate::SourceSpan::UNKNOWN)().unwrap();
     let events = Events::default();
     let mut pm = PassManager::on::<RegionPair>(context, Nesting::Explicit);
-    pm.nest::<First>().add_pass(Box::new(RecordOps(events.clone())));
-    pm.nest::<Second>().add_pass(Box::new(RecordOps(events.clone())));
+    pm.nest::<First>().add_pass(Box::new(RecordOps(events.clone()))).unwrap();
+    pm.nest::<Second>().add_pass(Box::new(RecordOps(events.clone()))).unwrap();
     pm.run(pair.as_operation_ref()).unwrap();
     assert_eq!(&*events.borrow(), &["test.first", "test.second"]);
 }
@@ -214,9 +211,9 @@ fn recursive_stages_visit_each_function_once_and_keep_stage_order() {
     let (context, world) = tree();
     let events = Events::default();
     let mut pm = PassManager::on::<World>(context, Nesting::Explicit);
-    pm.nest_recursive::<Function>().add_pass(record("a", &events));
-    pm.nest::<Function>().add_pass(record("immediate", &events));
-    pm.nest_recursive::<Function>().add_pass(record("b", &events));
+    pm.nest_recursive::<Function>().add_pass(record("a", &events)).unwrap();
+    pm.nest::<Function>().add_pass(record("immediate", &events)).unwrap();
+    pm.nest_recursive::<Function>().add_pass(record("b", &events)).unwrap();
     pm.run(world).unwrap();
     assert_eq!(
         &*events.borrow(),
@@ -243,9 +240,9 @@ fn recursive_matches_delegate_their_subtree_to_the_nested_pipeline() {
         {
             let mut modules = pm.nest_recursive::<Module>();
             if recurse_inside {
-                modules.nest_recursive::<Function>().add_pass(record("visit", &events));
+                modules.nest_recursive::<Function>().add_pass(record("visit", &events)).unwrap();
             } else {
-                modules.nest::<Function>().add_pass(record("visit", &events));
+                modules.nest::<Function>().add_pass(record("visit", &events)).unwrap();
             }
         }
         pm.run(world).unwrap();
@@ -263,7 +260,9 @@ fn recursive_scheduling_excludes_its_root() {
     let (context, world) = tree();
     let events = Events::default();
     let mut pm = PassManager::on::<World>(context, Nesting::Explicit);
-    pm.nest_recursive::<World>().add_pass(Box::new(RecordOps(events.clone())));
+    pm.nest_recursive::<World>()
+        .add_pass(Box::new(RecordOps(events.clone())))
+        .unwrap();
     pm.run(world).unwrap();
     assert!(events.borrow().is_empty());
 }
@@ -356,9 +355,10 @@ fn recursive_scheduling_preserves_analysis_ancestry() {
     let (context, world) = tree();
     let events = Events::default();
     let mut pm = PassManager::on::<World>(context, Nesting::Explicit);
-    pm.add_pass(Box::new(InspectAnalyses(events.clone())));
+    pm.add_pass(Box::new(InspectAnalyses(events.clone()))).unwrap();
     pm.nest_recursive::<Function>()
-        .add_pass(Box::new(InspectAnalyses(events.clone())));
+        .add_pass(Box::new(InspectAnalyses(events.clone())))
+        .unwrap();
     pm.run(world).unwrap();
     assert_eq!(&*events.borrow(), &["root:1", "first:2", "deep:3", "last:2"]);
 }
@@ -416,8 +416,8 @@ fn recursive_failure_is_instrumented_and_stops_siblings_and_later_stages() {
     let events = Events::default();
     let mut pm = PassManager::on::<World>(context, Nesting::Explicit);
     pm.add_instrumentation(Box::new(ObserveFailure(events.clone())));
-    pm.nest_recursive::<Function>().add_pass(Box::new(FailOnDeep));
-    pm.nest_recursive::<Function>().add_pass(record("later", &events));
+    pm.nest_recursive::<Function>().add_pass(Box::new(FailOnDeep)).unwrap();
+    pm.nest_recursive::<Function>().add_pass(record("later", &events)).unwrap();
     assert!(pm.run(world).unwrap_err().to_string().contains("deep function rejected"));
     assert_eq!(
         &*events.borrow(),
@@ -430,8 +430,8 @@ fn adjacent_recursive_pipelines_do_not_coalesce_into_per_function_order() {
     let (context, world) = tree();
     let events = Events::default();
     let mut pm = PassManager::on::<World>(context, Nesting::Explicit);
-    pm.nest_recursive::<Function>().add_pass(record("a", &events));
-    pm.nest_recursive::<Function>().add_pass(record("b", &events));
+    pm.nest_recursive::<Function>().add_pass(record("a", &events)).unwrap();
+    pm.nest_recursive::<Function>().add_pass(record("b", &events)).unwrap();
     pm.run(world).unwrap();
     assert_eq!(
         &*events.borrow(),
@@ -481,11 +481,307 @@ fn recursive_scheduling_reverifies_unmatched_containers_after_child_changes() {
 
     let later = Events::default();
     let mut pm = PassManager::on::<RegionPair>(context, Nesting::Explicit);
-    pm.nest_recursive::<First>().add_pass(Box::new(InvalidateParent));
-    pm.add_pass(Box::new(RecordOps(later.clone())));
+    pm.nest_recursive::<First>().add_pass(Box::new(InvalidateParent)).unwrap();
+    pm.add_pass(Box::new(RecordOps(later.clone()))).unwrap();
     assert!(
         pm.run(root.as_operation_ref()).is_err(),
         "the intermediate container invariant must be checked"
     );
     assert!(later.borrow().is_empty(), "verification failure must stop later passes");
+}
+
+/// A module of two functions, `@a` and `@b`.
+const MODULE: &str = r#"builtin.module public @m {
+    builtin.function public extern("C") @a() { builtin.ret; };
+    builtin.function public extern("C") @b() { builtin.ret; };
+};"#;
+
+fn module() -> (Rc<Context>, OperationRef) {
+    let context = Rc::new(Context::default());
+    let module = parse_any(ParserConfig::new(context.clone()), "module.runic", MODULE)
+        .expect("valid module");
+    (context, module)
+}
+
+/// The target of a pass is the name of its operation type, and nothing for a pass on any
+/// operation.
+#[test]
+fn a_typed_pass_names_its_target() {
+    let context = Context::default();
+    let events = Events::default();
+    assert_eq!(
+        record("typed", &events).target_name(&context),
+        Some(context.get_registered_name::<Function>())
+    );
+    let any: Box<dyn OperationPass> = Box::new(RecordOps(events));
+    assert_eq!(any.target_name(&context), None);
+    assert_eq!(<Operation as PassTarget>::target_name(&context), None);
+    assert_eq!(<dyn crate::Op as PassTarget>::target_name(&context), None);
+    assert_eq!(<dyn Symbol as PassTarget>::target_name(&context), None);
+    assert_eq!(<dyn crate::SymbolTable as PassTarget>::target_name(&context), None);
+    assert_eq!(
+        <dyn crate::traits::BranchOpInterface as PassTarget>::target_name(&context),
+        None
+    );
+}
+
+/// With implicit nesting, a pass on functions added to a manager on a module is nested under a
+/// manager for functions: it runs once per function, and never on the module.
+#[test]
+fn a_typed_pass_is_nested_implicitly_under_its_operation() {
+    let (context, module) = module();
+    let events = Events::default();
+    let mut pm = PassManager::on::<Module>(context, Nesting::Implicit);
+    pm.add_pass(record("visit", &events)).unwrap();
+    pm.run(module).unwrap();
+    assert_eq!(&*events.borrow(), &["visit:a", "visit:b"]);
+}
+
+/// With explicit nesting, the same is an error at `add_pass` that names the pass, its target and
+/// the anchor; nested under `builtin.function` by name, the pass runs.
+#[test]
+fn a_typed_pass_under_another_anchor_with_explicit_nesting_is_an_error() {
+    let (context, module) = module();
+    let events = Events::default();
+    let mut pm = PassManager::on::<Module>(context, Nesting::Explicit);
+    let message = pm.add_pass(record("visit", &events)).unwrap_err().to_string();
+    assert_eq!(
+        message,
+        "cannot add pass 'visit', which runs on 'builtin.function', to a pass manager anchored on \
+         'builtin.module': nest it under 'builtin.function', or use implicit nesting"
+    );
+    pm.nest_with_type("builtin.function")
+        .unwrap()
+        .add_pass(record("visit", &events))
+        .unwrap();
+    pm.run(module).unwrap();
+    assert_eq!(&*events.borrow(), &["visit:a", "visit:b"]);
+}
+
+/// A pass registered by name is checked by `add_pass`, with the same error; a pass whose options
+/// are invalid is not added.
+#[test]
+fn a_registered_pass_is_added_through_add_pass() {
+    #[derive(Default)]
+    struct OnFunctions;
+    impl Pass for OnFunctions {
+        type Target = Function;
+
+        fn name(&self) -> &'static str {
+            "on-functions"
+        }
+
+        fn can_schedule_on(&self, name: &OperationName) -> bool {
+            name.is::<Function>()
+        }
+
+        fn run_on_operation(
+            &mut self,
+            _op: EntityMut<'_, Function>,
+            state: &mut PassExecutionState,
+        ) -> Result<(), Report> {
+            state.set_post_pass_status(PostPassStatus::Unchanged);
+            Ok(())
+        }
+    }
+
+    let context = Rc::new(Context::default());
+    let mut explicit = OpPassManager::on::<Module>(Nesting::Explicit, context.clone());
+    let message = crate::pass::registry::default_registration::<OnFunctions>(&mut explicit, "")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        message.starts_with("cannot add pass 'on-functions', which runs on"),
+        "{message}"
+    );
+    assert!(explicit.is_empty());
+
+    let factory = crate::pass::registry::default_registration_factory(|| Box::new(OnFunctions));
+    let mut implicit = OpPassManager::on::<Module>(Nesting::Implicit, context);
+    let message = factory(&mut implicit, "x=1").unwrap_err().to_string();
+    assert_eq!(message, "pass 'on-functions' takes no options");
+    assert!(implicit.is_empty());
+    factory(&mut implicit, "").unwrap();
+    assert_eq!(implicit.len(), 1);
+}
+
+/// A manager for any operation runs a typed pass only on operations of its type.
+#[test]
+fn any_runs_a_typed_pass_only_on_its_type() {
+    let (context, world) = tree();
+    let events = Events::default();
+    let mut pm = PassManager::on::<World>(context, Nesting::Implicit);
+    pm.nest_any().add_pass(record("any", &events)).unwrap();
+    {
+        let mut modules = pm.nest::<Module>();
+        modules.nest_any().add_pass(record("inner", &events)).unwrap();
+    }
+    pm.run(world).unwrap();
+    assert_eq!(&*events.borrow(), &["any:root", "inner:first", "inner:last"]);
+}
+
+/// Two typed passes for the same type added in a row share one nested manager: each function
+/// sees both before the next function is visited.
+#[test]
+fn adjacent_typed_passes_share_one_nested_manager() {
+    let (context, module) = module();
+    let events = Events::default();
+    let mut pm = PassManager::on::<Module>(context, Nesting::Implicit);
+    pm.add_pass(record("a", &events)).unwrap();
+    pm.add_pass(record("b", &events)).unwrap();
+    pm.run(module).unwrap();
+    assert_eq!(&*events.borrow(), &["a:a", "b:a", "a:b", "b:b"]);
+    let passes = pm.op_pass_manager_mut().passes();
+    assert_eq!(passes.len(), 1);
+    let adaptor = passes[0].as_any().downcast_ref::<OpToOpPassAdaptor>().unwrap();
+    assert_eq!(adaptor.pass_managers().len(), 1);
+    assert_eq!(adaptor.pass_managers()[0].len(), 2);
+}
+
+/// An anchor that is not `any` and names no registered operation is an error, for a pass manager
+/// and for a nested one.
+#[test]
+fn an_unknown_anchor_is_an_error() {
+    let context = Rc::new(Context::default());
+    for (anchor, expected) in [
+        (
+            "function",
+            "invalid pass manager anchor 'function': expected 'any' or an operation name of the \
+             form '<dialect>.<opcode>'",
+        ),
+        (
+            "builtin.funktion",
+            "invalid pass manager anchor 'builtin.funktion': dialect 'builtin' has no operation \
+             'funktion'",
+        ),
+        (
+            "nowhere.function",
+            "invalid pass manager anchor 'nowhere.function': no dialect 'nowhere' is registered",
+        ),
+    ] {
+        let message = PassManager::new(context.clone(), anchor, Nesting::Implicit)
+            .err()
+            .expect("an unknown anchor is an error")
+            .to_string();
+        assert_eq!(message, expected);
+        let message = OpPassManager::new(anchor, Nesting::Implicit, context.clone())
+            .err()
+            .expect("an unknown anchor is an error")
+            .to_string();
+        assert_eq!(message, expected);
+        let mut pm = PassManager::on::<Module>(context.clone(), Nesting::Implicit);
+        let message = pm
+            .nest_with_type(anchor)
+            .err()
+            .expect("an unknown anchor is an error")
+            .to_string();
+        assert_eq!(message, expected);
+    }
+    assert!(PassManager::new(context.clone(), "any", Nesting::Implicit).is_ok());
+    assert!(PassManager::new(context, "builtin.module", Nesting::Implicit).is_ok());
+}
+
+/// A typed pass whose `can_schedule_on` answers true for every operation, put by hand in a
+/// manager for any operation, is run on the module: an error that names the pass and both
+/// operations, not a panic.
+#[test]
+fn a_typed_pass_run_on_another_operation_is_an_error() {
+    struct Careless;
+    impl Pass for Careless {
+        type Target = Function;
+
+        fn name(&self) -> &'static str {
+            "careless"
+        }
+
+        fn can_schedule_on(&self, _name: &OperationName) -> bool {
+            true
+        }
+
+        fn run_on_operation(
+            &mut self,
+            _op: EntityMut<'_, Function>,
+            state: &mut PassExecutionState,
+        ) -> Result<(), Report> {
+            state.set_post_pass_status(PostPassStatus::Unchanged);
+            Ok(())
+        }
+    }
+
+    let (context, world) = tree();
+    let mut pm = PassManager::on::<World>(context.clone(), Nesting::Explicit);
+    let mut any = OpPassManager::any(Nesting::Explicit, context);
+    any.add_pass(Box::new(Careless)).unwrap();
+    pm.nest::<Module>().nest_pass_manager(any);
+    let message = pm.run(world).unwrap_err().to_string();
+    assert_eq!(
+        message,
+        "pass 'careless' cannot run on this operation: expected 'builtin.function', but found \
+         'builtin.module'"
+    );
+}
+
+/// A dialect that is not submitted to `inventory`, so a context does not register it until it is
+/// asked for.
+#[derive(Debug)]
+pub struct UnloadedDialect {
+    info: crate::DialectInfo,
+}
+impl crate::Dialect for UnloadedDialect {
+    fn info(&self) -> &crate::DialectInfo {
+        &self.info
+    }
+}
+impl crate::DialectRegistration for UnloadedDialect {
+    const NAMESPACE: &'static str = "unloaded";
+
+    fn init(info: crate::DialectInfo) -> Self {
+        Self { info }
+    }
+}
+
+#[crate::derive::operation(dialect = UnloadedDialect, traits(IsolatedFromAbove))]
+pub struct Unloaded {}
+
+/// A pass on an operation whose dialect the context has not registered: asking for its target
+/// registers the dialect, as building such an operation does, and the pass is nested under it
+/// (and so never runs on a module that has none).
+#[test]
+fn a_typed_pass_on_an_unregistered_dialect_registers_it() {
+    struct OnUnloaded(Events);
+    impl Pass for OnUnloaded {
+        type Target = Unloaded;
+
+        fn name(&self) -> &'static str {
+            "on-unloaded"
+        }
+
+        fn can_schedule_on(&self, name: &OperationName) -> bool {
+            name.is::<Unloaded>()
+        }
+
+        fn run_on_operation(
+            &mut self,
+            _op: EntityMut<'_, Unloaded>,
+            state: &mut PassExecutionState,
+        ) -> Result<(), Report> {
+            self.0.borrow_mut().push("unloaded".into());
+            state.set_post_pass_status(PostPassStatus::Unchanged);
+            Ok(())
+        }
+    }
+
+    let (context, module) = module();
+    let unloaded = crate::interner::Symbol::intern("unloaded");
+    assert!(context.find_registered_dialect(unloaded).is_none());
+    let events = Events::default();
+    let mut pm = PassManager::on::<Module>(context.clone(), Nesting::Implicit);
+    pm.add_pass(Box::new(OnUnloaded(events.clone()))).unwrap();
+    assert!(context.find_registered_dialect(unloaded).is_some());
+    pm.run(module).unwrap();
+    assert!(events.borrow().is_empty());
+
+    let context = Rc::new(Context::default());
+    let pm = OpPassManager::on::<Unloaded>(Nesting::Explicit, context.clone());
+    assert_eq!(pm.name().map(|name| name.to_string()).as_deref(), Some("unloaded.unloaded"));
 }

@@ -469,7 +469,9 @@ mod entry_cycle_tests {
         }
         let signature = function.borrow().signature().clone();
         let mut passes = PassManager::on::<Function>(context, Nesting::Implicit);
-        passes.add_pass(Box::new(runic_dialect_scf::transforms::LiftControlFlowToSCF));
+        passes
+            .add_pass(Box::new(runic_dialect_scf::transforms::LiftControlFlowToSCF))
+            .unwrap();
         passes.run(function.as_operation_ref())?;
         assert_eq!(*function.borrow().signature(), signature);
         function.as_operation_ref().borrow().recursively_verify()?;
@@ -734,7 +736,7 @@ mod canonical_entry_tests {
         config.with_region_simplification_level(level);
         let mut passes = PassManager::on::<Function>(context.clone(), Nesting::Implicit);
         if patterns {
-            passes.add_pass(Box::new(crate::Canonicalizer::new(config, true)));
+            passes.add_pass(Box::new(crate::Canonicalizer::new(config, true))).unwrap();
             passes.run(function.as_operation_ref())?;
         } else {
             let region = function.borrow().body().as_region_ref();
@@ -789,7 +791,9 @@ mod canonical_entry_tests {
         );
         function.as_operation_ref().borrow().recursively_verify()?;
         let mut passes = PassManager::on::<Function>(context, Nesting::Implicit);
-        passes.add_pass(Box::new(runic_dialect_scf::transforms::LiftControlFlowToSCF));
+        passes
+            .add_pass(Box::new(runic_dialect_scf::transforms::LiftControlFlowToSCF))
+            .unwrap();
         passes.run(function.as_operation_ref())?;
         function.as_operation_ref().borrow().recursively_verify()?;
         Ok(())

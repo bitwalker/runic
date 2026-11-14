@@ -516,7 +516,7 @@ fn run_pass(pass: Box<dyn runic_core::pass::OperationPass>, body: &str) -> Resul
         parse::parse::<Module>(ParserConfig::new(context.clone()), "mem", text).into_result()?;
     let function = module.borrow().symbol_manager().lookup_op("f").unwrap();
     let mut passes = PassManager::on::<Function>(context, Nesting::Implicit);
-    passes.add_pass(pass);
+    passes.add_pass(pass).unwrap();
     passes.enable_verifier(true);
     passes.run(function)?;
     Ok(function.borrow().to_string())
@@ -954,7 +954,7 @@ fn canonicalize(
         parse::parse::<Module>(ParserConfig::new(context.clone()), "mem", text).into_result()?;
     let function = module.borrow().symbol_manager().lookup_op("f").unwrap();
     let mut passes = PassManager::on::<Function>(context, Nesting::Implicit);
-    passes.add_pass(Box::<Canonicalizer>::default());
+    passes.add_pass(Box::<Canonicalizer>::default()).unwrap();
     passes.enable_verifier(true);
     passes.run(function)?;
     Ok(function.borrow().to_string())
@@ -1404,7 +1404,7 @@ fn run_pass_on(
         parse::parse::<Module>(ParserConfig::new(context.clone()), "mem", text).into_result()?;
     let function = module.borrow().symbol_manager().lookup_op("f").unwrap();
     let mut passes = PassManager::on::<Function>(context, Nesting::Implicit);
-    passes.add_pass(pass);
+    passes.add_pass(pass).unwrap();
     passes.enable_verifier(true);
     passes.run(function)?;
     Ok(function.borrow().to_string())

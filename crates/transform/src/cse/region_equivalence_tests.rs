@@ -62,7 +62,7 @@ builtin.function public extern("C") @regions(%c: i1, %a: i32, %b: i32) -> (i32, 
             root.borrow_mut().remove_attribute(INLINE_CALL_CHAIN_ATTR_NAME);
         }
         let mut passes = PassManager::on::<Function>(context, Nesting::Implicit);
-        passes.add_pass(Box::<CommonSubexpressionElimination>::default());
+        passes.add_pass(Box::<CommonSubexpressionElimination>::default()).unwrap();
         passes.run(function.as_operation_ref())?;
         function.as_operation_ref().borrow().recursively_verify()?;
         let function = function.borrow();
@@ -104,7 +104,7 @@ builtin.function public extern("C") @regions(%c: i1, %a: i32, %b: i32) -> (i32, 
     )?;
     function.as_operation_ref().borrow().recursively_verify()?;
     let mut passes = PassManager::on::<Function>(context, Nesting::Implicit);
-    passes.add_pass(Box::<CommonSubexpressionElimination>::default());
+    passes.add_pass(Box::<CommonSubexpressionElimination>::default()).unwrap();
     passes.run(function.as_operation_ref())?;
     function.as_operation_ref().borrow().recursively_verify()?;
     let function = function.borrow();

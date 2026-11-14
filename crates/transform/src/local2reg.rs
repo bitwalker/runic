@@ -209,8 +209,8 @@ impl Pass for Local2Reg {
         "local2reg"
     }
 
-    fn can_schedule_on(&self, _name: &OperationName) -> bool {
-        true
+    fn can_schedule_on(&self, name: &OperationName) -> bool {
+        name.is::<Function>()
     }
 
     fn run_on_operation(
@@ -1108,7 +1108,7 @@ mod tests {
 
         let (context, function) = parse::<Function>(source).unwrap_or_else(|err| panic!("{err}"));
         let mut passes = PassManager::on::<Function>(context, Nesting::Implicit);
-        passes.add_pass(alloc::boxed::Box::<Local2Reg>::default());
+        passes.add_pass(alloc::boxed::Box::<Local2Reg>::default()).unwrap();
         passes.enable_verifier(true);
         passes
             .run(function.as_operation_ref())

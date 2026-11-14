@@ -219,7 +219,7 @@ pub fn parse_module(
 
 pub fn canonicalize(parsed: &Parsed) -> Result<(), String> {
     let mut passes = PassManager::on::<Function>(parsed.context.clone(), Nesting::Implicit);
-    passes.add_pass(Box::<Canonicalizer>::default());
+    passes.add_pass(Box::<Canonicalizer>::default()).unwrap();
     passes.enable_verifier(true);
     passes.run(parsed.function).map_err(|err| describe(&err))
 }

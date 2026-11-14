@@ -232,7 +232,7 @@ fn exercise(text: &str) -> bool {
     ];
     for make in passes {
         let mut manager = PassManager::on::<Function>(context.clone(), Nesting::Implicit);
-        manager.add_pass(make());
+        manager.add_pass(make()).unwrap();
         manager.enable_verifier(true);
         manager.run(function).expect("a pass leaves valid IR valid");
     }

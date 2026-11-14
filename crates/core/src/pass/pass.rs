@@ -121,7 +121,14 @@ where
         mut op: OperationRef,
         state: &mut PassExecutionState,
     ) -> Result<(), Report> {
-        let op = <<P as Pass>::Target as PassTarget>::into_target_mut(&mut op);
+        // A pass is scheduled only on operations of its target; a pass manager built by hand can
+        // still run it on another, which is reported rather than assumed away.
+        let op = <<P as Pass>::Target as PassTarget>::into_target_mut(&mut op).map_err(|err| {
+            Report::msg(format!(
+                "pass '{}' cannot run on this operation: {err}",
+                <P as Pass>::name(self)
+            ))
+        })?;
         <P as Pass>::run_on_operation(self, op, state)
     }
 

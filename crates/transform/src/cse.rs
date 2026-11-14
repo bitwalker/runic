@@ -854,7 +854,7 @@ builtin.function public extern("C") @ssa_memory_reads(%0: ptr<i8>) -> (i8, i8) {
         module.borrow().recursively_verify().expect("valid ir before CSE");
 
         let mut pm = PassManager::on::<Module>(test.context_rc(), Nesting::Implicit);
-        pm.add_pass(Box::<CommonSubexpressionElimination>::default());
+        pm.add_pass(Box::<CommonSubexpressionElimination>::default()).unwrap();
         pm.run(module).expect("valid ir");
         module.borrow().recursively_verify().expect("valid ir after CSE");
 
@@ -1504,7 +1504,7 @@ builtin.function public extern("C") @down_propagate_while() {
             .into_result()?;
         let function = module.borrow().symbol_manager().lookup_op("f").unwrap();
         let mut passes = PassManager::on::<Function>(context, Nesting::Implicit);
-        passes.add_pass(Box::<CommonSubexpressionElimination>::default());
+        passes.add_pass(Box::<CommonSubexpressionElimination>::default()).unwrap();
         passes.enable_verifier(true);
         passes.run(function)?;
         Ok(function.borrow().to_string())

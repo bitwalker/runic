@@ -441,7 +441,7 @@ pub fn run_passes(
     let before = function.borrow().to_string();
     for pass in passes {
         let mut manager = PassManager::on::<Function>(context.clone(), Nesting::Implicit);
-        manager.add_pass(pass);
+        manager.add_pass(pass).unwrap();
         manager.enable_verifier(true);
         manager.run(function).map_err(|err| format!("pass: {}", describe(&err)))?;
     }

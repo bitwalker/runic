@@ -66,9 +66,28 @@ pub struct PassManager {
 
 impl PassManager {
     /// Create a new pass manager under the given context with a specific nesting style. The created
-    /// pass manager can schedule operations that match `name`.
-    pub fn new(context: Rc<Context>, name: impl AsRef<str>, nesting: Nesting) -> Self {
-        let pm = OpPassManager::new(name.as_ref(), nesting, context.clone());
+    /// pass manager can schedule operations that match `name`: `any`, or the name of an operation
+    /// (`<dialect>.<opcode>`) registered in `context`.
+    ///
+    /// Returns an error when `name` is neither.
+    pub fn new(
+        context: Rc<Context>,
+        name: impl AsRef<str>,
+        nesting: Nesting,
+    ) -> Result<Self, Report> {
+        let pm = OpPassManager::new(name.as_ref(), nesting, context.clone())?;
+        Ok(Self::with_op_pass_manager(context, pm))
+    }
+
+    /// Create a new pass manager under the given context with a specific nesting style.
+    ///
+    /// The created pass manager can schedule operations that match type `T`.
+    pub fn on<T: OpRegistration>(context: Rc<Context>, nesting: Nesting) -> Self {
+        let pm = OpPassManager::on::<T>(nesting, context.clone());
+        Self::with_op_pass_manager(context, pm)
+    }
+
+    fn with_op_pass_manager(context: Rc<Context>, pm: OpPassManager) -> Self {
         Self {
             context,
             pm,
@@ -77,13 +96,6 @@ impl PassManager {
             timing: false,
             verification: true,
         }
-    }
-
-    /// Create a new pass manager under the given context with a specific nesting style.
-    ///
-    /// The created pass manager can schedule operations that match type `T`.
-    pub fn on<T: OpRegistration>(context: Rc<Context>, nesting: Nesting) -> Self {
-        Self::new(context, <T as OpRegistration>::full_name(), nesting)
     }
 
     /// Run the passes within this manager on the provided operation. The
@@ -223,7 +235,9 @@ impl PassManager {
     }
 
     /// Nest a new op-specific pass manager (for the op with the given name), under this pass manager.
-    pub fn nest_with_type(&mut self, nested_name: &str) -> NestedOpPassManager<'_> {
+    ///
+    /// Returns an error when `nested_name` is neither `any` nor the name of a registered operation.
+    pub fn nest_with_type(&mut self, nested_name: &str) -> Result<NestedOpPassManager<'_>, Report> {
         self.pm.nest_with_type(nested_name)
     }
 
@@ -232,11 +246,16 @@ impl PassManager {
         self.pm.nest_any()
     }
 
-    pub fn add_pass(&mut self, pass: Box<dyn OperationPass>) {
+    /// Add `pass` to this pass manager; see [`OpPassManager::add_pass`].
+    pub fn add_pass(&mut self, pass: Box<dyn OperationPass>) -> Result<(), Report> {
         self.pm.add_pass(pass)
     }
 
-    pub fn add_nested_pass<T: OpRegistration>(&mut self, pass: Box<dyn OperationPass>) {
+    /// Add `pass` to a pass manager for operations of type `T` nested under this one.
+    pub fn add_nested_pass<T: OpRegistration>(
+        &mut self,
+        pass: Box<dyn OperationPass>,
+    ) -> Result<(), Report> {
         self.pm.add_nested_pass::<T>(pass)
     }
 
@@ -277,56 +296,51 @@ impl OpPassManager {
         }
     }
 
-    pub fn new(name: &str, nesting: Nesting, context: Rc<Context>) -> Self {
+    /// Construct a pass manager for the operations named `name`: `any` (see [`Self::any`]), or the
+    /// name of an operation (`<dialect>.<opcode>`) registered in `context`.
+    ///
+    /// Returns an error when `name` is neither: it has no dialect, names a dialect that is not
+    /// registered, or names an operation its dialect does not have.
+    pub fn new(name: &str, nesting: Nesting, context: Rc<Context>) -> Result<Self, Report> {
         if name == Self::ANY {
-            return Self::any(nesting, context);
+            return Ok(Self::any(nesting, context));
         }
 
-        let (dialect_name, opcode) = name.split_once('.').expect(
-            "invalid operation name: expected format `<dialect>.<name>`, but missing `<dialect>.`",
-        );
-        let dialect_name = crate::interner::Symbol::intern(dialect_name);
-        let dialect = context.get_registered_dialect(dialect_name);
-        let ops = dialect.registered_ops();
-        let name =
-            ops.iter()
-                .find(|name| name.name().as_str() == opcode)
-                .cloned()
-                .unwrap_or_else(|| {
-                    panic!(
-                        "invalid operation name: found dialect '{dialect_name}', but no operation \
-                         called '{opcode}' is registered to that dialect"
-                    )
-                });
-        Self {
-            context,
-            name: Some(name),
-            passes: Default::default(),
-            nesting,
-        }
+        let Some((dialect_name, opcode)) = name.split_once('.') else {
+            return Err(Report::msg(format!(
+                "invalid pass manager anchor '{name}': expected 'any' or an operation name of the \
+                 form '<dialect>.<opcode>'"
+            )));
+        };
+        let Some(dialect) =
+            context.find_registered_dialect(crate::interner::Symbol::intern(dialect_name))
+        else {
+            return Err(Report::msg(format!(
+                "invalid pass manager anchor '{name}': no dialect '{dialect_name}' is registered"
+            )));
+        };
+        let Some(name) =
+            dialect.registered_ops().iter().find(|op| op.name().as_str() == opcode).cloned()
+        else {
+            return Err(Report::msg(format!(
+                "invalid pass manager anchor '{name}': dialect '{dialect_name}' has no operation \
+                 '{opcode}'"
+            )));
+        };
+        Ok(Self::for_operation(name, nesting, context))
     }
 
+    /// Construct a pass manager for the operations of type `T`, registering the dialect of `T` in
+    /// `context` if that has not been done.
     pub fn on<T: OpRegistration>(nesting: Nesting, context: Rc<Context>) -> Self {
-        let dialect_name = <T as OpRegistration>::dialect_name();
-        let opcode = <T as OpRegistration>::name();
-        let dialect = context.get_registered_dialect(dialect_name);
-        let name = dialect
-            .registered_ops()
-            .iter()
-            .find(|n| n.name() == opcode)
-            .cloned()
-            .unwrap_or_else(|| {
-                panic!(
-                    "invalid operation name: found dialect '{dialect_name}', but no operation \
-                     called '{opcode}' is registered to that dialect"
-                );
-            });
-        Self {
-            context,
-            name: Some(name),
-            passes: Default::default(),
-            nesting,
-        }
+        let name = <T as super::PassTarget>::target_name(&context).unwrap_or_else(|| {
+            panic!(
+                "operation `{}` is not registered with its dialect '{}'",
+                core::any::type_name::<T>(),
+                <T as OpRegistration>::dialect_name()
+            )
+        });
+        Self::for_operation(name, nesting, context)
     }
 
     pub fn for_operation(name: OperationName, nesting: Nesting, context: Rc<Context>) -> Self {
@@ -367,8 +381,11 @@ impl OpPassManager {
     }
 
     /// Nest a new op-specific pass manager (for the op with the given name), under this pass manager.
-    pub fn nest_with_type(&mut self, nested_name: &str) -> NestedOpPassManager<'_> {
-        self.nest_pass_manager(Self::new(nested_name, self.nesting, self.context.clone()))
+    ///
+    /// Returns an error when `nested_name` is neither `any` nor the name of a registered operation.
+    pub fn nest_with_type(&mut self, nested_name: &str) -> Result<NestedOpPassManager<'_>, Report> {
+        let nested = Self::new(nested_name, self.nesting, self.context.clone())?;
+        Ok(self.nest_pass_manager(nested))
     }
 
     pub fn nest<T: OpRegistration>(&mut self) -> NestedOpPassManager<'_> {
@@ -402,32 +419,44 @@ impl OpPassManager {
         self.nest_pass_manager(Self::for_operation(nested_name, self.nesting, self.context.clone()))
     }
 
-    pub fn add_pass(&mut self, pass: Box<dyn OperationPass>) {
-        // If this pass runs on a different operation than this pass manager, then implicitly
-        // nest a pass manager for this operation if enabled.
+    /// Add `pass` to this pass manager.
+    ///
+    /// A pass that targets one operation type (see [`super::PassTarget::target_name`]) added to a
+    /// manager anchored on another is nested under a manager for its type with
+    /// [`Nesting::Implicit`], and is an error that names the pass, its target and the anchor with
+    /// [`Nesting::Explicit`]. A manager for `any` takes every pass as it is: it schedules only
+    /// on operations every one of its passes can be scheduled on.
+    pub fn add_pass(&mut self, pass: Box<dyn OperationPass>) -> Result<(), Report> {
         let pass_op_name = pass.target_name(&self.context);
         if let Some(pass_op_name) = pass_op_name
-            && self.name.as_ref().is_some_and(|name| name != &pass_op_name)
+            && let Some(anchor) = self.name.as_ref()
+            && anchor != &pass_op_name
         {
             if matches!(self.nesting, Nesting::Implicit) {
                 let mut nested = self.nest_for(pass_op_name);
-                nested.add_pass(pass);
-                return;
+                return nested.add_pass(pass);
             }
-            panic!(
-                "cannot add pass '{}' restricted to '{pass_op_name}' to a pass manager intended \
-                 to run on '{}', did you intend to nest?",
-                pass.name(),
-                self.name().unwrap(),
-            );
+            let pass_name = match pass.argument() {
+                "" => pass.name(),
+                argument => argument,
+            };
+            return Err(Report::msg(format!(
+                "cannot add pass '{pass_name}', which runs on '{pass_op_name}', to a pass manager \
+                 anchored on '{anchor}': nest it under '{pass_op_name}', or use implicit nesting"
+            )));
         }
 
         self.passes.push(pass);
+        Ok(())
     }
 
-    pub fn add_nested_pass<T: OpRegistration>(&mut self, pass: Box<dyn OperationPass>) {
+    /// Add `pass` to a pass manager for operations of type `T` nested under this one.
+    pub fn add_nested_pass<T: OpRegistration>(
+        &mut self,
+        pass: Box<dyn OperationPass>,
+    ) -> Result<(), Report> {
         let mut nested = self.nest::<T>();
-        nested.add_pass(pass);
+        nested.add_pass(pass)
     }
 
     pub fn finalize_pass_list(&mut self) -> Result<(), Report> {
@@ -741,7 +770,8 @@ impl core::ops::DerefMut for NestedOpPassManager<'_> {
 
 impl Drop for NestedOpPassManager<'_> {
     fn drop(&mut self) {
-        self.parent.add_pass(self.nested.take().unwrap() as Box<dyn OperationPass>);
+        // An adaptor targets no operation type, so it is added as it is.
+        self.parent.passes.push(self.nested.take().unwrap() as Box<dyn OperationPass>);
     }
 }
 

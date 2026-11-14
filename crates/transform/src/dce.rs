@@ -171,7 +171,7 @@ mod tests {
             .into_result()?;
         let function = module.borrow().symbol_manager().lookup_op("f").unwrap();
         let mut passes = PassManager::on::<Function>(context, Nesting::Implicit);
-        passes.add_pass(Box::<DeadCodeElimination>::default());
+        passes.add_pass(Box::<DeadCodeElimination>::default()).unwrap();
         passes.enable_verifier(true);
         passes.run(function)?;
         Ok(function.borrow().to_string())

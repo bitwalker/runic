@@ -1,4 +1,4 @@
-use alloc::{boxed::Box, collections::BTreeMap, format};
+use alloc::{boxed::Box, collections::BTreeMap};
 use core::any::TypeId;
 
 use runic_symbol::sync::{LazyLock, RwLock};
@@ -321,33 +321,14 @@ pub fn register_pass(builder: PassAllocatorFunction) {
 /// A default implementation of a pass pipeline registration function.
 ///
 /// It expects that `P` (the type of the pass or pass pipeline), implements `Default`, so that an
-/// instance is default-constructible. It then initializes the pass with the provided options,
-/// validates that the pass/pipeline is valid for the parent pipeline, and adds it if so.
+/// instance is default-constructible. It then initializes the pass with the provided options and
+/// adds it to `pm` (see [`OpPassManager::add_pass`], which nests it or rejects it when it targets
+/// another operation than the anchor of `pm`).
 pub fn default_registration<P: Pass + Default>(
     pm: &mut OpPassManager,
     options: &str,
 ) -> Result<(), Report> {
-    let mut pass = Box::<P>::default() as Box<dyn OperationPass>;
-    let result = pass.initialize_options(options);
-    let pm_op_name = pm.name();
-    let pass_op_name = pass.target_name(&pm.context());
-    let pass_op_name = pass_op_name.as_ref();
-    if matches!(pm.nesting(), Nesting::Explicit)
-        && (pass_op_name.is_some_and(|p| pm_op_name.is_none_or(|p2| p != p2))
-            || (pm_op_name.is_some_and(|p| pass_op_name.is_some_and(|p2| p != p2))))
-    {
-        return Err(crate::diagnostics::report!(
-            message: (format!(
-                "registration error for pass '{}': can't add pass restricted to '{}' on a pass \
-                 manager intended to run on '{}', did you intend to nest?",
-                pass.name(),
-                crate::formatter::DisplayOptional(pass_op_name.as_ref()),
-                crate::formatter::DisplayOptional(pm_op_name),
-            )),
-        ));
-    }
-    pm.add_pass(pass);
-    result
+    add_with_options(default_instance::<P>(), pm, options)
 }
 
 /// Like [default_registration], but takes an arbitrary constructor in the form of a zero-arity
@@ -357,28 +338,19 @@ pub fn default_registration_factory(
     builder: PassAllocatorFunction,
 ) -> impl Fn(&mut OpPassManager, &str) -> Result<(), Report> + Send + Sync + 'static {
     move |pm: &mut OpPassManager, options: &str| -> Result<(), Report> {
-        let mut pass = builder();
-        let result = pass.initialize_options(options);
-        let pm_op_name = pm.name();
-        let pass_op_name = pass.target_name(&pm.context());
-        let pass_op_name = pass_op_name.as_ref();
-        if matches!(pm.nesting(), Nesting::Explicit)
-            && (pass_op_name.is_some_and(|p| pm_op_name.is_none_or(|p2| p != p2))
-                || (pm_op_name.is_some_and(|p| pass_op_name.is_some_and(|p2| p != p2))))
-        {
-            return Err(crate::diagnostics::report!(
-                message: (format!(
-                    "registration error for pass '{}': can't add pass restricted to '{}' on a \
-                     pass manager intended to run on '{}', did you intend to nest?",
-                    pass.name(),
-                    crate::formatter::DisplayOptional(pass_op_name.as_ref()),
-                    crate::formatter::DisplayOptional(pm_op_name),
-                )),
-            ));
-        }
-        pm.add_pass(pass);
-        result
+        add_with_options(builder(), pm, options)
     }
+}
+
+/// Initializes `pass` with `options` and adds it to `pm`; a pass whose options are invalid is not
+/// added.
+fn add_with_options(
+    mut pass: Box<dyn OperationPass>,
+    pm: &mut OpPassManager,
+    options: &str,
+) -> Result<(), Report> {
+    pass.initialize_options(options)?;
+    pm.add_pass(pass)
 }
 
 fn default_instance<P: Pass + Default>() -> Box<dyn OperationPass> {
