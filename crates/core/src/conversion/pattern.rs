@@ -115,7 +115,7 @@ pub trait ConversionPattern: Pattern {
     /// Return `Ok(true)` after successfully mutating IR. Return `Ok(false)` when the pattern does
     /// not match; in that case the pattern must not mutate IR, but may call
     /// [`ConversionPatternRewriter::notify_match_failure`] to leave a diagnostic breadcrumb. Return
-    /// `Err` for a fatal failure that should abort conversion. The full-conversion driver checks
+    /// `Err` for a fatal failure that should abort conversion. The conversion driver checks
     /// this mutation contract because it does not provide rollback.
     fn match_and_rewrite(
         &self,

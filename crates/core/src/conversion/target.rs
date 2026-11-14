@@ -164,9 +164,15 @@ impl RecursiveLegalityRule {
 /// 3. Interface rule, in registration order.
 /// 4. Unknown operation policy.
 ///
-/// Conversion targets are owned by concrete passes. The generic driver consumes a target together
-/// with a set of conversion patterns and requires every visited operation to become legal, except
-/// for operations nested under recursively legal operations.
+/// The unknown operation policy answers [Self::legality] for an operation that no rule matches;
+/// [Self::rule_legality] answers by the rules alone. A full conversion
+/// ([super::apply_full_conversion]) asks the former. A partial conversion
+/// ([super::apply_partial_conversion]) leaves an operation the policy calls legal as it is, and
+/// treats one that no rule matches and the policy does not call legal as an operation it may
+/// convert but need not.
+///
+/// Conversion targets are owned by concrete passes; operations nested under a recursively legal
+/// operation are not visited by either conversion.
 pub struct ConversionTarget {
     context: Rc<Context>,
     unknown_op_policy: UnknownOpPolicy,
@@ -305,45 +311,54 @@ impl ConversionTarget {
     }
 
     /// Evaluate operation-instance legality using the target precedence rules.
+    ///
+    /// An operation without an operation, dialect or interface rule is answered by the unknown
+    /// operation policy, so this never returns [`Legality::Unknown`].
     pub fn legality(&self, op: &Operation) -> Legality {
-        let name = op.name();
-        if let Some(rule) = self.op_actions.get(&name) {
-            return rule.evaluate(op);
+        match self.rule_legality(op) {
+            Legality::Unknown => self.unknown_op_policy.evaluate(op),
+            legality => legality,
         }
+    }
 
-        if let Some(rule) = self.dialect_actions.get(&name.dialect()) {
-            return rule.evaluate(op);
-        }
-
-        for interface in self.interface_actions.iter() {
-            if name.implements_trait_id(&interface.trait_id) {
-                return interface.rule.evaluate(op);
-            }
-        }
-
-        self.unknown_op_policy.evaluate(op)
+    /// Evaluate operation-instance legality by the operation, dialect and interface rules alone,
+    /// in that order; [`Legality::Unknown`] when none matches. The unknown operation policy is
+    /// not consulted.
+    pub fn rule_legality(&self, op: &Operation) -> Legality {
+        self.rule_for(&op.name()).map_or(Legality::Unknown, |rule| rule.evaluate(op))
     }
 
     /// Evaluate operation-name legality without inspecting a concrete operation instance.
     ///
     /// Dynamic rules return [`StaticLegality::Dynamic`]. This is used by legalization path
-    /// discovery to decide which generated operations may be terminal targets.
+    /// discovery to decide which generated operations may be terminal targets. A name without a
+    /// rule is answered by the unknown operation policy.
     pub fn static_legality(&self, name: &OperationName) -> StaticLegality {
-        if let Some(rule) = self.op_actions.get(name) {
-            return rule.static_legality();
+        match self.static_rule_legality(name) {
+            StaticLegality::Unknown => self.unknown_op_policy.static_legality(),
+            legality => legality,
         }
+    }
 
-        if let Some(rule) = self.dialect_actions.get(&name.dialect()) {
-            return rule.static_legality();
-        }
+    /// [Self::static_legality] by the operation, dialect and interface rules alone;
+    /// [`StaticLegality::Unknown`] when none matches.
+    pub fn static_rule_legality(&self, name: &OperationName) -> StaticLegality {
+        self.rule_for(name)
+            .map_or(StaticLegality::Unknown, LegalityRule::static_legality)
+    }
 
-        for interface in self.interface_actions.iter() {
-            if name.implements_trait_id(&interface.trait_id) {
-                return interface.rule.static_legality();
-            }
-        }
-
-        self.unknown_op_policy.static_legality()
+    /// The rule that decides the legality of operations named `name`: the operation's own rule,
+    /// else its dialect's, else the first interface rule it implements.
+    fn rule_for(&self, name: &OperationName) -> Option<&LegalityRule> {
+        self.op_actions
+            .get(name)
+            .or_else(|| self.dialect_actions.get(&name.dialect()))
+            .or_else(|| {
+                self.interface_actions
+                    .iter()
+                    .find(|interface| name.implements_trait_id(&interface.trait_id))
+                    .map(|interface| &interface.rule)
+            })
     }
 
     /// Return true when `op` is legal for this target.
@@ -517,6 +532,26 @@ mod tests {
             .expect_registered_name::<Constant>();
 
         assert_eq!(target.static_legality(&constant), StaticLegality::Dynamic);
+    }
+
+    #[test]
+    fn rule_legality_does_not_consult_the_unknown_policy() {
+        let context = Rc::new(Context::default());
+        let mut target = ConversionTarget::new(context.clone());
+        target.add_legal_op_interface::<dyn Commutative>();
+        let add = detached_op::<Add>(&context);
+        let constant = detached_op::<Constant>(&context);
+        let constant_name = constant.borrow().name();
+
+        assert!(matches!(target.legality(&constant.borrow()), Legality::Illegal));
+        assert!(matches!(target.rule_legality(&constant.borrow()), Legality::Unknown));
+        assert!(matches!(target.rule_legality(&add.borrow()), Legality::Legal));
+        assert_eq!(target.static_legality(&constant_name), StaticLegality::Illegal);
+        assert_eq!(target.static_rule_legality(&constant_name), StaticLegality::Unknown);
+
+        target.add_illegal_op::<Constant>();
+        assert!(matches!(target.rule_legality(&constant.borrow()), Legality::Illegal));
+        assert_eq!(target.static_rule_legality(&constant_name), StaticLegality::Illegal);
     }
 
     #[test]

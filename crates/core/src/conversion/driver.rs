@@ -13,38 +13,15 @@ use crate::{
     dialects::builtin::UnrealizedConversionCast,
 };
 
-/// Dialect conversion mode.
-///
-/// Only full conversion is implemented today. The additional variants reserve the API shape for
-/// the partial and analysis modes described by the design document.
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub enum ConversionMode {
-    /// Require every operation under the root to be legal after conversion.
-    Full,
-    /// Reserved for MLIR-style partial conversion, where already-legal operations may remain
-    /// without forcing every unknown operation to legalize.
-    Partial,
-    /// Reserved for analysis-only conversion that reports whether conversion could succeed without
-    /// mutating IR.
-    Analysis,
-}
-
 /// Configuration for the dialect conversion driver.
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct ConversionConfig {
-    mode: ConversionMode,
     reconcile_unrealized_casts: bool,
     verify_after_conversion: bool,
     max_iterations: usize,
 }
 
 impl ConversionConfig {
-    /// Return the configured conversion mode.
-    #[inline]
-    pub const fn mode(&self) -> ConversionMode {
-        self.mode
-    }
-
     /// Return whether the converted root is recursively verified after legality succeeds.
     #[inline]
     pub const fn verify_after_conversion(&self) -> bool {
@@ -63,14 +40,6 @@ impl ConversionConfig {
         self.max_iterations
     }
 
-    /// Set the conversion mode.
-    ///
-    /// The current driver accepts only [`ConversionMode::Full`]; other modes are reserved API.
-    pub fn with_mode(&mut self, mode: ConversionMode) -> &mut Self {
-        self.mode = mode;
-        self
-    }
-
     /// Enable or disable recursive IR verification after conversion.
     pub fn with_verify_after_conversion(&mut self, yes: bool) -> &mut Self {
         self.verify_after_conversion = yes;
@@ -81,7 +50,8 @@ impl ConversionConfig {
     ///
     /// When enabled (the default), the casts whose ends agree are folded away when the patterns
     /// have run, and each cast the driver inserted that remains is realized by the type
-    /// converter's materialization callbacks; one that none realizes is an error. When disabled,
+    /// converter's materialization callbacks. One that none realizes is an error, except in a
+    /// partial conversion whose target calls the cast legal, where it stays. When disabled,
     /// nothing is folded or realized, and the casts the driver inserted stay in the IR.
     pub fn with_reconcile_unrealized_casts(&mut self, yes: bool) -> &mut Self {
         self.reconcile_unrealized_casts = yes;
@@ -100,7 +70,6 @@ impl ConversionConfig {
 impl Default for ConversionConfig {
     fn default() -> Self {
         Self {
-            mode: ConversionMode::Full,
             reconcile_unrealized_casts: true,
             verify_after_conversion: true,
             max_iterations: 1024,
@@ -129,10 +98,12 @@ impl ConversionResult {
     }
 }
 
-/// Apply full dialect conversion to `root`.
+/// Every operation under `root` must end up legal.
 ///
-/// Full conversion requires every operation under `root` to be legal for `target`, except for
-/// operations nested under recursively legal operations.
+/// An operation the target does not call legal ([ConversionTarget::legality], the unknown
+/// operation policy included) is converted by the patterns, and one that no pattern converts is an
+/// error. Operations nested under a recursively legal operation are not visited. The module
+/// documentation ([crate::conversion]) states what a pattern may rely on.
 ///
 /// Patterns are tried according to the legalization graph derived from the target and each
 /// pattern's generated-op metadata. A pattern is given each operand as the values it became
@@ -155,13 +126,58 @@ pub fn apply_full_conversion(
     patterns: ConversionPatternSet,
     config: ConversionConfig,
 ) -> Result<ConversionResult, Report> {
-    if config.mode() != ConversionMode::Full {
-        return Err(Report::msg("apply_full_conversion requires ConversionMode::Full"));
-    }
+    run_conversion(Mode::Full, root, target, patterns, config)
+}
 
+/// Operations the target calls illegal must be converted. An operation the target has no rule for
+/// is offered to the patterns and stays as it is when none applies.
+///
+/// Each operation under `root` is in one of three cases:
+///
+/// - The target calls it legal, by a rule or by the unknown operation policy: it is left as it is.
+/// - A rule of the target (for the operation, its dialect or an interface, static or dynamic)
+///   calls it illegal: it must be converted, as in [apply_full_conversion], and one that no
+///   pattern converts is an error.
+/// - No rule matches it and the unknown operation policy does not call it legal: it is offered to
+///   the patterns rooted at it and to the patterns for any operation, and when there is none or
+///   none matches, it stays as it is. What a pattern makes of it is legalized like any operation
+///   the pattern creates.
+///
+/// A pattern that breaks the pattern contract, or fails, aborts the conversion as in
+/// [apply_full_conversion]. When the patterns have run, the casts are folded and realized as in a
+/// full conversion; a cast the driver inserted that no callback realizes stays when the target
+/// calls `builtin.unrealized_conversion_cast` legal, and is an error otherwise. The final check
+/// reports only an operation that a rule of the target calls illegal.
+pub fn apply_partial_conversion(
+    root: OperationRef,
+    target: ConversionTarget,
+    patterns: ConversionPatternSet,
+    config: ConversionConfig,
+) -> Result<ConversionResult, Report> {
+    run_conversion(Mode::Partial, root, target, patterns, config)
+}
+
+/// Which conversion runs: every operation must end legal, or only those a rule calls illegal.
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+enum Mode {
+    Full,
+    Partial,
+}
+
+fn run_conversion(
+    mode: Mode,
+    root: OperationRef,
+    target: ConversionTarget,
+    patterns: ConversionPatternSet,
+    config: ConversionConfig,
+) -> Result<ConversionResult, Report> {
     let frozen_patterns = FrozenConversionPatternSet::new(patterns);
-    let graph = LegalizationGraph::new(&target, &frozen_patterns);
-    let mut driver = FullConversionDriver {
+    let graph = match mode {
+        Mode::Full => LegalizationGraph::new(&target, &frozen_patterns),
+        Mode::Partial => LegalizationGraph::new_partial(&target, &frozen_patterns),
+    };
+    let mut driver = ConversionDriver {
+        mode,
         root,
         target: &target,
         graph,
@@ -178,7 +194,8 @@ pub fn apply_full_conversion(
     Ok(driver.result)
 }
 
-struct FullConversionDriver<'a> {
+struct ConversionDriver<'a> {
+    mode: Mode,
     root: OperationRef,
     target: &'a ConversionTarget,
     graph: LegalizationGraph<'a>,
@@ -189,7 +206,7 @@ struct FullConversionDriver<'a> {
     result: ConversionResult,
 }
 
-impl FullConversionDriver<'_> {
+impl ConversionDriver<'_> {
     fn run(&mut self) -> Result<(), Report> {
         let ops = self.collect_conversion_order()?;
         for op in ops {
@@ -207,7 +224,7 @@ impl FullConversionDriver<'_> {
             self.state.casts.borrow_mut().retain(|cast, _| live.contains(cast));
             self.result.changed |= self.realize_casts(&remaining)?;
         }
-        self.verify_full_conversion_legality()?;
+        self.verify_legality()?;
 
         if self.config.verify_after_conversion() {
             self.root.borrow().recursively_verify()?;
@@ -242,15 +259,20 @@ impl FullConversionDriver<'_> {
         if self.target.is_recursively_legal(&op.borrow()) || self.target.is_legal(&op.borrow()) {
             return Ok(());
         }
+        let required = self.must_be_converted(op);
 
         let op_name = op.borrow().name();
-        if !self.graph.is_legalizable(&op_name) {
-            return Err(self.no_legalization_path_error(op));
-        }
-
-        let candidates = self.candidate_patterns(&op_name);
+        let candidates = if self.graph.is_legalizable(&op_name) {
+            self.candidate_patterns(&op_name)
+        } else {
+            Vec::new()
+        };
         if candidates.is_empty() {
-            return Err(self.no_legalization_path_error(op));
+            return if required {
+                Err(self.no_legalization_path_error(op))
+            } else {
+                Ok(())
+            };
         }
 
         let mut match_failures = vec![];
@@ -316,7 +338,21 @@ impl FullConversionDriver<'_> {
             }
         }
 
-        Err(no_matching_pattern_error(op, match_failures))
+        if required {
+            Err(no_matching_pattern_error(op, match_failures))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Whether `op`, which the target does not call legal, must be converted: always in a full
+    /// conversion; in a partial one, when a rule of the target calls it illegal (not only the
+    /// unknown operation policy).
+    fn must_be_converted(&self, op: OperationRef) -> bool {
+        match self.mode {
+            Mode::Full => true,
+            Mode::Partial => !self.target.rule_legality(&op.borrow()).is_unknown(),
+        }
     }
 
     fn candidate_patterns(&self, op_name: &OperationName) -> Vec<Rc<dyn ConversionPattern>> {
@@ -376,7 +412,8 @@ impl FullConversionDriver<'_> {
     /// Realizes each of `casts` (in program order) that the driver inserted, through the
     /// materialization callbacks of its kind of the converter in force when it was inserted;
     /// returns whether any was realized. A cast the driver did not insert is left alone; one that
-    /// no callback realizes is an error.
+    /// no callback realizes is an error, except in a partial conversion whose target calls it
+    /// legal, where it stays (and is no longer the driver's).
     fn realize_casts(&mut self, casts: &[OperationRef]) -> Result<bool, Report> {
         let mut changed = false;
         for &cast in casts {
@@ -418,6 +455,10 @@ impl FullConversionDriver<'_> {
                 }
             };
             let Some(values) = values else {
+                // A partial conversion keeps a cast its target calls legal.
+                if self.mode == Mode::Partial && self.target.is_legal(&cast.borrow()) {
+                    continue;
+                }
                 return Err(unrealized_cast_error(cast, driver_cast.kind, &inputs, &result_types));
             };
             if types_of(&values) != result_types {
@@ -442,7 +483,9 @@ impl FullConversionDriver<'_> {
         self.state.casts.borrow().contains_key(&op)
     }
 
-    fn verify_full_conversion_legality(&self) -> Result<(), Report> {
+    /// Every operation not under a recursively legal one is legal (a full conversion), or none is
+    /// called illegal by a rule of the target (a partial one).
+    fn verify_legality(&self) -> Result<(), Report> {
         self.root
             .borrow()
             .prewalk(|op| {
@@ -450,8 +493,12 @@ impl FullConversionDriver<'_> {
                     return WalkResult::<Report>::Skip;
                 }
 
+                let accepted = match self.mode {
+                    Mode::Full => self.target.is_legal(op),
+                    Mode::Partial => !self.target.rule_legality(op).is_illegal(),
+                };
                 // A cast the driver inserted that remains is one reconciliation left alone (off).
-                if self.target.is_legal(op) || self.is_driver_cast(op.as_operation_ref()) {
+                if accepted || self.is_driver_cast(op.as_operation_ref()) {
                     WalkResult::<Report>::Continue(())
                 } else {
                     let op_ref = op.as_operation_ref();
@@ -622,16 +669,30 @@ fn unrealized_cast_error(
 }
 
 fn legality_failure_reason(target: &ConversionTarget, op: &crate::Operation) -> Option<String> {
-    match target.legality(op) {
+    let by_policy = target.rule_legality(op).is_unknown();
+    let reason = match target.legality(op) {
         Legality::DynamicIllegal {
             reason: Some(reason),
-        } => Some(format!("{reason}")),
+        } => format!("{reason}"),
         Legality::DynamicIllegal { reason: None } => {
-            Some(String::from("dynamic legality predicate returned illegal"))
+            String::from("dynamic legality predicate returned illegal")
         }
-        Legality::Illegal => Some(String::from("operation is explicitly illegal")),
-        Legality::Unknown => Some(String::from("operation is unknown to the conversion target")),
-        Legality::Legal | Legality::DynamicLegal => None,
+        Legality::Illegal if by_policy => {
+            return Some(String::from(
+                "the target has no rule for the operation, and its unknown operation policy calls \
+                 it illegal",
+            ));
+        }
+        Legality::Illegal => String::from("operation is explicitly illegal"),
+        Legality::Legal | Legality::DynamicLegal | Legality::Unknown => return None,
+    };
+    if by_policy {
+        Some(format!(
+            "the target has no rule for the operation, and its unknown operation policy calls it \
+             illegal: {reason}"
+        ))
+    } else {
+        Some(reason)
     }
 }
 

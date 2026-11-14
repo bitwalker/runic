@@ -15,6 +15,8 @@ use crate::OperationName;
 /// tooling can inspect legalization reachability.
 pub struct LegalizationGraph<'a> {
     target: &'a ConversionTarget,
+    /// Whether an operation the target has no rule for is terminal (a partial conversion).
+    rule_free_is_terminal: bool,
     legalizer_patterns: BTreeMap<OperationName, SmallVec<[Rc<dyn ConversionPattern>; 2]>>,
     any_op_patterns: SmallVec<[Rc<dyn ConversionPattern>; 1]>,
 }
@@ -26,9 +28,28 @@ impl<'a> LegalizationGraph<'a> {
     /// operation set is not root-specific. Operation-specific patterns are retained only when all
     /// declared generated operations are legalizable.
     pub fn new(target: &'a ConversionTarget, patterns: &FrozenConversionPatternSet) -> Self {
+        Self::build(target, patterns, false)
+    }
+
+    /// Build the legalization graph of a partial conversion: as [Self::new], except that an
+    /// operation the target has no rule for ([ConversionTarget::static_rule_legality]) is also a
+    /// terminal operation, since a partial conversion may leave it as it is.
+    pub fn new_partial(
+        target: &'a ConversionTarget,
+        patterns: &FrozenConversionPatternSet,
+    ) -> Self {
+        Self::build(target, patterns, true)
+    }
+
+    fn build(
+        target: &'a ConversionTarget,
+        patterns: &FrozenConversionPatternSet,
+        rule_free_is_terminal: bool,
+    ) -> Self {
         let any_op_patterns = patterns.any_op_patterns().iter().cloned().collect();
         let mut this = Self {
             target,
+            rule_free_is_terminal,
             legalizer_patterns: Default::default(),
             any_op_patterns,
         };
@@ -72,7 +93,7 @@ impl<'a> LegalizationGraph<'a> {
     /// legalization pattern.
     #[inline]
     pub fn is_legalizable(&self, name: &OperationName) -> bool {
-        target_is_terminal(self.target, name)
+        self.is_terminal(name)
             || self.legalizer_patterns.contains_key(name)
             || !self.any_op_patterns.is_empty()
     }
@@ -128,7 +149,7 @@ impl<'a> LegalizationGraph<'a> {
     }
 
     fn legalization_depth(&self, name: &OperationName, stack: &mut Vec<OperationName>) -> u32 {
-        if target_is_terminal(self.target, name) {
+        if self.is_terminal(name) {
             return 0;
         }
         if stack.iter().any(|active| active == name) {
@@ -158,8 +179,16 @@ impl<'a> LegalizationGraph<'a> {
     }
 }
 
-fn target_is_terminal(target: &ConversionTarget, name: &OperationName) -> bool {
-    matches!(target.static_legality(name), StaticLegality::Legal | StaticLegality::Dynamic)
+impl LegalizationGraph<'_> {
+    /// Whether operations named `name` may end a legalization path: the target calls them legal
+    /// or decides per operation, or, in a partial conversion, has no rule for them.
+    fn is_terminal(&self, name: &OperationName) -> bool {
+        matches!(
+            self.target.static_legality(name),
+            StaticLegality::Legal | StaticLegality::Dynamic
+        ) || (self.rule_free_is_terminal
+            && self.target.static_rule_legality(name) == StaticLegality::Unknown)
+    }
 }
 
 #[cfg(test)]
@@ -288,6 +317,42 @@ mod tests {
 
         assert!(!graph.is_legalizable(&constant));
         assert!(graph.legalizer_patterns(&constant).is_empty());
+    }
+
+    /// In a partial conversion an operation the target has no rule for may end a path; one the
+    /// target calls illegal still may not.
+    #[test]
+    fn a_partial_graph_ends_paths_at_operations_without_a_rule() {
+        let context = Rc::new(Context::default());
+        let (constant, add, mul) = names(&context);
+        let mut target = ConversionTarget::new(context.clone());
+        target.add_illegal_op::<Mul>();
+
+        let mut patterns = ConversionPatternSet::new(context.clone());
+        patterns.push(TestConversionPattern::new(
+            context.clone(),
+            "constant-to-add",
+            constant.clone(),
+            [add.clone()],
+            1,
+        ));
+        patterns.push(TestConversionPattern::new(
+            context.clone(),
+            "add-to-mul",
+            add.clone(),
+            [mul.clone()],
+            1,
+        ));
+        let frozen = FrozenConversionPatternSet::new(patterns);
+
+        let full = LegalizationGraph::new(&target, &frozen);
+        let partial = LegalizationGraph::new_partial(&target, &frozen);
+
+        assert!(!full.is_legalizable(&constant));
+        assert!(partial.is_legalizable(&constant));
+        assert_eq!(partial.legalizer_patterns(&constant).len(), 1);
+        assert!(partial.legalizer_patterns(&add).is_empty(), "test.mul is illegal");
+        assert!(!partial.is_legalizable(&mul));
     }
 
     #[test]
