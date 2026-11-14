@@ -44,7 +44,8 @@ pub trait AttributeRegistration: Attribute {
     fn underlying_value(attr: &Self) -> &Self::Value;
     /// Get a mutable reference the concrete value of this attribute
     fn underlying_value_mut(attr: &mut Self) -> &mut Self::Value;
-    /// Whether `value`, with the attribute type `ty`, is well formed by itself. The default accepts.
+    /// Whether `value`, with the attribute type `ty`, is well formed by itself. The default
+    /// accepts.
     ///
     /// [Operation::verify](crate::Operation::verify) calls this (through
     /// [Attribute::verify](crate::Attribute::verify)) for every attribute an operation holds, at

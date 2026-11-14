@@ -287,6 +287,15 @@ impl Type {
         header.group.map(|_| header.index)
     }
 
+    /// The open body of this type in its recursion group, if it is a member of one: the type the
+    /// group was defined with at this member's index, in which references to the group's members
+    /// are recursion variables.
+    #[inline]
+    pub fn rec_body(&self) -> Option<Type> {
+        let group = self.rec_group()?;
+        Some(group.bodies()[self.rec_index()? as usize])
+    }
+
     /// The id of the context that interned this type.
     #[inline]
     pub(crate) fn owner_id(&self) -> u32 {

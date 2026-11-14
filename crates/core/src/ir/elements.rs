@@ -1,9 +1,9 @@
 //! What an operation holds: every attribute and every type, at any depth.
 //!
 //! An operation holds attributes in its properties and its attribute dictionary, and an attribute
-//! holds attributes and types in turn (see [AttributeElements](crate::attributes::AttributeElements)).
-//! It holds types as the types of its results and of its regions' block arguments, in its
-//! attributes, and inside those types. [Operation::walk_attributes] and [Operation::walk_types]
+//! holds attributes and types in turn (see
+//! [AttributeElements](crate::attributes::AttributeElements)). It holds types as the types of its
+//! results and of its regions' block arguments, in its attributes, and inside those types. [Operation::walk_attributes] and [Operation::walk_types]
 //! visit all of them, each once, with the place in the operation it was reached from.
 //!
 //! An operand's type is not something the operation holds: it is the type of the value's
@@ -199,6 +199,10 @@ impl Operation {
     ///
     /// [WalkResult::Skip] from `f` leaves out what that attribute holds (unless it is reached
     /// another way); [WalkResult::Break] ends the walk and is returned.
+    ///
+    /// The key of a keyed successor (a case value of `cf.switch`) is an attribute the operation
+    /// holds outside its properties and dictionary: this walk does not reach it, and neither do
+    /// attribute verification and [replace_elements_in].
     pub fn walk_attributes(
         &self,
         f: &mut dyn FnMut(ElementSite<'_>, &AttributeRef) -> WalkResult,
@@ -243,6 +247,9 @@ impl Operation {
     ///
     /// [WalkResult::Skip] from `f` leaves out the types that type holds (unless they are reached
     /// another way); [WalkResult::Break] ends the walk and is returned.
+    ///
+    /// The types held by the key of a keyed successor are not visited: see
+    /// [Self::walk_attributes].
     pub fn walk_types(&self, f: &mut dyn FnMut(ElementSite<'_>, Type) -> WalkResult) -> WalkResult {
         let mut visited = Visited::default();
         for (index, result) in self.results().iter().enumerate() {
@@ -295,13 +302,14 @@ impl<'a> ElementRewrite<'a> {
         }
     }
 
-    /// Called for an integer constant whose type changes: the constant to use at the new type, or an
-    /// error. Without it, a constant whose type changes is an error.
+    /// Called for an integer constant whose type changes: the constant to use at the new type, or
+    /// an error. Without it, a constant whose type changes is an error.
     ///
     /// `f` is given the constant's value, its type and the type the map gives that type. It is not
     /// called for a constant whose type the map leaves as it is. The value it answers must be as
     /// wide as a constant of the new type ([Int::width_for_type]); an answer of another width is an
-    /// error, and an error from `f` is the error of the rewrite.
+    /// error, and an error from `f` is the error of the rewrite, naming the operation and where
+    /// the constant is.
     pub fn with_int_constants(
         mut self,
         f: impl FnMut(&Int, Type, Type) -> Result<Int, Report> + 'a,
@@ -382,7 +390,13 @@ impl OperationReplacer<'_, '_> {
         let new_value = match rewrite(&value, ty, new_ty) {
             Ok(new_value) => new_value,
             Err(err) => {
-                self.error = Some(err);
+                let label = format!(
+                    "{} of '{}' is the integer constant `{value} : {ty}`, which the rewrite of \
+                     integer constants could not carry to type `{new_ty}`: {err}",
+                    self.role(),
+                    self.op.name()
+                );
+                self.fail(label);
                 return None;
             }
         };
@@ -536,6 +550,12 @@ fn replacements(op: &Operation, rewrite: &mut ElementRewrite<'_>) -> Result<Repl
 /// attribute holding it is replaced. An attribute held twice by the operation is replaced by one
 /// new attribute. Because the result type and a type the operation keeps beside it in a property
 /// (a hidden `ty`, say) are mapped by one map, they change together.
+///
+/// What an operation ties to the shape of a type is not revalued: under a map that changes the
+/// fields of an aggregate, the index paths of `mem.gep` and `mem.offsetof` keep their numbers and
+/// may name other fields. Such a map needs a pattern for the operations that index the aggregate.
+/// The key of a keyed successor (a case value of `cf.switch`) is not rewritten either: it is not
+/// among the attributes [Operation::walk_attributes] reaches.
 ///
 /// An integer constant ([IntAttr]) whose type the map changes is given its new value by the
 /// rewrite of integer constants ([ElementRewrite::with_int_constants]); without one, it is an
@@ -796,7 +816,8 @@ mod tests {
         let signature = context.create_attribute::<SignatureAttr, _>(signature).as_attribute_ref();
         let ty = context.create_attribute::<TypeAttr, _>(context.i64()).as_attribute_ref();
         let entries = list(&context, [signature, ty]);
-        // the list's entries are its own
+        // the entries as the list holds them: a list links the attributes it is given (only a
+        // replaced list holds copies)
         let (signature, ty) = {
             let held = held(&entries).attributes;
             (held[0], held[1])
@@ -1086,6 +1107,21 @@ mod rewrite_tests {
         let typed = constant.downcast_ref::<Constant>().unwrap();
         assert_eq!(crate::Attribute::ty(&*typed.value()), context.i64());
         constant.verify().expect("the constant is as it was");
+    }
+
+    /// An error from the rewrite of integer constants names the operation and where the
+    /// constant is, and keeps the hook's message.
+    #[test]
+    fn an_error_from_the_constant_hook_names_the_operation_and_site() {
+        let (context, module) = parse::<Module>(MODULE).expect("the module parses");
+        let mut constant = find(module.as_operation_ref(), "test.constant");
+        let mut rewrite = ElementRewrite::types(i64_to_i32(&context))
+            .with_int_constants(|_, _, _| Err(Report::msg("the value does not fit")));
+        let err = replace_elements_in(&mut constant.borrow_mut(), &mut rewrite).unwrap_err();
+        let text = crate::testing::text::describe(&err);
+        assert!(text.contains("the value does not fit"), "{text}");
+        assert!(text.contains("property 'value' of 'test.constant'"), "{text}");
+        assert_eq!(constant.borrow().results()[0].borrow().ty(), context.i64());
     }
 
     /// A rewrite of integer constants that answers a value of the wrong width is an error, and

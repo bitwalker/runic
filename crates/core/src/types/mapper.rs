@@ -7,8 +7,8 @@ use smallvec::SmallVec;
 use super::{RecGroup, RecGroupError, Type, TypeInvariants};
 use crate::{Context, FxHashMap, Report, dialects::builtin::types::RecVarType};
 
-/// Maps every type reachable from a type, bottom-up: a type's held types are mapped first, the type is
-/// rebuilt from them, and `map` is applied to the rebuilt type.
+/// Maps every type reachable from a type, bottom-up: a type's held types are mapped first, the
+/// type is rebuilt from them, and `map` is applied to the rebuilt type.
 ///
 /// The rebuilt type is the type's value with each held type replaced by its result
 /// ([Context::map_subtypes]); the result of `map` on it is final and is not mapped again. Each
@@ -29,7 +29,18 @@ use crate::{Context, FxHashMap, Report, dialects::builtin::types::RecVarType};
 /// an ordinary type, as the result.
 ///
 /// Because `map` sees a recursive type as its open body, a map that matches a particular member by
-/// handle never matches: it must match on the body's shape or name instead.
+/// handle never matches: it must match on the body's shape or name instead, or be keyed by the
+/// member's body ([Type::rec_body]). Results are remembered per body, so two members with the same
+/// body cannot be mapped differently.
+///
+/// An enum whose discriminant type changes keeps its variants' raw bits: the values of a widened
+/// discriminant are zero-extended, and a narrowing that loses a set bit of a variant's value is
+/// [TypeMapError::Invalid]. A caller that also rewrites integer constants compared with an enum's
+/// tag must carry them the same way.
+///
+/// A map that changes the fields of an aggregate does not change what operations tie to the
+/// aggregate's shape: the index paths of `mem.gep` and `mem.offsetof` keep their numbers. Such a
+/// map needs a pattern for those operations.
 ///
 /// For a given `map`, the result for a type depends only on the type: not on the order in which
 /// types are mapped, nor on whether they are mapped by the same mapper (the context returns the
@@ -63,7 +74,11 @@ pub enum TypeMapError {
     /// `ty`, rebuilt from the results of the types it holds, breaks an invariant of its kind
     /// ([TypeInvariants]), as `error` says. `ty` is the type as it was before the map.
     #[error("type '{ty}' is not valid once the types it holds are mapped: {error}")]
-    Invalid { ty: Type, error: Report },
+    Invalid {
+        ty: Type,
+        #[source]
+        error: Report,
+    },
     /// `map` was given the closed type `from` and answered the open type `to`.
     #[error("the map answered the open type '{to}' for the closed type '{from}'")]
     OpenResult { from: Type, to: Type },
@@ -648,7 +663,8 @@ mod tests {
         let flag = plain_enum(&context, i8, &[("off", 0), ("on", 1)]);
         assert_invalid(TypeMapper::new(&context, i8_to_struct).map(flag), flag);
 
-        // The same in the body of a recursion group: `rec { type !e = enum e<i8; nil, cons: ptr<!e>>; }`.
+        // The same in the body of a recursion group:
+        // `rec { type !e = enum e<i8; nil, cons: ptr<!e>>; }`.
         let body = context.enum_type(
             EnumType::new(
                 Some(sym("e")),

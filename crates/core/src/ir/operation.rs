@@ -957,8 +957,8 @@ impl Operation {
     /// Every symbol reference the old value holds, at any depth, whose use belongs to this
     /// operation and that `value` does not hold (the same attribute, by handle) is unlinked from
     /// its symbol, as erasing the operation would. The property must hold a value already, as
-    /// every property of a built operation does; the builders set the first value with
-    /// [Self::init_property].
+    /// every property of a built operation does; the builders set the first value without reading
+    /// the field.
     ///
     /// This function will panic if `name` is not a valid property of this operation.
     #[track_caller]

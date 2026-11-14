@@ -361,7 +361,10 @@ impl quote::ToTokens for Attribute {
                 fn set_type(&mut self, ty: ::runic_core::Type) {
                     self._attr.set_type(ty);
                 }
-                fn visit_elements(&self, visitor: &mut dyn ::runic_core::attributes::ElementVisitor) {
+                fn visit_elements(
+                    &self,
+                    visitor: &mut dyn ::runic_core::attributes::ElementVisitor,
+                ) {
                     ::runic_core::attributes::visit_attribute_elements(self, visitor)
                 }
                 fn replace_elements(
@@ -374,7 +377,11 @@ impl quote::ToTokens for Attribute {
                     &self,
                     context: &::runic_core::Context,
                 ) -> ::core::result::Result<(), ::runic_core::Report> {
-                    <Self as ::runic_core::AttributeRegistration>::verify(&self.value, self._attr.ty(), context)
+                    <Self as ::runic_core::AttributeRegistration>::verify(
+                        &self.value,
+                        self._attr.ty(),
+                        context,
+                    )
                 }
             }
 
