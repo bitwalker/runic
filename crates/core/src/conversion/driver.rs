@@ -499,7 +499,9 @@ fn converted_operands_for(
     rewriter: &mut ConversionPatternRewriter,
 ) -> Result<OperandRanges, Report> {
     converted_operands_with(op, type_converter, rewriter, &mut |rewriter, value, types, span| {
-        rewriter.insert_cast(CastKind::Target, [value], types, span)
+        rewriter
+            .insert_cast(CastKind::Target, [value], types, span)
+            .map(|(_, outputs)| outputs)
     })
 }
 

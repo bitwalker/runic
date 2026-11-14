@@ -10,6 +10,7 @@ use crate::{
     Type, UnsafeIntrusiveEntityRef, Value, ValueRef,
     dialects::builtin::BuiltinOpBuilder,
     patterns::{PatternRewriter, Rewriter, RewriterExt, RewriterListener},
+    traits::Terminator,
 };
 
 /// A recorded reason that a conversion pattern did not match.
@@ -332,7 +333,7 @@ impl ConversionPatternRewriter {
 
     /// Insert a `builtin.unrealized_conversion_cast` of `inputs` to values of the types
     /// `results` at the current insertion point, record it as the driver's cast of `kind` under
-    /// this rewriter's type converter, and return its results.
+    /// this rewriter's type converter, and return the cast and its results.
     ///
     /// The driver inserts a cast only for a pattern with a type converter.
     pub(super) fn insert_cast(
@@ -341,7 +342,7 @@ impl ConversionPatternRewriter {
         inputs: impl IntoIterator<Item = ValueRef>,
         results: impl IntoIterator<Item = Type>,
         span: SourceSpan,
-    ) -> Result<SmallVec<[ValueRef; 2]>, Report> {
+    ) -> Result<(OperationRef, SmallVec<[ValueRef; 2]>), Report> {
         let converter = self.type_converter.as_ref().map(Rc::clone).ok_or_else(|| {
             Report::msg("the driver inserts a cast only for a pattern with a type converter")
         })?;
@@ -351,7 +352,7 @@ impl ConversionPatternRewriter {
         self.mark_materialization_op(cast_op);
         self.state.casts.borrow_mut().insert(cast_op, DriverCast { kind, converter });
         let outputs = cast.borrow().outputs().iter().map(|output| *output as ValueRef).collect();
-        Ok(outputs)
+        Ok((cast_op, outputs))
     }
 
     /// Mark `op` as a framework-owned materialization operation.
@@ -469,7 +470,7 @@ impl ConversionPatternRewriter {
             }
             self.set_insertion_point_before(op);
             let result_ty = result.borrow().ty();
-            let outputs =
+            let (_, outputs) =
                 self.insert_cast(CastKind::Source, range.iter().copied(), [result_ty], span)?;
             replacements.push(Some(outputs[0]));
         }
@@ -516,18 +517,34 @@ impl ConversionPatternRewriter {
     /// Runs `f` on the operation and records it as modified: the change counts as a mutation and
     /// the operation is legalized again. A result whose type `f` changed and that has users is
     /// replaced, for those users, by a one-to-one cast back to its old type placed after the
-    /// operation; the new type must be what the converter answers for the old one. Changing the
-    /// type of a block argument inside `f` is an error (use a signature conversion).
+    /// operation (the casts of several results follow it in the order of the results); the new
+    /// type must be what the converter answers for the result. Changing the type of an argument of
+    /// a block of the operation's own regions inside `f` is an error (use a signature conversion).
     ///
-    /// A changed result without users needs no cast. The new type of a changed result must be
-    /// exactly the one type the pattern's type converter answers for a value of the old type; with
-    /// no converter, any change of a result type is an error. These checks are made after `f` has
-    /// run, so an error leaves the operation as `f` changed it, and aborts the conversion.
+    /// What is watched is the operation itself: its own results and the arguments of the blocks of
+    /// its own regions. `f` is meant to change the operation itself. A change `f` makes to an
+    /// operation or a block nested deeper (for example with `recursively_replace_elements_in`) is
+    /// not tracked: it gets no cast, and the nested operation is not legalized again.
+    ///
+    /// The converter is asked about each result ([TypeConverter::convert_value]) before `f` runs,
+    /// while the result still has its old type, and the new type of a changed result must be
+    /// exactly the one type it answered; with no converter, any change of a result type is an
+    /// error. A changed result without users needs no cast. A changed result with users on a
+    /// terminator is an error, since its cast would follow the terminator; no cast is inserted.
+    /// These checks are made after `f` has run, so an error leaves the operation as `f` changed it,
+    /// and aborts the conversion.
+    ///
+    /// An `f` that changes nothing still counts as a modification: a pattern that answers
+    /// `Ok(true)` after it passes the driver's check that a successful pattern changed the IR, and
+    /// when the operation is still illegal it is offered to the patterns again, until the
+    /// conversion's limit on pattern applications ([super::ConversionConfig::with_max_iterations])
+    /// is reached.
     pub fn modify_op_in_place<R>(
         &mut self,
         mut op: OperationRef,
         f: impl FnOnce(&mut Operation) -> R,
     ) -> Result<R, Report> {
+        let context = self.inner.context_rc();
         let results = op
             .borrow()
             .results()
@@ -538,6 +555,15 @@ impl ConversionPatternRewriter {
                 (result.as_value_ref(), result.ty())
             })
             .collect::<SmallVec<[(ValueRef, Type); 2]>>();
+        // What the converter answers for each result, asked while it has its old type.
+        let expected = results
+            .iter()
+            .map(|(result, _)| {
+                self.type_converter
+                    .as_ref()
+                    .map(|converter| converter.convert_value(&context, *result))
+            })
+            .collect::<SmallVec<[_; 2]>>();
         let blocks = blocks_of(op)
             .into_iter()
             .map(|block| (block, argument_types(block)))
@@ -562,28 +588,34 @@ impl ConversionPatternRewriter {
             }
         }
 
-        let context = self.inner.context_rc();
+        let is_terminator = op.borrow().implements::<dyn Terminator>();
         let mut changed = SmallVec::<[(ValueRef, Type); 2]>::new();
-        for (index, (result, old_ty)) in results.iter().enumerate() {
+        for (index, ((result, old_ty), expected)) in results.iter().zip(&expected).enumerate() {
             let new_ty = result.borrow().ty();
             if new_ty == *old_ty {
                 continue;
             }
-            let Some(converter) = self.type_converter.as_ref() else {
+            let Some(expected) = expected else {
                 return Err(Report::msg(format!(
                     "result {index} of '{name}' changed type in place, from '{old_ty}' to \
                      '{new_ty}', and the pattern has no type converter"
                 )));
             };
-            let expected = converter.convert_type(&context, *old_ty);
             if expected.as_slice() != [new_ty] {
                 return Err(Report::msg(format!(
                     "result {index} of '{name}' changed type in place, from '{old_ty}' to \
                      '{new_ty}', but the type converter converts '{old_ty}' to {}",
-                    type_list(&expected)
+                    type_list(expected)
                 )));
             }
             if result.borrow().is_used() {
+                if is_terminator {
+                    return Err(Report::msg(format!(
+                        "result {index} of '{name}' changed type in place, from '{old_ty}' to \
+                         '{new_ty}', and has users, but '{name}' is a terminator: the cast back \
+                         to '{old_ty}' cannot be placed after it"
+                    )));
+                }
                 changed.push((*result, *old_ty));
             }
         }
@@ -594,11 +626,8 @@ impl ConversionPatternRewriter {
             let mut after = op;
             for (result, old_ty) in changed {
                 self.set_insertion_point_after(after);
-                let outputs = self.insert_cast(CastKind::Source, [result], [old_ty], span)?;
-                let cast = outputs[0]
-                    .borrow()
-                    .get_defining_op()
-                    .expect("a cast's result is defined by the cast");
+                let (cast, outputs) =
+                    self.insert_cast(CastKind::Source, [result], [old_ty], span)?;
                 self.inner.maybe_replace_uses_of_value_with(result, outputs[0], |operand| {
                     operand.owner != cast
                 });
@@ -617,8 +646,10 @@ impl ConversionPatternRewriter {
     /// block and the old ones erased: the block keeps its identity and its operations. The types an
     /// old argument becomes are taken as the conversion gives them; under a type converter they
     /// must be what the converter answers for the old argument. Values an argument is remapped to
-    /// stand for it as given. The casts are recorded like any the driver inserts, and the change
-    /// counts as a mutation of the block's parent operation.
+    /// stand for it as given; they must dominate the start of the block (in a debug build, a value
+    /// defined by an operation of the block itself is caught by an assertion). The casts are
+    /// recorded like any the driver inserts, and the change counts as a mutation of the block's
+    /// parent operation; of a block without a parent operation, as a mutation of the block.
     ///
     /// An error is raised before anything changes when the conversion does not map every old
     /// argument, when it maps one to types the converter does not answer for it, when an argument
@@ -681,6 +712,15 @@ impl ConversionPatternRewriter {
                     SmallVec::<[Type; 2]>::from(types)
                 }
                 InputMapping::Values(values) => {
+                    debug_assert!(
+                        values.iter().all(|value| {
+                            value.borrow().get_defining_op().and_then(|op| op.parent())
+                                != Some(block)
+                        }),
+                        "argument {index} of {} is remapped to a value defined in the block \
+                         itself, which does not dominate its start",
+                        describe()
+                    );
                     if let Some(value) = values.iter().find(|value| old.contains(value)) {
                         return Err(Report::msg(format!(
                             "argument {index} of {} is remapped to '{}', an argument of the same \
@@ -734,11 +774,8 @@ impl ConversionPatternRewriter {
             let replacement = if needs_cast[index] {
                 self.inner.set_insertion_point(ip);
                 let old_ty = argument.borrow().ty();
-                let outputs = self.insert_cast(CastKind::Source, values, [old_ty], spans[index])?;
-                let cast = outputs[0]
-                    .borrow()
-                    .get_defining_op()
-                    .expect("a cast's result is defined by the cast");
+                let (cast, outputs) =
+                    self.insert_cast(CastKind::Source, values, [old_ty], spans[index])?;
                 ip = ProgramPoint::after(cast);
                 outputs[0]
             } else {
@@ -750,8 +787,10 @@ impl ConversionPatternRewriter {
         for _ in 0..old.len() {
             block.borrow_mut().erase_argument(0);
         }
-        if let Some(parent) = parent {
-            self.inner.notify_operation_modified(parent);
+        match parent {
+            Some(parent) => self.inner.notify_operation_modified(parent),
+            // No operation is told of the change; it is still a mutation.
+            None => self.tracking.record_block_mutation(),
         }
         self.state.converted_blocks.borrow_mut().insert(block);
         Ok(new_arguments)

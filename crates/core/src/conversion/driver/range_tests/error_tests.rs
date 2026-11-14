@@ -64,7 +64,9 @@ fn an_operand_conversion_failing_on_the_second_operand_leaves_no_cast() {
         if calls == 2 {
             return Err(Report::msg("the second operand cannot be converted"));
         }
-        rewriter.insert_cast(CastKind::Target, [value], types, span)
+        rewriter
+            .insert_cast(CastKind::Target, [value], types, span)
+            .map(|(_, outputs)| outputs)
     };
 
     let err = converted_operands_with(add, Some(&converter), &mut rewriter, &mut insert)

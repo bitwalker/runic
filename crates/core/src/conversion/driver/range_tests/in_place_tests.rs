@@ -3,7 +3,14 @@
 //! cast for the users that still expect it.
 
 use super::*;
-use crate::{ElementRewrite, replace_elements_in, types::TypeMapper};
+use crate::{
+    ElementRewrite, EntityWithId, OpPrinter,
+    derive::{EffectOpInterface, OpParser, OpPrinter, operation},
+    effects::MemoryEffectOpInterface,
+    replace_elements_in,
+    traits::{AnyInteger, BranchOpInterface, InferTypeOpInterface, Terminator},
+    types::TypeMapper,
+};
 
 /// The value of the `test.constant` `op`, as an unsigned number.
 fn constant_value(op: OperationRef) -> u128 {
@@ -333,4 +340,183 @@ fn the_pattern_contract_holds_for_changes_in_place() {
         let err = format!("{err}");
         assert!(err.contains(message), "{err}");
     }
+}
+
+/// A pattern for the `i64` constant that retypes it to `i32` in place, its value truncated.
+fn narrow_constant_no_cast(context: &Rc<Context>) -> Rule {
+    narrow_constant_in_place(context, &narrow_converter(context))
+}
+
+/// A retyped result without users gets no cast, even with reconciliation off.
+#[test]
+fn a_result_retyped_in_place_without_users_gets_no_cast() {
+    let (context, function) = parse_function(
+        "()",
+        "    %0 = test.constant 4294967297 : i64;
+    builtin.ret;",
+    );
+    let mut set = ConversionPatternSet::new(context.clone());
+    set.push(narrow_constant_no_cast(&context));
+    let mut config = ConversionConfig::default();
+    config.with_reconcile_unrealized_casts(false);
+
+    apply_full_conversion(function, narrow_target(&context, false), set, config)
+        .unwrap_or_else(|err| panic!("{}", describe(&err)));
+
+    assert_str_eq!(
+        function.borrow().to_string(),
+        function_text(
+            "()",
+            "    %0 = test.constant 1 : i32;
+    builtin.ret;"
+        )
+    );
+}
+
+/// Two `i64`s: `%0, %1 = test.pair;`.
+#[derive(EffectOpInterface, OpPrinter, OpParser)]
+#[operation(
+    dialect = TestDialect,
+    implements(InferTypeOpInterface, MemoryEffectOpInterface, OpPrinter)
+)]
+pub struct Pair {
+    #[result]
+    first: AnyInteger,
+    #[result]
+    second: AnyInteger,
+}
+
+impl InferTypeOpInterface for Pair {
+    fn infer_return_types(&mut self, context: &Context) -> Result<(), Report> {
+        self.first_mut().set_type(context.i64());
+        self.second_mut().set_type(context.i64());
+        Ok(())
+    }
+}
+
+/// A terminator with a result, an `i64`, and one successor: `%0 = test.value_br ^bb1;`.
+#[derive(EffectOpInterface, OpPrinter, OpParser)]
+#[operation(
+    dialect = TestDialect,
+    traits(Terminator),
+    implements(
+        BranchOpInterface,
+        InferTypeOpInterface,
+        MemoryEffectOpInterface,
+        OpPrinter
+    )
+)]
+pub struct ValueBr {
+    #[successor]
+    target: Successor,
+    #[result]
+    result: AnyInteger,
+}
+
+impl BranchOpInterface for ValueBr {}
+
+impl InferTypeOpInterface for ValueBr {
+    fn infer_return_types(&mut self, context: &Context) -> Result<(), Report> {
+        self.result_mut().set_type(context.i64());
+        Ok(())
+    }
+}
+
+/// Sets the type of every `i64` result of `op` to `i32`.
+fn results_to_i32(op: &mut Operation) {
+    let (i32, i64) = (op.context().i32(), op.context().i64());
+    for mut result in op.results().iter().copied() {
+        if result.borrow().ty() == i64 {
+            result.borrow_mut().set_type(i32);
+        }
+    }
+}
+
+/// A pattern rooted at `Root` that retypes its `i64` results to `i32` in place.
+fn narrow_results_in_place<Root: OpRegistration>(context: &Rc<Context>) -> Rule {
+    Rule::new::<Root>(
+        context,
+        "narrow-results-in-place",
+        Some(narrow_converter(context)),
+        [],
+        |op, _, rewriter| {
+            if has_no_i64(&op.borrow()) {
+                return Ok(false);
+            }
+            rewriter.modify_op_in_place(op, results_to_i32)?;
+            Ok(true)
+        },
+    )
+}
+
+/// An operation is legal when no result is an `i64`.
+fn no_i64_result(op: &Operation) -> DynamicLegalityResult {
+    let i64 = op.context().i64();
+    DynamicLegalityResult::legal_if(!op.results().iter().any(|result| result.borrow().ty() == i64))
+}
+
+/// Two results retyped in place, both used, are each cast back for their users; the casts follow
+/// the operation in the order of its results.
+#[test]
+fn two_results_retyped_in_place_are_cast_back_in_order() {
+    let (context, function) = parse_function(
+        "()",
+        "    %0, %1 = test.pair;
+    test.sink %0, %1 : (i64, i64);
+    builtin.ret;",
+    );
+    let mut target = ConversionTarget::new(context.clone());
+    target
+        .set_unknown_op_policy(UnknownOpPolicy::Legal)
+        .add_dynamically_legal_op::<Pair, _>(no_i64_result);
+    let mut set = ConversionPatternSet::new(context.clone());
+    set.push(narrow_results_in_place::<Pair>(&context));
+    let mut config = ConversionConfig::default();
+    config.with_reconcile_unrealized_casts(false);
+
+    apply_full_conversion(function, target, set, config)
+        .unwrap_or_else(|err| panic!("{}", describe(&err)));
+
+    assert_str_eq!(
+        function.borrow().to_string(),
+        function_text(
+            "()",
+            "    %0, %1 = test.pair;
+    %2 = builtin.unrealized_conversion_cast %0 : i32 to i64;
+    %3 = builtin.unrealized_conversion_cast %1 : i32 to i64;
+    test.sink %2, %3 : (i64, i64);
+    builtin.ret;"
+        )
+    );
+}
+
+/// A result retyped in place on a terminator, with a user, is an error: its cast would follow the
+/// terminator. No cast is inserted.
+#[test]
+fn a_result_retyped_in_place_on_a_terminator_is_an_error() {
+    let (context, function) = parse_function(
+        "()",
+        "    %0 = test.value_br ^bb1;
+^bb1:
+    test.sink %0 : (i64);
+    builtin.ret;",
+    );
+    let mut target = ConversionTarget::new(context.clone());
+    target
+        .set_unknown_op_policy(UnknownOpPolicy::Legal)
+        .add_dynamically_legal_op::<ValueBr, _>(no_i64_result);
+
+    let err =
+        convert(function, target, [narrow_results_in_place::<ValueBr>(&context)]).unwrap_err();
+
+    let err = format!("{err}");
+    assert!(
+        err.contains(
+            "result 0 of 'test.value_br' changed type in place, from 'i64' to 'i32', and has \
+             users, but 'test.value_br' is a terminator: the cast back to 'i64' cannot be placed \
+             after it"
+        ),
+        "{err}"
+    );
+    assert!(!function.borrow().to_string().contains("builtin.unrealized_conversion_cast"));
 }

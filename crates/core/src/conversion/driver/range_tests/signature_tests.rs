@@ -476,3 +476,43 @@ fn a_converted_block_whose_branch_is_not_converted_fails_verification() {
         "{err}"
     );
 }
+
+/// A conversion that needs a cast for an argument with users, applied by a rewriter without a type
+/// converter, is an error raised before anything changes.
+#[test]
+fn a_needed_cast_without_a_type_converter_is_an_error() {
+    let (context, function) = parse_function(SIGNATURE, BODY);
+    let before = function.borrow().to_string();
+    let block = second_block(function);
+    let (i32, i64) = (context.i32(), context.i64());
+    let mut conversion = SignatureConversion::new(2);
+    conversion.add_inputs(0, &[i64, i64]).unwrap();
+    conversion.add_inputs(1, &[i32]).unwrap();
+    let mut rewriter = ConversionPatternRewriter::new(context.clone());
+
+    let err = rewriter.apply_signature_conversion(block, &conversion).unwrap_err();
+
+    assert_eq!(
+        format!("{err}"),
+        "argument 0 of a block of 'builtin.function' of type 'i128' becomes values of types (i64, \
+         i64), which needs a cast, and the pattern has no type converter"
+    );
+    assert_str_eq!(function.borrow().to_string(), before);
+    assert_eq!(rewriter.mutation_count(), 0);
+}
+
+/// Converting the arguments of a block that has no parent operation counts as a mutation.
+#[test]
+fn converting_a_block_without_a_parent_operation_is_a_mutation() {
+    let context = Rc::new(Context::default());
+    let block = context.create_block_with_params([context.i128()]);
+    let conversion = SignatureConversion::for_block(block, &wide_converter(&context)).unwrap();
+    let mut rewriter = wide_rewriter(&context);
+
+    let new = rewriter.apply_signature_conversion(block, &conversion).unwrap();
+
+    let i64 = context.i64();
+    assert_eq!(types(&new), [i64, i64]);
+    assert_eq!(new.as_slice(), arguments(block).as_slice());
+    assert_eq!(rewriter.mutation_count(), 1);
+}
