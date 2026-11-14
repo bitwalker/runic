@@ -17,8 +17,14 @@ use crate::MemDialect;
 /// The address `addr` as an `isize`: `%a = mem.ptrtoint %p;`.
 ///
 /// The pointer may have any pointer type, typed or opaque, in any address space. Other integer
-/// widths are reached through `arith`. The operation has no effects. `mem.ptrtoint` of a
-/// `mem.inttoptr` of `x` folds to `x`.
+/// widths are reached through `arith`. The widths are those of the data layout: the pointer size
+/// of the pointer's address space and the layout's `isize`. The address is zero-extended when the
+/// `isize` is wider than the pointer and truncated when it is narrower. The operation has no
+/// effects.
+///
+/// `mem.ptrtoint` of a `mem.inttoptr` of `x` folds to `x` when a data layout is in scope
+/// ([DataLayout::closest]) and its pointer of that address space is at least as wide as its
+/// `isize`; otherwise the pair is kept.
 #[derive(EffectOpInterface)]
 #[operation(
     dialect = MemDialect,
@@ -38,8 +44,13 @@ pub struct PtrToInt {
 ///
 /// The type is written in the text and kept in the hidden property `ty`, from which the result is
 /// made; the verifier rejects a `ty` that is not a pointer type and a result whose type is not
-/// `ty`. The operation has no effects. `mem.inttoptr` of a `mem.ptrtoint` of `p` folds to `p` when
-/// the result has `p`'s type; to another pointer type it is left as it is.
+/// `ty`. The widths are those of the data layout: the layout's `isize` and the pointer size of
+/// `ty`'s address space. The value is zero-extended when the pointer is wider than the `isize` and
+/// truncated when it is narrower. The operation has no effects.
+///
+/// `mem.inttoptr` of a `mem.ptrtoint` of `p` folds to `p` when the result has `p`'s type, a data
+/// layout is in scope ([DataLayout::closest]) and its `isize` is at least as wide as its pointer
+/// of that address space; otherwise, and to another pointer type, the pair is kept.
 #[derive(EffectOpInterface)]
 #[operation(
     dialect = MemDialect,
@@ -100,7 +111,8 @@ impl InferTypeOpInterface for PtrToInt {
     }
 }
 
-/// `mem.ptrtoint (mem.inttoptr %a)` is `%a`.
+/// `mem.ptrtoint (mem.inttoptr %a)` is `%a` when the layout's pointer holds every bit of its
+/// `isize`.
 impl Foldable for PtrToInt {
     fn fold(&self, results: &mut SmallVec<[OpFoldResult; 1]>) -> FoldResult {
         let Some(defining_op) = self.addr().as_value_ref().borrow().get_defining_op() else {
@@ -113,6 +125,11 @@ impl Foldable for PtrToInt {
         let value = inner.value().as_value_ref();
         if value.borrow().ty() != self.result().ty() {
             return FoldResult::Failed;
+        }
+        // The pointer between the two casts must hold every bit of an `isize`
+        match cast_widths(self.as_operation(), self.addr().ty()) {
+            Some((pointer, isize)) if pointer >= isize => (),
+            _ => return FoldResult::Failed,
         }
         results.push(OpFoldResult::Value(value));
         FoldResult::Ok(())
@@ -148,7 +165,8 @@ impl Verify<dyn InferTypeOpInterface> for IntToPtr {
     }
 }
 
-/// `mem.inttoptr (mem.ptrtoint %p)` is `%p` when the result has `%p`'s type.
+/// `mem.inttoptr (mem.ptrtoint %p)` is `%p` when the result has `%p`'s type and the layout's
+/// `isize` holds every bit of the pointer.
 impl Foldable for IntToPtr {
     fn fold(&self, results: &mut SmallVec<[OpFoldResult; 1]>) -> FoldResult {
         let Some(defining_op) = self.value().as_value_ref().borrow().get_defining_op() else {
@@ -161,6 +179,11 @@ impl Foldable for IntToPtr {
         let addr = inner.addr().as_value_ref();
         if addr.borrow().ty() != self.result().ty() {
             return FoldResult::Failed;
+        }
+        // The `isize` between the two casts must hold every bit of the pointer
+        match cast_widths(self.as_operation(), self.result().ty()) {
+            Some((pointer, isize)) if isize >= pointer => (),
+            _ => return FoldResult::Failed,
         }
         results.push(OpFoldResult::Value(addr));
         FoldResult::Ok(())
@@ -238,6 +261,15 @@ impl Canonicalizable for PtrCast {
     fn get_canonicalization_patterns(rewrites: &mut RewritePatternSet, context: Rc<Context>) {
         rewrites.push(crate::canonicalization::MergePtrCastOfPtrCast::new(context));
     }
+}
+
+/// The widths in bits of a pointer of the type `pointer` and of an `isize`, under the data layout
+/// in scope at `op`. `None` with no layout in scope, or if `pointer` is not a pointer type: a fold
+/// that depends on the widths then does not apply.
+fn cast_widths(op: &Operation, pointer: Type) -> Option<(u32, u32)> {
+    let layout = DataLayout::closest(op)?;
+    let addrspace = pointer.as_pointer()?.addrspace();
+    Some((layout.pointer(addrspace).size_bits, layout.isize_width()))
 }
 
 /// The stated type `stated` of a cast is a pointer type, and the result has it.

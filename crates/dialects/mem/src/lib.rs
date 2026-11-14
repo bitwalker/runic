@@ -14,7 +14,7 @@
 //! - [`mem.memmove`](MemMove) copies bytes between regions that may overlap.
 //! - [`mem.memset`](MemSet) fills bytes with an `i8`.
 //! - [`mem.ptrtoint`](PtrToInt) and [`mem.inttoptr`](IntToPtr) convert between a pointer and an
-//!   `isize`.
+//!   `isize`, zero-extending or truncating when the layout gives them different widths.
 //! - [`mem.ptrcast`](PtrCast) changes a pointer's type within its address space.
 //!
 //! **Resources and aliases.** Every access reads or writes [MemoryResource], a child of the
@@ -32,6 +32,15 @@
 //! verifiers and folds: when one is in scope, the verifiers check that the accessed or measured
 //! type has a layout under it, and a size, alignment or offset folds to a constant; when none is,
 //! the checks are skipped and nothing folds.
+//!
+//! **Folds.** Under a data layout: `mem.sizeof`, `mem.alignof` and `mem.offsetof` fold to `isize`
+//! constants when the answer fits the layout's `isize`; `mem.ptrtoint (mem.inttoptr x)` folds to
+//! `x` when the pointer of that address space is at least as wide as `isize`, and
+//! `mem.inttoptr (mem.ptrtoint p)` to `p` (cast back to `p`'s own type) when `isize` is at least
+//! as wide as the pointer. With or without one: a `mem.ptrcast` to its operand's type folds to
+//! the operand, and a cast of a cast becomes one cast; a `mem.gep` with neither index nor path
+//! folds to its base, and one without an index whose base is a `mem.gep` becomes one gep; a copy
+//! or fill of the constant length 0 is erased.
 
 #![no_std]
 #![feature(specialization)]

@@ -1492,13 +1492,14 @@ fn loads_merge_across_casts_but_not_through_them() -> Result<(), Report> {
     Ok(())
 }
 
-/// `ptrtoint (inttoptr %a)` is `%a`; `inttoptr (ptrtoint %p)` is `%p` when the result has `%p`'s
-/// type and is left alone otherwise; a `ptrcast` to its operand's type is the operand; a cast of a
-/// cast becomes one cast, and then folds away when it casts back to the original type.
+/// Under a data layout whose pointers are as wide as its `isize`: `ptrtoint (inttoptr %a)` is
+/// `%a`; `inttoptr (ptrtoint %p)` is `%p` when the result has `%p`'s type and is left alone
+/// otherwise; a `ptrcast` to its operand's type is the operand; a cast of a cast becomes one cast,
+/// and then folds away when it casts back to the original type.
 #[test]
 fn casts_fold_and_canonicalize() -> Result<(), Report> {
     let text = canonicalize(
-        None,
+        Some("little, ptr = 32"),
         "%p: ptr<i32>, %a: isize, %r: ptr<i8, 1>",
         "isize, ptr<i32>, ptr<i8>, ptr<i32>, ptr<i16>, ptr<i32>, isize, ptr<i16, 1>",
         r#"    %1 = mem.inttoptr %a : ptr<i64, 2>;
@@ -1528,6 +1529,98 @@ fn casts_fold_and_canonicalize() -> Result<(), Report> {
             builtin.ret %1, %0, %8, %0, %11, %0, %1, %18 : (isize, ptr<i32>, ptr<i8>, ptr<i32>, ptr<i16>, ptr<i32>, isize, ptr<i16, 1>);
         };"#]]
     .assert_eq(&text);
+    Ok(())
+}
+
+const ROUND_TRIP_INT: &str = "    %q = mem.inttoptr %n : ptr<i8, 1>;
+    %m = mem.ptrtoint %q;
+    builtin.ret %m : (isize);";
+
+const ROUND_TRIP_PTR: &str = "    %n = mem.ptrtoint %p;
+    %q = mem.inttoptr %n : ptr<i8, 1>;
+    builtin.ret %q : (ptr<i8, 1>);";
+
+/// `ptrtoint (inttoptr x)` is `x` only when the pointer holds every bit of an `isize`: under
+/// `ptr = 32, ptr<1> = 16` the pointer keeps 16 of the 32 bits, and the pair stays.
+#[test]
+fn ptrtoint_of_inttoptr_is_kept_when_the_pointer_is_narrower_than_isize() -> Result<(), Report> {
+    let text =
+        canonicalize(Some("little, ptr = 32, ptr<1> = 16"), "%n: isize", "isize", ROUND_TRIP_INT)?;
+    assert!(text.contains("mem.inttoptr") && text.contains("mem.ptrtoint"), "{text}");
+    // and it folds when the pointer is at least as wide as `isize`
+    for layout in ["little, ptr = 32", "little, ptr = 32, ptr<1> = 64", "little, ptr = 64"] {
+        let text = canonicalize(Some(layout), "%n: isize", "isize", ROUND_TRIP_INT)?;
+        assert!(!text.contains("mem."), "{layout}\n{text}");
+    }
+    Ok(())
+}
+
+/// `inttoptr (ptrtoint p)` is `p` only when an `isize` holds every bit of the pointer: under
+/// `ptr = 32, ptr<1> = 64`, and under `ptr = 64 index 32`, it holds 32 of the 64 bits.
+#[test]
+fn inttoptr_of_ptrtoint_is_kept_when_isize_is_narrower_than_the_pointer() -> Result<(), Report> {
+    for layout in ["little, ptr = 32, ptr<1> = 64", "little, ptr = 64 align 8 index 32"] {
+        let text = canonicalize(Some(layout), "%p: ptr<i8, 1>", "ptr<i8, 1>", ROUND_TRIP_PTR)?;
+        assert!(
+            text.contains("mem.inttoptr") && text.contains("mem.ptrtoint"),
+            "{layout}\n{text}"
+        );
+    }
+    // and it folds when `isize` is at least as wide as the pointer
+    for layout in ["little, ptr = 32", "little, ptr = 32, ptr<1> = 16", "little, ptr = 64"] {
+        let text = canonicalize(Some(layout), "%p: ptr<i8, 1>", "ptr<i8, 1>", ROUND_TRIP_PTR)?;
+        assert!(!text.contains("mem."), "{layout}\n{text}");
+    }
+    Ok(())
+}
+
+/// With no data layout in scope nothing is known about the widths, and neither round trip folds.
+#[test]
+fn the_cast_round_trips_do_not_fold_without_a_data_layout() -> Result<(), Report> {
+    let text = canonicalize(None, "%n: isize", "isize", ROUND_TRIP_INT)?;
+    assert!(text.contains("mem.inttoptr") && text.contains("mem.ptrtoint"), "{text}");
+    let text = canonicalize(None, "%p: ptr<i8, 1>", "ptr<i8, 1>", ROUND_TRIP_PTR)?;
+    assert!(text.contains("mem.inttoptr") && text.contains("mem.ptrtoint"), "{text}");
+    Ok(())
+}
+
+/// The folds that do not depend on a width, with no data layout in scope. A cast to the operand's
+/// type is the operand; nested casts merge and then fold; `inttoptr (ptrtoint p)` to another
+/// pointer type stays. A cast across address spaces, direct or as the outer of two, is rejected.
+#[test]
+fn the_width_free_cast_folds() -> Result<(), Report> {
+    let text = canonicalize(
+        None,
+        "%p: ptr<i32, 1>, %o: ptr<1>",
+        "ptr<i32, 1>, ptr<i32, 1>, ptr<i16, 1>, ptr<i8, 1>, ptr<i32, 1>",
+        "    %a = mem.ptrcast %p : ptr<i32, 1>;
+    %b = mem.ptrcast %p : ptr<i8, 1>;
+    %c = mem.ptrcast %b : ptr<i32, 1>;
+    %d = mem.ptrcast %b : ptr<i16, 1>;
+    %n = mem.ptrtoint %p;
+    %e = mem.inttoptr %n : ptr<i8, 1>;
+    %f = mem.ptrcast %o : ptr<i32, 1>;
+    builtin.ret %a, %c, %d, %e, %f : (ptr<i32, 1>, ptr<i32, 1>, ptr<i16, 1>, ptr<i8, 1>, ptr<i32, \
+         1>);",
+    )?;
+    expect![[r#"
+        builtin.function public extern("C") @f(%0: ptr<i32, 1>, %1: ptr<1>) -> (ptr<i32, 1>, ptr<i32, 1>, ptr<i16, 1>, ptr<i8, 1>, ptr<i32, 1>) {
+            %5 = mem.ptrcast %0 : ptr<i16, 1>;
+            %6 = mem.ptrtoint %0;
+            %7 = mem.inttoptr %6 : ptr<i8, 1>;
+            %8 = mem.ptrcast %1 : ptr<i32, 1>;
+            builtin.ret %0, %0, %5, %7, %8 : (ptr<i32, 1>, ptr<i32, 1>, ptr<i16, 1>, ptr<i8, 1>, ptr<i32, 1>);
+        };"#]]
+    .assert_eq(&text);
+    for body in [
+        "    %a = mem.ptrcast %p : ptr<i32>;",
+        "    %b = mem.ptrcast %p : ptr<i8, 1>;\n    %a = mem.ptrcast %b : ptr<i32, 2>;",
+    ] {
+        let err = canonicalize(None, "%p: ptr<i32, 1>", "", &format!("{body}\n    builtin.ret;"))
+            .unwrap_err();
+        let err = runic_core::testing::text::describe(&err);
+        assert!(err.contains("a cast keeps the address space"), "{err}");
+    }
     Ok(())
 }
 
