@@ -298,6 +298,22 @@ fn verify_region_branch_terminator_operands(
 
     let constants = unknown_constants(op.num_operands());
     let successors = terminator.get_successor_regions(&constants);
+    // A terminator that is not an early exit and states no successor under its parent cannot end
+    // that parent's regions: control would have nowhere to go.
+    if let Some(parent) = parent.filter(|_| successors.is_empty() && !is_exit) {
+        let parent_name = parent.borrow().name();
+        return Err(crate::diagnostics::report!(
+            message: (alloc::format!(
+                "invalid operation {}: `{}` cannot end a region of `{}`",
+                op.name(),
+                op.name(),
+                parent_name
+            )),
+            labels: [
+                primary(op.span(), alloc::format!("this terminator states no successor under `{parent_name}`")),
+            ],
+        ));
+    }
     for (index, successor) in successors.iter().enumerate() {
         if successor.is_exiting() && is_exit {
             continue;
@@ -355,10 +371,16 @@ fn describe_region_successor(
         let number = region.region_number();
         let description = alloc::format!("successor {index} (region {number} of {})", owner.name());
         let Some(entry) = region.entry_block_ref() else {
-            return Err(Report::msg(alloc::format!(
-                "invalid operation {}: {description} has no entry block",
-                owner.name()
-            )));
+            use crate::diagnostics::Spanned;
+            return Err(crate::diagnostics::report!(
+                message: (alloc::format!(
+                    "invalid operation {}: {description} has no entry block",
+                    owner.name()
+                )),
+                labels: [
+                    primary(owner.span(), "a region this operation branches to has no entry block"),
+                ],
+            ));
         };
         let types = entry
             .borrow()

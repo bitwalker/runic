@@ -858,11 +858,15 @@ impl RegionBranchTerminatorOpInterface for Condition {
         let cond = operands[0].as_ref().and_then(|v| v.borrow().as_bool());
         let mut regions = SmallVec::<[RegionSuccessorInfo; 2]>::default();
 
-        let parent_op = self.parent_op().unwrap();
+        // Under any other parent this op states no successor; the region-branch terminator
+        // verifier reports it.
+        let Some(parent_op) = self.parent_op() else {
+            return regions;
+        };
         let parent_op = parent_op.borrow();
-        let while_op = parent_op
-            .downcast_ref::<While>()
-            .expect("expected `Condition` op to be a child of a `While` op");
+        let Some(while_op) = parent_op.downcast_ref::<While>() else {
+            return regions;
+        };
         let after_region = while_op.after().as_region_ref();
 
         // We can't know the condition until runtime, so both the parent `while` op and
@@ -940,7 +944,12 @@ impl RegionBranchTerminatorOpInterface for Yield {
         // * [While] may only have a yield to its `before` region
         // * [If] may only yield to its parent
         // * [IndexSwitch] may only yield to its parent
-        let parent_op = self.parent_op().unwrap();
+        //
+        // Under any other parent this op states no successor; the region-branch terminator
+        // verifier reports it.
+        let Some(parent_op) = self.parent_op() else {
+            return SmallVec::new();
+        };
         let parent_op = parent_op.borrow();
         if parent_op.is::<If>() || parent_op.is::<IndexSwitch>() {
             smallvec![RegionSuccessorInfo::Returning(
@@ -950,7 +959,7 @@ impl RegionBranchTerminatorOpInterface for Yield {
             let before_region = while_op.before().as_region_ref();
             smallvec![RegionSuccessorInfo::Entering(before_region)]
         } else {
-            panic!("unsupported parent operation for '{}': '{}'", self.name(), parent_op.name())
+            SmallVec::new()
         }
     }
 }
@@ -3181,6 +3190,66 @@ builtin.function public extern("C") @f(%n: i32, %w: i64) -> i32 {
                  has type 'i64', but the block argument it binds has type 'i32'"
             ),
             "{err}"
+        );
+    }
+
+    /// A terminator that states no successor under its parent is reported, naming both, instead
+    /// of panicking inside its own successor computation.
+    #[test]
+    fn a_condition_in_an_if_is_reported() {
+        let error = rejection(
+            "condition_in_if.hir",
+            r#"
+builtin.function public extern("C") @f(%c: i1, %x: i32) -> i32 {
+    %r = scf.if %c then {
+        scf.condition %c, %x : (i1, i32);
+    } else {
+        scf.yield %x : (i32);
+    } : (i1) -> i32;
+    builtin.ret %r : (i32);
+};"#,
+        );
+        assert!(error.contains("`scf.condition` cannot end a region of `scf.if`"), "{error}");
+    }
+
+    #[test]
+    fn a_condition_in_an_index_switch_is_reported() {
+        let error = rejection(
+            "condition_in_index_switch.hir",
+            r#"
+builtin.function public extern("C") @f(%c: i1, %s: i32, %x: i32) -> i32 {
+    %r = scf.index_switch %s
+    case 1 {
+        scf.condition %c, %x : (i1, i32);
+    }
+    default {
+        scf.yield %x : (i32);
+    } : (i32);
+    builtin.ret %r : (i32);
+};"#,
+        );
+        assert!(
+            error.contains("`scf.condition` cannot end a region of `scf.index_switch`"),
+            "{error}"
+        );
+    }
+
+    /// `test.callable_receiver` is a region-branch operation `scf.yield` does not know.
+    #[test]
+    fn a_yield_under_a_region_branch_op_of_another_dialect_is_reported() {
+        let error = rejection(
+            "yield_in_callable_receiver.hir",
+            r#"
+builtin.function public extern("C") @f() {
+    test.callable_receiver {
+        scf.yield : ();
+    };
+    builtin.ret;
+};"#,
+        );
+        assert!(
+            error.contains("`scf.yield` cannot end a region of `test.callable_receiver`"),
+            "{error}"
         );
     }
 }
