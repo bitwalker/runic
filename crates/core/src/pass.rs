@@ -10,7 +10,8 @@ pub mod registry;
 mod specialization;
 pub mod statistics;
 
-use alloc::{borrow::Cow, boxed::Box, format, string::String};
+use alloc::{borrow::Cow, boxed::Box, rc::Rc, string::String};
+use core::cell::RefCell;
 
 #[cfg(feature = "std")]
 pub use self::duration::HumanDuration;
@@ -28,24 +29,91 @@ use crate::{Forward, Operation, OperationRef, RawWalk, Report, WalkResult};
 
 /// The stream the pass manager writes printed IR and statistics to.
 ///
-/// It is [`std::io::Write`] with the `std` feature, so that standard output or a file can be given
-/// as it is, and [`core::fmt::Write`] without it.
-#[cfg(feature = "std")]
-pub type PassOutput = dyn std::io::Write;
-/// The stream the pass manager writes printed IR and statistics to.
+/// It is a [`core::fmt::Write`] in every build. With the `std` feature, [`IoOutput`] makes one of a
+/// [`std::io::Write`], such as standard error or a file.
 ///
-/// It is [`std::io::Write`] with the `std` feature, so that standard output or a file can be given
-/// as it is, and [`core::fmt::Write`] without it.
-#[cfg(not(feature = "std"))]
+/// Each print, and the statistics of a run, are written with one call to
+/// [`core::fmt::Write::write_str`]. After the first call that fails, nothing more is written to
+/// the stream, and [`PassManager::run`] returns the failure when the passes themselves succeeded.
 pub type PassOutput = dyn core::fmt::Write;
 
-/// Writes `text` to `out`, and flushes it when it is a [`std::io::Write`].
-pub(crate) fn write_output(out: &mut PassOutput, text: &str) -> Result<(), Report> {
-    #[cfg(feature = "std")]
-    let result = out.write_all(text.as_bytes()).and_then(|_| out.flush());
-    #[cfg(not(feature = "std"))]
-    let result = out.write_str(text);
-    result.map_err(|error| Report::msg(format!("could not write pass output: {error}")))
+/// A [`PassOutput`] that writes to a [`std::io::Write`], and flushes it after each write.
+///
+/// A [`core::fmt::Error`] carries no message, so the first [`std::io::Error`] is kept here, and
+/// the [`core::fmt::Write::write_str`] that met it and every one after it fail without writing.
+#[cfg(feature = "std")]
+pub struct IoOutput<W> {
+    writer: W,
+    error: Option<std::io::Error>,
+}
+
+#[cfg(feature = "std")]
+impl<W: std::io::Write> IoOutput<W> {
+    /// An output that writes to `writer`.
+    pub fn new(writer: W) -> Self {
+        Self {
+            writer,
+            error: None,
+        }
+    }
+
+    /// An output that writes to `writer`, boxed as the pass manager takes it.
+    pub fn boxed(writer: W) -> Box<PassOutput>
+    where
+        W: 'static,
+    {
+        Box::new(Self::new(writer))
+    }
+
+    /// The first error the writer returned, if it returned one.
+    pub fn error(&self) -> Option<&std::io::Error> {
+        self.error.as_ref()
+    }
+
+    /// The writer, and the first error it returned, if it returned one.
+    pub fn into_inner(self) -> (W, Option<std::io::Error>) {
+        (self.writer, self.error)
+    }
+}
+
+#[cfg(feature = "std")]
+impl<W: std::io::Write> core::fmt::Write for IoOutput<W> {
+    fn write_str(&mut self, text: &str) -> core::fmt::Result {
+        if self.error.is_some() {
+            return Err(core::fmt::Error);
+        }
+        match self.writer.write_all(text.as_bytes()).and_then(|()| self.writer.flush()) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.error = Some(error);
+                Err(core::fmt::Error)
+            }
+        }
+    }
+}
+
+/// A [`PassOutput`] the pass manager writes to, which writes nothing after its first failure.
+pub(crate) struct OutputStream {
+    out: Box<PassOutput>,
+    failed: bool,
+}
+
+impl OutputStream {
+    pub(crate) fn new(out: Box<PassOutput>) -> Self {
+        Self { out, failed: false }
+    }
+
+    /// Writes `text`, unless an earlier write failed; the error is returned only for the write that
+    /// failed.
+    pub(crate) fn write(&mut self, text: &str) -> Result<(), Report> {
+        if self.failed {
+            return Ok(());
+        }
+        self.out.write_str(text).map_err(|_| {
+            self.failed = true;
+            Report::msg("could not write pass output: the stream returned an error")
+        })
+    }
 }
 
 /// Which operations under the operation a pass ran on are printed.
@@ -94,14 +162,26 @@ impl OpFilter {
 /// printed with the configured [`crate::OpPrintingFlags`] and a blank line. With filters, each
 /// operation they select is printed under its own header instead. A pass manager adaptor (a
 /// nested pipeline) is never printed for: the passes it runs are.
+///
+/// The first write that fails is recorded in `error`, where [`PassManager::run`] finds it; nothing
+/// is written after it.
 struct Print {
     config: IRPrintingConfig,
-    out: Box<PassOutput>,
+    out: OutputStream,
+    error: Rc<RefCell<Option<Report>>>,
 }
 
 impl Print {
-    fn new(config: IRPrintingConfig, out: Box<PassOutput>) -> Self {
-        Self { config, out }
+    fn new(
+        config: IRPrintingConfig,
+        out: Box<PassOutput>,
+        error: Rc<RefCell<Option<Report>>>,
+    ) -> Self {
+        Self {
+            config,
+            out: OutputStream::new(out),
+            error,
+        }
     }
 
     fn print(&mut self, phase: &str, pass: &dyn OperationPass, op: &OperationRef) {
@@ -123,9 +203,12 @@ impl Print {
             });
         }
         if !text.is_empty()
-            && let Err(error) = write_output(&mut *self.out, &text)
+            && let Err(error) = self.out.write(&text)
         {
-            log::warn!(target: "pass", "{error}");
+            let mut slot = self.error.borrow_mut();
+            if slot.is_none() {
+                *slot = Some(error);
+            }
         }
     }
 

@@ -13,13 +13,9 @@ use runic_core::{
 #[derive(Clone, Default)]
 struct Buffer(Rc<RefCell<String>>);
 
-impl std::io::Write for Buffer {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0.borrow_mut().push_str(core::str::from_utf8(bytes).expect("utf-8 output"));
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
+impl core::fmt::Write for Buffer {
+    fn write_str(&mut self, text: &str) -> core::fmt::Result {
+        self.0.borrow_mut().push_str(text);
         Ok(())
     }
 }

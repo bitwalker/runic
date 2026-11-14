@@ -97,7 +97,11 @@ pub trait Statistic {
     fn description(&self) -> &str;
     /// Pretty prints this statistic as a value
     fn pretty_print(&self) -> crate::formatter::Document;
-    /// The raw underlying value of this statistic, as [Self::try_merge] takes it
+    /// The raw underlying value of this statistic, as [Self::try_merge] takes it.
+    ///
+    /// The pass manager uses it to merge the statistics of the instances of one pass (one per
+    /// operation a nested pipeline ran on) before it prints them: each statistic of one instance is
+    /// handed, through this method, to [Self::try_merge] of the same statistic of another.
     fn value_as_any_mut(&mut self) -> &mut dyn Any;
     /// Merges another instance of this statistic into this one, given a mutable reference to the
     /// raw underlying value of the other instance.

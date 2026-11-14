@@ -1,6 +1,13 @@
 //! IR printed between passes, and statistics, written to a stream the caller gives.
 
-use alloc::{boxed::Box, format, rc::Rc, string::String, vec, vec::Vec};
+use alloc::{
+    boxed::Box,
+    format,
+    rc::Rc,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
 use core::cell::RefCell;
 
 use crate::{
@@ -29,19 +36,6 @@ impl Buffer {
     }
 }
 
-#[cfg(feature = "std")]
-impl std::io::Write for Buffer {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0.borrow_mut().push_str(core::str::from_utf8(bytes).expect("utf-8 output"));
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-#[cfg(not(feature = "std"))]
 impl core::fmt::Write for Buffer {
     fn write_str(&mut self, text: &str) -> core::fmt::Result {
         self.0.borrow_mut().push_str(text);
@@ -359,4 +353,122 @@ fn statistics_are_written_to_the_given_stream_as_a_list() {
             " ".repeat(25)
         )
     );
+}
+
+/// A stream that accepts `accepted` writes, fails the next, and counts the writes it is handed.
+#[derive(Clone)]
+struct Failing {
+    accepted: usize,
+    writes: Rc<RefCell<usize>>,
+}
+
+impl core::fmt::Write for Failing {
+    fn write_str(&mut self, _text: &str) -> core::fmt::Result {
+        let mut writes = self.writes.borrow_mut();
+        *writes += 1;
+        if *writes > self.accepted {
+            Err(core::fmt::Error)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[test]
+fn after_a_failed_write_of_printed_ir_nothing_more_is_written_and_the_run_fails() {
+    let (context, module) = module();
+    let mut pm = PassManager::on::<Module>(context, Nesting::Explicit);
+    for argument in ["first", "second", "third"] {
+        pm.add_pass(reporting(argument, true)).unwrap();
+    }
+    let writes = Rc::new(RefCell::new(0));
+    let out = Failing {
+        accepted: 1,
+        writes: writes.clone(),
+    };
+    let config = IRPrintingConfig {
+        after: PassSelection::All,
+        ..Default::default()
+    };
+    pm.enable_ir_printing(config, Box::new(out));
+    let error = pm.run(module).expect_err("the second write fails");
+    assert!(error.to_string().contains("could not write pass output"), "{error}");
+    // The first print is written, the second fails, the third is not attempted.
+    assert_eq!(*writes.borrow(), 2);
+    // The stream stays failed: a second run writes nothing, and its passes succeed.
+    pm.run(module).expect("the failure was returned by the run that met it");
+    assert_eq!(*writes.borrow(), 2);
+}
+
+#[test]
+fn a_failed_write_of_statistics_fails_the_run() {
+    let (context, module) = module();
+    let mut pm = PassManager::on::<Module>(context, Nesting::Explicit);
+    pm.add_pass(Box::<Count>::default()).unwrap();
+    let writes = Rc::new(RefCell::new(0));
+    pm.enable_statistics(Box::new(Failing {
+        accepted: 0,
+        writes: writes.clone(),
+    }));
+    let error = pm.run(module).expect_err("the statistics are not written");
+    assert!(error.to_string().contains("could not write pass output"), "{error}");
+    assert_eq!(*writes.borrow(), 1);
+    pm.run(module).expect("nothing more is written to a failed stream");
+    assert_eq!(*writes.borrow(), 1);
+}
+
+#[cfg(feature = "std")]
+mod io_output {
+    use alloc::{rc::Rc, string::ToString, vec::Vec};
+    use core::{cell::RefCell, fmt::Write};
+
+    use crate::pass::IoOutput;
+
+    /// An `io::Write` that records what it is given and whether it was flushed, and fails every
+    /// write after `accepted` of them.
+    struct Device {
+        accepted: usize,
+        log: Rc<RefCell<Vec<&'static str>>>,
+        bytes: Vec<u8>,
+    }
+
+    impl std::io::Write for Device {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if self.accepted == 0 {
+                self.log.borrow_mut().push("fail");
+                return Err(std::io::Error::other("the device is full"));
+            }
+            self.accepted -= 1;
+            self.log.borrow_mut().push("write");
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.log.borrow_mut().push("flush");
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn an_io_output_flushes_each_write_and_keeps_the_first_error() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut out = IoOutput::new(Device {
+            accepted: 1,
+            log: log.clone(),
+            bytes: Vec::new(),
+        });
+        out.write_str("one").unwrap();
+        assert!(out.write_str("two").is_err());
+        assert!(out.write_str("three").is_err());
+        assert_eq!(
+            out.error().map(|error| error.to_string()).as_deref(),
+            Some("the device is full")
+        );
+        // The third write never reaches the device.
+        assert_eq!(*log.borrow(), ["write", "flush", "fail"]);
+        let (device, error) = out.into_inner();
+        assert_eq!(device.bytes, b"one");
+        assert!(error.is_some());
+    }
 }

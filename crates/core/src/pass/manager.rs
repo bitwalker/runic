@@ -6,13 +6,14 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
+use core::cell::RefCell;
 
 use compact_str::{CompactString, ToCompactString};
 use smallvec::{SmallVec, smallvec};
 
 use super::{
-    AnalysisManager, OpFilter, OperationPass, Pass, PassExecutionState, PassInstrumentation,
-    PassInstrumentor, PassOutput, PipelineParentInfo, Statistic, write_output,
+    AnalysisManager, OpFilter, OperationPass, OutputStream, Pass, PassExecutionState,
+    PassInstrumentation, PassInstrumentor, PassOutput, PipelineParentInfo, Statistic,
 };
 use crate::{
     Context, EntityMut, Forward, OpPrintingFlags, OpRegistration, Operation, OperationName,
@@ -79,7 +80,10 @@ pub struct PassManager {
     // generate reproducers.
     //crash_reproducer_generator: Rc<PassCrashReproducerGenerator>,
     /// Where pass statistics are written after a run, if they are
-    statistics: Option<Box<PassOutput>>,
+    statistics: Option<OutputStream>,
+    /// The first failure to write printed IR (see [`Self::enable_ir_printing`]), returned by the
+    /// next [`Self::run`] whose passes succeed
+    output_error: Rc<RefCell<Option<Report>>>,
     /// Indicates whether or not to run verification between passes
     verification: bool,
 }
@@ -113,6 +117,7 @@ impl PassManager {
             pm,
             instrumentor: Default::default(),
             statistics: None,
+            output_error: Rc::default(),
             verification: true,
         }
     }
@@ -166,19 +171,20 @@ impl PassManager {
         }
         */
         let result = self.run_passes(op, analysis_manager);
+        let printed = self.output_error.borrow_mut().take().map_or(Ok(()), Err);
 
         // Write the pass statistics if they were asked for, whether or not the passes succeeded.
-        if let Some(out) = self.statistics.as_deref_mut() {
+        let mut written = Ok(());
+        if let Some(out) = self.statistics.as_mut() {
             let mut text = String::new();
-            let written = self
+            written = self
                 .pm
                 .print_statistics(&mut text)
                 .map_err(Report::msg)
-                .and_then(|()| write_output(out, &text));
-            return result.and(written);
+                .and_then(|()| out.write(&text));
         }
 
-        result
+        result.and(printed).and(written)
     }
 
     fn run_passes(
@@ -215,22 +221,26 @@ impl PassManager {
     /// Prints the operation a pass ran on, before and after the selected passes, to `out`.
     ///
     /// A pass is selected by its command-line name; see [`IRPrintingConfig`] for what is printed.
-    /// Nothing is installed, and nothing written, when no pass is selected.
+    /// Nothing is installed, and nothing written, when no pass is selected. After a write to `out`
+    /// fails, nothing more is written to it, and the next [`Self::run`] returns the failure when
+    /// its passes succeed.
     pub fn enable_ir_printing(
         &mut self,
         config: IRPrintingConfig,
         out: Box<PassOutput>,
     ) -> &mut Self {
         if config.before != PassSelection::None || config.after != PassSelection::None {
-            self.add_instrumentation(Box::new(Print::new(config, out)));
+            let error = self.output_error.clone();
+            self.add_instrumentation(Box::new(Print::new(config, out, error)));
         }
         self
     }
 
     /// Writes the statistics of the passes to `out` at the end of each run, in the form of
-    /// [`OpPassManager::print_statistics`].
+    /// [`OpPassManager::print_statistics`]. A run whose passes succeed returns the failure to
+    /// write them; after a write fails, nothing more is written to `out`.
     pub fn enable_statistics(&mut self, out: Box<PassOutput>) -> &mut Self {
-        self.statistics = Some(out);
+        self.statistics = Some(OutputStream::new(out));
         self
     }
 
