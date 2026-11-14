@@ -26,4 +26,5 @@ runic-dialect-arith = { path = "../dialects/arith" }
 runic-dialect-cf = { path = "../dialects/cf" }
 runic-dialect-mem = { path = "../dialects/mem" }
 runic-dialect-scf = { path = "../dialects/scf" }
+runic-expect-test = { path = "../../tools/expect-test" }
 runic-core = { path = "../core", features = ["logging"] }
