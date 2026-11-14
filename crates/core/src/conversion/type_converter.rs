@@ -143,6 +143,12 @@ impl TypeConverter {
         self
     }
 
+    /// Whether the converter has a value conversion callback ([Self::add_value_conversion]).
+    #[inline]
+    pub fn has_value_conversions(&self) -> bool {
+        !self.value_conversions.is_empty()
+    }
+
     /// Add a source materialization callback: many new values to one value of the old type.
     ///
     /// It is given the values (none for a value that was dropped), the old type and the span of

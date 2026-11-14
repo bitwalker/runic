@@ -136,7 +136,11 @@ fn every_pattern_that_does_not_match_leaves_no_cast() {
     let first = add_that(&context, "first", || Ok(false));
     let second = add_that(&context, "second", || Ok(false));
 
-    convert(function, wide_target(&context), [first, second]).unwrap_err();
+    let err = convert(function, wide_target(&context), [first, second]).unwrap_err();
 
+    assert_eq!(
+        format!("{err}"),
+        "failed to legalize operation 'test.add': no conversion pattern matched"
+    );
     assert_str_eq!(function.borrow().to_string(), before);
 }

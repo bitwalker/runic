@@ -33,8 +33,9 @@ impl<'a> LegalizationGraph<'a> {
 
     /// Build the legalization graph of a partial conversion: as [Self::new], except that an
     /// operation the target has no rule for ([ConversionTarget::static_rule_legality]) is also a
-    /// terminal operation, since a partial conversion may leave it as it is.
-    pub fn new_partial(
+    /// terminal operation, since a partial conversion may leave it as it is: a path ends at it at
+    /// depth 0, like a path at a legal operation.
+    pub(crate) fn new_partial(
         target: &'a ConversionTarget,
         patterns: &FrozenConversionPatternSet,
     ) -> Self {

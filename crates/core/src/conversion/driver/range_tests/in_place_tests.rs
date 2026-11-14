@@ -342,11 +342,6 @@ fn the_pattern_contract_holds_for_changes_in_place() {
     }
 }
 
-/// A pattern for the `i64` constant that retypes it to `i32` in place, its value truncated.
-fn narrow_constant_no_cast(context: &Rc<Context>) -> Rule {
-    narrow_constant_in_place(context, &narrow_converter(context))
-}
-
 /// A retyped result without users gets no cast, even with reconciliation off.
 #[test]
 fn a_result_retyped_in_place_without_users_gets_no_cast() {
@@ -356,7 +351,7 @@ fn a_result_retyped_in_place_without_users_gets_no_cast() {
     builtin.ret;",
     );
     let mut set = ConversionPatternSet::new(context.clone());
-    set.push(narrow_constant_no_cast(&context));
+    set.push(narrow_constant_in_place(&context, &narrow_converter(&context)));
     let mut config = ConversionConfig::default();
     config.with_reconcile_unrealized_casts(false);
 

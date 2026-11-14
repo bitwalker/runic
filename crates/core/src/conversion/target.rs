@@ -342,7 +342,7 @@ impl ConversionTarget {
 
     /// [Self::static_legality] by the operation, dialect and interface rules alone;
     /// [`StaticLegality::Unknown`] when none matches.
-    pub fn static_rule_legality(&self, name: &OperationName) -> StaticLegality {
+    pub(crate) fn static_rule_legality(&self, name: &OperationName) -> StaticLegality {
         self.rule_for(name)
             .map_or(StaticLegality::Unknown, LegalityRule::static_legality)
     }

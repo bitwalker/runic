@@ -623,7 +623,6 @@ impl ConversionPatternRewriter {
             }
         }
 
-        let is_terminator = op.borrow().implements::<dyn Terminator>();
         let mut changed = SmallVec::<[(ValueRef, Type); 2]>::new();
         for (index, ((result, old_ty), expected)) in results.iter().zip(&expected).enumerate() {
             let new_ty = result.borrow().ty();
@@ -644,7 +643,7 @@ impl ConversionPatternRewriter {
                 )));
             }
             if result.borrow().is_used() {
-                if is_terminator {
+                if op.borrow().implements::<dyn Terminator>() {
                     return Err(Report::msg(format!(
                         "result {index} of '{name}' changed type in place, from '{old_ty}' to \
                          '{new_ty}', and has users, but '{name}' is a terminator: the cast back \

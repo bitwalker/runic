@@ -257,9 +257,11 @@ fn is_legal_op_does_not_ask_value_callbacks() {
     );
     let (i64, i128) = (context.i64(), context.i128());
     let mut converter = TypeConverter::new();
+    assert!(!converter.has_value_conversions());
     converter.add_value_conversion(move |_, value| {
         (value.borrow().ty() == i128).then(|| TypeConversion::many([i64, i64]))
     });
+    assert!(converter.has_value_conversions());
     let sink = function
         .borrow()
         .regions()
@@ -393,4 +395,90 @@ fn a_replacement_built_after_the_operation_is_read_after_it() {
     convert(function, target, [split_constant_after(&context, &converter)])
         .unwrap_or_else(|err| panic!("{}", describe(&err)));
     defined_before_use(function).unwrap_or_else(|err| panic!("{err}\n{}", function.borrow()));
+}
+
+/// A pattern for `test.sink` that counts the operations it is offered and matches none.
+fn counting_sink(context: &Rc<Context>, converter: &TypeConverter, offers: Seen<()>) -> Rule {
+    Rule::new::<Sink>(context, "counting-sink", Some(converter.clone()), [], move |_, _, _| {
+        offers.borrow_mut().push(());
+        Ok(false)
+    })
+}
+
+/// In a partial conversion, an operation the target has no rule for is left alone when the
+/// unknown operation policy calls it legal, by `Legal` or by a dynamic policy that answers legal:
+/// it is never offered to the pattern that would match it.
+#[test]
+fn in_partial_mode_a_rule_free_operation_the_policy_calls_legal_is_not_offered() {
+    let policies: [fn() -> UnknownOpPolicy; 2] = [
+        || UnknownOpPolicy::Legal,
+        || UnknownOpPolicy::Dynamic(Rc::new(|_| DynamicLegalityResult::legal_if(true))),
+    ];
+    for policy in policies {
+        let (context, function) = parse_function(
+            "(%0: i128)",
+            "    test.sink %0 : (i128);
+    builtin.ret;",
+        );
+        let before = function.borrow().to_string();
+        let converter = wide_converter(&context);
+        let offers: Seen<()> = Rc::default();
+        let mut target = ConversionTarget::new(context.clone());
+        target.set_unknown_op_policy(policy());
+        let mut set = ConversionPatternSet::new(context.clone());
+        set.push(counting_sink(&context, &converter, offers.clone()));
+
+        let result = apply_partial_conversion(function, target, set, ConversionConfig::default())
+            .unwrap_or_else(|err| panic!("{}", describe(&err)));
+
+        assert_eq!(offers.borrow().len(), 0, "the sink is not offered");
+        assert_eq!(result.converted_ops(), 0);
+        assert_str_eq!(function.borrow().to_string(), before);
+    }
+}
+
+/// In a partial conversion, the operations nested under a recursively legal operation are not
+/// offered to the patterns, though a rule of the target calls them illegal, and the final check
+/// does not report them.
+#[test]
+fn in_partial_mode_the_operations_under_a_recursively_legal_one_are_not_offered() {
+    let mut test = Test::new("f", |_| ([], []));
+    let context = test.context_rc();
+    {
+        let mut builder = test.function_builder();
+        let b = builder.builder_mut();
+        const S: SourceSpan = SourceSpan::UNKNOWN;
+        let scope = b.create::<Scope, ()>(S)().unwrap();
+        let region = scope.borrow().body().as_region_ref();
+        let body = b.create_block(region, None, &[]);
+        let after = scope.as_operation_ref();
+        b.set_insertion_point_to_end(body);
+        let inner = b.create::<Constant, _>(S)(Int::from_bits(128, 9)).unwrap();
+        let inner = inner.borrow().result().as_value_ref();
+        b.create::<Sink, (ValueRef, Vec<ValueRef>)>(S)(inner, vec![]).unwrap();
+        b.set_insertion_point_after(after);
+        b.create::<crate::dialects::builtin::Ret, (Vec<ValueRef>,)>(S)(vec![]).unwrap();
+    }
+    let function = test.function().as_operation_ref();
+    let before = function.borrow().to_string();
+    let converter = wide_converter(&context);
+    let offers: Seen<()> = Rc::default();
+    let mut target = ConversionTarget::new(context.clone());
+    target
+        .add_legal_op::<Function>()
+        .add_legal_op::<crate::dialects::builtin::Ret>()
+        .add_legal_op::<Scope>()
+        .mark_op_recursively_legal::<Scope>()
+        .add_illegal_op::<Constant>()
+        .add_illegal_op::<Sink>();
+    let mut set = ConversionPatternSet::new(context.clone());
+    set.push(split_constant(&context, &converter));
+    set.push(counting_sink(&context, &converter, offers.clone()));
+
+    let result = apply_partial_conversion(function, target, set, ConversionConfig::default())
+        .unwrap_or_else(|err| panic!("{}", describe(&err)));
+
+    assert_eq!(offers.borrow().len(), 0, "the nested sink is not offered");
+    assert_eq!(result.converted_ops(), 0, "the nested constant is not offered");
+    assert_str_eq!(function.borrow().to_string(), before);
 }
