@@ -236,6 +236,7 @@ impl Options {
         Ok(runic_core::pass::IRPrintingConfig {
             before: PassSelection::None,
             after,
+            after_failure: PassSelection::None,
             only_when_modified: self.print_ir_after_modified,
             filters: print_ir_filters,
             flags: self.op_printing_flags(),

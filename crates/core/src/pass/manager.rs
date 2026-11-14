@@ -67,6 +67,9 @@ pub struct IRPrintingConfig {
     pub before: PassSelection,
     /// The passes after which the operation they ran on is printed
     pub after: PassSelection,
+    /// The passes after whose failure the operation they ran on is printed, as the failed pass
+    /// left it (a failure of the verifier after a pass is a failure of the pass)
+    pub after_failure: PassSelection,
     /// Print after a pass only when the pass reported that it changed the IR (see
     /// [`PassExecutionState::set_post_pass_status`]); printing before a pass is not affected
     pub only_when_modified: bool,
@@ -242,7 +245,10 @@ impl PassManager {
         config: IRPrintingConfig,
         out: Box<PassOutput>,
     ) -> &mut Self {
-        if config.before != PassSelection::None || config.after != PassSelection::None {
+        if config.before != PassSelection::None
+            || config.after != PassSelection::None
+            || config.after_failure != PassSelection::None
+        {
             let error = self.output_error.clone();
             self.add_instrumentation(Box::new(Print::new(config, out, error)));
         }
@@ -1125,11 +1131,20 @@ impl OpToOpPassAdaptor {
             instrumentor.run_before_pass(pass, &op);
         }
 
+        // A failure of a pass, or of the verifier after it, says which pass it was and what it ran
+        // on. An adaptor adds nothing: the failure comes from a pass it ran, which said so.
+        let is_adaptor = pass.as_any().is::<OpToOpPassAdaptor>();
         let mut result =
             if let Some(adaptor) = pass.as_any_mut().downcast_mut::<OpToOpPassAdaptor>() {
                 adaptor.run_on_operation(op, &mut execution_state, verify)
             } else {
-                pass.run_on_operation(op, &mut execution_state)
+                pass.run_on_operation(op, &mut execution_state).map_err(|error| {
+                    error.context(format!(
+                        "pass '{}' failed on {}",
+                        Self::command_line_name(pass),
+                        Self::describe(&op)
+                    ))
+                })
             };
 
         // Invalidate any non-preserved analyses
@@ -1154,7 +1169,15 @@ impl OpToOpPassAdaptor {
             if run_verifier_now
                 && let Err(verification_result) = Self::verify(&op, run_verifier_recursively)
             {
-                result = Err(verification_result);
+                result = Err(if is_adaptor {
+                    verification_result
+                } else {
+                    verification_result.context(format!(
+                        "the IR that pass '{}' left on {} is invalid",
+                        Self::command_line_name(pass),
+                        Self::describe(&op)
+                    ))
+                });
             }
         }
 
@@ -1168,6 +1191,24 @@ impl OpToOpPassAdaptor {
 
         // Return the pass result
         result.map(|_| ())
+    }
+
+    /// The command-line name of `pass`, or its display name when it has none.
+    fn command_line_name(pass: &dyn OperationPass) -> &'static str {
+        match pass.argument() {
+            "" => pass.name(),
+            argument => argument,
+        }
+    }
+
+    /// The name of `op` in quotes, followed by its symbol name when it is a symbol:
+    /// `'builtin.function' @f`.
+    fn describe(op: &OperationRef) -> String {
+        let op = op.borrow();
+        match op.as_symbol() {
+            Some(symbol) => format!("'{}' @{}", op.name(), symbol.name().as_str()),
+            None => format!("'{}'", op.name()),
+        }
     }
 
     fn verify(op: &OperationRef, verify_recursively: bool) -> Result<(), Report> {

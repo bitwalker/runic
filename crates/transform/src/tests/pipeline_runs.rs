@@ -309,7 +309,8 @@ impl Pass for Break {
 }
 
 /// A verifier failure after a pass is one report, labelled at the operation that is invalid,
-/// which does not name the pass; nothing is emitted on the context.
+/// whose message does not name the pass and whose context frame does; nothing is emitted on the
+/// context.
 #[test]
 fn a_verifier_failure_after_a_pass_as_data() {
     const MODULE: &str = "\
@@ -333,7 +334,12 @@ builtin.module public @m {
     let mut message = String::new();
     error.as_diagnostic().message(&mut message).unwrap();
     assert_eq!(message, "invalid operation builtin.function");
-    assert!(!message.contains("break-returns"), "the report does not name the pass");
+    assert!(!message.contains("break-returns"), "the message does not name the pass");
+    let frames = error.contexts().iter().map(|frame| frame.message()).collect::<Vec<_>>();
+    assert_eq!(
+        frames,
+        ["the IR that pass 'break-returns' left on 'builtin.function' @f is invalid"]
+    );
     // Labelled at the `builtin.ret` the pass broke.
     assert_eq!(primary_line(error.as_diagnostic(), &context), Some(3));
     assert_eq!(emitted.iter().count(), 0);

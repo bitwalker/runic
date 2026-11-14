@@ -533,3 +533,74 @@ mod io_output {
         assert_eq!(*log.borrow(), ["fail"]);
     }
 }
+
+/// A pass on any operation, with the command-line name `fail`, that fails.
+struct Fail;
+
+impl Pass for Fail {
+    type Target = Operation;
+
+    fn name(&self) -> &'static str {
+        "failing pass"
+    }
+
+    fn argument(&self) -> &'static str {
+        "fail"
+    }
+
+    fn can_schedule_on(&self, _name: &OperationName) -> bool {
+        true
+    }
+
+    fn run_on_operation(
+        &mut self,
+        _op: EntityMut<'_, Operation>,
+        _state: &mut PassExecutionState,
+    ) -> Result<(), Report> {
+        Err(Report::msg("this pass always fails"))
+    }
+}
+
+/// Runs `reporting("first", true)` then `fail` on the module, with `config`, and returns what
+/// was written, the error, and the module, with the context that keeps it alive.
+fn run_failing(config: IRPrintingConfig) -> (String, Report, (Rc<Context>, OperationRef)) {
+    let (context, module) = module();
+    let mut pm = PassManager::on::<Module>(context.clone(), Nesting::Explicit);
+    pm.add_pass(reporting("first", true)).unwrap();
+    pm.add_pass(Box::new(Fail)).unwrap();
+    let buffer = Buffer::default();
+    pm.enable_ir_printing(config, buffer.output());
+    let error = pm.run(module).unwrap_err();
+    drop(pm);
+    (buffer.text(), error, (context, module))
+}
+
+#[test]
+fn ir_is_printed_after_a_selected_pass_that_failed() {
+    let config = IRPrintingConfig {
+        after_failure: PassSelection::All,
+        ..Default::default()
+    };
+    let (text, _, (_context, module)) = run_failing(config);
+    assert_eq!(text, print("after failed", "fail", &module));
+}
+
+#[test]
+fn ir_is_not_printed_after_a_failure_unless_the_failed_pass_is_selected() {
+    let config = IRPrintingConfig {
+        after_failure: PassSelection::Named(vec!["first".into()]),
+        after: PassSelection::All,
+        ..Default::default()
+    };
+    let (text, _, (_context, module)) = run_failing(config);
+    // `first` succeeded and is printed after; `fail` is neither printed after (it failed) nor
+    // after its failure (it is not selected).
+    assert_eq!(text, print("after", "first", &module));
+}
+
+#[test]
+fn a_failed_pass_is_named_with_the_operation_it_ran_on() {
+    let (_, error, _module) = run_failing(IRPrintingConfig::default());
+    let contexts = error.contexts().iter().map(|frame| frame.message()).collect::<Vec<_>>();
+    assert_eq!(contexts, ["pass 'fail' failed on 'builtin.module' @m"]);
+}

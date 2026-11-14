@@ -191,7 +191,7 @@ impl OpFilter {
 /// selects, to a stream; installed by [`PassManager::enable_ir_printing`].
 ///
 /// Each print is a header line, `// ----- IR before <pass> on <operation name> -----` (or
-/// `after`), where `<pass>` is the command-line name of the pass (its display name when it has
+/// `after`, or `after failed` after a pass that failed), where `<pass>` is the command-line name of the pass (its display name when it has
 /// none), followed by the operation printed with the configured [`crate::OpPrintingFlags`] and a
 /// blank line. With filters, each operation they select is printed under its own header instead.
 /// A pass manager adaptor (a nested pipeline) is never printed for: the passes it runs are.
@@ -294,5 +294,11 @@ impl PassInstrumentation for Print {
             return;
         }
         self.print("after", pass, op);
+    }
+
+    fn run_after_pass_failed(&mut self, pass: &dyn OperationPass, op: &OperationRef) {
+        if !Self::is_adaptor(pass) && self.config.after_failure.selects(pass.argument()) {
+            self.print("after failed", pass, op);
+        }
     }
 }
