@@ -62,13 +62,20 @@ pub enum StaticLegality {
 }
 
 /// Policy used when an operation has no op, dialect, or interface rule.
+///
+/// A full conversion reads the policy as a rule: an operation it calls illegal must be converted.
+/// A partial conversion reads it as whether an operation without a rule is offered at all: one the
+/// policy calls legal is left alone and never offered to a pattern; one it calls illegal still has
+/// no rule, so it is offered to the patterns and may stay as it is when none applies.
 #[derive(Clone)]
 pub enum UnknownOpPolicy {
-    /// Treat otherwise-unmatched operations as legal.
+    /// Treat otherwise-unmatched operations as legal (in a partial conversion: never offer them).
     Legal,
-    /// Treat otherwise-unmatched operations as illegal.
+    /// Treat otherwise-unmatched operations as illegal (in a partial conversion: offer them; they
+    /// may stay).
     Illegal,
-    /// Decide legality for otherwise-unmatched operations with a callback.
+    /// Decide legality for otherwise-unmatched operations with a callback; a partial conversion
+    /// reads its answer as above.
     Dynamic(DynamicLegalityFn),
 }
 

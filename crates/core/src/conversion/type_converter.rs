@@ -93,6 +93,13 @@ impl TypeConversion {
 /// from a type list to itself is the identity), so the materializations of a conversion must agree
 /// with that.
 ///
+/// The converters of the patterns of one conversion must also agree with each other on what a
+/// cast between two type lists means. An operand is read through any cast whose input types are
+/// what the pattern's converter answers for it, whoever caused the cast, and chains of casts are
+/// folded whoever made their links. Two converters that answer the same type list for a type but
+/// mean different things by it (one splits an `i128` into its low and high halves, the other into
+/// its high and low halves) miscompile silently.
+///
 /// The converter remembers what the type callbacks answered for a type, so each type is asked
 /// about once. The memo is shared by the clones of a converter, and a clone that is given another
 /// callback starts a memo of its own. An answer of a value callback is not remembered.
@@ -131,9 +138,13 @@ impl TypeConverter {
     /// Value callbacks are tried before type callbacks, most recently added first, and may look at
     /// the value's defining operation, its uses, or its type. What they answer is not remembered.
     ///
-    /// A callback is asked about the value an operation reads now. After a replacement that is the
-    /// result of a cast standing for the old value, so a callback must answer from the value's
-    /// type, not from what defines it, for the casts of a conversion to fold away.
+    /// A callback is asked about the value an operation reads now, and the driver keeps no map
+    /// from old values to new ones: after the producer of a value was replaced, what its users
+    /// read is the result of a cast, so a callback that answers from what defines the value stops
+    /// answering then (and the pattern of a user that keeps the old type may run until the rewrite
+    /// limit). [Self::is_legal_op] does not ask value callbacks. A value callback is safe only
+    /// when its answer depends on nothing but the value's type and on uses that the conversion
+    /// does not change; [Self::has_value_conversions] tells whether a converter has one.
     pub fn add_value_conversion<F>(&mut self, callback: F) -> &mut Self
     where
         F: Fn(&Context, ValueRef) -> Option<TypeConversion> + 'static,

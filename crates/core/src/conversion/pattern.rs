@@ -99,6 +99,13 @@ impl<'a> ConvertedOperands<'a> {
 }
 
 /// A rewrite pattern that participates in target-driven dialect conversion.
+///
+/// A pattern declares the operations it creates ([Pattern::generated_ops]). The legalization
+/// graph is built from those names alone: a pattern is kept only when each operation it may
+/// create is legal, or legalizable by other patterns. So a pattern that creates operations of its
+/// own root's kind (a split `test.add` that builds `i64` additions) is dropped when that kind is
+/// statically illegal, even when what it builds would be legal; such a kind must be dynamically
+/// legal in the target.
 pub trait ConversionPattern: Pattern {
     /// The type converter that says what this pattern's operands and results become.
     ///

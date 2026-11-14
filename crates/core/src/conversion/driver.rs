@@ -155,12 +155,18 @@ pub fn apply_full_conversion(
 ///   none matches, it stays as it is. What a pattern makes of it is legalized like any operation
 ///   the pattern creates.
 ///
+/// So for an operation without a rule the policy decides whether it is offered at all: under
+/// [super::UnknownOpPolicy::Legal] (or a dynamic policy that answers legal) it is never offered,
+/// though a pattern for it exists; under [super::UnknownOpPolicy::Illegal], the default, it is
+/// offered and may stay.
+///
 /// A pattern that breaks the pattern contract, or fails, aborts the conversion as in
-/// [apply_full_conversion], and the pattern applications that follow from one operation are
-/// limited as there ([ConversionConfig::with_max_rewrites_per_operation]). When the patterns have run, the casts are folded and realized as in a
-/// full conversion; a cast the driver inserted that no callback realizes stays when the target
-/// calls `builtin.unrealized_conversion_cast` legal, and is an error otherwise. The final check
-/// reports only an operation that a rule of the target calls illegal.
+/// [apply_full_conversion], and the pattern applications that follow from one operation are limited
+/// as there ([ConversionConfig::with_max_rewrites_per_operation]). When the patterns have run, the
+/// casts are folded and realized as in a full conversion; a cast the driver inserted that no
+/// callback realizes stays when the target calls `builtin.unrealized_conversion_cast` legal, and is
+/// an error otherwise. The final check reports only an operation that a rule of the target calls
+/// illegal.
 pub fn apply_partial_conversion(
     root: OperationRef,
     target: ConversionTarget,

@@ -57,9 +57,11 @@
 //! # Materializations
 //!
 //! When the patterns have run, chains of casts whose ends agree are folded away and casts without
-//! users are erased ([reconcile_unrealized_casts]). Each cast the driver inserted that remains is
-//! handed to the materialization callbacks of its kind of the converter recorded with it, most
-//! recently added first, until one answers:
+//! users are erased ([reconcile_unrealized_casts]). This reaches every cast under the root: those
+//! the driver did not insert, and those under a recursively legal operation, are folded and erased
+//! too. Only the casts the driver inserted are realized: each that remains is handed to the
+//! materialization callbacks of its kind of the converter recorded with it, most recently added
+//! first, until one answers:
 //!
 //! - a source callback ([TypeConverter::add_source_materialization]) is given the old type and the
 //!   values, and builds one value of that type;
@@ -69,9 +71,11 @@
 //! The cast is replaced by what the callback built.
 //! A cast no callback realizes is an error in a full conversion; in a partial one it stays when the
 //! target calls `builtin.unrealized_conversion_cast` legal. A cast in the IR that the driver did
-//! not insert is never handed to a callback. With
-//! [ConversionConfig::with_reconcile_unrealized_casts] off, nothing is folded or realized and the
-//! casts the driver inserted stay.
+//! not insert is never handed to a callback, and while reconciliation is on it is not offered to
+//! the patterns either (they are left to reconciliation). With
+//! [ConversionConfig::with_reconcile_unrealized_casts] off, nothing is folded or realized, the
+//! casts the driver inserted stay, and a cast that was already in the IR is an operation like any
+//! other: when the target does not call it legal it is offered to the patterns.
 //!
 //! # Block arguments
 //!
@@ -106,10 +110,14 @@
 //!   one the target calls legal is left as it is; one no rule matches
 //!   ([ConversionTarget::rule_legality]) and the policy does not call legal is offered to the
 //!   patterns and stays as it is when none applies. The final check reports only operations a rule
-//!   calls illegal.
+//!   calls illegal. So the unknown operation policy decides, for an operation without a rule,
+//!   whether it is offered at all: under [UnknownOpPolicy::Legal] (or a dynamic policy that
+//!   answers legal) it is left alone and never offered; under [UnknownOpPolicy::Illegal] it is
+//!   offered and may stay.
 //!
-//! In both, the operations nested under a recursively legal operation are not visited, and a
-//! conversion that succeeds leaves IR that verifies (unless
+//! In both, the operations nested under a recursively legal operation are not visited and are
+//! never offered to a pattern, even when a value they read is replaced outside (they read it
+//! through a cast); and a conversion that succeeds leaves IR that verifies (unless
 //! [ConversionConfig::with_verify_after_conversion] is off). [TypeConverter::is_legal_op] can serve
 //! as a dynamic legality rule: an operation is legal when every type it uses converts to itself.
 //!
@@ -134,11 +142,11 @@
 //!
 //! A pattern may not rely on: the order in which operations are offered (it is a pre-order walk,
 //! but the operations a pattern creates or changes in place are legalized at once, before the
-//! operations that follow; a user redirected to a cast waits for its turn); the operations around it being
-//! converted yet (an operand may be an old value read through a cast); a cast it sees in the IR
-//! staying there (casts are folded and realized at the end); a failed attempt's changes being
-//! undone; the operation it is given being offered only once; or a change it makes to a nested
-//! operation being tracked.
+//! operations that follow; a user redirected to a cast waits for its turn); the operations around
+//! it being converted yet (an operand may be an old value read through a cast); a cast it sees in
+//! the IR staying there (casts are folded and realized at the end); a failed attempt's changes
+//! being undone; the operation it is given being offered only once; or a change it makes to a
+//! nested operation being tracked.
 
 mod diagnostics;
 mod driver;
