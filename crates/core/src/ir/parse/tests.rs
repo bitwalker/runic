@@ -6801,3 +6801,46 @@ fn an_undefined_value_is_the_parsers_diagnostic() {
         assert!(format!("{err}").contains("use of undeclared values"), "{err}");
     }
 }
+
+/// Only whitespace and comments may follow the top-level operation: a second operation, a stray
+/// token, or anything after a `builtin.world` is an error labelled at the first token after it.
+#[test]
+fn text_after_the_top_level_operation_is_an_error() {
+    const FUNCTION: &str = "builtin.function public extern(\"C\") @f() {\n    builtin.ret;\n};";
+    const MESSAGE: &str = "expected the end of the input after the top-level operation";
+    let at = |source: &str, trailing: &str| {
+        let start = source.rfind(trailing).unwrap();
+        (start, start + trailing.len())
+    };
+    for (source, trailing) in [
+        (format!("{FUNCTION}\n{FUNCTION}"), "builtin.function"),
+        (format!("{FUNCTION}\n// a comment\n}}"), "}"),
+        (format!("{FUNCTION} ;"), ";"),
+        (format!("{WORLD_SOURCE}\n\n%0 = test.constant 1 : i32;"), "%0"),
+        (format!("{WORLD_SOURCE}{MODULE_SOURCE}"), "builtin.module"),
+    ] {
+        let (message, labels) = parse_error_labels(&source);
+        assert!(message.contains(MESSAGE), "{source}\n{message}");
+        assert_eq!(labels, [at(&source, trailing)], "{source}\n{message}");
+
+        let test = ParserTest::default();
+        let err = if source.starts_with("builtin.world") {
+            test.parse::<World>("trailing.hir", &source).map(|_| ())
+        } else {
+            test.parse::<Function>("trailing.hir", &source).map(|_| ())
+        }
+        .expect_err(&source);
+        assert!(format!("{}", err.display()).contains(MESSAGE), "{source}");
+    }
+
+    // Comments and blank lines after the operation are not text.
+    let test = ParserTest::default();
+    for source in [
+        format!("{FUNCTION}\n"),
+        format!("{FUNCTION}\n\n   \n// a comment\n\n// another\n"),
+        format!("// before\n{WORLD_SOURCE}\n// after"),
+    ] {
+        test.parse_any("trailing.hir", &source)
+            .unwrap_or_else(|err| panic!("{source}\n{}", err.display()));
+    }
+}

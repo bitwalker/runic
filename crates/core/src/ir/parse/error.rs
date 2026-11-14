@@ -22,6 +22,12 @@ pub enum ParserError {
         #[help]
         expected: Option<String>,
     },
+    #[error("expected the end of the input after the top-level operation")]
+    TrailingInput {
+        #[label(primary, "unexpected token '{token}'")]
+        span: SourceSpan,
+        token: String,
+    },
     #[error("invalid syntax")]
     InvalidCharacter {
         #[label(primary, "unexpected character '{character}'")]

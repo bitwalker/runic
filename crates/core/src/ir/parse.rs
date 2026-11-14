@@ -367,6 +367,9 @@ fn parse_type_source(context: &Rc<Context>, source_id: SourceId) -> Outcome<Type
 
 /// Parse an operation of type `T` from `source`, registered with the context under `name`
 ///
+/// The source is one top-level operation, which type declarations may precede; anything but
+/// whitespace and comments after it is an error.
+///
 /// The parsed operation is owned by the context: the caller keeps a handle to it for as long as
 /// it uses the operation. This function holds one of its own until the operation is downcast, as
 /// `config` may hold the only one.
@@ -383,6 +386,9 @@ pub fn parse<T: OpParser + OpRegistration>(
 }
 
 /// Parse an operation of type `T` from the file at `path`
+///
+/// The source is one top-level operation, which type declarations may precede; anything but
+/// whitespace and comments after it is an error.
 #[cfg(feature = "std")]
 pub fn parse_file<T: OpParser + OpRegistration>(
     config: ParserConfig,
@@ -404,6 +410,9 @@ fn downcast_anchored<T: OpRegistration>(op: OperationRef) -> UnsafeIntrusiveEnti
 }
 
 /// Parse any operation from `source`, registered with the context under `name`.
+///
+/// The source is one top-level operation, which type declarations may precede; anything but
+/// whitespace and comments after it is an error.
 pub fn parse_any(
     config: ParserConfig,
     name: impl Into<String>,
@@ -417,6 +426,9 @@ pub fn parse_any(
 
 /// Parse IR assembly anchored at an operation `anchor`, from `source` registered with the
 /// context under `name`.
+///
+/// The source is one top-level operation, which type declarations may precede; anything but
+/// whitespace and comments after it is an error.
 pub fn parse_anchored(
     anchor: OperationName,
     config: ParserConfig,
@@ -430,6 +442,9 @@ pub fn parse_anchored(
 }
 
 /// Parse any operation from the file at `path`.
+///
+/// The source is one top-level operation, which type declarations may precede; anything but
+/// whitespace and comments after it is an error.
 #[cfg(feature = "std")]
 pub fn parse_file_any(
     config: ParserConfig,
@@ -442,6 +457,9 @@ pub fn parse_file_any(
 }
 
 /// Parse IR assembly anchored at an operation `anchor`, from the file at `path`.
+///
+/// The source is one top-level operation, which type declarations may precede; anything but
+/// whitespace and comments after it is an error.
 #[cfg(feature = "std")]
 pub fn parse_file_anchored(
     anchor: OperationName,
@@ -457,7 +475,9 @@ pub fn parse_file_anchored(
 /// Parse the single top-level operation in the source `source_id`, and return it.
 ///
 /// The operation may be preceded by type declarations (`type !a = ..;` and `rec { .. }`), which is
-/// how the printer writes the recursion groups a root operation refers to.
+/// how the printer writes the recursion groups a root operation refers to. Only whitespace and
+/// comments may follow it: anything else, such as a second operation, is the error
+/// [`ParserError::TrailingInput`], labelled at the first token after the operation.
 ///
 /// Symbol resolution is rooted at a [World](crate::dialects::builtin::World), so parsing needs one
 /// to anchor the operation it is reading — `OperationParser` takes a
@@ -528,6 +548,22 @@ fn parse_anchored_source(
     let result = (|| -> Result<OperationRef, Report> {
         operation::parse_type_declarations(&mut operation_parser).map_err(Report::from)?;
         let op = operation_parser.parse_operation().map_err(Report::from)?;
+        // Only whitespace and comments may follow the top-level operation.
+        let operation_end = operation_parser.token_stream().previous_end();
+        match operation_parser.token_stream_mut().next().map_err(Report::from)? {
+            None => (),
+            Some(token) if matches!(token.inner(), Token::Eof) => (),
+            Some(token) => {
+                // The span of a token can leave out its sigil (`%0` is lexed as `0`), so the label
+                // starts where the text after the operation does.
+                let end = token.span().range().end();
+                let start = skip_whitespace_and_comments(source, operation_end as usize) as u32;
+                return Err(Report::from(ParserError::TrailingInput {
+                    span: span!(source_id, start.min(end), end),
+                    token: String::from(&source[start.min(end) as usize..end as usize]),
+                }));
+            }
+        }
         // See the note above: a parsed world is the root, not something to be rooted.
         //
         // Holding the world mutably borrowed across `remove` is safe. `remove` reaches
@@ -577,6 +613,20 @@ fn parse_anchored_source(
     })();
 
     parse_outcome(scope, result)
+}
+
+/// The byte offset of the first character of `text` at or after `at` that is neither whitespace
+/// nor part of a `//` comment, as the lexer skips them.
+fn skip_whitespace_and_comments(text: &str, mut at: usize) -> usize {
+    loop {
+        let rest = &text[at..];
+        let trimmed = rest.trim_start();
+        at += rest.len() - trimmed.len();
+        if !trimmed.starts_with("//") {
+            return at;
+        }
+        at += trimmed.find('\n').unwrap_or(trimmed.len());
+    }
 }
 
 /// This trait is implemented by parsers which can parse operations from IR assembly, and provides
