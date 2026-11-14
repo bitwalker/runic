@@ -59,14 +59,14 @@ where
         self.op.borrow_mut().set_attribute(name.into(), attr)
     }
 
-    /// Set attribute `name` on this op to `value`
+    /// Set property `name` of this op, which is being built, to its first value
     #[inline]
     pub fn with_property_boxed(
         &mut self,
         name: impl Into<interner::Symbol>,
         value: AttributeRef,
     ) -> Result<(), Report> {
-        self.op.borrow_mut().set_property(name.into(), value)
+        self.op.borrow_mut().init_property(name.into(), value)
     }
 
     /// Set symbol `attr_name` on this op to `symbol`.

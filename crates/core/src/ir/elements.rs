@@ -484,27 +484,33 @@ fn replacements(op: &Operation, rewrite: &mut ElementRewrite<'_>) -> Result<Repl
     }
 }
 
-/// Rewrites the operation's properties, attribute dictionary, result types and the argument types of its
-/// regions' blocks. Operand types are not touched. Returns whether anything changed.
+/// Rewrites the operation's properties, attribute dictionary, result types and the argument
+/// types of its regions' blocks. Operand types are not touched. Returns whether anything changed.
 ///
 /// Every type the operation holds is mapped by `rewrite`'s [TypeMapper]: a result's type and a
 /// block argument's type are set in place on the value, and an attribute that holds a type the
 /// map changes, at any depth, is replaced by a new attribute (see
 /// [Attribute::replace_elements](crate::Attribute::replace_elements)), installed with
 /// [Operation::set_property] or [Operation::set_attribute]. The old attribute is not edited, so
-/// another holder of it keeps it as it was, and an attribute whose elements the map does not
-/// change keeps its handle: a symbol reference stays linked, and the identity map changes nothing
-/// and builds no attribute. An attribute held twice by the operation is replaced by one new
-/// attribute. Because the result type and a type the operation keeps beside it in a property (a
-/// hidden `ty`, say) are mapped by one map, they change together.
+/// another holder of it keeps it as it was. An attribute whose elements the map does not change
+/// keeps its handle where it is held directly by the operation or by an attribute that is kept,
+/// and the identity map changes nothing and builds no attribute. The entries of a rebuilt list
+/// are copies, changed or not; a symbol reference copied this way is given a use of its own,
+/// linked to the symbol the original was linked to, and the original's use is unlinked when the
+/// attribute holding it is replaced. An attribute held twice by the operation is replaced by one
+/// new attribute. Because the result type and a type the operation keeps beside it in a property
+/// (a hidden `ty`, say) are mapped by one map, they change together.
 ///
 /// An integer constant ([IntAttr]) whose type the map changes is given its new value by the
 /// rewrite of integer constants ([ElementRewrite::with_int_constants]); without one, it is an
 /// error naming the operation and where the constant is. The operations nested in the regions
 /// are not rewritten (see [recursively_replace_elements_in]).
 ///
-/// Every replacement is computed before any is installed: on an error (the map fails, or a
-/// constant cannot be carried to its new type) nothing of the operation is changed. Whether the
+/// Every replacement is computed before any is installed: on an error of the map or of the
+/// rewrite of integer constants, nothing of the operation is changed. The properties and
+/// dictionary entries are installed before the result and block-argument types are set; a
+/// property that refuses its replacement is an internal error (a replacement is of the kind of
+/// the attribute it replaces), after which the operation may be partly rewritten. Whether the
 /// rewritten operation is still valid (an `arith.zext` whose two types became equal, say) is its
 /// verifier's business.
 pub fn replace_elements_in(
@@ -515,20 +521,61 @@ pub fn replace_elements_in(
     if replacements.is_empty() {
         return Ok(false);
     }
+    for (name, new) in replacements.properties {
+        give_copied_references_their_own_uses(op, &new);
+        // A replacement is of the kind of the attribute it replaces, which the property holds
+        if let Err(err) = op.set_property(name, new) {
+            return Err(Report::msg(format!(
+                "internal error: the replacement of property '{name}' of '{}' is not of the \
+                 property's kind, and the operation may be partly rewritten: {err}",
+                op.name()
+            )));
+        }
+    }
+    for (name, new) in replacements.attributes {
+        give_copied_references_their_own_uses(op, &new);
+        op.set_attribute(name, new);
+    }
     for (mut result, ty) in replacements.results {
         result.borrow_mut().set_type(ty);
     }
     for (mut arg, ty) in replacements.arguments {
         arg.borrow_mut().set_type(ty);
     }
-    for (name, new) in replacements.properties {
-        // a replacement is of the kind of the attribute it replaces, which the property holds
-        op.set_property(name, new)?;
-    }
-    for (name, new) in replacements.attributes {
-        op.set_attribute(name, new);
-    }
     Ok(true)
+}
+
+/// Gives each symbol reference `attr` holds, at any depth, whose use names another attribute (a
+/// copy, made when a list holding the reference was rebuilt) a use of its own, owned by `op` and
+/// linked to the symbol the shared use is linked to, if any. The shared use stays with the
+/// reference it names.
+fn give_copied_references_their_own_uses(op: &mut Operation, attr: &AttributeRef) {
+    use crate::{
+        SymbolUse, UnsafeIntrusiveEntityRef, dialects::builtin::attributes::SymbolRefAttr,
+    };
+
+    let mut copies = SmallVec::<[(UnsafeIntrusiveEntityRef<SymbolRefAttr>, _); 2]>::new();
+    let _ = walk_nested_attributes(attr, &mut |attr| {
+        if let Ok(reference) = attr.try_downcast_attr::<SymbolRefAttr>()
+            && let Some(shared) = reference.borrow().try_user()
+            && shared.borrow().attr != reference
+        {
+            copies.push((reference, shared));
+        }
+        WalkResult::Continue(())
+    });
+    if copies.is_empty() {
+        return;
+    }
+    let owner = op.as_operation_ref();
+    let context = op.context_rc();
+    for (mut reference, shared) in copies {
+        let own = context.alloc_tracked(SymbolUse::new(owner, reference));
+        reference.borrow_mut().replace_shared_user(own);
+        if let Some(symbol) = shared.linked_symbol() {
+            op.link_symbol_use(own, symbol);
+        }
+    }
 }
 
 /// The same for the operation and everything nested in it.
@@ -1091,51 +1138,264 @@ mod rewrite_tests {
     }
 }
 
-/// A symbol reference held in a list that is rebuilt (because another entry changed) is still
-/// linked to its symbol: the operation verifies, and the symbol has one use.
+/// Symbol references held inside other attributes: a rebuilt list gives the copy of a reference
+/// a use of its own, replacing or removing an attribute unlinks the references it held, and an
+/// operation erased afterwards leaves no use behind.
 #[cfg(test)]
-mod rebuilt_list_tests {
+mod nested_reference_tests {
+    use alloc::{format, rc::Rc, vec};
+
     use super::*;
     use crate::{
-        AsSymbolRef, Op, Symbol as _, SymbolUse, Usable,
-        attributes::AttrList,
-        dialects::builtin::attributes::{List, ListAttr, SymbolRef, SymbolRefAttr, TypeAttr},
+        AsSymbolRef, CallConv, Op, Symbol as _, SymbolName, SymbolTable, SymbolUse,
+        UnsafeIntrusiveEntityRef, Usable,
+        attributes::{AttrList, NamedAttribute},
+        dialects::builtin::{
+            FunctionRef,
+            attributes::{
+                AbiParam, List, ListAttr, Signature, SignatureAttr, SymbolRef, SymbolRefAttr,
+                TypeAttr,
+            },
+        },
         testing::Test,
     };
 
-    #[test]
-    fn a_symbol_reference_in_a_rebuilt_list_stays_linked() {
-        let mut test = Test::named("elements").in_module("test");
-        let mut owner = test.define_function("owner", &[], &[]);
-        let g = test.define_function("g", &[], &[]);
-        let context = test.context_rc();
-        let path = g.borrow().path();
-        let mut reference =
-            context.create_attribute::<SymbolRefAttr, _>(SymbolRef::new(path, None));
-        let user = context.alloc_tracked(SymbolUse::new(owner.as_operation_ref(), reference));
-        reference.borrow_mut().set_user(user);
-        reference.borrow_mut().link(g.as_symbol_ref());
-        let ty = context.create_attribute::<TypeAttr, _>(context.i64()).as_attribute_ref();
+    fn list(cx: &Rc<Context>, entries: impl IntoIterator<Item = AttributeRef>) -> AttributeRef {
         let mut list = AttrList::new();
-        for entry in [reference.as_attribute_ref(), ty] {
+        for entry in entries {
             list.push_back(entry.borrow().as_attr().as_attr_ref());
         }
-        let list = context.create_attribute::<ListAttr, _>(List::from(list)).as_attribute_ref();
-        owner.borrow_mut().as_operation_mut().set_attribute("entries", list);
+        cx.create_attribute::<ListAttr, _>(List::from(list)).as_attribute_ref()
+    }
+
+    /// A reference to `to`, linked, whose use belongs to `owner`.
+    fn linked(
+        cx: &Rc<Context>,
+        owner: FunctionRef,
+        to: FunctionRef,
+    ) -> UnsafeIntrusiveEntityRef<SymbolRefAttr> {
+        let path = to.borrow().path();
+        let mut reference = cx.create_attribute::<SymbolRefAttr, _>(SymbolRef::new(path, None));
+        let user = cx.alloc_tracked(SymbolUse::new(owner.as_operation_ref(), reference));
+        reference.borrow_mut().set_user(user);
+        reference.borrow_mut().link(to.as_symbol_ref());
+        reference
+    }
+
+    fn uses(symbol: FunctionRef) -> usize {
+        symbol.borrow().iter_uses().count()
+    }
+
+    fn i64_to_i32(cx: &Context, ty: Type) -> Type {
+        if ty == cx.i64() { cx.i32() } else { ty }
+    }
+
+    /// The one reference `owner` holds.
+    fn held_reference(owner: FunctionRef) -> UnsafeIntrusiveEntityRef<SymbolRefAttr> {
+        let mut found = None;
+        let owner = owner.borrow();
+        let _ = owner.as_operation().walk_attributes(&mut |_, attr| {
+            if let Ok(reference) = attr.try_downcast_attr::<SymbolRefAttr>() {
+                assert!(found.is_none(), "one reference");
+                found = Some(reference);
+            }
+            WalkResult::Continue(())
+        });
+        found.expect("a reference")
+    }
+
+    /// `@owner` holding `refs = [@g, type i64]`, rewritten `i64 -> i32`, which rebuilds the list
+    /// and copies the reference: the test, `@owner`, `@g`, and the original reference.
+    fn rebuilt() -> (Test, FunctionRef, FunctionRef, UnsafeIntrusiveEntityRef<SymbolRefAttr>) {
+        let mut test = Test::named("elements").in_module("m");
+        let mut owner = test.define_function("owner", &[], &[]);
+        let g = test.define_function("g", &[], &[]);
+        let cx = test.context_rc();
+        let reference = linked(&cx, owner, g);
+        let ty = cx.create_attribute::<TypeAttr, _>(cx.i64()).as_attribute_ref();
+        let refs = list(&cx, [reference.as_attribute_ref(), ty]);
+        owner.borrow_mut().as_operation_mut().set_attribute("refs", refs);
         owner.borrow().as_operation().verify().expect("the operation verifies");
-        let mut rewrite = ElementRewrite::types(TypeMapper::new(&context, |cx, t| {
-            if t == cx.i64() { cx.i32() } else { t }
-        }));
+
+        let mut rewrite = ElementRewrite::types(TypeMapper::new(&cx, i64_to_i32));
         assert!(replace_elements_in(owner.borrow_mut().as_operation_mut(), &mut rewrite).unwrap());
         drop(rewrite);
-        let entries = owner
-            .borrow()
-            .as_operation()
-            .get_attribute(crate::interner::Symbol::intern("entries"));
-        assert!(!AttributeRef::ptr_eq(&entries.unwrap(), &list), "the list is rebuilt");
-        assert_eq!(g.borrow().iter_uses().count(), 1);
+        let refs_now = owner.borrow().as_operation().get_attribute(Symbol::intern("refs"));
+        assert!(!AttributeRef::ptr_eq(&refs_now.unwrap(), &refs), "the list is rebuilt");
+        (test, owner, g, reference)
+    }
+
+    /// The copy in the rebuilt list has a use of its own, which names it and `@owner` and is the
+    /// only use of `@g`; the original's use is unlinked.
+    #[test]
+    fn a_symbol_reference_in_a_rebuilt_list_stays_linked() {
+        let (_test, owner, g, original) = rebuilt();
+        let held = held_reference(owner);
+        assert!(held != original, "the rebuilt list holds a copy");
+        let user = held.borrow().try_user().expect("the copy has a use");
+        assert!(user.borrow().attr == held, "the use names the held reference");
+        assert!(user.borrow().owner == owner.as_operation_ref());
+        assert_eq!(user.linked_symbol(), Some(g.as_symbol_ref()));
+        assert_eq!(uses(g), 1);
+        assert!(g.borrow().iter_uses().any(|symbol_use| symbol_use.attr == held));
+        let original_user = original.borrow().try_user().unwrap();
+        assert!(!original_user.is_linked(), "the original's use is unlinked");
         if let Err(err) = owner.borrow().as_operation().verify() {
             panic!("the rewritten operation does not verify: {err:?}");
         }
+    }
+
+    /// Renaming the symbol afterwards renames the reference the operation holds.
+    #[test]
+    fn a_reference_in_a_rebuilt_list_follows_a_rename() {
+        let (test, owner, g, _original) = rebuilt();
+        let mut module = test.module();
+        module
+            .borrow_mut()
+            .symbol_manager_mut()
+            .rename_symbol(g.as_symbol_ref(), SymbolName::intern("renamed"))
+            .expect("renamed");
+        let held = held_reference(owner);
+        let held_path = format!("{}", held.borrow().path());
+        assert!(held_path.contains("renamed"), "the held reference names `{held_path}`");
+        owner.borrow().as_operation().verify().expect("the operation verifies");
+    }
+
+    /// Erasing the operation after the rewrite leaves the use list of the symbol empty.
+    #[test]
+    fn erasing_after_a_rebuild_leaves_no_use() {
+        let (_test, mut owner, g, _original) = rebuilt();
+        owner.borrow_mut().as_operation_mut().erase();
+        assert_eq!(uses(g), 0);
+    }
+
+    /// A copy of a reference installed by hand shares the original's use, and verification
+    /// reports it.
+    #[test]
+    fn a_reference_sharing_another_references_use_is_rejected() {
+        let mut test = Test::named("elements").in_module("m");
+        let mut owner = test.define_function("owner", &[], &[]);
+        let g = test.define_function("g", &[], &[]);
+        let cx = test.context_rc();
+        let reference = linked(&cx, owner, g);
+        let alias = reference.borrow().as_attribute_ref().borrow().dyn_clone();
+        owner.borrow_mut().as_operation_mut().set_attribute("alias", alias);
+        let err = owner.borrow().as_operation().verify().expect_err("an alias is rejected");
+        let text = crate::testing::text::describe(&err);
+        assert!(text.contains("shares the use of another reference"), "{text}");
+    }
+
+    /// Replacing or removing an attribute unlinks the references it holds, top-level and nested;
+    /// replacing it with an attribute that holds the same reference keeps it linked.
+    #[test]
+    fn replacing_or_removing_an_attribute_unlinks_its_references() {
+        for nested in [false, true] {
+            let mut test = Test::named("elements").in_module("m");
+            let mut owner = test.define_function("owner", &[], &[]);
+            let g = test.define_function("g", &[], &[]);
+            let cx = test.context_rc();
+            let wrap = |reference: AttributeRef| {
+                if nested {
+                    list(&cx, [reference])
+                } else {
+                    reference
+                }
+            };
+            let other = || cx.create_attribute::<TypeAttr, _>(cx.i64()).as_attribute_ref();
+
+            // replaced by an attribute without the reference
+            let reference = linked(&cx, owner, g).as_attribute_ref();
+            owner.borrow_mut().as_operation_mut().set_attribute("refs", wrap(reference));
+            assert_eq!(uses(g), 1);
+            owner.borrow_mut().as_operation_mut().set_attribute("refs", other());
+            assert_eq!(uses(g), 0, "replaced, nested = {nested}");
+
+            // removed
+            let reference = linked(&cx, owner, g).as_attribute_ref();
+            owner.borrow_mut().as_operation_mut().set_attribute("refs", wrap(reference));
+            assert_eq!(uses(g), 1);
+            owner.borrow_mut().as_operation_mut().remove_attribute("refs");
+            assert_eq!(uses(g), 0, "removed, nested = {nested}");
+
+            // replaced by an attribute that holds the same reference
+            let reference = linked(&cx, owner, g).as_attribute_ref();
+            owner.borrow_mut().as_operation_mut().set_attribute("refs", reference);
+            owner
+                .borrow_mut()
+                .as_operation_mut()
+                .set_attribute("refs", list(&cx, [reference]));
+            assert_eq!(uses(g), 1, "the same reference is kept linked");
+            owner.borrow().as_operation().verify().expect("the operation verifies");
+        }
+    }
+
+    /// Replacing a property unlinks the references the old value held.
+    #[test]
+    fn replacing_a_property_unlinks_its_references() {
+        let mut test = Test::named("elements").in_module("m");
+        let g = test.define_function("g", &[], &[]);
+        let cx = test.context_rc();
+        let mut owner = test.define_function("owner", &[], &[]);
+        let param = AbiParam::new_with_attrs(
+            cx.i32(),
+            [NamedAttribute::new("callee", linked(&cx, owner, g).as_attribute_ref())],
+        );
+        let signature = Signature::from_parts(CallConv::default(), vec![param], vec![]);
+        let signature = cx.create_attribute::<SignatureAttr, _>(signature).as_attribute_ref();
+        let previous = owner.borrow().as_operation().get_attribute(Symbol::intern("signature"));
+        let previous = previous.expect("a function has a signature property");
+        owner
+            .borrow_mut()
+            .as_operation_mut()
+            .set_property("signature", signature)
+            .unwrap();
+        assert_eq!(uses(g), 1);
+        owner
+            .borrow_mut()
+            .as_operation_mut()
+            .set_property("signature", previous)
+            .unwrap();
+        assert_eq!(uses(g), 0);
+    }
+
+    /// Erasing an operation unlinks a reference two attributes deep: in a list in a list, and in
+    /// a parameter attribute of a signature in a list.
+    #[test]
+    fn erasing_unlinks_references_at_any_depth() {
+        let mut test = Test::named("elements").in_module("m");
+        let mut owner = test.define_function("owner", &[], &[]);
+        let g = test.define_function("g", &[], &[]);
+        let h = test.define_function("h", &[], &[]);
+        let cx = test.context_rc();
+
+        let in_list = linked(&cx, owner, g);
+        let inner = list(&cx, [in_list.as_attribute_ref()]);
+        let outer = list(&cx, [inner]);
+
+        let in_param = linked(&cx, owner, h);
+        let param = AbiParam::new_with_attrs(
+            cx.i32(),
+            [NamedAttribute::new("callee", in_param.as_attribute_ref())],
+        );
+        let signature = Signature::from_parts(CallConv::default(), vec![param], vec![]);
+        let signature = cx.create_attribute::<SignatureAttr, _>(signature).as_attribute_ref();
+        let sigs = list(&cx, [signature]);
+
+        {
+            let mut owner = owner.borrow_mut();
+            owner.as_operation_mut().set_attribute("refs", outer);
+            owner.as_operation_mut().set_attribute("sigs", sigs);
+        }
+        owner.borrow().as_operation().verify().expect("verifies");
+        assert_eq!((uses(g), uses(h)), (1, 1));
+        let mut count = 0;
+        let _ = owner.borrow().as_operation().walk_symbol_uses(|_| {
+            count += 1;
+            WalkResult::Continue(())
+        });
+        assert_eq!(count, 2);
+
+        owner.borrow_mut().as_operation_mut().erase();
+        assert_eq!((uses(g), uses(h)), (0, 0));
     }
 }

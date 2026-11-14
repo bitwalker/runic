@@ -21,6 +21,12 @@ use crate::{
 /// its link to the symbol, and it has no type of its own. A replacement of an attribute's
 /// elements ([crate::Attribute::replace_elements]) therefore never rebuilds a `SymbolRefAttr`,
 /// and the reference stays linked to its symbol.
+///
+/// A copy of a reference (`Clone`, or `dyn_clone` of an attribute holding one)
+/// shares the use of the reference it was copied from, and that use names the original
+/// attribute. A copy must be given a use of its own before it is held by an operation:
+/// [crate::replace_elements_in] does this for each copy in an attribute it installs, and
+/// verification rejects a reference whose use names another attribute.
 #[derive(DialectAttribute, Debug, Clone)]
 #[attribute(name = "symbol", dialect = BuiltinDialect, implements(AttrPrinter))]
 pub struct SymbolRef {
@@ -133,6 +139,12 @@ impl SymbolRefAttr {
 
     pub fn set_user(&mut self, user: SymbolUseRef) {
         self.value.set_user(user);
+    }
+
+    /// Gives this reference `user` in place of the use it shares with the reference it was copied
+    /// from, which is left as it is: the original keeps its use, linked or not.
+    pub(crate) fn replace_shared_user(&mut self, user: SymbolUseRef) {
+        self.value.user = Some(user);
     }
 
     /// The symbol this reference is linked to.

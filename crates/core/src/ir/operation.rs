@@ -558,8 +558,10 @@ impl Operation {
     /// Each reference's path is looked up once, which borrows this operation's nearest symbol
     /// table and the symbol tables on the path immutably.
     ///
-    /// Every reference the operation holds is checked, at any depth, as [Self::walk_symbol_refs]
-    /// visits them: a reference nested in a list, say, is checked too.
+    /// Every reference the operation holds is checked, at any depth, as [Self::walk_attributes]
+    /// visits them: a reference nested in a list, say, is checked too. A reference whose use names
+    /// another attribute, or belongs to another operation (a copy that shares the use of the
+    /// reference it was copied from), is reported as well.
     pub fn verify_symbol_refs(&self) -> Result<(), Report> {
         let print_path = |path: &crate::SymbolPath| {
             let flags = crate::OpPrintingFlags::default();
@@ -583,11 +585,34 @@ impl Operation {
             )
         };
 
-        Self::walk_symbol_refs(self, |reference| {
-            let (attr, linked) = match reference {
-                Ok(symbol_use) => (symbol_use.borrow().attr, symbol_use.linked_symbol()),
-                Err(attr) => (attr, None),
+        let owner = self.as_operation_ref();
+        self.walk_attributes(&mut |_, attr| {
+            let Ok(attr) = attr.try_downcast_attr::<SymbolRefAttr>() else {
+                return WalkResult::Continue(());
             };
+            let user = attr.borrow().try_user();
+            if let Some(user) = user {
+                let symbol_use = user.borrow();
+                if symbol_use.attr != attr || symbol_use.owner != owner {
+                    let printed = print_path(attr.borrow().path());
+                    return WalkResult::Break(crate::diagnostics::report!(
+                        message: (alloc::format!(
+                            "symbol '{printed}' shares the use of another reference"
+                        )),
+                        labels: [
+                            primary(
+                                self.span(),
+                                alloc::format!(
+                                    "this reference, held by '{}', is tracked by a use that \
+                                     belongs to another attribute or operation",
+                                    self.name()
+                                )
+                            ),
+                        ],
+                    ));
+                }
+            }
+            let linked = user.and_then(|user| user.linked_symbol());
             let path = attr.borrow().path().clone();
             let named = lookup(&path);
             if named.is_some() && named == linked {
@@ -900,9 +925,34 @@ impl Operation {
 
     /// Set the intrinsic attribute (i.e. property) `name` with `value`.
     ///
+    /// Every symbol reference the old value holds, at any depth, whose use belongs to this
+    /// operation and that `value` does not hold (the same attribute, by handle) is unlinked from
+    /// its symbol, as erasing the operation would. The property must hold a value already, as
+    /// every property of a built operation does; the builders set the first value with
+    /// [Self::init_property].
+    ///
     /// This function will panic if `name` is not a valid property of this operation.
     #[track_caller]
     pub fn set_property(
+        &mut self,
+        name: impl Into<interner::Symbol>,
+        value: AttributeRef,
+    ) -> Result<(), Report> {
+        let name = name.into();
+        let Some(prop) = self.name.get_property(name) else {
+            panic!("{name} is not a valid property for '{}'", self.name);
+        };
+        // SAFETY: the property of a built operation holds a valid attribute
+        let old = unsafe { (prop.get_raw)(self.container(), prop) };
+        unsafe { (prop.try_from)(self.container().cast_mut(), prop, value) }?;
+        self.unlink_replaced_symbol_refs(&old, Some(&value));
+        Ok(())
+    }
+
+    /// Set the property `name` of an operation being built to its first value: the field holds
+    /// no attribute yet, so nothing is read from it and nothing is unlinked.
+    #[track_caller]
+    pub(crate) fn init_property(
         &mut self,
         name: impl Into<interner::Symbol>,
         value: AttributeRef,
@@ -968,8 +1018,15 @@ impl Operation {
     }
 
     /// Set the attribute `name` with `value` for this function.
+    ///
+    /// Every symbol reference the attribute it replaces holds, at any depth, whose use belongs to
+    /// this operation and that `value` does not hold (the same attribute, by handle) is unlinked
+    /// from its symbol, as erasing the operation would.
     pub fn set_attribute(&mut self, name: impl Into<interner::Symbol>, value: AttributeRef) {
         let name = name.into();
+        if let Some(old) = self.attrs.find(&name).get().map(|old| old.as_named_attribute().value) {
+            self.unlink_replaced_symbol_refs(&old, Some(&value));
+        }
         let attr = OpAttribute::from(NamedAttribute::new(name, value));
         let attr = self.context().alloc_map_item(attr);
         if self.attrs.find(&name).is_null() {
@@ -981,9 +1038,53 @@ impl Operation {
     }
 
     /// Remove any attribute with the given name from this function
+    ///
+    /// Every symbol reference the removed attribute holds, at any depth, whose use belongs to this
+    /// operation is unlinked from its symbol, as erasing the operation would.
     pub fn remove_attribute(&mut self, name: impl Into<interner::Symbol>) {
         let name = name.into();
+        if let Some(old) = self.attrs.find(&name).get().map(|old| old.as_named_attribute().value) {
+            self.unlink_replaced_symbol_refs(&old, None);
+        }
         self.attrs.find_mut(&name).remove();
+    }
+
+    /// Unlinks the symbol references `old` holds, at any depth, whose use belongs to this
+    /// operation and names that reference, except those `new` holds (by handle): `old` is being
+    /// replaced by `new`, or removed (`None`).
+    ///
+    /// A use that belongs to another operation (`old` is shared) or names another attribute is
+    /// left alone.
+    fn unlink_replaced_symbol_refs(&mut self, old: &AttributeRef, new: Option<&AttributeRef>) {
+        use crate::walk_nested_attributes;
+
+        let references = |attr: &AttributeRef| {
+            let mut found = SmallVec::<[UnsafeIntrusiveEntityRef<SymbolRefAttr>; 2]>::new();
+            let _ = walk_nested_attributes(attr, &mut |attr| {
+                if let Ok(reference) = attr.try_downcast_attr::<SymbolRefAttr>() {
+                    found.push(reference);
+                }
+                WalkResult::Continue(())
+            });
+            found
+        };
+        let kept = new.map(references).unwrap_or_default();
+        let owner = self.as_operation_ref();
+        let uses = references(old)
+            .into_iter()
+            .filter(|reference| !kept.contains(reference))
+            .filter_map(|reference| {
+                let user = reference.borrow().try_user()?;
+                let owned = {
+                    let symbol_use = user.borrow();
+                    symbol_use.owner == owner && symbol_use.attr == reference
+                };
+                owned.then_some(user)
+            })
+            .collect::<SmallVec<[crate::SymbolUseRef; 2]>>();
+        for symbol_use in uses {
+            self.unlink_symbol_use(symbol_use);
+        }
     }
 }
 
@@ -1032,6 +1133,43 @@ impl Operation {
         }
     }
 
+    /// Whether `symbol` is this operation, compared by address, without borrowing `symbol`.
+    fn is_self(&self, symbol: &SymbolRef) -> bool {
+        let (data_ptr, _) = SymbolRef::as_ptr(symbol).to_raw_parts();
+        core::ptr::addr_eq(data_ptr, self.container())
+    }
+
+    /// Links `symbol_use` to `symbol`, which may be this operation (already borrowed mutably by
+    /// the caller).
+    pub(crate) fn link_symbol_use(&mut self, symbol_use: crate::SymbolUseRef, symbol: SymbolRef) {
+        if self.is_self(&symbol) {
+            let this = self
+                .as_trait_mut::<dyn crate::Symbol>()
+                .expect("an operation that is a symbol implements Symbol");
+            // SAFETY: `symbol` is this operation, whose use list this is
+            unsafe { symbol_use.link_into(symbol, this.uses_mut()) };
+        } else {
+            symbol_use.link_to_symbol(symbol);
+        }
+    }
+
+    /// Unlinks `symbol_use` from the symbol it is linked to, if any, which may be this operation
+    /// (already borrowed mutably by the caller).
+    fn unlink_symbol_use(&mut self, symbol_use: crate::SymbolUseRef) {
+        let Some(symbol) = symbol_use.linked_symbol() else {
+            return;
+        };
+        if self.is_self(&symbol) {
+            let this = self
+                .as_trait_mut::<dyn crate::Symbol>()
+                .expect("an operation that is a symbol implements Symbol");
+            // SAFETY: the use is linked to this operation, so it is in its use list
+            unsafe { symbol_use.unlink_from(this.uses_mut()) };
+        } else {
+            symbol_use.unlink_from_symbol();
+        }
+    }
+
     /// This function performs the same change as [`Self::set_symbol_attribute`], but is called
     /// specifically when creating an operation and setting a symbol property of that operation.
     ///
@@ -1071,7 +1209,7 @@ impl Operation {
         };
 
         // Store the underlying attribute value
-        self.set_property(attr_name, attr)
+        self.init_property(attr_name, attr)
             .expect("not a valid value for this operation property");
         attr.borrow_mut().link(symbol);
     }
@@ -1713,20 +1851,7 @@ impl Operation {
         }
 
         for symbol_use in uses {
-            let Some(symbol) = symbol_use.linked_symbol() else {
-                continue;
-            };
-            // Compared by address, without borrowing `symbol`, which may be `self`
-            let (data_ptr, _) = SymbolRef::as_ptr(&symbol).to_raw_parts();
-            if core::ptr::addr_eq(data_ptr, self.container()) {
-                let symbol = self
-                    .as_trait_mut::<dyn crate::Symbol>()
-                    .expect("an operation that is a symbol implements Symbol");
-                // SAFETY: the use is linked to this operation, so it is in its use list
-                unsafe { symbol_use.unlink_from(symbol.uses_mut()) };
-            } else {
-                symbol_use.unlink_from_symbol();
-            }
+            self.unlink_symbol_use(symbol_use);
         }
 
         // What remains in these use lists are the references from outside, as `SymbolTable::remove`

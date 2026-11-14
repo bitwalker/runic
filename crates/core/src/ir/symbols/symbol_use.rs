@@ -87,6 +87,21 @@ impl UnsafeIntrusiveEntityRef<SymbolUse> {
         symbol.borrow_mut().insert_use(self);
     }
 
+    /// Links this use to `symbol` through `uses`, the use list of `symbol`, held by the caller:
+    /// used where that symbol is already borrowed.
+    ///
+    /// # Safety
+    ///
+    /// `uses` must be the use list of `symbol`, and this use must not be linked.
+    pub(crate) unsafe fn link_into(mut self, symbol: SymbolRef, uses: &mut super::SymbolUseList) {
+        debug_assert!(
+            !self.is_linked(),
+            "symbol use must be unlinked before it can be linked again"
+        );
+        self.borrow_mut().linked_to = Some(symbol);
+        uses.push_back(self);
+    }
+
     /// Removes this use from the use list `uses`, which must be the use list of the symbol it is
     /// linked to, held by the caller: used where that symbol is already borrowed.
     ///
