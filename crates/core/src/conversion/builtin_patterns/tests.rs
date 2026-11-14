@@ -109,13 +109,19 @@ fn builtin_patterns(context: &Rc<Context>, converter: &TypeConverter) -> Convers
 }
 
 /// Parses `body` as the body of `builtin.module @m`, in a context with the test and debug-info
-/// dialects, without verifying it.
+/// dialects, and verifies it.
 fn parse_module(body: &str) -> (Rc<Context>, OperationRef) {
+    parse_module_verified(body, true)
+}
+
+/// [parse_module], verifying the module after parsing only when `verify` is true.
+fn parse_module_verified(body: &str, verify: bool) -> (Rc<Context>, OperationRef) {
     let context = Rc::new(Context::default());
     context.get_or_register_dialect::<TestDialect>();
     context.get_or_register_dialect::<DebugInfoDialect>();
     let source = format!("builtin.module public @m {{\n{body}\n}};");
-    let module = parse::<Module>(ParserConfig::new(context.clone()), "builtin-patterns", &source)
+    let config = ParserConfig::new(context.clone()).verify_after_parse(verify);
+    let module = parse::<Module>(config, "builtin-patterns", &source)
         .into_result()
         .unwrap_or_else(|err| panic!("{}", describe(&err)));
     (context, module.as_operation_ref())
@@ -520,4 +526,26 @@ fn a_store_of_a_local_outside_a_function_is_left_alone() {
     let err = describe(&err);
     assert!(err.contains("failed to legalize operation 'builtin.store_local'"), "{err}");
     assert!(err.contains("the local is in no function"), "{err}");
+}
+
+/// A function made without verification can declare an effect on a parameter or result its
+/// signature does not have: the function pattern reports it, naming the function and the effect,
+/// instead of remapping it.
+#[test]
+fn an_effect_outside_the_signature_is_an_error() {
+    for (effect, names) in [
+        ("read(arg 3)", "names argument 3, but its signature has 1 parameter(s)"),
+        ("write(result 1)", "names result 1, but its signature has 1 result(s)"),
+    ] {
+        let source =
+            format!("    builtin.function public extern(\"C\") @f(i128) -> i32 effects({effect});");
+        let (context, module) = parse_module_verified(&source, false);
+        let converter = wide_converter(&context);
+        let err =
+            convert_full(module, by_type_target(&context, &converter), &converter).unwrap_err();
+        let err = describe(&err);
+        assert!(err.contains(&format!("the declared effect `{effect}` of function @f")), "{err}");
+        assert!(err.contains(names), "{err}");
+        assert_str_eq!(module.borrow().to_string(), module_text(&source));
+    }
 }

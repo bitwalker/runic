@@ -44,7 +44,9 @@ pub trait EffectOpInterface<T: Effect> {
     }
     /// Return the set of effect instances that operate on the provided value
     ///
-    /// Only meaningful when [Self::effects_are_known] is true.
+    /// Only meaningful when [Self::effects_are_known] is true. An effect that names no value is an
+    /// effect on its resource in general, so on any value: it is not listed here, and code that
+    /// reasons per value must treat it as applying to every value.
     fn effects_on_value(&self, value: ValueRef) -> ValueEffectIterator<T> {
         EffectIterator::for_value(self.effects(), value)
     }

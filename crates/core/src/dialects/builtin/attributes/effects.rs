@@ -18,6 +18,8 @@ use crate::{
 /// Text: `read`, `write`, `allocate` or `free`, optionally followed by `(arg N)` or `(result N)`.
 /// At most one of `argument` and `result` is set. A descriptor with neither is an effect on no
 /// value in particular: it applies to the resource in general, and is what `read` alone means.
+/// Such an effect is on any value: code that reasons per value must treat it as applying to every
+/// value, though a query for the effects on one value does not list it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, AttributeComponent)]
 pub struct MemoryEffectDescriptor {
     pub effect: MemoryEffect,
@@ -123,7 +125,8 @@ impl DeclaredEffects {
 ///
 /// An effect on no value is a descriptor with neither `argument` nor `result`: it applies to the
 /// resource in general, and it is left as it is. An effect the remap makes equal to one already
-/// present is kept once, at its first position.
+/// present is kept once, at its first position; so identity ranges give an equal value for an
+/// input without duplicates, and the input with its duplicates removed otherwise.
 ///
 /// Every index a descriptor names must be in `params` (for an argument) or `results` (for a
 /// result): that is a precondition, checked with a `debug_assert!`. A function's verifier keeps

@@ -66,8 +66,8 @@ use smallvec::SmallVec;
 
 use super::{
     ConversionPattern, ConversionPatternRewriter, ConversionPatternSet, ConversionTarget,
-    ConvertedOperands, DynamicLegalityResult, SignatureConversion, TypeConverter,
-    convert_signature,
+    ConvertedOperands, ConvertedSignature, DynamicLegalityResult, SignatureConversion,
+    TypeConverter, convert_signature,
 };
 use crate::{
     AttributeRef, CallableOpInterface, Context, OpRegistration, Operation, OperationRef, Report,
@@ -77,8 +77,8 @@ use crate::{
         builtin::{
             Call, CallIndirect, Function, FunctionReference, LoadLocal, Ret, RetImm, StoreLocal,
             attributes::{
-                DeclaredEffectsAttr, LocalVariable, LocalVariableAttr, SignatureAttr,
-                TypeArrayAttr, remap_declared_effects,
+                DeclaredEffects, DeclaredEffectsAttr, LocalVariable, LocalVariableAttr,
+                SignatureAttr, TypeArrayAttr, remap_declared_effects,
             },
         },
         debuginfo::{
@@ -259,6 +259,7 @@ impl ConversionPattern for FunctionPattern {
             )
         };
         let converted = convert_signature(&context, &signature, converter);
+        check_effects_within_signature(&op.borrow(), &effects, &converted)?;
         let new_effects = remap_declared_effects(&effects, &converted.params, &converted.results);
         let mut map = LocalMap {
             starts: Vec::with_capacity(locals.len()),
@@ -355,6 +356,47 @@ impl ConversionPattern for FunctionPattern {
         }
         Ok(changed)
     }
+}
+
+/// An error, naming the function and the effect, when a declared effect of `function` names a
+/// parameter or result its signature does not have (a function made without verification can hold
+/// one): such an effect cannot be remapped.
+fn check_effects_within_signature(
+    function: &Operation,
+    effects: &DeclaredEffects,
+    converted: &ConvertedSignature,
+) -> Result<(), Report> {
+    let Some(effects) = effects.known() else {
+        return Ok(());
+    };
+    for effect in effects {
+        let outside = match (effect.argument, effect.result) {
+            (Some(index), _) => (index as usize >= converted.params.len()).then(|| {
+                format!(
+                    "argument {index}, but its signature has {} parameter(s)",
+                    converted.params.len()
+                )
+            }),
+            (None, Some(index)) => (index as usize >= converted.results.len()).then(|| {
+                format!(
+                    "result {index}, but its signature has {} result(s)",
+                    converted.results.len()
+                )
+            }),
+            (None, None) => None,
+        };
+        if let Some(outside) = outside {
+            let name = function
+                .as_trait::<dyn Symbol>()
+                .map(|symbol| format!("@{}", symbol.name()))
+                .unwrap_or_else(|| format!("{}", function.name()));
+            return Err(Report::msg(format!(
+                "the declared effect `{effect}` of function {name} names {outside}: it cannot be \
+                 remapped to the converted signature"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// `count` as a number of locals.
