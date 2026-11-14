@@ -12,6 +12,10 @@
 //! rendered instead. The exit code is then 1 exactly when something did not match, and a case
 //! is printed only when it succeeded.
 //!
+//! Besides the passes of the crates it links, the tool registers passes for testing from text
+//! what has no pass of its own (in `test_passes`): `test-convert-wide-ints`, `test-fail` and
+//! `test-print-int-ranges`.
+//!
 //! [`run`] is the whole tool, given its arguments and streams; the binary calls it with the
 //! process's.
 #![deny(warnings)]
@@ -19,6 +23,7 @@
 mod expect;
 mod options;
 mod split;
+mod test_passes;
 
 use std::{
     cell::RefCell,

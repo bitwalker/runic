@@ -25,6 +25,7 @@ clap.workspace = true
 log.workspace = true
 # The version and features `runic-log` uses, with Unicode classes for `expected-<kind>-re`.
 regex = { version = "1.0", default-features = false, features = ["std", "perf", "unicode"] }
+runic-analysis.workspace = true
 runic-core.workspace = true
 runic-dialect-arith.workspace = true
 runic-dialect-cf.workspace = true

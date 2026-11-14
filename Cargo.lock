@@ -1442,6 +1442,7 @@ dependencies = [
  "clap",
  "log",
  "regex",
+ "runic-analysis",
  "runic-core",
  "runic-dialect-arith",
  "runic-dialect-cf",

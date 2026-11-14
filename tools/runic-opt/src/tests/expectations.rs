@@ -142,8 +142,9 @@ fn a_pass_failure_is_matched_by_its_message_or_its_context() {
     for expectation in
         ["this pass always fails", "pass 'test-fail' failed on 'builtin.function' @f"]
     {
-        let text = format!("// expected-error@unknown {{{{{expectation}}}}}\n{LOCALS}");
-        let output = opt(&[CHECK, "-p", "test-fail"], &text);
+        // The function is on the third line.
+        let text = format!("// expected-error@+2 {{{{{expectation}}}}}\n{LOCALS}");
+        let output = opt(&[CHECK, "-p", verification::FAIL], &text);
         output.succeeded();
         assert_eq!(output.stderr, "", "{expectation}");
         assert_eq!(output.stdout, "", "{expectation}");

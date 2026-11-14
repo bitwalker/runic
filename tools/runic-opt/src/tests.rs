@@ -4,6 +4,7 @@ mod cli;
 mod expectations;
 mod pipeline;
 mod splitting;
+mod test_passes;
 mod text;
 mod verification;
 

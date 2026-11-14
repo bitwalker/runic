@@ -9,6 +9,10 @@ use runic_core::{
 
 use super::{INVALID, LOCALS, opt};
 
+/// The tool's `test-fail` at each function, with the message these tests expect.
+pub(super) const FAIL: &str =
+    r#"builtin.module(builtin.function(test-fail{message="this pass always fails"}))"#;
+
 /// A pass that leaves invalid IR: it removes the operands of every `builtin.ret`.
 #[derive(Default)]
 struct BreakReturns;
@@ -53,38 +57,6 @@ impl Pass for BreakReturns {
     }
 }
 
-/// A pass that fails.
-#[derive(Default)]
-struct Fail;
-
-impl Pass for Fail {
-    type Target = Function;
-
-    fn name(&self) -> &'static str {
-        "fail"
-    }
-
-    fn argument(&self) -> &'static str {
-        "test-fail"
-    }
-
-    fn description(&self) -> &'static str {
-        "Fails"
-    }
-
-    fn can_schedule_on(&self, name: &OperationName) -> bool {
-        name.is::<Function>()
-    }
-
-    fn run_on_operation(
-        &mut self,
-        _op: EntityMut<'_, Function>,
-        _state: &mut PassExecutionState,
-    ) -> Result<(), Report> {
-        Err(Report::msg("this pass always fails"))
-    }
-}
-
 /// A pass that panics.
 #[derive(Default)]
 struct Panic;
@@ -120,7 +92,6 @@ impl Pass for Panic {
 /// Registers the passes of this module (again, which does nothing, when a test before did).
 pub(super) fn register() {
     register_pass(|| Box::new(BreakReturns)).unwrap();
-    register_pass(|| Box::new(Fail)).unwrap();
     register_pass(|| Box::new(Panic)).unwrap();
 }
 
@@ -237,7 +208,7 @@ fn with_no_verify_invalid_input_and_broken_ir_are_printed_as_they_are() {
 #[test]
 fn a_failed_pass_is_named_with_the_operation_it_ran_on() {
     register();
-    let output = opt(&["-p", "test-fail"], LOCALS);
+    let output = opt(&["-p", FAIL], LOCALS);
     output.failed();
     assert_eq!(output.stdout, "");
     assert!(output.stderr.starts_with("error: this pass always fails"), "{}", output.stderr);
@@ -253,7 +224,7 @@ fn a_failed_pass_is_named_with_the_operation_it_ran_on() {
 #[test]
 fn print_ir_after_failure_prints_the_operation_the_failed_pass_ran_on() {
     register();
-    let output = opt(&["-p", "test-fail", "--print-ir-after-failure"], LOCALS);
+    let output = opt(&["-p", FAIL, "--print-ir-after-failure"], LOCALS);
     output.failed();
     let header = "// ----- IR after failed test-fail on builtin.function -----\n";
     assert!(output.stderr.starts_with(header), "{}", output.stderr);
