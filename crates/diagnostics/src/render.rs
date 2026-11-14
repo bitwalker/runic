@@ -25,6 +25,9 @@ pub struct RenderConfig {
     pub width: usize,
     pub short: bool,
     pub anonymize_line_numbers: bool,
+    /// Show only the source lines a diagnostic's labels and edits are on, with a few lines of
+    /// context around them, rather than the whole of each source it refers to.
+    pub fold: bool,
 }
 
 impl RenderConfig {
@@ -35,6 +38,7 @@ impl RenderConfig {
         width: 140,
         short: false,
         anonymize_line_numbers: false,
+        fold: false,
     };
 }
 
@@ -496,7 +500,7 @@ impl<'a> Preflight<'a> {
             if let Some(text) = slot.resolved.source.text {
                 let mut snippet = Snippet::<Annotation<'a>>::source(text)
                     .path(slot.display_name.clone())
-                    .fold(false);
+                    .fold(self.config.fold);
                 for (index, label) in snapshot
                     .labels
                     .iter()
@@ -616,8 +620,9 @@ impl<'a> Preflight<'a> {
             edits.sort_by_key(|(index, edit)| {
                 (edit.span.range().start(), edit.span.range().end(), *index)
             });
-            let mut snippet =
-                Snippet::<Patch<'a>>::source(text).path(slot.display_name.clone()).fold(false);
+            let mut snippet = Snippet::<Patch<'a>>::source(text)
+                .path(slot.display_name.clone())
+                .fold(self.config.fold);
             for (_, edit) in edits {
                 snippet = snippet.patch(Patch::new(
                     edit.span.range().into_slice_index(),
