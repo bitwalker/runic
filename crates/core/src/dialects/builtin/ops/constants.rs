@@ -17,10 +17,12 @@ use crate::{
 
 pub type BytesRef = UnsafeIntrusiveEntityRef<Bytes>;
 
-/// A constant array of bytes: `%b = builtin.bytes "0201" : array<i8; 2>;` holds the bytes `1, 2`.
+/// A constant array of bytes: `%b = builtin.bytes "0a0b0c0d" : array<i8; 4>;`.
 ///
-/// The bytes are written as [BytesAttr] writes them, as a string of hexadecimal digits that gives
-/// the last byte first. The result is an `array<i8; N>`, where `N` is the number of bytes. It is the
+/// The text is the data read as one little-endian number, written as a hexadecimal number is
+/// written, most significant byte first (as [BytesAttr] writes it): the first byte of the data, the
+/// one at the lowest address, is the last pair of digits. The example holds the bytes `0d 0c 0b 0a`
+/// in memory order. The result is an `array<i8; N>`, where `N` is the number of bytes. It is the
 /// data of the initializer region of a [GlobalVariable](super::GlobalVariable), whose contents are
 /// placed in memory at the address of the global.
 ///
@@ -123,8 +125,8 @@ impl OpPrinter for Bytes {
     }
 }
 
-/// Reads `"digits" : type`, then an optional `attributes {..}`; the digits give the last byte
-/// first, as [BytesAttr] reads them.
+/// Reads `"digits" : type`, then an optional `attributes {..}`; the digits are the data written
+/// most significant byte first, as [BytesAttr] reads them.
 impl OpParser for Bytes {
     fn parse(state: &mut OperationState, parser: &mut dyn crate::OpAsmParser<'_>) -> ParseResult {
         let digits = parser.parse_string()?;
@@ -194,8 +196,8 @@ mod tests {
         found
     }
 
-    /// The bytes are written last byte first, as `#builtin.bytes<..>` writes them; the result is
-    /// an `array<i8; N>`; the module round trips in both forms.
+    /// The bytes are written most significant byte first, as `#builtin.bytes<..>` writes them; the
+    /// result is an `array<i8; N>`; the module round trips in both forms.
     #[test]
     fn bytes_round_trip_in_both_forms() {
         let source = module(
@@ -229,6 +231,21 @@ mod tests {
         let failures = round_trip::<Module>(module, true, &mut skipped);
         assert!(failures.is_empty(), "{}", failures.join("\n\n"));
         assert!(skipped.is_empty(), "skipped: {skipped:#?}");
+    }
+
+    /// The digits of `builtin.bytes` are the data as one little-endian number, most significant byte
+    /// first: `"0a0b0c0d"` is the bytes `0d 0c 0b 0a` in memory order, and prints as it was written.
+    #[test]
+    fn a_byte_string_is_written_most_significant_byte_first() {
+        let text = "%0 = builtin.bytes \"0a0b0c0d\" : array<i8; 4>;";
+        let (_context, module) =
+            parse_text(&module("array<i8; 4>", text, "")).unwrap_or_else(|err| panic!("{err}"));
+        let found = all_bytes(module);
+        assert_eq!(found.len(), 1);
+        let op = found[0].borrow();
+        let bytes = op.downcast_ref::<Bytes>().unwrap();
+        assert_eq!(bytes.data().as_slice(), [0x0d, 0x0c, 0x0b, 0x0a]);
+        assert_eq!(op.to_string(), text);
     }
 
     /// A result type that is not the array of the bytes is a diagnostic, in either form; so are
