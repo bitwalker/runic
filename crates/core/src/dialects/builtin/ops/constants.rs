@@ -232,7 +232,7 @@ mod tests {
     }
 
     /// A result type that is not the array of the bytes is a diagnostic, in either form; so are
-    /// digits that do not make bytes.
+    /// digits that do not make bytes: an odd number of them, or digits that are not hex.
     #[test]
     fn bytes_of_another_type_are_an_error() {
         let err =
@@ -249,12 +249,19 @@ mod tests {
             .map(|_| ())
             .expect_err("the result is an array");
         assert!(err.contains("builtin.bytes"), "{err}");
+        assert!(err.contains("expected an array of 8-bit integral type, got i16"), "{err}");
 
         let err =
             parse_text(&module("i8", "", "        %b = builtin.bytes \"021\" : array<i8; 2>;"))
                 .map(|_| ())
                 .expect_err("an odd number of digits");
         assert!(err.contains("even number of hex digits"), "{err}");
+
+        let err =
+            parse_text(&module("i8", "", "        %b = builtin.bytes \"zz\" : array<i8; 1>;"))
+                .map(|_| ())
+                .expect_err("digits that are not hex");
+        assert!(err.contains("invalid hex-encoded data: contains invalid hex digits"), "{err}");
 
         let generic = "        %b = \"builtin.bytes\"() <{ value = #builtin.bytes<\"0201\"> }> : \
                        () -> array<i8; 1>;";

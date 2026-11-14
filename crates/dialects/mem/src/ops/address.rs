@@ -5,7 +5,7 @@ use runic_core::{
     dialects::builtin::attributes::{Array, I32ArrayAttr},
     effects::*,
     formatter::const_text,
-    parse::{Delimiter, ParseResult, ParserExt},
+    parse::{Delimiter, ParseResult, ParserError, ParserExt},
     patterns::RewritePatternSet,
     traits::*,
     *,
@@ -26,7 +26,10 @@ use crate::MemDialect;
 ///
 /// The address is computed, never accessed: the gep has no effects, and address arithmetic wraps.
 /// An opaque base must be cast to a typed pointer first. Every step of the path is
-/// non-negative.
+/// non-negative. When a data layout is in scope ([DataLayout::closest]), the pointee must have a
+/// layout under it if there is an index, and the offset of the element the path selects must be
+/// known ([DataLayout::offset_of]) if there is a path; with none in scope nothing is checked
+/// against a layout.
 #[derive(EffectOpInterface)]
 #[operation(
     dialect = MemDialect,
@@ -141,6 +144,47 @@ impl Verify<dyn InferTypeOpInterface> for Gep {
     }
 }
 
+/// When a data layout is in scope: with an index, the pointee has a layout under it; with a path,
+/// the offset of the element it selects is known ([DataLayout::offset_of]). A path that selects
+/// no element is left to the other verifier, which says so.
+impl Verify<dyn MemoryEffectOpInterface> for Gep {
+    fn verify(&self, _context: &Context) -> Result<(), Report> {
+        let op = self.as_operation();
+        let Some(layout) = DataLayout::closest(op) else {
+            return Ok(());
+        };
+        let Some(pointee) = self.base().ty().pointee() else {
+            return Ok(());
+        };
+        if self.dynamic_index().is_some()
+            && let Err(error) = layout.layout_of(pointee)
+        {
+            return Err(invalid(
+                op,
+                format!(
+                    "the pointee stepped over, `{pointee}`, has no layout under the data layout \
+                     in scope: {error}"
+                ),
+            ));
+        }
+        let Some(steps) = self.steps() else {
+            return Ok(());
+        };
+        if steps.is_empty() || element_at(pointee, &steps).is_err() {
+            return Ok(());
+        }
+        layout.offset_of(pointee, &steps).map(|_| ()).map_err(|error| {
+            invalid(
+                op,
+                format!(
+                    "the type the element is selected in, `{pointee}`, has no layout under the \
+                     data layout in scope: {error}"
+                ),
+            )
+        })
+    }
+}
+
 /// A gep with no index and an empty path is its base.
 impl Foldable for Gep {
     fn fold(&self, results: &mut SmallVec<[OpFoldResult; 1]>) -> FoldResult {
@@ -245,13 +289,23 @@ pub(crate) fn print_path(printer: &mut print::AsmPrinter<'_>, path: &Array<i32>)
     *printer += const_text("]");
 }
 
-/// Reads `[n, ..]`, each step written as an `i32` constant is. A negative step parses, and the
-/// verifier reports it.
+/// Reads `[n, ..]`, each step written as an `i32` constant is. A step above `i32::MAX` is a parse
+/// error. A negative step parses, and the verifier reports it.
 pub(crate) fn parse_path(parser: &mut dyn OpAsmParser<'_>) -> ParseResult<Array<i32>> {
     let ty = parser.context().i32();
     let mut path = Array::default();
     parser.parse_comma_separated_list(Delimiter::Bracket, Some("path"), |parser| {
         let (span, literal) = parser.parse_integer_literal()?.into_parts();
+        if !literal.negative && literal.magnitude > i32::MAX as u128 {
+            return Err(ParserError::InvalidIntegerLiteral {
+                span,
+                reason: format!(
+                    "the step {} is too large: a path step is at most {}",
+                    literal.magnitude,
+                    i32::MAX
+                ),
+            });
+        }
         path.push(literal.to_int(ty, span)?.signed() as i32);
         Ok(true)
     })?;

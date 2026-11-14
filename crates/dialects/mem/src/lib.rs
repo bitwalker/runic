@@ -27,6 +27,14 @@
 //! copy or fill is never removed, except a copy or fill of the constant length 0. `mem.gep`, the
 //! size operations and the casts access nothing and have no effects.
 //!
+//! **What the generic passes do not do.** A store to any address blocks the merging of loads
+//! through every other pointer, a store to a fresh `mem.alloca` included. Nothing forwards a stored
+//! value to a later load, removes a store that is never read, or promotes an alloca to a value
+//! (`Local2Reg` promotes function locals, not memory). Loads merge within one block only. A
+//! `cf.assert` between two loads does not block their merging, but it does block the merging of
+//! two calls to a function declared `effects(read)`: such a call reads the default resource, of
+//! which the assert's resource is a child.
+//!
 //! **Layouts.** No operation needs a data layout to be built, printed, parsed or type-checked. A
 //! layout is read only through [DataLayout::closest](runic_core::DataLayout::closest), and only by
 //! verifiers and folds: when one is in scope, the verifiers check that the accessed or measured

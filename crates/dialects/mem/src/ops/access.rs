@@ -28,10 +28,11 @@ impl Resource for MemoryResource {
 /// A read of a value of the type the pointer `addr` points to: `%v = mem.load %p;`.
 ///
 /// Through an opaque pointer the type read is written, and kept in the hidden property `ty`:
-/// `%v = mem.load %p : i32;`. Through a typed pointer `ty` is left unknown, or, when a type is
-/// written anyway, must be the pointee. The result has the type read. `, align N` states the
-/// alignment of the address in bytes; without it the access assumes the alignment the data layout
-/// gives the type read.
+/// `%v = mem.load %p : i32;`. Through a typed pointer `ty` is left unknown: a type written anyway
+/// must be the pointee, and the parser and the builder drop it, so the load has one form (the
+/// verifier accepts a `ty` equal to the pointee). The result has the type read. `, align N` states
+/// the alignment of the address in bytes; without it the access assumes the alignment the data
+/// layout gives the type read.
 ///
 /// The load reads [MemoryResource] at `addr`, and has no other effect: an address that is invalid,
 /// or not aligned as the load assumes, is undefined behaviour of the access, so an unused load is
@@ -172,6 +173,8 @@ impl OpParser for Load {
         let unknown = parser.context().unknown_type();
         let addr = parser.resolve_operand(addr, unknown)?;
         state.add_operand(addr);
+        // A stated type equal to the pointee of a typed pointer is not kept: one spelling per load
+        let ty = ty.filter(|ty| addr.borrow().ty().pointee() != Some(*ty));
         if let Some(ty) = ty {
             state.add_attribute("ty", parser.context_rc().create_attribute::<TypeAttr, _>(ty));
         }

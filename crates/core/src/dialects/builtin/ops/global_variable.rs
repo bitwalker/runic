@@ -405,6 +405,20 @@ mod tests {
         assert!(skipped.is_empty(), "skipped: {skipped:#?}");
     }
 
+    /// A `builtin.global_symbol` that names a function, not a global variable, is a diagnostic.
+    #[test]
+    fn a_global_symbol_of_a_function_is_an_error() {
+        let source = "builtin.module public @m {
+    builtin.function public extern(\"C\") @h(i32) -> i32;
+    builtin.function public extern(\"C\") @f() {
+        %p = builtin.global_symbol @h : ptr<i32>;
+        builtin.ret;
+    };
+};";
+        let err = parse_text(source).map(|_| ()).expect_err("a function is not a global");
+        assert!(err.contains("is not linked to a global variable"), "{err}");
+    }
+
     /// A pointer to another type, an opaque pointer and a type that is not a pointer are each
     /// rejected, in the custom form and in the generic form.
     #[test]
@@ -435,7 +449,7 @@ mod tests {
         let err = parse_text(&module("        %p = builtin.global_symbol @g+8 : ptr<i32>;"))
             .map(|_| ())
             .expect_err("an offset is not accepted");
-        assert!(!err.is_empty());
+        assert!(err.contains("unexpected token '+'"), "{err}");
 
         // The generic form states the result type itself, and the verifier checks it
         let (_context, parsed) =

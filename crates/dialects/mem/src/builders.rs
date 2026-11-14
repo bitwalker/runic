@@ -23,12 +23,14 @@ pub trait MemOpBuilder<'f, B: ?Sized + Builder> {
         build_load(self.builder_mut(), addr, unknown, align, span)
     }
 
-    /// A `mem.load` of a `ty` through `addr`, an opaque pointer, at its natural alignment.
+    /// A `mem.load` of a `ty` through `addr`, an opaque pointer, at its natural alignment. Through
+    /// a typed pointer whose pointee is `ty` it is the load [MemOpBuilder::load] makes.
     fn load_as(&mut self, addr: ValueRef, ty: Type, span: SourceSpan) -> Result<ValueRef, Report> {
         self.load_as_aligned(addr, ty, Alignment::Natural, span)
     }
 
-    /// A `mem.load` of a `ty` through `addr`, an opaque pointer, assuming `align`.
+    /// A `mem.load` of a `ty` through `addr`, an opaque pointer, assuming `align`. Through a typed
+    /// pointer whose pointee is `ty` it is the load [MemOpBuilder::load_aligned] makes.
     fn load_as_aligned(
         &mut self,
         addr: ValueRef,
@@ -199,6 +201,12 @@ fn build_load<B: ?Sized + Builder>(
     align: Alignment,
     span: SourceSpan,
 ) -> Result<ValueRef, Report> {
+    // A stated type equal to the pointee of a typed pointer is not kept: one spelling per load
+    let ty = if addr.borrow().ty().pointee() == Some(ty) {
+        builder.context().unknown_type()
+    } else {
+        ty
+    };
     let op_builder = builder.create::<Load, (_, _, _)>(span);
     let op = op_builder(addr, ty, align)?;
     Ok(op.borrow().result().as_value_ref())
