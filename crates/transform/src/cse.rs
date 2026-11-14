@@ -220,6 +220,15 @@ impl CSEDriver<'_> {
             if !operation.has_single_memory_effect(MemoryEffect::Read) {
                 return PostPassStatus::Unchanged;
             }
+            // An operation with regions is a read only when everything it holds reads too:
+            // `has_single_memory_effect` looks at the operation's own effects alone.
+            if operation.has_regions()
+                && !operation.get_effects_recursively::<MemoryEffect>().is_some_and(|effects| {
+                    effects.iter().all(|effect| *effect.effect() == MemoryEffect::Read)
+                })
+            {
+                return PostPassStatus::Unchanged;
+            }
 
             // Look for an existing definition for the operation.
             let candidates = known_values.equivalent_ops_rev(op, has_ssa_dominance);
@@ -449,7 +458,9 @@ impl CSEDriver<'_> {
 
     /// Returns true if an operation between `from` and `to`, two reads in one block, may change
     /// what `from` read: one with unknown effects, or one that writes or frees a resource that is
-    /// not disjoint from the resource of a read of `from`. Reads and allocations never block.
+    /// not disjoint from the resource of a read of `from` (or of an operation `from` holds).
+    /// Reads and allocations never block, and everything blocks when an operation `from` holds
+    /// has unknown effects.
     fn has_other_side_effecting_op_in_between(
         &mut self,
         from: OperationRef,
@@ -477,10 +488,13 @@ impl CSEDriver<'_> {
             return true;
         };
 
-        // The resources `from` reads. Its effects are known: it has a read effect.
-        let reads = from_op
-            .get_effects_recursively::<MemoryEffect>()
-            .unwrap_or_default()
+        // The resources `from` reads, it and every operation it holds. If an operation it holds
+        // has unknown effects, nothing is known about what it reads, and everything blocks.
+        let Some(effects) = from_op.get_effects_recursively::<MemoryEffect>() else {
+            *result = (from, Some(MemoryEffect::Write));
+            return true;
+        };
+        let reads = effects
             .into_iter()
             .filter(|effect| effect.effect() == MemoryEffect::Read)
             .collect::<SmallVec<[_; 2]>>();
@@ -1611,6 +1625,55 @@ cf.assert %c, "between";"#;
             assert_eq!(text.matches("builtin.load_local").count(), 2, "{text}");
         }
         Ok(())
+    }
+
+    /// Two `test.reads_locals_and_holds`, each holding `test.store %p, %v`, in a new function.
+    fn two_region_reads() -> (Test, [runic_core::OperationRef; 2]) {
+        use runic_core::{BuilderExt, Op, OpBuilder, ValueRef, dialects::test};
+
+        let mut test = Test::new("region_reads", |cx| ([cx.ptr_type(cx.i32()), cx.i32()], []));
+        let ops = {
+            let mut builder = test.function_builder();
+            let entry = builder.entry_block();
+            let (addr, value) = {
+                let block = entry.borrow();
+                (block.arguments()[0] as ValueRef, block.arguments()[1] as ValueRef)
+            };
+            let builder = builder.builder_mut();
+            let make = |builder: &mut OpBuilder| {
+                builder.set_insertion_point_to_end(entry);
+                let op =
+                    builder.create::<test::ReadsLocalsAndHolds, ()>(SourceSpan::UNKNOWN)().unwrap();
+                let body = op.borrow().body().as_region_ref();
+                let block = builder.create_block(body, None, &[]);
+                builder.set_insertion_point_to_end(block);
+                builder.create::<test::Store, _>(SourceSpan::UNKNOWN)(addr, value).unwrap();
+                op.borrow().as_operation().as_operation_ref()
+            };
+            let first = make(builder);
+            let second = make(builder);
+            builder.set_insertion_point_to_end(entry);
+            [first, second]
+        };
+        (test, ops)
+    }
+
+    /// An operation whose own effect is one read but which holds a store is not a read: two equal
+    /// ones are both kept, though the store writes a resource disjoint from the one they read.
+    #[test]
+    fn cse_keeps_a_region_operation_that_holds_a_store() {
+        let (test, [first, second]) = two_region_reads();
+        {
+            let op = first.borrow();
+            assert!(op.has_single_memory_effect(MemoryEffect::Read));
+            assert!(!op.would_be_trivially_dead(), "it holds a store");
+        }
+        test.apply_pass::<CommonSubexpressionElimination>(false).unwrap();
+        assert!(first.parent().is_some());
+        assert!(
+            second.parent().is_some(),
+            "an operation that holds a store is not a duplicate read"
+        );
     }
 
     /// Two calls that read the default resource do not merge across a `cf.assert`: the assert's

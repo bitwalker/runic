@@ -99,3 +99,24 @@ pub struct TouchLocal {
     )]
     local: crate::dialects::builtin::attributes::LocalVariableAttr,
 }
+
+/// An operation that reads the locals itself and holds a region whose operations' effects are
+/// counted as its own (`HasRecursiveMemoryEffects`).
+///
+/// It stands for an operation whose own effect is a read while what it holds may write: a pass
+/// that treats an operation as a read must look at everything inside it. It has no text of its
+/// own and is built with a builder.
+#[derive(EffectOpInterface)]
+#[effects(
+    MemoryEffect(MemoryEffect::Read),
+    resource(crate::dialects::builtin::LocalsResource)
+)]
+#[operation(
+    dialect = TestDialect,
+    traits(SingleBlock, HasRecursiveMemoryEffects),
+    implements(MemoryEffectOpInterface)
+)]
+pub struct ReadsLocalsAndHolds {
+    #[region]
+    body: Region,
+}
