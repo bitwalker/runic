@@ -72,8 +72,9 @@ impl TypeConversion {
 /// argument), never about a type held inside another type. A callback that wants a deep map
 /// builds a [TypeMapper](crate::types::TypeMapper) in the call.
 ///
-/// Type callbacks are tried in the order they were added, and the first that answers wins; a type
-/// no callback answers for converts to itself. Value callbacks are tried before type callbacks.
+/// Type callbacks are tried most recently added first, and the first that answers wins; a type no
+/// callback answers for converts to itself. Value callbacks are tried before type callbacks, also
+/// most recently added first.
 /// Each callback is given the context of the IR being converted, in which it builds the types it
 /// converts to.
 ///
@@ -85,8 +86,9 @@ impl TypeConversion {
 /// materialization callbacks of its kind of the converter of the pattern that caused it, most
 /// recently added first. The first callback that answers builds, before the cast, the operations
 /// that compute the cast's results; they replace the cast's results and the cast is erased. The
-/// operations a callback builds are not offered to patterns: they must be legal in the target.
-/// The folding assumes that casts compose (a cast from one type list to a second followed by one
+/// operations a callback builds are not offered to patterns: they must be legal in the target. A
+/// `builtin.unrealized_conversion_cast` a callback builds is not realized either; only the target
+/// judges it. The folding assumes that casts compose (a cast from one type list to a second followed by one
 /// from the second to a third means a cast from the first to the third, and a cast from a type
 /// list to itself is the identity), so the materializations of a conversion must agree with that.
 ///
@@ -111,8 +113,9 @@ impl TypeConverter {
 
     /// Add a type conversion callback.
     ///
-    /// Return `Some` to answer for the type, or `None` to let later callbacks try. Callbacks are
-    /// tried in the order they were added, and are given the context the type belongs to.
+    /// Return `Some` to answer for the type, or `None` to let the callbacks added before it try.
+    /// Callbacks are tried most recently added first, so a later callback for a type wins over an
+    /// earlier one, and are given the context the type belongs to.
     pub fn add_conversion<F>(&mut self, callback: F) -> &mut Self
     where
         F: Fn(&Context, Type) -> Option<TypeConversion> + 'static,
@@ -124,8 +127,12 @@ impl TypeConverter {
 
     /// Add a value conversion callback.
     ///
-    /// Value callbacks are tried before type callbacks and may look at the value's defining
-    /// operation, its uses, or its type. What they answer is not remembered.
+    /// Value callbacks are tried before type callbacks, most recently added first, and may look at
+    /// the value's defining operation, its uses, or its type. What they answer is not remembered.
+    ///
+    /// A callback is asked about the value an operation reads now. After a replacement that is the
+    /// result of a cast standing for the old value, so a callback must answer from the value's
+    /// type, not from what defines it, for the casts of a conversion to fold away.
     pub fn add_value_conversion<F>(&mut self, callback: F) -> &mut Self
     where
         F: Fn(&Context, ValueRef) -> Option<TypeConversion> + 'static,
@@ -139,7 +146,8 @@ impl TypeConverter {
     ///
     /// It is given the values (none for a value that was dropped), the old type and the span of
     /// the cast, and builds at the rewriter's insertion point the operations that compute a value
-    /// of the old type from them. `None`: this callback does not apply.
+    /// of the old type from them. `None`: this callback does not apply. A
+    /// `builtin.unrealized_conversion_cast` it builds is not realized; only the target judges it.
     pub fn add_source_materialization<F>(&mut self, callback: F) -> &mut Self
     where
         F: Fn(
@@ -158,7 +166,8 @@ impl TypeConverter {
     ///
     /// It is given the value, the new types and the span of the cast, and builds at the
     /// rewriter's insertion point the operations that compute one value of each new type from it.
-    /// `None`: this callback does not apply.
+    /// `None`: this callback does not apply. A `builtin.unrealized_conversion_cast` it builds is
+    /// not realized; only the target judges it.
     pub fn add_target_materialization<F>(&mut self, callback: F) -> &mut Self
     where
         F: Fn(
@@ -181,16 +190,17 @@ impl TypeConverter {
         let types = self
             .conversions
             .iter()
+            .rev()
             .find_map(|convert| convert(context, ty))
             .map_or_else(|| smallvec::smallvec![ty], TypeConversion::into_types);
         self.memo.borrow_mut().insert(ty, types.clone());
         types
     }
 
-    /// The types `value` becomes: what the first value callback answers, otherwise what its type
-    /// becomes ([Self::convert_type]).
+    /// The types `value` becomes: what the most recently added value callback that answers says,
+    /// otherwise what its type becomes ([Self::convert_type]).
     pub fn convert_value(&self, context: &Context, value: ValueRef) -> SmallVec<[Type; 2]> {
-        match self.value_conversions.iter().find_map(|convert| convert(context, value)) {
+        match self.value_conversions.iter().rev().find_map(|convert| convert(context, value)) {
             Some(conversion) => conversion.into_types(),
             None => self.convert_type(context, value.borrow().ty()),
         }
@@ -412,6 +422,20 @@ mod tests {
         assert_eq!(calls.get(), 2, "a clone given another callback asks again");
         assert_eq!(converter.convert_type(&context, i128).as_slice(), [i64, i64]);
         assert_eq!(calls.get(), 2, "the original keeps its answers");
+    }
+
+    /// A conversion added later for a type wins over one added before it; a later callback that
+    /// declines leaves the type to the earlier ones.
+    #[test]
+    fn a_later_conversion_for_the_same_type_wins() {
+        let context = Context::default();
+        let (i16, i32, i64) = (context.i16(), context.i32(), context.i64());
+        let mut converter = TypeConverter::new();
+        converter.add_conversion(move |_, ty| (ty == i32).then_some(TypeConversion::One(i64)));
+        converter.add_conversion(move |_, ty| (ty == i32).then_some(TypeConversion::One(i16)));
+        converter.add_conversion(|_, _| None);
+
+        assert_eq!(converter.convert_type(&context, i32).as_slice(), [i16]);
     }
 
     /// A value callback is asked every time; a value it does not answer for falls back to its

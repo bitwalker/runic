@@ -141,9 +141,11 @@ impl ConversionResult {
 /// values it became by the `builtin.unrealized_conversion_cast`s it inserts. When the patterns
 /// have run, those casts whose ends agree are folded away and each that remains is realized by
 /// the materialization callbacks of the type converter that caused it ([TypeConverter]); one that
-/// none realizes is an error (see [ConversionConfig::with_reconcile_unrealized_casts]). A pattern that returns `Ok(false)` must not mutate IR, and a
-/// pattern that returns `Ok(true)` must mutate IR. Violating either contract is reported as a
-/// conversion error because this driver intentionally does not roll changes back.
+/// none realizes is an error (see [ConversionConfig::with_reconcile_unrealized_casts]).
+///
+/// A pattern that returns `Ok(false)` must not mutate IR, and a pattern that returns `Ok(true)`
+/// must mutate IR. Violating either contract is reported as a conversion error because this
+/// driver intentionally does not roll changes back.
 pub fn apply_full_conversion(
     root: OperationRef,
     target: ConversionTarget,
@@ -250,7 +252,7 @@ impl FullConversionDriver<'_> {
 
         let mut match_failures = vec![];
         for pattern in candidates {
-            let type_converter = pattern.type_converter().cloned();
+            let type_converter = pattern.type_converter().cloned().map(Rc::new);
             let mut rewriter = ConversionPatternRewriter::new_for_conversion(
                 Rc::clone(&self.context),
                 type_converter.clone(),
@@ -262,7 +264,7 @@ impl FullConversionDriver<'_> {
             }
 
             let (ranges, group_sizes) =
-                converted_operands_for(op, type_converter.as_ref(), &mut rewriter)?;
+                converted_operands_for(op, type_converter.as_deref(), &mut rewriter)?;
             let mutation_count_before_pattern = rewriter.mutation_count();
             let operands = ConvertedOperands::new(&ranges, &group_sizes);
             let applied = pattern.match_and_rewrite(op, operands, &mut rewriter);
@@ -396,9 +398,10 @@ impl FullConversionDriver<'_> {
             };
 
             let converter = driver_cast.converter;
-            let mut rewriter = ConversionPatternRewriter::new_with_type_converter(
+            let mut rewriter = ConversionPatternRewriter::new_for_conversion(
                 Rc::clone(&self.context),
-                Some(converter.clone()),
+                Some(Rc::clone(&converter)),
+                DriverCasts::default(),
             );
             rewriter.inherit_inline_call_chain(cast);
             rewriter.set_insertion_point_before(cast);
@@ -415,7 +418,9 @@ impl FullConversionDriver<'_> {
             };
             if types_of(&values) != result_types {
                 return Err(Report::msg(format!(
-                    "a {} materialization of {} to {} gave values of types {}",
+                    "failed to legalize operation '{}': the {} materialization of the cast of {} \
+                     to {} gave values of types {}",
+                    cast.borrow().name(),
                     kind_name(driver_cast.kind),
                     type_list(&types_of(&inputs)),
                     type_list(&result_types),

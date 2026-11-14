@@ -110,7 +110,7 @@ pub(super) enum CastKind {
 /// A cast the driver inserted: its kind and the type converter of the pattern that caused it.
 pub(super) struct DriverCast {
     pub(super) kind: CastKind,
-    pub(super) converter: TypeConverter,
+    pub(super) converter: Rc<TypeConverter>,
 }
 
 /// The casts the driver inserted during one conversion and that are still in the IR, shared by
@@ -234,7 +234,7 @@ fn push_unique(ops: &mut Vec<OperationRef>, op: OperationRef) {
 pub struct ConversionPatternRewriter {
     inner: PatternRewriter<Rc<ConversionTrackingListener>>,
     tracking: Rc<ConversionTrackingListener>,
-    type_converter: Option<TypeConverter>,
+    type_converter: Option<Rc<TypeConverter>>,
     casts: DriverCasts,
     match_failures: Vec<MatchFailure>,
 }
@@ -255,13 +255,14 @@ impl ConversionPatternRewriter {
         context: Rc<Context>,
         type_converter: Option<TypeConverter>,
     ) -> Self {
-        Self::new_for_conversion(context, type_converter, DriverCasts::default())
+        Self::new_for_conversion(context, type_converter.map(Rc::new), DriverCasts::default())
     }
 
-    /// Create a conversion rewriter that records the casts it inserts in `casts`.
+    /// Create a conversion rewriter that records the casts it inserts in `casts`, each under the
+    /// one shared handle of `type_converter`.
     pub(super) fn new_for_conversion(
         context: Rc<Context>,
-        type_converter: Option<TypeConverter>,
+        type_converter: Option<Rc<TypeConverter>>,
         casts: DriverCasts,
     ) -> Self {
         let tracking = Rc::new(ConversionTrackingListener::new(Rc::clone(&casts)));
@@ -327,7 +328,7 @@ impl ConversionPatternRewriter {
         results: impl IntoIterator<Item = Type>,
         span: SourceSpan,
     ) -> Result<SmallVec<[ValueRef; 2]>, Report> {
-        let converter = self.type_converter.clone().ok_or_else(|| {
+        let converter = self.type_converter.as_ref().map(Rc::clone).ok_or_else(|| {
             Report::msg("the driver inserts a cast only for a pattern with a type converter")
         })?;
         let cast =
@@ -372,6 +373,10 @@ impl ConversionPatternRewriter {
     /// result still has users, they are given a many-to-one `builtin.unrealized_conversion_cast`
     /// of the range back to the result's type, inserted before `op`. A range of any other types,
     /// or the wrong number of ranges, is an error raised before anything is changed.
+    ///
+    /// Afterwards the insertion point is where it was before the call; when it was at `op`, it is
+    /// at the position `op` occupied (before the operation that followed it, or at the end of its
+    /// block).
     pub fn replace_op_with_multiple(
         &mut self,
         op: OperationRef,
@@ -407,27 +412,35 @@ impl ConversionPatternRewriter {
             let range_types = types_of(range);
             let Some(converter) = self.type_converter.as_ref() else {
                 return Err(Report::msg(format!(
-                        "result {index} of '{}' has type '{result_ty}', but it is replaced by \
-                         values                      of types {}, and the pattern has no type \
-                         converter",
-                        op.borrow().name(),
-                        type_list(&range_types)
-                    )));
+                    "result {index} of '{}' has type '{result_ty}', but it is replaced by values \
+                     of types {}, and the pattern has no type converter",
+                    op.borrow().name(),
+                    type_list(&range_types)
+                )));
             };
             let expected = converter.convert_value(&context, *result);
             if range_types != expected {
                 return Err(Report::msg(format!(
-                            "result {index} of '{}' has type '{result_ty}', which the type \
-                             converter                      converts to {}, but it is replaced by \
-                             values of types {}",
-                            op.borrow().name(),
-                            type_list(&expected),
-                            type_list(&range_types)
-                        )));
+                    "result {index} of '{}' has type '{result_ty}', which the type converter \
+                     converts to {}, but it is replaced by values of types {}",
+                    op.borrow().name(),
+                    type_list(&expected),
+                    type_list(&range_types)
+                )));
             }
             casts.push(true);
         }
 
+        // The casts are inserted before `op`; afterwards the insertion point is where it was, or,
+        // when it was at `op`, at the position `op` occupied.
+        let saved = *self.inner.insertion_point();
+        let restore = match saved {
+            ProgramPoint::Op { op: anchor, .. } if anchor == op => match op.next() {
+                Some(next) => ProgramPoint::before(next),
+                None => op.parent().map_or(saved, ProgramPoint::at_end_of),
+            },
+            _ => saved,
+        };
         let span = op.borrow().span();
         let mut replacements = SmallVec::<[Option<ValueRef>; 2]>::new();
         for ((result, range), cast) in results.iter().zip(values).zip(casts) {
@@ -446,6 +459,7 @@ impl ConversionPatternRewriter {
             replacements.push(Some(outputs[0]));
         }
         self.inner.replace_op_with_values(op, &replacements);
+        self.inner.set_insertion_point(restore);
         Ok(())
     }
 

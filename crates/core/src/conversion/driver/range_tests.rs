@@ -472,7 +472,8 @@ fn a_replacement_range_of_the_wrong_shape_is_an_error() {
             "one value",
             true,
             |a, _, _| vec![vec![a[0]]],
-            "converts to (i64, i64), but it is replaced by values of types (i64)",
+            "result 0 of 'test.add' has type 'i128', which the type converter converts to (i64, \
+             i64), but it is replaced by values of types (i64)",
         ),
         (
             "other types",
@@ -484,7 +485,8 @@ fn a_replacement_range_of_the_wrong_shape_is_an_error() {
             "no converter",
             false,
             |_, _, _| vec![vec![]],
-            "and the pattern has no type converter",
+            "result 0 of 'test.add' has type 'i128', but it is replaced by values of types (), \
+             and the pattern has no type converter",
         ),
     ];
     for (name, with_converter, replace, message) in cases {
@@ -512,7 +514,11 @@ fn a_replacement_range_of_the_wrong_shape_is_an_error() {
         let err = convert(function, wide_target(&context), [pattern]).unwrap_err();
 
         let err = format!("{err}");
-        assert!(err.contains(message), "{name}: {err}");
+        if message.starts_with("result ") {
+            assert_eq!(err, message, "{name}");
+        } else {
+            assert!(err.contains(message), "{name}: {err}");
+        }
         assert_str_eq!(function.borrow().to_string(), before, "{name}");
     }
 }
@@ -777,4 +783,201 @@ fn a_cast_the_driver_did_not_insert_is_not_offered() {
     builtin.ret %6, %1 : (i128, i64);"
         )
     );
+}
+
+/// The operands of the `builtin.ret` that ends `function`'s entry block.
+fn returned(function: OperationRef) -> Vec<ValueRef> {
+    let function = function.try_downcast_op::<Function>().unwrap();
+    let entry = function.borrow().entry_block();
+    let ret = entry.borrow().terminator().unwrap();
+    ret.borrow()
+        .operands()
+        .iter()
+        .map(|operand| operand.borrow().as_value_ref())
+        .collect()
+}
+
+/// Adds to `converter` a source callback that joins two `i64` halves into an `i128`; the values it
+/// builds are recorded in the list returned.
+fn tagging_join(converter: &mut TypeConverter) -> Seen<ValueRef> {
+    let built: Seen<ValueRef> = Rc::default();
+    let tags = built.clone();
+    converter.add_source_materialization(move |rewriter, inputs, _, span| {
+        let [low, high] = inputs else {
+            return Ok(None);
+        };
+        let join = rewriter.create_op::<Join, _>(span, (*low, *high))?;
+        let value = join.borrow().result().as_value_ref();
+        tags.borrow_mut().push(value);
+        Ok(Some(value))
+    });
+    built
+}
+
+/// Two patterns whose converters have different source callbacks: each cast that remains is
+/// realized by the callback of the converter of the pattern that caused it.
+#[test]
+fn each_cast_is_realized_by_the_converter_of_the_pattern_that_caused_it() {
+    let (context, function) = parse_function(
+        "() -> (i128, i128)",
+        "    %0 = test.constant 1 : i128;
+    %1 = test.constant 2 : i128;
+    %2 = test.add %0, %1;
+    builtin.ret %0, %2 : (i128, i128);",
+    );
+    let mut for_constants = wide_converter(&context);
+    let mut for_adds = wide_converter(&context);
+    let by_constants = tagging_join(&mut for_constants);
+    let by_adds = tagging_join(&mut for_adds);
+
+    convert(
+        function,
+        wide_target(&context),
+        [
+            split_constant(&context, &for_constants),
+            split_add(&context, &for_adds, Rc::default()),
+        ],
+    )
+    .unwrap_or_else(|err| panic!("{}", describe(&err)));
+
+    let returned = returned(function);
+    assert_eq!(*by_constants.borrow(), [returned[0]], "the constant's cast");
+    assert_eq!(*by_adds.borrow(), [returned[1]], "the add's cast");
+}
+
+/// A source callback that answers a value of another type than the cast's is an error naming the
+/// cast.
+#[test]
+fn a_source_callback_answering_the_wrong_type_is_an_error() {
+    let (context, function) = parse_function(
+        "() -> i128",
+        "    %0 = test.constant 5 : i128;
+    builtin.ret %0 : (i128);",
+    );
+    let mut converter = wide_converter(&context);
+    converter.add_source_materialization(|_, inputs, _, _| Ok(inputs.first().copied()));
+
+    let err = convert(function, wide_target(&context), [split_constant(&context, &converter)])
+        .unwrap_err();
+
+    assert_eq!(
+        format!("{err}"),
+        "failed to legalize operation 'builtin.unrealized_conversion_cast': the source \
+         materialization of the cast of (i64, i64) to (i128) gave values of types (i64)"
+    );
+}
+
+/// A target callback that answers the wrong number of values is an error naming the cast.
+#[test]
+fn a_target_callback_answering_the_wrong_count_is_an_error() {
+    let (context, function) = parse_function(
+        "(%0: i128, %1: i128) -> i128",
+        "    %2 = test.add %0, %1;
+    builtin.ret %2 : (i128);",
+    );
+    let mut converter = wide_converter(&context);
+    converter.add_target_materialization(|rewriter, input, _, span| {
+        let low = rewriter.create_op::<Low, _>(span, (input,))?;
+        Ok(Some(smallvec::smallvec![low.borrow().result().as_value_ref()]))
+    });
+
+    let err = convert(
+        function,
+        wide_target(&context),
+        [split_add(&context, &converter, Rc::default())],
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        format!("{err}"),
+        "failed to legalize operation 'builtin.unrealized_conversion_cast': the target \
+         materialization of the cast of (i128) to (i64, i64) gave values of types (i64)"
+    );
+}
+
+/// A callback that fails aborts the conversion with its error.
+#[test]
+fn a_failing_callback_aborts_the_conversion_with_its_error() {
+    let (context, function) = parse_function(
+        "() -> i128",
+        "    %0 = test.constant 5 : i128;
+    builtin.ret %0 : (i128);",
+    );
+    let mut converter = wide_converter(&context);
+    converter.add_source_materialization(|_, _, _, _| Err(Report::msg("the halves do not join")));
+
+    let err = convert(function, wide_target(&context), [split_constant(&context, &converter)])
+        .unwrap_err();
+
+    assert_eq!(format!("{err}"), "the halves do not join");
+}
+
+/// After a replacement, an operation the pattern creates is built where the insertion point was:
+/// where the replaced operation was, when the insertion point was at it, and elsewhere where the
+/// pattern put it.
+#[test]
+fn after_a_replacement_the_insertion_point_is_where_it_was() {
+    let cases = [
+        (
+            true,
+            "    %0 = test.constant 1 : i32;
+    %2 = test.constant 5 : i64;
+    %3 = test.constant 0 : i64;
+    %6 = test.join %2, %3;
+    %5 = test.constant 9 : i32;
+    builtin.ret %6 : (i128);",
+        ),
+        (
+            false,
+            "    %2 = test.constant 5 : i64;
+    %3 = test.constant 0 : i64;
+    %5 = test.constant 9 : i32;
+    %0 = test.constant 1 : i32;
+    %6 = test.join %2, %3;
+    builtin.ret %6 : (i128);",
+        ),
+    ];
+    for (at_op, expected) in cases {
+        let (context, function) = parse_function(
+            "() -> i128",
+            "    %0 = test.constant 1 : i32;
+    %1 = test.constant 5 : i128;
+    builtin.ret %1 : (i128);",
+        );
+        let first = defined_values(function)[0].borrow().get_defining_op().unwrap();
+        let mut converter = wide_converter(&context);
+        join_halves(&mut converter, Rc::default());
+        let i128 = context.i128();
+        let pattern = Rule::new::<Constant>(
+            &context,
+            "split-then-build",
+            Some(converter.clone()),
+            [registered::<Constant>(&context)],
+            move |op, _operands, rewriter| {
+                if op.borrow().results()[0].borrow().ty() != i128 {
+                    return Ok(false);
+                }
+                if !at_op {
+                    rewriter.set_insertion_point_before(first);
+                }
+                let span = op.borrow().span();
+                let low = rewriter.create_op::<Constant, _>(span, (Int::from(5i64),))?;
+                let high = rewriter.create_op::<Constant, _>(span, (Int::from(0i64),))?;
+                let low = low.borrow().result().as_value_ref();
+                let high = high.borrow().result().as_value_ref();
+                rewriter.replace_op_with_multiple(op, &[&[low, high]])?;
+                rewriter.create_op::<Constant, _>(span, (Int::from(9i32),))?;
+                Ok(true)
+            },
+        );
+
+        convert(function, wide_target(&context), [pattern])
+            .unwrap_or_else(|err| panic!("{}", describe(&err)));
+
+        assert_str_eq!(
+            function.borrow().to_string(),
+            function_text("() -> i128", expected),
+            "at the replaced operation: {at_op}"
+        );
+    }
 }
