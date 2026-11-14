@@ -116,14 +116,24 @@ pub struct ParserConfig {
 }
 
 impl ParserConfig {
-    /// The default of [Self::max_region_depth]: 64.
+    /// The default of [Self::max_region_depth]: 32.
     ///
     /// The parser recurses through an operation, its regions and their blocks, so each level of
-    /// nesting costs stack. In an unoptimized build a level costs from about 21 KB (nested
-    /// `builtin.module`) to about 29 KB (a module, a function and an `scf.if`, alternating), so 64
-    /// levels use at most about 1.8 MB: they fit the 2 MB stack of a spawned thread, the smallest
-    /// one a parse of IR is expected to run on. An optimized build uses much less.
-    pub const DEFAULT_MAX_REGION_DEPTH: u32 = 64;
+    /// nesting costs stack, as much as the parser of the operation at that level spends. On the
+    /// 2 MiB stack of a spawned thread, the smallest one a parse of IR is expected to run on, an
+    /// unoptimized build overflows at these depths (the first depth that overflows):
+    ///
+    /// - `builtin.function`s nested in function bodies, in a module: 56 (about 38 KB a level);
+    /// - a module, a function and an `scf.if`, alternating: 74;
+    /// - a world, a component, a module, a function, then `scf.if`, `scf.while` and
+    ///   `scf.index_switch` in turn: 82;
+    /// - a module, a function, then `scf.if`s: 82;
+    /// - nested `builtin.module`s: 98.
+    ///
+    /// 32 is under 60% of the worst of these, which leaves a margin for operations whose parsers
+    /// spend more. An optimized build uses much less. Text that nests deeper is parsed on a thread
+    /// with a larger stack and a raised limit.
+    pub const DEFAULT_MAX_REGION_DEPTH: u32 = 32;
 
     pub fn new(context: Rc<Context>) -> Self {
         Self {
@@ -641,8 +651,6 @@ fn parse_anchored_source(
     parse_outcome(scope, result)
 }
 
-/// The byte offset of the first character of `text` at or after `at` that is neither whitespace
-/// nor part of a `//` comment, as the lexer skips them.
 /// The offset of the end of the word that starts at `at` in `text`: the first whitespace after
 /// it, or the end of the text. A word holds at least the character at `at`.
 fn end_of_word(text: &str, at: usize) -> usize {
@@ -651,6 +659,8 @@ fn end_of_word(text: &str, at: usize) -> usize {
     at + rest[first..].find(char::is_whitespace).map_or(rest.len(), |end| first + end)
 }
 
+/// The byte offset of the first character of `text` at or after `at` that is neither whitespace
+/// nor part of a `//` comment, as the lexer skips them.
 fn skip_whitespace_and_comments(text: &str, mut at: usize) -> usize {
     loop {
         let rest = &text[at..];
