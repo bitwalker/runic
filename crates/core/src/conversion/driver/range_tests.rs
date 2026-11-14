@@ -31,6 +31,8 @@ use crate::{
     testing::text::describe,
 };
 
+mod in_place_tests;
+
 type Rewrite = dyn Fn(
     OperationRef,
     ConvertedOperands<'_>,
@@ -101,7 +103,9 @@ impl ConversionPattern for Rule {
 }
 
 fn registered<T: OpRegistration>(context: &Rc<Context>) -> OperationName {
-    context.get_or_register_dialect::<TestDialect>().expect_registered_name::<T>()
+    context
+        .get_or_register_dialect::<<T as OpRegistration>::Dialect>()
+        .expect_registered_name::<T>()
 }
 
 /// The zero-sized marker type, `array<i8; 0>`.

@@ -82,15 +82,16 @@ impl TypeConversion {
 /// `builtin.unrealized_conversion_cast` the driver inserts: a source cast from the new values to
 /// the old type, for a user that still expects the old value, or a target cast from the old value
 /// to the new types, for a pattern that expects the new ones. When the patterns have run and the
-/// casts whose ends agree are folded away, each cast that remains is offered to the
-/// materialization callbacks of its kind of the converter of the pattern that caused it, most
-/// recently added first. The first callback that answers builds, before the cast, the operations
-/// that compute the cast's results; they replace the cast's results and the cast is erased. The
-/// operations a callback builds are not offered to patterns: they must be legal in the target. A
+/// casts whose ends agree are folded away, each cast that remains is offered to the materialization
+/// callbacks of its kind of the converter of the pattern that caused it, most recently added first.
+/// The first callback that answers builds, before the cast, the operations that compute the cast's
+/// results; they replace the cast's results and the cast is erased. The operations a callback
+/// builds are not offered to patterns: they must be legal in the target. A
 /// `builtin.unrealized_conversion_cast` a callback builds is not realized either; only the target
-/// judges it. The folding assumes that casts compose (a cast from one type list to a second followed by one
-/// from the second to a third means a cast from the first to the third, and a cast from a type
-/// list to itself is the identity), so the materializations of a conversion must agree with that.
+/// judges it. The folding assumes that casts compose (a cast from one type list to a second
+/// followed by one from the second to a third means a cast from the first to the third, and a cast
+/// from a type list to itself is the identity), so the materializations of a conversion must agree
+/// with that.
 ///
 /// The converter remembers what the type callbacks answered for a type, so each type is asked
 /// about once. The memo is shared by the clones of a converter, and a clone that is given another

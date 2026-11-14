@@ -6,7 +6,7 @@ use super::{
     ConversionPattern, ConversionPatternRewriter, ConversionPatternSet, ConversionTarget,
     ConvertedOperands, FrozenConversionPatternSet, Legality, LegalizationGraph, TrackedMutations,
     TypeConverter, reconcile_unrealized_casts,
-    rewriter::{CastKind, DriverCasts, type_list, types_of},
+    rewriter::{CastKind, ConversionState, type_list, types_of},
 };
 use crate::{
     FxHashSet, OperationName, OperationRef, Report, Spanned, Usable, ValueRef, WalkResult,
@@ -163,7 +163,7 @@ pub fn apply_full_conversion(
         target: &target,
         graph,
         context: target.context(),
-        casts: DriverCasts::default(),
+        state: ConversionState::default(),
         config,
         result: ConversionResult {
             changed: false,
@@ -181,7 +181,7 @@ struct FullConversionDriver<'a> {
     graph: LegalizationGraph<'a>,
     context: Rc<crate::Context>,
     /// The casts this conversion inserted that are still in the IR.
-    casts: DriverCasts,
+    state: ConversionState,
     config: ConversionConfig,
     result: ConversionResult,
 }
@@ -201,7 +201,7 @@ impl FullConversionDriver<'_> {
             let remaining = reconciled.remaining;
             // The casts reconciliation erased leave the table.
             let live = remaining.iter().copied().collect::<FxHashSet<_>>();
-            self.casts.borrow_mut().retain(|cast, _| live.contains(cast));
+            self.state.casts.borrow_mut().retain(|cast, _| live.contains(cast));
             self.result.changed |= self.realize_casts(&remaining)?;
         }
         self.verify_full_conversion_legality()?;
@@ -256,7 +256,7 @@ impl FullConversionDriver<'_> {
             let mut rewriter = ConversionPatternRewriter::new_for_conversion(
                 Rc::clone(&self.context),
                 type_converter.clone(),
-                Rc::clone(&self.casts),
+                self.state.clone(),
             );
             rewriter.inherit_inline_call_chain(op);
             if op.parent().is_some() {
@@ -376,7 +376,7 @@ impl FullConversionDriver<'_> {
     fn realize_casts(&mut self, casts: &[OperationRef]) -> Result<bool, Report> {
         let mut changed = false;
         for &cast in casts {
-            let Some(driver_cast) = self.casts.borrow_mut().remove(&cast) else {
+            let Some(driver_cast) = self.state.casts.borrow_mut().remove(&cast) else {
                 continue;
             };
             if !self.is_live(cast) {
@@ -401,7 +401,7 @@ impl FullConversionDriver<'_> {
             let mut rewriter = ConversionPatternRewriter::new_for_conversion(
                 Rc::clone(&self.context),
                 Some(Rc::clone(&converter)),
-                DriverCasts::default(),
+                ConversionState::default(),
             );
             rewriter.inherit_inline_call_chain(cast);
             rewriter.set_insertion_point_before(cast);
@@ -435,7 +435,7 @@ impl FullConversionDriver<'_> {
 
     /// Whether `op` is a cast the driver inserted.
     fn is_driver_cast(&self, op: OperationRef) -> bool {
-        self.casts.borrow().contains_key(&op)
+        self.state.casts.borrow().contains_key(&op)
     }
 
     fn verify_full_conversion_legality(&self) -> Result<(), Report> {

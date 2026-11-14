@@ -6,10 +6,10 @@ use smallvec::SmallVec;
 use super::TypeConverter;
 use crate::{
     BlockRef, BuildableOp, Builder, BuilderExt, Context, FxHashMap, Listener, ListenerType,
-    OperationRef, ProgramPoint, RegionRef, Report, SourceSpan, Spanned, Type,
-    UnsafeIntrusiveEntityRef, ValueRef,
+    Operation, OperationRef, ProgramPoint, RegionRef, Report, SourceSpan, Spanned, Type,
+    UnsafeIntrusiveEntityRef, Value, ValueRef,
     dialects::builtin::BuiltinOpBuilder,
-    patterns::{PatternRewriter, Rewriter, RewriterListener},
+    patterns::{PatternRewriter, Rewriter, RewriterExt, RewriterListener},
 };
 
 /// A recorded reason that a conversion pattern did not match.
@@ -117,16 +117,22 @@ pub(super) struct DriverCast {
 /// the rewriters of the conversion. A cast that is erased through a rewriter leaves the table.
 pub(super) type DriverCasts = Rc<RefCell<FxHashMap<OperationRef, DriverCast>>>;
 
+/// What the rewriters of one conversion share: the casts the driver inserted.
+#[derive(Clone, Default)]
+pub(super) struct ConversionState {
+    pub(super) casts: DriverCasts,
+}
+
 struct ConversionTrackingListener {
     mutations: RefCell<TrackedMutations>,
-    casts: DriverCasts,
+    state: ConversionState,
 }
 
 impl ConversionTrackingListener {
-    fn new(casts: DriverCasts) -> Self {
+    fn new(state: ConversionState) -> Self {
         Self {
             mutations: RefCell::new(TrackedMutations::default()),
-            casts,
+            state,
         }
     }
 
@@ -215,7 +221,7 @@ impl RewriterListener for ConversionTrackingListener {
     }
 
     fn notify_operation_erased(&self, op: OperationRef) {
-        self.casts.borrow_mut().remove(&op);
+        self.state.casts.borrow_mut().remove(&op);
         self.record_erased_op(op);
     }
 }
@@ -235,7 +241,7 @@ pub struct ConversionPatternRewriter {
     inner: PatternRewriter<Rc<ConversionTrackingListener>>,
     tracking: Rc<ConversionTrackingListener>,
     type_converter: Option<Rc<TypeConverter>>,
-    casts: DriverCasts,
+    state: ConversionState,
     match_failures: Vec<MatchFailure>,
 }
 
@@ -255,23 +261,23 @@ impl ConversionPatternRewriter {
         context: Rc<Context>,
         type_converter: Option<TypeConverter>,
     ) -> Self {
-        Self::new_for_conversion(context, type_converter.map(Rc::new), DriverCasts::default())
+        Self::new_for_conversion(context, type_converter.map(Rc::new), ConversionState::default())
     }
 
-    /// Create a conversion rewriter that records the casts it inserts in `casts`, each under the
+    /// Create a conversion rewriter that records the casts it inserts in `state`, each under the
     /// one shared handle of `type_converter`.
     pub(super) fn new_for_conversion(
         context: Rc<Context>,
         type_converter: Option<Rc<TypeConverter>>,
-        casts: DriverCasts,
+        state: ConversionState,
     ) -> Self {
-        let tracking = Rc::new(ConversionTrackingListener::new(Rc::clone(&casts)));
+        let tracking = Rc::new(ConversionTrackingListener::new(state.clone()));
         let inner = PatternRewriter::new_with_listener(context, Rc::clone(&tracking));
         Self {
             inner,
             tracking,
             type_converter,
-            casts,
+            state,
             match_failures: Vec::new(),
         }
     }
@@ -335,7 +341,7 @@ impl ConversionPatternRewriter {
             BuiltinOpBuilder::unrealized_conversion_cast(&mut *self.inner, inputs, results, span)?;
         let cast_op = cast.as_operation_ref();
         self.mark_materialization_op(cast_op);
-        self.casts.borrow_mut().insert(cast_op, DriverCast { kind, converter });
+        self.state.casts.borrow_mut().insert(cast_op, DriverCast { kind, converter });
         let outputs = cast.borrow().outputs().iter().map(|output| *output as ValueRef).collect();
         Ok(outputs)
     }
@@ -498,6 +504,102 @@ impl ConversionPatternRewriter {
         Ok(replacement)
     }
 
+    /// Runs `f` on the operation and records it as modified: the change counts as a mutation and
+    /// the operation is legalized again. A result whose type `f` changed and that has users is
+    /// replaced, for those users, by a one-to-one cast back to its old type placed after the
+    /// operation; the new type must be what the converter answers for the old one. Changing the
+    /// type of a block argument inside `f` is an error (use a signature conversion).
+    ///
+    /// A changed result without users needs no cast. The new type of a changed result must be
+    /// exactly the one type the pattern's type converter answers for a value of the old type; with
+    /// no converter, any change of a result type is an error. These checks are made after `f` has
+    /// run, so an error leaves the operation as `f` changed it, and aborts the conversion.
+    pub fn modify_op_in_place<R>(
+        &mut self,
+        mut op: OperationRef,
+        f: impl FnOnce(&mut Operation) -> R,
+    ) -> Result<R, Report> {
+        let results = op
+            .borrow()
+            .results()
+            .all()
+            .iter()
+            .map(|result| {
+                let result = result.borrow();
+                (result.as_value_ref(), result.ty())
+            })
+            .collect::<SmallVec<[(ValueRef, Type); 2]>>();
+        let blocks = blocks_of(op)
+            .into_iter()
+            .map(|block| (block, argument_types(block)))
+            .collect::<SmallVec<[_; 2]>>();
+
+        let answer = {
+            let _modification = self.inner.modify_op_in_place(op);
+            f(&mut op.borrow_mut())
+        };
+
+        let name = op.borrow().name();
+        for (index, (block, before)) in blocks.iter().enumerate() {
+            let after = argument_types(*block);
+            if after != *before {
+                return Err(Report::msg(format!(
+                    "the arguments of block {index} in the regions of '{name}' changed type in \
+                     place, from {} to {}; a block's arguments are changed by a signature \
+                     conversion",
+                    type_list(before),
+                    type_list(&after)
+                )));
+            }
+        }
+
+        let context = self.inner.context_rc();
+        let mut changed = SmallVec::<[(ValueRef, Type); 2]>::new();
+        for (index, (result, old_ty)) in results.iter().enumerate() {
+            let new_ty = result.borrow().ty();
+            if new_ty == *old_ty {
+                continue;
+            }
+            let Some(converter) = self.type_converter.as_ref() else {
+                return Err(Report::msg(format!(
+                    "result {index} of '{name}' changed type in place, from '{old_ty}' to \
+                     '{new_ty}', and the pattern has no type converter"
+                )));
+            };
+            let expected = converter.convert_type(&context, *old_ty);
+            if expected.as_slice() != [new_ty] {
+                return Err(Report::msg(format!(
+                    "result {index} of '{name}' changed type in place, from '{old_ty}' to \
+                     '{new_ty}', but the type converter converts '{old_ty}' to {}",
+                    type_list(&expected)
+                )));
+            }
+            if result.borrow().is_used() {
+                changed.push((*result, *old_ty));
+            }
+        }
+
+        if !changed.is_empty() {
+            let saved = *self.inner.insertion_point();
+            let span = op.borrow().span();
+            let mut after = op;
+            for (result, old_ty) in changed {
+                self.set_insertion_point_after(after);
+                let outputs = self.insert_cast(CastKind::Source, [result], [old_ty], span)?;
+                let cast = outputs[0]
+                    .borrow()
+                    .get_defining_op()
+                    .expect("a cast's result is defined by the cast");
+                self.inner.maybe_replace_uses_of_value_with(result, outputs[0], |operand| {
+                    operand.owner != cast
+                });
+                after = cast;
+            }
+            self.inner.set_insertion_point(saved);
+        }
+        Ok(answer)
+    }
+
     /// Erase an operation with no remaining uses.
     ///
     /// Callers are responsible for ensuring the operation can be erased without leaving dangling
@@ -543,6 +645,26 @@ impl ConversionPatternRewriter {
     pub fn take_tracked_mutations(&mut self) -> TrackedMutations {
         self.tracking.take_mutations()
     }
+}
+
+/// The blocks of the regions of `op`, in order.
+fn blocks_of(op: OperationRef) -> SmallVec<[BlockRef; 2]> {
+    let op = op.borrow();
+    op.regions()
+        .iter()
+        .flat_map(|region| {
+            region
+                .body()
+                .iter()
+                .map(|block| block.as_block_ref())
+                .collect::<SmallVec<[_; 2]>>()
+        })
+        .collect()
+}
+
+/// The types of the arguments of `block`, in order.
+fn argument_types(block: BlockRef) -> SmallVec<[Type; 4]> {
+    block.borrow().argument_types().collect()
 }
 
 /// The types of `values`, in order.
