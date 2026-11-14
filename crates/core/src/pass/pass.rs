@@ -112,8 +112,12 @@ where
         <P as Pass>::initialize(self, context)
     }
 
+    /// The pass's own answer, for an operation of its target only: whatever
+    /// [Pass::can_schedule_on] says, a pass is never scheduled on an operation that is not of its
+    /// [Pass::Target] (see [PassTarget::accepts]).
     fn can_schedule_on(&self, name: &OperationName) -> bool {
-        <P as Pass>::can_schedule_on(self, name)
+        <<P as Pass>::Target as PassTarget>::accepts(name)
+            && <P as Pass>::can_schedule_on(self, name)
     }
 
     fn run_on_operation(

@@ -681,46 +681,6 @@ fn an_unknown_anchor_is_an_error() {
     assert!(PassManager::new(context, "builtin.module", Nesting::Implicit).is_ok());
 }
 
-/// A typed pass whose `can_schedule_on` answers true for every operation, put by hand in a
-/// manager for any operation, is run on the module: an error that names the pass and both
-/// operations, not a panic.
-#[test]
-fn a_typed_pass_run_on_another_operation_is_an_error() {
-    struct Careless;
-    impl Pass for Careless {
-        type Target = Function;
-
-        fn name(&self) -> &'static str {
-            "careless"
-        }
-
-        fn can_schedule_on(&self, _name: &OperationName) -> bool {
-            true
-        }
-
-        fn run_on_operation(
-            &mut self,
-            _op: EntityMut<'_, Function>,
-            state: &mut PassExecutionState,
-        ) -> Result<(), Report> {
-            state.set_post_pass_status(PostPassStatus::Unchanged);
-            Ok(())
-        }
-    }
-
-    let (context, world) = tree();
-    let mut pm = PassManager::on::<World>(context.clone(), Nesting::Explicit);
-    let mut any = OpPassManager::any(Nesting::Explicit, context);
-    any.add_pass(Box::new(Careless)).unwrap();
-    pm.nest::<Module>().nest_pass_manager(any);
-    let message = pm.run(world).unwrap_err().to_string();
-    assert_eq!(
-        message,
-        "pass 'careless' cannot run on this operation: expected 'builtin.function', but found \
-         'builtin.module'"
-    );
-}
-
 /// A dialect that is not submitted to `inventory`, so a context does not register it until it is
 /// asked for.
 #[derive(Debug)]
@@ -784,4 +744,69 @@ fn a_typed_pass_on_an_unregistered_dialect_registers_it() {
     let context = Rc::new(Context::default());
     let pm = OpPassManager::on::<Unloaded>(Nesting::Explicit, context.clone());
     assert_eq!(pm.name().map(|name| name.to_string()).as_deref(), Some("unloaded.unloaded"));
+}
+
+/// A pass on `builtin.function` whose own `can_schedule_on` answers yes for every operation.
+struct Permissive(Events);
+
+impl Pass for Permissive {
+    type Target = Function;
+
+    fn name(&self) -> &'static str {
+        "permissive"
+    }
+
+    fn can_schedule_on(&self, _name: &OperationName) -> bool {
+        true
+    }
+
+    fn run_on_operation(
+        &mut self,
+        op: EntityMut<'_, Function>,
+        state: &mut PassExecutionState,
+    ) -> Result<(), Report> {
+        self.0.borrow_mut().push(format!("permissive:{}", Symbol::name(&*op)));
+        state.set_post_pass_status(PostPassStatus::Unchanged);
+        Ok(())
+    }
+}
+
+/// A typed pass in an `any` manager is scheduled only on operations of its type, whatever its own
+/// `can_schedule_on` says: under the world, it runs on `@root` and not on the module beside it.
+#[test]
+fn a_typed_pass_in_an_any_manager_is_scheduled_only_on_its_type() {
+    let (context, world) = tree();
+    let events = Events::default();
+    let mut pm = PassManager::on::<World>(context, Nesting::Explicit);
+    pm.nest_any().add_pass(Box::new(Permissive(events.clone()))).unwrap();
+    pm.run(world).expect("the module beside the function is not scheduled");
+    assert_eq!(*events.borrow(), ["permissive:root"]);
+
+    // A manager for any operation made by hand and nested under the module: the functions run,
+    // the nested module beside them does not.
+    let (context, world) = tree();
+    let events = Events::default();
+    let mut pm = PassManager::on::<World>(context.clone(), Nesting::Explicit);
+    let mut any = OpPassManager::any(Nesting::Explicit, context);
+    any.add_pass(Box::new(Permissive(events.clone()))).unwrap();
+    pm.nest::<Module>().nest_pass_manager(any);
+    pm.run(world).expect("the nested module is not scheduled");
+    assert_eq!(*events.borrow(), ["permissive:first", "permissive:last"]);
+}
+
+#[test]
+fn a_target_accepts_the_operations_of_its_type_or_interface() {
+    let (context, _world) = tree();
+    let function = <Function as PassTarget>::target_name(&context).unwrap();
+    let module = <Module as PassTarget>::target_name(&context).unwrap();
+    assert!(<Function as PassTarget>::accepts(&function));
+    assert!(!<Function as PassTarget>::accepts(&module));
+    assert!(<Operation as PassTarget>::accepts(&function));
+    assert!(<Operation as PassTarget>::accepts(&module));
+    assert!(<dyn crate::SymbolTable as PassTarget>::accepts(&module));
+    assert!(!<dyn crate::SymbolTable as PassTarget>::accepts(&function));
+    assert!(<dyn Symbol as PassTarget>::accepts(&function));
+    let permissive: Box<dyn OperationPass> = Box::new(Permissive(Events::default()));
+    assert!(permissive.can_schedule_on(&function));
+    assert!(!permissive.can_schedule_on(&module));
 }

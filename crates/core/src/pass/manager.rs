@@ -22,9 +22,17 @@ use crate::{
     traits::IsolatedFromAbove,
 };
 
+/// What a pass manager does with a pass that targets one operation type (see
+/// [`super::PassTarget::target_name`]) when the pass is added to a manager anchored on another.
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
 pub enum Nesting {
+    /// The pass is nested one level: under a manager for its type, which runs it on the
+    /// operations of that type directly inside the regions of the anchor's operation, not on ones
+    /// nested deeper. To reach deeper, a pipeline says `recursive(..)` (the outermost operations
+    /// of the type at any depth) or names the anchors in between, as in
+    /// `builtin.module(builtin.function(..))`.
     Implicit,
+    /// The add is an error that names the pass, its target and the anchor.
     #[default]
     Explicit,
 }
@@ -468,10 +476,14 @@ impl OpPassManager {
     /// Add `pass` to this pass manager.
     ///
     /// A pass that targets one operation type (see [`super::PassTarget::target_name`]) added to a
-    /// manager anchored on another is nested under a manager for its type with
-    /// [`Nesting::Implicit`], and is an error that names the pass, its target and the anchor with
-    /// [`Nesting::Explicit`]. A manager for `any` takes every pass as it is: it schedules only
-    /// on operations every one of its passes can be scheduled on.
+    /// manager anchored on another is, with [`Nesting::Implicit`], nested one level under a
+    /// manager for its type: it runs on the operations of its type directly inside the regions of
+    /// the anchor's operation, and not on ones nested deeper (a pipeline reaches those with
+    /// `recursive(..)` or by naming the anchors in between). With [`Nesting::Explicit`] it is an
+    /// error that names the pass, its target and the anchor. A manager for `any` takes every pass
+    /// as it is: it schedules only on operations every one of its passes can be scheduled on,
+    /// and a pass that targets a type or an interface can be scheduled only on operations of that
+    /// target, whatever its own [`Pass::can_schedule_on`] says.
     pub fn add_pass(&mut self, pass: Box<dyn OperationPass>) -> Result<(), Report> {
         let pass_op_name = pass.target_name(&self.context);
         if let Some(pass_op_name) = pass_op_name

@@ -14,6 +14,10 @@ pub trait PassTarget {
     /// A registered operation type answers its name, registering its dialect in `context` first
     /// if that has not been done, as building an operation of that type does.
     fn target_name(context: &Context) -> Option<OperationName>;
+    /// Whether an operation named `name` is of this target: one of the type for an operation
+    /// type, one that implements the interface for an interface, and any operation for
+    /// [Operation].
+    fn accepts(name: &OperationName) -> bool;
     /// `op` as this target.
     ///
     /// Panics if `op` is not of this target.
@@ -26,6 +30,11 @@ pub trait PassTarget {
 impl<T: 'static> PassTarget for T {
     default fn target_name(_context: &Context) -> Option<OperationName> {
         None
+    }
+
+    #[inline]
+    default fn accepts(name: &OperationName) -> bool {
+        name.is::<T>()
     }
 
     #[inline]
@@ -59,6 +68,11 @@ impl PassTarget for Operation {
         None
     }
 
+    #[inline(always)]
+    fn accepts(_name: &OperationName) -> bool {
+        true
+    }
+
     #[inline]
     #[track_caller]
     fn into_target(op: &OperationRef) -> EntityRef<'_, Operation> {
@@ -77,6 +91,11 @@ impl PassTarget for dyn Op {
         None
     }
 
+    #[inline]
+    fn accepts(name: &OperationName) -> bool {
+        name.implements::<dyn Op>()
+    }
+
     fn into_target(op: &OperationRef) -> EntityRef<'_, dyn Op> {
         EntityRef::map(op.borrow(), |op| op.as_trait::<dyn Op>().unwrap())
     }
@@ -89,6 +108,11 @@ impl PassTarget for dyn BranchOpInterface {
     #[inline(always)]
     fn target_name(_context: &Context) -> Option<OperationName> {
         None
+    }
+
+    #[inline]
+    fn accepts(name: &OperationName) -> bool {
+        name.implements::<dyn BranchOpInterface>()
     }
 
     #[track_caller]
@@ -111,6 +135,11 @@ impl PassTarget for dyn Symbol {
         None
     }
 
+    #[inline]
+    fn accepts(name: &OperationName) -> bool {
+        name.implements::<dyn Symbol>()
+    }
+
     #[track_caller]
     fn into_target(op: &OperationRef) -> EntityRef<'_, dyn Symbol> {
         EntityRef::map(op.borrow(), |t| {
@@ -127,6 +156,11 @@ impl PassTarget for dyn SymbolTable + 'static {
     #[inline(always)]
     fn target_name(_context: &Context) -> Option<OperationName> {
         None
+    }
+
+    #[inline]
+    fn accepts(name: &OperationName) -> bool {
+        name.implements::<dyn SymbolTable>()
     }
 
     #[track_caller]
