@@ -230,7 +230,7 @@ impl Pass for ControlFlowSink {
             };
 
             // Sink side-effect free operations.
-            sunk = control_flow_sink(
+            sunk |= control_flow_sink(
                 &regions_to_sink,
                 &dominfo,
                 |op: &Operation, region: &Region| {

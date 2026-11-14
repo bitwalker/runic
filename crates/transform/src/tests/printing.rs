@@ -176,8 +176,47 @@ fn changed_and_printed(pass: &str, module: &str) -> (bool, bool) {
     (changed, printed)
 }
 
+/// Two `scf.if`s in one function: the first has a definition to sink, the second none.
+const TWO_IFS_SINK_FIRST: &str = r#"builtin.module public @m {
+    builtin.function public extern("C") @s(%c: i1, %a: i32, %b: i32) -> i32 {
+        %t = arith.add %a, %b;
+        %x = scf.if %c then {
+            scf.yield %t : (i32);
+        } else {
+            scf.yield %a : (i32);
+        } : (i1) -> (i32);
+        %y = scf.if %c then {
+            scf.yield %x : (i32);
+        } else {
+            scf.yield %a : (i32);
+        } : (i1) -> (i32);
+        builtin.ret %y : (i32);
+    };
+};"#;
+
+/// Two `scf.if`s in one function: the last has a definition to sink. After the sinking, the
+/// `scf.if` that moved into it is visited and sinks nothing.
+const TWO_IFS_SINK_LAST: &str = r#"builtin.module public @m {
+    builtin.function public extern("C") @s(%c: i1, %a: i32, %b: i32) -> i32 {
+        %x = scf.if %c then {
+            scf.yield %a : (i32);
+        } else {
+            scf.yield %b : (i32);
+        } : (i1) -> (i32);
+        %t = arith.add %a, %x;
+        %y = scf.if %c then {
+            scf.yield %t : (i32);
+        } else {
+            scf.yield %a : (i32);
+        } : (i1) -> (i32);
+        builtin.ret %y : (i32);
+    };
+};"#;
+
 /// Each registered pass reports a change on a module it changes, and none on a module it leaves
 /// alone, so printing only when the IR changed prints exactly after the passes that changed it.
+/// `control-flow-sink` reports a change when any of the operations it visits sank something, not
+/// only the last.
 #[test]
 fn every_pass_that_changes_the_ir_reports_it() {
     for pass in PASSES {
@@ -192,4 +231,14 @@ fn every_pass_that_changes_the_ir_reports_it() {
             "{pass} on a module it leaves alone"
         );
     }
+    assert_eq!(
+        changed_and_printed("control-flow-sink", TWO_IFS_SINK_FIRST),
+        (true, true),
+        "control-flow-sink, sinking under the first of two scf.if"
+    );
+    assert_eq!(
+        changed_and_printed("control-flow-sink", TWO_IFS_SINK_LAST),
+        (true, true),
+        "control-flow-sink, sinking under the last of two scf.if"
+    );
 }
