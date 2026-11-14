@@ -841,6 +841,25 @@ impl BranchOpInterface for TwoBr {
     }
 }
 
+/// A terminator with an operand of its own ahead of its two successors, a condition, whose
+/// successors take only forwarded operands.
+#[derive(EffectOpInterface, OpPrinter, OpParser)]
+#[operation(
+    dialect = TestDialect,
+    traits(Terminator),
+    implements(BranchOpInterface, MemoryEffectOpInterface, OpPrinter)
+)]
+pub struct CondTwoBr {
+    #[operand]
+    condition: crate::traits::AnyType,
+    #[successor]
+    first: Successor,
+    #[successor]
+    second: Successor,
+}
+
+impl BranchOpInterface for CondTwoBr {}
+
 /// The text of `module`, after checking that it verifies and holds neither an `i128` nor a cast.
 fn converted_text(module: OperationRef) -> alloc::string::String {
     module
@@ -1040,6 +1059,40 @@ fn branches_forward_the_values_their_operands_became() {
     ^block4(%4: i32, %5: i32):
         test.sink %4, %5 : (i32, i32);
         builtin.ret %6, %7 : (i64, i64);
+    };"
+        )
+    );
+}
+
+/// A branch with a condition ahead of its successors keeps the condition, and its forwarded
+/// operands become the values they became: an `i128` its two halves and a marker nothing, so a
+/// successor that forwarded only a marker forwards nothing.
+#[test]
+fn a_branch_keeps_its_condition_and_forwards_what_its_operands_became() {
+    let (context, module) = parse_module(
+        "    builtin.function public extern(\"C\") @b(%c: i1, %0: i128, %m: array<i8; 0>, %1: \
+         i32) -> i128 {
+        test.cond_two_br %c ^bb1(%0, %m, %1 : i128, array<i8; 0>, i32), ^bb2(%m : array<i8; 0>) : \
+         (i1);
+    ^bb1(%2: i128, %3: array<i8; 0>, %4: i32):
+        builtin.ret %2 : (i128);
+    ^bb2(%5: array<i8; 0>):
+        builtin.ret %0 : (i128);
+    };",
+    );
+    let converter = wide_converter(&context);
+    convert_full(module, by_type_target(&context, &converter), &converter)
+        .unwrap_or_else(|err| panic!("{}", describe(&err)));
+    assert_str_eq!(
+        converted_text(module),
+        module_text(
+            "    builtin.function public extern(\"C\") @b(%8: i1, %9: i64, %10: i64, %11: i32) -> \
+             (i64, i64) {
+        test.cond_two_br %8 ^block3(%9, %10, %11 : i64, i64, i32), ^block4 : (i1);
+    ^block3(%14: i64, %15: i64, %16: i32):
+        builtin.ret %14, %15 : (i64, i64);
+    ^block4:
+        builtin.ret %9, %10 : (i64, i64);
     };"
         )
     );
@@ -1291,4 +1344,77 @@ fn an_answer_that_is_not_legal_is_an_error_that_says_so() {
             "{err}"
         );
     }
+}
+
+/// Each operation a pattern replaces (a `builtin.function_ref`, a `builtin.call_indirect`, a
+/// `builtin.call` and a `builtin.ret`) gives its replacement its attribute dictionary: a symbol
+/// reference held directly, and one held in a list, each get a use of their own, owned by the
+/// replacement and linked to the same symbol. The symbol has exactly one use per reference that
+/// names it afterwards: none is left with an erased operation.
+#[test]
+fn replaced_operations_keep_their_references_with_uses_of_their_own() {
+    let (context, module) = parse_module(
+        "    builtin.function public extern(\"C\") @f(i128) -> i128;
+    builtin.function public extern(\"C\") @g(%0: i128) -> i128 {
+        %1 = builtin.function_ref @f : (i128) -> i128;
+        %2 = builtin.call_indirect %1(%0) : extern(\"C\") (i128) -> i128;
+        %3 = builtin.call @f(%2) : extern(\"C\") (i128) -> i128;
+        builtin.ret %3 : (i128);
+    };",
+    );
+    let f = symbol_named(module, "f");
+    let symbol = f.borrow().as_symbol_ref().expect("a symbol");
+    let held = |op: &Operation| {
+        op.is::<FunctionReference>() || op.is::<CallIndirect>() || op.is::<Call>() || op.is::<Ret>()
+    };
+    let mut ops = Vec::new();
+    module.borrow().prewalk_all(|op: &Operation| {
+        if held(op) {
+            ops.push(op.as_operation_ref());
+        }
+    });
+    assert_eq!(ops.len(), 4);
+    for mut op in ops {
+        let mut op = op.borrow_mut();
+        op.set_symbol_attribute("direct", symbol);
+        let direct = op.get_attribute("direct").unwrap();
+        let nested = list_of(&context, &[direct.borrow().dyn_clone()]);
+        crate::ir::give_copied_references_their_own_uses(&mut op, &nested);
+        op.set_attribute("nested", nested);
+    }
+    let uses = |f: OperationRef| f.borrow().as_trait::<dyn Symbol>().unwrap().iter_uses().count();
+    // The callees of the reference and the call, and two references on each of four operations.
+    assert_eq!(uses(f), 10);
+
+    let converter = wide_converter(&context);
+    convert_full(module, by_type_target(&context, &converter), &converter)
+        .unwrap_or_else(|err| panic!("{}", describe(&err)));
+    // Not printed: a list has no text form.
+    module
+        .borrow()
+        .recursively_verify()
+        .unwrap_or_else(|err| panic!("{}", describe(&err)));
+
+    let mut references = 0;
+    module.borrow().prewalk_all(|op: &Operation| {
+        if !held(op) {
+            return;
+        }
+        let direct = op.get_attribute("direct").expect("the direct reference is kept");
+        let nested = op.get_attribute("nested").expect("the list is kept");
+        let nested = nested.borrow();
+        let nested = nested.downcast_ref::<ListAttr>().expect("a list");
+        let entries = nested.as_value().as_ref().iter().map(|entry| entry.as_attribute_ref());
+        for reference in core::iter::once(direct).chain(entries) {
+            let reference = reference.try_downcast_attr::<SymbolRefAttr>().ok().unwrap();
+            let user = reference.borrow().try_user().expect("the reference has a use");
+            assert_eq!(user.borrow().owner, op.as_operation_ref(), "{}", op.name());
+            assert_eq!(user.borrow().attr, reference, "{}", op.name());
+            let linked = reference.borrow().resolve().expect("the reference is linked");
+            assert_eq!(linked.borrow().name().as_str(), "f", "{}", op.name());
+            references += 1;
+        }
+    });
+    assert_eq!(references, 8);
+    assert_eq!(uses(f), 10);
 }

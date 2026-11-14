@@ -185,9 +185,9 @@ pub struct ConvertedSignature {
     pub results: Vec<Range<u32>>,
 }
 
-/// Each parameter and result becomes one `AbiParam` per type the converter gives for it. One that stays
-/// one value keeps its attributes; the parts of one that becomes several carry none. The calling
-/// convention is kept.
+/// Each parameter and result becomes one `AbiParam` per type the converter gives for it. One that
+/// stays one value keeps its attributes; the parts of one that becomes several carry none. The
+/// calling convention is kept.
 ///
 /// Each type is asked about with [TypeConverter::convert_type]: a signature is converted by type,
 /// so equal signatures convert to equal signatures, and a callable and every call of it agree. A

@@ -510,9 +510,9 @@ impl CallableSymbol for Function {}
 /// outside nested callables is one of the function's: its index is below the number of locals,
 /// and its type is the one the function gives that local. The error, like the others of this
 /// verifier, is an invalid `builtin.function`; its message and its primary label name the
-/// operation that holds the local. A local held by an operation in no function is not checked against any
-/// `locals`; `builtin.load_local` and `builtin.store_local` check their own value against their
-/// local's type wherever they are.
+/// operation that holds the local. A local held by an operation in no function is not checked
+/// against any `locals`; `builtin.load_local` and `builtin.store_local` check their own value
+/// against their local's type wherever they are.
 ///
 /// The signature itself, and that each declared effect names at most one of an argument and a
 /// result, are checked before this runs by [Operation::verify], which verifies every attribute an

@@ -142,8 +142,8 @@ const LOCALS: &str = "locals";
 /// The property of a debug record that holds its expression.
 const EXPRESSION: &str = "expression";
 
-/// Adds the patterns of this part to `patterns`, all driven by `converter`. Fails when the converter
-/// does not convert function types.
+/// Adds the builtin conversion patterns to `patterns`, all driven by `converter`. Fails when the
+/// converter does not convert function types.
 ///
 /// It also fails for a converter with value callbacks. Either error is raised before anything is
 /// added. The patterns added are the function pattern, the patterns of `builtin.load_local` and
@@ -1151,11 +1151,12 @@ impl ConversionPattern for CallIndirectPattern {
         rewriter: &mut ConversionPatternRewriter,
     ) -> Result<bool, Report> {
         let context = op.borrow().context_rc();
-        let (signature, attributes, span) = {
-            let op_ref = op.borrow();
-            let call = op_ref.downcast_ref::<CallIndirect>().expect("rooted at call_indirect");
-            (call.get_signature().clone(), CopiedAttributes::of(&op_ref), op_ref.span())
-        };
+        let signature = op
+            .borrow()
+            .downcast_ref::<CallIndirect>()
+            .expect("rooted at call_indirect")
+            .get_signature()
+            .clone();
         let converted = convert_signature(&context, &signature, &self.converter);
         check_answers_are_legal(&context, &self.converter, &signature, &converted, op)?;
         if converted.signature == signature
@@ -1163,6 +1164,10 @@ impl ConversionPattern for CallIndirectPattern {
         {
             return Ok(false);
         }
+        let (attributes, span) = {
+            let op_ref = op.borrow();
+            (CopiedAttributes::of(&op_ref), op_ref.span())
+        };
         let Some(callee) = operands.one(0) else {
             rewriter.notify_match_failure(
                 op,

@@ -339,10 +339,12 @@ pub(crate) fn function_type_of(context: &Context, signature: &Signature) -> Type
 
 /// The attribute dictionary of an operation, taken to be given to an operation that replaces it.
 ///
-/// A symbol reference held directly by an entry gets an attribute and a use of its own on the
-/// operation it is given to, linked to the same symbol by the path it was written with (or left
-/// unlinked, as the parser leaves a reference that names no symbol); the original's attribute and
-/// use go with the original when it is erased. Any other entry is shared.
+/// A symbol reference held by an entry, directly or at any depth of attribute (in a list), gets
+/// an attribute and a use of its own on the operation it is given to, linked to the same symbol
+/// (by the path it was written with, for one held directly), or left unlinked, as the parser
+/// leaves a reference that names no symbol; the original's attribute and use go with the original
+/// when it is erased. An entry that holds a reference deeper is rebuilt around copies of its
+/// references. Any other entry is shared.
 pub(crate) struct CopiedAttributes(SmallVec<[(crate::NamedAttribute, Option<CopiedReference>); 2]>);
 
 /// A symbol reference held by a copied entry: the symbol it is linked to, if any, and its path.
@@ -367,11 +369,18 @@ impl CopiedAttributes {
         )
     }
 
-    /// Sets each entry on `op`.
+    /// Sets each entry on `op`. The operation the entries were taken from must still hold them.
     pub(crate) fn install(self, op: &mut crate::Operation) {
         for (attr, symbol) in self.0 {
             let Some((symbol, path)) = symbol else {
-                op.set_attribute(attr.name, attr.value);
+                let value = attr.value.borrow().replace_elements(&mut CopyReferences);
+                match value {
+                    Some(value) => {
+                        crate::ir::give_copied_references_their_own_uses(op, &value);
+                        op.set_attribute(attr.name, value);
+                    }
+                    None => op.set_attribute(attr.name, attr.value),
+                }
                 continue;
             };
             let Some(symbol) = symbol else {
@@ -386,6 +395,23 @@ impl CopiedAttributes {
             let mut reference = reference.try_downcast_attr::<SymbolRefAttr>().ok().unwrap();
             reference.borrow_mut().set_path(path);
         }
+    }
+}
+
+/// Rebuilds an attribute around a copy of each symbol reference it holds, at any depth; a copy
+/// shares the original's use until it is given one of its own.
+struct CopyReferences;
+
+impl crate::attributes::ElementReplacer for CopyReferences {
+    fn replace_type(&mut self, ty: Type) -> Type {
+        ty
+    }
+
+    fn replace_attribute(&mut self, attr: &crate::AttributeRef) -> Option<crate::AttributeRef> {
+        if attr.try_downcast_attr::<SymbolRefAttr>().is_ok() {
+            return Some(attr.borrow().dyn_clone());
+        }
+        attr.borrow().replace_elements(self)
     }
 }
 
