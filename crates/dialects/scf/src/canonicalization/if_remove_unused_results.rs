@@ -143,7 +143,7 @@ impl RewritePattern for IfRemoveUnusedResults {
 
 #[cfg(test)]
 mod tests {
-    use alloc::{boxed::Box, format, rc::Rc, string::String, vec::Vec};
+    use alloc::{boxed::Box, format, rc::Rc, string::String};
 
     use runic_core::{
         Listener, ListenerType, Op, OperationRef, ProgramPoint, Report, SourceSpan,
@@ -156,6 +156,7 @@ mod tests {
     use runic_expect_test::expect_file;
 
     use super::*;
+    use crate::canonicalization::normalize_ir;
 
     #[track_caller]
     fn run_one(name: &str, source: &str) -> (bool, Result<(), String>) {
@@ -282,13 +283,6 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
         assert!(changed, "must still drop the unused result when both branches yield");
     }
 
-    /// Strips trailing whitespace from every line and ends the text with a single newline
-    fn normalize_hir(input: &str) -> String {
-        let mut normalized = input.lines().map(str::trim_end).collect::<Vec<_>>().join("\n");
-        normalized.push('\n');
-        normalized
-    }
-
     /// Borrows the op following every inserted op while the pattern that made the insertion is
     /// still running, the way a listener inspecting the neighbourhood of an insertion does. The
     /// pattern inserts before the op it rewrites, so that op is the neighbour: the rewrite fails
@@ -342,7 +336,7 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
         let live_if_result = if_op.borrow().results()[1].upcast();
         builder.ret(Some(live_if_result), span)?;
 
-        let input = normalize_hir(&format!("{}", test.function().as_operation_ref().borrow()));
+        let input = normalize_ir(&format!("{}", test.function().as_operation_ref().borrow()));
         expect_file!["expected/if_remove_unused_results_before.runic"].assert_eq(&input);
 
         let context = test.context_rc();
@@ -360,7 +354,7 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
 
         test.function().as_operation_ref().borrow().recursively_verify()?;
 
-        let output = normalize_hir(&format!("{}", test.function().as_operation_ref().borrow()));
+        let output = normalize_ir(&format!("{}", test.function().as_operation_ref().borrow()));
         expect_file!["expected/if_remove_unused_results_after.runic"].assert_eq(&output);
 
         Ok(())

@@ -769,7 +769,7 @@ builtin.function public extern(\"C\") @retconst() -> i8 {
     Ok(())
 }
 
-/// A whole `builtin.world` — the shape `runic --emit=hir` writes, and the shape that must
+/// A whole `builtin.world` — the shape a whole program prints as, and the shape that must
 /// survive being fed back in.
 const WORLD_SOURCE: &str = "\
 builtin.world {
@@ -1163,7 +1163,7 @@ fn a_module_or_component_name_error_points_at_the_operation() {
 }
 
 /// A component prints its name as a symbol path, one raw segment per segment of the name (see
-/// `SymbolPath::to_symbol_name`), quoting a segment that is not a bare HIR identifier, and that
+/// `SymbolPath::to_symbol_name`), quoting a segment that is not a bare identifier of the IR, and that
 /// text parses back to the same name: the canonical spelling of the segments.
 #[test]
 fn component_name_roundtrips_through_the_printer() -> TestResult {
@@ -1176,9 +1176,9 @@ fn component_name_roundtrips_through_the_printer() -> TestResult {
     for (raw, name, header) in [
         ("acme::a::b", "acme::a::b", "builtin.component private @acme::@a::@b {"),
         (
-            "hir_ns:test@1.0.0",
-            "\"hir_ns:test@1.0.0\"",
-            "builtin.component private @\"hir_ns:test@1.0.0\" {",
+            "app_ns:test@1.0.0",
+            "\"app_ns:test@1.0.0\"",
+            "builtin.component private @\"app_ns:test@1.0.0\" {",
         ),
         ("$kernel", "\"$kernel\"", "builtin.component private @\"$kernel\" {"),
         ("1st", "\"1st\"", "builtin.component private @\"1st\" {"),
@@ -1327,7 +1327,7 @@ builtin.world {
     );
 
     // A standalone component, the root itself, named by its raw segment only
-    let source = "builtin.component private @\"hir_ns:test@1.0.0\" {\n};";
+    let source = "builtin.component private @\"app_ns:test@1.0.0\" {\n};";
     let component = test.parse::<Component>("leaf_root.runic", source)?;
     let root = component.as_operation_ref();
     let resolve = |path: &SymbolPath| {
@@ -1336,8 +1336,8 @@ builtin.world {
             .resolve(path)
             .map(|symbol| symbol.borrow().as_symbol_operation().as_operation_ref())
     };
-    assert_eq!(resolve(&leaf(&["hir_ns:test@1.0.0"])), Some(root));
-    assert_eq!(resolve(&leaf(&["\"hir_ns:test@1.0.0\""])), None);
+    assert_eq!(resolve(&leaf(&["app_ns:test@1.0.0"])), Some(root));
+    assert_eq!(resolve(&leaf(&["\"app_ns:test@1.0.0\""])), None);
     assert_eq!(resolve(&component.borrow().path()), Some(root));
     Ok(())
 }

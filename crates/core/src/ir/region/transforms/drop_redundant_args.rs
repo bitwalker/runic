@@ -15,7 +15,7 @@ impl Region {
     ///
     /// A simple example:
     ///
-    /// ```hir,ignore
+    /// ```text,ignore
     /// %cond = llvm.call @rand() : () -> i1
     /// %val0 = llvm.mlir.constant(1 : i64) : i64
     /// %val1 = llvm.mlir.constant(2 : i64) : i64
@@ -29,7 +29,7 @@ impl Region {
     ///
     /// That can be rewritten as:
     ///
-    /// ```hir,ignore
+    /// ```text,ignore
     /// %cond = llvm.call @rand() : () -> i1
     /// %val0 = llvm.mlir.constant(1 : i64) : i64
     /// %val1 = llvm.mlir.constant(2 : i64) : i64

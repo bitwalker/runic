@@ -239,7 +239,7 @@ impl Component {
 
     /// Returns the name a component given `name` gets: `name` itself when it already is the
     /// canonical spelling of its segments (`acme::a::b`, `"acme::pkg"::app`), otherwise the
-    /// spelling of `name` read as one raw segment (`masm-dep` is named `"masm-dep"`).
+    /// spelling of `name` read as one raw segment (`ext-dep` is named `"ext-dep"`).
     ///
     /// Returns an error when the spelling rules reject a segment (see
     /// [SymbolPath::is_spellable]).

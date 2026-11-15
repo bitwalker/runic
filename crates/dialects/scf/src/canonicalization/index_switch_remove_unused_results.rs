@@ -149,7 +149,7 @@ impl RewritePattern for IndexSwitchRemoveUnusedResults {
 
 #[cfg(test)]
 mod tests {
-    use alloc::{boxed::Box, format, rc::Rc, string::String, vec::Vec};
+    use alloc::{boxed::Box, format, rc::Rc};
 
     use runic_core::{
         Op, Report, SourceSpan,
@@ -161,12 +161,7 @@ mod tests {
     use runic_expect_test::expect_file;
 
     use super::*;
-
-    fn normalize_hir(input: &str) -> String {
-        let mut normalized = input.lines().map(str::trim_end).collect::<Vec<_>>().join("\n");
-        normalized.push('\n');
-        normalized
-    }
+    use crate::canonicalization::normalize_ir;
 
     #[test]
     fn index_switch_remove_unused_results() -> Result<(), Report> {
@@ -200,7 +195,7 @@ mod tests {
         let live_switch_result = switch.borrow().results()[1].upcast();
         builder.ret(Some(live_switch_result), span)?;
 
-        let input = normalize_hir(&format!("{}", test.function().as_operation_ref().borrow()));
+        let input = normalize_ir(&format!("{}", test.function().as_operation_ref().borrow()));
         expect_file!["expected/index_switch_remove_unused_results_before.runic"].assert_eq(&input);
 
         let context = test.context_rc();
@@ -218,7 +213,7 @@ mod tests {
 
         test.function().as_operation_ref().borrow().recursively_verify()?;
 
-        let output = normalize_hir(&format!("{}", test.function().as_operation_ref().borrow()));
+        let output = normalize_ir(&format!("{}", test.function().as_operation_ref().borrow()));
         expect_file!["expected/index_switch_remove_unused_results_after.runic"].assert_eq(&output);
 
         Ok(())
@@ -283,7 +278,7 @@ mod tests {
 
         // The yielding region lost its dead operand; the diverging one is
         // untouched and still terminates the switch's second region.
-        let rendered = normalize_hir(&format!("{}", test.function().as_operation_ref().borrow()));
+        let rendered = normalize_ir(&format!("{}", test.function().as_operation_ref().borrow()));
         assert!(rendered.contains("ub.unreachable"), "{rendered}");
         assert_eq!(rendered.matches("scf.yield").count(), 1, "{rendered}");
 

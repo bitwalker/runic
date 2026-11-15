@@ -910,7 +910,7 @@ pub trait OpAsmOpInterface: crate::Op {
     ///
     /// This would print the operation as follows:
     ///
-    /// ```hir
+    /// ```text
     /// %first_result, %middle_results:2, %0 = "my.op" ...
     /// ```
     fn get_asm_result_names(&self) -> SmallVec<[(OpResultRef, Option<CompactString>); 2]> {

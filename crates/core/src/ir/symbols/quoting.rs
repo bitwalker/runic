@@ -1,4 +1,4 @@
-//! The quoted spelling of a HIR symbol name shared by the HIR printer and the lexer: `"..."`, with
+//! The quoted spelling of a symbol name shared by the IR printer and the lexer: `"..."`, with
 //! `"` and `\` escaped by a `\`.
 
 use alloc::string::String;
@@ -16,7 +16,7 @@ pub(crate) fn push_quoted(out: &mut String, name: &str) {
     out.push('"');
 }
 
-/// Reads the quoted name whose opening `"` precedes `quoted`, the inverse of the quoting the HIR
+/// Reads the quoted name whose opening `"` precedes `quoted`, the inverse of the quoting the IR
 /// printer applies.
 ///
 /// A `\` takes the character after it literally. Returns the unescaped name and the text after

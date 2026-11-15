@@ -402,20 +402,20 @@ mod tests {
         }
     }
 
-    /// A stub module tree declared from a path with a quoted root (`"masm-dep"`)
-    /// and a component named from the raw namespace `masm-dep` meet under one name, in either
+    /// A stub module tree declared from a path with a quoted root (`"ext-dep"`)
+    /// and a component named from the raw namespace `ext-dep` meet under one name, in either
     /// order.
     #[test]
     fn a_quoted_module_tree_root_and_a_raw_component_namespace_shadow() {
         use alloc::string::ToString;
 
-        let stub_tree = SymbolPath::from_module_name("\"masm-dep\"::math");
+        let stub_tree = SymbolPath::from_module_name("\"ext-dep\"::math");
         let namespace = SymbolPath::from_iter([
             SymbolNameComponent::Root,
-            SymbolNameComponent::Component(SymbolName::intern("masm-dep")),
+            SymbolNameComponent::Component(SymbolName::intern("ext-dep")),
         ]);
-        let expected = "component `\"masm-dep\"` and module path `\"masm-dep\"::math` share the \
-                        prefix `\"masm-dep\"`; a component name must not shadow a module tree";
+        let expected = "component `\"ext-dep\"` and module path `\"ext-dep\"::math` share the \
+                        prefix `\"ext-dep\"`; a component name must not shadow a module tree";
 
         let (_world, mut world_builder) = empty_world();
         world_builder
@@ -427,7 +427,7 @@ mod tests {
         };
         assert_eq!(
             err.to_string(),
-            "component `\"masm-dep\"` and `builtin.module` `::\"masm-dep\"` have the same path; a \
+            "component `\"ext-dep\"` and `builtin.module` `::\"ext-dep\"` have the same path; a \
              component must not share its path with another symbol"
         );
 
@@ -480,8 +480,8 @@ mod tests {
 
         for (name, expected) in [
             (
-                "masm-dep",
-                "component `masm-dep` is not the canonical spelling of its segments; name \
+                "ext-dep",
+                "component `ext-dep` is not the canonical spelling of its segments; name \
                  components through `SymbolPath::to_symbol_name`",
             ),
             (
@@ -530,13 +530,13 @@ mod tests {
 
         let mut builder = OpBuilder::new(Rc::new(Context::default()));
         let mut module =
-            || builder.create_module(Ident::from("masm-dep")).expect("failed to create module");
+            || builder.create_module(Ident::from("ext-dep")).expect("failed to create module");
         let (first, second) = (module(), module());
         let mut symbols = SymbolMap::default();
         let name = Symbol::name(&*first.borrow());
-        assert_eq!(symbols.insert(name, first.as_symbol_ref()).as_str(), "\"masm-dep\"");
-        assert_eq!(symbols.insert(name, second.as_symbol_ref()).as_str(), "\"masm-dep_1\"");
-        assert_eq!(Symbol::name(&*second.borrow()).as_str(), "\"masm-dep_1\"");
+        assert_eq!(symbols.insert(name, first.as_symbol_ref()).as_str(), "\"ext-dep\"");
+        assert_eq!(symbols.insert(name, second.as_symbol_ref()).as_str(), "\"ext-dep_1\"");
+        assert_eq!(Symbol::name(&*second.borrow()).as_str(), "\"ext-dep_1\"");
     }
 
     /// Renaming a component rewrites the raw segments its uses end in, so a use still resolves.

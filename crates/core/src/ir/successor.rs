@@ -79,7 +79,7 @@ pub trait SuccessorOperands {
 /// An example operation with both of these concepts would be a branch-on-error operation, that
 /// internally produces an error object on the error path:
 ///
-/// ```hir,ignore
+/// ```text,ignore
 /// invoke %function(%0)
 ///    label ^success ^error(%1 : i32)
 ///

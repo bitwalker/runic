@@ -21,3 +21,14 @@ pub use self::{
     while_remove_duplicated_results::WhileRemoveDuplicatedResults,
     while_remove_unused_args::WhileRemoveUnusedArgs, while_unused_result::WhileUnusedResult,
 };
+
+/// Strips trailing whitespace from every line and ends the text with a single newline: the printed
+/// IR the tests of the canonicalization patterns compare.
+#[cfg(test)]
+fn normalize_ir(input: &str) -> alloc::string::String {
+    use alloc::vec::Vec;
+
+    let mut normalized = input.lines().map(str::trim_end).collect::<Vec<_>>().join("\n");
+    normalized.push('\n');
+    normalized
+}

@@ -10,10 +10,10 @@ use crate::{
 /// Unresolved symbol references attached directly to one operation.
 type SymbolUses = SmallVec<[UnsafeIntrusiveEntityRef<SymbolRefAttr>; 1]>;
 
-/// This struct represents state from a parsed HIR textual format string.
+/// This struct represents state from a parsed string in the textual IR format.
 ///
-/// It is useful for building additional analysis and language utilities on top of textual HIR. This
-/// should generally not be used for traditional compilation.
+/// It is useful for building additional analysis and language utilities on top of the textual IR.
+/// This should generally not be used for traditional compilation.
 #[derive(Default)]
 pub struct AsmParserState {
     /// A mapping from operations in the input source file to their parser state

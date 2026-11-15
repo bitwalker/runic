@@ -133,10 +133,10 @@ impl Module {
     }
 
     /// Returns the name a module given the raw segment `name` gets: its canonical spelling
-    /// (see [SymbolPath::segments_of]), e.g. `"masm-dep"` for `masm-dep` and `m` for `m`.
+    /// (see [SymbolPath::segments_of]), e.g. `"ext-dep"` for `ext-dep` and `m` for `m`.
     ///
-    /// `name` is always read as one raw segment, never as a spelled name: `"masm-dep"` is not
-    /// the segment `masm-dep`. Returns an error when the spelling rules reject the segment (see
+    /// `name` is always read as one raw segment, never as a spelled name: `"ext-dep"` is not
+    /// the segment `ext-dep`. Returns an error when the spelling rules reject the segment (see
     /// [SymbolPath::is_spellable]) or it contains `::`.
     pub fn canonical_name(name: SymbolName) -> Result<SymbolName, Report> {
         SymbolPath::table_name(SymbolTableKind::Module, name)

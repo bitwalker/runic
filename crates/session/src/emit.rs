@@ -232,7 +232,7 @@ impl Emit for alloc::string::String {
 
 impl Emit for Module {
     /// The raw segment of the module name, without the quotes of its path spelling
-    /// (`masm-dep` for `"masm-dep"`). It may hold any spellable character, `/` and `:` included.
+    /// (`ext-dep` for `"ext-dep"`). It may hold any spellable character, `/` and `:` included.
     fn name(&self) -> Option<Symbol> {
         Some(SymbolPath::raw_segment(RSymbol::name(self)))
     }

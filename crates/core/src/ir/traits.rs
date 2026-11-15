@@ -89,7 +89,7 @@ pub trait BranchOpInterface: crate::Op {
     /// by a range of operands that are forwarded. An example operation making use of produced
     /// operands would be:
     ///
-    /// ```hir,ignore
+    /// ```text,ignore
     /// invoke %function(%0)
     ///     label ^success ^error(%1 : i32)
     ///

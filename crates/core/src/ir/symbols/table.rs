@@ -662,7 +662,7 @@ fn is_symbol_table(symbol: &SymbolRef) -> bool {
 ///
 /// The name of a symbol-table op is the canonical spelling of its raw segments (see
 /// [SymbolPath::segments_of]), so the suffix goes on its raw last segment and the result is
-/// spelled again: `"masm-dep"` becomes `"masm-dep_1"`, not `"masm-dep"_1`.
+/// spelled again: `"ext-dep"` becomes `"ext-dep_1"`, not `"ext-dep"_1`.
 fn generate_unique_name<F>(
     is_table: bool,
     name: SymbolName,

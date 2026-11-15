@@ -133,7 +133,7 @@ impl SymbolPath {
     ///
     /// let id = FunctionIdent {
     ///     module: "intrinsics::mem".into(),
-    ///     function: "load_felt_unchecked".into(),
+    ///     function: "load_word_unchecked".into(),
     /// };
     /// assert_eq!(
     ///     SymbolPath::from_function_id(id),
@@ -141,7 +141,7 @@ impl SymbolPath {
     ///         SymbolNameComponent::Root,
     ///         SymbolNameComponent::Component("intrinsics".into()),
     ///         SymbolNameComponent::Component("mem".into()),
-    ///         SymbolNameComponent::Leaf("load_felt_unchecked".into()),
+    ///         SymbolNameComponent::Leaf("load_word_unchecked".into()),
     ///     ])
     /// );
     /// ```
@@ -288,7 +288,7 @@ impl SymbolPath {
     /// For a module, `name` is one raw segment, which must not contain `::`. For
     /// a component, a name that already is the canonical spelling of its segments is taken
     /// as is (`acme::a::b`, `"acme::pkg"::app`); any other name is one raw segment, which is
-    /// spelled (`masm-dep` is named `"masm-dep"`).
+    /// spelled (`ext-dep` is named `"ext-dep"`).
     pub(crate) fn table_name(
         kind: SymbolTableKind,
         name: SymbolName,
@@ -693,7 +693,7 @@ mod tests {
         assert!(nests("\"acme::pkg\"::app", "\"acme::pkg\""));
         assert!(!nests("\"acme::pkg\"::app", "acme"));
         assert!(!nests("\"a::b\"", "a"));
-        assert!(nests("\"masm-dep\"::math", "\"masm-dep\""));
+        assert!(nests("\"ext-dep\"::math", "\"ext-dep\""));
         // A name that is not a valid path is one segment
         assert!(!nests(r#""a::b"#, r#""a"#));
     }
@@ -717,7 +717,7 @@ mod tests {
             (&["acme::pkg", "app"][..], r#""acme::pkg"::app"#),
             (&["acme::pkg"][..], r#""acme::pkg""#),
             (&["a:b@1.0.0"][..], r#""a:b@1.0.0""#),
-            (&["masm-dep", "math"][..], r#""masm-dep"::math"#),
+            (&["ext-dep", "math"][..], r#""ext-dep"::math"#),
             (&["::"][..], r#""::""#),
             (&["a", "::", "b"][..], r#"a::"::"::b"#),
             (&["a:", "b::c"][..], r#""a:"::"b::c""#),
@@ -750,8 +750,8 @@ mod tests {
                 .map(|name| name.as_str())
                 .map_err(|err| err.to_string())
         };
-        assert_eq!(name("masm-dep"), Ok(r#""masm-dep""#));
-        assert_eq!(name(r#""masm-dep""#), Ok(r#""masm-dep""#));
+        assert_eq!(name("ext-dep"), Ok(r#""ext-dep""#));
+        assert_eq!(name(r#""ext-dep""#), Ok(r#""ext-dep""#));
         assert_eq!(name("acme::a::b"), Ok("acme::a::b"));
         assert_eq!(
             name(r#""app""#),
@@ -764,7 +764,7 @@ mod tests {
     /// A segment is spellable when it is made of ASCII graphic characters other than `"`, `\`, `#`
     #[test]
     fn spellable_segments_are_ascii_graphic_without_quote_backslash_or_hash() {
-        for segment in ["app", "masm-dep", "a:b@1.0.0", "::", "$kernel", "1st"] {
+        for segment in ["app", "ext-dep", "a:b@1.0.0", "::", "$kernel", "1st"] {
             assert!(SymbolPath::is_spellable(segment), "`{segment}`");
         }
         for segment in ["", "q\"u", "\"x-y\"", "a\\b", "a#b", "my lib", "ü", "a\tb"] {
@@ -873,17 +873,17 @@ mod tests {
                 .map(|c| c.as_symbol_name().as_str().to_string())
                 .collect::<alloc::vec::Vec<_>>()
         };
-        assert_eq!(components(r#""masm-dep"::math"#), ["masm-dep", "math"]);
+        assert_eq!(components(r#""ext-dep"::math"#), ["ext-dep", "math"]);
         assert_eq!(components(r#""acme::pkg"::app"#), ["acme::pkg", "app"]);
         assert_eq!(components("<T as Trait>::f"), ["<T as Trait>", "f"]);
         assert_eq!(components("::<T as Trait>::f"), ["<T as Trait>", "f"]);
         // Split on every `::`, a quoted segment still loses its quotes
-        assert_eq!(components(r#""masm-dep"::::f"#), ["masm-dep", "", "f"]);
+        assert_eq!(components(r#""ext-dep"::::f"#), ["ext-dep", "", "f"]);
         assert_eq!(
-            SymbolPath::from_module_name(r#""masm-dep"::math"#),
+            SymbolPath::from_module_name(r#""ext-dep"::math"#),
             SymbolPath::from_iter([
                 SymbolNameComponent::Root,
-                SymbolNameComponent::Component("masm-dep".into()),
+                SymbolNameComponent::Component("ext-dep".into()),
                 SymbolNameComponent::Component("math".into()),
             ])
         );

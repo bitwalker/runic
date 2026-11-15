@@ -940,7 +940,7 @@ impl Block {
         }
 
         // Instructions should not be hoisted across effectful or return-like terminators. This is
-        // typically only exception handling intrinsics, which HIR doesn't really have, but which
+        // typically only exception handling intrinsics, which the IR doesn't really have, but which
         // we may nevertheless want to represent in the future.
         //
         // NOTE: Most return-like terminators would have no successors, but in LLVM, for example,

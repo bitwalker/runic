@@ -726,7 +726,7 @@ mod entry_cycle_tests {
         )
         .into_result()?;
         if entry_placeholder {
-            // Named function parameters require an unlabeled entry in textual HIR. Retarget
+            // Named function parameters require an unlabeled entry in the textual IR. Retarget
             // the typed placeholder edges to construct the corresponding in-memory CFG.
             let entry = function.borrow().body().entry_block_ref().unwrap();
             let mut placeholder = function.borrow().body().body().back().as_pointer().unwrap();

@@ -15,7 +15,7 @@ use super::{
 /// and can be used to obtain not only the _user_ of the reference, but the location of that use
 /// within the user. Uses are tracked in a _use list_, also called the _use-def list_, which
 /// associates all uses to the definition, or _def_, that they reference. For example, operations
-/// in HIR _use_ SSA values defined previously in the program.
+/// in the IR _use_ SSA values defined previously in the program.
 ///
 /// A _user_ does not have to be of the same IR type as the _definition_, and the type representing
 /// the _use_ is typically different than both, and represents the type of relationship between the

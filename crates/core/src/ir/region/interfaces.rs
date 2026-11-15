@@ -44,7 +44,7 @@ pub trait RegionKindInterface {
 ///
 /// ## Example
 ///
-/// ```hir,ignore
+/// ```text,ignore
 /// %r = scf.for %iv = %lb to %ub step %step iter_args(%a = %b)
 ///     -> tensor<5xf32> {
 ///     ...

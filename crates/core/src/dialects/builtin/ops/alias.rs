@@ -447,7 +447,7 @@ builtin.module public @test {
         );
     }
 
-    /// Parses and verifies a HIR module from source.
+    /// Parses and verifies a module from its textual IR.
     fn verify_alias_source(source: &str) -> Result<(), crate::Report> {
         let test = Test::default();
         parse::<Module>(ParserConfig::new(test.context_rc()), "alias.runic", source)
