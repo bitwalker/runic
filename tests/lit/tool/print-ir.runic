@@ -11,33 +11,41 @@
 // when the pass changed the IR (alone, after every pass that did; with `--print-ir-after`, after
 // the named passes that did). Here CSE merges the two constants and erases the unused sum, and DCE
 // the constant left unused; local2reg, which runs on each function, finds no local and changes
-// nothing. `--print-ir-after-failure` prints the IR a failed
-// pass left, once, marked as failed: a pass that says it changed the IR and then fails
-// (`test-fail{after-change}`) is not printed as a change. Standard output holds the result only.
+// nothing. `--print-ir-after-failure` prints the IR a failed pass left, once, marked as failed: a
+// pass that says it changed the IR and then fails (`test-fail{after-change}`) is not printed as a
+// change. Standard output holds the result only.
 
 // NAMED: // ----- IR before cse on builtin.module -----
 // NAMED-NEXT: builtin.module public @m {
 // NAMED-NOT: IR before
+// NAMED-NOT: IR after cse
 // NAMED: // ----- IR after local2reg on builtin.function -----
 // NAMED-NOT: IR before
-// NAMED: // ----- IR after dce on builtin.module -----
 // NAMED-NOT: IR after cse
+// NAMED: // ----- IR after dce on builtin.module -----
 
+// BEFORE-NOT: IR after
 // BEFORE: // ----- IR before cse on builtin.module -----
+// BEFORE-NOT: IR after
 // BEFORE: // ----- IR before local2reg on builtin.function -----
+// BEFORE-NOT: IR after
 // BEFORE: // ----- IR before dce on builtin.module -----
 // BEFORE-NOT: IR after
 
+// AFTER-NOT: IR before
 // AFTER: // ----- IR after cse on builtin.module -----
 // AFTER-NEXT: builtin.module public @m {
 // AFTER-NEXT: builtin.function public extern("C") @f(
 // AFTER-NEXT: {{%[0-9]+}} = arith.constant 1 : i32;
 // AFTER-NEXT: builtin.ret
+// AFTER-NOT: IR before
 // AFTER: // ----- IR after local2reg on builtin.function -----
+// AFTER-NOT: IR before
 // AFTER: // ----- IR after dce on builtin.module -----
 // AFTER-NEXT: builtin.module public @m {
 // AFTER-NEXT: builtin.function public extern("C") @f(
 // AFTER-NEXT: builtin.ret
+// AFTER-NOT: IR before
 
 // CHANGE-NOT: IR before
 // CHANGE: // ----- IR after cse on builtin.module -----

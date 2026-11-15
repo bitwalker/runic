@@ -1,0 +1,19 @@
+// RUN: runic-opt --help | filecheck %s --check-prefix=HELP
+// RUN: runic-opt -h | filecheck %s --check-prefix=SUMMARY
+// RUN: runic-opt --version | filecheck %s --check-prefix=VERSION
+// RUN: runic-opt -V | filecheck %s --check-prefix=VERSION
+
+// `--help` prints the usage and the long help of each option, `-h` a summary; `--version` and
+// `-V` print the tool's name and version. Each exits with 0. The checks name lines that do not
+// change when an option is added: the usage, and the lines of the help options themselves.
+
+// HELP: Usage: runic-opt [OPTIONS] [FILE]
+// HELP: -p, --pass-pipeline <PIPELINE>
+// HELP: -h, --help
+// HELP-NEXT: Print help (see a summary with '-h')
+
+// SUMMARY: Usage: runic-opt [OPTIONS] [FILE]
+// SUMMARY: -h, --help
+// SUMMARY-SAME: Print help (see more with '--help')
+
+// VERSION: {{^}}runic-opt {{[0-9]+\.[0-9]+\.[0-9]+}}{{$}}

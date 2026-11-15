@@ -4,6 +4,7 @@
 // RUN: runic-opt %s -p 'builtin.module(builtin.module(local2reg))' | filecheck %s
 // RUN: runic-opt %s -p 'any(builtin.module(local2reg))' | filecheck %s
 // RUN: runic-opt %s -p 'cse,builtin.module(local2reg),dce' | filecheck %s
+// RUN: runic-opt %s --pass-pipeline 'builtin.module(builtin.module(builtin.function(local2reg)))' | filecheck %s
 // RUN: runic-opt %s -p 'builtin.module(builtin.module(local2reg))' --dump-pass-pipeline 2>&1 >/dev/null | filecheck %s --check-prefix=ANCHORED
 // RUN: runic-opt %s -p 'cse, builtin.module(local2reg) ,dce' --dump-pass-pipeline 2>&1 >/dev/null | filecheck %s --check-prefix=LIST
 // RUN: runic-opt %s -p 'recursive(builtin.function(local2reg))' --dump-pass-pipeline 2>&1 >/dev/null | filecheck %s --check-prefix=RECURSIVE
@@ -16,12 +17,13 @@
 // whole pipeline is anchored on its first name, `any` or the top-level operation's; any other
 // text is a list run on the top-level operation. A pass that runs on one kind of operation is
 // nested one level under the operations of its kind; `recursive(..)`, or the operations in between
-// named, reach deeper. Each of the first six RUN lines reaches the function and promotes its local.
+// named, reach deeper. Each of the first seven RUN lines reaches the function and promotes its
+// local; the seventh gives the pipeline with the long spelling of `-p`, `--pass-pipeline`.
 // `--dump-pass-pipeline` prints the pipeline as it was loaded, to standard error: a list is
-// anchored on the top-level operation, the implicit nesting is written out, and spaces around
-// the names are not kept. A pass option's
-// quoted value may hold commas, spaces and braces. A pipeline the tool rejects is rejected before
-// the input is read, so those RUN lines check standard error with `not`.
+// anchored on the top-level operation, the implicit nesting is written out, and spaces around the
+// names are not kept. A pass option's quoted value may hold commas, spaces and braces. A pipeline
+// the tool rejects is rejected before the input is read, so those RUN lines check standard error
+// with `not`.
 
 // CHECK-LABEL: @f(
 // CHECK-SAME: [[X:%[0-9]+]]: i32) -> i32 locals(i32) {

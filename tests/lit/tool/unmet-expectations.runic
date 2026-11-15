@@ -2,7 +2,8 @@
 
 // What `--verify-diagnostics` reports, as errors, when the diagnostics and the expectations do not
 // meet: an expectation that nothing meets (an `info`, which no pass or verifier of runic-opt
-// emits; a hint of another text), and a diagnostic that nothing expects. The exit code is 1.
+// emits; a hint of another text), and a diagnostic that nothing expects. The tool fails: `not`
+// checks that its exit code is not zero.
 
 // CHECK-DAG: error: expected info "never produced" was not produced
 // CHECK-DAG: error: expected hint "u[11, 11]" was not produced

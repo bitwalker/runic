@@ -218,8 +218,8 @@ must be expected and every expectation met; the tool's exit code is that check's
 regular expression. The text is looked for in the diagnostic's message, the text of its labels,
 its helps and its context frames; a parser error's message is often `invalid syntax` alone, and
 its label names the token it did not expect and what it expected, so its expectation names both:
-`{{unexpected token '<', expected )}}`. An expectation is on the line of the diagnostic, or names it with `@+N`,
-`@-N`, `@above`, `@below`, or `@unknown` (a diagnostic with no location):
+`{{unexpected token '<', expected )}}`. An expectation is on the line of the diagnostic, or names
+it with `@+N`, `@-N`, `@above`, `@below`, or `@unknown` (a diagnostic with no location):
 
 ```
 %x = arith.constant 10 : i32; // expected-hint {{range of result 0: u[10, 10] s[10, 10] width 32}}

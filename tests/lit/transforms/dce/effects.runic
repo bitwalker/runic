@@ -46,9 +46,9 @@ builtin.module public @dce_effects {
     // CHECK-NEXT: builtin.call @allocates_elsewhere() : extern("C") ();
     // CHECK-NEXT: builtin.ret;
     builtin.function public extern("C") @calls(%a: i32) {
-        %1 = builtin.call @pure(%a) : extern("C") (i32) -> i32;
-        %2 = builtin.call @unknown(%a) : extern("C") (i32) -> i32;
-        %3 = builtin.call @allocates() : extern("C") () -> ptr<i8>;
+        %pure = builtin.call @pure(%a) : extern("C") (i32) -> i32;
+        %unknown = builtin.call @unknown(%a) : extern("C") (i32) -> i32;
+        %allocated = builtin.call @allocates() : extern("C") () -> ptr<i8>;
         builtin.call @allocates_elsewhere() : extern("C") ();
         builtin.ret;
     };
@@ -60,7 +60,7 @@ builtin.module public @dce_effects {
     // CHECK-NEXT: builtin.ret;
     builtin.function public extern("C") @indirect_calls(%a: i32) {
         %f = builtin.function_ref @pure : (i32) -> i32;
-        %1 = builtin.call_indirect %f(%a) : extern("C") (i32) -> i32;
+        %indirect = builtin.call_indirect %f(%a) : extern("C") (i32) -> i32;
         %g = builtin.function_ref @pure : (i32) -> i32;
         builtin.ret;
     };

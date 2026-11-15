@@ -5,7 +5,7 @@
 // at the operands' width (`arith.min` and `arith.max` in the signedness they are given), and the
 // constants it read are then erased as dead. An operation that would trap or whose result is
 // undefined (a checked overflow, a division by zero or of `MIN` by -1, a shift by the width or
-// more) does not fold. An `isize` operation folds to what both a 32-bit and a 64-bit target
+// more) does not fold; a rotate by the width does. An `isize` operation folds to what both a 32-bit and a 64-bit target
 // compute, and not at all when they disagree; no arith fold reads the data layout. The second RUN
 // line reads the output back.
 builtin.module public @arith_fold {
@@ -36,6 +36,17 @@ builtin.module public @arith_fold {
     builtin.function public extern("C") @add_checked_signed_overflow() -> (i8) {
         %a = arith.constant 100 : i8;
         %b = arith.constant 100 : i8;
+        %r = arith.add %a, %b <{ overflow = #builtin.overflow<checked signed> }>;
+        builtin.ret %r : (i8);
+    };
+
+    // A checked sum that fits folds: 100 + 27 is 127, the largest `i8`.
+    // CHECK-LABEL: @add_checked_signed_fits(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant 127 : i8;
+    // CHECK-NEXT: builtin.ret [[R0]] : (i8);
+    builtin.function public extern("C") @add_checked_signed_fits() -> (i8) {
+        %a = arith.constant 100 : i8;
+        %b = arith.constant 27 : i8;
         %r = arith.add %a, %b <{ overflow = #builtin.overflow<checked signed> }>;
         builtin.ret %r : (i8);
     };
@@ -266,6 +277,16 @@ builtin.module public @arith_fold {
         builtin.ret %r : (i8);
     };
 
+    // CHECK-LABEL: @shr_by_width(
+    // CHECK: [[R:%[0-9]+]] = arith.shr 
+    // CHECK-NEXT: builtin.ret [[R]] : (i8);
+    builtin.function public extern("C") @shr_by_width() -> (i8) {
+        %a = arith.constant -128 : i8;
+        %b = arith.constant 8 : i8;
+        %r = arith.shr %a, %b;
+        builtin.ret %r : (i8);
+    };
+
     // An arithmetic shift brings in the sign.
     // CHECK-LABEL: @ashr(
     // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant -1 : i8;
@@ -273,6 +294,16 @@ builtin.module public @arith_fold {
     builtin.function public extern("C") @ashr() -> (i8) {
         %a = arith.constant -128 : i8;
         %b = arith.constant 7 : i8;
+        %r = arith.ashr %a, %b;
+        builtin.ret %r : (i8);
+    };
+
+    // CHECK-LABEL: @ashr_by_width(
+    // CHECK: [[R:%[0-9]+]] = arith.ashr 
+    // CHECK-NEXT: builtin.ret [[R]] : (i8);
+    builtin.function public extern("C") @ashr_by_width() -> (i8) {
+        %a = arith.constant -128 : i8;
+        %b = arith.constant 8 : i8;
         %r = arith.ashr %a, %b;
         builtin.ret %r : (i8);
     };
@@ -287,12 +318,33 @@ builtin.module public @arith_fold {
         builtin.ret %r : (i8);
     };
 
+    // A rotate by the width is defined, unlike a shift: the value comes back as it was.
+    // CHECK-LABEL: @rotl_by_width(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant -127 : i8;
+    // CHECK-NEXT: builtin.ret [[R0]] : (i8);
+    builtin.function public extern("C") @rotl_by_width() -> (i8) {
+        %a = arith.constant -127 : i8;
+        %b = arith.constant 8 : i8;
+        %r = arith.rotl %a, %b;
+        builtin.ret %r : (i8);
+    };
+
     // CHECK-LABEL: @rotr(
     // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant -127 : i8;
     // CHECK-NEXT: builtin.ret [[R0]] : (i8);
     builtin.function public extern("C") @rotr() -> (i8) {
         %a = arith.constant 3 : i8;
         %b = arith.constant 1 : i8;
+        %r = arith.rotr %a, %b;
+        builtin.ret %r : (i8);
+    };
+
+    // CHECK-LABEL: @rotr_by_width(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant 3 : i8;
+    // CHECK-NEXT: builtin.ret [[R0]] : (i8);
+    builtin.function public extern("C") @rotr_by_width() -> (i8) {
+        %a = arith.constant 3 : i8;
+        %b = arith.constant 8 : i8;
         %r = arith.rotr %a, %b;
         builtin.ret %r : (i8);
     };
