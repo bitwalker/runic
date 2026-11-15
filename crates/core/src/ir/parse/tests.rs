@@ -613,8 +613,8 @@ fn diagnostics_name_and_point_at_what_was_written() {
                 &["invalid block name", "it takes no label"],
             ),
             (
-                "builtin.function public extern(\"C\") @f() {\n    test.reads_locals_and_holds;\n    \
-                 builtin.ret;\n};",
+                "builtin.function public extern(\"C\") @f() {\n    \
+                 test.reads_locals_and_holds;\n    builtin.ret;\n};",
                 &["'test.reads_locals_and_holds' has no custom form: write it in the generic form"],
             ),
         ];

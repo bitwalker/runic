@@ -140,7 +140,8 @@ impl Verify<dyn SymbolTable> for Component {
 
         use crate::Spanned;
 
-        SymbolPath::validate_table_name(SymbolTableKind::Component, Symbol::name(self)).map_err(|err| {
+        let name = Symbol::name(self);
+        SymbolPath::validate_table_name(SymbolTableKind::Component, name).map_err(|err| {
             crate::diagnostics::report!(
                 message: (err.to_string()),
                 labels: [primary(self.as_operation().span(), "this component's name is not valid")],
