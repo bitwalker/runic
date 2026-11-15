@@ -414,7 +414,7 @@ impl<'input> Lexer<'input> {
             let Token::BareIdent(s) = self.lex_identifier()? else {
                 unreachable!()
             };
-            Ok(Token::AtIdent(&s[c.len_utf8()..]))
+            Ok(Token::AtIdent(&s['@'.len_utf8()..]))
         }
     }
 
@@ -476,7 +476,6 @@ impl<'input> Lexer<'input> {
         self.skip();
         let content_start = self.token_end as u32;
 
-        let mut is_identifier = true;
         loop {
             match self.read() {
                 '\0' | '\n' => {
@@ -485,7 +484,6 @@ impl<'input> Lexer<'input> {
                     });
                 }
                 '\\' => {
-                    is_identifier = false;
                     self.skip();
                     match self.read() {
                         '"' | '\\' | '\n' => {
@@ -503,7 +501,6 @@ impl<'input> Lexer<'input> {
                     self.skip();
                 }
                 _ => {
-                    is_identifier = false;
                     self.skip();
                 }
             }
