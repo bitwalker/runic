@@ -27,21 +27,21 @@ builtin.module private @while_remove_duplicated_results {
     // CHECK-NEXT: } : (i32, i32) -> (i32, i32);
     // CHECK-NEXT: [[U:%[0-9]+]] = arith.add [[R0]], [[R1]]
     // CHECK-NEXT: arith.add [[U]], [[R0]]
-    builtin.function public extern("C") @one_pair(%0: i32, %1: i32) -> i32 {
-        %2 = arith.constant 10 : i32;
-        %3, %4, %5 = scf.while %0, %1 before {
-        ^block1(%6: i32, %7: i32):
-            %8 = arith.cmpi ult %6, %2;
-            scf.condition %8, %6, %7, %6 : (i1, i32, i32, i32);
+    builtin.function public extern("C") @one_pair(%a: i32, %b: i32) -> i32 {
+        %c10 = arith.constant 10 : i32;
+        %res0, %res1, %res2 = scf.while %a, %b before {
+        ^before(%iter0: i32, %iter1: i32):
+            %cond = arith.cmpi ult %iter0, %c10;
+            scf.condition %cond, %iter0, %iter1, %iter0 : (i1, i32, i32, i32);
         } after {
-        ^block2(%9: i32, %10: i32, %11: i32):
-            %12 = arith.add %9, %10 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
-            %13 = arith.add %11, %12 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
-            scf.yield %13, %12 : (i32, i32);
+        ^after(%fwd0: i32, %fwd1: i32, %fwd2: i32):
+            %sum = arith.add %fwd0, %fwd1 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+            %sum2 = arith.add %fwd2, %sum <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+            scf.yield %sum2, %sum : (i32, i32);
         } : (i32, i32) -> (i32, i32, i32);
-        %14 = arith.add %3, %4 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
-        %15 = arith.add %14, %5 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
-        builtin.ret %15 : (i32);
+        %sum3 = arith.add %res0, %res1 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+        %sum4 = arith.add %sum3, %res2 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+        builtin.ret %sum4 : (i32);
     };
 
     // The condition forwards before-block argument 1 at positions 0, 2 and 3: results 2 and 3
@@ -62,22 +62,22 @@ builtin.module private @while_remove_duplicated_results {
     // CHECK-NEXT: [[U:%[0-9]+]] = arith.add [[R0]], [[R1]]
     // CHECK-NEXT: [[V:%[0-9]+]] = arith.add [[U]], [[R0]]
     // CHECK-NEXT: arith.add [[V]], [[R0]]
-    builtin.function public extern("C") @three_times(%0: i32, %1: i32) -> i32 {
-        %2 = arith.constant 10 : i32;
-        %3, %4, %5, %6 = scf.while %0, %1 before {
-        ^block1(%7: i32, %8: i32):
-            %9 = arith.cmpi ult %7, %2;
-            scf.condition %9, %8, %7, %8, %8 : (i1, i32, i32, i32, i32);
+    builtin.function public extern("C") @three_times(%a: i32, %b: i32) -> i32 {
+        %c10 = arith.constant 10 : i32;
+        %res0, %res1, %res2, %res3 = scf.while %a, %b before {
+        ^before(%iter0: i32, %iter1: i32):
+            %cond = arith.cmpi ult %iter0, %c10;
+            scf.condition %cond, %iter1, %iter0, %iter1, %iter1 : (i1, i32, i32, i32, i32);
         } after {
-        ^block2(%10: i32, %11: i32, %12: i32, %13: i32):
-            %14 = arith.add %10, %12 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
-            %15 = arith.add %14, %13 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
-            scf.yield %11, %15 : (i32, i32);
+        ^after(%fwd0: i32, %fwd1: i32, %fwd2: i32, %fwd3: i32):
+            %sum = arith.add %fwd0, %fwd2 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+            %sum2 = arith.add %sum, %fwd3 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+            scf.yield %fwd1, %sum2 : (i32, i32);
         } : (i32, i32) -> (i32, i32, i32, i32);
-        %16 = arith.add %3, %4 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
-        %17 = arith.add %16, %5 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
-        %18 = arith.add %17, %6 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
-        builtin.ret %18 : (i32);
+        %sum3 = arith.add %res0, %res1 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+        %sum4 = arith.add %sum3, %res2 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+        %sum5 = arith.add %sum4, %res3 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+        builtin.ret %sum5 : (i32);
     };
 
     // Two interleaved pairs: the condition forwards `a, b, a, b`. Result 2 merges into result 0
@@ -98,22 +98,22 @@ builtin.module private @while_remove_duplicated_results {
     // CHECK-NEXT: [[U:%[0-9]+]] = arith.add [[R0]], [[R1]]
     // CHECK-NEXT: [[V:%[0-9]+]] = arith.add [[R0]], [[R1]]
     // CHECK-NEXT: arith.add [[U]], [[V]]
-    builtin.function public extern("C") @two_pairs(%0: i32, %1: i32) -> i32 {
-        %2 = arith.constant 10 : i32;
-        %3, %4, %5, %6 = scf.while %0, %1 before {
-        ^block1(%7: i32, %8: i32):
-            %9 = arith.cmpi ult %7, %2;
-            scf.condition %9, %7, %8, %7, %8 : (i1, i32, i32, i32, i32);
+    builtin.function public extern("C") @two_pairs(%a: i32, %b: i32) -> i32 {
+        %c10 = arith.constant 10 : i32;
+        %res0, %res1, %res2, %res3 = scf.while %a, %b before {
+        ^before(%iter0: i32, %iter1: i32):
+            %cond = arith.cmpi ult %iter0, %c10;
+            scf.condition %cond, %iter0, %iter1, %iter0, %iter1 : (i1, i32, i32, i32, i32);
         } after {
-        ^block2(%10: i32, %11: i32, %12: i32, %13: i32):
-            %14 = arith.add %10, %13 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
-            %15 = arith.add %12, %11 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
-            scf.yield %14, %15 : (i32, i32);
+        ^after(%fwd0: i32, %fwd1: i32, %fwd2: i32, %fwd3: i32):
+            %sum = arith.add %fwd0, %fwd3 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+            %sum2 = arith.add %fwd2, %fwd1 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+            scf.yield %sum, %sum2 : (i32, i32);
         } : (i32, i32) -> (i32, i32, i32, i32);
-        %16 = arith.add %3, %6 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
-        %17 = arith.add %5, %4 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
-        %18 = arith.add %16, %17 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
-        builtin.ret %18 : (i32);
+        %sum3 = arith.add %res0, %res3 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+        %sum4 = arith.add %res2, %res1 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+        %sum5 = arith.add %sum3, %sum4 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+        builtin.ret %sum5 : (i32);
     };
 
     // Negative: the condition forwards two distinct values, so the loop is left untouched.
@@ -130,18 +130,18 @@ builtin.module private @while_remove_duplicated_results {
     // CHECK-NEXT: scf.yield [[P]], [[S]] : (i32, i32);
     // CHECK-NEXT: } : (i32, i32) -> (i32, i32);
     // CHECK-NEXT: arith.add [[R0]], [[R1]]
-    builtin.function public extern("C") @no_duplicates(%0: i32, %1: i32) -> i32 {
-        %2 = arith.constant 10 : i32;
-        %3, %4 = scf.while %0, %1 before {
-        ^block1(%5: i32, %6: i32):
-            %7 = arith.cmpi ult %6, %2;
-            scf.condition %7, %5, %6 : (i1, i32, i32);
+    builtin.function public extern("C") @no_duplicates(%a: i32, %b: i32) -> i32 {
+        %c10 = arith.constant 10 : i32;
+        %res0, %res1 = scf.while %a, %b before {
+        ^before(%iter0: i32, %iter1: i32):
+            %cond = arith.cmpi ult %iter1, %c10;
+            scf.condition %cond, %iter0, %iter1 : (i1, i32, i32);
         } after {
-        ^block2(%8: i32, %9: i32):
-            %10 = arith.add %9, %8 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
-            scf.yield %8, %10 : (i32, i32);
+        ^after(%fwd0: i32, %fwd1: i32):
+            %sum = arith.add %fwd1, %fwd0 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+            scf.yield %fwd0, %sum : (i32, i32);
         } : (i32, i32) -> (i32, i32);
-        %11 = arith.add %3, %4 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
-        builtin.ret %11 : (i32);
+        %sum2 = arith.add %res0, %res1 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+        builtin.ret %sum2 : (i32);
     };
 };

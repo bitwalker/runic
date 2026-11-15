@@ -159,6 +159,8 @@ way:
 ### What the IR may write
 
 - Every block ends with a terminator, unless the test is about that rule.
+- Values and blocks are named for what they are (`%sum`, `%cond`, `^after`), never by number
+  (`%3`, `^block1`): numbers in an input read like printer output, and are not kept anyway.
 - A symbol reference as an attribute value is written `#builtin.symbol<@name>`, `@name`, or, rooted,
   `::@m::@name`; each prints as `#builtin.symbol<..>`, which is what a check matches:
 

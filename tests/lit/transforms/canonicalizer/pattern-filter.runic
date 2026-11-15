@@ -66,7 +66,9 @@
 // An option given to a pass that takes none is rejected, naming the pass.
 // NOOPT: error: pass 'dce' takes no options
 //
-// An empty option list is accepted by a pass that takes none.
+// An empty option list is accepted by a pass that takes none. The real check of that RUN line is
+// its exit code: under `pipefail` the line fails if runic-opt does; the label only shows that the
+// input was printed.
 // EMPTYOPTS-LABEL: @unused_result(
 builtin.module private @pattern_filter {
     builtin.function public extern("C") @unused_result(%a: i32, %b: i32) -> i32 {

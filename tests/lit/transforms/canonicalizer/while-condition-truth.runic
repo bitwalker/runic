@@ -9,9 +9,10 @@
 // condition value to an after-block argument, the uses of that argument are replaced with the
 // constant `true`. The loop itself keeps its operands, block arguments and results.
 builtin.module private @while_condition_truth {
-    // The condition is forwarded once and the after-block argument is used by the select: the use
-    // becomes a `true` constant, and the select of `true` folds to its first arm.
-    // CHECK-LABEL: @forwarded_once(
+    // The condition is forwarded once and the after-block argument is used by a select: the use
+    // becomes a `true` constant, and the select of `true` folds to its first arm, so the constant
+    // is not left either.
+    // CHECK-LABEL: @forwarded_to_select(
     // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32)
     // CHECK-NEXT: [[TEN:%[0-9]+]] = arith.constant 10 : i32;
     // CHECK-NEXT: {{%[0-9]+}}, [[R:%[0-9]+]] = scf.while [[A]] before {
@@ -23,47 +24,79 @@ builtin.module private @while_condition_truth {
     // CHECK-NEXT: scf.yield [[TEN]] : (i32);
     // CHECK-NEXT: } : (i32) -> (i1, i32);
     // CHECK-NEXT: builtin.ret [[R]] : (i32);
-    builtin.function public extern("C") @forwarded_once(%0: i32, %1: i32) -> i32 {
-        %2 = arith.constant 10 : i32;
-        %3, %4 = scf.while %0 before {
-        ^block1(%5: i32):
-            %6 = arith.cmpi ult %5, %2;
-            scf.condition %6, %6, %5 : (i1, i1, i32);
+    builtin.function public extern("C") @forwarded_to_select(%a: i32, %b: i32) -> i32 {
+        %c10 = arith.constant 10 : i32;
+        %res0, %res1 = scf.while %a before {
+        ^before(%iter0: i32):
+            %cond = arith.cmpi ult %iter0, %c10;
+            scf.condition %cond, %cond, %iter0 : (i1, i1, i32);
         } after {
-        ^block2(%7: i1, %8: i32):
-            %9 = cf.select %7, %2, %8;
-            scf.yield %9 : (i32);
+        ^after(%fwd0: i1, %fwd1: i32):
+            %sel = cf.select %fwd0, %c10, %fwd1;
+            scf.yield %sel : (i32);
         } : (i32) -> (i1, i32);
-        builtin.ret %4 : (i32);
+        builtin.ret %res1 : (i32);
     };
 
-    // The condition is forwarded to after-block arguments 0 and 2, both used: both uses become
-    // `true`, and both selects fold to their first arm.
-    // CHECK-LABEL: @forwarded_twice(
-    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32)
+    // The condition is forwarded once, to an after-block argument that the yield feeds back to an
+    // `i1` iteration argument (a use that does not fold): the use becomes a `true` constant, created
+    // at the function's entry.
+    // CHECK-LABEL: @forwarded_once(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[INIT:%[0-9]+]]: i1)
     // CHECK-NEXT: [[TEN:%[0-9]+]] = arith.constant 10 : i32;
-    // CHECK-NEXT: {{%[0-9]+}}, [[R:%[0-9]+]], {{%[0-9]+}} = scf.while [[A]] before {
-    // CHECK-NEXT: ^{{block[0-9]+}}([[X:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[TRUE:%[0-9]+]] = arith.constant 1 : i1;
+    // CHECK-NEXT: [[R:%[0-9]+]], {{%[0-9]+}}, {{%[0-9]+}} = scf.while [[A]], [[INIT]] before {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[X:%[0-9]+]]: i32, [[F:%[0-9]+]]: i1):
     // CHECK-NEXT: [[CND:%[0-9]+]] = arith.cmpi ult [[X]], [[TEN]];
-    // CHECK-NEXT: scf.condition [[CND]], [[CND]], [[X]], [[CND]] : (i1, i1, i32, i1);
+    // CHECK-NEXT: scf.condition [[CND]], [[CND]], [[X]], [[F]] : (i1, i1, i32, i1);
     // CHECK-NEXT: } after {
-    // CHECK-NEXT: ^{{block[0-9]+}}({{%[0-9]+}}: i1, {{%[0-9]+}}: i32, {{%[0-9]+}}: i1):
-    // CHECK-NEXT: scf.yield [[TEN]] : (i32);
-    // CHECK-NEXT: } : (i32) -> (i1, i32, i1);
-    // CHECK-NEXT: builtin.ret [[R]] : (i32);
-    builtin.function public extern("C") @forwarded_twice(%0: i32, %1: i32) -> i32 {
-        %2 = arith.constant 10 : i32;
-        %3, %4, %5 = scf.while %0 before {
-        ^block1(%6: i32):
-            %7 = arith.cmpi ult %6, %2;
-            scf.condition %7, %7, %6, %7 : (i1, i1, i32, i1);
+    // CHECK-NEXT: ^{{block[0-9]+}}({{%[0-9]+}}: i1, [[P:%[0-9]+]]: i32, {{%[0-9]+}}: i1):
+    // CHECK-NEXT: [[N:%[0-9]+]] = arith.neg [[P]];
+    // CHECK-NEXT: scf.yield [[N]], [[TRUE]] : (i32, i1);
+    // CHECK-NEXT: } : (i32, i1) -> (i1, i32, i1);
+    // CHECK-NEXT: builtin.ret [[R]] : (i1);
+    builtin.function public extern("C") @forwarded_once(%a: i32, %init: i1) -> i1 {
+        %c10 = arith.constant 10 : i32;
+        %truth, %count, %flag = scf.while %a, %init before {
+        ^before(%iter: i32, %iter_flag: i1):
+            %cond = arith.cmpi ult %iter, %c10;
+            scf.condition %cond, %cond, %iter, %iter_flag : (i1, i1, i32, i1);
         } after {
-        ^block2(%8: i1, %9: i32, %10: i1):
-            %11 = cf.select %8, %2, %9;
-            %12 = cf.select %10, %11, %1;
-            scf.yield %12 : (i32);
-        } : (i32) -> (i1, i32, i1);
-        builtin.ret %4 : (i32);
+        ^after(%held: i1, %fwd: i32, %fwd_flag: i1):
+            %next = arith.neg %fwd;
+            scf.yield %next, %held : (i32, i1);
+        } : (i32, i1) -> (i1, i32, i1);
+        builtin.ret %truth : (i1);
+    };
+
+    // The condition is forwarded twice, to after-block arguments 0 and 2, and the yield feeds both
+    // back: both uses become one `true` constant, created once at the function's entry.
+    // CHECK-LABEL: @forwarded_twice(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[INIT:%[0-9]+]]: i1)
+    // CHECK-NEXT: [[TEN:%[0-9]+]] = arith.constant 10 : i32;
+    // CHECK-NEXT: [[TRUE:%[0-9]+]] = arith.constant 1 : i1;
+    // CHECK-NEXT: {{%[0-9]+}}, {{%[0-9]+}}, {{%[0-9]+}}, [[R:%[0-9]+]] = scf.while [[A]], [[INIT]], [[INIT]] before {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[X:%[0-9]+]]: i32, [[F:%[0-9]+]]: i1, {{%[0-9]+}}: i1):
+    // CHECK-NEXT: [[CND:%[0-9]+]] = arith.cmpi ult [[X]], [[TEN]];
+    // CHECK-NEXT: scf.condition [[CND]], [[CND]], [[X]], [[CND]], [[F]] : (i1, i1, i32, i1, i1);
+    // CHECK-NEXT: } after {
+    // CHECK-NEXT: ^{{block[0-9]+}}({{%[0-9]+}}: i1, [[P:%[0-9]+]]: i32, {{%[0-9]+}}: i1, {{%[0-9]+}}: i1):
+    // CHECK-NEXT: [[N:%[0-9]+]] = arith.neg [[P]];
+    // CHECK-NEXT: scf.yield [[N]], [[TRUE]], [[TRUE]] : (i32, i1, i1);
+    // CHECK-NEXT: } : (i32, i1, i1) -> (i1, i32, i1, i1);
+    // CHECK-NEXT: builtin.ret [[R]] : (i1);
+    builtin.function public extern("C") @forwarded_twice(%a: i32, %init: i1) -> i1 {
+        %c10 = arith.constant 10 : i32;
+        %truth, %count, %truth_again, %flag = scf.while %a, %init, %init before {
+        ^before(%iter: i32, %iter_flag: i1, %iter_flag2: i1):
+            %cond = arith.cmpi ult %iter, %c10;
+            scf.condition %cond, %cond, %iter, %cond, %iter_flag : (i1, i1, i32, i1, i1);
+        } after {
+        ^after(%held: i1, %fwd: i32, %held_again: i1, %fwd_flag: i1):
+            %next = arith.neg %fwd;
+            scf.yield %next, %held, %held_again : (i32, i1, i1);
+        } : (i32, i1, i1) -> (i1, i32, i1, i1);
+        builtin.ret %flag : (i1);
     };
 
     // Negative: the condition is forwarded, but the after-block argument has no uses, so nothing
@@ -81,18 +114,18 @@ builtin.module private @while_condition_truth {
     // CHECK-NEXT: scf.yield [[N]] : (i32);
     // CHECK-NEXT: } : (i32) -> (i1, i32);
     // CHECK-NEXT: builtin.ret [[R]] : (i32);
-    builtin.function public extern("C") @unused_forwarded_arg(%0: i32, %1: i32) -> i32 {
-        %2 = arith.constant 10 : i32;
-        %3, %4 = scf.while %0 before {
-        ^block1(%5: i32):
-            %6 = arith.cmpi ult %5, %2;
-            scf.condition %6, %6, %5 : (i1, i1, i32);
+    builtin.function public extern("C") @unused_forwarded_arg(%a: i32, %b: i32) -> i32 {
+        %c10 = arith.constant 10 : i32;
+        %res0, %res1 = scf.while %a before {
+        ^before(%iter0: i32):
+            %cond = arith.cmpi ult %iter0, %c10;
+            scf.condition %cond, %cond, %iter0 : (i1, i1, i32);
         } after {
-        ^block2(%7: i1, %8: i32):
-            %9 = arith.neg %8;
-            scf.yield %9 : (i32);
+        ^after(%fwd0: i1, %fwd1: i32):
+            %neg = arith.neg %fwd1;
+            scf.yield %neg : (i32);
         } : (i32) -> (i1, i32);
-        builtin.ret %4 : (i32);
+        builtin.ret %res1 : (i32);
     };
 
     // Negative: the condition is forwarded, but the after-block argument is only described by a
@@ -113,19 +146,19 @@ builtin.module private @while_condition_truth {
     // CHECK-NEXT: scf.yield [[N]] : (i32);
     // CHECK-NEXT: } : (i32) -> (i1, i32);
     // CHECK-NEXT: builtin.ret [[R]] : (i32);
-    builtin.function public extern("C") @debug_only_forwarded_arg(%0: i32, %1: i32) -> i32 {
-        %2 = arith.constant 10 : i32;
-        %3, %4 = scf.while %0 before {
-        ^block1(%5: i32):
-            %6 = arith.cmpi ult %5, %2;
-            scf.condition %6, %6, %5 : (i1, i1, i32);
+    builtin.function public extern("C") @debug_only_forwarded_arg(%a: i32, %b: i32) -> i32 {
+        %c10 = arith.constant 10 : i32;
+        %res0, %res1 = scf.while %a before {
+        ^before(%iter0: i32):
+            %cond = arith.cmpi ult %iter0, %c10;
+            scf.condition %cond, %cond, %iter0 : (i1, i1, i32);
         } after {
-        ^block2(%7: i1, %8: i32):
-            di.debug_value %7 <{ variable = #di.variable<{ name = "c", file = "test.rs", line = 3 }>, expression = #di.expression<[]> }> : (i1);
-            %9 = arith.neg %8;
-            scf.yield %9 : (i32);
+        ^after(%fwd0: i1, %fwd1: i32):
+            di.debug_value %fwd0 <{ variable = #di.variable<{ name = "c", file = "test.rs", line = 3 }>, expression = #di.expression<[]> }> : (i1);
+            %neg = arith.neg %fwd1;
+            scf.yield %neg : (i32);
         } : (i32) -> (i1, i32);
-        builtin.ret %4 : (i32);
+        builtin.ret %res1 : (i32);
     };
 
     // Negative: the forwarded i1 value is not the condition, so its after-block argument keeps
@@ -144,18 +177,18 @@ builtin.module private @while_condition_truth {
     // CHECK-NEXT: scf.yield [[S]] : (i32);
     // CHECK-NEXT: } : (i32) -> (i1, i32);
     // CHECK-NEXT: builtin.ret [[R]] : (i32);
-    builtin.function public extern("C") @other_value_forwarded(%0: i32, %1: i32) -> i32 {
-        %2 = arith.constant 10 : i32;
-        %3, %4 = scf.while %0 before {
-        ^block1(%5: i32):
-            %6 = arith.cmpi ult %5, %2;
-            %7 = arith.cmpi ult %5, %1;
-            scf.condition %6, %7, %5 : (i1, i1, i32);
+    builtin.function public extern("C") @other_value_forwarded(%a: i32, %b: i32) -> i32 {
+        %c10 = arith.constant 10 : i32;
+        %res0, %res1 = scf.while %a before {
+        ^before(%iter0: i32):
+            %cond = arith.cmpi ult %iter0, %c10;
+            %cond2 = arith.cmpi ult %iter0, %b;
+            scf.condition %cond, %cond2, %iter0 : (i1, i1, i32);
         } after {
-        ^block2(%8: i1, %9: i32):
-            %10 = cf.select %8, %2, %9;
-            scf.yield %10 : (i32);
+        ^after(%fwd0: i1, %fwd1: i32):
+            %sel = cf.select %fwd0, %c10, %fwd1;
+            scf.yield %sel : (i32);
         } : (i32) -> (i1, i32);
-        builtin.ret %4 : (i32);
+        builtin.ret %res1 : (i32);
     };
 };

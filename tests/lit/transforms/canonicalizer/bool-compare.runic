@@ -193,4 +193,39 @@ builtin.module private @bool_compare {
         %t = arith.cmpi eq %w5, %zero;
         builtin.ret %t : (i1);
     };
+
+    // The patterns look through `arith.sext` as through `arith.zext`: a boolean widened by both,
+    // four times, compared equal to 0, is still negated (a sign-extended true is all ones, which is
+    // nonzero).
+    // CHECK-LABEL: @sign_extended_four_times(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i1 {
+    // CHECK-NEXT: [[C:%[0-9]+]] = arith.cmpi ne [[A]], [[B]];
+    // CHECK-NEXT: builtin.ret [[C]] : (i1);
+    builtin.function public extern("C") @sign_extended_four_times(%a: i32, %b: i32) -> i1 {
+        %zero = arith.constant 0 : i64;
+        %c = arith.cmpi eq %a, %b;
+        %w1 = arith.sext %c <{ ty = #builtin.type<i8> }>;
+        %w2 = arith.zext %w1 <{ ty = #builtin.type<i16> }>;
+        %w3 = arith.sext %w2 <{ ty = #builtin.type<i32> }>;
+        %w4 = arith.sext %w3 <{ ty = #builtin.type<i64> }>;
+        %t = arith.cmpi eq %w4, %zero;
+        builtin.ret %t : (i1);
+    };
+
+    // `builtin.unrealized_conversion_cast` is not a transparent cast, so the patterns do not look
+    // through it: the comparison is left alone.
+    // CHECK-LABEL: @through_unrealized_cast(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i1 {
+    // CHECK-NEXT: [[ZERO:%[0-9]+]] = arith.constant 0 : i8;
+    // CHECK-NEXT: [[C:%[0-9]+]] = arith.cmpi eq [[A]], [[B]];
+    // CHECK-NEXT: [[CAST:%[0-9]+]] = builtin.unrealized_conversion_cast [[C]] : i1 to i8;
+    // CHECK-NEXT: [[X:%[0-9]+]] = arith.cmpi eq [[CAST]], [[ZERO]];
+    // CHECK-NEXT: builtin.ret [[X]] : (i1);
+    builtin.function public extern("C") @through_unrealized_cast(%a: i32, %b: i32) -> i1 {
+        %zero = arith.constant 0 : i8;
+        %c = arith.cmpi eq %a, %b;
+        %cast = builtin.unrealized_conversion_cast %c : i1 to i8;
+        %t = arith.cmpi eq %cast, %zero;
+        builtin.ret %t : (i1);
+    };
 };
