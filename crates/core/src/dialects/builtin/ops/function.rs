@@ -118,10 +118,9 @@ impl OpParser for Function {
                         return Err(ParserError::UnexpectedToken {
                             span: first_keyword.unwrap().span(),
                             token: invalid.to_string(),
-                            expected: Some(
-                                "a visibility, `public`, `private` or `internal`, or `extern`"
-                                    .into(),
-                            ),
+                            expected: "a visibility, `public`, `private` or `internal`, or \
+                                       `extern`"
+                                .into(),
                         });
                     }
                 };
@@ -142,7 +141,7 @@ impl OpParser for Function {
                 return Err(ParserError::UnexpectedToken {
                     span,
                     token: invalid.to_string(),
-                    expected: Some("`extern`".into()),
+                    expected: "`extern`".into(),
                 });
             }
         }

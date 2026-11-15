@@ -359,7 +359,7 @@ fn parse_type_source(context: &Rc<Context>, source_id: SourceId) -> Outcome<Type
         Some(token) => Err(ParserError::UnexpectedToken {
             span: token.span(),
             token: token.to_string(),
-            expected: Some("end of input".into()),
+            expected: "end of input".into(),
         }),
     });
     parse_outcome(scope, result.map_err(Report::from))

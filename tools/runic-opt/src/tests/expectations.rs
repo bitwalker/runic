@@ -136,23 +136,33 @@ fn a_verifier_error_is_matched_by_its_message_or_its_label() {
     }
 }
 
-/// The help of a diagnostic is searched too: two parser errors on one token differ only there.
+/// The label of a parser error names the token and what was expected; the help of a diagnostic
+/// is searched too.
 #[test]
-fn a_parse_error_is_matched_by_its_help() {
-    let text =
-        "builtin.function public extern(\"C\") @f(i0); // expected-error {{expected a type}}\n";
+fn a_parse_error_is_matched_by_its_label_or_its_help() {
+    let text = "builtin.function public extern(\"C\") @f(i0); // expected-error {{unexpected \
+                token 'i0', expected a type}}\n";
     let output = opt(&[CHECK], text);
     output.succeeded();
     assert_eq!(output.stderr, "");
-    // A help that says something else does not match.
-    let text = "builtin.function public extern(\"C\") @f(i0); // expected-error {{expected ;}}\n";
+    // A label that says something else does not match.
+    let text = "builtin.function public extern(\"C\") @f(i0); // expected-error {{unexpected \
+                token 'i0', expected ;}}\n";
     let output = opt(&[CHECK], text);
     output.failed();
     assert!(
-        output.stderr.contains("expected error \"expected ;\" was not produced"),
+        output
+            .stderr
+            .contains("expected error \"unexpected token 'i0', expected ;\" was not produced"),
         "{}",
         output.stderr
     );
+    // A location alias is an error whose help says what to write instead.
+    let text = "builtin.function public extern(\"C\") @f() {\n    builtin.ret loc(#here); // \
+                expected-error {{write the location itself}}\n};\n";
+    let output = opt(&[CHECK], text);
+    output.succeeded();
+    assert_eq!(output.stderr, "");
 }
 
 #[test]

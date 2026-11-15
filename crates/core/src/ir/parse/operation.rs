@@ -695,7 +695,7 @@ where
                 return Err(ParserError::UnexpectedToken {
                     span: name_span,
                     token: invalid.to_string(),
-                    expected: Some("an operation name".into()),
+                    expected: "an operation name".into(),
                 });
             }
         };
@@ -2455,7 +2455,7 @@ where
                 return Err(ParserError::UnexpectedToken {
                     span: span!(parser.source_id(), start, end),
                     token: token.to_string(),
-                    expected: Some("a type declaration, 'type !name = ..;', or '}'".into()),
+                    expected: "a type declaration, 'type !name = ..;', or '}'".into(),
                 });
             }
         }

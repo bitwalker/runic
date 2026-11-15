@@ -270,7 +270,7 @@ pub trait Parser<'input> {
                     Err(ParserError::UnexpectedToken {
                         span: span!(self.source_id(), start, end),
                         token: t.to_string(),
-                        expected: Some(expected.into()),
+                        expected: expected.into(),
                     })
                 }
                 None => Err(ParserError::UnexpectedEof {
@@ -566,7 +566,7 @@ pub trait Parser<'input> {
             return Err(ParserError::UnexpectedToken {
                 span,
                 token: next.to_string(),
-                expected: Some("a type".into()),
+                expected: "a type".into(),
             });
         };
 
@@ -1054,7 +1054,7 @@ pub trait ParserExt<'input>: Parser<'input> {
                 Err(ParserError::UnexpectedToken {
                     span: loc,
                     token: end_token.to_string(),
-                    expected: Some("at least one element".into()),
+                    expected: "at least one element".into(),
                 })
             }
         } else {
@@ -1272,11 +1272,9 @@ fn parse_attribute_value<'input, P: ?Sized + Parser<'input>>(
         other => Err(ParserError::UnexpectedToken {
             span,
             token: other.to_string(),
-            expected: Some(
-                "an attribute value: a string, an integer (with its type), `true` or `false`, a \
-                 type, a symbol reference, a list `[..]`, or `#dialect.name<..>`"
-                    .into(),
-            ),
+            expected: "an attribute value: a string, an integer (with its type), `true` or \
+                       `false`, a type, a symbol reference, a list `[..]`, or `#dialect.name<..>`"
+                .into(),
         }),
     }
 }

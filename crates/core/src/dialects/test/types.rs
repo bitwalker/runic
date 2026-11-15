@@ -49,7 +49,7 @@ impl TypeParser for TestVectorType {
                 Some(token) => ParserError::UnexpectedToken {
                     span: token.span(),
                     token: alloc::string::ToString::to_string(&token),
-                    expected: Some("'x'".into()),
+                    expected: "'x'".into(),
                 },
                 None => ParserError::UnexpectedEof {
                     expected: alloc::vec!["'x'".into()],

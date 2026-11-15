@@ -1865,10 +1865,9 @@ fn a_type_parses_from_text_on_its_own() {
     assert_eq!(outcome.into_result().unwrap(), context.ptr_type(context.i32()));
 
     for (text, expected) in [
-        ("i32 i32", "unexpected token"),
-        ("i32 i32", "help: expected end of input"),
+        ("i32 i32", "unexpected token 'i32', expected end of input"),
         ("ptr<i32", "unexpected token 'end of input'"),
-        ("%0", "help: expected a type"),
+        ("%0", "unexpected token '%0', expected a type"),
     ] {
         let err = parse::parse_type(&context, "bad.runic", text).into_result().expect_err(text);
         let message = format!("{}", err.display());
@@ -2085,8 +2084,7 @@ fn the_bracket_spelling_of_an_array_type_is_not_a_type() {
     let context = Rc::new(Context::default());
     for text in ["[i8; 16]", "ptr<[i8; 16]>"] {
         let message = type_error_text(&context, text);
-        assert!(message.contains("unexpected token '['"), "`{text}`: {message}");
-        assert!(message.contains("help: expected a type"), "`{text}`: {message}");
+        assert!(message.contains("unexpected token '[', expected a type"), "`{text}`: {message}");
     }
 }
 
@@ -2557,8 +2555,10 @@ fn an_over_wide_integer_type_spelling_is_an_identifier() {
 
     let context = Rc::new(Context::default());
     let message = type_error_text(&context, "i99999999999");
-    assert!(message.contains("unexpected token 'i99999999999'"), "{message}");
-    assert!(message.contains("help: expected a type"), "{message}");
+    assert!(
+        message.contains("unexpected token 'i99999999999', expected a type"),
+        "{message}"
+    );
 
     let id = context.add_source("key.runic", "i99999999999").unwrap();
     let sources = context.sources();
@@ -3887,20 +3887,17 @@ fn list_attributes_round_trip_through_text() -> TestResult {
 
     for (text, expected) in [
         ("[", r#"token: "end of input""#),
-        ("[#builtin.i32<1>", r#"token: "end of input", expected: Some(Expected("]"))"#),
+        ("[#builtin.i32<1>", r#"token: "end of input", expected: Expected("]")"#),
         ("[#builtin.i32<1>,]", r#"token: "]""#),
         (
             "[#builtin.i32<1> #builtin.i32<2>]",
-            r##"token: "#builtin.i32", expected: Some(Expected("]"))"##,
+            r##"token: "#builtin.i32", expected: Expected("]")"##,
         ),
         // A bare integer has no type to be read with.
         ("[1]", "an integer literal has no type here"),
         ("[,]", r#"token: ",""#),
-        // The help says what an attribute value may be, in words.
-        (
-            "[unit]",
-            r#"token: "unit", expected: Some(Expected("an attribute value: a string"#,
-        ),
+        // The label says what an attribute value may be, in words.
+        ("[unit]", r#"token: "unit", expected: Expected("an attribute value: a string"#),
     ] {
         let Err(err) = parse_attribute_text(&context, text, unknown) else {
             panic!("{text} should not parse");

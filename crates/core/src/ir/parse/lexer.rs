@@ -406,7 +406,7 @@ impl<'input> Lexer<'input> {
                 return Err(ParserError::UnexpectedToken {
                     span: self.span(),
                     token: c.to_string(),
-                    expected: Some("an identifier".into()),
+                    expected: "an identifier".into(),
                 });
             }
             let Token::BareIdent(s) = self.lex_identifier()? else {
@@ -445,7 +445,7 @@ impl<'input> Lexer<'input> {
             return Err(ParserError::UnexpectedToken {
                 span: self.span(),
                 token: c.to_string(),
-                expected: Some("an identifier".into()),
+                expected: "an identifier".into(),
             });
         }
 
@@ -804,7 +804,7 @@ impl<'input> TokenStream<'input> {
             Some(spanned) => Err(ParserError::UnexpectedToken {
                 token: spanned.to_string(),
                 span: span!(spanned.span().source().id(), spanned.span().range().start()),
-                expected: Some(expected.to_string().into()),
+                expected: expected.to_string().into(),
             }),
             None => Err(ParserError::UnexpectedEof {
                 expected: vec![expected.to_string()],
@@ -828,7 +828,7 @@ impl<'input> TokenStream<'input> {
                     Err(ParserError::UnexpectedToken {
                         span: spanned.span(),
                         token: spanned.to_string(),
-                        expected: Some(expected.to_string().into()),
+                        expected: expected.to_string().into(),
                     })
                 }
             }
@@ -854,7 +854,7 @@ impl<'input> TokenStream<'input> {
                     None => Err(ParserError::UnexpectedToken {
                         span,
                         token: tok.to_string(),
-                        expected: Some(expected.to_string().into()),
+                        expected: expected.to_string().into(),
                     }),
                 }
             }

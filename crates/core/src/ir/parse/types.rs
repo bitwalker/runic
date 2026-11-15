@@ -163,7 +163,7 @@ fn parse_type<'input, P: Parser<'input>>(parser: &mut P) -> ParseResult<Type> {
         Some(token) => Err(ParserError::UnexpectedToken {
             span: token.span(),
             token: token.to_string(),
-            expected: Some("a type".into()),
+            expected: "a type".into(),
         }),
         None => Err(ParserError::UnexpectedEof {
             expected: alloc::vec!["type".into()],
@@ -413,7 +413,7 @@ fn parse_name<'input, P: Parser<'input>>(parser: &mut P, expected: &str) -> Pars
         token => keyword.ok_or_else(|| ParserError::UnexpectedToken {
             span,
             token: token.to_string(),
-            expected: Some(expected.into()),
+            expected: expected.into(),
         }),
     }
 }

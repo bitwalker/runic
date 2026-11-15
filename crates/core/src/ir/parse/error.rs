@@ -16,16 +16,15 @@ pub enum ParserError {
     UnexpectedEof { expected: Vec<String> },
     #[error("invalid syntax")]
     UnexpectedToken {
-        #[label(primary, "unexpected token '{token}'")]
+        #[label(primary, "unexpected token '{token}', {expected}")]
         span: SourceSpan,
         token: String,
-        /// What was expected instead, shown as the help `expected ..`
-        #[help]
-        expected: Option<Expected>,
+        /// What was expected instead, shown in the label after the token (`expected ..`)
+        expected: Expected,
     },
     #[error("expected the end of the input after the top-level operation")]
     TrailingInput {
-        #[label(primary, "unexpected token '{token}'")]
+        #[label(primary, "unexpected token '{token}', expected the end of the input")]
         span: SourceSpan,
         token: String,
     },
