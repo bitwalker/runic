@@ -10,13 +10,46 @@
 // block label with no arguments (which a then region prints without), and a dictionary of
 // `scf.index_switch` without spaces.
 //
-// Three checks pin what the printer does today and is known to be wrong (each is on the ledger,
-// and its check changes when it is fixed): the after region of an `scf.while` prints the label of
-// its entry block even when it has no arguments (the input writes it so), `scf.index_switch`
-// writes its attribute dictionary without the `attributes` keyword, and it prints a space after
-// its selector (which the checks do not match).
+// Some checks pin three things the printer does today that are known to be wrong; each is on the
+// ledger, each such check says so, and the checks change when it is fixed: the after region of an
+// `scf.while` prints the label of its entry block even when it has no arguments (the input writes
+// it so), `scf.index_switch` writes its attribute dictionary without the `attributes` keyword,
+// and it prints a space after its selector (which the checks do not match).
 // CHECK: builtin.module public @scf {
 builtin.module public @scf {
+    // An exit with no values and an attribute dictionary.
+    // CHECK-LABEL: builtin.function public extern("C") @exit_dictionaries(
+    // CHECK-SAME: [[C:%[0-9]+]]: i1) {
+    // CHECK-NEXT: scf.while before {
+    // CHECK-NEXT: scf.condition [[C]] : (i1);
+    // CHECK-NEXT: } after {
+    // Known defect (ledger): the after region prints its entry block's label though the block has
+    // no arguments; this check changes when it is fixed.
+    // CHECK-NEXT: ^{{block[0-9]+}}:
+    // CHECK-NEXT: scf.if [[C]] then {
+    // CHECK-NEXT: scf.break 1 attributes { note = #builtin.i32<6> } : ();
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: scf.continue 1 attributes { note = #builtin.i32<7> } : ();
+    // CHECK-NEXT: } : (i1) -> ();
+    // CHECK-NEXT: scf.yield : ();
+    // CHECK-NEXT: } : () -> ();
+    // CHECK-NEXT: builtin.ret;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @exit_dictionaries(%c: i1) {
+        scf.while before {
+            scf.condition %c : (i1);
+        } after {
+        ^body:
+            scf.if %c then {
+                scf.break 1 attributes { note = #builtin.i32<6> } : ();
+            } else {
+                scf.continue 1 attributes { note = #builtin.i32<7> } : ();
+            } : (i1) -> ();
+            scf.yield : ();
+        } : () -> ();
+        builtin.ret;
+    };
+
     // `scf.while` whose after region continues or breaks out of an `scf.if`, and an
     // `scf.index_switch` with a case and a default, each yielding a value.
     // CHECK-LABEL: builtin.function public extern("C") @loops(

@@ -9,6 +9,30 @@
 // here are where it breaks it).
 // CHECK: builtin.module public @cf {
 builtin.module public @cf {
+    // An attribute dictionary on each operation whose custom form has one: `cf.select` after its
+    // operands, the branches after their successors and before their types.
+    // CHECK-LABEL: builtin.function public extern("C") @dictionaries(
+    // CHECK-SAME: [[C:%[0-9]+]]: i1, [[S:%[0-9]+]]: i32, [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[SEL:%[0-9]+]] = cf.select [[C]], [[A]], [[B]] attributes { note = #builtin.i32<1> };
+    // CHECK-NEXT: cf.cond_br [[C]] ^[[B_LEFT:block[0-9]+]]([[SEL]] : i32), ^[[B_RIGHT:block[0-9]+]] attributes { note = #builtin.i32<2> } : (i1);
+    // CHECK-NEXT: ^[[B_LEFT]]([[L:%[0-9]+]]: i32):
+    // CHECK-NEXT: cf.switch [[S]] [#builtin.i32<1> -> ^[[B_JOIN:block[0-9]+]]([[L]] : i32)], ^[[B_RIGHT]] attributes { note = #builtin.i32<3> } : (i32);
+    // CHECK-NEXT: ^[[B_RIGHT]]:
+    // CHECK-NEXT: cf.br ^[[B_JOIN]]([[A]] : i32) attributes { note = #builtin.i32<4> };
+    // CHECK-NEXT: ^[[B_JOIN]]([[J:%[0-9]+]]: i32):
+    // CHECK-NEXT: builtin.ret [[J]] : (i32);
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @dictionaries(%c: i1, %s: i32, %a: i32, %b: i32) -> i32 {
+        %sel = cf.select %c, %a, %b attributes { note = #builtin.i32<1> };
+        cf.cond_br %c ^left(%sel : i32), ^right attributes { note = #builtin.i32<2> } : (i1);
+    ^left(%l: i32):
+        cf.switch %s [#builtin.i32<1> -> ^join(%l : i32)], ^right attributes { note = #builtin.i32<3> } : (i32);
+    ^right:
+        cf.br ^join(%a : i32) attributes { note = #builtin.i32<4> };
+    ^join(%j: i32):
+        builtin.ret %j : (i32);
+    };
+
     // `cf.assert` with a message that holds escapes, and with an attribute dictionary;
     // `cf.select`; `cf.cond_br` to a block with arguments and one without; `cf.br` with one
     // argument and with none.

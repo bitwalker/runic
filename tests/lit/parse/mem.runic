@@ -10,6 +10,24 @@
 // printed.
 // CHECK: builtin.module public @mem {
 builtin.module public @mem {
+    // An attribute dictionary on the bulk operations that have none elsewhere in this file, and on
+    // the measures of a type.
+    // CHECK-LABEL: builtin.function public extern("C") @dictionaries(
+    // CHECK-SAME: [[D:%[0-9]+]]: ptr<i8>, [[S:%[0-9]+]]: ptr<i8>, [[N:%[0-9]+]]: isize, [[B:%[0-9]+]]: i8) -> isize {
+    // CHECK-NEXT: mem.memmove [[D]], [[S]], [[N]] attributes { note = #builtin.i32<10> };
+    // CHECK-NEXT: mem.memset [[D]], [[B]], [[N]] attributes { note = #builtin.i32<11> };
+    // CHECK-NEXT: [[ALIGN:%[0-9]+]] = mem.alignof i64 attributes { note = #builtin.i32<12> };
+    // CHECK-NEXT: [[OFFSET:%[0-9]+]] = mem.offsetof struct<i32, i8>, [1] attributes { note = #builtin.i32<13> };
+    // CHECK-NEXT: builtin.ret [[OFFSET]] : (isize);
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @dictionaries(%d: ptr<i8>, %s: ptr<i8>, %n: isize, %b: i8) -> isize {
+        mem.memmove %d, %s, %n attributes { note = #builtin.i32<10> };
+        mem.memset %d, %b, %n attributes { note = #builtin.i32<11> };
+        %align = mem.alignof i64 attributes { note = #builtin.i32<12> };
+        %offset = mem.offsetof struct<i32, i8>, [1] attributes { note = #builtin.i32<13> };
+        builtin.ret %offset : (isize);
+    };
+
     // Allocation, loads and stores: natural and stated alignment, a typed and an opaque pointer.
     // CHECK-LABEL: builtin.function public extern("C") @access(
     // CHECK-SAME: [[P:%[0-9]+]]: ptr<i32>, [[O:%[0-9]+]]: ptr) -> i32 {

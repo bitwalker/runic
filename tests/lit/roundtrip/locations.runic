@@ -1,11 +1,13 @@
 // RUN: runic-opt %s --print-locations | filecheck %s
 // RUN: runic-opt %s --print-locations --verify-roundtrip | filecheck %s
 // RUN: runic-opt %s --print-locations --print-generic | filecheck %s --check-prefix=GENERIC
+// RUN: runic-opt %s --print-locations --print-generic | runic-opt - --print-locations --print-generic | filecheck %s --check-prefix=GENERIC
 
 // Locations in both forms: each operation and each block argument (a function's parameters, the
 // arguments of a later block and of the blocks of nested regions) is printed with the range of
 // text it was read from, in the custom and the generic form; the second RUN line reads both forms
-// back with their locations. The input is read from `%s`, so the locations name this file (a
+// back with their locations, and the last reads the generic output back, whose locations name
+// this file, and prints the same. The input is read from `%s`, so the locations name this file (a
 // location that names standard input could not be resolved by a second run). The range of an
 // operation starts at its name, after its results. The path is matched with `{{[^"]*}}`: a line
 // holds several locations, and `{{.*}}` would run to the last.

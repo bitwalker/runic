@@ -27,6 +27,37 @@ builtin.world {
     // CHECK-LABEL: builtin.module public @m
     // CHECK-SAME:  attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
     builtin.module public @m attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+        // An attribute dictionary on each operation whose custom form has one and that has none
+        // elsewhere in this file, in a global's initializer and in a function; a call with no
+        // arguments and several results.
+        // CHECK-LABEL: builtin.global_variable public @noted_data
+        // CHECK-SAME:  : array<i8; 2> {
+        // CHECK-NEXT: [[BYTES:%[0-9]+]] = builtin.bytes "0201" : array<i8; 2> attributes { note = #builtin.i32<10> };
+        // CHECK-NEXT: };
+        builtin.global_variable public @noted_data : array<i8; 2> {
+            %bytes = builtin.bytes "0201" : array<i8; 2> attributes { note = #builtin.i32<10> };
+        };
+        // CHECK-LABEL: builtin.function public extern("C") @pair(
+        // CHECK-SAME: ) -> (i32, i64);
+        builtin.function public extern("C") @pair() -> (i32, i64);
+        // CHECK-LABEL: builtin.function public extern("C") @dictionaries(
+        // CHECK-SAME: [[A:%[0-9]+]]: i32) -> i32 {
+        // CHECK-NEXT: [[FN:%[0-9]+]] = builtin.function_ref @dictionaries : (i32) -> i32 attributes { note = #builtin.i32<11> };
+        // CHECK-NEXT: [[IND:%[0-9]+]] = builtin.call_indirect [[FN]]([[A]]) : extern("C") (i32) -> i32 attributes { note = #builtin.i32<12> };
+        // CHECK-NEXT: [[ADDR:%[0-9]+]] = builtin.global_symbol @noted_data : ptr<array<i8; 2>> attributes { note = #builtin.i32<13> };
+        // CHECK-NEXT: [[CAST:%[0-9]+]] = builtin.unrealized_conversion_cast [[IND]] : i32 to i32 attributes { note = #builtin.i32<14> };
+        // CHECK-NEXT: [[PAIR_0:%[0-9]+]], [[PAIR_1:%[0-9]+]] = builtin.call @pair() : extern("C") () -> (i32, i64);
+        // CHECK-NEXT: builtin.ret [[CAST]] : (i32);
+        // CHECK-NEXT: };
+        builtin.function public extern("C") @dictionaries(%a: i32) -> i32 {
+            %fn = builtin.function_ref @dictionaries : (i32) -> i32 attributes { note = #builtin.i32<11> };
+            %ind = builtin.call_indirect %fn(%a) : extern("C") (i32) -> i32 attributes { note = #builtin.i32<12> };
+            %addr = builtin.global_symbol @noted_data : ptr<array<i8; 2>> attributes { note = #builtin.i32<13> };
+            %cast = builtin.unrealized_conversion_cast %ind : i32 to i32 attributes { note = #builtin.i32<14> };
+            %pair:2 = builtin.call @pair() : extern("C") () -> (i32, i64);
+            builtin.ret %cast : (i32);
+        };
+
         // A global variable with an initializer, which holds no terminator.
         // CHECK-LABEL: builtin.global_variable public @data
         // CHECK-SAME:  : array<i8; 2> {

@@ -8,6 +8,24 @@
 // a bare type as a type attribute, a hexadecimal or binary literal, a result pack.
 // CHECK: builtin.module public @arith {
 builtin.module public @arith {
+    // An attribute dictionary on a derived form of each shape that has none elsewhere in this
+    // file: one operand, two results with a property, two results without, a cast with its type.
+    // CHECK-LABEL: builtin.function public extern("C") @dictionaries(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[NEG:%[0-9]+]] = arith.neg [[A]] attributes { note = #builtin.i32<10> };
+    // CHECK-NEXT: [[O:%[0-9]+]], [[R:%[0-9]+]] = arith.add_overflowing [[A]], [[B]] <{ signedness = #builtin.signedness<signed> }> attributes { note = #builtin.i32<11> };
+    // CHECK-NEXT: [[Q:%[0-9]+]], [[M:%[0-9]+]] = arith.udivrem [[A]], [[B]] attributes { note = #builtin.i32<12> };
+    // CHECK-NEXT: [[WIDE:%[0-9]+]] = arith.zext [[A]] <{ ty = #builtin.type<i64> }> attributes { note = #builtin.i32<13> };
+    // CHECK-NEXT: builtin.ret [[NEG]] : (i32);
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @dictionaries(%a: i32, %b: i32) -> i32 {
+        %neg = arith.neg %a attributes { note = #builtin.i32<10> };
+        %o, %r = arith.add_overflowing %a, %b <{ signedness = #builtin.signedness<signed> }> attributes { note = #builtin.i32<11> };
+        %q, %m = arith.udivrem %a, %b attributes { note = #builtin.i32<12> };
+        %wide = arith.zext %a <{ ty = i64 }> attributes { note = #builtin.i32<13> };
+        builtin.ret %neg : (i32);
+    };
+
     // `arith.constant`: decimal, negative, hexadecimal and binary literals, printed as signed
     // decimals of the type; `i1`, `isize`, `i128`; and an attribute dictionary after the type.
     // CHECK-LABEL: builtin.function public extern("C") @constants(

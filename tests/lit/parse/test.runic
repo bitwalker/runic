@@ -9,6 +9,41 @@
 // `#builtin.bool<true>`, a hexadecimal constant.
 // CHECK: builtin.module public @test {
 builtin.module public @test {
+    // An attribute dictionary on each derived form that has none elsewhere in this file.
+    // CHECK-LABEL: builtin.function public extern("C") @dictionaries(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[W:%[0-9]+]]: i128, [[P:%[0-9]+]]: ptr<i32>, [[S:%[0-9]+]]: i8) -> i32 locals(i32) {
+    // CHECK-NEXT: [[SUM:%[0-9]+]] = test.add [[A]], [[A]] attributes { note = #builtin.i32<10> };
+    // CHECK-NEXT: [[EQ:%[0-9]+]] = test.eq [[A]], [[A]] attributes { note = #builtin.i32<11> };
+    // CHECK-NEXT: [[NE:%[0-9]+]] = test.neq [[A]], [[A]] attributes { note = #builtin.i32<12> };
+    // CHECK-NEXT: [[PRODUCT:%[0-9]+]] = test.mul [[A]], [[A]] attributes { note = #builtin.i32<13> };
+    // CHECK-NEXT: [[EFFECTS:%[0-9]+]] = test.effects <{ known = #builtin.bool<true> }> attributes { note = #builtin.i32<14> };
+    // CHECK-NEXT: [[LOW:%[0-9]+]] = test.low [[W]] attributes { note = #builtin.i32<15> };
+    // CHECK-NEXT: [[HIGH:%[0-9]+]] = test.high [[W]] attributes { note = #builtin.i32<16> };
+    // CHECK-NEXT: [[JOINED:%[0-9]+]] = test.join [[LOW]], [[HIGH]] attributes { note = #builtin.i32<17> };
+    // CHECK-NEXT: test.sink [[JOINED]] attributes { note = #builtin.i32<18> } : (i128);
+    // CHECK-NEXT: test.store [[P]], [[A]] attributes { note = #builtin.i32<19> } : (ptr<i32>, i32);
+    // CHECK-NEXT: [[LOADED:%[0-9]+]] = test.load [[P]] attributes { note = #builtin.i32<20> };
+    // CHECK-NEXT: test.touch_local <{ local = #builtin.local_variable<0, i32> }> attributes { note = #builtin.i32<21> };
+    // CHECK-NEXT: [[CHECKED:%[0-9]+]] = test.check_range [[S]] <{ umin = #builtin.int<1 : i8>, umax = #builtin.int<-56 : i8> }> attributes { note = #builtin.i32<22> };
+    // CHECK-NEXT: test.ret [[SUM]] attributes { note = #builtin.i32<23> } : (i32);
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @dictionaries(%a: i32, %w: i128, %p: ptr<i32>, %s: i8) -> i32 locals(i32) {
+        %sum = test.add %a, %a <{ overflow = #builtin.overflow<wrapping> }> attributes { note = #builtin.i32<10> };
+        %eq = test.eq %a, %a attributes { note = #builtin.i32<11> };
+        %ne = test.neq %a, %a attributes { note = #builtin.i32<12> };
+        %product = test.mul %a, %a attributes { note = #builtin.i32<13> };
+        %effects = test.effects <{ known = true }> attributes { note = #builtin.i32<14> };
+        %low = test.low %w attributes { note = #builtin.i32<15> };
+        %high = test.high %w attributes { note = #builtin.i32<16> };
+        %joined = test.join %low, %high attributes { note = #builtin.i32<17> };
+        test.sink %joined attributes { note = #builtin.i32<18> } : (i128);
+        test.store %p, %a attributes { note = #builtin.i32<19> } : (ptr<i32>, i32);
+        %loaded = test.load %p attributes { note = #builtin.i32<20> };
+        test.touch_local <{ local = #builtin.local_variable<0, i32> }> attributes { note = #builtin.i32<21> };
+        %checked = test.check_range %s <{ umin = #builtin.int<1 : i8>, umax = #builtin.int<-56 : i8> }> attributes { note = #builtin.i32<22> };
+        test.ret %sum attributes { note = #builtin.i32<23> } : (i32);
+    };
+
     // CHECK-LABEL: builtin.function public extern("C") @callee(
     // CHECK-SAME: i32) -> i32;
     builtin.function public extern("C") @callee(i32) -> i32;
