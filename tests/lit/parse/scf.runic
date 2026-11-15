@@ -5,12 +5,16 @@
 // Every operation of `scf`, read and printed in its custom form; the last RUN line reads the
 // generic form of each back. Each operation with results and without, and with an attribute
 // dictionary: before the types for `scf.break` and `scf.continue`, before the types of the
-// results for `scf.index_switch` (written there without the `attributes` keyword), before the
-// signature for the derived forms. Where the parser takes more than the printer writes, the input
-// uses the other spelling: block names, an entry block label with no arguments (which a then
-// region prints without), and a dictionary of `scf.index_switch` without spaces. The after
-// region of an `scf.while` prints the label of its entry block even when it has no arguments
-// (the input writes it so), and `scf.index_switch` prints a space after its selector.
+// results for `scf.index_switch`, before the signature for the derived forms. Where the parser
+// takes more than the printer writes, the input uses the other spelling: block names, an entry
+// block label with no arguments (which a then region prints without), and a dictionary of
+// `scf.index_switch` without spaces.
+//
+// Three checks pin what the printer does today and is known to be wrong (each is on the ledger,
+// and its check changes when it is fixed): the after region of an `scf.while` prints the label of
+// its entry block even when it has no arguments (the input writes it so), `scf.index_switch`
+// writes its attribute dictionary without the `attributes` keyword, and it prints a space after
+// its selector (which the checks do not match).
 // CHECK: builtin.module public @scf {
 builtin.module public @scf {
     // `scf.while` whose after region continues or breaks out of an `scf.if`, and an
@@ -83,10 +87,14 @@ builtin.module public @scf {
     // CHECK-NEXT: scf.index_switch [[S]]
     // CHECK-NEXT: default {
     // CHECK-NEXT: scf.yield : ();
+    // Known defect (ledger): the dictionary is written without the `attributes` keyword; this
+    // check changes when it is fixed.
     // CHECK-NEXT: } { note = #builtin.i32<3> } : ();
     // CHECK-NEXT: scf.while before {
     // CHECK-NEXT: scf.condition [[C]] attributes { note = #builtin.i32<4> } : (i1);
     // CHECK-NEXT: } after {
+    // Known defect (ledger): the after region prints its entry block's label though the block has
+    // no arguments; this check changes when it is fixed.
     // CHECK-NEXT: ^[[B_BODY:block[0-9]+]]:
     // CHECK-NEXT: scf.yield : ();
     // CHECK-NEXT: } attributes { note = #builtin.i32<5> } : () -> ();
@@ -124,6 +132,8 @@ builtin.module public @scf {
     // CHECK-NEXT: scf.while before {
     // CHECK-NEXT: scf.condition [[C]] : (i1);
     // CHECK-NEXT: } after {
+    // Known defect (ledger): the after region prints its entry block's label though the block has
+    // no arguments; this check changes when it is fixed.
     // CHECK-NEXT: ^[[B_INNER:block[0-9]+]]:
     // CHECK-NEXT: scf.if [[C]] then {
     // CHECK-NEXT: scf.break 2 [[J]] attributes { note = #builtin.i32<1> } : (i32);
@@ -135,6 +145,8 @@ builtin.module public @scf {
     // CHECK-NEXT: scf.while before {
     // CHECK-NEXT: scf.condition [[C]] : (i1);
     // CHECK-NEXT: } after {
+    // Known defect (ledger): the after region prints its entry block's label though the block has
+    // no arguments; this check changes when it is fixed.
     // CHECK-NEXT: ^[[B_INNER2:block[0-9]+]]:
     // CHECK-NEXT: scf.if [[C]] then {
     // CHECK-NEXT: scf.break 1 : ();
