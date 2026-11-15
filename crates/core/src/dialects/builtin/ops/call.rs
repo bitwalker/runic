@@ -1020,6 +1020,39 @@ mod tests {
         (test, callee, args)
     }
 
+    /// A function reference retargeted through its derived setter is relinked: the old callee
+    /// has no use left, the new one has one, and erasing the reference leaves neither with a use.
+    #[test]
+    fn a_function_ref_retargeted_by_its_setter_is_relinked() {
+        let (mut test, callee, _) = indirect_caller();
+        let i32 = test.context().i32();
+        let other = test.define_function("other", &[i32, i32], &[i32]);
+        let mut reference = {
+            let mut builder = test.function_builder();
+            let reference = builder.function_ref(callee, SourceSpan::UNKNOWN).unwrap();
+            builder.ret_imm(crate::Int::from(0i32), SourceSpan::UNKNOWN).unwrap();
+            reference
+        };
+        assert_eq!(callee.borrow().iter_uses().count(), 1);
+
+        reference.borrow_mut().set_callee(other).unwrap();
+        verify(&test).unwrap();
+        assert_eq!(callee.borrow().iter_uses().count(), 0);
+        assert_eq!(other.borrow().iter_uses().count(), 1);
+        assert!(
+            reference
+                .borrow()
+                .callee()
+                .resolve()
+                .map(|symbol| symbol.borrow().as_operation_ref())
+                == Some(other.as_operation_ref())
+        );
+
+        reference.borrow_mut().as_operation_mut().erase();
+        assert_eq!(callee.borrow().iter_uses().count(), 0);
+        assert_eq!(other.borrow().iter_uses().count(), 0);
+    }
+
     #[test]
     fn the_function_ref_builder_types_the_reference_from_its_callee() {
         let (mut test, callee, [_, a, b]) = indirect_caller();

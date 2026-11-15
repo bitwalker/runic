@@ -247,7 +247,7 @@ impl AttrInfo {
     }
 }
 
-type AllocDefaultFn = fn(Rc<Context>) -> OperationRef;
+type AllocDefaultFn = unsafe fn(Rc<Context>) -> OperationRef;
 
 pub type ParseAssemblyFn =
     fn(&mut OperationState, &mut dyn parse::OpAsmParser<'_>) -> parse::ParseResult;
@@ -317,10 +317,15 @@ impl OperationName {
         &self.0.type_id
     }
 
-    /// Allocates a new default-initialized instance of this operation
+    /// Allocates a new instance of this operation, whose properties hold no attribute yet.
+    ///
+    /// # Safety
+    ///
+    /// As for [OpRegistration::alloc_uninit]: every property is given its first value through the
+    /// builders' initialisation path before the operation is used.
     #[inline]
-    pub fn alloc_default(&self, context: Rc<Context>) -> OperationRef {
-        (self.0.alloc_default)(context)
+    pub(crate) unsafe fn alloc_default(&self, context: Rc<Context>) -> OperationRef {
+        unsafe { (self.0.alloc_default)(context) }
     }
 
     /// Returns the custom assembly parser function for this operation, if it has one.

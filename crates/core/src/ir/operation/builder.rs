@@ -467,7 +467,8 @@ mod tests {
         for (operands, message) in
             [(vec![], "invalid operand count"), (vec![integer], "invalid operand")]
         {
-            let mut op = name.alloc_default(context.clone());
+            // SAFETY: `CheckedBranch` has no property
+            let mut op = unsafe { name.alloc_default(context.clone()) };
             let mut op_builder = GenericOperationBuilder::new(&mut builder, op);
             op_builder.with_operands(operands);
             op_builder.with_successor(target, [boolean]);
@@ -507,7 +508,8 @@ mod tests {
         let value = test.entry_block().borrow().get_argument(0) as ValueRef;
         let target = context.create_block_with_params([i32]);
         let name = context.get_registered_name::<Shl>();
-        let op = name.alloc_default(context.clone());
+        // SAFETY: `Shl` has no property
+        let op = unsafe { name.alloc_default(context.clone()) };
         let unknown = context.unknown_type();
         let mut builder = context.builder();
         let mut op_builder = GenericOperationBuilder::new(&mut builder, op);

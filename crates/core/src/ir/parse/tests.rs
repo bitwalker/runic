@@ -87,7 +87,8 @@ fn declared_operand_cardinality_is_checked_before_building_and_verifying() -> Te
         (&[1, 0, 1, 1][..], false),
     ] {
         let mut builder = context.clone().builder();
-        let op = name.alloc_default(context.clone());
+        // SAFETY: `GroupedOperands` has no property
+        let op = unsafe { name.alloc_default(context.clone()) };
         let mut op_builder = GenericOperationBuilder::new(&mut builder, op);
         for (group, count) in sizes.iter().copied().enumerate() {
             op_builder.with_operands_in_group(group, core::iter::repeat_n(value, count));
@@ -97,7 +98,8 @@ fn declared_operand_cardinality_is_checked_before_building_and_verifying() -> Te
 
     // Verification must catch corruption after construction, even for ops without trait verifiers.
     let mut builder = context.clone().builder();
-    let op = name.alloc_default(context.clone());
+    // SAFETY: `GroupedOperands` has no property
+    let op = unsafe { name.alloc_default(context.clone()) };
     let mut op_builder = GenericOperationBuilder::new(&mut builder, op);
     op_builder.with_operands_in_group(0, [value]);
     op_builder.with_operands_in_group(1, []);
@@ -128,14 +130,16 @@ fn variadic_operand_types_are_checked_when_building_and_verifying() -> TestResul
     let name = context.get_registered_name::<GroupedOperands>();
 
     let mut builder = context.clone().builder();
-    let op = name.alloc_default(context.clone());
+    // SAFETY: `GroupedOperands` has no property
+    let op = unsafe { name.alloc_default(context.clone()) };
     let mut op_builder = GenericOperationBuilder::new(&mut builder, op);
     op_builder.with_operands_in_group(0, [boolean]);
     op_builder.with_operands_in_group(1, [integer]);
     op_builder.with_operands_in_group(2, [boolean]);
     assert!(op_builder.build().is_err(), "i32 must not satisfy the variadic Bool constraint");
 
-    let op = name.alloc_default(context.clone());
+    // SAFETY: `GroupedOperands` has no property
+    let op = unsafe { name.alloc_default(context.clone()) };
     let mut op_builder = GenericOperationBuilder::new(&mut builder, op);
     op_builder.with_operands_in_group(0, [boolean]);
     op_builder.with_operands_in_group(1, []);

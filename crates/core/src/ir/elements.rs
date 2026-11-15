@@ -1431,6 +1431,54 @@ mod nested_reference_tests {
         assert_eq!(uses(g), 0);
     }
 
+    /// A derived `set_<attr>` replaces a property as [Operation::set_property] does: a reference
+    /// the old value held, at any depth (a parameter attribute, a list in a list there), that the
+    /// operation no longer holds is unlinked; one the new value holds again stays linked; and
+    /// erasing the operation leaves no use.
+    #[test]
+    fn a_derived_setter_unlinks_the_references_it_replaces() {
+        use crate::ReadyAttr;
+
+        let mut test = Test::named("elements").in_module("m");
+        let g = test.define_function("g", &[], &[]);
+        let h = test.define_function("h", &[], &[]);
+        let cx = test.context_rc();
+        let i32 = cx.i32();
+        let mut owner = test.define_function("owner", &[i32], &[]);
+        let previous = owner.borrow().get_signature().clone();
+        let with_params = |attrs: &[(&'static str, AttributeRef)]| {
+            let attrs = attrs.iter().map(|&(name, value)| NamedAttribute::new(name, value));
+            let param = AbiParam::new_with_attrs(i32, attrs);
+            let signature =
+                Signature::from_parts(previous.calling_convention(), vec![param], vec![]);
+            cx.create_attribute::<SignatureAttr, _>(signature)
+        };
+
+        let to_g = linked(&cx, owner, g).as_attribute_ref();
+        let to_h = linked(&cx, owner, h).as_attribute_ref();
+        let nested = list(&cx, [list(&cx, [to_h])]);
+        owner
+            .borrow_mut()
+            .set_signature(ReadyAttr(with_params(&[("callee", to_g), ("refs", nested)])));
+        assert_eq!((uses(g), uses(h)), (1, 1));
+        owner.borrow().as_operation().verify().expect("the function verifies");
+
+        // The list holding @h is kept; @g is dropped.
+        owner.borrow_mut().set_signature(ReadyAttr(with_params(&[("refs", nested)])));
+        assert_eq!((uses(g), uses(h)), (0, 1));
+        owner.borrow().as_operation().verify().expect("the function verifies");
+
+        owner.borrow_mut().set_signature(previous.clone());
+        assert_eq!((uses(g), uses(h)), (0, 0));
+        owner.borrow().as_operation().verify().expect("the function verifies");
+
+        let to_g = linked(&cx, owner, g).as_attribute_ref();
+        owner.borrow_mut().set_signature(ReadyAttr(with_params(&[("callee", to_g)])));
+        assert_eq!(uses(g), 1);
+        owner.borrow_mut().as_operation_mut().erase();
+        assert_eq!((uses(g), uses(h)), (0, 0));
+    }
+
     /// Erasing an operation unlinks a reference two attributes deep: in a list in a list, and in
     /// a parameter attribute of a signature in a list.
     #[test]

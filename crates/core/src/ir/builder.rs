@@ -162,7 +162,9 @@ pub trait Builder: Listener {
     /// Create an [super::Operation] from the provided [OperationState]
     fn create_operation(&mut self, state: &mut OperationState) -> Result<OperationRef, Report> {
         let context = self.context_rc();
-        let mut op = state.name.alloc_default(context.clone());
+        // SAFETY: every property is given its first value below, before the operation is used;
+        // when one cannot be, the operation is dropped unused with the error
+        let mut op = unsafe { state.name.alloc_default(context.clone()) };
         op.borrow_mut().set_span(state.span);
 
         let mut builder = crate::GenericOperationBuilder::new(self, op);

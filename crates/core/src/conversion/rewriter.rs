@@ -1082,10 +1082,11 @@ mod tests {
     #[test]
     fn records_match_failures() {
         let context = Rc::new(Context::default());
-        let op = context
+        let name = context
             .get_or_register_dialect::<<Constant as OpRegistration>::Dialect>()
-            .expect_registered_name::<Constant>()
-            .alloc_default(context.clone());
+            .expect_registered_name::<Constant>();
+        // SAFETY: the operation is only named in a match failure, never read
+        let op = unsafe { name.alloc_default(context.clone()) };
         let mut rewriter = ConversionPatternRewriter::new(context);
 
         rewriter.notify_match_failure(op, Report::msg("no match"));

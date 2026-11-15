@@ -446,10 +446,11 @@ mod tests {
     where
         Op: OpRegistration,
     {
-        context
+        let name = context
             .get_or_register_dialect::<<Op as OpRegistration>::Dialect>()
-            .expect_registered_name::<Op>()
-            .alloc_default(context.clone())
+            .expect_registered_name::<Op>();
+        // SAFETY: a legality query asks for the operation's name and traits, never a property
+        unsafe { name.alloc_default(context.clone()) }
     }
 
     #[test]

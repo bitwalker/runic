@@ -915,7 +915,7 @@ impl quote::ToTokens for OpCreateFn<'_> {
             self.op.span,
         ));
         let alloc_default_doc = syn::Lit::Str(syn::LitStr::new(
-            &format!("Allocate a new, default-initialized `{}`", self.op.name),
+            &format!(" Allocate a new `{}` whose properties hold no attribute yet.", self.op.name),
             self.op.span,
         ));
 
@@ -984,9 +984,11 @@ impl quote::ToTokens for OpCreateFn<'_> {
 
             #[doc = #alloc_default_doc]
             ///
-            /// This method is used as part of op definition implementation, and should not be
-            /// used directly if at all possible.
-            pub fn alloc_default(context: ::alloc::rc::Rc<::runic_core::Context>) -> ::runic_core::UnsafeIntrusiveEntityRef<Self> {
+            /// # Safety
+            ///
+            /// As for [`::runic_core::OpRegistration::alloc_uninit`], which is its only caller:
+            /// every property is given its first value before the operation is used.
+            unsafe fn alloc_default(context: ::alloc::rc::Rc<::runic_core::Context>) -> ::runic_core::UnsafeIntrusiveEntityRef<Self> {
                 #![allow(clippy::all)]
                 let __operation_name = {
                     let dialect = context.get_or_register_dialect::<#dialect>();
@@ -1179,8 +1181,9 @@ impl quote::ToTokens for OpDefinition {
                     ])
                 }
 
-                fn alloc_uninit(context: ::alloc::rc::Rc<::runic_core::Context>) -> ::runic_core::OperationRef {
-                    Self::alloc_default(context).as_operation_ref()
+                unsafe fn alloc_uninit(context: ::alloc::rc::Rc<::runic_core::Context>) -> ::runic_core::OperationRef {
+                    // SAFETY: the caller upholds the contract of `alloc_uninit`, which is this one's
+                    unsafe { Self::alloc_default(context) }.as_operation_ref()
                 }
             }
 
@@ -1491,14 +1494,14 @@ impl quote::ToTokens for OpAttrFns<'_> {
             let set_attr_doc = syn::Lit::Str(syn::LitStr::new(
                 &format!(
                     " Set the `{attr}` attribute to a value, or to an attribute that already \
-                     exists ([::runic_core::ReadyAttr]).\n\n The old value is not read, because \
-                     this setter also gives an operation being allocated its first value: a \
-                     symbol reference the old value held stays linked. A property of a built \
-                     operation that may hold a symbol reference is replaced with \
-                     [::runic_core::Operation::set_property], which unlinks it."
+                     exists ([::runic_core::ReadyAttr]).\n\n The value is replaced as \
+                     [::runic_core::Operation::set_property] replaces it: every symbol reference \
+                     the old value held, at any depth, that the operation no longer holds is \
+                     unlinked from its symbol."
                 ),
                 attr.span(),
             ));
+            let attr_name = syn::Lit::Str(syn::LitStr::new(&format!("{attr}"), attr.span()));
             tokens.extend(quote_spanned! { span =>
                 #[doc = #attr_doc]
                 #[inline]
@@ -1532,7 +1535,12 @@ impl quote::ToTokens for OpAttrFns<'_> {
                         value,
                         &self.op.context_rc(),
                     );
-                    self.#attr = attr;
+                    self.op
+                        .set_property(
+                            #attr_name,
+                            ::runic_core::attributes::IntoAttributeRef::into_attribute_ref(attr),
+                        )
+                        .expect("an attribute of the property's own kind is accepted");
                 }
             });
         }

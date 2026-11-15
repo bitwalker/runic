@@ -54,8 +54,16 @@ pub trait OpRegistration: Op {
     /// The operation macro derives these from the `#[successor]` and `#[successors]`
     /// declarations: consecutive `#[successor]`s form one group of that many.
     fn successor_groups() -> Box<[SuccessorGroupShape]>;
-    /// Allocate a new, default-initialized instance of this op in `context`
-    fn alloc_uninit(context: Rc<Context>) -> OperationRef;
+    /// Allocate a new instance of this op in `context`, whose properties hold no attribute yet.
+    ///
+    /// # Safety
+    ///
+    /// Each property must be given its first value through the initialisation path of the
+    /// builders ([crate::GenericOperationBuilder::with_property_boxed]) before the operation is
+    /// used: until then a property may not be read or set (its setter and
+    /// [Operation::set_property](crate::Operation::set_property) read the old value), and the
+    /// operation may not be verified, printed or inserted.
+    unsafe fn alloc_uninit(context: Rc<Context>) -> OperationRef;
 }
 
 pub trait BuildableOp<Args: core::marker::Tuple>: Op {
