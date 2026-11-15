@@ -1,0 +1,170 @@
+// RUN: runic-opt %s -p control-flow-sink | filecheck %s
+// RUN: runic-opt %s -p control-flow-sink | runic-opt - --verify-roundtrip | filecheck %s
+
+// Control-flow sinking moves an effect-free operation into the region of a region operation that
+// holds every use of its results, when that region runs at most once, and only when every region
+// in between runs at most once too: a definition is never moved to where it would run more often.
+// What it must not move: an operation with a memory effect, a call whose callee states no effects
+// or writes, an indirect call, a value used in more than one region. The second RUN line reads the
+// output back.
+builtin.module public @control_flow_sink_regions {
+    builtin.function public extern("C") @pure(i32) -> i32 effects();
+    builtin.function public extern("C") @unknown(i32) -> i32;
+    builtin.function public extern("C") @writes(ptr<i32>, i32) -> i32 effects(write(arg 0));
+
+    // CHECK-LABEL: @into_an_if(
+    // CHECK-SAME: [[C:%[0-9]+]]: i1, [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[X:%[0-9]+]] = scf.if [[C]] then {
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[A]], [[B]];
+    // CHECK-NEXT: [[Q:%[0-9]+]] = arith.udiv [[S]], [[B]];
+    // CHECK-NEXT: [[Y:%[0-9]+]] = arith.add [[B]], [[Q]];
+    // CHECK-NEXT: scf.yield [[Y]] : (i32);
+    builtin.function public extern("C") @into_an_if(%c: i1, %a: i32, %b: i32) -> i32 {
+        %s = arith.add %a, %b;
+        %q = arith.udiv %s, %b;
+        %x = scf.if %c then {
+            %y = arith.add %b, %q;
+            scf.yield %y : (i32);
+        } else {
+            scf.yield %b : (i32);
+        } : (i1) -> (i32);
+        builtin.ret %x : (i32);
+    };
+
+    // A value used in both regions stays before the `scf.if`.
+    // CHECK-LABEL: @used_in_both_regions(
+    // CHECK-SAME: [[C:%[0-9]+]]: i1, [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = scf.if [[C]] then {
+    builtin.function public extern("C") @used_in_both_regions(%c: i1, %a: i32, %b: i32) -> i32 {
+        %s = arith.add %a, %b;
+        %x = scf.if %c then {
+            scf.yield %s : (i32);
+        } else {
+            %y = arith.mul %s, %b;
+            scf.yield %y : (i32);
+        } : (i1) -> (i32);
+        builtin.ret %x : (i32);
+    };
+
+    // A load has a memory effect: it is not moved.
+    // CHECK-LABEL: @a_load(
+    // CHECK-SAME: [[C:%[0-9]+]]: i1, [[P:%[0-9]+]]: ptr<i32>, [[B:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[L:%[0-9]+]] = test.load [[P]];
+    // CHECK-NEXT: {{%[0-9]+}} = scf.if [[C]] then {
+    builtin.function public extern("C") @a_load(%c: i1, %p: ptr<i32>, %b: i32) -> i32 {
+        %l = test.load %p;
+        %x = scf.if %c then {
+            scf.yield %l : (i32);
+        } else {
+            scf.yield %b : (i32);
+        } : (i1) -> (i32);
+        builtin.ret %x : (i32);
+    };
+
+    // Only the call of `@pure`, which declares no effects, moves; the calls whose callees state
+    // no effects or write stay, and so does the indirect call.
+    // CHECK-LABEL: @calls(
+    // CHECK-SAME: {{%[0-9]+}}: i1, [[A:%[0-9]+]]: i32, {{%[0-9]+}}: i32, [[P:%[0-9]+]]: ptr<i32>) -> (i32, i32, i32) {
+    // CHECK-NEXT: builtin.call @unknown([[A]])
+    // CHECK-NEXT: builtin.call @writes([[P]], [[A]])
+    // CHECK-NEXT: builtin.function_ref @pure
+    // CHECK-NEXT: builtin.call_indirect
+    // CHECK-NEXT: scf.if
+    // CHECK-NEXT: builtin.call @pure([[A]])
+    builtin.function public extern("C") @calls(%c: i1, %a: i32, %b: i32, %p: ptr<i32>) -> (i32, i32, i32) {
+        %pure = builtin.call @pure(%a) : extern("C") (i32) -> i32;
+        %unknown = builtin.call @unknown(%a) : extern("C") (i32) -> i32;
+        %writes = builtin.call @writes(%p, %a) : extern("C") (ptr<i32>, i32) -> i32;
+        %f = builtin.function_ref @pure : (i32) -> i32;
+        %indirect = builtin.call_indirect %f(%a) : extern("C") (i32) -> i32;
+        %x, %y, %z = scf.if %c then {
+            %s1 = arith.add %pure, %unknown;
+            %s2 = arith.add %writes, %indirect;
+            scf.yield %s1, %s2, %b : (i32, i32, i32);
+        } else {
+            scf.yield %b, %b, %b : (i32, i32, i32);
+        } : (i1) -> (i32, i32, i32);
+        builtin.ret %x, %y, %z : (i32, i32, i32);
+    };
+
+    // The division would run once per iteration in the loop's body: it stays before the loop.
+    // CHECK-LABEL: @not_into_a_loop(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32, {{%[0-9]+}}: ptr<i32>) -> i32 {
+    // CHECK-NEXT: [[Q:%[0-9]+]] = arith.udiv [[A]], [[B]];
+    // CHECK-NEXT: arith.constant 0 : i32;
+    // CHECK-NEXT: scf.while
+    builtin.function public extern("C") @not_into_a_loop(%a: i32, %b: i32, %p: ptr<i32>) -> i32 {
+        %q = arith.udiv %a, %b;
+        %zero = arith.constant 0 : i32;
+        %count = scf.while %zero before {
+        ^head(%i: i32):
+            %continue = arith.cmpi ult %i, %a;
+            scf.condition %continue, %i : (i1, i32);
+        } after {
+        ^body(%j: i32):
+            test.store %p, %j : (ptr<i32>, i32);
+            %next = arith.add %j, %q;
+            scf.yield %next : (i32);
+        } : (i32) -> i32;
+        builtin.ret %count : (i32);
+    };
+
+    // The `scf.if` runs its region at most once, but the loop runs the `scf.if` once per
+    // iteration: the division stays before the loop.
+    // CHECK-LABEL: @not_into_an_if_in_a_loop(
+    // CHECK-SAME: {{%[0-9]+}}: i1, [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32, {{%[0-9]+}}: ptr<i32>) -> i32 {
+    // CHECK-NEXT: [[Q:%[0-9]+]] = arith.udiv [[A]], [[B]];
+    // CHECK-NEXT: arith.constant 0 : i32;
+    // CHECK-NEXT: scf.while
+    builtin.function public extern("C") @not_into_an_if_in_a_loop(%c: i1, %a: i32, %b: i32, %p: ptr<i32>) -> i32 {
+        %q = arith.udiv %a, %b;
+        %zero = arith.constant 0 : i32;
+        %count = scf.while %zero before {
+        ^head(%i: i32):
+            %continue = arith.cmpi ult %i, %a;
+            scf.condition %continue, %i : (i1, i32);
+        } after {
+        ^body(%j: i32):
+            test.store %p, %j : (ptr<i32>, i32);
+            %next = scf.if %c then {
+                %y = arith.add %b, %q;
+                scf.yield %y : (i32);
+            } else {
+                scf.yield %j : (i32);
+            } : (i1) -> (i32);
+            scf.yield %next : (i32);
+        } : (i32) -> i32;
+        builtin.ret %count : (i32);
+    };
+
+    // A division in the loop's body, used only in an `scf.if` in that body, moves into the
+    // then-region: it runs at most once per iteration there, as it did before.
+    // CHECK-LABEL: @within_a_loop_body(
+    // CHECK-SAME: {{%[0-9]+}}: i1, [[A:%[0-9]+]]: i32, {{%[0-9]+}}: i32, [[P:%[0-9]+]]: ptr<i32>) -> i32 {
+    // CHECK: } after {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[J:%[0-9]+]]: i32):
+    // CHECK-NEXT: test.store [[P]], [[J]] : (ptr<i32>, i32);
+    // CHECK-NEXT: {{%[0-9]+}} = scf.if
+    // CHECK-NEXT: {{%[0-9]+}} = arith.udiv [[A]], [[J]];
+    builtin.function public extern("C") @within_a_loop_body(%c: i1, %a: i32, %b: i32, %p: ptr<i32>) -> i32 {
+        %zero = arith.constant 0 : i32;
+        %count = scf.while %zero before {
+        ^head(%i: i32):
+            %continue = arith.cmpi ult %i, %a;
+            scf.condition %continue, %i : (i1, i32);
+        } after {
+        ^body(%j: i32):
+            %q = arith.udiv %a, %j;
+            test.store %p, %j : (ptr<i32>, i32);
+            %next = scf.if %c then {
+                %y = arith.add %b, %q;
+                scf.yield %y : (i32);
+            } else {
+                scf.yield %j : (i32);
+            } : (i1) -> (i32);
+            scf.yield %next : (i32);
+        } : (i32) -> i32;
+        builtin.ret %count : (i32);
+    };
+};

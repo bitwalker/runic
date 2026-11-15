@@ -1,0 +1,39 @@
+// RUN: runic-opt %s -p sink-operand-defs | filecheck %s
+// RUN: runic-opt %s -p sink-operand-defs | runic-opt - --verify-roundtrip | filecheck %s
+
+// A constant used once is moved to just before its use. A constant used more than once ends up
+// just before each of its uses: a fresh copy is materialized before a use while the constant has
+// others, and the constant itself is moved before its last one. A block argument stays where it
+// is. The second RUN line reads the output back.
+builtin.module public @sink_constants {
+    // CHECK-LABEL: @used_once(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[P:%[0-9]+]]: ptr<i32>) -> i32 {
+    // CHECK-NEXT: test.store [[P]], [[A]] : (ptr<i32>, i32);
+    // CHECK-NEXT: [[K:%[0-9]+]] = arith.constant 7 : i32;
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[A]], [[K]];
+    // CHECK-NEXT: builtin.ret [[S]] : (i32);
+    builtin.function public extern("C") @used_once(%a: i32, %p: ptr<i32>) -> i32 {
+        %k = arith.constant 7 : i32;
+        test.store %p, %a : (ptr<i32>, i32);
+        %s = arith.add %a, %k;
+        builtin.ret %s : (i32);
+    };
+
+    // CHECK-LABEL: @used_twice(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[P:%[0-9]+]]: ptr<i32>) -> (i32, i32) {
+    // CHECK-NEXT: test.store [[P]], [[A]] : (ptr<i32>, i32);
+    // CHECK-NEXT: [[K1:%[0-9]+]] = arith.constant 7 : i32;
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[A]], [[K1]];
+    // CHECK-NEXT: test.store [[P]], [[S]] : (ptr<i32>, i32);
+    // CHECK-NEXT: [[K2:%[0-9]+]] = arith.constant 7 : i32;
+    // CHECK-NEXT: [[M:%[0-9]+]] = arith.mul [[A]], [[K2]];
+    // CHECK-NEXT: builtin.ret [[S]], [[M]] : (i32, i32);
+    builtin.function public extern("C") @used_twice(%a: i32, %p: ptr<i32>) -> (i32, i32) {
+        %k = arith.constant 7 : i32;
+        test.store %p, %a : (ptr<i32>, i32);
+        %s = arith.add %a, %k;
+        test.store %p, %s : (ptr<i32>, i32);
+        %m = arith.mul %a, %k;
+        builtin.ret %s, %m : (i32, i32);
+    };
+};
