@@ -68,8 +68,9 @@ class CoverageTests(unittest.TestCase):
         commands = [command for command, _ in calls]
         self.assertEqual(commands[0], ["cargo", "llvm-cov", "clean", "--workspace"])
         build = commands[1]
-        for package in coverage.TOOL_PACKAGES:
-            self.assertIn(package, build)
+        self.assertEqual(coverage.TOOL_PACKAGES, ("runic-opt",))
+        self.assertEqual(build[build.index("-p") :][:2], ["-p", "runic-opt"])
+        self.assertEqual(build.count("-p"), 1, "only the tool the lit suite runs is built")
         self.assertIn("--artifact-dir", build)
         self.assertIn("nextest", commands[2])
         self.assertIn("--workspace", commands[2])

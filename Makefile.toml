@@ -2,6 +2,10 @@
 default_to_workspace = false
 skip_core_tasks = true
 skip_git_env_info = true
+# For a virtual workspace, cargo-make 0.37.24 reads the crate information of the package in the
+# subdirectory named like the root (`runic/`), which is parked and not a member: every task fails.
+# No task uses the `CARGO_MAKE_CRATE_*` variables this skips.
+skip_crate_env_info = true
 modify_core_tasks = { private = true, namespace = "default" }
 init_task = "init"
 
@@ -203,7 +207,7 @@ args = [
     "-p",
     "runic-opt",
     "--artifact-dir",
-    "${RUNIC_BIN_DIR}",
+    "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/bin",
 ]
 
 [tasks.build]
@@ -418,7 +422,7 @@ args = [
     "install",
     "--locked",
     "--path",
-    "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/tools/hir-opt",
+    "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/tools/runic-opt",
     "--${RUNIC_BUILD_PROFILE}",
     "--force",
     "--bin",
@@ -457,9 +461,8 @@ dependencies = ["install-nextest"]
 
 [tasks.test-lit]
 category = "Test"
-description = "Runs the lit/filecheck test suite"
+description = "Builds runic-opt into bin and runs the lit suite of tests/lit"
 command = "litcheck"
-env = { RUNIC_BIN_DIR = "${RUNIC_BIN_DIR}" }
 args = [
     "lit",
     "run",
@@ -468,18 +471,17 @@ args = [
     "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/bin",
     "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/tests/lit",
 ]
-dependencies = ["litcheck", "runic", "runic-opt"]
+dependencies = ["litcheck", "runic-opt"]
 
 [tasks.lit]
 category = "Test"
-description = "Execute the lit utility"
+description = "Builds runic-opt into bin and runs `litcheck lit` with the arguments given"
 command = "litcheck"
-env = { RUNIC_BIN_DIR = "${RUNIC_BIN_DIR}" }
 args = [
     "lit",
     "${@}",
 ]
-dependencies = ["litcheck", "runic", "runic-opt"]
+dependencies = ["litcheck", "runic-opt"]
 
 [tasks.litcheck]
 category = "Test"

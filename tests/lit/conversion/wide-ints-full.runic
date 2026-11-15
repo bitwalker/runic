@@ -1,0 +1,26 @@
+// RUN: runic-opt %s -p 'test-convert-wide-ints{full}' --split-input-file --verify-diagnostics | filecheck %s
+
+// The full conversion. A module the builtin patterns convert completely succeeds; an `arith`
+// operation over `i128`, which has no pattern, is an error and the case prints nothing.
+
+// CHECK-LABEL: @id(
+// CHECK: [[LO:%[0-9]+]]: i64, [[HI:%[0-9]+]]: i64) -> (i64, i64) {
+// CHECK-NEXT: builtin.ret [[LO]], [[HI]] : (i64, i64);
+builtin.module public @converts {
+    builtin.function public extern("C") @id(%x: i128) -> i128 {
+        builtin.ret %x : (i128);
+    };
+};
+
+// -----
+
+// The failure has no location: it is expected with `@unknown`.
+// expected-error@unknown {{failed to legalize operation 'arith.add'}}
+builtin.module public @fails {
+    builtin.function public extern("C") @double(%x: i128) -> i128 {
+        %s = arith.add %x, %x;
+        builtin.ret %s : (i128);
+    };
+};
+
+// CHECK-NOT: @fails

@@ -1,0 +1,20 @@
+// RUN: runic-opt %s -p test-print-int-ranges --verify-diagnostics | filecheck %s
+
+// The integer range analysis from text. `test-print-int-ranges` emits one hint per integer
+// result, at the operation; the hints are checked in place and the IR is printed unchanged.
+// CHECK-LABEL: @f(
+builtin.module public @m {
+    builtin.function public extern("C") @f(%a: i32, %c: i1) -> i32 {
+        %x = arith.constant 10 : i32; // expected-hint {{range of result 0: u[10, 10] s[10, 10] width 32}}
+        %y = arith.constant 20 : i32; // expected-hint {{u[20, 20]}}
+        // A sum of constants is a constant.
+        // expected-hint@+1 {{range of result 0: u[30, 30] s[30, 30] width 32}}
+        %s = arith.add %x, %y;
+        // An argument is not known.
+        // expected-hint@below {{range of result 0: u[0, 4294967295] s[-2147483648, 2147483647] width 32}}
+        %t = arith.add %a, %x;
+        %lt = arith.cmpi ult %a, %x; // expected-hint-re {{u\[0, 1\] s\[-1, 0\] width 1$}}
+        // CHECK: builtin.ret {{%[0-9]+}} : (i32);
+        builtin.ret %t : (i32);
+    };
+};

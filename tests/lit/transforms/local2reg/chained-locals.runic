@@ -1,0 +1,21 @@
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(local2reg))' | filecheck %s
+// RUN: runic-opt %s -p local2reg | filecheck %s
+// RUN: runic-opt %s -p local2reg | runic-opt - --verify-roundtrip | filecheck %s
+
+// Slot 1 stores the value loaded from slot 0. Locals are promoted in index order, so promoting
+// slot 0 replaces that load with the entry argument before slot 1 is visited, and promoting slot 1
+// forwards what its store holds by then: the entry argument, which the function then returns
+// directly. The pass runs anchored on each function (first RUN line) and nested implicitly
+// (second); the third RUN line reads the output back.
+builtin.module public @local2reg_chained_locals {
+    // CHECK-LABEL: @l2r_chain(
+    // CHECK: [[X:%[0-9]+]]: i32) -> i32 locals(i32, i32) {
+    // CHECK-NEXT: builtin.ret [[X]] : (i32);
+    builtin.function public extern("C") @l2r_chain(%x: i32) -> i32 locals(i32, i32) {
+        builtin.store_local 0, %x;
+        %a = builtin.load_local 0 : i32;
+        builtin.store_local 1, %a;
+        %b = builtin.load_local 1 : i32;
+        builtin.ret %b : (i32);
+    };
+};

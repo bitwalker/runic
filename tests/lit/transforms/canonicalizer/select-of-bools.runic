@@ -1,0 +1,58 @@
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(canonicalizer{enable-patterns=simplify-select-of-bools}))' | filecheck %s
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(canonicalizer{enable-patterns=simplify-select-of-bools}))' | runic-opt - --verify-roundtrip | filecheck %s
+
+// The `cf.select` simplifications: the `simplify-select-of-bools` pattern and the folds of selects
+// whose arms cannot differ. The canonicalizer is restricted to that one pattern (the greedy driver
+// still folds and erases trivially dead operations). The second RUN line reads the rewritten IR
+// back, so every printed form must be valid input.
+builtin.module private @select_of_bools {
+    // `select(c, true, false)` is `c`.
+    // CHECK-LABEL: @select_true_false(
+    // CHECK: [[C:%[0-9]+]]: i1) -> i1 {
+    // CHECK-NEXT: builtin.ret [[C]] : (i1);
+    builtin.function public extern("C") @select_true_false(%c: i1) -> i1 {
+        %t = arith.constant 1 : i1;
+        %f = arith.constant 0 : i1;
+        %s = cf.select %c, %t, %f;
+        builtin.ret %s : (i1);
+    };
+
+    // `select(c, false, true)` is `not c`.
+    // CHECK-LABEL: @select_false_true(
+    // CHECK: [[C:%[0-9]+]]: i1) -> i1 {
+    // CHECK-NEXT: [[N:%[0-9]+]] = arith.bnot [[C]];
+    // CHECK-NEXT: builtin.ret [[N]] : (i1);
+    builtin.function public extern("C") @select_false_true(%c: i1) -> i1 {
+        %t = arith.constant 1 : i1;
+        %f = arith.constant 0 : i1;
+        %s = cf.select %c, %f, %t;
+        builtin.ret %s : (i1);
+    };
+
+    // A select with a poison arm folds to the other arm, and a select of the same value twice
+    // folds to that value.
+    // CHECK-LABEL: @degenerate_arms(
+    // CHECK: [[C:%[0-9]+]]: i1, [[A:%[0-9]+]]: i32) -> (i32, i32, i32) {
+    // CHECK-NEXT: builtin.ret [[A]], [[A]], [[A]] : (i32, i32, i32);
+    builtin.function public extern("C") @degenerate_arms(%c: i1, %a: i32) -> (i32, i32, i32) {
+        %p = ub.poison <{ value = #ub.poison<i32> }>;
+        %s0 = cf.select %c, %a, %p;
+        %s1 = cf.select %c, %p, %a;
+        %s2 = cf.select %c, %a, %a;
+        builtin.ret %s0, %s1, %s2 : (i32, i32, i32);
+    };
+
+    // A select between other constants is left alone.
+    // CHECK-LABEL: @other_constants(
+    // CHECK: [[C:%[0-9]+]]: i1) -> i32 {
+    // CHECK-NEXT: [[ONE:%[0-9]+]] = arith.constant 1 : i32;
+    // CHECK-NEXT: [[TWO:%[0-9]+]] = arith.constant 2 : i32;
+    // CHECK-NEXT: [[S:%[0-9]+]] = cf.select [[C]], [[ONE]], [[TWO]];
+    // CHECK-NEXT: builtin.ret [[S]] : (i32);
+    builtin.function public extern("C") @other_constants(%c: i1) -> i32 {
+        %one = arith.constant 1 : i32;
+        %two = arith.constant 2 : i32;
+        %s = cf.select %c, %one, %two;
+        builtin.ret %s : (i32);
+    };
+};

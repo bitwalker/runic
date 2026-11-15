@@ -1,0 +1,25 @@
+// RUN: runic-opt %s -p 'builtin.module(cse)' | filecheck %s
+// RUN: runic-opt %s -p 'builtin.module(cse)' | runic-opt - --verify-roundtrip | filecheck %s
+
+// A use before its definition in a graph region, when the duplicate has no use CSE can safely
+// replace. The second `mem.store` reads %dup before CSE reaches its definition, so replacing that
+// operand would change IR already visited: the pass leaves both constants and the forward use in
+// place. `mem.store` infers its operand types, so its custom form cannot name a value defined
+// later: the forward use is written, and printed, in the generic form. The second RUN line reads
+// the output back.
+//
+// CHECK-LABEL: builtin.module private @graph_no_replaceable_uses {
+// CHECK-NEXT: [[ADDR:%[0-9]+]] = arith.constant 0 : isize;
+// CHECK-NEXT: [[PTR:%[0-9]+]] = mem.inttoptr [[ADDR]] : ptr<i32>;
+// CHECK-NEXT: [[CANONICAL:%[0-9]+]] = arith.constant 1 : i32;
+// CHECK-NEXT: mem.store [[CANONICAL]], [[PTR]];
+// CHECK-NEXT: "mem.store"([[DUP:%[0-9]+]], [[PTR]]) <{ align = #mem.align<natural> }> : (i32, ptr<i32>) -> ();
+// CHECK-NEXT: [[DUP]] = arith.constant 1 : i32;
+builtin.module private @graph_no_replaceable_uses {
+    %addr = arith.constant 0 : isize;
+    %ptr = mem.inttoptr %addr : ptr<i32>;
+    %canonical = arith.constant 1 : i32;
+    mem.store %canonical, %ptr;
+    "mem.store"(%dup, %ptr) <{ align = #mem.align<natural> }> : (i32, ptr<i32>) -> ();
+    %dup = arith.constant 1 : i32;
+};

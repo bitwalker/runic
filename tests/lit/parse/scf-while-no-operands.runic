@@ -1,0 +1,35 @@
+// RUN: runic-opt %s --verify-roundtrip | filecheck %s
+// RUN: runic-opt %s | runic-opt - | filecheck %s
+
+// An `scf.while` without iteration arguments, read and printed: the loop has no operands (the
+// printer leaves the empty operand list out), its before block has no arguments (and so no block
+// header), and the after block ends in an `scf.yield` with no operands. The second RUN line reads
+// the printed text again and prints the same.
+
+// CHECK-LABEL: @no_operands(
+// CHECK: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[TEN:%[0-9]+]] = arith.constant 10 : i32;
+// CHECK-NEXT: [[R0:%[0-9]+]], [[R1:%[0-9]+]] = scf.while before {
+// CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[A]], [[B]] <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+// CHECK-NEXT: [[C:%[0-9]+]] = arith.cmpi ult [[S]], [[TEN]];
+// CHECK-NEXT: scf.condition [[C]], [[A]], [[S]] : (i1, i32, i32);
+// CHECK-NEXT: } after {
+// CHECK-NEXT: ^[[BODY:block[0-9]+]]([[X:%[0-9]+]]: i32, [[Y:%[0-9]+]]: i32):
+// CHECK-NEXT: scf.yield : ();
+// CHECK-NEXT: } : () -> (i32, i32);
+// CHECK-NEXT: [[SUM:%[0-9]+]] = arith.add [[R0]], [[R1]] <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+// CHECK-NEXT: builtin.ret [[SUM]] : (i32);
+// CHECK-NEXT: };
+builtin.function public extern("C") @no_operands(%a: i32, %b: i32) -> i32 {
+    %ten = arith.constant 10 : i32;
+    %r0, %r1 = scf.while before {
+        %s = arith.add %a, %b <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+        %c = arith.cmpi ult %s, %ten;
+        scf.condition %c, %a, %s : (i1, i32, i32);
+    } after {
+    ^body(%x: i32, %y: i32):
+        scf.yield : ();
+    } : () -> (i32, i32);
+    %sum = arith.add %r0, %r1 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+    builtin.ret %sum : (i32);
+};

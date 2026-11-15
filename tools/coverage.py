@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 WORKSPACE = Path(__file__).resolve().parents[1]
-TOOL_PACKAGES = ("runic", "runic-opt")
+TOOL_PACKAGES = ("runic-opt",)
 
 
 def parse_environment(output):

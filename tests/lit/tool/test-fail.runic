@@ -1,0 +1,19 @@
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(test-fail{message="no good"}))' --verify-diagnostics
+// RUN: not runic-opt %s -p test-fail 2>&1 | filecheck %s --check-prefix=PLAIN
+// RUN: not runic-opt %s -p cse,test-fail --print-ir-after-failure 2>&1 | filecheck %s --check-prefix=AFTER
+
+// A pass that fails. The failure is a diagnostic at the operation the pass ran on, with the pass
+// named in a note; nothing is printed to standard output.
+// PLAIN: error: test-fail
+// PLAIN-NEXT: --> {{.*}}test-fail.runic:[[@LINE+6]]:1
+// PLAIN: = note: context: pass 'test-fail' failed on 'builtin.module' @m
+// PLAIN-NOT: builtin.ret
+// AFTER: // ----- IR after failed test-fail on builtin.module -----
+// AFTER-NEXT: builtin.module public @m {
+// AFTER: error: test-fail
+builtin.module public @m {
+    // expected-error@+1 {{no good}}
+    builtin.function public extern("C") @f() {
+        builtin.ret;
+    };
+};

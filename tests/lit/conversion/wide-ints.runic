@@ -1,0 +1,60 @@
+// RUN: runic-opt %s -p test-convert-wide-ints | filecheck %s
+// RUN: runic-opt %s -p test-convert-wide-ints | runic-opt - -p test-convert-wide-ints | filecheck %s
+// RUN: runic-opt %s -p test-convert-wide-ints | filecheck %s --check-prefix=GONE
+
+// The partial conversion of `i128` to `(i64, i64)`. Signatures, calls, branch operands, block
+// arguments and locals are split; an `arith` operation over `i128` stays and reads a join of the
+// halves; its result is split again where a converted operation reads it. The second RUN line
+// converts the converted module again: nothing changes. The third checks that no signature, call,
+// branch or local still names `i128`.
+
+// GONE: builtin.module public @m {
+// GONE-NOT: {{[(: ]i128[),; ]}}
+// GONE: {{^}}};
+builtin.module public @m {
+    // CHECK-LABEL: @id(
+    // CHECK: [[LO:%[0-9]+]]: i64, [[HI:%[0-9]+]]: i64) -> (i64, i64) {
+    // CHECK-NEXT: builtin.ret [[LO]], [[HI]] : (i64, i64);
+    builtin.function public extern("C") @id(%x: i128) -> i128 {
+        builtin.ret %x : (i128);
+    };
+
+    // CHECK-LABEL: @twice(
+    // CHECK: [[LO:%[0-9]+]]: i64, [[HI:%[0-9]+]]: i64, [[C:%[0-9]+]]: i1) -> (i64, i64) locals(i64, i64) {
+    // CHECK-NEXT: builtin.store_local 0, [[LO]];
+    // CHECK-NEXT: builtin.store_local 1, [[HI]];
+    // CHECK-NEXT: [[YL:%[0-9]+]], [[YH:%[0-9]+]] = builtin.call @id([[LO]], [[HI]]) : extern("C") (i64, i64) -> (i64, i64);
+    // (A CHECK-NEXT that uses a variable and then captures one ends before the last character of
+    // the line: the final `;` here, and the final `:` of the block header below.)
+    // CHECK-NEXT: cf.cond_br [[C]] ^[[A:block[0-9]+]]([[YL]], [[YH]] : i64, i64), ^[[B:block[0-9]+]] : (i1)
+    builtin.function public extern("C") @twice(%x: i128, %c: i1) -> i128 locals(i128) {
+        builtin.store_local 0, %x;
+        %y = builtin.call @id(%x) : extern("C") (i128) -> i128;
+        cf.cond_br %c ^a(%y : i128), ^b : (i1);
+    // The join: zero-extend both halves, shift the high one left by 64, or them.
+    // CHECK-NEXT: ^[[A]]([[VL:%[0-9]+]]: i64, [[VH:%[0-9]+]]: i64)
+    // CHECK-NEXT: [[ZL:%[0-9]+]] = arith.zext [[VL]] <{ ty = #builtin.type<i128> }>;
+    // CHECK-NEXT: [[ZH:%[0-9]+]] = arith.zext [[VH]] <{ ty = #builtin.type<i128> }>;
+    // CHECK-NEXT: [[K:%[0-9]+]] = arith.constant 64 : i64;
+    // CHECK-NEXT: [[ZK:%[0-9]+]] = arith.zext [[K]] <{ ty = #builtin.type<i128> }>;
+    // CHECK-NEXT: [[SH:%[0-9]+]] = arith.shl [[ZH]], [[ZK]];
+    // CHECK-NEXT: [[V:%[0-9]+]] = arith.bor [[SH]], [[ZL]];
+    // The operation that has no pattern stays, over `i128`.
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[V]], [[V]];
+    // The split: truncate, and shift right by 64 and truncate.
+    // CHECK-NEXT: [[SL:%[0-9]+]] = arith.trunc [[S]] <{ ty = #builtin.type<i64> }>;
+    // CHECK: [[SR:%[0-9]+]] = arith.shr [[S]], {{%[0-9]+}};
+    // CHECK-NEXT: [[SHI:%[0-9]+]] = arith.trunc [[SR]] <{ ty = #builtin.type<i64> }>;
+    // CHECK-NEXT: builtin.ret [[SL]], [[SHI]] : (i64, i64);
+    ^a(%v: i128):
+        %s = arith.add %v, %v;
+        builtin.ret %s : (i128);
+    // CHECK-NEXT: ^[[B]]:
+    // CHECK-NEXT: [[LL:%[0-9]+]] = builtin.load_local 0 : i64;
+    // CHECK-NEXT: [[LH:%[0-9]+]] = builtin.load_local 1 : i64;
+    // CHECK-NEXT: builtin.ret [[LL]], [[LH]] : (i64, i64);
+    ^b:
+        %l = builtin.load_local 0 : i128;
+        builtin.ret %l : (i128);
+    };
+};
