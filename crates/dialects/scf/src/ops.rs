@@ -1186,13 +1186,9 @@ fn parse_exit(state: &mut OperationState, parser: &mut dyn OpAsmParser<'_>) -> P
     let (_, levels) = parse_i32(parser)?;
     state.add_attribute("levels", parser.context_rc().create_attribute::<I32Attr, _>(levels));
 
+    // An exit that carries no values is printed `scf.break 1 : ()`, with no operand list.
     let mut operands = SmallVec::default();
-    parser.parse_operand_list(
-        &mut operands,
-        runic_core::parse::Delimiter::None,
-        /*allow_result_number=*/ true,
-        None,
-    )?;
+    parser.parse_optional_operand_list(&mut operands)?;
     parser.parse_optional_attribute_dict_with_keyword(&mut state.attrs)?;
     let mut types = SmallVec::<[Type; 4]>::default();
     parser.parse_colon_type_list(&mut types)?;
@@ -1398,6 +1394,32 @@ builtin.function public extern("C") @exit(%flag: i1, %value: i32) -> i32 {
     builtin.ret %result : (i32);
 };"#;
         parse_function_fixpoint(&context, "nested_break.hir", source)?;
+        Ok(())
+    }
+
+    /// An `scf.break` or `scf.continue` that carries no values prints `scf.break 1 : ()`, and
+    /// that reads back.
+    #[test]
+    fn an_exit_without_values_reads_back() -> Result<(), Report> {
+        let context = Rc::new(Context::default());
+        let source = r#"
+builtin.function public extern("C") @exit(%flag: i1) {
+    scf.while before {
+        scf.condition %flag : (i1);
+    } after {
+        scf.if %flag then {
+            scf.break 1 : ();
+        } else {
+            scf.continue 1 attributes { note = #builtin.i32<1> } : ();
+        } : (i1) -> ();
+        scf.yield : ();
+    } : () -> ();
+    builtin.ret;
+};"#;
+        let (_function, printed) =
+            parse_function_fixpoint(&context, "exit_without_values.hir", source)?;
+        assert!(printed.contains("scf.break 1 : ();"), "{printed}");
+        assert!(printed.contains("scf.continue 1 attributes"), "{printed}");
         Ok(())
     }
 
