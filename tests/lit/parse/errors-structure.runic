@@ -53,5 +53,5 @@ builtin.module public @second { }; // expected-error {{expected the end of the i
 
 // -----
 
-// expected-error@below {{unexpected token 'end of input'}}
+// expected-error@below {{expected an operation name}}
 builtin.module public @open {
