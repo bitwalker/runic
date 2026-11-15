@@ -3,7 +3,9 @@
 // Where on its line a parser diagnostic points. `--verify-diagnostics` compares lines only, so
 // these check the `-->` line of what is printed: a redefined value at its `%`, a redefined block
 // at its `^`, a label on an entry block whose arguments the operation names at the label, and an
-// exit whose operands and types differ in number at its first operand.
+// exit whose operands and types differ in number at its first operand. A symbol, attribute or
+// type alias name is pointed at from its sigil, and a string or a quoted symbol name from its
+// opening quote; the underline shows each whole, through the closing quote.
 
 // CHECK: error: redefinition of value '%x'
 // CHECK-NEXT: --> {{.*}}errors-columns.runic:[[@LINE+3]]:5
@@ -46,3 +48,33 @@ builtin.function public extern("C") @exit(%c: i1, %v: i32) {
     } : () -> ();
     builtin.ret;
 };
+
+// -----
+
+// CHECK: --> {{.*}}errors-columns.runic:[[@LINE+2]]:49
+// CHECK: {{ }}^^ unexpected token '@g', expected a type
+builtin.function public extern("C") @symbol(%a: @g);
+
+// -----
+
+// CHECK: --> {{.*}}errors-columns.runic:[[@LINE+2]]:52
+// CHECK: {{ }}^^^^^^^^^^^^^ unexpected token '#builtin.unit', expected a type
+builtin.function public extern("C") @attribute(%a: #builtin.unit);
+
+// -----
+
+// CHECK: --> {{.*}}errors-columns.runic:[[@LINE+2]]:53
+// CHECK: {{ }}^^ no type alias with this name is defined before this point
+builtin.function public extern("C") @type_alias(%a: !t);
+
+// -----
+
+// CHECK: --> {{.*}}errors-columns.runic:[[@LINE+2]]:49
+// CHECK: {{ }}^^^ unexpected token '"s"', expected a type
+builtin.function public extern("C") @string(%a: "s");
+
+// -----
+
+// CHECK: --> {{.*}}errors-columns.runic:[[@LINE+2]]:56
+// CHECK: {{ }}^^^^^^ unexpected token '@"a b"', expected a type
+builtin.function public extern("C") @quoted_symbol(%a: @"a b");

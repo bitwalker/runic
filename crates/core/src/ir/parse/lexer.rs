@@ -385,7 +385,7 @@ impl<'input> Lexer<'input> {
         let c = self.pop();
         debug_assert_eq!(c, '@');
 
-        self.token_start += c.len_utf8();
+        // The span of a symbol name starts at its `@`; the token holds the name alone.
         if self.read() == '"' {
             let Token::String(s) = self.lex_string()? else {
                 unreachable!()
@@ -394,17 +394,19 @@ impl<'input> Lexer<'input> {
                 return Ok(Token::AtIdent(s));
             }
             // The printer escapes `"` and `\` in a quoted symbol name, and nothing else. The
-            // current token runs from after the opening quote through the closing one, which is
-            // what `unescape_quoted` reads. The unescaped name is interned, as the token cannot
+            // current token runs from the `@` through the closing quote; `unescape_quoted` reads
+            // what follows the opening quote. The unescaped name is interned, as the token cannot
             // borrow it from the input.
-            let (name, _) = crate::unescape_quoted(self.slice())
+            let quoted = &self.slice()[c.len_utf8() + '"'.len_utf8()..];
+            let (name, _) = crate::unescape_quoted(quoted)
                 .expect("`lex_string` returns a string only once its quote is closed");
             Ok(Token::AtIdent(crate::interner::Symbol::intern(name).as_str()))
         } else {
             let c = self.read();
             if !(c.is_ascii_alphabetic() || c == '_') {
+                // The token that is not an identifier is the one after the `@`.
                 return Err(ParserError::UnexpectedToken {
-                    span: self.span(),
+                    span: span!(self.source_id, self.token_end as u32),
                     token: c.to_string(),
                     expected: "an identifier".into(),
                 });
@@ -412,7 +414,7 @@ impl<'input> Lexer<'input> {
             let Token::BareIdent(s) = self.lex_identifier()? else {
                 unreachable!()
             };
-            Ok(Token::AtIdent(s))
+            Ok(Token::AtIdent(&s[c.len_utf8()..]))
         }
     }
 
@@ -420,20 +422,13 @@ impl<'input> Lexer<'input> {
         let prefix = self.pop();
         debug_assert!(matches!(prefix, '#' | '%' | '^' | '!'), "got '{prefix}'");
 
-        // The span of a value or block name starts at its sigil; the token holds the name alone.
-        let keeps_sigil = matches!(prefix, '%' | '^');
+        // The span of a name starts at its sigil; the token holds the name alone.
         let c = self.read();
         if c.is_ascii_digit() {
-            if !keeps_sigil {
-                self.token_start += prefix.len_utf8();
-            }
             while self.read().is_ascii_digit() {
                 self.skip();
             }
         } else if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '$' | '.') {
-            if !keeps_sigil {
-                self.token_start += prefix.len_utf8();
-            }
             loop {
                 match self.read() {
                     '_' | '-' | '$' | '.' => self.skip(),
@@ -449,12 +444,7 @@ impl<'input> Lexer<'input> {
             });
         }
 
-        let id = self.slice();
-        let id = if keeps_sigil {
-            &id[prefix.len_utf8()..]
-        } else {
-            id
-        };
+        let id = &self.slice()[prefix.len_utf8()..];
         Ok(match prefix {
             '#' => Token::HashIdent(id),
             '%' => Token::PercentIdent(id),
@@ -481,10 +471,10 @@ impl<'input> Lexer<'input> {
     }
 
     fn lex_string(&mut self) -> Result<Token<'input>, ParserError> {
-        // Skip quotation mark
+        // Skip quotation mark. The span of a string runs from its opening quote through its
+        // closing one; the token holds what is between them.
         self.skip();
-
-        self.token_start += '"'.len_utf8();
+        let content_start = self.token_end as u32;
 
         let mut is_identifier = true;
         loop {
@@ -505,11 +495,9 @@ impl<'input> Lexer<'input> {
                     }
                 }
                 '"' => {
-                    let span = self.span();
+                    let content_end = self.token_end as u32;
                     self.skip();
-                    break Ok(Token::String(
-                        self.slice_span(span.range().start()..span.range().end()),
-                    ));
+                    break Ok(Token::String(self.slice_span(content_start..content_end)));
                 }
                 c if c.is_alphanumeric() || c.is_ascii_graphic() => {
                     self.skip();

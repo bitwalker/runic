@@ -1135,8 +1135,9 @@ fn a_world_is_a_top_level_operation() -> TestResult {
 }
 
 /// The error that a module or component name is not one valid path segment (or, for a component,
-/// a path of valid segments) is located at the operation. Such a name can only be written in the
-/// generic form: the custom form spells and checks it as it parses it.
+/// a path of valid segments) is located at the operation, from the opening quote of its name.
+/// Such a name can only be written in the generic form: the custom form spells and checks it as it
+/// parses it.
 #[test]
 fn a_module_or_component_name_error_points_at_the_operation() {
     let test = ParserTest::default();
@@ -1153,7 +1154,7 @@ fn a_module_or_component_name_error_points_at_the_operation() {
         let text = crate::testing::text::describe(&err);
         assert!(text.contains(&format!("this {op}'s name is not valid")), "{text}");
         let rendered = format!("{}", err.display());
-        assert!(rendered.contains("names.hir:2:6"), "{rendered}");
+        assert!(rendered.contains("names.hir:2:5"), "{rendered}");
     }
 }
 
@@ -1254,13 +1255,12 @@ fn an_unspellable_symbol_table_name_is_reported() {
 }
 
 /// The diagnostic for a component name underlines the whole symbol path: from its root `::`, or
-/// from its first identifier (after the `@` sigil) when it has no root, to the end of its last
-/// identifier.
+/// from the `@` of its first identifier when it has no root, to the end of its last identifier.
 #[test]
 fn a_symbol_path_diagnostic_spans_the_whole_path() {
     let test = ParserTest::default();
     // The path, and where its span starts
-    for (path, first) in [("@app::@\"a b\"", "app"), ("::@app::@\"a b\"", "::")] {
+    for (path, first) in [("@app::@\"a b\"", "@app"), ("::@app::@\"a b\"", "::")] {
         let source = format!("builtin.component private {path} {{}};");
         let err = test
             .parse_any("span.hir", &source)
@@ -3098,17 +3098,17 @@ fn invalid_rec_blocks_are_reported() {
     let message = parse_error_text("rec { type !a = struct<ptr<!a>>;");
     assert!(message.contains("unexpected end of input"), "{message}");
 
-    // The primary label of each error: the first occurrence of `labelled` in the source, without
-    // its first `skip` bytes (an alias's span leaves out the `!`).
-    for (declarations, labelled, skip) in [
-        ("rec { type !a = struct<ptr<!b>>; type !c = struct<ptr<!b>>; }", "!b", 1),
-        ("rec { type !a = struct<ptr<!b>>; type !b = i32; }", "type !b = i32;", 0),
-        ("rec { }", "rec", 0),
+    // The primary label of each error: the first occurrence of `labelled` in the source (an
+    // alias's span holds its `!`).
+    for (declarations, labelled) in [
+        ("rec { type !a = struct<ptr<!b>>; type !c = struct<ptr<!b>>; }", "!b"),
+        ("rec { type !a = struct<ptr<!b>>; type !b = i32; }", "type !b = i32;"),
+        ("rec { }", "rec"),
     ] {
         let source = format!("{declarations}{world}");
         let (message, labels) = parse_error_labels(&source);
         let (start, end) = range_of(&source, labelled);
-        assert_eq!(labels.first(), Some(&(start + skip, end)), "{source}: {message}");
+        assert_eq!(labels.first(), Some(&(start, end)), "{source}: {message}");
     }
 }
 
@@ -3186,6 +3186,19 @@ fn the_span_of_a_value_or_block_name_starts_at_its_sigil() {
         // The second definition of a name is the one the diagnostic is about
         let start = source.rfind(named).expect("the name is in the source");
         assert!(labels.iter().any(|(at, _)| *at == start), "{named}: {labels:?} {message}");
+    }
+}
+
+/// The span of a symbol, attribute or type name starts at its sigil, and the span of a string or
+/// of a quoted symbol name runs from its opening quote through its closing one: a diagnostic about
+/// one underlines it as it is written.
+#[test]
+fn the_span_of_a_symbol_attribute_or_type_name_starts_at_its_sigil_and_a_string_at_its_quote() {
+    for written in ["@g", "#builtin.unit", "!t", "\"s\"", "@\"a b\""] {
+        let source = format!("builtin.function public extern(\"C\") @f(%a: {written});");
+        let (message, labels) = parse_error_labels(&source);
+        let start = source.rfind(written).expect("the token is in the source");
+        assert_eq!(labels.first(), Some(&(start, start + written.len())), "{written}: {message}");
     }
 }
 
