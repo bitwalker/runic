@@ -2,7 +2,7 @@
 //!
 //! For each of the custom and the generic form, the operation is printed, the text is parsed in a
 //! context of its own (with the parser configured as for the input: verification as the options
-//! say, the same region depth limit), and the result is printed in the same form. The two texts
+//! say, the same region depth and list nesting limits), and the result is printed in the same form. The two texts
 //! are the same program when they are equal after value and block names are renumbered in order
 //! of first appearance (see [`runic_core::print::same_program`]). For the custom form, what the
 //! text read back to is also printed in the generic form, which holds every part of an operation,
@@ -20,7 +20,7 @@ use runic_core::{
     print::{renumbered, same_program},
 };
 
-use crate::{MAX_REGION_DEPTH, print_operation, render};
+use crate::{MAX_LIST_NESTING, MAX_REGION_DEPTH, print_operation, render};
 
 /// Checks both forms of `op`; returns the diagnostics of the forms that do not read back, which
 /// have no location in the input.
@@ -50,6 +50,7 @@ fn check_form(
     let context = Rc::new(Context::default());
     let config = ParserConfig::new(context.clone())
         .with_max_region_depth(MAX_REGION_DEPTH)
+        .with_max_list_nesting(MAX_LIST_NESTING)
         .verify_after_parse(verify);
     let name = format!("<{form} form>");
     let parsed = parse_any(config, name.as_str(), printed.clone());

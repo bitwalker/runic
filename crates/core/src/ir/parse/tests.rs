@@ -1722,7 +1722,7 @@ fn a_type_parses_from_text_on_its_own() {
         ("%0", "help: type"),
     ] {
         let err = parse::parse_type(&context, "bad.runic", text).into_result().expect_err(text);
-        let message = format!("{err:?}");
+        let message = format!("{}", err.display());
         assert!(message.contains(expected), "`{text}`: {message}");
     }
     let err = parse::parse_type(&context, "rendered.runic", "i32 i32")
@@ -2227,7 +2227,7 @@ fn a_negated_hex_or_binary_literal_is_a_spanned_error() {
             1,
         );
         let err = test.parse::<Function>("negated.hir", &source).err().expect(literal);
-        let message = format!("{err:?}");
+        let message = format!("{}", err.display());
         assert!(message.contains("only a decimal literal can be negative"), "{message}");
     }
 }
@@ -2943,7 +2943,7 @@ fn parse_error_labels(source: &str) -> (String, Vec<(usize, usize)>) {
         .into_iter()
         .map(|range| (range.start, range.end))
         .collect();
-    let message = format!("{err:?}");
+    let message = format!("{}", err.display()).split_whitespace().collect::<Vec<_>>().join(" ");
     (message, labels)
 }
 
@@ -3708,20 +3708,27 @@ fn nested_list_text(inner: &str, depth: usize) -> String {
     format!("{}{inner}{}", "[".repeat(depth), "]".repeat(depth))
 }
 
-/// List nesting is limited to 16 levels, so that deeply nested input is an error instead of a stack
-/// overflow, on a 1 MB stack and in an unoptimized build: the innermost list may hold a type nested
-/// to its own limit, in the attribute dictionary of an operation in a world.
+/// List nesting is limited by default to 16 levels, so that deeply nested input is an error instead
+/// of a stack overflow, on a 1 MB stack and in an unoptimized build: the innermost list may hold a
+/// type nested to its own limit, in the attribute dictionary of an operation in a world. A list at
+/// the limit prints, and what it prints parses.
 #[cfg(feature = "std")]
 #[test]
-fn list_nesting_is_limited_to_16_levels() {
+fn list_nesting_is_limited_to_16_levels_by_default() {
+    assert_eq!(ParserConfig::DEFAULT_MAX_LIST_NESTING, 16);
     on_a_1_mb_stack(|| {
         let context = Rc::new(Context::default());
         let unknown = context.unknown_type();
         let deepest_type = nested_type_text("struct<", "i32", ">", 64);
         for inner in ["", deepest_type.as_str()] {
             let text = nested_list_text(inner, 16);
-            if let Err(err) = parse_attribute_text(&context, &text, unknown) {
-                panic!("16 levels should parse: {err:?}");
+            let attr = match parse_attribute_text(&context, &text, unknown) {
+                Ok(attr) => attr,
+                Err(err) => panic!("16 levels should parse: {err:?}"),
+            };
+            let printed = print_attribute_text(&context, &attr);
+            if let Err(err) = parse_attribute_text(&context, &printed, unknown) {
+                panic!("16 levels should parse once printed: {err:?}\n{printed}");
             }
             let test = ParserTest::default();
             let source = format!(
@@ -3737,10 +3744,96 @@ fn list_nesting_is_limited_to_16_levels() {
             else {
                 panic!("{depth} levels should not parse");
             };
-            let message = format!("{err:?}");
-            assert!(message.contains("list nesting is too deep (limit 16)"), "{depth}: {message}");
+            assert_list_nesting_error(err, 16);
         }
     });
+}
+
+/// `err` is the error for a list nested one more than `limit` deep: the limit and how deep the
+/// text went, at the bracket that went too deep.
+#[track_caller]
+fn assert_list_nesting_error(err: crate::parse::ParserError, limit: u32) {
+    let text = crate::testing::text::describe(&crate::Report::from(err));
+    assert!(text.starts_with(&format!("lists are nested more than {limit} deep")), "{text}");
+    assert!(
+        text.contains(&format!(
+            "this list is nested {} deep; at most {limit} is accepted",
+            limit + 1
+        )),
+        "{text}"
+    );
+    assert!(!text.contains("ParserConfig"), "{text}");
+}
+
+/// The limit is the reader's configuration: raised, a list nested deeper parses, and one past it
+/// is the same error with the configured limit.
+#[cfg(feature = "std")]
+#[test]
+fn the_list_nesting_limit_is_configured() {
+    use super::{DefaultParser, Parser, ParserState, Scanner, TokenStream};
+
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            let context = Rc::new(Context::default());
+            let parse = |depth: usize, limit: u32| {
+                let text = nested_list_text("", depth);
+                let id = context.add_source("attr.runic", text).unwrap();
+                let sources = context.sources();
+                let scanner = Scanner::new(sources.get(id).unwrap().text.unwrap());
+                let config = ParserConfig::new(context.clone()).with_max_list_nesting(limit);
+                let mut parser =
+                    DefaultParser::new(ParserState::new(config, TokenStream::new(id, scanner)));
+                parser.parse_attribute(context.unknown_type()).map(|attr| attr.into_inner())
+            };
+            let attr = parse(200, 200).expect("200 levels parse under a limit of 200");
+            let printed = print_attribute_text(&context, &attr);
+            assert_eq!(printed, nested_list_text("", 200));
+            assert_list_nesting_error(parse(201, 200).unwrap_err(), 200);
+            assert_list_nesting_error(parse(4, 3).unwrap_err(), 3);
+        })
+        .expect("spawn a thread")
+        .join()
+        .expect("the configured limit holds");
+}
+
+/// A bare `@name` in a dictionary is the symbol reference `#builtin.symbol<@name>` spells: it
+/// prints in that spelling, and is linked to its symbol as a use, alone and in a list. A second
+/// reference after it is an error, not a reference to the second name.
+#[test]
+fn a_bare_symbol_reference_is_an_attribute_value() -> TestResult {
+    let test = ParserTest::default();
+    let source = "\
+builtin.world {
+    builtin.module public @reader attributes { one = @target, more = [@target] } {};
+    builtin.module public @target {};
+};";
+    let parsed = test.parse_any("bare_symbol_ref.hir", source)?;
+    let printed = format!("{}", parsed.borrow());
+    assert!(
+        printed.contains(
+            "attributes { more = [#builtin.symbol<@target>], one = #builtin.symbol<@target> }"
+        ),
+        "{printed}"
+    );
+    let (reader, target) = {
+        let world = parsed.borrow();
+        let symbols = world.as_symbol_table().unwrap().symbol_manager();
+        (symbols.lookup_op("reader").unwrap(), symbols.lookup_op("target").unwrap())
+    };
+    let target = target.borrow();
+    let uses = target.as_symbol().unwrap().iter_uses().collect::<Vec<_>>();
+    assert_eq!(uses.len(), 2, "each reference is a use of the target");
+    assert!(uses.iter().all(|usage| usage.owner == reader));
+
+    let test = ParserTest::default();
+    let source = "\
+builtin.world {
+    builtin.module public @reader attributes { one = @zzz @target } {};
+    builtin.module public @target {};
+};";
+    assert!(test.parse_any("bare_symbol_refs.hir", source).is_err());
+    Ok(())
 }
 
 /// A list in an attribute dictionary holds symbol references (nested, and twice the same) that are

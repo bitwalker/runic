@@ -3,7 +3,7 @@
 //!
 //! The input is one top-level operation, or with `--split-input-file` several, one per case. Each
 //! is parsed in a context of its own, on a thread with a stack large enough for regions nested
-//! [`MAX_REGION_DEPTH`] deep; the pass manager is anchored on the operation with implicit
+//! [`MAX_REGION_DEPTH`] deep (and lists nested [`MAX_LIST_NESTING`] deep); the pass manager is anchored on the operation with implicit
 //! nesting. Standard output holds only what was asked for: the printed IR, or a listing. Every
 //! diagnostic, and every print of IR between passes, goes to standard error. The exit code is 0
 //! when no case produced an error (a pass that emits one fails its case like a pass that fails)
@@ -78,8 +78,12 @@ use self::options::{Options, Verification};
 /// than this is the parser's diagnostic.
 pub const MAX_REGION_DEPTH: u32 = 1_000;
 
+/// How deeply list attributes may nest in the input: text with a list inside more enclosing lists
+/// than this is the parser's diagnostic.
+pub const MAX_LIST_NESTING: u32 = 1_000;
+
 /// The stack of the thread an input is processed on, which regions nested
-/// [`MAX_REGION_DEPTH`] deep need in every build.
+/// [`MAX_REGION_DEPTH`] deep, and lists nested [`MAX_LIST_NESTING`] deep, need in every build.
 const CHUNK_STACK_SIZE: usize = 256 << 20;
 
 /// The name of the thread an input is processed on. A panic on it is reported by the tool, as an
@@ -793,6 +797,7 @@ impl Chunk {
     ) -> bool {
         let config = ParserConfig::new(context.clone())
             .with_max_region_depth(MAX_REGION_DEPTH)
+            .with_max_list_nesting(MAX_LIST_NESTING)
             .verify_after_parse(self.verification != Verification::None);
         let parsed = parse_any(config, self.name.as_str(), text);
         diagnostics.set(&parsed.diagnostics);

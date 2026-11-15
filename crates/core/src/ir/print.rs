@@ -199,8 +199,9 @@
 //!                        '(' (param (',' param)*)? ')' ('->' result-list)? '>'
 //!     (`param` and `result-list` as for functions, read and written by the same code)
 //! list-attribute := '[' (attribute-value (',' attribute-value)*)? ']'
-//!     (each entry an attribute value of any type, as in a dictionary, so lists nest; a list nests
-//!     at most 16 deep)
+//!     (each entry an attribute value of any type, as in a dictionary, so lists nest. How deep
+//!     is the reader's limit, which its configuration sets: 16 by default. The printer writes a
+//!     list at any depth)
 //!
 //! No bare attribute is followed by a `: type` suffix. An integer literal is an attribute only
 //! where the syntax that reads it expects an integer type, such as an operation's own format: an

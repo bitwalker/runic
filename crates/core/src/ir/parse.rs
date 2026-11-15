@@ -113,9 +113,21 @@ pub struct ParserConfig {
     /// How deeply regions may nest: text with a region inside this many enclosing regions is an
     /// error. The default is [Self::DEFAULT_MAX_REGION_DEPTH].
     pub max_region_depth: u32,
+    /// How deeply list attributes may nest: text with a list inside this many enclosing lists is
+    /// an error. The default is [Self::DEFAULT_MAX_LIST_NESTING].
+    pub max_list_nesting: u32,
 }
 
 impl ParserConfig {
+    /// The default of [Self::max_list_nesting]: 16.
+    ///
+    /// The attribute parser recurses through a list and its entries, so each level of nesting
+    /// costs stack: about 5 KB in an unoptimized build. 16 levels use about 80 KB, which leaves
+    /// room on a 1 MB stack for a type nested to its own limit (64) inside the innermost list, in
+    /// the attribute dictionary of an operation nested in regions; that is measured by a test of
+    /// the parser. Text that nests deeper is parsed on a thread with a larger stack and a raised
+    /// limit.
+    pub const DEFAULT_MAX_LIST_NESTING: u32 = 16;
     /// The default of [Self::max_region_depth]: 32.
     ///
     /// The parser recurses through an operation, its regions and their blocks, so each level of
@@ -140,6 +152,7 @@ impl ParserConfig {
             context,
             verify: true,
             max_region_depth: Self::DEFAULT_MAX_REGION_DEPTH,
+            max_list_nesting: Self::DEFAULT_MAX_LIST_NESTING,
         }
     }
 
@@ -147,6 +160,13 @@ impl ParserConfig {
     /// than the default needs a larger stack.
     pub fn with_max_region_depth(mut self, depth: u32) -> Self {
         self.max_region_depth = depth;
+        self
+    }
+
+    /// Set how deeply list attributes may nest (see [Self::max_list_nesting]). A parse that allows
+    /// more than the default needs a larger stack.
+    pub fn with_max_list_nesting(mut self, depth: u32) -> Self {
+        self.max_list_nesting = depth;
         self
     }
 
@@ -178,7 +198,8 @@ pub struct ParserState<'input> {
     pub default_dialect_stack: SmallVec<[interner::Symbol; 1]>,
     /// The number of types enclosing the one being parsed, which the type parser limits.
     type_nesting: u32,
-    /// The number of lists enclosing the attribute being parsed, which the attribute parser limits.
+    /// The number of lists enclosing the attribute being parsed, which
+    /// [ParserConfig::max_list_nesting] limits.
     list_nesting: u32,
     /// The number of regions enclosing the text being parsed, which [ParserConfig::max_region_depth]
     /// limits.

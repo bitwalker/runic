@@ -350,3 +350,57 @@ fn a_multi_result_name_leaves_scope_with_its_region() {
         output.stderr
     );
 }
+
+/// A module whose function holds an `arith.add` with the attribute `note = {note}`.
+fn with_note(note: &str) -> String {
+    format!(
+        "builtin.module public @m {{\n    builtin.function public extern(\"C\") @g(%a: i32) -> \
+         i32 {{\n        %4 = arith.add %a, %a attributes {{ note = {note} }};\n        \
+         builtin.ret %4 : (i32);\n    }};\n}};\n"
+    )
+}
+
+/// The tool raises the reader's list nesting limit as it raises the region depth: a list 200 deep
+/// reads back in both forms, and one 1,000 deep is read; one deeper is the parser's diagnostic.
+#[test]
+fn lists_nested_up_to_1000_deep_are_read() {
+    let list = |depth: usize| format!("{}{}", "[".repeat(depth), "]".repeat(depth));
+    let output = opt(&["--verify-roundtrip"], &with_note(&list(200)));
+    output.succeeded();
+    assert_eq!(output.stderr, "");
+    assert!(output.stdout.contains(&format!("note = {}", list(200))), "{}", output.stdout);
+    opt(&[], &with_note(&list(1_000))).succeeded();
+    let output = opt(&[], &with_note(&list(1_001)));
+    output.failed();
+    assert!(
+        output.stderr.starts_with("error: lists are nested more than 1000 deep\n"),
+        "{}",
+        output.stderr
+    );
+    assert!(
+        output
+            .stderr
+            .contains("this list is nested 1001 deep; at most 1000 is accepted"),
+        "{}",
+        output.stderr
+    );
+}
+
+/// A bare `@name` is a symbol reference as an attribute value, read and printed as
+/// `#builtin.symbol<..>` is; a second reference after it is a syntax error.
+#[test]
+fn a_bare_symbol_reference_is_an_attribute_value() {
+    let bare = opt(&["--verify-roundtrip"], &with_note("@g"));
+    bare.succeeded();
+    assert_eq!(bare.stderr, "");
+    assert!(bare.stdout.contains("note = #builtin.symbol<@g>"), "{}", bare.stdout);
+    let spelled = opt(&["--verify-roundtrip"], &with_note("#builtin.symbol<@g>"));
+    assert_eq!(bare.stdout, spelled.stdout);
+    let output = opt(&[], &with_note("@zzz @g"));
+    output.failed();
+    assert_eq!(output.stdout, "");
+    // A reference that names nothing is the verifier's error, as for the other spelling
+    let output = opt(&[], &with_note("@nosuch"));
+    output.failed();
+    assert!(output.stderr.contains("'@nosuch'"), "{}", output.stderr);
+}

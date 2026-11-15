@@ -1231,6 +1231,13 @@ fn parse_attribute_value<'input, P: ?Sized + Parser<'input>>(
         return integer_literal_attr(&parser.context_rc(), literal, ty);
     }
 
+    // A bare symbol reference, `@g` or `@m::@g`, is what `#builtin.symbol<..>` holds
+    if parser.token_stream_mut().is_next(|tok| matches!(tok, Token::AtIdent(_))) {
+        return parser
+            .parse_symbol_ref()
+            .map(|spanned| spanned.map(|sym| sym.as_attribute_ref()));
+    }
+
     let Some(spanned) = parser.token_stream_mut().next()? else {
         return Err(ParserError::UnexpectedEof {
             expected: vec!["attribute value".to_string()],
@@ -1247,12 +1254,6 @@ fn parse_attribute_value<'input, P: ?Sized + Parser<'input>>(
         Token::String(s) => {
             let value = unescape_string(span, s)?;
             Ok(Span::new(span, parser.context_rc().create_attribute::<StringAttr, _>(value)))
-        }
-        Token::AtIdent(_) => {
-            // Parse symbol reference attribute
-            parser
-                .parse_symbol_ref()
-                .map(|spanned| spanned.map(|sym| sym.as_attribute_ref()))
         }
         Token::Lbrace => Err(ParserError::InvalidAttributeValue {
             span,
@@ -1287,16 +1288,8 @@ fn parse_attribute_value<'input, P: ?Sized + Parser<'input>>(
     }
 }
 
-/// The number of lists a list attribute may be nested in: 16.
-///
-/// Each level of nesting is a few recursive calls, so the limit keeps deeply nested input from
-/// overflowing the stack. In an unoptimized build a level costs about 5 KB of stack, so 16 levels
-/// use about 80 KB, which leaves room on a 1 MB stack for a type nested to its own limit
-/// ([MAX_TYPE_NESTING](super::types::MAX_TYPE_NESTING)) inside the innermost list, and is far
-/// beyond any realistic nesting of lists.
-pub(super) const MAX_LIST_NESTING: u32 = 16;
-
-/// Reads a list attribute, `[a, b, ..]`.
+/// Reads a list attribute, `[a, b, ..]`, nested in no more lists than
+/// [ParserConfig::max_list_nesting](super::ParserConfig::max_list_nesting) allows.
 ///
 /// Each entry is an attribute value of any type, written as one is anywhere else; `[]` is the
 /// empty list. A bare `[` begins an attribute nowhere else: an array of integers or types is
@@ -1313,10 +1306,13 @@ fn parse_list_attribute<'input, P: ?Sized + Parser<'input>>(
 
     let open = parser.token_stream_mut().expect_if("'['", |tok| tok == Token::Lbracket)?.span();
     let enclosing = parser.state().list_nesting;
-    if enclosing >= MAX_LIST_NESTING {
-        return Err(ParserError::InvalidAttributeValue {
+    let limit = parser.state().config.max_list_nesting;
+    if enclosing >= limit {
+        // This list is the one `limit + 1` deep: parsing stops here, deeper lists are not seen
+        return Err(ParserError::ListNestingTooDeep {
             span: open,
-            reason: format!("list nesting is too deep (limit {MAX_LIST_NESTING})"),
+            limit,
+            depth: limit.saturating_add(1),
         });
     }
     // Restored on every return from the nested parse, successful or not.

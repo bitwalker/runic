@@ -212,6 +212,16 @@ pub enum ParserError {
         limit: u32,
         depth: u32,
     },
+    #[error("lists are nested more than {limit} deep")]
+    ListNestingTooDeep {
+        #[label(
+            primary,
+            "this list is nested {depth} deep; at most {limit} is accepted"
+        )]
+        span: SourceSpan,
+        limit: u32,
+        depth: u32,
+    },
     #[error("invalid type")]
     InvalidType {
         #[label(primary, "{reason}")]
