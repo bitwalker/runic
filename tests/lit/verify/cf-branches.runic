@@ -4,8 +4,9 @@
 // gives a successor agree with the block's arguments in number and, position by position, in
 // type. One case per rule; the number on `cf.cond_br` and `cf.switch` too, since each names its
 // successor by its position. The message names the block by the number it prints with, which
-// is not the name written (written names are not kept), so the expectations leave it out. Whether
-// `cf.switch` may have two cases with one value is not decided, and has no case.
+// is not the name written (written names are not kept), so the expectations leave it out. The
+// keys of keyed successors are distinct: no two cases of a `cf.switch` have one value, however
+// the value is spelled.
 
 builtin.function public extern("C") @valid(%c: i1, %s: i32, %a: i32) -> i32 {
     cf.cond_br %c ^left(%a : i32), ^right : (i1);
@@ -40,6 +41,30 @@ builtin.function public extern("C") @cond_br_count(%c: i1, %a: i32) -> i32 {
 ^yes:
     builtin.ret %a : (i32);
 ^no:
+    builtin.ret %a : (i32);
+};
+
+// -----
+
+// Two cases with one value, whichever blocks they go to.
+builtin.function public extern("C") @switch_duplicate_case(%s: i32, %a: i32) -> i32 {
+    cf.switch %s [#builtin.i32<1> -> ^one, #builtin.i32<2> -> ^two, #builtin.i32<1> -> ^two], ^done : (i32); // expected-error {{invalid operation cf.switch: successor 2 has the key #builtin.i32<1>, which successor 0 has too}}
+^one:
+    builtin.ret %a : (i32);
+^two:
+    builtin.ret %a : (i32);
+^done:
+    builtin.ret %a : (i32);
+};
+
+// -----
+
+// A key is a 32-bit pattern: `4294967295` is `-1`. The label says what is wrong with the key.
+builtin.function public extern("C") @switch_case_spelled_two_ways(%s: i32, %a: i32) -> i32 {
+    cf.switch %s [#builtin.i32<-1> -> ^one, #builtin.i32<4294967295> -> ^one], ^done : (i32); // expected-error {{the key #builtin.i32<-1> selects two successors}}
+^one:
+    builtin.ret %a : (i32);
+^done:
     builtin.ret %a : (i32);
 };
 

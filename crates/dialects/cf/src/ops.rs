@@ -110,7 +110,8 @@ impl BranchOpInterface for CondBr {
 /// case is the one to which control is transferred. If no matching case is found for the selector,
 /// then the `fallback` target is used instead.
 ///
-/// A `fallback` successor must always be provided.
+/// A `fallback` successor must always be provided. No two cases have the same value: the
+/// verifier refuses that for every operation with keyed successors.
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
 #[operation(
     dialect = ControlFlowDialect,
@@ -1199,6 +1200,39 @@ builtin.function public extern(\"C\") @select(%sel: i32, %a: i32, %b: i32) -> i3
         assert_eq!(returned_value(fallback.successor()), arg_b);
 
         Ok(())
+    }
+
+    /// Two cases with one value are refused, whichever blocks they go to: a key selects one
+    /// successor.
+    #[test]
+    fn a_switch_with_two_cases_of_one_value_is_rejected() {
+        let mut test = Test::new("duplicate", |cx| ([cx.i32()], [cx.i32()]));
+        let selector = test.function().borrow().entry_block().borrow().arguments()[0] as ValueRef;
+        let mut builder = test.function_builder();
+        let one = builder.create_block();
+        let two = builder.create_block();
+        let fallback = builder.create_block();
+        let cases = vec![
+            SwitchCase::create(7, one, vec![]),
+            SwitchCase::create(8, two, vec![]),
+            SwitchCase::create(7, two, vec![]),
+        ];
+        let error = match builder.switch(selector, cases, fallback, [], SourceSpan::UNKNOWN) {
+            Err(error) => error,
+            Ok(op) => op
+                .borrow()
+                .as_operation()
+                .verify()
+                .expect_err("a switch with two cases of one value verifies"),
+        };
+        let message = runic_core::testing::text::describe(&error);
+        assert!(
+            message.starts_with(
+                "invalid operation cf.switch: successor 2 has the key #builtin.i32<7>, which \
+                 successor 0 has too"
+            ),
+            "{message}"
+        );
     }
 
     /// A switch with the keys `-1`, `0` and `i32::MAX` builds, prints each key as a signed

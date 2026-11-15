@@ -186,8 +186,51 @@ where
     T: crate::Op + BranchOpInterface,
 {
     fn verify(&self, _context: &Context) -> Result<(), Report> {
+        verify_successor_keys_are_distinct(self.as_operation())?;
         verify_branch_successor_operands(self)
     }
+}
+
+/// Check that no two keyed successors of `op` have the same key: a key selects one successor
+/// (see [crate::KeyedSuccessor]). Keys are compared as attributes, so two spellings of one value
+/// are one key.
+fn verify_successor_keys_are_distinct(op: &Operation) -> Result<(), Report> {
+    struct Key(AttributeRef);
+    impl Eq for Key {}
+    impl PartialEq for Key {
+        fn eq(&self, other: &Self) -> bool {
+            self.0.borrow().dyn_eq(&other.0.borrow())
+        }
+    }
+    impl core::hash::Hash for Key {
+        fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+            self.0.borrow().hash(state);
+        }
+    }
+
+    let mut seen = crate::FxHashMap::<Key, usize>::default();
+    for (index, successor) in op.successors().all().iter().enumerate() {
+        let Some(key) = successor.key else {
+            continue;
+        };
+        if let Some(earlier) = seen.insert(Key(key), index) {
+            let flags = Default::default();
+            let mut printer = crate::print::AsmPrinter::root(op.context_rc(), &flags);
+            printer.print_attribute_value(&*key.borrow());
+            let key = printer.finish();
+            let name = op.name();
+            return Err(crate::diagnostics::report!(
+                message: (format!(
+                    "invalid operation {name}: successor {index} has the key {key}, which \
+                     successor {earlier} has too"
+                )),
+                labels: [
+                    primary(op.span(), format!("the key {key} selects two successors")),
+                ],
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Check every successor of `branch` against the arguments of the block it goes to.
