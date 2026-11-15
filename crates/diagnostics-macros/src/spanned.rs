@@ -164,7 +164,7 @@ fn field_specs(fields: &Fields) -> syn::Result<(FieldStyle, Vec<FieldSpec>)> {
             .clone()
             .map(Member::Named)
             .unwrap_or_else(|| Member::Unnamed(Index::from(position)));
-        let binding = format_ident!("__miden_spanned_field_{position}");
+        let binding = format_ident!("__runic_spanned_field_{position}");
         let shape = type_shape(&field.ty);
         let roles = parse_field_roles(&field.attrs)?;
         if roles.span && matches!(shape.cardinality, Cardinality::Many | Cardinality::OptionalMany)
@@ -417,6 +417,6 @@ mod tests {
 
         let expanded = super::expand_spanned(&input).unwrap().to_string();
         assert!(expanded.contains("T : runtime_api :: Spanned"));
-        assert!(expanded.contains("runtime_api :: Spanned :: span (__miden_spanned_field_1)"));
+        assert!(expanded.contains("runtime_api :: Spanned :: span (__runic_spanned_field_1)"));
     }
 }

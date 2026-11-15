@@ -611,14 +611,14 @@ mod tests {
     fn source_map_clone_is_an_immutable_snapshot() {
         let namespace = SourceNamespace::new_unchecked(7);
         let mut sources = SourceMap::new(namespace);
-        let first = sources.insert("module.masm", "begin\nend", None).unwrap();
+        let first = sources.insert("module.runic", "begin\nend", None).unwrap();
         let snapshot = sources.clone();
 
-        let latest = sources.insert("module.masm", "begin\nnop\nend", None).unwrap();
+        let latest = sources.insert("module.runic", "begin\nnop\nend", None).unwrap();
 
         assert_eq!(snapshot.len(), 1);
-        assert_eq!(snapshot.find_by_name("module.masm"), Some(first));
-        assert_eq!(sources.find_by_name("module.masm"), Some(latest));
+        assert_eq!(snapshot.find_by_name("module.runic"), Some(first));
+        assert_eq!(sources.find_by_name("module.runic"), Some(latest));
         assert!(snapshot.get(latest).is_none());
         assert_eq!(snapshot.get(first).unwrap().text, Some("begin\nend"));
     }
@@ -632,17 +632,17 @@ mod tests {
     #[test]
     fn shared_source_provider_delegates_and_hides_implementation_details() {
         let mut sources = SourceMap::new(SourceNamespace::new_unchecked(8));
-        let id = sources.insert("module.masm", "begin\nend", None).unwrap();
+        let id = sources.insert("module.runic", "begin\nend", None).unwrap();
         let shared = SharedSourceProvider::from(Arc::new(sources));
 
-        assert_eq!(shared.get(id).unwrap().display_name, "module.masm");
+        assert_eq!(shared.get(id).unwrap().display_name, "module.runic");
         assert_eq!(shared.line_column(id, 6), LineColumn::new(2, 1));
-        assert_eq!(shared.find_by_name("module.masm"), Some(id));
+        assert_eq!(shared.find_by_name("module.runic"), Some(id));
         assert_eq!(format!("{shared:?}"), "SharedSourceProvider(..)");
 
         let erased: Arc<dyn SourceProvider + Send + Sync> = Arc::new(shared);
         let erased = SharedSourceProvider::from(erased);
-        assert_eq!(erased.find_by_name("module.masm"), Some(id));
+        assert_eq!(erased.find_by_name("module.runic"), Some(id));
     }
 
     #[test]

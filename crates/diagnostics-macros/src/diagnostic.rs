@@ -64,7 +64,7 @@ pub fn expand_diagnostic(input: &DeriveInput) -> syn::Result<TokenStream2> {
     };
     for (index, case) in cases.iter_mut().enumerate() {
         if case.args.code.is_some() {
-            case.descriptor_ident = Some(format_ident!("__MIDEN_DIAGNOSTIC_DESCRIPTOR_{index}"));
+            case.descriptor_ident = Some(format_ident!("__RUNIC_DIAGNOSTIC_DESCRIPTOR_{index}"));
         }
         validate_case(case)?;
     }

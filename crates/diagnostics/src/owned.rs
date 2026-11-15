@@ -977,12 +977,12 @@ mod tests {
     #[test]
     fn report_display_uses_retained_session_sources() {
         let mut sources = SourceMap::new(SourceNamespace::new_unchecked(12));
-        let id = sources.insert("input.masm", "begin broken end", None).unwrap();
+        let id = sources.insert("input.runic", "begin broken end", None).unwrap();
         let span = SourceSpan::session(id, TextRange::new(6, 12).unwrap());
         let report = Report::new(LabeledFailure(span)).attach_session_sources(sources);
 
         let rendered = format!("{report:?}");
-        assert!(rendered.contains("input.masm"));
+        assert!(rendered.contains("input.runic"));
         assert!(rendered.contains("broken"));
         assert!(rendered.contains("failure occurred here"));
     }

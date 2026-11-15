@@ -234,7 +234,7 @@ fn descriptor_declarations_and_derive_cover_the_complete_protocol() {
 
     let mut sources = SourceMap::new(SourceNamespace::new_unchecked(3));
     assert_eq!(
-        sources.insert("derive.masm", "][abc", None).unwrap(),
+        sources.insert("derive.runic", "][abc", None).unwrap(),
         SourceId::new(SourceNamespace::new_unchecked(3), 0)
     );
     let prepared = PreparedDiagnostic {

@@ -10,7 +10,7 @@ use std::{
 
 const RICH_REPORT: &str = "\
 error[std/E_REPORT]: could not compile module
- --> attached.masm:2:5
+ --> attached.runic:2:5
   |
 1 | begin
 2 |     broken
@@ -115,7 +115,7 @@ fn std_runtime_contracts() {
 
     let session = run(&exit, ["session-source"], []);
     assert_failure(&session);
-    assert!(text(&session.stderr).contains(" --> session.masm:2:5\n"));
+    assert!(text(&session.stderr).contains(" --> session.runic:2:5\n"));
 
     let degraded_warning = run(&exit, ["missing-source-warning"], []);
     assert!(degraded_warning.status.success());

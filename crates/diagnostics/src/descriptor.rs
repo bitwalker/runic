@@ -99,11 +99,11 @@ mod tests {
     #[test]
     fn code_display_and_explanation_states_are_explicit() {
         let code = DiagnosticCode {
-            namespace: "miden::parser",
+            namespace: "runic::parser",
             code: "E0001",
         };
-        assert_eq!(code.to_string(), "miden::parser/E0001");
-        assert_eq!(code.as_ref().to_string(), "miden::parser/E0001");
+        assert_eq!(code.to_string(), "runic::parser/E0001");
+        assert_eq!(code.as_ref().to_string(), "runic::parser/E0001");
         assert_ne!(Explanation::NotProvided, Explanation::NotEmbedded);
         assert_ne!(Explanation::NotEmbedded, Explanation::Embedded("sentinel"));
     }

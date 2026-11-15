@@ -55,7 +55,7 @@ impl Diagnostic for RichDiagnostic {
 pub fn rich_report() -> Report {
     let mut sources = SourceMap::new(SourceNamespace::new_unchecked(44));
     let source = sources
-        .insert("attached.masm", "begin\n    broken\nend\n", None)
+        .insert("attached.runic", "begin\n    broken\nend\n", None)
         .expect("fixture source must fit");
     let range = TextRange::new(10, 16).expect("fixture range is valid");
     Report::new(RichDiagnostic {
@@ -68,7 +68,7 @@ pub fn rich_report() -> Report {
 pub fn rich_session_diagnostic() -> (RichDiagnostic, SourceMap) {
     let mut sources = SourceMap::new(SourceNamespace::new_unchecked(46));
     let source = sources
-        .insert("session.masm", "begin\n    broken\nend\n", None)
+        .insert("session.runic", "begin\n    broken\nend\n", None)
         .expect("fixture source must fit");
     let range = TextRange::new(10, 16).expect("fixture range is valid");
     (

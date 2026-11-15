@@ -504,7 +504,7 @@ fn a_bundled_report_keeps_the_session_sources() {
     use crate::{SourceMap, SourceNamespace, SourceSpan, TextRange};
 
     let mut sources = SourceMap::new(SourceNamespace::new_unchecked(1));
-    let id = sources.insert("bundled.masm", "begin broken end", None).unwrap();
+    let id = sources.insert("bundled.runic", "begin broken end", None).unwrap();
     let span = SourceSpan::session(id, TextRange::new(6, 12).unwrap());
 
     let mut collector = DiagnosticCollector::new();
@@ -517,6 +517,6 @@ fn a_bundled_report_keeps_the_session_sources() {
     assert!(report.session_sources().is_some());
     let rendered = alloc::format!("{}", report.display());
     assert!(!rendered.contains("missing source"), "rendered without its source: {rendered}");
-    assert!(rendered.contains("bundled.masm"), "rendered without its source: {rendered}");
+    assert!(rendered.contains("bundled.runic"), "rendered without its source: {rendered}");
     assert!(rendered.contains("broken"), "rendered without its snippet: {rendered}");
 }

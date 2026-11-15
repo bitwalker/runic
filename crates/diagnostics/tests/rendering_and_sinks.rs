@@ -23,7 +23,7 @@ use runic_diagnostics::{EmissionStatus, IoEmissionError, IoEmitter};
 static TAGS: &[DiagnosticTag] = &[DiagnosticTag::Deprecated];
 static DESCRIPTOR: DiagnosticDescriptor = DiagnosticDescriptor {
     code: DiagnosticCode {
-        namespace: "miden::parser",
+        namespace: "runic::parser",
         code: "E0007",
     },
     summary: "test descriptor",
@@ -39,7 +39,7 @@ static DESCRIPTOR: DiagnosticDescriptor = DiagnosticDescriptor {
 };
 static INVALID_URL_DESCRIPTOR: DiagnosticDescriptor = DiagnosticDescriptor {
     code: DiagnosticCode {
-        namespace: "miden::parser",
+        namespace: "runic::parser",
         code: "E0008",
     },
     summary: "bad URL",
@@ -717,9 +717,9 @@ impl Diagnostic for RichDiagnostic {
 fn rich_owned() -> (SourceMap, OwnedDiagnostic, SourceId, SourceId) {
     let mut session = SourceMap::new(SourceNamespace::new_unchecked(20));
     let session_id =
-        session.insert("same.masm", "fn main() {}\n", Some(SourceRevision(7))).unwrap();
+        session.insert("same.runic", "fn main() {}\n", Some(SourceRevision(7))).unwrap();
     let mut attached = SourceMap::new(SourceNamespace::new_unchecked(20));
-    let attached_id = attached.insert("same.masm", "var value = 1\n", None).unwrap();
+    let attached_id = attached.insert("same.runic", "var value = 1\n", None).unwrap();
     let diagnostic = RichDiagnostic {
         session: SourceSpan::session(session_id, range(0, 2)).with_revision(SourceRevision(7)),
         attached: SourceSpan::attached(attached_id, range(0, 3)),
@@ -844,16 +844,16 @@ fn diagnostic_display_has_strict_errors_and_safe_degradation() {
 #[test]
 fn attached_display_and_explicit_preparation_limits_are_supported() {
     let mut attached = SourceMap::new(SourceNamespace::new_unchecked(22));
-    let id = attached.insert("attached.masm", "bad token", None).unwrap();
+    let id = attached.insert("attached.runic", "bad token", None).unwrap();
     let owned = OwnedDiagnostic::new(MissingLocated(SourceSpan::attached(id, range(0, 3))))
         .attach_sources(attached);
     let rendered = owned.display().try_render().unwrap();
-    assert!(rendered.contains("attached.masm"));
+    assert!(rendered.contains("attached.runic"));
     assert!(rendered.contains("bad token"));
 
     let report = Report::from_diagnostic(owned);
     let rendered = AnnotateRenderer::default().render(&report.prepare_attached().unwrap()).unwrap();
-    assert!(rendered.contains("attached.masm"));
+    assert!(rendered.contains("attached.runic"));
 
     let limits = PreparationLimits {
         max_item_text_bytes: 3,
@@ -881,12 +881,12 @@ fn attached_display_and_explicit_preparation_limits_are_supported() {
 #[test]
 fn diagnostic_sets_prepare_with_each_occurrences_retained_session_sources() {
     let mut first_sources = SourceMap::new(SourceNamespace::new_unchecked(24));
-    let first_id = first_sources.insert("first.masm", "bad first", None).unwrap();
+    let first_id = first_sources.insert("first.runic", "bad first", None).unwrap();
     let first = OwnedDiagnostic::new(MissingLocated(SourceSpan::session(first_id, range(0, 3))))
         .attach_session_sources(first_sources);
 
     let mut second_sources = SourceMap::new(SourceNamespace::new_unchecked(25));
-    let second_id = second_sources.insert("second.masm", "bad second", None).unwrap();
+    let second_id = second_sources.insert("second.runic", "bad second", None).unwrap();
     let second = OwnedDiagnostic::new(MissingLocated(SourceSpan::session(second_id, range(0, 3))))
         .attach_session_sources(second_sources);
 
@@ -900,9 +900,9 @@ fn diagnostic_sets_prepare_with_each_occurrences_retained_session_sources() {
         .map(|diagnostic| AnnotateRenderer::default().render(diagnostic).unwrap())
         .collect::<Vec<_>>();
 
-    assert!(rendered[0].contains("first.masm"));
+    assert!(rendered[0].contains("first.runic"));
     assert!(rendered[0].contains("bad first"));
-    assert!(rendered[1].contains("second.masm"));
+    assert!(rendered[1].contains("second.runic"));
     assert!(rendered[1].contains("bad second"));
 }
 
@@ -913,9 +913,9 @@ fn renderer_lowers_full_semantics_and_never_reads_explanations() {
     let diagnostic = prepared.iter().next().unwrap();
 
     let plain = AnnotateRenderer::default().render(diagnostic).unwrap();
-    assert!(plain.contains("error[miden::parser/E0007]: unexpected token"));
-    assert!(plain.contains("same.masm [session 20:0]"));
-    assert!(plain.contains("same.masm [attached 20:0]"));
+    assert!(plain.contains("error[runic::parser/E0007]: unexpected token"));
+    assert!(plain.contains("same.runic [session 20:0]"));
+    assert!(plain.contains("same.runic [attached 20:0]"));
     assert!(plain.contains("while parsing module"));
     assert!(plain.contains("conventional cause"));
     assert!(plain.contains("inner source"));
@@ -1038,7 +1038,7 @@ fn renderer_rejects_source_revision_range_edit_url_and_width_failures() {
     );
 
     let mut sources = SourceMap::new(SourceNamespace::new_unchecked(31));
-    let id = sources.insert("unicode.masm", "é", Some(SourceRevision(2))).unwrap();
+    let id = sources.insert("unicode.runic", "é", Some(SourceRevision(2))).unwrap();
     let prepared = PreparedDiagnostic {
         snapshot: snapshot_with_label(
             SourceSpan::session(id, range(0, 2)).with_revision(SourceRevision(1)),
@@ -1272,7 +1272,7 @@ impl SourceProvider for MetadataProvider {
     fn get(&self, id: SourceId) -> Option<Source<'_>> {
         (id == self.id).then_some(Source {
             id,
-            display_name: "generated.masm",
+            display_name: "generated.runic",
             byte_len: 8,
             text: None,
             revision: None,
@@ -1313,9 +1313,9 @@ fn metadata_only_sources_preserve_each_label_role_and_location() {
         sources: LayeredSourceProvider::session_only(&provider),
     };
     let output = AnnotateRenderer::default().render(&prepared).unwrap();
-    assert!(output.contains("generated.masm:12:4"));
-    assert!(output.contains("primary at generated.masm:12:4: here"));
-    assert!(output.contains("context at generated.masm:20:1: secondary metadata label"));
+    assert!(output.contains("generated.runic:12:4"));
+    assert!(output.contains("primary at generated.runic:12:4: here"));
+    assert!(output.contains("context at generated.runic:20:1: secondary metadata label"));
 
     let mut snapshot = snapshot_with_label(SourceSpan::session(id, range(0, 2)));
     snapshot.suggestions.push(OwnedSuggestion {
@@ -1404,7 +1404,7 @@ fn every_rendered_user_field_crosses_the_terminal_safety_boundary() {
     let mut sources = SourceMap::new(SourceNamespace::new_unchecked(51));
     let id = sources
         .insert(
-            "pa\u{1b}]0;title\u{7}th\u{009d}.masm",
+            "pa\u{1b}]0;title\u{7}th\u{009d}.runic",
             concat!(
                 "\u{1b}[2J",
                 "\u{1b}]8;;https://docs.example.test/E0007\u{1b}\\",
@@ -1702,7 +1702,7 @@ fn sink_failure_while_writing_a_degraded_record_does_not_count_it() {
 #[test]
 fn deterministic_malformed_corpus_never_unwinds_through_the_renderer() {
     let mut sources = SourceMap::new(SourceNamespace::new_unchecked(70));
-    let id = sources.insert("fuzz.masm", "éx", None).unwrap();
+    let id = sources.insert("fuzz.runic", "éx", None).unwrap();
     let mut empty_suggestion = snapshot_with_label(SourceSpan::session(id, range(0, 2)));
     empty_suggestion.suggestions.push(OwnedSuggestion {
         message: "empty".into(),

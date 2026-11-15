@@ -1,10 +1,10 @@
-<ESC>[1m<ESC>[91merror[miden::parser/E0007]<ESC>[0m<ESC>[1m: unexpected token<ESC>[0m
- <ESC>[1m<ESC>[94m--> <ESC>[0msame.masm [session 20:0]:1:1
+<ESC>[1m<ESC>[91merror[runic::parser/E0007]<ESC>[0m<ESC>[1m: unexpected token<ESC>[0m
+ <ESC>[1m<ESC>[94m--> <ESC>[0msame.runic [session 20:0]:1:1
   <ESC>[1m<ESC>[94m|<ESC>[0m
 <ESC>[1m<ESC>[94m1<ESC>[0m <ESC>[1m<ESC>[94m|<ESC>[0m fn main() {}
   <ESC>[1m<ESC>[94m|<ESC>[0m <ESC>[1m<ESC>[91m^^<ESC>[0m <ESC>[1m<ESC>[91munexpected<ESC>[0m
   <ESC>[1m<ESC>[94m|<ESC>[0m
- <ESC>[1m<ESC>[94m::: <ESC>[0msame.masm [attached 20:0]:1:1
+ <ESC>[1m<ESC>[94m::: <ESC>[0msame.runic [attached 20:0]:1:1
   <ESC>[1m<ESC>[94m|<ESC>[0m
 <ESC>[1m<ESC>[94m1<ESC>[0m <ESC>[1m<ESC>[94m|<ESC>[0m var value = 1
   <ESC>[1m<ESC>[94m|<ESC>[0m <ESC>[1m<ESC>[94m---<ESC>[0m <ESC>[1m<ESC>[94mdeclared here<ESC>[0m
@@ -21,7 +21,7 @@
 <ESC>[1m<ESC>[94m1<ESC>[0m <ESC>[91m- fn<ESC>[0m main() {}
 <ESC>[1m<ESC>[94m1<ESC>[0m <ESC>[92m+ proc<ESC>[0m main() {}
   <ESC>[1m<ESC>[94m|<ESC>[0m
- <ESC>[1m<ESC>[94m--> <ESC>[0msame.masm [attached 20:0]:1:1
+ <ESC>[1m<ESC>[94m--> <ESC>[0msame.runic [attached 20:0]:1:1
   <ESC>[1m<ESC>[94m|<ESC>[0m
 <ESC>[1m<ESC>[94m1<ESC>[0m <ESC>[91m- var<ESC>[0m value = 1
 <ESC>[1m<ESC>[94m1<ESC>[0m <ESC>[92m+ let<ESC>[0m value = 1

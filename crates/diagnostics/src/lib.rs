@@ -328,9 +328,9 @@ macro_rules! __diagnostic_push_suggestions {
         ),* $(,)?)?
     ) => {
         {
-            let mut __miden_diagnostic_edits = $crate::__private::Vec::new();
+            let mut __runic_diagnostic_edits = $crate::__private::Vec::new();
             $(
-                __miden_diagnostic_edits.push($crate::OwnedTextEdit {
+                __runic_diagnostic_edits.push($crate::OwnedTextEdit {
                     span: $span,
                     replacement: $crate::__private::format_arguments(
                         $crate::__diagnostic_format_args!($replacement),
@@ -340,15 +340,15 @@ macro_rules! __diagnostic_push_suggestions {
             $diagnostic.push_suggestion(
                 $crate::__diagnostic_format_args!($message),
                 $crate::__diagnostic_applicability!($applicability),
-                __miden_diagnostic_edits,
+                __runic_diagnostic_edits,
             );
         }
         $(
             $(
                 {
-                    let mut __miden_diagnostic_edits = $crate::__private::Vec::new();
+                    let mut __runic_diagnostic_edits = $crate::__private::Vec::new();
                     $(
-                        __miden_diagnostic_edits.push($crate::OwnedTextEdit {
+                        __runic_diagnostic_edits.push($crate::OwnedTextEdit {
                             span: $rest_span,
                             replacement: $crate::__private::format_arguments(
                                 $crate::__diagnostic_format_args!($rest_replacement),
@@ -358,7 +358,7 @@ macro_rules! __diagnostic_push_suggestions {
                     $diagnostic.push_suggestion(
                         $crate::__diagnostic_format_args!($rest_message),
                         $crate::__diagnostic_applicability!($rest_applicability),
-                        __miden_diagnostic_edits,
+                        __runic_diagnostic_edits,
                     );
                 }
             )*
@@ -388,11 +388,11 @@ macro_rules! __diagnostic_build {
         $(related: [$($related:expr),* $(,)?],)?
     ) => {
         {
-            let mut __miden_diagnostic = $root;
+            let mut __runic_diagnostic = $root;
             $(
                 $(
                     $crate::__diagnostic_push_label!(
-                        __miden_diagnostic,
+                        __runic_diagnostic,
                         $label_kind,
                         $label_span
                         $(, $label_message)?
@@ -402,7 +402,7 @@ macro_rules! __diagnostic_build {
             $(
                 $(
                     $crate::__diagnostic_push_note!(
-                        __miden_diagnostic,
+                        __runic_diagnostic,
                         $note_kind,
                         $note_message
                     );
@@ -410,22 +410,22 @@ macro_rules! __diagnostic_build {
             )?
             $(
                 $crate::__diagnostic_push_suggestions!(
-                    __miden_diagnostic;
+                    __runic_diagnostic;
                     $($suggestion)*
                 );
             )?
             $(
-                __miden_diagnostic.set_cause($cause);
+                __runic_diagnostic.set_cause($cause);
             )?
             $(
-                __miden_diagnostic.set_diagnostic_source($diagnostic_source);
+                __runic_diagnostic.set_diagnostic_source($diagnostic_source);
             )?
             $(
                 $(
-                    __miden_diagnostic.push_related($related);
+                    __runic_diagnostic.push_related($related);
                 )*
             )?
-            __miden_diagnostic
+            __runic_diagnostic
         }
     };
 }

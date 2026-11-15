@@ -222,7 +222,7 @@ mod tests {
         let namespace = SourceNamespace::new_unchecked(1);
         for explicit_override in [false, true] {
             let mut retained = SourceMap::new(namespace);
-            let id = retained.insert("retained.masm", "retained source", None).unwrap();
+            let id = retained.insert("retained.runic", "retained source", None).unwrap();
             let mut outcome =
                 outcome(Located(SourceSpan::session(id, TextRange::new(0, 8).unwrap())));
             outcome.diagnostics =
@@ -230,7 +230,7 @@ mod tests {
             let mut exit = ExitWithOutcome::from(outcome);
             if explicit_override {
                 let mut sources = SourceMap::new(namespace);
-                assert_eq!(sources.insert("override.masm", "override source", None).unwrap(), id);
+                assert_eq!(sources.insert("override.runic", "override source", None).unwrap(), id);
                 exit = exit.with_sources(sources);
             }
             let mut rendered = alloc::string::String::new();
@@ -250,14 +250,14 @@ mod tests {
             } else {
                 "retained"
             };
-            assert!(rendered.contains(&alloc::format!("{expected}.masm")), "{rendered}");
+            assert!(rendered.contains(&alloc::format!("{expected}.runic")), "{rendered}");
             assert!(rendered.contains(&alloc::format!("{expected} source")), "{rendered}");
             let unexpected = if explicit_override {
                 "retained"
             } else {
                 "override"
             };
-            assert!(!rendered.contains(&alloc::format!("{unexpected}.masm")), "{rendered}");
+            assert!(!rendered.contains(&alloc::format!("{unexpected}.runic")), "{rendered}");
         }
     }
 
