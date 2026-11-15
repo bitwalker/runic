@@ -351,26 +351,58 @@ fn run_to_buffers(
     Ok(succeeded)
 }
 
-/// Writes `bytes` to `path` through a temporary file beside it, renamed into place once it is
-/// complete, so that a write that fails part of the way leaves `path` as it was.
+/// Writes `bytes` to `path`.
+///
+/// A regular file, or a path where nothing is yet, is written through a temporary file beside
+/// it, renamed into place once it is complete, so that a write that fails part of the way leaves
+/// `path` as it was; the file keeps its permissions. A link is followed, and what it points at is
+/// written, so the link stays. Anything else (a device such as `/dev/null`, a pipe) is written
+/// directly.
 fn write_file(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> {
-    let name = path
+    let target = match fs::canonicalize(path) {
+        Ok(target) => target,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            // A link to nothing: writing through it creates what it points at.
+            if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+                return write_directly(path, bytes);
+            }
+            path.to_path_buf()
+        }
+        Err(error) => return Err(error),
+    };
+    let permissions = match fs::metadata(&target) {
+        Ok(metadata) if metadata.is_file() => Some(metadata.permissions()),
+        Ok(_) => return write_directly(&target, bytes),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    let name = target
         .file_name()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "the path names no file"))?;
     let mut temporary = name.to_os_string();
     temporary.push(format!(".runic-opt-{}.tmp", std::process::id()));
-    let temporary = path.with_file_name(temporary);
+    let temporary = target.with_file_name(temporary);
     let written = fs::File::create(&temporary).and_then(|mut file| {
         file.write_all(bytes)?;
+        if let Some(permissions) = permissions {
+            file.set_permissions(permissions)?;
+        }
         file.sync_all()
     });
-    match written.and_then(|()| fs::rename(&temporary, path)) {
+    match written.and_then(|()| fs::rename(&temporary, &target)) {
         Ok(()) => Ok(()),
         Err(error) => {
             let _ = fs::remove_file(&temporary);
             Err(error)
         }
     }
+}
+
+/// Writes `bytes` to `path` as it is, for what a temporary file cannot stand in for.
+fn write_directly(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> {
+    let mut file = fs::File::create(path)?;
+    file.write_all(bytes)?;
+    file.flush()
 }
 
 /// Checks the pipeline's `text` as [`read_pipeline`] reads it, apart from its anchor: its syntax,

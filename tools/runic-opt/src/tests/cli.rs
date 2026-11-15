@@ -261,8 +261,8 @@ fn an_output_file_is_written_only_when_every_case_succeeded() {
     assert!(!path.exists());
 }
 
-/// `-o` writes through a temporary file beside the output, renamed into place: none is left
-/// behind, on success or when the write fails.
+/// `-o` writes a regular file through a temporary file beside it, renamed into place: none is
+/// left behind, on success or when the write fails.
 #[test]
 fn an_output_file_is_written_whole_or_not_at_all() {
     let dir = scratch();
@@ -278,7 +278,7 @@ fn an_output_file_is_written_whole_or_not_at_all() {
         names
     };
     assert_eq!(names(), ["output.runic"]);
-    // A directory in the way of the rename: the write fails, and nothing is left behind.
+    // A directory in the way: the write fails, and nothing is left behind.
     let blocked = dir.path().join("blocked");
     std::fs::create_dir(&blocked).unwrap();
     std::fs::write(blocked.join("inside"), "kept").unwrap();
@@ -287,4 +287,52 @@ fn an_output_file_is_written_whole_or_not_at_all() {
     assert!(output.stderr.starts_with("error: could not write '"), "{}", output.stderr);
     assert_eq!(names(), ["blocked", "output.runic"]);
     assert_eq!(std::fs::read_to_string(blocked.join("inside")).unwrap(), "kept");
+}
+
+/// `-o` names something that is not a regular file, such as a device: it is written as it is,
+/// with no temporary file beside it.
+#[cfg(unix)]
+#[test]
+fn an_output_that_is_a_device_is_written_directly() {
+    let output = opt(&["-o", "/dev/null"], REPEATED_ADD);
+    output.succeeded();
+    assert_eq!(output.stdout, "");
+    assert_eq!(output.stderr, "");
+}
+
+/// `-o` names a link to a file: the file it points at is written, and the link stays a link.
+#[cfg(unix)]
+#[test]
+fn an_output_that_is_a_link_writes_the_file_it_points_at() {
+    let dir = scratch();
+    let real = dir.path().join("real.runic");
+    let link = dir.path().join("link.runic");
+    std::fs::write(&real, "before").unwrap();
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    opt(&["-o", link.to_str().unwrap()], REPEATED_ADD).succeeded();
+    assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+    assert_eq!(std::fs::read_link(&link).unwrap(), real);
+    assert_eq!(std::fs::read_to_string(&real).unwrap(), opt(&[], REPEATED_ADD).stdout);
+    let mut names = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect::<Vec<_>>();
+    names.sort();
+    assert_eq!(names, ["link.runic", "real.runic"]);
+}
+
+/// `-o` names an existing file: the file written in its place keeps its permissions.
+#[cfg(unix)]
+#[test]
+fn an_output_file_keeps_its_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = scratch();
+    let path = dir.path().join("output.runic");
+    std::fs::write(&path, "before").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+    opt(&["-o", path.to_str().unwrap()], REPEATED_ADD).succeeded();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), opt(&[], REPEATED_ADD).stdout);
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o640, "{mode:o}");
 }
