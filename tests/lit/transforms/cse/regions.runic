@@ -1,0 +1,194 @@
+// RUN: runic-opt %s -p cse | filecheck %s
+// RUN: runic-opt %s -p cse | runic-opt - --verify-roundtrip | filecheck %s
+
+// CSE and operations that hold regions. Two operations whose regions are equal are merged like any
+// other equal pair: blocks are compared by their arguments' places, not their names, and the
+// operations inside are compared in order, with the values they read from outside the regions.
+// Operations whose regions differ, in what they yield or in the operands of one operation inside,
+// are kept. A region is simplified before the operation that holds it is compared: an operation in
+// it is replaced by an equal one outside that dominates it, and the operation that holds it is then
+// merged with an equal one. The second RUN line reads the output back.
+builtin.module public @cse_regions {
+    // Each region's block takes arguments, and the after region yields its argument: the two
+    // loops are equal, and the second is replaced by the first.
+    // CHECK-LABEL: @equal_loops(
+    // CHECK-SAME: [[N:%[0-9]+]]: i32, [[Z:%[0-9]+]]: i32) -> (i32, i32) {
+    // CHECK-NEXT: [[LOOP:%[0-9]+]] = scf.while [[Z]] before {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[I:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[MORE:%[0-9]+]] = arith.cmpi ult [[I]], [[N]];
+    // CHECK-NEXT: scf.condition [[MORE]], [[I]] : (i1, i32);
+    // CHECK-NEXT: } after {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[X:%[0-9]+]]: i32):
+    // CHECK-NEXT: scf.yield [[X]] : (i32);
+    // CHECK-NEXT: } : (i32) -> (i32);
+    // CHECK-NEXT: builtin.ret [[LOOP]], [[LOOP]] : (i32, i32);
+    builtin.function public extern("C") @equal_loops(%n: i32, %z: i32) -> (i32, i32) {
+        %first = scf.while %z before {
+        ^before(%i: i32):
+            %more = arith.cmpi ult %i, %n;
+            scf.condition %more, %i : (i1, i32);
+        } after {
+        ^after(%x: i32):
+            scf.yield %x : (i32);
+        } : (i32) -> (i32);
+        %second = scf.while %z before {
+        ^before(%j: i32):
+            %more = arith.cmpi ult %j, %n;
+            scf.condition %more, %j : (i1, i32);
+        } after {
+        ^after(%y: i32):
+            scf.yield %y : (i32);
+        } : (i32) -> (i32);
+        builtin.ret %first, %second : (i32, i32);
+    };
+
+    // The after regions yield their two arguments in different orders: the loops differ, and
+    // both stay.
+    // CHECK-LABEL: @loops_that_yield_different_arguments(
+    // CHECK-SAME: [[N:%[0-9]+]]: i32, [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> (i32, i32, i32, i32) {
+    // CHECK-NEXT: [[FIRST:%[0-9]+]], [[FIRST_B:%[0-9]+]] = scf.while [[A]], [[B]] before {
+    // CHECK: } after {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[X:%[0-9]+]]: i32, [[Y:%[0-9]+]]: i32):
+    // CHECK-NEXT: scf.yield [[X]], [[Y]] : (i32, i32);
+    // CHECK-NEXT: } : (i32, i32) -> (i32, i32);
+    // CHECK-NEXT: [[SECOND:%[0-9]+]], [[SECOND_B:%[0-9]+]] = scf.while [[A]], [[B]] before {
+    // CHECK: } after {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[U:%[0-9]+]]: i32, [[V:%[0-9]+]]: i32):
+    // CHECK-NEXT: scf.yield [[V]], [[U]] : (i32, i32);
+    // CHECK-NEXT: } : (i32, i32) -> (i32, i32);
+    // CHECK-NEXT: builtin.ret [[FIRST]], [[FIRST_B]], [[SECOND]], [[SECOND_B]] : (i32, i32, i32, i32);
+    builtin.function public extern("C") @loops_that_yield_different_arguments(%n: i32, %a: i32, %b: i32) -> (i32, i32, i32, i32) {
+        %first, %first_b = scf.while %a, %b before {
+        ^before(%i: i32, %j: i32):
+            %more = arith.cmpi ult %i, %n;
+            scf.condition %more, %i, %j : (i1, i32, i32);
+        } after {
+        ^after(%x: i32, %y: i32):
+            scf.yield %x, %y : (i32, i32);
+        } : (i32, i32) -> (i32, i32);
+        %second, %second_b = scf.while %a, %b before {
+        ^before(%i: i32, %j: i32):
+            %more = arith.cmpi ult %i, %n;
+            scf.condition %more, %i, %j : (i1, i32, i32);
+        } after {
+        ^after(%x: i32, %y: i32):
+            scf.yield %y, %x : (i32, i32);
+        } : (i32, i32) -> (i32, i32);
+        builtin.ret %first, %first_b, %second, %second_b : (i32, i32, i32, i32);
+    };
+
+    // The after regions hold the same three operations, which read the block's arguments and two
+    // values from outside the loop: the loops are equal, and the second is replaced by the first.
+    // CHECK-LABEL: @loops_with_equal_bodies(
+    // CHECK-SAME: [[N:%[0-9]+]]: i32, [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32, [[K:%[0-9]+]]: i32, [[D:%[0-9]+]]: i1) -> (i32, i32, i32, i32) {
+    // CHECK-NEXT: [[LOOP:%[0-9]+]], [[LOOP_B:%[0-9]+]] = scf.while [[A]], [[B]] before {
+    // CHECK: } after {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[X:%[0-9]+]]: i32, [[Y:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[DIFF:%[0-9]+]] = arith.sub [[X]], [[Y]];
+    // CHECK-NEXT: [[SCALED:%[0-9]+]] = arith.mul [[X]], [[K]];
+    // CHECK-NEXT: [[PICK:%[0-9]+]] = cf.select [[D]], [[DIFF]], [[SCALED]];
+    // CHECK-NEXT: scf.yield [[PICK]], [[Y]] : (i32, i32);
+    // CHECK-NEXT: } : (i32, i32) -> (i32, i32);
+    // CHECK-NEXT: builtin.ret [[LOOP]], [[LOOP_B]], [[LOOP]], [[LOOP_B]] : (i32, i32, i32, i32);
+    builtin.function public extern("C") @loops_with_equal_bodies(%n: i32, %a: i32, %b: i32, %k: i32, %d: i1) -> (i32, i32, i32, i32) {
+        %first, %first_b = scf.while %a, %b before {
+        ^before(%i: i32, %j: i32):
+            %more = arith.cmpi ult %i, %n;
+            scf.condition %more, %i, %j : (i1, i32, i32);
+        } after {
+        ^after(%x: i32, %y: i32):
+            %diff = arith.sub %x, %y;
+            %scaled = arith.mul %x, %k;
+            %pick = cf.select %d, %diff, %scaled;
+            scf.yield %pick, %y : (i32, i32);
+        } : (i32, i32) -> (i32, i32);
+        %second, %second_b = scf.while %a, %b before {
+        ^before(%i: i32, %j: i32):
+            %more = arith.cmpi ult %i, %n;
+            scf.condition %more, %i, %j : (i1, i32, i32);
+        } after {
+        ^after(%x: i32, %y: i32):
+            %diff = arith.sub %x, %y;
+            %scaled = arith.mul %x, %k;
+            %pick = cf.select %d, %diff, %scaled;
+            scf.yield %pick, %y : (i32, i32);
+        } : (i32, i32) -> (i32, i32);
+        builtin.ret %first, %first_b, %second, %second_b : (i32, i32, i32, i32);
+    };
+
+    // The same bodies, but the second `cf.select` takes its two values in the other order (a
+    // select is not commutative): the loops differ, and both stay.
+    // CHECK-LABEL: @loops_with_different_bodies(
+    // CHECK-SAME: [[N:%[0-9]+]]: i32, [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32, [[K:%[0-9]+]]: i32, [[D:%[0-9]+]]: i1) -> (i32, i32, i32, i32) {
+    // CHECK-NEXT: [[FIRST:%[0-9]+]], [[FIRST_B:%[0-9]+]] = scf.while [[A]], [[B]] before {
+    // CHECK: } after {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[X:%[0-9]+]]: i32, [[Y:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[DIFF:%[0-9]+]] = arith.sub [[X]], [[Y]];
+    // CHECK-NEXT: [[SCALED:%[0-9]+]] = arith.mul [[X]], [[K]];
+    // CHECK-NEXT: [[PICK:%[0-9]+]] = cf.select [[D]], [[DIFF]], [[SCALED]];
+    // CHECK-NEXT: scf.yield [[PICK]], [[Y]] : (i32, i32);
+    // CHECK-NEXT: } : (i32, i32) -> (i32, i32);
+    // CHECK-NEXT: [[SECOND:%[0-9]+]], [[SECOND_B:%[0-9]+]] = scf.while [[A]], [[B]] before {
+    // CHECK: } after {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[U:%[0-9]+]]: i32, [[V:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[DIFF2:%[0-9]+]] = arith.sub [[U]], [[V]];
+    // CHECK-NEXT: [[SCALED2:%[0-9]+]] = arith.mul [[U]], [[K]];
+    // CHECK-NEXT: [[PICK2:%[0-9]+]] = cf.select [[D]], [[SCALED2]], [[DIFF2]];
+    // CHECK-NEXT: scf.yield [[PICK2]], [[V]] : (i32, i32);
+    // CHECK-NEXT: } : (i32, i32) -> (i32, i32);
+    // CHECK-NEXT: builtin.ret [[FIRST]], [[FIRST_B]], [[SECOND]], [[SECOND_B]] : (i32, i32, i32, i32);
+    builtin.function public extern("C") @loops_with_different_bodies(%n: i32, %a: i32, %b: i32, %k: i32, %d: i1) -> (i32, i32, i32, i32) {
+        %first, %first_b = scf.while %a, %b before {
+        ^before(%i: i32, %j: i32):
+            %more = arith.cmpi ult %i, %n;
+            scf.condition %more, %i, %j : (i1, i32, i32);
+        } after {
+        ^after(%x: i32, %y: i32):
+            %diff = arith.sub %x, %y;
+            %scaled = arith.mul %x, %k;
+            %pick = cf.select %d, %diff, %scaled;
+            scf.yield %pick, %y : (i32, i32);
+        } : (i32, i32) -> (i32, i32);
+        %second, %second_b = scf.while %a, %b before {
+        ^before(%i: i32, %j: i32):
+            %more = arith.cmpi ult %i, %n;
+            scf.condition %more, %i, %j : (i1, i32, i32);
+        } after {
+        ^after(%x: i32, %y: i32):
+            %diff = arith.sub %x, %y;
+            %scaled = arith.mul %x, %k;
+            %pick = cf.select %d, %scaled, %diff;
+            scf.yield %pick, %y : (i32, i32);
+        } : (i32, i32) -> (i32, i32);
+        builtin.ret %first, %first_b, %second, %second_b : (i32, i32, i32, i32);
+    };
+
+    // Each then region defines a constant equal to %outside, which dominates it: the constants are
+    // replaced by %outside, and the two `scf.if`s, equal after that, are merged. %outside is
+    // returned: an operation unused when CSE reaches it is erased as dead, and replaces nothing.
+    // CHECK-LABEL: @regions_equal_once_simplified(
+    // CHECK-SAME: [[C:%[0-9]+]]: i1) -> (i1, i1, i1) {
+    // CHECK-NEXT: [[OUTSIDE:%[0-9]+]] = arith.constant 1 : i1;
+    // CHECK-NEXT: [[IF:%[0-9]+]] = scf.if [[C]] then {
+    // CHECK-NEXT: scf.yield [[OUTSIDE]] : (i1);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: scf.yield [[C]] : (i1);
+    // CHECK-NEXT: } : (i1) -> (i1);
+    // CHECK-NEXT: builtin.ret [[IF]], [[IF]], [[OUTSIDE]] : (i1, i1, i1);
+    builtin.function public extern("C") @regions_equal_once_simplified(%c: i1) -> (i1, i1, i1) {
+        %outside = arith.constant 1 : i1;
+        %first = scf.if %c then {
+            %inside = arith.constant 1 : i1;
+            scf.yield %inside : (i1);
+        } else {
+            scf.yield %c : (i1);
+        } : (i1) -> (i1);
+        %second = scf.if %c then {
+            %inside = arith.constant 1 : i1;
+            scf.yield %inside : (i1);
+        } else {
+            scf.yield %c : (i1);
+        } : (i1) -> (i1);
+        builtin.ret %first, %second, %outside : (i1, i1, i1);
+    };
+};

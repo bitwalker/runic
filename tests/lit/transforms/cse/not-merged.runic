@@ -6,8 +6,9 @@
 // states no effects. A call with unknown effects is never merged, nor are calls of different
 // callees. The one resource that holds every local keeps two loads of a local apart across a store
 // of any local. A read of the default resource is kept apart by an assertion, whose resource is a
-// child of the default one; a read of memory through an address is not. An operation that holds a
-// store is not a read, though its own effect is one. CSE does not move an operation up the
+// child of the default one; a read of memory through an address is not. A store held in a region
+// of an operation between two reads keeps them apart. An operation that holds a store is not a
+// read, though its own effect is one. CSE does not move an operation up the
 // dominance tree: an operation in a region is not merged with an equal one after the region. The
 // first function shows the pass live. The second RUN line reads the output back.
 builtin.module public @cse_not_merged {
@@ -159,6 +160,35 @@ builtin.module public @cse_not_merged {
         builtin.store_local 0, %v;
         %second = builtin.load_local 0 : i32;
         builtin.ret %first, %second : (i32, i32);
+    };
+
+    // The then region of the `scf.if` between the two loads stores to memory; the `scf.if` has the
+    // effects of what it holds, so the loads are both kept.
+    // CHECK-LABEL: @reads_across_a_region_that_writes(
+    // CHECK-SAME: [[P:%[0-9]+]]: ptr<i32>, [[V:%[0-9]+]]: i32, [[C:%[0-9]+]]: i1) -> (i32, i32, i32) {
+    // CHECK-NEXT: [[FIRST:%[0-9]+]] = test.load [[P]];
+    // CHECK-NEXT: [[IF:%[0-9]+]] = scf.if [[C]] then {
+    // CHECK-NEXT: test.store [[P]], [[V]] : (ptr<i32>, i32);
+    // CHECK-NEXT: [[C42:%[0-9]+]] = arith.constant 42 : i32;
+    // CHECK-NEXT: scf.yield [[C42]] : (i32);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: [[C24:%[0-9]+]] = arith.constant 24 : i32;
+    // CHECK-NEXT: scf.yield [[C24]] : (i32);
+    // CHECK-NEXT: } : (i1) -> (i32);
+    // CHECK-NEXT: [[SECOND:%[0-9]+]] = test.load [[P]];
+    // CHECK-NEXT: builtin.ret [[FIRST]], [[SECOND]], [[IF]] : (i32, i32, i32);
+    builtin.function public extern("C") @reads_across_a_region_that_writes(%p: ptr<i32>, %v: i32, %c: i1) -> (i32, i32, i32) {
+        %first = test.load %p;
+        %if = scf.if %c then {
+            test.store %p, %v : (ptr<i32>, i32);
+            %c42 = arith.constant 42 : i32;
+            scf.yield %c42 : (i32);
+        } else {
+            %c24 = arith.constant 24 : i32;
+            scf.yield %c24 : (i32);
+        } : (i1) -> (i32);
+        %second = test.load %p;
+        builtin.ret %first, %second, %if : (i32, i32, i32);
     };
 
     // `test.reads_locals_and_holds` reads, and holds a store: two equal ones are both kept (the

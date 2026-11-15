@@ -1,9 +1,11 @@
 // RUN: runic-opt %s -p cse | filecheck %s
 // RUN: runic-opt %s -p cse | runic-opt - --verify-roundtrip | filecheck %s
 
-// CSE follows the dominance tree down: an operation in a nested region is replaced by an equal one
-// in a region that encloses it. The constant 1 in the `before` region of the `scf.while` is
-// replaced by the function's constant 1. The second RUN line reads the output back.
+// CSE follows the dominance tree down, never up. An operation in a nested region is replaced by an
+// equal one in a region that encloses it: the constant 1 in the `before` region of the `scf.while`
+// is replaced by the function's constant 1. Across the blocks of a region, an operation is replaced
+// by an equal one in a block that dominates its own, and not by one in a block that does not. The
+// second RUN line reads the output back.
 builtin.module public @cse_dominance {
     // CHECK-LABEL: @down_propagate_while(
     // CHECK-SAME: ) {
@@ -35,5 +37,49 @@ builtin.module public @cse_dominance {
             scf.yield %x, %y : (i32, i32);
         } : (i32, i32) -> (i32, i32);
         builtin.ret;
+    };
+
+    // The entry block dominates ^then: the constant 1 there is replaced by the entry's.
+    // CHECK-LABEL: @down_propagate_cfg(
+    // CHECK-SAME: [[COND:%[0-9]+]]: i1) -> i32 {
+    // CHECK-NEXT: [[ONE:%[0-9]+]] = arith.constant 1 : i32;
+    // CHECK-NEXT: cf.cond_br [[COND]] ^[[THEN:block[0-9]+]], ^[[JOIN:block[0-9]+]]([[ONE]] : i32) : (i1);
+    // CHECK-NEXT: ^[[THEN]]:
+    // CHECK-NEXT: cf.br ^[[JOIN]]([[ONE]] : i32);
+    // CHECK-NEXT: ^[[JOIN]]([[ARG:%[0-9]+]]: i32):
+    // CHECK-NEXT: builtin.ret [[ARG]] : (i32);
+    builtin.function public extern("C") @down_propagate_cfg(%cond: i1) -> i32 {
+        %one = arith.constant 1 : i32;
+        cf.cond_br %cond ^then, ^join(%one : i32) : (i1);
+    ^then:
+        %one_again = arith.constant 1 : i32;
+        cf.br ^join(%one_again : i32);
+    ^join(%arg: i32):
+        builtin.ret %arg : (i32);
+    };
+
+    // ^then does not dominate ^join, which the entry block also branches to: the constant 1 in
+    // ^join is not replaced by the one in ^then, and both stay.
+    // CHECK-LABEL: @up_propagate_cfg(
+    // CHECK-SAME: [[COND:%[0-9]+]]: i1) -> i32 {
+    // CHECK-NEXT: [[ZERO:%[0-9]+]] = arith.constant 0 : i32;
+    // CHECK-NEXT: cf.cond_br [[COND]] ^[[THEN:block[0-9]+]], ^[[JOIN:block[0-9]+]]([[ZERO]] : i32) : (i1);
+    // CHECK-NEXT: ^[[THEN]]:
+    // CHECK-NEXT: [[ONE:%[0-9]+]] = arith.constant 1 : i32;
+    // CHECK-NEXT: cf.br ^[[JOIN]]([[ONE]] : i32);
+    // CHECK-NEXT: ^[[JOIN]]([[ARG:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[ONE_AGAIN:%[0-9]+]] = arith.constant 1 : i32;
+    // CHECK-NEXT: [[SUM:%[0-9]+]] = arith.add [[ARG]], [[ONE_AGAIN]];
+    // CHECK-NEXT: builtin.ret [[SUM]] : (i32);
+    builtin.function public extern("C") @up_propagate_cfg(%cond: i1) -> i32 {
+        %zero = arith.constant 0 : i32;
+        cf.cond_br %cond ^then, ^join(%zero : i32) : (i1);
+    ^then:
+        %one = arith.constant 1 : i32;
+        cf.br ^join(%one : i32);
+    ^join(%arg: i32):
+        %one_again = arith.constant 1 : i32;
+        %sum = arith.add %arg, %one_again;
+        builtin.ret %sum : (i32);
     };
 };

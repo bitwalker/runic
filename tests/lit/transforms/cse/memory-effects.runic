@@ -2,7 +2,8 @@
 // RUN: runic-opt %s -p cse | runic-opt - --verify-roundtrip | filecheck %s
 
 // CSE and memory effects in a region that has dominance. Two equal reads of a resource are merged
-// when nothing between them writes it; a write between them keeps both. An operation that writes is
+// when nothing between them writes it, including an operation with regions that holds no write; a
+// write between them keeps both. An operation that writes is
 // never merged, nor is an assertion. Locals are a resource apart from memory: a store to memory does
 // not keep two loads of a local apart, and a store to a local does not keep two loads of memory
 // apart. The second RUN line reads the output back.
@@ -16,6 +17,51 @@ builtin.module public @cse_memory_effects {
         %first = test.load %p;
         %second = test.load %p;
         builtin.ret %first, %second : (i8, i8);
+    };
+
+    // Four equal loads with sums between them, which do not write: all four become the first.
+    // CHECK-LABEL: @many_memory_reads(
+    // CHECK-SAME: [[P:%[0-9]+]]: ptr<i64>) -> i64 {
+    // CHECK-NEXT: [[LOAD:%[0-9]+]] = test.load [[P]];
+    // CHECK-NEXT: [[S1:%[0-9]+]] = arith.add [[LOAD]], [[LOAD]];
+    // CHECK-NEXT: [[S2:%[0-9]+]] = arith.add [[S1]], [[LOAD]];
+    // CHECK-NEXT: [[S3:%[0-9]+]] = arith.add [[S2]], [[LOAD]];
+    // CHECK-NEXT: builtin.ret [[S3]] : (i64);
+    builtin.function public extern("C") @many_memory_reads(%p: ptr<i64>) -> i64 {
+        %r0 = test.load %p;
+        %r1 = test.load %p;
+        %s1 = arith.add %r0, %r1;
+        %r2 = test.load %p;
+        %s2 = arith.add %s1, %r2;
+        %r3 = test.load %p;
+        %s3 = arith.add %s2, %r3;
+        builtin.ret %s3 : (i64);
+    };
+
+    // An `scf.if` between two loads has the effects of what its regions hold, which here is none:
+    // it does not keep the loads apart, and the second is replaced by the first.
+    // CHECK-LABEL: @reads_across_a_region_that_does_not_write(
+    // CHECK-SAME: [[P:%[0-9]+]]: ptr<i32>, [[C:%[0-9]+]]: i1) -> (i32, i32, i32) {
+    // CHECK-NEXT: [[LOAD:%[0-9]+]] = test.load [[P]];
+    // CHECK-NEXT: [[IF:%[0-9]+]] = scf.if [[C]] then {
+    // CHECK-NEXT: [[C42:%[0-9]+]] = arith.constant 42 : i32;
+    // CHECK-NEXT: scf.yield [[C42]] : (i32);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: [[C24:%[0-9]+]] = arith.constant 24 : i32;
+    // CHECK-NEXT: scf.yield [[C24]] : (i32);
+    // CHECK-NEXT: } : (i1) -> (i32);
+    // CHECK-NEXT: builtin.ret [[LOAD]], [[LOAD]], [[IF]] : (i32, i32, i32);
+    builtin.function public extern("C") @reads_across_a_region_that_does_not_write(%p: ptr<i32>, %c: i1) -> (i32, i32, i32) {
+        %first = test.load %p;
+        %if = scf.if %c then {
+            %c42 = arith.constant 42 : i32;
+            scf.yield %c42 : (i32);
+        } else {
+            %c24 = arith.constant 24 : i32;
+            scf.yield %c24 : (i32);
+        } : (i1) -> (i32);
+        %second = test.load %p;
+        builtin.ret %first, %second, %if : (i32, i32, i32);
     };
 
     // Each load follows a store to its address: the two equal stores and the two loads all stay.
