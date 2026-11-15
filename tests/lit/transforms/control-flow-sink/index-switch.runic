@@ -9,7 +9,7 @@ builtin.module public @control_flow_sink_index_switch {
     // CHECK-LABEL: @into_case(
     // CHECK-SAME: [[S:%[0-9]+]]: i32, [[A:%[0-9]+]]: i32) -> i32 {
     // CHECK-NEXT: [[BOTH:%[0-9]+]] = arith.mul [[A]], [[A]];
-    // CHECK-NEXT: [[R:%[0-9]+]] = scf.index_switch [[S]]
+    // CHECK-NEXT: [[R:%[0-9]+]] = scf.index_switch [[S]]{{[ ]*$}}
     // CHECK-NEXT: case 1 {
     // CHECK-NEXT: [[SUM:%[0-9]+]] = arith.add [[A]], [[BOTH]];
     // CHECK-NEXT: scf.yield [[SUM]] : (i32);

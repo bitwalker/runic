@@ -26,7 +26,7 @@
 // CHECK-NEXT: } after {
 // CHECK-NEXT: ^[[B_BODY:block[0-9]+]]([[K:%[0-9]+]]: i32, [[L:%[0-9]+]]: i32):
 // CHECK-NEXT: [[PICKED:%[0-9]+]] = scf.if [[C]] then {
-// CHECK-NEXT: [[INNER:%[0-9]+]] = scf.index_switch [[K]]
+// CHECK-NEXT: [[INNER:%[0-9]+]] = scf.index_switch [[K]]{{[ ]*$}}
 // CHECK-NEXT: case 0 {
 // CHECK-NEXT: scf.yield [[L]] : (i32);
 // CHECK-NEXT: }

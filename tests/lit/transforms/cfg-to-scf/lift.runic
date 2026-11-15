@@ -82,7 +82,7 @@ builtin.module public @cfg_to_scf_lift {
 
     // CHECK-LABEL: @switch(
     // CHECK-SAME: [[S:%[0-9]+]]: i32, [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
-    // CHECK-NEXT: [[R:%[0-9]+]] = scf.index_switch [[S]]
+    // CHECK-NEXT: [[R:%[0-9]+]] = scf.index_switch [[S]]{{[ ]*$}}
     // CHECK-NEXT: case 1 {
     // CHECK-NEXT: scf.yield [[A]] : (i32);
     // CHECK-NEXT: }

@@ -22,10 +22,10 @@ builtin.module private @while_unused_result {
     // CHECK-NEXT: scf.condition [[CND]], [[Y]], [[X]] : (i1, i32, i32);
     // CHECK-NEXT: } after {
     // CHECK-NEXT: ^{{block[0-9]+}}([[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32):
-    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[P]], [[Q]]
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[P]], [[Q]] <{
     // CHECK-NEXT: scf.yield [[S]], [[P]], [[Q]] : (i32, i32, i32);
     // CHECK-NEXT: } : (i32, i32, i32) -> (i32, i32);
-    // CHECK-NEXT: arith.add [[R0]], [[R1]]
+    // CHECK-NEXT: arith.add [[R0]], [[R1]] <{
     builtin.function public extern("C") @unused_positions(%a: i32, %b: i32, %c: i32) -> i32 {
         %c10 = arith.constant 10 : i32;
         %res0, %res1, %res2, %res3, %res4 = scf.while %a, %b, %c before {
@@ -52,7 +52,7 @@ builtin.module private @while_unused_result {
     // CHECK-NEXT: scf.condition [[CND]], [[X]], [[Y]] : (i1, i32, i32);
     // CHECK-NEXT: } after {
     // CHECK-NEXT: ^{{block[0-9]+}}([[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32):
-    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[P]], [[Q]]
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[P]], [[Q]] <{
     // CHECK-NEXT: scf.yield [[S]], [[Q]] : (i32, i32);
     // CHECK-NEXT: } : (i32, i32) -> (i32, i32);
     // CHECK-NEXT: builtin.ret [[R1]] : (i32);
@@ -81,10 +81,10 @@ builtin.module private @while_unused_result {
     // CHECK-NEXT: scf.condition [[CND]], [[X]], [[Y]] : (i1, i32, i32);
     // CHECK-NEXT: } after {
     // CHECK-NEXT: ^{{block[0-9]+}}({{%[0-9]+}}: i32, [[Q:%[0-9]+]]: i32):
-    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[Q]], [[TEN]]
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[Q]], [[TEN]] <{
     // CHECK-NEXT: scf.yield [[S]], [[Q]] : (i32, i32);
     // CHECK-NEXT: } : (i32, i32) -> (i32, i32);
-    // CHECK-NEXT: arith.add [[R0]], [[R1]]
+    // CHECK-NEXT: arith.add [[R0]], [[R1]] <{
     builtin.function public extern("C") @result_used_arg_unused(%a: i32, %b: i32) -> i32 {
         %c10 = arith.constant 10 : i32;
         %res0, %res1 = scf.while %a, %b before {
@@ -141,10 +141,10 @@ builtin.module private @while_unused_result {
     // CHECK-NEXT: scf.condition [[CND]], [[X]], [[Y]] : (i1, i32, i32);
     // CHECK-NEXT: } after {
     // CHECK-NEXT: ^{{block[0-9]+}}([[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32):
-    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[Q]], [[P]]
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[Q]], [[P]] <{
     // CHECK-NEXT: scf.yield [[P]], [[S]] : (i32, i32);
     // CHECK-NEXT: } : (i32, i32) -> (i32, i32);
-    // CHECK-NEXT: arith.add [[R0]], [[R1]]
+    // CHECK-NEXT: arith.add [[R0]], [[R1]] <{
     builtin.function public extern("C") @none_unused(%a: i32, %b: i32) -> i32 {
         %c10 = arith.constant 10 : i32;
         %res0, %res1 = scf.while %a, %b before {

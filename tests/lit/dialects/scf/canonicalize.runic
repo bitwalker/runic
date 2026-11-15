@@ -68,7 +68,7 @@ builtin.module public @scf_canonicalize {
 
     // UNUSED-LABEL: @index_switch_unused_results(
     // UNUSED-SAME: [[S:%[0-9]+]]: i32, [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
-    // UNUSED-NEXT: [[Y:%[0-9]+]] = scf.index_switch [[S]]
+    // UNUSED-NEXT: [[Y:%[0-9]+]] = scf.index_switch [[S]]{{[ ]*$}}
     // UNUSED-NEXT: case 1 {
     // UNUSED-NEXT: scf.yield [[B]] : (i32);
     // UNUSED-NEXT: }

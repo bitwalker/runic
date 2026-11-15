@@ -35,8 +35,8 @@ builtin.module public @cse_scopes_and_kinds {
     // CHECK-LABEL: @debug_values(
     // CHECK-SAME: [[A:%[0-9]+]]: i32) -> i32 {
     // CHECK-NEXT: [[SUM:%[0-9]+]] = arith.add [[A]], [[A]];
-    // CHECK-NEXT: di.debug_value [[SUM]]
-    // CHECK-NEXT: di.debug_value [[SUM]]
+    // CHECK-NEXT: di.debug_value [[SUM]] <{
+    // CHECK-NEXT: di.debug_value [[SUM]] <{
     // CHECK-NEXT: [[TWICE:%[0-9]+]] = arith.add [[SUM]], [[SUM]];
     // CHECK-NEXT: builtin.ret [[TWICE]] : (i32);
     builtin.function public extern("C") @debug_values(%a: i32) -> i32 {

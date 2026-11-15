@@ -9,7 +9,7 @@
 // CHECK: @first(
 // CHECK-SAME: [[C:%[0-9]+]]: i1,
 // CHECK-NOT: scf.if
-// CHECK: cf.cond_br [[C]]
+// CHECK: cf.cond_br [[C]] ^
 // CHECK-NOT: scf.if
 // CHECK: @second(
 // CHECK: error: {{.*}}transformation does not support unreachable blocks

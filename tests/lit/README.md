@@ -119,7 +119,8 @@ Each case's checks start with a `CHECK-LABEL` that names its function (or its mo
 has no function). Values and blocks print by number, in the order they were created across the
 whole context; the names written in the input are not kept. A check therefore captures a value or
 block name, `[[V:%[0-9]+]]` or `^[[B:block[0-9]+]]`, and uses it as `[[V]]`; it never spells a
-number. A value not used again is matched with `{{%[0-9]+}}`.
+number. A value not used again is matched with `{{%[0-9]+}}`. A value at the end of a check is followed by what follows it in the output (`;`, ` :`,
+` <{`, or `{{[ ]*$}}` where the line ends), because a captured `%1` otherwise matches the start of `%13`.
 
 A `CHECK-LABEL` holds no variable: the label is the function's name, `CHECK-LABEL: @name(`, and
 the rest of that line, with its captures, follows in a `CHECK-SAME`, which must match on the

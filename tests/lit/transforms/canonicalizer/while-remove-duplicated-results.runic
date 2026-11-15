@@ -21,12 +21,12 @@ builtin.module private @while_remove_duplicated_results {
     // CHECK-NEXT: scf.condition [[CND]], [[X]], [[Y]] : (i1, i32, i32);
     // CHECK-NEXT: } after {
     // CHECK-NEXT: ^{{block[0-9]+}}([[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32):
-    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[P]], [[Q]]
-    // CHECK-NEXT: [[T:%[0-9]+]] = arith.add [[P]], [[S]]
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[P]], [[Q]] <{
+    // CHECK-NEXT: [[T:%[0-9]+]] = arith.add [[P]], [[S]] <{
     // CHECK-NEXT: scf.yield [[T]], [[S]] : (i32, i32);
     // CHECK-NEXT: } : (i32, i32) -> (i32, i32);
-    // CHECK-NEXT: [[U:%[0-9]+]] = arith.add [[R0]], [[R1]]
-    // CHECK-NEXT: arith.add [[U]], [[R0]]
+    // CHECK-NEXT: [[U:%[0-9]+]] = arith.add [[R0]], [[R1]] <{
+    // CHECK-NEXT: arith.add [[U]], [[R0]] <{
     builtin.function public extern("C") @one_pair(%a: i32, %b: i32) -> i32 {
         %c10 = arith.constant 10 : i32;
         %res0, %res1, %res2 = scf.while %a, %b before {
@@ -55,13 +55,13 @@ builtin.module private @while_remove_duplicated_results {
     // CHECK-NEXT: scf.condition [[CND]], [[Y]], [[X]] : (i1, i32, i32);
     // CHECK-NEXT: } after {
     // CHECK-NEXT: ^{{block[0-9]+}}([[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32):
-    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[P]], [[P]]
-    // CHECK-NEXT: [[T:%[0-9]+]] = arith.add [[S]], [[P]]
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[P]], [[P]] <{
+    // CHECK-NEXT: [[T:%[0-9]+]] = arith.add [[S]], [[P]] <{
     // CHECK-NEXT: scf.yield [[Q]], [[T]] : (i32, i32);
     // CHECK-NEXT: } : (i32, i32) -> (i32, i32);
-    // CHECK-NEXT: [[U:%[0-9]+]] = arith.add [[R0]], [[R1]]
-    // CHECK-NEXT: [[V:%[0-9]+]] = arith.add [[U]], [[R0]]
-    // CHECK-NEXT: arith.add [[V]], [[R0]]
+    // CHECK-NEXT: [[U:%[0-9]+]] = arith.add [[R0]], [[R1]] <{
+    // CHECK-NEXT: [[V:%[0-9]+]] = arith.add [[U]], [[R0]] <{
+    // CHECK-NEXT: arith.add [[V]], [[R0]] <{
     builtin.function public extern("C") @three_times(%a: i32, %b: i32) -> i32 {
         %c10 = arith.constant 10 : i32;
         %res0, %res1, %res2, %res3 = scf.while %a, %b before {
@@ -91,13 +91,13 @@ builtin.module private @while_remove_duplicated_results {
     // CHECK-NEXT: scf.condition [[CND]], [[X]], [[Y]] : (i1, i32, i32);
     // CHECK-NEXT: } after {
     // CHECK-NEXT: ^{{block[0-9]+}}([[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32):
-    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[P]], [[Q]]
-    // CHECK-NEXT: [[T:%[0-9]+]] = arith.add [[P]], [[Q]]
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[P]], [[Q]] <{
+    // CHECK-NEXT: [[T:%[0-9]+]] = arith.add [[P]], [[Q]] <{
     // CHECK-NEXT: scf.yield [[S]], [[T]] : (i32, i32);
     // CHECK-NEXT: } : (i32, i32) -> (i32, i32);
-    // CHECK-NEXT: [[U:%[0-9]+]] = arith.add [[R0]], [[R1]]
-    // CHECK-NEXT: [[V:%[0-9]+]] = arith.add [[R0]], [[R1]]
-    // CHECK-NEXT: arith.add [[U]], [[V]]
+    // CHECK-NEXT: [[U:%[0-9]+]] = arith.add [[R0]], [[R1]] <{
+    // CHECK-NEXT: [[V:%[0-9]+]] = arith.add [[R0]], [[R1]] <{
+    // CHECK-NEXT: arith.add [[U]], [[V]] <{
     builtin.function public extern("C") @two_pairs(%a: i32, %b: i32) -> i32 {
         %c10 = arith.constant 10 : i32;
         %res0, %res1, %res2, %res3 = scf.while %a, %b before {
@@ -126,10 +126,10 @@ builtin.module private @while_remove_duplicated_results {
     // CHECK-NEXT: scf.condition [[CND]], [[X]], [[Y]] : (i1, i32, i32);
     // CHECK-NEXT: } after {
     // CHECK-NEXT: ^{{block[0-9]+}}([[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32):
-    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[Q]], [[P]]
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[Q]], [[P]] <{
     // CHECK-NEXT: scf.yield [[P]], [[S]] : (i32, i32);
     // CHECK-NEXT: } : (i32, i32) -> (i32, i32);
-    // CHECK-NEXT: arith.add [[R0]], [[R1]]
+    // CHECK-NEXT: arith.add [[R0]], [[R1]] <{
     builtin.function public extern("C") @no_duplicates(%a: i32, %b: i32) -> i32 {
         %c10 = arith.constant 10 : i32;
         %res0, %res1 = scf.while %a, %b before {

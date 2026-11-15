@@ -25,10 +25,10 @@ builtin.module private @remove_loop_invariant_args {
     // CHECK-NEXT: scf.condition [[C]], [[A]], [[Y]] : (i1, i32, i32);
     // CHECK-NEXT: } after {
     // CHECK-NEXT: ^{{block[0-9]+}}([[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32):
-    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[Q]], [[P]]
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[Q]], [[P]] <{
     // CHECK-NEXT: scf.yield [[S]] : (i32);
     // CHECK-NEXT: } : (i32) -> (i32, i32);
-    // CHECK-NEXT: arith.add [[R0]], [[R1]]
+    // CHECK-NEXT: arith.add [[R0]], [[R1]] <{
     builtin.function public extern("C") @yield_init(%a: i32, %b: i32) -> i32 {
         %c10 = arith.constant 10 : i32;
         %res0, %res1 = scf.while %a, %b before {
@@ -55,10 +55,10 @@ builtin.module private @remove_loop_invariant_args {
     // CHECK-NEXT: scf.condition [[C]], [[A]], [[Y]] : (i1, i32, i32);
     // CHECK-NEXT: } after {
     // CHECK-NEXT: ^{{block[0-9]+}}([[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32):
-    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[Q]], [[P]]
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[Q]], [[P]] <{
     // CHECK-NEXT: scf.yield [[S]] : (i32);
     // CHECK-NEXT: } : (i32) -> (i32, i32);
-    // CHECK-NEXT: arith.add [[R0]], [[R1]]
+    // CHECK-NEXT: arith.add [[R0]], [[R1]] <{
     builtin.function public extern("C") @yield_forwarded_before_arg(%a: i32, %b: i32) -> i32 {
         %c10 = arith.constant 10 : i32;
         %res0, %res1 = scf.while %a, %b before {
@@ -83,15 +83,15 @@ builtin.module private @remove_loop_invariant_args {
     // CHECK-NEXT: [[ONE:%[0-9]+]] = arith.constant 1 : i32;
     // CHECK-NEXT: [[R0:%[0-9]+]], [[R1:%[0-9]+]] = scf.while [[B]] before {
     // CHECK-NEXT: ^{{block[0-9]+}}([[Y:%[0-9]+]]: i32):
-    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[A]], [[Y]]
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[A]], [[Y]] <{
     // CHECK-NEXT: [[C:%[0-9]+]] = arith.cmpi ult [[S]], [[TEN]];
     // CHECK-NEXT: scf.condition [[C]], [[A]], [[S]] : (i1, i32, i32);
     // CHECK-NEXT: } after {
     // CHECK-NEXT: ^{{block[0-9]+}}({{%[0-9]+}}: i32, [[Q:%[0-9]+]]: i32):
-    // CHECK-NEXT: [[N:%[0-9]+]] = arith.add [[Q]], [[ONE]]
+    // CHECK-NEXT: [[N:%[0-9]+]] = arith.add [[Q]], [[ONE]] <{
     // CHECK-NEXT: scf.yield [[N]] : (i32);
     // CHECK-NEXT: } : (i32) -> (i32, i32);
-    // CHECK-NEXT: arith.add [[R0]], [[R1]]
+    // CHECK-NEXT: arith.add [[R0]], [[R1]] <{
     builtin.function public extern("C") @yield_forwarded_init(%a: i32, %b: i32) -> i32 {
         %c10 = arith.constant 10 : i32;
         %c1 = arith.constant 1 : i32;
@@ -117,19 +117,19 @@ builtin.module private @remove_loop_invariant_args {
     // CHECK-NEXT: [[TEN:%[0-9]+]] = arith.constant 10 : i32;
     // CHECK-NEXT: [[R0:%[0-9]+]], [[R1:%[0-9]+]], [[R2:%[0-9]+]], [[R3:%[0-9]+]] = scf.while [[B]], [[D]] before {
     // CHECK-NEXT: ^{{block[0-9]+}}([[X:%[0-9]+]]: i32, [[Y:%[0-9]+]]: i32):
-    // CHECK-NEXT: [[S0:%[0-9]+]] = arith.add [[A]], [[C]]
-    // CHECK-NEXT: [[S1:%[0-9]+]] = arith.add [[S0]], [[X]]
+    // CHECK-NEXT: [[S0:%[0-9]+]] = arith.add [[A]], [[C]] <{
+    // CHECK-NEXT: [[S1:%[0-9]+]] = arith.add [[S0]], [[X]] <{
     // CHECK-NEXT: [[CND:%[0-9]+]] = arith.cmpi ult [[S1]], [[TEN]];
     // CHECK-NEXT: scf.condition [[CND]], [[A]], [[X]], [[C]], [[Y]] : (i1, i32, i32, i32, i32);
     // CHECK-NEXT: } after {
     // CHECK-NEXT: ^{{block[0-9]+}}([[P0:%[0-9]+]]: i32, [[P1:%[0-9]+]]: i32, [[P2:%[0-9]+]]: i32, [[P3:%[0-9]+]]: i32):
-    // CHECK-NEXT: [[N1:%[0-9]+]] = arith.add [[P1]], [[P0]]
-    // CHECK-NEXT: [[N3:%[0-9]+]] = arith.add [[P3]], [[P2]]
+    // CHECK-NEXT: [[N1:%[0-9]+]] = arith.add [[P1]], [[P0]] <{
+    // CHECK-NEXT: [[N3:%[0-9]+]] = arith.add [[P3]], [[P2]] <{
     // CHECK-NEXT: scf.yield [[N1]], [[N3]] : (i32, i32);
     // CHECK-NEXT: } : (i32, i32) -> (i32, i32, i32, i32);
-    // CHECK-NEXT: [[T0:%[0-9]+]] = arith.add [[R0]], [[R1]]
-    // CHECK-NEXT: [[T1:%[0-9]+]] = arith.add [[T0]], [[R2]]
-    // CHECK-NEXT: arith.add [[T1]], [[R3]]
+    // CHECK-NEXT: [[T0:%[0-9]+]] = arith.add [[R0]], [[R1]] <{
+    // CHECK-NEXT: [[T1:%[0-9]+]] = arith.add [[T0]], [[R2]] <{
+    // CHECK-NEXT: arith.add [[T1]], [[R3]] <{
     builtin.function public extern("C") @mixed_positions(%a: i32, %b: i32, %c: i32, %d: i32) -> i32 {
         %c10 = arith.constant 10 : i32;
         %res0, %res1, %res2, %res3 = scf.while %a, %b, %c, %d before {
@@ -156,14 +156,14 @@ builtin.module private @remove_loop_invariant_args {
     // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32)
     // CHECK-NEXT: [[TEN:%[0-9]+]] = arith.constant 10 : i32;
     // CHECK-NEXT: [[R0:%[0-9]+]], [[R1:%[0-9]+]] = scf.while before {
-    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[A]], [[B]]
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[A]], [[B]] <{
     // CHECK-NEXT: [[C:%[0-9]+]] = arith.cmpi ult [[S]], [[TEN]];
     // CHECK-NEXT: scf.condition [[C]], [[A]], [[S]] : (i1, i32, i32);
     // CHECK-NEXT: } after {
     // CHECK-NEXT: ^{{block[0-9]+}}({{%[0-9]+}}: i32, {{%[0-9]+}}: i32):
     // CHECK-NEXT: scf.yield : ();
     // CHECK-NEXT: } : () -> (i32, i32);
-    // CHECK-NEXT: arith.add [[R0]], [[R1]]
+    // CHECK-NEXT: arith.add [[R0]], [[R1]] <{
     builtin.function public extern("C") @all_invariant(%a: i32, %b: i32) -> i32 {
         %c10 = arith.constant 10 : i32;
         %res0, %res1 = scf.while %a, %b before {
@@ -189,7 +189,7 @@ builtin.module private @remove_loop_invariant_args {
     // CHECK-NEXT: ^{{block[0-9]+}}([[Y:%[0-9]+]]: i32):
     // CHECK-NEXT: [[C:%[0-9]+]] = arith.cmpi ult [[Y]], [[TEN]];
     // CHECK-NEXT: [[V:%[0-9]+]] = scf.if [[C]] then {
-    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[A]], [[ONE]]
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[A]], [[ONE]] <{
     // CHECK-NEXT: scf.yield [[S]] : (i32);
     // CHECK-NEXT: } else {
     // CHECK-NEXT: scf.yield [[A]] : (i32);
@@ -197,10 +197,10 @@ builtin.module private @remove_loop_invariant_args {
     // CHECK-NEXT: scf.condition [[C]], [[V]], [[Y]] : (i1, i32, i32);
     // CHECK-NEXT: } after {
     // CHECK-NEXT: ^{{block[0-9]+}}([[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32):
-    // CHECK-NEXT: [[N:%[0-9]+]] = arith.add [[Q]], [[P]]
+    // CHECK-NEXT: [[N:%[0-9]+]] = arith.add [[Q]], [[P]] <{
     // CHECK-NEXT: scf.yield [[N]] : (i32);
     // CHECK-NEXT: } : (i32) -> (i32, i32);
-    // CHECK-NEXT: arith.add [[R0]], [[R1]]
+    // CHECK-NEXT: arith.add [[R0]], [[R1]] <{
     builtin.function public extern("C") @nested_use(%a: i32, %b: i32) -> i32 {
         %c10 = arith.constant 10 : i32;
         %c1 = arith.constant 1 : i32;
@@ -234,7 +234,7 @@ builtin.module private @remove_loop_invariant_args {
     // CHECK-NEXT: scf.condition [[C]], [[X]], [[Y]] : (i1, i32, i32);
     // CHECK-NEXT: } after {
     // CHECK-NEXT: ^{{block[0-9]+}}([[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32):
-    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[Q]], [[P]]
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[Q]], [[P]] <{
     // CHECK-NEXT: scf.yield [[S]], [[S]] : (i32, i32);
     // CHECK-NEXT: } : (i32, i32) -> (i32, i32);
     builtin.function public extern("C") @no_invariant(%a: i32, %b: i32) -> i32 {
@@ -267,7 +267,7 @@ builtin.module private @remove_loop_invariant_args {
     // CHECK-NEXT: scf.condition [[C]], [[X]], [[Y]] : (i1, i32, i32);
     // CHECK-NEXT: } after {
     // CHECK-NEXT: ^{{block[0-9]+}}([[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32):
-    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[Q]], [[P]]
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[Q]], [[P]] <{
     // CHECK-NEXT: scf.yield [[A]], [[S]] : (i32, i32);
     // CHECK-NEXT: } : (i32, i32) -> (i32, i32);
     builtin.function public extern("C") @foreign_block_arg(%a: i32, %b: i32) -> i32 {
@@ -295,12 +295,12 @@ builtin.module private @remove_loop_invariant_args {
     // CHECK-NEXT: [[ONE:%[0-9]+]] = arith.constant 1 : i32;
     // CHECK-NEXT: [[R0:%[0-9]+]], [[R1:%[0-9]+]] = scf.while [[A]], [[B]] before {
     // CHECK-NEXT: ^{{block[0-9]+}}([[X:%[0-9]+]]: i32, [[Y:%[0-9]+]]: i32):
-    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[X]], [[ONE]]
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[X]], [[ONE]] <{
     // CHECK-NEXT: [[C:%[0-9]+]] = arith.cmpi ult [[Y]], [[TEN]];
     // CHECK-NEXT: scf.condition [[C]], [[S]], [[Y]] : (i1, i32, i32);
     // CHECK-NEXT: } after {
     // CHECK-NEXT: ^{{block[0-9]+}}([[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32):
-    // CHECK-NEXT: [[N:%[0-9]+]] = arith.add [[Q]], [[P]]
+    // CHECK-NEXT: [[N:%[0-9]+]] = arith.add [[Q]], [[P]] <{
     // CHECK-NEXT: scf.yield [[P]], [[N]] : (i32, i32);
     // CHECK-NEXT: } : (i32, i32) -> (i32, i32);
     builtin.function public extern("C") @forwarded_other_value(%a: i32, %b: i32) -> i32 {
@@ -333,10 +333,10 @@ builtin.module private @remove_loop_invariant_args {
     // CHECK-NEXT: scf.condition [[C]], [[Y]], [[A]] : (i1, i32, i32);
     // CHECK-NEXT: } after {
     // CHECK-NEXT: ^{{block[0-9]+}}([[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32):
-    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[P]], [[Q]]
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[P]], [[Q]] <{
     // CHECK-NEXT: scf.yield [[S]] : (i32);
     // CHECK-NEXT: } : (i32) -> (i32, i32);
-    // CHECK-NEXT: arith.add [[R0]], [[R1]]
+    // CHECK-NEXT: arith.add [[R0]], [[R1]] <{
     builtin.function public extern("C") @yield_forwarded_permuted(%a: i32, %b: i32) -> i32 {
         %c10 = arith.constant 10 : i32;
         %res0, %res1 = scf.while %a, %b before {
@@ -373,13 +373,13 @@ builtin.module private @remove_loop_invariant_args {
     // CHECK-NEXT: scf.condition [[IC]], [[U]], [[V]] : (i1, i32, i32);
     // CHECK-NEXT: } after {
     // CHECK-NEXT: ^{{block[0-9]+}}([[G:%[0-9]+]]: i32, [[H:%[0-9]+]]: i32):
-    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[H]], [[G]]
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[H]], [[G]] <{
     // CHECK-NEXT: scf.yield [[P]], [[S]] : (i32, i32);
     // CHECK-NEXT: } : (i32, i32) -> (i32, i32);
-    // CHECK-NEXT: [[T:%[0-9]+]] = arith.add [[I0]], [[I1]]
+    // CHECK-NEXT: [[T:%[0-9]+]] = arith.add [[I0]], [[I1]] <{
     // CHECK-NEXT: scf.yield [[T]], [[T]] : (i32, i32);
     // CHECK-NEXT: } : (i32, i32) -> (i32, i32);
-    // CHECK-NEXT: arith.add [[R0]], [[R1]]
+    // CHECK-NEXT: arith.add [[R0]], [[R1]] <{
     builtin.function public extern("C") @nested_after_arg(%a: i32, %b: i32) -> i32 {
         %c10 = arith.constant 10 : i32;
         %c1 = arith.constant 1 : i32;
@@ -417,10 +417,10 @@ builtin.module private @remove_loop_invariant_args {
     // CHECK-NEXT: scf.condition [[C]], [[A]], [[Y]] : (i1, i32, i32);
     // CHECK-NEXT: } after {
     // CHECK-NEXT: ^{{block[0-9]+}}([[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32):
-    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[Q]], [[P]]
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[Q]], [[P]] <{
     // CHECK-NEXT: scf.yield [[S]] : (i32);
     // CHECK-NEXT: } : (i32) -> (i32, i32);
-    // CHECK-NEXT: arith.add [[R0]], [[R1]]
+    // CHECK-NEXT: arith.add [[R0]], [[R1]] <{
     builtin.function public extern("C") @debug_use(%a: i32, %b: i32) -> i32 {
         %c10 = arith.constant 10 : i32;
         %res0, %res1 = scf.while %a, %b before {
