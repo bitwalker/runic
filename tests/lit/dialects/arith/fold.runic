@@ -2,11 +2,12 @@
 // RUN: runic-opt %s -p canonicalizer | runic-opt - --verify-roundtrip | filecheck %s
 
 // The folds of `arith`: each operation whose operands are constants folds to a constant, computed
-// at the operands' width, and the constants it read are then erased as dead. An operation that
-// would trap or whose result is undefined (a checked overflow, a division by zero or of `MIN` by
-// -1, a shift by the width or more) does not fold. An `isize` operation folds to what both a 32-bit
-// and a 64-bit target compute, and not at all when they disagree; no arith fold reads the data
-// layout. The second RUN line reads the output back.
+// at the operands' width (`arith.min` and `arith.max` in the signedness they are given), and the
+// constants it read are then erased as dead. An operation that would trap or whose result is
+// undefined (a checked overflow, a division by zero or of `MIN` by -1, a shift by the width or
+// more) does not fold. An `isize` operation folds to what both a 32-bit and a 64-bit target
+// compute, and not at all when they disagree; no arith fold reads the data layout. The second RUN
+// line reads the output back.
 builtin.module public @arith_fold {
     // A constant folds to its own value: it stays.
     // CHECK-LABEL: @constant(
@@ -190,6 +191,18 @@ builtin.module public @arith_fold {
         builtin.ret %r0, %r1 : (i32, i32);
     };
 
+    // `MIN / -1` overflows: neither the quotient nor the remainder folds (the remainder alone would
+    // be 0).
+    // CHECK-LABEL: @sdivrem_overflow(
+    // CHECK: [[Q:%[0-9]+]], [[R:%[0-9]+]] = arith.sdivrem
+    // CHECK-NEXT: builtin.ret [[Q]], [[R]] : (i8, i8);
+    builtin.function public extern("C") @sdivrem_overflow() -> (i8, i8) {
+        %a = arith.constant -128 : i8;
+        %b = arith.constant -1 : i8;
+        %q, %r = arith.sdivrem %a, %b;
+        builtin.ret %q, %r : (i8, i8);
+    };
+
     // CHECK-LABEL: @band(
     // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant 8 : i8;
     // CHECK-NEXT: builtin.ret [[R0]] : (i8);
@@ -295,6 +308,18 @@ builtin.module public @arith_fold {
         builtin.ret %r : (i8);
     };
 
+    // Signed, -1 is the smallest.
+    // CHECK-LABEL: @min_signed(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant -1 : i8;
+    // CHECK-NEXT: builtin.ret [[R0]] : (i8);
+    builtin.function public extern("C") @min_signed() -> (i8) {
+        %a = arith.constant -1 : i8;
+        %b = arith.constant 1 : i8;
+        %r = arith.min %a, %b <{ signedness = #builtin.signedness<signed> }>;
+        builtin.ret %r : (i8);
+    };
+
+    // Signed, 1 is the largest.
     // CHECK-LABEL: @max(
     // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant 1 : i8;
     // CHECK-NEXT: builtin.ret [[R0]] : (i8);
@@ -302,6 +327,17 @@ builtin.module public @arith_fold {
         %a = arith.constant -1 : i8;
         %b = arith.constant 1 : i8;
         %r = arith.max %a, %b <{ signedness = #builtin.signedness<signed> }>;
+        builtin.ret %r : (i8);
+    };
+
+    // Unsigned, -1 is the largest.
+    // CHECK-LABEL: @max_unsigned(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant -1 : i8;
+    // CHECK-NEXT: builtin.ret [[R0]] : (i8);
+    builtin.function public extern("C") @max_unsigned() -> (i8) {
+        %a = arith.constant -1 : i8;
+        %b = arith.constant 1 : i8;
+        %r = arith.max %a, %b <{ signedness = #builtin.signedness<unsigned> }>;
         builtin.ret %r : (i8);
     };
 

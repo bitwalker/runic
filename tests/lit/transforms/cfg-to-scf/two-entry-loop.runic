@@ -1,0 +1,36 @@
+// RUN: runic-opt %s -p cfg-to-scf | filecheck %s
+// RUN: runic-opt %s -p cfg-to-scf | runic-opt - --verify-roundtrip | filecheck %s
+
+// A cycle entered at two of its blocks (`^a` and `^b`) has no single header. cfg-to-scf gives it
+// one: the entries are numbered, an `scf.if` before the loop says which is taken, and the loop's
+// before region dispatches on that number with an `scf.index_switch` (`transforms/cfg-to-scf/
+// lift.runic` holds cycles with one entry). No `cf` operation remains. The second RUN line reads
+// the output back.
+builtin.module public @cfg_to_scf_two_entry_loop {
+    // CHECK-LABEL: @two_entries(
+    // CHECK-SAME: [[C:%[0-9]+]]: i1, [[X:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NOT: {{\bcf\.}}
+    // CHECK: {{.*}} = scf.if [[C]] then {
+    // CHECK-NOT: {{\bcf\.}}
+    // CHECK: {{.*}} = scf.while {{.*}} before {
+    // CHECK-NEXT: ^{{block[0-9]+}}({{.*}}, [[ENTRY:%[0-9]+]]: i32, {{%[0-9]+}}: i32):
+    // CHECK-NEXT: {{.*}} = scf.index_switch [[ENTRY]]{{[ ]*$}}
+    // CHECK-NOT: {{\bcf\.}}
+    // CHECK: scf.condition
+    // CHECK-NOT: {{\bcf\.}}
+    // CHECK: builtin.ret {{%[0-9]+}} : (i32);
+    builtin.function public extern("C") @two_entries(%c: i1, %x: i32) -> i32 {
+        cf.cond_br %c ^a(%x : i32), ^b(%x : i32) : (i1);
+    ^a(%p: i32):
+        %one = arith.constant 1 : i32;
+        %q = arith.add %p, %one;
+        cf.br ^b(%q : i32);
+    ^b(%r: i32):
+        %two = arith.constant 2 : i32;
+        %s = arith.mul %r, %two;
+        %again = arith.cmpi ult %s, %x;
+        cf.cond_br %again ^a(%s : i32), ^exit : (i1);
+    ^exit:
+        builtin.ret %s : (i32);
+    };
+};

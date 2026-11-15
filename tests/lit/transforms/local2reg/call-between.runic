@@ -1,0 +1,25 @@
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(local2reg))' | filecheck %s
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(local2reg))' | runic-opt - --verify-roundtrip | filecheck %s
+
+// A local stored once and loaded once is not promoted when a call stands between the store and
+// the load (`transforms/local2reg/not-promoted.runic` holds a region operation between them). The
+// second local, with nothing between, is promoted, so the test fails when the pass does not run.
+// The second RUN line reads the output back.
+builtin.module public @local2reg_call_between {
+    builtin.function public extern("C") @callee();
+
+    // CHECK-LABEL: @call_between(
+    // CHECK-SAME: [[X:%[0-9]+]]: i32) -> (i32, i32) locals(i32, i32) {
+    // CHECK-NEXT: builtin.store_local 0, [[X]];
+    // CHECK-NEXT: builtin.call @callee() : extern("C") ();
+    // CHECK-NEXT: [[KEPT:%[0-9]+]] = builtin.load_local 0 : i32;
+    // CHECK-NEXT: builtin.ret [[KEPT]], [[X]] : (i32, i32);
+    builtin.function public extern("C") @call_between(%x: i32) -> (i32, i32) locals(i32, i32) {
+        builtin.store_local 0, %x;
+        builtin.call @callee() : extern("C") ();
+        %kept = builtin.load_local 0 : i32;
+        builtin.store_local 1, %x;
+        %promoted = builtin.load_local 1 : i32;
+        builtin.ret %kept, %promoted : (i32, i32);
+    };
+};

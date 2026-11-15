@@ -1,0 +1,59 @@
+// RUN: runic-opt %s -p sccp | filecheck %s
+// RUN: runic-opt %s -p sccp | runic-opt - --verify-roundtrip | filecheck %s
+
+// Constant propagation through what `transforms/sccp/propagation.runic` does not hold: a call
+// (its result is not known, what follows it still folds, and the call stays), a `cf.select` whose
+// condition is proven constant (the fold with the constants its operands hold), and a `cf.switch`
+// whose selector is proven constant (only the case taken can execute, so the argument of the join
+// block is known). The second RUN line reads the output back.
+builtin.module public @sccp_calls_select_switch {
+    builtin.function public extern("C") @callee(%x: i32) -> i32 {
+        builtin.ret %x : (i32);
+    };
+
+    // CHECK-LABEL: @through_call(
+    // CHECK: [[FOUR:%[0-9]+]] = arith.constant 4 : i32;
+    // CHECK: builtin.call @callee(
+    // CHECK-NOT: arith.add
+    // CHECK: builtin.ret [[FOUR]] : (i32);
+    builtin.function public extern("C") @through_call() -> i32 {
+        %two = arith.constant 2 : i32;
+        %unused = builtin.call @callee(%two) : extern("C") (i32) -> i32;
+        %sum = arith.add %two, %two;
+        builtin.ret %sum : (i32);
+    };
+
+    // The condition is computed, not written as a constant: the select is folded with the
+    // constants the analysis holds for its operands.
+    // CHECK-LABEL: @select(
+    // CHECK: [[TWO:%[0-9]+]] = arith.constant 2 : i32;
+    // CHECK-NOT: cf.select
+    // CHECK: builtin.ret [[TWO]] : (i32);
+    builtin.function public extern("C") @select() -> i32 {
+        %one = arith.constant 1 : i32;
+        %two = arith.constant 2 : i32;
+        %cond = arith.cmpi eq %one, %one;
+        %chosen = cf.select %cond, %one, %two;
+        %sum = arith.add %chosen, %one;
+        builtin.ret %sum : (i32);
+    };
+
+    // Only `^two` can execute, so the argument of `^join` is 1, and the sum 2.
+    // CHECK-LABEL: @switch(
+    // CHECK: [[TWO:%[0-9]+]] = arith.constant 2 : i32;
+    // CHECK: cf.switch
+    // CHECK-NOT: arith.add
+    // CHECK: builtin.ret [[TWO]] : (i32);
+    builtin.function public extern("C") @switch(%x: i32) -> i32 {
+        %one = arith.constant 1 : i32;
+        %selector = arith.add %one, %one;
+        cf.switch %selector [#builtin.i32<2> -> ^two], ^other : (i32);
+    ^two:
+        cf.br ^join(%one : i32);
+    ^other:
+        cf.br ^join(%x : i32);
+    ^join(%j: i32):
+        %sum = arith.add %j, %one;
+        builtin.ret %sum : (i32);
+    };
+};

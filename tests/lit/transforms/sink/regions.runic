@@ -5,8 +5,8 @@
 // use, to just before it, also into a region that runs at most once, and only when every region in
 // between runs at most once too: a definition is never moved to where it would run more often.
 // What it must not move: an operation with a memory effect, a call whose callee states no effects
-// or writes, an indirect call, a value used in more than one region. The second RUN line reads the
-// output back.
+// or writes, an indirect call, a value used in more than one region, an operation that holds an
+// exit into another region. The second RUN line reads the output back.
 builtin.module public @sink_operand_defs_regions {
     builtin.function public extern("C") @pure(i32) -> i32 effects();
     builtin.function public extern("C") @unknown(i32) -> i32;
@@ -89,6 +89,29 @@ builtin.module public @sink_operand_defs_regions {
             scf.yield %b, %b, %b : (i32, i32, i32);
         } : (i1) -> (i32, i32, i32);
         builtin.ret %x, %y, %z : (i32, i32, i32);
+    };
+
+    // A region operation holds a terminator, which is taken to be an exit: it stays in the region
+    // it was written in, though its only use is in a region that runs at most once.
+    // CHECK-LABEL: @region_operation_not_into_an_if(
+    // CHECK-SAME: [[C:%[0-9]+]]: i1, [[D:%[0-9]+]]: i1, {{%[0-9]+}}: i32, [[B:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[V:%[0-9]+]] = scf.if [[C]] then {
+    // CHECK: {{%[0-9]+}} = scf.if [[D]] then {
+    // CHECK-NEXT: {{%[0-9]+}} = arith.mul [[V]], [[B]];
+    builtin.function public extern("C") @region_operation_not_into_an_if(%c: i1, %d: i1, %a: i32, %b: i32) -> i32 {
+        %v = scf.if %c then {
+            %s = arith.add %a, %b;
+            scf.yield %s : (i32);
+        } else {
+            scf.yield %a : (i32);
+        } : (i1) -> (i32);
+        %x = scf.if %d then {
+            %y = arith.mul %v, %b;
+            scf.yield %y : (i32);
+        } else {
+            scf.yield %b : (i32);
+        } : (i1) -> (i32);
+        builtin.ret %x : (i32);
     };
 
     // The division would run once per iteration in the loop's body: it stays before the loop.

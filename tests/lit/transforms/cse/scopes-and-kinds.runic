@@ -1,0 +1,86 @@
+// RUN: runic-opt %s -p 'builtin.module(cse)' | filecheck %s
+// RUN: runic-opt %s -p 'builtin.module(cse)' | runic-opt - --verify-roundtrip | filecheck %s
+
+// What CSE leaves alone because of what an operation is or where it is, beside what
+// `transforms/cse/not-merged.runic` holds: a function does not take a value from the module body
+// around it (a function is isolated from above), though the constant there equals its own; two
+// equal debug values both stay; two equal terminators both stay (the second ends its own block);
+// and a read is not merged with an equal read in a block that dominates it. In each function an
+// equal pair of sums is merged, so the test fails when the pass does not run. The second RUN line
+// reads the output back.
+//
+// CHECK-LABEL: builtin.module public @cse_scopes_and_kinds {
+// CHECK-NEXT: [[OUTER:%[0-9]+]] = arith.constant 7 : i32;
+// CHECK-NEXT: [[FLAG:%[0-9]+]] = arith.cmpi eq [[OUTER]], [[OUTER]];
+// CHECK-NEXT: cf.assert [[FLAG]], "outer";
+builtin.module public @cse_scopes_and_kinds {
+    %outer = arith.constant 7 : i32;
+    %flag = arith.cmpi eq %outer, %outer;
+    cf.assert %flag, "outer";
+
+    // CHECK-LABEL: @isolated(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[SEVEN:%[0-9]+]] = arith.constant 7 : i32;
+    // CHECK-NEXT: [[SUM:%[0-9]+]] = arith.add [[A]], [[SEVEN]];
+    // CHECK-NEXT: [[TWICE:%[0-9]+]] = arith.add [[SUM]], [[SUM]];
+    // CHECK-NEXT: builtin.ret [[TWICE]] : (i32);
+    builtin.function public extern("C") @isolated(%a: i32) -> i32 {
+        %seven = arith.constant 7 : i32;
+        %first = arith.add %a, %seven;
+        %second = arith.add %a, %seven;
+        %twice = arith.add %first, %second;
+        builtin.ret %twice : (i32);
+    };
+
+    // CHECK-LABEL: @debug_values(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[SUM:%[0-9]+]] = arith.add [[A]], [[A]];
+    // CHECK-NEXT: di.debug_value [[SUM]]
+    // CHECK-NEXT: di.debug_value [[SUM]]
+    // CHECK-NEXT: [[TWICE:%[0-9]+]] = arith.add [[SUM]], [[SUM]];
+    // CHECK-NEXT: builtin.ret [[TWICE]] : (i32);
+    builtin.function public extern("C") @debug_values(%a: i32) -> i32 {
+        %first = arith.add %a, %a;
+        di.debug_value %first <{ variable = #di.variable<{ name = "x", file = "test.rs", line = 2 }>, expression = #di.expression<[]> }> : (i32);
+        di.debug_value %first <{ variable = #di.variable<{ name = "x", file = "test.rs", line = 2 }>, expression = #di.expression<[]> }> : (i32);
+        %second = arith.add %a, %a;
+        %twice = arith.add %first, %second;
+        builtin.ret %twice : (i32);
+    };
+
+    // CHECK-LABEL: @terminators(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32) {
+    // CHECK-NEXT: [[SUM:%[0-9]+]] = arith.add [[A]], [[A]];
+    // CHECK-NEXT: [[SAME:%[0-9]+]] = arith.cmpi eq [[SUM]], [[SUM]];
+    // CHECK-NEXT: cf.assert [[SAME]], "same";
+    // CHECK-NEXT: cf.br ^[[LOOP:block[0-9]+]];
+    // CHECK-NEXT: ^[[LOOP]]:
+    // CHECK-NEXT: cf.br ^[[LOOP]];
+    builtin.function public extern("C") @terminators(%a: i32) {
+        %first = arith.add %a, %a;
+        %second = arith.add %a, %a;
+        %same = arith.cmpi eq %first, %second;
+        cf.assert %same, "same";
+        cf.br ^loop;
+    ^loop:
+        cf.br ^loop;
+    };
+
+    // CHECK-LABEL: @reads_in_two_blocks(
+    // CHECK-SAME: [[P:%[0-9]+]]: ptr<i32>, [[A:%[0-9]+]]: i32) -> (i32, i32, i32, i32) {
+    // CHECK-NEXT: [[SUM:%[0-9]+]] = arith.add [[A]], [[A]];
+    // CHECK-NEXT: [[FIRST:%[0-9]+]] = mem.load [[P]];
+    // CHECK-NEXT: cf.br ^[[NEXT:block[0-9]+]]([[SUM]] : i32);
+    // CHECK-NEXT: ^[[NEXT]]([[S:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[SECOND:%[0-9]+]] = mem.load [[P]];
+    // CHECK-NEXT: builtin.ret [[FIRST]], [[SECOND]], [[S]], [[SUM]] : (i32, i32, i32, i32);
+    builtin.function public extern("C") @reads_in_two_blocks(%p: ptr<i32>, %a: i32) -> (i32, i32, i32, i32) {
+        %sum = arith.add %a, %a;
+        %first = mem.load %p;
+        cf.br ^next(%sum : i32);
+    ^next(%s: i32):
+        %second = mem.load %p;
+        %again = arith.add %a, %a;
+        builtin.ret %first, %second, %s, %again : (i32, i32, i32, i32);
+    };
+};

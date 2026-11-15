@@ -158,4 +158,25 @@ builtin.module public @cf_canonicalize {
     ^other:
         builtin.ret %b : (i32);
     };
+
+    // The pattern on `cf.switch`, which is registered for it on its own: an edge from a switch to
+    // a block with two predecessors gets a block of its own too.
+    // SPLIT-LABEL: @critical_edges_of_a_switch(
+    // SPLIT-SAME: [[S:%[0-9]+]]: i32, [[C:%[0-9]+]]: i1, [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+    // SPLIT-NEXT: cf.switch [[S]] [#builtin.i32<1> -> ^[[E0:block[0-9]+]]], ^[[SECOND:block[0-9]+]] : (i32);
+    // SPLIT-NEXT: ^[[SECOND]]:
+    // SPLIT-NEXT: cf.cond_br [[C]] ^[[E1:block[0-9]+]], ^{{block[0-9]+}} : (i1);
+    // SPLIT-NEXT: ^[[E0]]:
+    // SPLIT-NEXT: cf.br ^[[JOIN:block[0-9]+]]([[A]] : i32);
+    // SPLIT-NEXT: ^[[E1]]:
+    // SPLIT-NEXT: cf.br ^[[JOIN]]([[B]] : i32);
+    builtin.function public extern("C") @critical_edges_of_a_switch(%s: i32, %c: i1, %a: i32, %b: i32) -> i32 {
+        cf.switch %s [#builtin.i32<1> -> ^join(%a : i32)], ^second : (i32);
+    ^second:
+        cf.cond_br %c ^join(%b : i32), ^other : (i1);
+    ^join(%x: i32):
+        builtin.ret %x : (i32);
+    ^other:
+        builtin.ret %b : (i32);
+    };
 };

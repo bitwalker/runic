@@ -1,0 +1,30 @@
+// RUN: not runic-opt %s -p cfg-to-scf --print-ir-after-failure 2>&1 | filecheck %s
+
+// cfg-to-scf looks for a block that cannot be reached in every function before it lifts any: a
+// refusal leaves the whole module as it was. `@first` could be lifted and is printed, after the
+// failure, with its `cf.cond_br` still there. (`transforms/cfg-to-scf/refused.runic` holds the
+// refusals; a failed case prints nothing there, so this test prints the IR after the failure.)
+
+// CHECK: // ----- IR after failed cfg-to-scf on builtin.module -----
+// CHECK: @first(
+// CHECK-SAME: [[C:%[0-9]+]]: i1,
+// CHECK-NOT: scf.if
+// CHECK: cf.cond_br [[C]]
+// CHECK-NOT: scf.if
+// CHECK: @second(
+// CHECK: error: {{.*}}transformation does not support unreachable blocks
+builtin.module public @cfg_to_scf_refusal {
+    builtin.function public extern("C") @first(%c: i1, %a: i32, %b: i32) -> i32 {
+        cf.cond_br %c ^left, ^right : (i1);
+    ^left:
+        builtin.ret %a : (i32);
+    ^right:
+        builtin.ret %b : (i32);
+    };
+
+    builtin.function public extern("C") @second(%a: i32) -> i32 {
+        builtin.ret %a : (i32);
+    ^island:
+        cf.br ^island;
+    };
+};

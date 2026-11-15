@@ -2,9 +2,9 @@
 // RUN: runic-opt %s -p canonicalizer --split-input-file | runic-opt - --split-input-file --verify-roundtrip | filecheck %s
 
 // Sizes, alignments and offsets fold to `isize` constants under the data layout the module
-// states, and do not fold without one. A test that expects layout folds states the layout: the
-// size of a pointer differs between the first two cases. The second RUN line reads the output
-// back.
+// states, and do not fold without one, nor when the constant does not fit the layout's `isize`.
+// A test that expects layout folds states the layout: the size of a pointer differs between the
+// first two cases. The second RUN line reads the output back.
 
 // CHECK-LABEL: @ptr32(
 // CHECK-SAME: ) -> (isize, isize, isize, isize) {
@@ -54,5 +54,23 @@ builtin.module public @none {
         %offset = mem.offsetof struct<i8, i32>, [1];
         %ptr = mem.sizeof ptr<i8>;
         builtin.ret %size, %align, %offset, %ptr : (isize, isize, isize, isize);
+    };
+};
+
+// -----
+
+// A size folds only when it fits in the `isize` of the layout in scope: under a layout whose
+// `isize` (the index width) is 16 bits, the size of 70,000 bytes does not fit and the operation
+// stays; one that fits folds.
+// CHECK-LABEL: @size_wider_than_isize(
+// CHECK-SAME: ) -> (isize, isize) {
+// CHECK-NEXT: [[SMALL:%[0-9]+]] = arith.constant 60000 : isize;
+// CHECK-NEXT: [[BIG:%[0-9]+]] = mem.sizeof array<i8; 70000>;
+// CHECK-NEXT: builtin.ret [[BIG]], [[SMALL]] : (isize, isize);
+builtin.module public @narrow attributes { data_layout = #builtin.data_layout<little, ptr = 32 index 16> } {
+    builtin.function public extern("C") @size_wider_than_isize() -> (isize, isize) {
+        %big = mem.sizeof array<i8; 70000>;
+        %small = mem.sizeof array<i8; 60000>;
+        builtin.ret %big, %small : (isize, isize);
     };
 };
