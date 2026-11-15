@@ -697,16 +697,31 @@ impl OpPrinter for Ret {
         true
     }
 
+    /// `builtin.ret %0, %1 : (i32, i64)`, or `builtin.ret` returning nothing; an attribute
+    /// dictionary is written before the types, as `attributes { .. }`.
     fn print(&self, printer: &mut AsmPrinter<'_>) {
         let returning = self.values();
-        if returning.is_empty() {
-            return;
+        if !returning.is_empty() {
+            printer.print_space();
+            printer.print_value_uses(returning.as_value_range());
         }
+        print_attribute_dictionary(self.as_operation(), printer);
+        if !returning.is_empty() {
+            printer.print_space();
+            printer.print_colon_type_list(returning.iter().map(|r| r.borrow().ty()));
+        }
+    }
+}
 
+/// ` attributes { .. }`, if `op` has attributes in its dictionary.
+fn print_attribute_dictionary(op: &Operation, printer: &mut AsmPrinter<'_>) {
+    if op.has_attributes() {
         printer.print_space();
-        printer.print_value_uses(returning.as_value_range());
+        printer.print_keyword("attributes");
         printer.print_space();
-        printer.print_colon_type_list(returning.iter().map(|r| r.borrow().ty()));
+        printer.print_attribute_dictionary(
+            op.attributes().iter().map(|attr| *attr.as_named_attribute()),
+        );
     }
 }
 
@@ -721,6 +736,7 @@ impl OpParser for Ret {
         };
 
         if !parser.token_stream_mut().is_next(|tok| matches!(tok, Token::PercentIdent(_))) {
+            parser.parse_optional_attribute_dict_with_keyword(&mut state.attrs)?;
             return Ok(());
         }
 
@@ -732,6 +748,7 @@ impl OpParser for Ret {
             /*allow_result_number=*/ true,
             None,
         )?;
+        parser.parse_optional_attribute_dict_with_keyword(&mut state.attrs)?;
 
         let mut types = SmallVec::default();
         parser.parse_colon_type_list(&mut types)?;
@@ -777,6 +794,7 @@ impl OpPrinter for RetImm {
         printer.print_int(value.as_int());
         *printer += const_text(" : ");
         printer.print_type(crate::Attribute::ty(&*value));
+        print_attribute_dictionary(self.as_operation(), printer);
     }
 }
 
@@ -807,6 +825,7 @@ impl OpParser for RetImm {
         let value = literal.to_int(*ty, literal_span)?;
         let attr = parser.context_rc().int_attr(value, ty.into_inner());
         state.add_attribute("value", attr);
+        parser.parse_optional_attribute_dict_with_keyword(&mut state.attrs)?;
 
         Ok(())
     }

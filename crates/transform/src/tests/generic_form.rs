@@ -250,3 +250,34 @@ builtin.function public extern(\"C\") @f(%a: i32) -> i32 {
     let printed = default_print_reads_back(text);
     assert!(generic_lines(&printed).is_empty(), "{printed}");
 }
+
+/// With an entry added to the attribute dictionary of every operation of the dialect modules,
+/// each module printed in its default form reads back to what its generic form says: every
+/// operation's custom form holds its dictionary.
+#[test]
+fn every_custom_form_holds_the_attribute_dictionary() {
+    use runic_core::dialects::builtin::attributes::I32Attr;
+
+    for (name, text) in DIALECT_MODULES {
+        let (context, module) = parse(text).unwrap_or_else(|err| panic!("{name}: {err}"));
+        let mut ops = Vec::new();
+        module.borrow().prewalk_all(|op: &Operation| ops.push(op.as_operation_ref()));
+        for (index, mut op) in ops.iter().copied().enumerate() {
+            let note = context.create_attribute::<I32Attr, _>(index as i32).as_attribute_ref();
+            let key = runic_core::interner::Symbol::intern(format!("note{index}").as_str());
+            op.borrow_mut().set_attribute(key, note);
+        }
+        let generic = print(&module.borrow(), true);
+        let custom = print(&module.borrow(), false);
+        let (_context, read_back) = parse(&custom).unwrap_or_else(|err| {
+            panic!("{name}: the custom text does not parse: {err}\n{custom}")
+        });
+        let generic_again = print(&read_back.borrow(), true);
+        assert!(
+            same_program(&generic_again, &generic),
+            "{name}: the custom form loses part of an \
+             operation:\n{generic}\nbecame\n{generic_again}"
+        );
+        assert_eq!(generic.matches("note").count(), ops.len(), "{name}: {generic}");
+    }
+}

@@ -1149,7 +1149,8 @@ pub struct Continue {
     args: AnyType,
 }
 
-/// Print `scf.break`/`scf.continue` as `<op> <levels> <operands> : (<types>)`.
+/// Print `scf.break`/`scf.continue` as `<op> <levels> <operands> : (<types>)`, with an attribute
+/// dictionary, if the operation has one, as `attributes { .. }` before the types.
 ///
 /// The level count is printed positionally, as a signed decimal, rather than in the attribute
 /// dictionary; `scf.index_switch`'s `case <n>` has the same shape.
@@ -1165,11 +1166,20 @@ fn print_exit(op: &Operation, levels: i32, printer: &mut AsmPrinter<'_>) {
         printer.print_space();
         printer.print_value_uses(ValueRange::<2>::from(operands));
     }
+    if op.has_attributes() {
+        printer.print_space();
+        printer.print_keyword("attributes");
+        printer.print_space();
+        printer.print_attribute_dictionary(
+            op.attributes().iter().map(|attr| *attr.as_named_attribute()),
+        );
+    }
     printer.print_space();
     printer.print_colon_type_list(types);
 }
 
-/// Parse `<levels> [<operands>] : (<types>)` into `state`, the inverse of [print_exit]. `levels`
+/// Parse `<levels> [<operands>] [attributes { .. }] : (<types>)` into `state`, the inverse of
+/// [print_exit]. `levels`
 /// is written the way an `i32` constant's literal is written (see [parse_i32]); the verifier
 /// rejects a value below 1.
 fn parse_exit(state: &mut OperationState, parser: &mut dyn OpAsmParser<'_>) -> ParseResult {
@@ -1183,6 +1193,7 @@ fn parse_exit(state: &mut OperationState, parser: &mut dyn OpAsmParser<'_>) -> P
         /*allow_result_number=*/ true,
         None,
     )?;
+    parser.parse_optional_attribute_dict_with_keyword(&mut state.attrs)?;
     let mut types = SmallVec::<[Type; 4]>::default();
     parser.parse_colon_type_list(&mut types)?;
     for (operand, ty) in operands.into_iter().zip(types) {
