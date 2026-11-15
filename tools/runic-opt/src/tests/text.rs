@@ -255,18 +255,18 @@ fn assert_redefined(text: &str, name: &str, second: &str, first: usize) {
 fn a_result_defined_twice_is_an_error() {
     let body =
         "%x = arith.constant 1 : i32;\n%x = arith.constant 2 : i32;\nbuiltin.ret %x : (i32);";
-    assert_redefined(&function("", " -> i32", body), "%x", "4:2", 3);
+    assert_redefined(&function("", " -> i32", body), "%x", "4:1", 3);
     // The same in the generic form.
     let body = "%x = \"arith.constant\"() <{ value = #builtin.int<1 : i32> }> : () -> i32;\n%x = \
                 \"arith.constant\"() <{ value = #builtin.int<2 : i32> }> : () -> \
                 i32;\nbuiltin.ret %x : (i32);";
-    assert_redefined(&function("", " -> i32", body), "%x", "4:2", 3);
+    assert_redefined(&function("", " -> i32", body), "%x", "4:1", 3);
 }
 
 #[test]
 fn a_result_with_the_name_of_a_parameter_is_an_error() {
     let body = "%a = arith.constant 1 : i32;\nbuiltin.ret %a : (i32);";
-    assert_redefined(&function("%a: i32", " -> i32", body), "%a", "3:2", 2);
+    assert_redefined(&function("%a: i32", " -> i32", body), "%a", "3:1", 2);
 }
 
 #[test]
@@ -274,7 +274,7 @@ fn two_parameters_of_one_name_are_an_error() {
     assert_redefined(
         &function("%a: i32, %a: i32", " -> i32", "builtin.ret %a : (i32);"),
         "%a",
-        "2:54",
+        "2:53",
         2,
     );
 }
@@ -283,18 +283,18 @@ fn two_parameters_of_one_name_are_an_error() {
 fn a_block_argument_defined_twice_in_a_region_is_an_error() {
     // With the name of a parameter.
     let body = "cf.br ^b(%a : i32);\n^b(%a: i32):\nbuiltin.ret %a : (i32);";
-    assert_redefined(&function("%a: i32", " -> i32", body), "%a", "4:5", 2);
+    assert_redefined(&function("%a: i32", " -> i32", body), "%a", "4:4", 2);
     // With the name of an argument of another block of the region.
     let body = "cf.br ^b(%a : i32);\n^b(%x: i32):\ncf.br ^c(%x : i32);\n^c(%x: i32):\nbuiltin.ret \
                 %x : (i32);";
-    assert_redefined(&function("%a: i32", " -> i32", body), "%x", "6:5", 4);
+    assert_redefined(&function("%a: i32", " -> i32", body), "%x", "6:4", 4);
 }
 
 #[test]
 fn a_nested_region_cannot_reuse_a_name_defined_around_it() {
     let body = "%r = scf.if %c then {\n%a = arith.add %a, %a;\nscf.yield %a : (i32);\n} else \
                 {\nscf.yield %a : (i32);\n} : (i1) -> (i32);\nbuiltin.ret %r : (i32);";
-    assert_redefined(&function("%a: i32, %c: i1", " -> i32", body), "%a", "4:2", 2);
+    assert_redefined(&function("%a: i32, %c: i1", " -> i32", body), "%a", "4:1", 2);
 }
 
 /// A name goes out of scope at the end of the region it is defined in, and every function (an

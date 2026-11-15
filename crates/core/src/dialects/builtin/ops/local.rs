@@ -593,7 +593,7 @@ mod tests {
             ("%1 = builtin.load_local -1 : i32;", "-"),
             ("%1 = builtin.load_local 0;", ""),
             ("builtin.store_local 0;", ""),
-            ("builtin.store_local %0;", "0"),
+            ("builtin.store_local %0;", "%0"),
         ] {
             let source = alloc::format!(
                 "{HEADER} @f(%0: i32) locals(i32) {{\n    {body}\n    builtin.ret;\n}};"

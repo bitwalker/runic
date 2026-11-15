@@ -3079,6 +3079,35 @@ fn range_of(source: &str, text: &str) -> (usize, usize) {
     (start, start + text.len())
 }
 
+/// The span of a value or block name starts at its sigil: a diagnostic about one points at the
+/// `%` or the `^` it is written with.
+#[test]
+fn the_span_of_a_value_or_block_name_starts_at_its_sigil() {
+    for (source, named) in [
+        (
+            "builtin.function public extern(\"C\") @f(%a: i32) -> i32 {\n    builtin.ret \
+             %undefined : (i32);\n};",
+            "%undefined",
+        ),
+        (
+            "builtin.function public extern(\"C\") @f(%a: i32) -> i32 {\n    builtin.ret %a : \
+             (i32);\n^twice:\n    builtin.ret %a : (i32);\n^twice:\n    builtin.ret %a : \
+             (i32);\n};",
+            "^twice",
+        ),
+        (
+            "builtin.function public extern(\"C\") @f(%a: i32, %a: i32) -> i32 {\n    builtin.ret \
+             %a : (i32);\n};",
+            "%a: i32) ",
+        ),
+    ] {
+        let (message, labels) = parse_error_labels(source);
+        // The second definition of a name is the one the diagnostic is about
+        let start = source.rfind(named).expect("the name is in the source");
+        assert!(labels.iter().any(|(at, _)| *at == start), "{named}: {labels:?} {message}");
+    }
+}
+
 #[test]
 fn a_member_of_another_group_is_not_a_body_in_a_rec_block() {
     let source = "\

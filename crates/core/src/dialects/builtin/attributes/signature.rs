@@ -612,24 +612,16 @@ pub(crate) fn print_optional_results<W: SignatureWriter + ?Sized>(
     }
 }
 
-/// The span of the next token (with the `%` of a value name), or the current location at the end
-/// of the input.
+/// The span of the next token (with the `%` of a value name, which the lexer's span holds), or
+/// the current location at the end of the input.
 pub(crate) fn next_token_span<'input, P: ?Sized + Parser<'input>>(
     parser: &mut P,
 ) -> ParseResult<SourceSpan> {
     match parser.token_stream_mut().peek()? {
-        Some((start, token, end)) => {
-            // The token of a value name is the name after its `%`
-            let start = if matches!(token, Token::PercentIdent(_)) {
-                start - 1
-            } else {
-                start
-            };
-            Ok(SourceSpan::session(
-                parser.source_id(),
-                TextRange::new(start, end).expect("the lexer produces ordered ranges"),
-            ))
-        }
+        Some((start, _, end)) => Ok(SourceSpan::session(
+            parser.source_id(),
+            TextRange::new(start, end).expect("the lexer produces ordered ranges"),
+        )),
         None => Ok(parser.current_location()),
     }
 }

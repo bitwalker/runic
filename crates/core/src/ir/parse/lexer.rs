@@ -420,14 +420,20 @@ impl<'input> Lexer<'input> {
         let prefix = self.pop();
         debug_assert!(matches!(prefix, '#' | '%' | '^' | '!'), "got '{prefix}'");
 
+        // The span of a value or block name starts at its sigil; the token holds the name alone.
+        let keeps_sigil = matches!(prefix, '%' | '^');
         let c = self.read();
         if c.is_ascii_digit() {
-            self.token_start += prefix.len_utf8();
+            if !keeps_sigil {
+                self.token_start += prefix.len_utf8();
+            }
             while self.read().is_ascii_digit() {
                 self.skip();
             }
         } else if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '$' | '.') {
-            self.token_start += prefix.len_utf8();
+            if !keeps_sigil {
+                self.token_start += prefix.len_utf8();
+            }
             loop {
                 match self.read() {
                     '_' | '-' | '$' | '.' => self.skip(),
@@ -444,6 +450,11 @@ impl<'input> Lexer<'input> {
         }
 
         let id = self.slice();
+        let id = if keeps_sigil {
+            &id[prefix.len_utf8()..]
+        } else {
+            id
+        };
         Ok(match prefix {
             '#' => Token::HashIdent(id),
             '%' => Token::PercentIdent(id),

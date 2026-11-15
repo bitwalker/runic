@@ -8,7 +8,7 @@
 // as given. The second RUN line also checks that both forms, with their locations, read back.
 
 // CHECK-LABEL: @entrypoint(
-// CHECK-SAME: {{%[0-9]+}}: i32 loc("{{.*}}locations.runic":[[@LINE+3]]:50 to [[@LINE+3]]:51)) -> i32 {
+// CHECK-SAME: {{%[0-9]+}}: i32 loc("{{.*}}locations.runic":[[@LINE+3]]:49 to [[@LINE+3]]:51)) -> i32 {
 // CHECK-NEXT: builtin.ret {{%[0-9]+}} : (i32) loc("{{.*}}locations.runic":[[@LINE+3]]:5 to [[@LINE+3]]:16);
 // CHECK-NEXT: } loc("{{.*}}locations.runic":[[@LINE+1]]:1 to [[@LINE+1]]:17);
 builtin.function public extern("C") @entrypoint(%a: i32) -> i32 {
