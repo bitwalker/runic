@@ -6,7 +6,7 @@ use runic_core::{
     Context, OpAsmParser, OpParser, OpPrinter, OperationState, Report, Value,
     derive::operation,
     dialects::{
-        builtin::attributes::{LocalVariable, LocalVariableAttr},
+        builtin::attributes::{ListAttr, LocalVariable, LocalVariableAttr},
         test::TestDialect,
     },
     parse::{ParseResult, ParserExt},
@@ -293,4 +293,90 @@ fn the_inputs_of_the_tests_and_a_module_of_each_dialect_read_back() {
         assert_eq!(output.stderr, "", "the module of {dialect}");
         output.succeeded();
     }
+}
+
+/// An operation with a list property, which its derived custom form writes.
+#[operation(dialect = TestDialect)]
+pub struct RoundtripListProperty {
+    #[attr]
+    items: ListAttr,
+}
+
+/// A module that holds lists in a property and in an attribute dictionary: nested lists, empty
+/// lists, and lists of symbol references (to the enclosing function and to a sibling).
+const LISTS: &str = r#"builtin.module public @m {
+    builtin.function public extern("C") @f(%a: i32) -> i32 {
+        "test.roundtrip_list_property"() <{ items = [[#builtin.i32<1>, []], [], [#builtin.symbol<@g>]] }> { none = [], refs = [#builtin.symbol<@f>, [#builtin.symbol<@g>, #builtin.string<"s">]] } : () -> ();
+        builtin.ret %a : (i32);
+    };
+    builtin.function public extern("C") @g() {
+        builtin.ret;
+    };
+};
+"#;
+
+#[test]
+fn lists_in_a_property_and_a_dictionary_read_back() {
+    let plain = opt(&[], LISTS);
+    plain.succeeded();
+    for list in [
+        "items = [[#builtin.i32<1>, []], [], [#builtin.symbol<@g>]]",
+        "none = []",
+        "refs = [#builtin.symbol<@f>, [#builtin.symbol<@g>, #builtin.string<\"s\">]]",
+    ] {
+        assert!(plain.stdout.contains(list), "{list} in\n{}", plain.stdout);
+    }
+    let checked = opt(&["--verify-roundtrip"], LISTS);
+    checked.succeeded();
+    assert_eq!(checked.stderr, "");
+    assert_eq!(checked.stdout, plain.stdout);
+    let generic = opt(&["--verify-roundtrip", "--print-generic"], LISTS);
+    generic.succeeded();
+    assert_eq!(generic.stderr, "");
+}
+
+/// The symbol references in the lists are linked when the text is read, and unlinked when the
+/// operation holding them is erased.
+#[test]
+fn symbol_references_read_in_a_list_are_linked() {
+    use std::rc::Rc;
+
+    use runic_core::{
+        Operation,
+        parse::{ParserConfig, parse_any},
+    };
+
+    let context = Rc::new(Context::default());
+    let module = parse_any(ParserConfig::new(context.clone()), "lists.runic", LISTS).unwrap();
+    let (f, g) = {
+        let module = module.borrow();
+        let symbols = module.as_symbol_table().unwrap().symbol_manager();
+        (symbols.lookup_op("f").unwrap(), symbols.lookup_op("g").unwrap())
+    };
+    let uses = |symbol: runic_core::OperationRef| -> usize {
+        symbol.borrow().as_symbol().unwrap().iter_uses().count()
+    };
+    let mut holder = {
+        let f = f.borrow();
+        let body = f.regions().front().get().unwrap().entry_block_ref().unwrap();
+        let holder = body.borrow().front().unwrap();
+        assert!(holder.borrow().is::<RoundtripListProperty>());
+        holder
+    };
+    let owners = |symbol: runic_core::OperationRef| {
+        symbol
+            .borrow()
+            .as_symbol()
+            .unwrap()
+            .iter_uses()
+            .all(|usage| usage.owner == holder)
+    };
+    assert_eq!(uses(g), 2, "one use in the property, one in the dictionary");
+    assert_eq!(uses(f), 1, "one use in the dictionary");
+    assert!(owners(f) && owners(g));
+    assert!(holder.borrow().verify().is_ok());
+
+    Operation::erase(&mut holder.borrow_mut());
+    assert_eq!(uses(f), 0);
+    assert_eq!(uses(g), 0);
 }

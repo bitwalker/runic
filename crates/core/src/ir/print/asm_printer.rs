@@ -705,11 +705,16 @@ impl<'a> AsmPrinter<'a> {
         }
     }
 
-    /// Print an attribute value
+    /// Print an attribute value: `#dialect.name<body>`, or `#dialect.name` for a marker; a list
+    /// is `[a, b, ..]`, each entry printed as an attribute value.
     pub fn print_attribute_value(&mut self, value: &dyn Attribute) {
         use crate::formatter::*;
 
         let attr = value.as_attr();
+        if let Some(list) = attr.downcast_ref::<crate::dialects::builtin::attributes::ListAttr>() {
+            list.print(self);
+            return;
+        }
         self.document += text(format!("#{}", attr.name()));
         if attr.implements::<dyn Marker>() {
             return;

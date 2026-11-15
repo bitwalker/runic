@@ -740,6 +740,43 @@ fn the_generic_forms_of_address_and_size_operations() {
     .assert_eq(&format!("{}", parsed.borrow().as_operation()));
 }
 
+/// A path is written `[1, 2]` in the custom form of a gep and an offsetof, and their own parsers
+/// read it, as an `i32` array, at a place where no attribute is read: a list attribute never takes
+/// its place. A list written where the generic form expects the path is a list attribute, which is
+/// not the array the property holds, so it is a diagnostic.
+#[test]
+fn a_path_is_never_read_as_a_list_attribute() {
+    use runic_core::dialects::builtin::attributes::I32ArrayAttr;
+
+    let (_context, parsed) = parse_function(ADDRESS_FORMS).expect("valid ir");
+    let paths = body_ops(parsed)
+        .into_iter()
+        .filter_map(|op| {
+            let op = op.borrow();
+            let path = op.get_typed_attribute::<I32ArrayAttr>("path")?;
+            let path = path.borrow().as_value().iter().copied().collect::<Vec<_>>();
+            Some(path)
+        })
+        .collect::<Vec<_>>();
+    // The seven geps, then the three offsetofs (a sizeof and an alignof have no path).
+    let expected: [&[i32]; 10] = [&[1, 2], &[1], &[], &[], &[], &[], &[], &[1], &[], &[1, 1]];
+    assert_eq!(paths, expected.map(<[i32]>::to_vec));
+
+    for body in [
+        r#"    %1 = "mem.gep"(%p) <{ path = [#builtin.i32<1>] }> : (ptr<struct<i32, i8>> |) -> ptr<i8>;"#,
+        r#"    %1 = "mem.offsetof"() <{ ty = #builtin.type<struct<i32, i8>>, path = [] }> : () -> isize;"#,
+    ] {
+        let err = parse_function(&function("%p: ptr<struct<i32, i8>>", body))
+            .err()
+            .unwrap_or_else(|| panic!("`{body}` parsed"));
+        assert!(
+            err.contains("could not convert attribute of type 'builtin.list'")
+                && err.contains("I32ArrayAttr"),
+            "{body}: {err}"
+        );
+    }
+}
+
 /// A load through a typed pointer leaves its `ty` unknown, which the generic form writes as
 /// `#builtin.type<?>` and reads back; a load through an opaque pointer writes the type it reads.
 #[test]

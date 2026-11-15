@@ -183,6 +183,7 @@
 //!                    | symbol-ref-attribute
 //!                    | location-attribute
 //!                    | signature-attribute
+//!                    | list-attribute
 //!
 //! type-attribute := type
 //! integer-attribute := '-'? decimal-literal | hex-literal | binary-literal
@@ -197,6 +198,9 @@
 //! signature-attribute := '#builtin.signature' '<' 'extern' '(' string ')'
 //!                        '(' (param (',' param)*)? ')' ('->' result-list)? '>'
 //!     (`param` and `result-list` as for functions, read and written by the same code)
+//! list-attribute := '[' (attribute-value (',' attribute-value)*)? ']'
+//!     (each entry an attribute value of any type, as in a dictionary, so lists nest; a list nests
+//!     at most 16 deep)
 //!
 //! No bare attribute is followed by a `: type` suffix. An integer literal is an attribute only
 //! where the syntax that reads it expects an integer type, such as an operation's own format: an
@@ -208,7 +212,11 @@
 //! they print, a string being escaped as by `str::escape_default`.
 //!
 //! In attribute position a type is a type attribute, so `array<`, `ptr`, `struct` and `(` start a
-//! type. `[` starts no attribute value (it is kept for list attributes), and neither does `unit`.
+//! type. `[` starts a list attribute, and nothing else in attribute position: an array of integers
+//! or types is written `#builtin.array_i32<..>` or `#builtin.type_array<..>`, and a `[` an
+//! operation's own syntax gives a meaning to (a path of `mem.gep`, the successors of the generic
+//! form) is read by that syntax, where no attribute value is read. `unit` starts no attribute
+//! value. A list prints as `[a, b]`, each entry as an attribute value prints.
 //!
 //! # Dialect Attributes
 //!

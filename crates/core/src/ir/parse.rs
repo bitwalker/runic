@@ -178,6 +178,8 @@ pub struct ParserState<'input> {
     pub default_dialect_stack: SmallVec<[interner::Symbol; 1]>,
     /// The number of types enclosing the one being parsed, which the type parser limits.
     type_nesting: u32,
+    /// The number of lists enclosing the attribute being parsed, which the attribute parser limits.
+    list_nesting: u32,
     /// The number of regions enclosing the text being parsed, which [ParserConfig::max_region_depth]
     /// limits.
     region_nesting: u32,
@@ -192,6 +194,7 @@ impl<'input> ParserState<'input> {
             asm_state: None,
             default_dialect_stack: smallvec![interner::Symbol::intern("builtin")],
             type_nesting: 0,
+            list_nesting: 0,
             region_nesting: 0,
         }
     }

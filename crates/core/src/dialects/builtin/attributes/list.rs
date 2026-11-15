@@ -26,21 +26,31 @@ impl fmt::Debug for List {
 
 impl fmt::Display for List {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut list = f.debug_list();
+        let Some(first) = self.0.front().get() else {
+            return f.write_str("[]");
+        };
+        let context = first.as_trait::<dyn Attribute>().unwrap().context_rc();
         let flags = OpPrintingFlags::default();
-        for entry in self.0.iter() {
-            let attr = entry.as_trait::<dyn Attribute>().unwrap();
-            list.entry_with(|f| {
-                let context = attr.context_rc();
-                // Only reached outside an IR print (the `AttrPrinter` of a list is not implemented):
-                // the diagnostic text of a value, printed as a fragment, without declarations.
-                let mut printer = AsmPrinter::fragment(context, &flags);
-                printer.print_attribute_value(attr);
-                write!(f, "{}", printer.finish())
-            });
-        }
-        list.finish()
+        // The text of the list as an IR print writes it, printed as a fragment, without
+        // declarations.
+        let mut printer = AsmPrinter::fragment(context, &flags);
+        print_entries(&self.0, &mut printer);
+        write!(f, "{}", printer.finish())
     }
+}
+
+/// Prints `entries` as a list attribute is written: `[a, b, ..]`, each entry an attribute value.
+fn print_entries(entries: &AttrList, printer: &mut AsmPrinter<'_>) {
+    use crate::formatter::*;
+
+    *printer += const_text("[");
+    for (index, entry) in entries.iter().enumerate() {
+        if index > 0 {
+            *printer += const_text(", ");
+        }
+        printer.print_attribute_value(entry.as_trait::<dyn Attribute>().unwrap());
+    }
+    *printer += const_text("]");
 }
 
 impl Eq for List {}
@@ -148,8 +158,10 @@ impl AsMut<AttrList> for List {
     }
 }
 
+/// A list is written `[a, b, ..]`, without the `#builtin.list<..>` of other attributes: see
+/// [AsmPrinter::print_attribute_value].
 impl AttrPrinter for ListAttr {
-    fn print(&self, _printer: &mut AsmPrinter<'_>) {
-        todo!()
+    fn print(&self, printer: &mut AsmPrinter<'_>) {
+        print_entries(self.as_value().as_ref(), printer);
     }
 }

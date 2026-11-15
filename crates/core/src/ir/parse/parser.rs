@@ -369,6 +369,11 @@ pub trait Parser<'input> {
     /// type `ty`; one with a body, or a bare string, keeps the unknown type. An unknown `ty`
     /// accepts an attribute of any type.
     fn parse_attribute(&mut self, ty: Type) -> ParseResult<Span<AttributeRef>> {
+        // A list is read here rather than by `parse_attribute_value`, whose frame would otherwise
+        // be on the stack once for each level of nesting.
+        if self.token_stream_mut().is_next(|tok| matches!(tok, Token::Lbracket)) {
+            return parse_list_attribute(self);
+        }
         let attr = parse_attribute_value(self, ty)?;
         // The expected type, when known, is the type of the attribute read, whatever its form.
         let attr_ty = attr.inner().borrow().ty();
@@ -1203,7 +1208,8 @@ fn unescape_string(span: SourceSpan, quoted: &str) -> ParseResult<CompactString>
         })
 }
 
-/// Reads an attribute value of any form; [Parser::parse_attribute] holds it to the expected type.
+/// Reads an attribute value of any form but a list; [Parser::parse_attribute] reads a list, and
+/// holds any other value to the expected type.
 fn parse_attribute_value<'input, P: ?Sized + Parser<'input>>(
     parser: &mut P,
     ty: Type,
@@ -1279,6 +1285,61 @@ fn parse_attribute_value<'input, P: ?Sized + Parser<'input>>(
             )),
         }),
     }
+}
+
+/// The number of lists a list attribute may be nested in: 16.
+///
+/// Each level of nesting is a few recursive calls, so the limit keeps deeply nested input from
+/// overflowing the stack. In an unoptimized build a level costs about 5 KB of stack, so 16 levels
+/// use about 80 KB, which leaves room on a 1 MB stack for a type nested to its own limit
+/// ([MAX_TYPE_NESTING](super::types::MAX_TYPE_NESTING)) inside the innermost list, and is far
+/// beyond any realistic nesting of lists.
+pub(super) const MAX_LIST_NESTING: u32 = 16;
+
+/// Reads a list attribute, `[a, b, ..]`.
+///
+/// Each entry is an attribute value of any type, written as one is anywhere else; `[]` is the
+/// empty list. A bare `[` begins an attribute nowhere else: an array of integers or types is
+/// written `#builtin.array_i32<..>` or `#builtin.type_array<..>`, and a `[` an operation's own
+/// syntax gives a meaning to (a path of `mem.gep`, a list of successors) is read by that
+/// operation's parser, never as an attribute value.
+fn parse_list_attribute<'input, P: ?Sized + Parser<'input>>(
+    parser: &mut P,
+) -> ParseResult<Span<AttributeRef>> {
+    use crate::{
+        attributes::AttrList,
+        dialects::builtin::attributes::{List, ListAttr},
+    };
+
+    let open = parser.token_stream_mut().expect_if("'['", |tok| tok == Token::Lbracket)?.span();
+    let enclosing = parser.state().list_nesting;
+    if enclosing >= MAX_LIST_NESTING {
+        return Err(ParserError::InvalidAttributeValue {
+            span: open,
+            reason: format!("list nesting is too deep (limit {MAX_LIST_NESTING})"),
+        });
+    }
+    // Restored on every return from the nested parse, successful or not.
+    parser.state_mut().list_nesting = enclosing + 1;
+    let mut entries = Vec::new();
+    let unknown = parser.context().unknown_type();
+    let result = parser.parse_comma_separated_list_until(Token::Rbracket, true, |parser| {
+        entries.push(parser.parse_attribute(unknown)?.into_inner());
+        Ok(true)
+    });
+    parser.state_mut().list_nesting = enclosing;
+    result?;
+
+    let mut list = AttrList::new();
+    for entry in entries {
+        list.push_back(entry.borrow().as_attr().as_attr_ref());
+    }
+    let end = parser.token_stream().current_position();
+    let span = span!(open.source().id(), open.range().start(), end);
+    Ok(Span::new(
+        span,
+        parser.context_rc().create_attribute::<ListAttr, _>(List::from(list)),
+    ))
 }
 
 /// Creates the attribute for an integer literal of the integer type `ty`.

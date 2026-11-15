@@ -1718,7 +1718,7 @@ fn a_type_parses_from_text_on_its_own() {
         ("%0", "help: type"),
     ] {
         let err = parse::parse_type(&context, "bad.runic", text).into_result().expect_err(text);
-        let message = format!("{}", err.display());
+        let message = format!("{err:?}");
         assert!(message.contains(expected), "`{text}`: {message}");
     }
     let err = parse::parse_type(&context, "rendered.runic", "i32 i32")
@@ -2223,7 +2223,7 @@ fn a_negated_hex_or_binary_literal_is_a_spanned_error() {
             1,
         );
         let err = test.parse::<Function>("negated.hir", &source).err().expect(literal);
-        let message = format!("{}", err.display());
+        let message = format!("{err:?}");
         assert!(message.contains("only a decimal literal can be negative"), "{message}");
     }
 }
@@ -2939,7 +2939,7 @@ fn parse_error_labels(source: &str) -> (String, Vec<(usize, usize)>) {
         .into_iter()
         .map(|range| (range.start, range.end))
         .collect();
-    let message = format!("{}", err.display()).split_whitespace().collect::<Vec<_>>().join(" ");
+    let message = format!("{err:?}");
     (message, labels)
 }
 
@@ -3619,6 +3619,207 @@ fn int_and_type_of(attr: &crate::AttributeRef) -> (Int, Type) {
     let attr = attr.borrow();
     let attr = attr.as_attr().as_trait::<dyn IntegerLikeAttr>().unwrap();
     (attr.as_int(), attr.ty())
+}
+
+/// A list attribute is written `[a, b, ..]`, each entry as an attribute value is written anywhere
+/// else; lists nest, and the empty list is `[]`. An entry written in a shorter form (a string, a
+/// type, `true`) prints in its attribute form.
+#[test]
+fn list_attributes_round_trip_through_text() -> TestResult {
+    use crate::dialects::builtin::attributes::{BoolAttr, ListAttr, StringAttr, TypeAttr};
+
+    let context = Rc::new(Context::default());
+    let unknown = context.unknown_type();
+    let flat =
+        "[#builtin.int<1 : i32>, #builtin.string<\"s\">, #builtin.type<i64>, #builtin.bool<true>]";
+    for (text, printed) in [
+        ("[]", "[]"),
+        (flat, flat),
+        ("[#builtin.int<1 : i32>, \"s\", i64, true]", flat),
+        ("[[], [#builtin.i32<1>, [[]]]]", "[[], [#builtin.i32<1>, [[]]]]"),
+        ("[ [ ] , #builtin.i32<1> ]", "[[], #builtin.i32<1>]"),
+    ] {
+        let attr = parse_attribute_text(&context, text, unknown)?;
+        assert!(attr.borrow().is::<ListAttr>(), "{text}");
+        assert_eq!(print_attribute_text(&context, &attr), printed, "{text}");
+        let reparsed = parse_attribute_text(&context, printed, unknown)?;
+        assert_eq!(&*reparsed.borrow(), &*attr.borrow(), "{printed}");
+        assert_eq!(print_attribute_text(&context, &reparsed), printed, "{printed}");
+        // A list displays as it prints.
+        let display = format!("{}", attr.borrow().downcast_ref::<ListAttr>().unwrap().as_value());
+        assert_eq!(display, printed, "{text}");
+    }
+
+    let attr = parse_attribute_text(&context, flat, unknown)?;
+    let attr = attr.borrow();
+    let entries = attr.downcast_ref::<ListAttr>().unwrap().as_value().as_ref();
+    let entries = entries.iter().map(|entry| entry.as_attribute_ref()).collect::<Vec<_>>();
+    assert_eq!(entries.len(), 4);
+    assert_eq!(int_and_type_of(&entries[0]), (Int::from(1i32), context.i32()));
+    assert_eq!(
+        entries[1].borrow().downcast_ref::<StringAttr>().unwrap().as_value().as_str(),
+        "s"
+    );
+    assert_eq!(
+        *entries[2].borrow().downcast_ref::<TypeAttr>().unwrap().as_value(),
+        context.i64()
+    );
+    assert!(*entries[3].borrow().downcast_ref::<BoolAttr>().unwrap().as_value());
+
+    for (text, expected) in [
+        ("[", r#"token: "end of input""#),
+        ("[#builtin.i32<1>", r#"token: "end of input", expected: Some("]")"#),
+        ("[#builtin.i32<1>,]", r#"token: "]""#),
+        (
+            "[#builtin.i32<1> #builtin.i32<2>]",
+            r#"token: "'#'-identifier", expected: Some("]")"#,
+        ),
+        // A bare integer has no type to be read with.
+        ("[1]", "expected value of type ?, got an integer literal"),
+        ("[,]", r#"token: ",""#),
+    ] {
+        let Err(err) = parse_attribute_text(&context, text, unknown) else {
+            panic!("{text} should not parse");
+        };
+        let message = format!("{err:?}");
+        assert!(message.contains(expected), "{text}: {message}");
+    }
+    Ok(())
+}
+
+/// A list is a value without a type, so it is read wherever an attribute of a given type is
+/// expected, as a string is.
+#[test]
+fn a_list_is_read_where_a_type_is_expected() -> TestResult {
+    use crate::dialects::builtin::attributes::ListAttr;
+
+    let context = Rc::new(Context::default());
+    let attr = parse_attribute_text(&context, "[#builtin.i8<1>]", context.i32())?;
+    assert!(attr.borrow().is::<ListAttr>());
+    Ok(())
+}
+
+/// The text of `depth` nested lists around `inner`.
+fn nested_list_text(inner: &str, depth: usize) -> String {
+    format!("{}{inner}{}", "[".repeat(depth), "]".repeat(depth))
+}
+
+/// List nesting is limited to 16 levels, so that deeply nested input is an error instead of a stack
+/// overflow, on a 1 MB stack and in an unoptimized build: the innermost list may hold a type nested
+/// to its own limit, in the attribute dictionary of an operation in a world.
+#[cfg(feature = "std")]
+#[test]
+fn list_nesting_is_limited_to_16_levels() {
+    on_a_1_mb_stack(|| {
+        let context = Rc::new(Context::default());
+        let unknown = context.unknown_type();
+        let deepest_type = nested_type_text("struct<", "i32", ">", 64);
+        for inner in ["", deepest_type.as_str()] {
+            let text = nested_list_text(inner, 16);
+            if let Err(err) = parse_attribute_text(&context, &text, unknown) {
+                panic!("16 levels should parse: {err:?}");
+            }
+            let test = ParserTest::default();
+            let source = format!(
+                "builtin.world {{\n    builtin.module public @m attributes {{ l = {text} }} \
+                 {{}};\n}};"
+            );
+            if let Err(err) = test.parse_any("deep_list.hir", &source) {
+                panic!("16 levels should parse in a dictionary: {err:?}");
+            }
+        }
+        for depth in [17, 10_000] {
+            let Err(err) = parse_attribute_text(&context, &nested_list_text("", depth), unknown)
+            else {
+                panic!("{depth} levels should not parse");
+            };
+            let message = format!("{err:?}");
+            assert!(message.contains("list nesting is too deep (limit 16)"), "{depth}: {message}");
+        }
+    });
+}
+
+/// A list in an attribute dictionary holds symbol references (nested, and twice the same) that are
+/// linked to their symbol when parsed, and unlinked when the operation holding them is erased.
+#[test]
+fn symbol_references_in_a_list_are_linked() -> TestResult {
+    use crate::dialects::builtin::attributes::{ListAttr, SymbolRefAttr};
+
+    let test = ParserTest::default();
+    let source = "\
+builtin.world {
+    builtin.module public @reader attributes { refs = [#builtin.symbol<@target>, \
+                  [#builtin.symbol<@target>], []] } {};
+    builtin.module public @target {};
+};";
+    let parsed = test.parse_any("list_symbol_refs.hir", source)?;
+    let printed = format!("{}", parsed.borrow());
+    assert!(
+        printed.contains(
+            "attributes { refs = [#builtin.symbol<@target>, [#builtin.symbol<@target>], []] }"
+        ),
+        "{printed}"
+    );
+    let (mut reader, target) = {
+        let world = parsed.borrow();
+        let symbols = world.as_symbol_table().unwrap().symbol_manager();
+        (symbols.lookup_op("reader").unwrap(), symbols.lookup_op("target").unwrap())
+    };
+    let references = {
+        let reader = reader.borrow();
+        let refs = reader.get_typed_attribute::<ListAttr>("refs").unwrap();
+        let mut references = Vec::new();
+        let _ = crate::walk_nested_attributes(&refs.as_attribute_ref(), &mut |attr| {
+            if let Ok(reference) = attr.try_downcast_attr::<SymbolRefAttr>() {
+                references.push(reference);
+            }
+            crate::WalkResult::Continue(())
+        });
+        references
+    };
+    assert_eq!(references.len(), 2);
+    {
+        let target = target.borrow();
+        let uses = target.as_symbol().unwrap().iter_uses().collect::<Vec<_>>();
+        assert_eq!(uses.len(), 2, "each reference in the list is a use of the target");
+        for reference in &references {
+            assert_eq!(uses.iter().filter(|usage| usage.attr == *reference).count(), 1);
+            assert!(uses.iter().all(|usage| usage.owner == reader));
+            assert_eq!(
+                reference.borrow().resolve().unwrap().borrow().as_operation_ref(),
+                target.as_operation_ref()
+            );
+        }
+    }
+
+    reader.borrow_mut().erase();
+    assert_eq!(target.borrow().as_symbol().unwrap().iter_uses().count(), 0);
+    Ok(())
+}
+
+/// A list in a parameter attribute of a function, and in one of a signature attribute, reads back.
+#[test]
+fn a_list_in_a_parameter_attribute_round_trips() -> TestResult {
+    use crate::dialects::builtin::attributes::ListAttr;
+
+    let test = ParserTest::default();
+    let source = "\
+builtin.function public extern(\"C\") @f(%0: i8 { tags = [#builtin.i32<1>, [], \
+                  [#builtin.string<\"t\">]] }) -> i8 {
+    builtin.ret %0 : (i8);
+};";
+    let function = assert_function_round_trips(&test, source, source);
+    let function = function.borrow();
+    let tags = function.get_signature().params()[0].attribute("tags");
+    assert!(tags.unwrap().borrow().is::<ListAttr>());
+
+    let context = Rc::new(Context::default());
+    let text = "#builtin.signature<extern(\"C\") (i8 { tags = [[#builtin.i32<1>]] }) -> i8>";
+    let attr = parse_attribute_text(&context, text, context.unknown_type())?;
+    assert_eq!(print_attribute_text(&context, &attr), text);
+    let reparsed = parse_attribute_text(&context, text, context.unknown_type())?;
+    assert_eq!(&*reparsed.borrow(), &*attr.borrow());
+    Ok(())
 }
 
 #[test]
