@@ -73,8 +73,8 @@ impl TypeConversion {
 /// [TypeMapper](crate::types::TypeMapper) in the call.
 ///
 /// Callbacks are tried most recently added first, and the first that answers wins; a type no
-/// callback answers for converts to itself. Each callback is given the context of the IR being converted, in which it builds the types it
-/// converts to.
+/// callback answers for converts to itself. Each callback is given the context of the IR being
+/// converted, in which it builds the types it converts to.
 ///
 /// While a conversion runs, a value that became other values is related to them by a
 /// `builtin.unrealized_conversion_cast` the driver inserts: a source cast from the new values to

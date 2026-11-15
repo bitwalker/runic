@@ -987,7 +987,9 @@ impl quote::ToTokens for OpCreateFn<'_> {
             /// # Safety
             ///
             /// As for [`::runic_core::OpRegistration::alloc_uninit`], which is its only caller:
-            /// every property is given its first value before the operation is used.
+            /// every property is given its first value through the builders' initialisation
+            /// path. Until every property holds a value, the operation may be named and its traits
+            /// queried, but it may not be read, set, verified, printed or inserted.
             unsafe fn alloc_default(context: ::alloc::rc::Rc<::runic_core::Context>) -> ::runic_core::UnsafeIntrusiveEntityRef<Self> {
                 #![allow(clippy::all)]
                 let __operation_name = {

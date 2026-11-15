@@ -916,12 +916,13 @@ fn a_module_is_converted_in_one_run() {
     assert!(!again.changed(), "a second conversion changes nothing");
 }
 
-/// A converter answers for types only, so every path of the driver and of the builtin patterns
-/// (operands, results, block arguments, signatures of definitions, declarations and calls, function
-/// types, locals, forwarded branch operands) asks the type callbacks: a callback that counts the
-/// types it is asked about is asked about each type of a value of the module, and, the answers
-/// being remembered, once. A function type is answered by the converter from its parts
-/// ([TypeConverter::with_function_types]), whose types are asked about.
+/// A converter answers for types only. A module whose values (operands, results, block arguments,
+/// in definitions, a declaration, calls, a function reference, locals and a forwarded branch
+/// operand) have the types `i128` and `i32`, a function type counted by its parts, is converted
+/// with a callback added before the converter's own that counts the types it is asked about and
+/// declines: the conversion leaves no `i128` and no cast, and verifies (which shows the converter's
+/// answers reached every path); the counting callback was asked about each type of a value; and
+/// it was asked about no type twice, the converter remembering its answers.
 #[test]
 fn every_path_of_a_conversion_asks_the_type_callbacks() {
     use core::cell::RefCell;
@@ -1002,9 +1003,6 @@ fn every_path_of_a_conversion_asks_the_type_callbacks() {
         value_types.is_subset(&asked_types),
         "every type of a value is asked about: {value_types:?} of {asked_types:?}"
     );
-    for ty in [context.i128(), context.i32()] {
-        assert!(asked.contains_key(&ty), "{ty} is asked about");
-    }
 }
 
 /// The results of a call are grouped as the signature's results: of `(i32, i128, i32)`, the

@@ -322,7 +322,8 @@ impl OperationName {
     /// # Safety
     ///
     /// As for [OpRegistration::alloc_uninit]: every property is given its first value through the
-    /// builders' initialisation path before the operation is used.
+    /// builders' initialisation path. Until every property holds a value, the operation may be
+    /// named and its traits queried, but it may not be read, set, verified, printed or inserted.
     #[inline]
     pub(crate) unsafe fn alloc_default(&self, context: Rc<Context>) -> OperationRef {
         unsafe { (self.0.alloc_default)(context) }

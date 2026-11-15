@@ -58,11 +58,11 @@ pub trait OpRegistration: Op {
     ///
     /// # Safety
     ///
-    /// Each property must be given its first value through the initialisation path of the
-    /// builders ([crate::GenericOperationBuilder::with_property_boxed]) before the operation is
-    /// used: until then a property may not be read or set (its setter and
-    /// [Operation::set_property](crate::Operation::set_property) read the old value), and the
-    /// operation may not be verified, printed or inserted.
+    /// Each property is given its first value through the initialisation path of the builders
+    /// ([crate::GenericOperationBuilder::with_property_boxed]). Until every property holds a
+    /// value, the operation may be named and its traits queried, but it may not be read, set,
+    /// verified, printed or inserted (a property's setter and
+    /// [Operation::set_property](crate::Operation::set_property) read the old value).
     unsafe fn alloc_uninit(context: Rc<Context>) -> OperationRef;
 }
 
