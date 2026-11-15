@@ -70,7 +70,6 @@ def collect(args):
     if clean.returncode:
         return clean.returncode
 
-    environment["RUNIC_BIN_DIR"] = str(bin_dir)
     environment["PATH"] = str(bin_dir) + os.pathsep + environment.get("PATH", "")
     build = ["cargo", "-Z", "unstable-options", "build", "--locked", "--bins"]
     for package in TOOL_PACKAGES:
@@ -93,7 +92,6 @@ def collect(args):
             if args.lit_filter:
                 lit.extend(["--filter", args.lit_filter])
             lit.append(str(WORKSPACE / "tests" / "lit"))
-            environment["CARGO_MAKE_RUSTUP_TOOLCHAIN_NAME"] = toolchain
             lit_status = run(lit, environment).returncode
             status = status or lit_status
 

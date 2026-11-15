@@ -81,7 +81,6 @@ class CoverageTests(unittest.TestCase):
         self.assertEqual(len(profiles), 1)
         for _, environment in calls[1:]:
             self.assertIn("isolated", environment["CARGO_TARGET_DIR"])
-            self.assertIn("isolated", environment["RUNIC_BIN_DIR"])
             self.assertEqual(environment["RUSTC_WRAPPER"], "/tools/cargo-llvm-cov")
             self.assertEqual(environment["RUSTUP_TOOLCHAIN"], "nightly-test")
             self.assertEqual(environment["__CARGO_LLVM_COV_RUSTC_WRAPPER_COVERAGE_TARGET"], "host-triple")
@@ -108,10 +107,10 @@ class CoverageTests(unittest.TestCase):
         self.assertIn("report", calls[-1][0])
 
     def test_package_selection_and_single_suite_collection(self):
-        status, calls = self.collect(skip_lit=True, package=["runic-ir"])
+        status, calls = self.collect(skip_lit=True, package=["runic-core"])
         self.assertEqual(status, 0)
         test_command = next(command for command, _ in calls if "nextest" in command)
-        self.assertIn("runic-ir", test_command)
+        self.assertIn("runic-core", test_command)
         self.assertNotIn("--workspace", test_command)
         self.assertFalse(any(command[0] == "litcheck" for command, _ in calls))
         status, calls = self.collect(skip_rust=True)

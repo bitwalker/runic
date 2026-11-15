@@ -61,7 +61,7 @@ import time
 # workspace's own profile directories. These are the graphs `cargo make`
 # builds and tests with; each runs with `--message-format=json` appended.
 MARK_INVOCATIONS = (
-    ["cargo", "build", "-p", "runic"],
+    ["cargo", "build", "--workspace"],
     ["cargo", "build", "-p", "runic-opt"],
     ["cargo", "test", "--no-run", "--workspace"],
 )
@@ -173,9 +173,10 @@ def uplifted_executable_hashes(message, target_dir, build_dir):
     """Resolve an uplifted executable to its byte-identical hashed cache unit.
 
     Cargo's JSON messages name ordinary binaries only by their final, unhashed
-    path (for example, `target/debug/runic`). The build cache keeps the same
-    executable as `target/debug/build/runic/<hash>/out/runic` in the per-unit
-    layout, and as `target/debug/deps/runic-<hash>` in the older one. Compare
+    path (for example, `target/debug/runic-opt`). The build cache keeps the
+    same executable as `target/debug/build/runic-opt/<hash>/out/runic-opt` in
+    the per-unit layout, and as `target/debug/deps/runic_opt-<hash>` in the
+    older one. Compare
     the uplifted file with same-named cache candidates so the live unit hash
     is not swept.
 

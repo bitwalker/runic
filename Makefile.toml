@@ -2,8 +2,9 @@
 default_to_workspace = false
 skip_core_tasks = true
 skip_git_env_info = true
-# For a virtual workspace, cargo-make 0.37.24 reads the crate information of the package in the
-# subdirectory named like the root (`runic/`), which is parked and not a member: every task fails.
+# The checkout's directory is named `runic` and holds the parked `runic/Cargo.toml`. For a virtual
+# workspace, cargo-make 0.37.24 reads the crate information of the package in the subdirectory
+# named like the root, and that package is not a member: without this setting every task fails.
 # No task uses the `CARGO_MAKE_CRATE_*` variables this skips.
 skip_crate_env_info = true
 modify_core_tasks = { private = true, namespace = "default" }
@@ -22,11 +23,9 @@ BACKTRACE_DEFAULT = { source = "${CARGO_MAKE_CI}", mapping = { "true" = "1", "fa
 RUST_BACKTRACE = { value = "${BACKTRACE_DEFAULT}", condition = { env_not_set = [
     "RUST_BACKTRACE",
 ] } }
-RUNIC_BIN_DIR = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/bin"
-RUNIC_INSTALL_DIR = "${RUNIC_BIN_DIR}/${CARGO_MAKE_RUST_TARGET_TRIPLE}"
 
 [env.development]
-RUNIC_BUILD_PROFILE = "debug"
+RUNIC_BUILD_PROFILE = "dev"
 
 [env.production]
 RUNIC_BUILD_PROFILE = "release"
@@ -58,7 +57,7 @@ cm_run_task "print-env"
 
 [tasks.default]
 category = "Build"
-description = "Default task builds the compiler"
+description = "Builds the workspace"
 alias = "build"
 
 [tasks.print-env]
@@ -84,8 +83,6 @@ echo "    Command: ${CARGO_MAKE_COMMAND}"
 echo "    Working Directory: ${CARGO_MAKE_WORKING_DIRECTORY}"
 echo "    Target Directory: ${CARGO_TARGET_DIR}"
 echo "    Profile: ${CARGO_MAKE_PROFILE}"
-echo "    Bin Directory: ${RUNIC_BIN_DIR}"
-echo "    Install Directory: ${RUNIC_INSTALL_DIR}"
 echo "    Target Triple: ${CARGO_MAKE_RUST_TARGET_TRIPLE}"
 echo "    RUST_BACKTRACE: ${RUST_BACKTRACE}"
 echo "*************************************"
@@ -182,20 +179,6 @@ description = "Run cargo-bloat"
 command = "cargo"
 args = ["bloat", "${@}"]
 
-[tasks.runic]
-category = "Build"
-description = "Builds runic and installs it to the bin folder"
-command = "cargo"
-args = [
-    "-Z",
-    "unstable-options",
-    "build",
-    "-p",
-    "runic",
-    "--artifact-dir",
-    "${RUNIC_BIN_DIR}",
-]
-
 [tasks.runic-opt]
 category = "Build"
 description = "Builds runic-opt and installs it to the bin folder"
@@ -213,17 +196,8 @@ args = [
 [tasks.build]
 category = "Build"
 description = "Runs cargo build on the workspace"
-run_task = [{ name = ["runic", "runic-opt"] }]
-
-[tasks.install]
-category = "Install"
-description = "Installs the compiler via cargo"
-run_task = [
-    { name = [
-       "install-runic",
-       "install-runic-opt",
-    ] },
-]
+command = "cargo"
+args = ["build", "--workspace", "${@}"]
 
 [tasks.check]
 category = "Build"
@@ -328,9 +302,9 @@ description = "Update dependencies to latest semver-compatible version"
 command = "cargo"
 args = ["update"]
 
-[tasks.refresh-example-lockfiles]
+[tasks.refresh-fixture-lockfiles]
 category = "Dependencies"
-description = "Refresh checked-in example and fixture lockfiles without compiling crates"
+description = "Refresh the checked-in lockfiles of the test fixture workspaces without compiling crates"
 script = ['''
 #!/usr/bin/env bash
 set -euo pipefail
@@ -349,11 +323,10 @@ while IFS= read -r -d '' lockfile; do
     cargo update --workspace --manifest-path "${manifest}"
     refreshed=$((refreshed + 1))
 done < <(git -C "${WORKSPACE}" ls-files -z -- \
-    'examples/**/Cargo.lock' \
-    'tests/fixtures/**/Cargo.lock')
+    'crates/*/tests/fixtures/*/Cargo.lock')
 
 if [[ "${refreshed}" -eq 0 ]]; then
-    echo "no checked-in example or fixture lockfiles found" >&2
+    echo "no checked-in fixture lockfiles found" >&2
     exit 0
 fi
 
@@ -402,28 +375,13 @@ run_task = { name = ["test-sweep", "test-coverage-script", "test-rust", "test-li
 
 [tasks.test]
 category = "Test"
-description = "Runs all Rust-based tests including network integration tests"
+description = "Runs the Rust tests of the workspace and the unit tests of the scripts in tools"
 dependencies = ["test-sweep", "test-coverage-script", "test-rust"]
 
 [tasks.test-release]
 category = "Test"
 description = "Runs Rust-based tests via the workspace-wide test-release profile"
 dependencies = ["test-release-rust"]
-
-[tasks.install-runic]
-category = "Install"
-description = "Builds runic and installs it globally via the cargo bin directory"
-command = "cargo"
-args = [
-    "install",
-    "--locked",
-    "--path",
-    "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/runic",
-    "--${RUNIC_BUILD_PROFILE}",
-    "--force",
-    "--bin",
-    "runic",
-]
 
 [tasks.install-runic-opt]
 category = "Install"
@@ -434,7 +392,8 @@ args = [
     "--locked",
     "--path",
     "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/tools/runic-opt",
-    "--${RUNIC_BUILD_PROFILE}",
+    "--profile",
+    "${RUNIC_BUILD_PROFILE}",
     "--force",
     "--bin",
     "runic-opt",
