@@ -1,0 +1,20 @@
+// RUN: runic-opt %s --print-locations | filecheck %s
+// RUN: runic-opt %s --print-locations --verify-roundtrip | filecheck %s
+
+// The location of an operation written in the generic form: it starts at the opening quote of the
+// operation's name and ends where the name's closing quote does, as the location of an operation
+// written in its custom form starts and ends with its name. (`roundtrip/locations.runic` and
+// `parse/locations.runic` write every operation in its custom form.) The path is matched with
+// `{{.*}}`, since it is the path as given. The second RUN line also checks that both forms, with
+// their locations, read back.
+
+// CHECK-LABEL: @generic_and_custom(
+// CHECK-SAME: [[A:%[0-9]+]]: i32 loc("{{.*}}locations-generic-input.runic":[[@LINE+4]]:57 to [[@LINE+4]]:59)) -> i32 {
+// CHECK-NEXT: [[G:%[0-9]+]] = arith.add [[A]], [[A]] loc("{{.*}}locations-generic-input.runic":[[@LINE+4]]:10 to [[@LINE+4]]:21);
+// CHECK-NEXT: [[C:%[0-9]+]] = arith.add [[G]], [[A]] loc("{{.*}}locations-generic-input.runic":[[@LINE+4]]:10 to [[@LINE+4]]:19);
+// CHECK-NEXT: builtin.ret [[C]] : (i32) loc("{{.*}}locations-generic-input.runic":[[@LINE+4]]:5 to [[@LINE+4]]:18);
+builtin.function public extern("C") @generic_and_custom(%a: i32) -> i32 {
+    %g = "arith.add"(%a, %a) <{ overflow = #builtin.overflow<wrapping> }> : (i32, i32) -> i32;
+    %c = arith.add %g, %a;
+    "builtin.ret"(%c) : i32 -> ();
+};
