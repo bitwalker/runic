@@ -1772,6 +1772,61 @@ cf.assert %c, "between";"#;
         );
         Ok(())
     }
+
+    /// A function that is a tower of `scf.if`, `depth` deep, whose arms hold nothing but their
+    /// yields and the next level.
+    fn if_tower(depth: usize) -> alloc::string::String {
+        let mut text =
+            alloc::string::String::from("builtin.function public extern(\"C\") @f(%c: i1) {\n");
+        for level in 0..depth {
+            text += &format!("{}scf.if %c then {{\n", "    ".repeat(level + 1));
+        }
+        for level in (0..depth).rev() {
+            let (outer, inner) = ("    ".repeat(level + 1), "    ".repeat(level + 2));
+            text += &format!(
+                "{inner}scf.yield : ();\n{outer}}} else {{\n{inner}scf.yield : ();\n{outer}}} : \
+                 (i1) -> ();\n"
+            );
+        }
+        text + "    builtin.ret;\n};\n"
+    }
+
+    /// CSE visits each nested region once, and asks each operation once whether it is free of
+    /// memory effects: a tower of `scf.if` 200 deep takes a fraction of a second (the question
+    /// asked of each nested operation again used to double the work with each level).
+    #[test]
+    fn a_tower_of_nested_ifs_is_simplified_in_time_linear_in_its_depth() {
+        use runic_core::{
+            dialects::builtin::Function,
+            parse::{self, ParserConfig},
+        };
+
+        std::thread::Builder::new()
+            .stack_size(64 << 20)
+            .spawn(|| {
+                let context = Rc::new(runic_core::Context::default());
+                let config = ParserConfig::new(context.clone()).with_max_region_depth(250);
+                let function = parse::parse::<Function>(config, "tower", if_tower(200))
+                    .into_result()
+                    .expect("the tower parses");
+                let before = function.as_operation_ref().borrow().to_string();
+                let start = std::time::Instant::now();
+                let mut passes = PassManager::on::<Function>(context, Nesting::Implicit);
+                passes.add_pass(Box::<CommonSubexpressionElimination>::default()).unwrap();
+                passes.enable_verifier(false);
+                passes.run(function.as_operation_ref()).expect("cse");
+                let elapsed = start.elapsed();
+                assert!(elapsed < std::time::Duration::from_secs(2), "{elapsed:?}");
+                assert_eq!(
+                    function.as_operation_ref().borrow().to_string(),
+                    before,
+                    "nothing to eliminate"
+                );
+            })
+            .expect("spawn a thread")
+            .join()
+            .expect("cse of the tower");
+    }
 }
 
 //------------ TESTS TO FINISH TRANSLATING

@@ -835,6 +835,17 @@ impl Operation {
     }
 }
 
+/// What [Operation::is_memory_effect_free] concludes from one operation, before looking at the
+/// operations nested in it.
+enum OwnMemoryEffects {
+    /// The operation has memory effects, or its effects are unknown
+    Some,
+    /// The operation is memory effect free, whatever it holds
+    None,
+    /// The operation has no memory effects of its own, and has those of the operations it holds
+    NoneOfItsOwn,
+}
+
 /// How a check names an attribute it found by [Operation::walk_attributes]: by its property or
 /// dictionary entry, or as an attribute held by one.
 struct ElementRole<'a> {
@@ -1789,30 +1800,20 @@ impl Operation {
     /// ([EffectOpInterface::effects_are_known](crate::effects::EffectOpInterface::effects_are_known))
     /// is not free of memory effects.
     pub fn is_memory_effect_free(&self) -> bool {
-        if let Some(mem_interface) = self.as_trait::<dyn MemoryEffectOpInterface>() {
-            // `has_no_effect` is false when the effects are unknown
-            if !mem_interface.has_no_effect() {
-                return false;
-            }
-
-            // If the op does not have recursive side effects, then it is memory effect free
-            if !self.implements::<dyn HasRecursiveMemoryEffects>() {
-                return true;
-            }
-        } else if !self.implements::<dyn HasRecursiveMemoryEffects>() {
-            // Otherwise, if the op does not implement the memory effect interface and it does not
-            // have recursive side effects, then it cannot be known that the op is moveable.
-            return false;
+        match self.own_memory_effects() {
+            OwnMemoryEffects::Some => return false,
+            OwnMemoryEffects::None => return true,
+            OwnMemoryEffects::NoneOfItsOwn => (),
         }
 
-        // Recurse into the regions and ensure that all nested ops are memory effect free
+        // Every nested operation, at any depth, is memory effect free by its own effects: then
+        // each is memory effect free with what it holds too. The walk visits each nested
+        // operation once (asking each the whole question instead would walk each region once
+        // per enclosing operation, which doubles the work with each level of nesting).
         for region in self.regions() {
-            let walk_result = region.prewalk(|op| {
-                if !op.is_memory_effect_free() {
-                    WalkResult::Break(())
-                } else {
-                    WalkResult::Continue(())
-                }
+            let walk_result = region.prewalk(|op| match op.own_memory_effects() {
+                OwnMemoryEffects::Some => WalkResult::Break(()),
+                OwnMemoryEffects::None | OwnMemoryEffects::NoneOfItsOwn => WalkResult::Continue(()),
             });
             if walk_result.was_interrupted() {
                 return false;
@@ -1820,6 +1821,27 @@ impl Operation {
         }
 
         true
+    }
+
+    /// What [Self::is_memory_effect_free] concludes from this operation alone, before looking at
+    /// the operations nested in it.
+    fn own_memory_effects(&self) -> OwnMemoryEffects {
+        let recursive = self.implements::<dyn HasRecursiveMemoryEffects>();
+        if let Some(mem_interface) = self.as_trait::<dyn MemoryEffectOpInterface>() {
+            // `has_no_effect` is false when the effects are unknown
+            if !mem_interface.has_no_effect() {
+                return OwnMemoryEffects::Some;
+            }
+            // If the op does not have recursive side effects, then it is memory effect free
+            if !recursive {
+                return OwnMemoryEffects::None;
+            }
+        } else if !recursive {
+            // Otherwise, if the op does not implement the memory effect interface and it does not
+            // have recursive side effects, then it cannot be known that the op is moveable.
+            return OwnMemoryEffects::Some;
+        }
+        OwnMemoryEffects::NoneOfItsOwn
     }
 
     pub fn get_effects_recursively<T: Effect>(&self) -> Option<SmallVec<[EffectInstance<T>; 2]>> {
