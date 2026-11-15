@@ -12,8 +12,9 @@
 //!
 //! With `--verify-diagnostics` the diagnostics of each case are not rendered: they are checked
 //! against the expectations written in the case (see [`expect`]), and what does not match is
-//! rendered instead. The exit code is then 1 exactly when something did not match, and a case
-//! is printed only when it succeeded.
+//! rendered instead. The exit code is then 1 exactly when something did not match, and a case's
+//! result is printed when the case was processed without error, whether or not its diagnostics
+//! met the expectations.
 //!
 //! Besides the passes of the crates it links, the tool registers passes for testing from text
 //! what has no pass of its own (in `test_passes`): `test-convert-wide-ints`, `test-fail` and

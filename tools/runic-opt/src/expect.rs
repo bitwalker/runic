@@ -25,8 +25,8 @@
 //! its labels, one of its helps or one of its context frames contains the text (or matches the
 //! expression). Its line is that of its first primary label, when the label is in the case's own
 //! source: a diagnostic located in another source (written with `loc("other":..)`) matches
-//! neither a line nor `@unknown`. Each diagnostic matches at most one expectation and each expectation at most
-//! one diagnostic. What does not match is reported by [`mismatches`].
+//! neither a line nor `@unknown`. Each diagnostic matches at most one expectation and each
+//! expectation at most one diagnostic. What does not match is reported by [`mismatches`].
 
 use std::{fmt::Write as _, ops::Range};
 
