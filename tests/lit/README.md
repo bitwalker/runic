@@ -47,7 +47,9 @@ tests/lit/coverage.sh bin/runic-opt
 
 Both list, one per line, each operation runic-opt registers (`runic-opt --list-operations`)
 whose name appears in no test under `parse/` outside a `//` comment, and fail if there is one;
-the first builds the tool first. They print nothing when every operation has a parse test. Each
+the first builds the tool first. They print nothing when every operation has a parse test. They
+check that each operation's name appears, not that every form of it does (each optional part, an
+attribute dictionary): that is what the parse tests themselves are written to cover. Each
 dialect's operations are in `parse/<dialect>.runic`, which the Rust tests of the generic form
 read too (`crates/transform/src/tests/dialect_modules.rs`).
 
