@@ -688,7 +688,7 @@ builtin.function public extern("C") @f(%a: i32, %b: i32, %c: i1, %d: i1, %p: ptr
 
 #[cfg(test)]
 mod entry_cycle_tests {
-    use alloc::{boxed::Box, rc::Rc};
+    use alloc::{boxed::Box, format, rc::Rc, string::String};
 
     use runic_core::{
         Context, Forward, OperationRef, RawWalk, Report,
@@ -696,6 +696,23 @@ mod entry_cycle_tests {
         parse::{self, ParserConfig},
         pass::{Nesting, PassManager},
     };
+
+    /// What the verifier says of a function whose entry block is branched to.
+    const ENTRY_PREDECESSORS: &str =
+        "the entry block of region #0 of 'builtin.function' has predecessors";
+
+    /// The error `source` fails to parse with.
+    fn rejected(source: &str) -> String {
+        let context = Rc::new(Context::default());
+        // The context outlives what the parser returns.
+        let parsed =
+            parse::parse::<Function>(ParserConfig::new(context.clone()), "entry-cycle.hir", source)
+                .into_result();
+        match parsed {
+            Ok(_) => panic!("the verifier accepted the function"),
+            Err(error) => format!("{error}"),
+        }
+    }
 
     fn lift(source: &str, entry_placeholder: bool) -> Result<(), Report> {
         let context = Rc::new(Context::default());
@@ -718,9 +735,14 @@ mod entry_cycle_tests {
                     }
                 });
             placeholder.borrow_mut().erase();
+            // The verifier rejects an entry block that is branched to; the lifting accepts it,
+            // and gives the region a new entry.
+            let error = function.as_operation_ref().borrow().recursively_verify().unwrap_err();
+            assert!(format!("{error}").contains(ENTRY_PREDECESSORS), "{error}");
         }
         let signature = function.borrow().signature().clone();
         let mut passes = PassManager::on::<Function>(context, Nesting::Implicit);
+        passes.enable_verifier(!entry_placeholder);
         passes
             .add_pass(Box::new(runic_dialect_scf::transforms::LiftControlFlowToSCF))
             .unwrap();
@@ -733,12 +755,12 @@ mod entry_cycle_tests {
         Ok(())
     }
 
+    /// An entry block that branches to itself is not a valid function.
     #[test]
-    fn entry_cycle_self_loop_without_arguments() -> Result<(), Report> {
-        lift(
-            r#"builtin.function public extern("C") @cycle() { ^entry: cf.br ^entry; };"#,
-            false,
-        )
+    fn an_entry_block_that_branches_to_itself_is_rejected() {
+        let error =
+            rejected(r#"builtin.function public extern("C") @cycle() { ^entry: cf.br ^entry; };"#);
+        assert!(error.contains(ENTRY_PREDECESSORS), "{error}");
     }
 
     #[test]
@@ -752,15 +774,16 @@ mod entry_cycle_tests {
         )
     }
 
+    /// Nor is one that a later block branches back to.
     #[test]
-    fn entry_cycle_multiple_blocks() -> Result<(), Report> {
-        lift(
+    fn an_entry_block_that_a_later_block_branches_to_is_rejected() {
+        let error = rejected(
             r#"builtin.function public extern("C") @cycle() {
             ^entry: cf.br ^next;
             ^next: cf.br ^entry;
         };"#,
-            false,
-        )
+        );
+        assert!(error.contains(ENTRY_PREDECESSORS), "{error}");
     }
 
     #[test]
@@ -983,10 +1006,18 @@ mod canonical_entry_tests {
         }
         branch.borrow_mut().successor_mut(0).set(entry);
         placeholder.borrow_mut().erase();
-        function.as_operation_ref().borrow().recursively_verify()?;
+        // The verifier rejects an entry block that is branched to; canonicalization keeps it
+        // as it is, and the lifting below gives the region a new entry.
+        let error = function.as_operation_ref().borrow().recursively_verify().unwrap_err();
+        assert!(
+            alloc::format!("{error}")
+                .contains("the entry block of region #0 of 'builtin.function' has predecessors"),
+            "{error}"
+        );
         let mut config = GreedyRewriteConfig::default();
         config.with_region_simplification_level(level);
         let mut passes = PassManager::on::<Function>(context.clone(), Nesting::Implicit);
+        passes.enable_verifier(false);
         if patterns {
             passes.add_pass(Box::new(crate::Canonicalizer::new(config, true))).unwrap();
             passes.run(function.as_operation_ref())?;
@@ -1041,8 +1072,15 @@ mod canonical_entry_tests {
             backedges > 0,
             "the evolving backedge must remain at the canonicalization boundary"
         );
-        function.as_operation_ref().borrow().recursively_verify()?;
+        // The entry is still branched to, which the verifier rejects, until the lifting.
+        let error = function.as_operation_ref().borrow().recursively_verify().unwrap_err();
+        assert!(
+            alloc::format!("{error}")
+                .contains("the entry block of region #0 of 'builtin.function' has predecessors"),
+            "{error}"
+        );
         let mut passes = PassManager::on::<Function>(context, Nesting::Implicit);
+        passes.enable_verifier(false);
         passes
             .add_pass(Box::new(runic_dialect_scf::transforms::LiftControlFlowToSCF))
             .unwrap();

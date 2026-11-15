@@ -250,7 +250,9 @@ mod tests {
             }
         }
         placeholder.borrow_mut().erase();
-        function.as_operation_ref().borrow().recursively_verify()?;
+        // The verifier rejects an entry block that is branched to; the pattern keeps the entry
+        // as it is.
+        assert_entry_has_predecessors(&function);
         let branch = branches[0];
         let original_successors = {
             let op = branch.borrow();
@@ -295,8 +297,19 @@ mod tests {
         }
         assert_eq!(function.borrow().body().entry_block_ref(), Some(entry));
         assert_eq!(entry.borrow().arguments(), args.as_slice());
-        function.as_operation_ref().borrow().recursively_verify()?;
+        // The split blocks branch to the entry, which is as invalid as before.
+        assert_entry_has_predecessors(&function);
         Ok(())
+    }
+
+    /// `function` fails to verify because its entry block is branched to.
+    fn assert_entry_has_predecessors(function: &runic_core::UnsafeIntrusiveEntityRef<Function>) {
+        let error = function.as_operation_ref().borrow().recursively_verify().unwrap_err();
+        let error = alloc::format!("{error}");
+        assert!(
+            error.contains("the entry block of region #0 of 'builtin.function' has predecessors"),
+            "{error}"
+        );
     }
 
     #[test]

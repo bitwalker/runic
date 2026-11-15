@@ -318,11 +318,10 @@ fn replacing_an_operation_twice_goes_unnoticed() {
     assert!(matches!(outcome, Outcome::Converted(_)), "{outcome:?}");
 }
 
-/// Replacing by values defined after the users (the halves are built after the sink).
+/// Replacing by values defined after the users (the halves are built after the sink) is an
+/// error: the driver reports the use before the definition when it applies the replacement.
 #[test]
-#[ignore = "the verifier has no dominance check: the conversion succeeds with a use before its \
-            definition"]
-fn wanted_replacing_by_values_that_do_not_dominate_fails_verification() {
+fn replacing_by_values_defined_after_their_users_is_an_error() {
     let outcome = outcome(
         "replace by later values",
         with_add(|op, operands, rewriter| {
@@ -334,6 +333,10 @@ fn wanted_replacing_by_values_that_do_not_dominate_fails_verification() {
         }),
     );
     assert!(outcome.is_error(), "{outcome:?}");
+    assert!(
+        outcome.text().contains("but its user 'test.sink' comes before that definition"),
+        "{outcome:?}"
+    );
 }
 
 /// A pattern that changes nothing through `modify_op_in_place` and reports success, for an

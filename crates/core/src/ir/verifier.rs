@@ -261,3 +261,5 @@ mod tests {
         assert!(black_box(!<Operation as Verifier<dyn SingleBlock>>::VACUOUS));
     }
 }
+
+pub(crate) mod dominance;

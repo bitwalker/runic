@@ -772,12 +772,34 @@ impl Operation {
         result
     }
 
-    /// Run any verifiers for this operation, and all of its nested operations, recursively.
+    /// Run any verifiers for this operation, and all of its nested operations, recursively, then
+    /// check that every value under it is defined before it is read.
     ///
-    /// The verification is performed in post-order, so that when the verifier(s) for `self` are
-    /// run, it is known that all of its children have successfully verified.
+    /// The first phase visits the operations in post-order, so that when the verifier(s) for an
+    /// operation run, it is known that all of its children have successfully verified. Each
+    /// operation is checked by [Self::verify], then by the structural rules of its block and
+    /// regions: an operation with successors is the last of its block and branches only to blocks
+    /// of its own region; the entry block of a region has no predecessors; a graph region has at
+    /// most one block.
+    ///
+    /// Only if all of that holds does the second phase walk the regions of `self`, because a
+    /// malformed block structure would make dominance meaningless: no operand of an operation
+    /// under an operation isolated from above is defined outside it, and the definition of every
+    /// operand that can be reached dominates its use. A use in a block that cannot be reached from
+    /// its region's entry is not checked, nor one that, walked out through the operations that
+    /// hold it to the region of its definition, sits in a block that cannot be reached; and in a
+    /// graph region every definition dominates every use. The operands of `self` itself are not
+    /// checked.
+    ///
+    /// The first failure is returned.
     pub fn recursively_verify(&self) -> Result<(), Report> {
-        self.postwalk(|op: &Operation| op.verify().into()).into_result()
+        self.postwalk(|op: &Operation| {
+            op.verify()
+                .and_then(|()| crate::verifier::dominance::verify_structure(op))
+                .into()
+        })
+        .into_result()?;
+        crate::verifier::dominance::verify_dominance(self)
     }
 }
 

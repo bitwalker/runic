@@ -509,7 +509,19 @@ mod tests {
                 .collect::<Vec<_>>();
             branch.borrow_mut().successor_mut(0).set(entry);
             placeholder.borrow_mut().erase();
-            function.as_operation_ref().borrow().recursively_verify()?;
+            // The verifier rejects an entry block that is branched to; the pattern does not
+            // retire the entry.
+            let entry_predecessors = || {
+                let error = function.as_operation_ref().borrow().recursively_verify().unwrap_err();
+                let error = alloc::format!("{error}");
+                assert!(
+                    error.contains(
+                        "the entry block of region #0 of 'builtin.function' has predecessors"
+                    ),
+                    "{error}"
+                );
+            };
+            entry_predecessors();
             assert_eq!(rewrite(&context, branch)?, !conditional);
             assert_eq!(entry.borrow().is_used(), conditional);
             assert_eq!(function.borrow().body().entry_block_ref(), Some(entry));
@@ -529,7 +541,12 @@ mod tests {
                     .collect::<Vec<_>>(),
                 incoming
             );
-            function.as_operation_ref().borrow().recursively_verify()?;
+            // Bypassed, the entry has no predecessor left; kept, it still has one.
+            if conditional {
+                entry_predecessors();
+            } else {
+                function.as_operation_ref().borrow().recursively_verify()?;
+            }
         }
         Ok(())
     }
