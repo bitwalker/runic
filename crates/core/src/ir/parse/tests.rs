@@ -1134,6 +1134,29 @@ fn a_world_is_a_top_level_operation() -> TestResult {
     Ok(())
 }
 
+/// The error that a module or component name is not one valid path segment (or, for a component,
+/// a path of valid segments) is located at the operation. Such a name can only be written in the
+/// generic form: the custom form spells and checks it as it parses it.
+#[test]
+fn a_module_or_component_name_error_points_at_the_operation() {
+    let test = ParserTest::default();
+    let case = |op: &str, name: &str| {
+        format!(
+            "builtin.world {{\n    \"builtin.{op}\"() <{{ name = #builtin.ident<@\"{name}\">, \
+             visibility = #builtin.visibility<public> }}> ({{ }}) : () -> ();\n}};"
+        )
+    };
+    for (op, name) in [("module", "a::b"), ("module", ""), ("component", "a::"), ("component", "")]
+    {
+        let source = case(op, name);
+        let err = test.parse_any("names.hir", &source).expect_err(&source);
+        let text = crate::testing::text::describe(&err);
+        assert!(text.contains(&format!("this {op}'s name is not valid")), "{text}");
+        let rendered = format!("{}", err.display());
+        assert!(rendered.contains("names.hir:2:6"), "{rendered}");
+    }
+}
+
 /// A component prints its name as a symbol path, one raw segment per segment of the name (see
 /// `SymbolPath::to_symbol_name`), quoting a segment that is not a bare HIR identifier, and that
 /// text parses back to the same name: the canonical spelling of the segments.

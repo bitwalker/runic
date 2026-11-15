@@ -147,9 +147,20 @@ impl Module {
 /// names; a name set afterwards is not, so it is checked here as well. Only components are named
 /// by `::`-joined paths: a module's name is a single segment of the path of every symbol it
 /// contains.
+///
+/// The error is located at the module.
 impl Verify<dyn SymbolTable> for Module {
     fn verify(&self, _context: &Context) -> Result<(), Report> {
-        SymbolPath::validate_table_name(SymbolTableKind::Module, Symbol::name(self))
+        use alloc::string::ToString;
+
+        use crate::{Op, Spanned};
+
+        SymbolPath::validate_table_name(SymbolTableKind::Module, Symbol::name(self)).map_err(|err| {
+            crate::diagnostics::report!(
+                message: (err.to_string()),
+                labels: [primary(self.as_operation().span(), "this module's name is not valid")],
+            )
+        })
     }
 }
 

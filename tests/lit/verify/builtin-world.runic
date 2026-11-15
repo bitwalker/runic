@@ -3,7 +3,9 @@
 // The rules of `builtin.world`: it is in no other operation; no component shares its path with
 // another symbol, and no two components' names nest. Each error about a component is located at
 // the component. That a module or component name is spelled as the rules say is checked by the
-// parser when it reads the name.
+// parser when it reads the custom form; a name written in the generic form is checked by the
+// verifier, at the operation: a module's name is one valid path segment, without `::`, and a
+// component's a path of valid segments, spelled canonically.
 
 builtin.world {
     builtin.component public @acme::@a { };
@@ -33,4 +35,32 @@ builtin.world {
 
 builtin.module public @holds_a_world {
     builtin.world { }; // expected-error {{a world is a top-level operation: it is in no other operation}}
+};
+
+// -----
+
+builtin.world {
+    // expected-error@+1 {{module `a::b`: a module name cannot contain `::`}}
+    "builtin.module"() <{ name = #builtin.ident<@"a::b">, visibility = #builtin.visibility<public> }> ({ }) : () -> ();
+};
+
+// -----
+
+builtin.world {
+    // expected-error@+1 {{invalid module name: the segment `` is not a valid path segment}}
+    "builtin.module"() <{ name = #builtin.ident<@"">, visibility = #builtin.visibility<public> }> ({ }) : () -> ();
+};
+
+// -----
+
+builtin.world {
+    // expected-error@+1 {{component `a::` is not the canonical spelling of its segments}}
+    "builtin.component"() <{ name = #builtin.ident<@"a::">, visibility = #builtin.visibility<public> }> ({ }) : () -> ();
+};
+
+// -----
+
+builtin.world {
+    // expected-error@+1 {{invalid component name: the segment `` is not a valid path segment}}
+    "builtin.component"() <{ name = #builtin.ident<@"">, visibility = #builtin.visibility<public> }> ({ }) : () -> ();
 };

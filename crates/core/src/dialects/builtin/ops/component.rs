@@ -132,9 +132,20 @@ impl OpParser for Component {
 /// Components are built through the builtin builders and the parser, which spell and validate
 /// their names; a name set afterwards is not, so it is checked here as well (see
 /// [SymbolPath::segments_of]).
+///
+/// The error is located at the component.
 impl Verify<dyn SymbolTable> for Component {
     fn verify(&self, _context: &Context) -> Result<(), Report> {
-        SymbolPath::validate_table_name(SymbolTableKind::Component, Symbol::name(self))
+        use alloc::string::ToString;
+
+        use crate::Spanned;
+
+        SymbolPath::validate_table_name(SymbolTableKind::Component, Symbol::name(self)).map_err(|err| {
+            crate::diagnostics::report!(
+                message: (err.to_string()),
+                labels: [primary(self.as_operation().span(), "this component's name is not valid")],
+            )
+        })
     }
 }
 
