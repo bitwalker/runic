@@ -565,6 +565,65 @@ fn a_function_may_leave_out_its_visibility_or_extern() -> TestResult {
     Ok(())
 }
 
+/// The parser's diagnostics name what was written and point at it: a block by its written name,
+/// a symbol defined twice at its second definition (also directly in a world, which is still
+/// held by the parser's anchor when its symbols are collected), and the results named for an
+/// operation at the operation.
+#[test]
+fn diagnostics_name_and_point_at_what_was_written() {
+    let test = ParserTest::default();
+    let cases: [(&str, &[&str]); 7] =
+        [
+            (
+                "builtin.function public extern(\"C\") @f(%a: i32) -> i32 {\n    builtin.ret %a : \
+                 (i32);\n^b:\n    builtin.ret %a : (i32);\n^b:\n    builtin.ret %a : (i32);\n};",
+                &["redefinition of block '^b'", "'^b' is defined again here"],
+            ),
+            (
+                "builtin.module public @m {\n    builtin.function public extern(\"C\") @f();\n    \
+                 builtin.function public extern(\"C\") @f();\n};",
+                &["redefinition of symbol f", "this definition conflicts with an earlier one"],
+            ),
+            (
+                "builtin.world {\n    builtin.module public @c { };\n    builtin.module public @c \
+                 { };\n};",
+                &["redefinition of symbol c", "this definition conflicts with an earlier one"],
+            ),
+            (
+                "builtin.function public extern(\"C\") @f(%a: i32) {\n    %x = test.sink %a : \
+                 (i32);\n    builtin.ret;\n};",
+                &[
+                    "results are named for an operation that has none",
+                    "this operation has no results",
+                ],
+            ),
+            (
+                "builtin.function public extern(\"C\") @f(%a: i32) {\n    %x, %y = test.add %a, \
+                 %a;\n    builtin.ret;\n};",
+                &["result count mismatch", "this operation has 1 result(s), but 2 are named"],
+            ),
+            (
+                "builtin.function public extern(\"C\") @f(%a: i32) {\n    %x:0 = test.add %a, \
+                 %a;\n    builtin.ret;\n};",
+                &["invalid result count", "a result pack holds 1 to"],
+            ),
+            (
+                "builtin.function public extern(\"C\") @f(%a: i32) {\n^entry(%b: i32):\n    \
+                 builtin.ret;\n};",
+                &["invalid block name", "it takes no label"],
+            ),
+        ];
+    for (source, expected) in cases {
+        let err = test.parse_any("diagnostic.hir", source).expect_err(source);
+        let text = crate::testing::text::describe(&err);
+        for part in expected {
+            assert!(text.contains(part), "{part} in {text}\n{source}");
+        }
+        let rendered = format!("{}", err.display());
+        assert!(rendered.contains("diagnostic.hir:"), "a location: {rendered}");
+    }
+}
+
 /// A global variable declaration keeps its attribute dictionary through print and parse.
 #[test]
 fn a_global_declaration_keeps_its_attribute_dictionary() -> TestResult {
@@ -1737,9 +1796,9 @@ fn a_type_parses_from_text_on_its_own() {
 
     for (text, expected) in [
         ("i32 i32", "unexpected token"),
-        ("i32 i32", "help: end of input"),
+        ("i32 i32", "help: expected end of input"),
         ("ptr<i32", "unexpected token 'end of input'"),
-        ("%0", "help: type"),
+        ("%0", "help: expected a type"),
     ] {
         let err = parse::parse_type(&context, "bad.runic", text).into_result().expect_err(text);
         let message = format!("{}", err.display());
@@ -1957,7 +2016,7 @@ fn the_bracket_spelling_of_an_array_type_is_not_a_type() {
     for text in ["[i8; 16]", "ptr<[i8; 16]>"] {
         let message = type_error_text(&context, text);
         assert!(message.contains("unexpected token '['"), "`{text}`: {message}");
-        assert!(message.contains("help: type"), "`{text}`: {message}");
+        assert!(message.contains("help: expected a type"), "`{text}`: {message}");
     }
 }
 
@@ -2407,7 +2466,7 @@ fn an_over_wide_integer_type_spelling_is_an_identifier() {
     let context = Rc::new(Context::default());
     let message = type_error_text(&context, "i99999999999");
     assert!(message.contains("unexpected token 'bare identifier'"), "{message}");
-    assert!(message.contains("help: type"), "{message}");
+    assert!(message.contains("help: expected a type"), "{message}");
 
     let id = context.add_source("key.runic", "i99999999999").unwrap();
     let sources = context.sources();
@@ -3692,14 +3751,14 @@ fn list_attributes_round_trip_through_text() -> TestResult {
 
     for (text, expected) in [
         ("[", r#"token: "end of input""#),
-        ("[#builtin.i32<1>", r#"token: "end of input", expected: Some("]")"#),
+        ("[#builtin.i32<1>", r#"token: "end of input", expected: Some(Expected("]"))"#),
         ("[#builtin.i32<1>,]", r#"token: "]""#),
         (
             "[#builtin.i32<1> #builtin.i32<2>]",
-            r#"token: "'#'-identifier", expected: Some("]")"#,
+            r##"token: "#-identifier", expected: Some(Expected("]"))"##,
         ),
         // A bare integer has no type to be read with.
-        ("[1]", "expected value of type ?, got an integer literal"),
+        ("[1]", "an integer literal has no type here"),
         ("[,]", r#"token: ",""#),
     ] {
         let Err(err) = parse_attribute_text(&context, text, unknown) else {

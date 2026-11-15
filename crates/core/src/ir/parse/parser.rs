@@ -264,13 +264,13 @@ pub trait Parser<'input> {
             None => match self.token_stream_mut().peek()? {
                 Some((start, t, end)) => {
                     let expected = format!(
-                        "any keyword in: {}",
+                        "one of the keywords {}",
                         DisplayValues::new(keywords.iter().map(|kw| kw.into_compact_string()))
                     );
                     Err(ParserError::UnexpectedToken {
                         span: span!(self.source_id(), start, end),
                         token: t.to_string(),
-                        expected: Some(expected),
+                        expected: Some(expected.into()),
                     })
                 }
                 None => Err(ParserError::UnexpectedEof {
@@ -461,7 +461,7 @@ pub trait Parser<'input> {
 
     fn parse_at_identifier(&mut self) -> ParseResult<Ident> {
         self.token_stream_mut()
-            .expect_map("'@'-identifier", |tok| match tok {
+            .expect_map("a symbol name, `@name`", |tok| match tok {
                 Token::AtIdent(s) => Some(Symbol::intern(s)),
                 _ => None,
             })
@@ -566,7 +566,7 @@ pub trait Parser<'input> {
             return Err(ParserError::UnexpectedToken {
                 span,
                 token: next.to_string(),
-                expected: Some("type".to_string()),
+                expected: Some("a type".into()),
             });
         };
 
@@ -1054,7 +1054,7 @@ pub trait ParserExt<'input>: Parser<'input> {
                 Err(ParserError::UnexpectedToken {
                     span: loc,
                     token: end_token.to_string(),
-                    expected: Some("at least one element".to_string()),
+                    expected: Some("at least one element".into()),
                 })
             }
         } else {
@@ -1272,22 +1272,25 @@ fn parse_attribute_value<'input, P: ?Sized + Parser<'input>>(
         other => Err(ParserError::UnexpectedToken {
             span,
             token: other.to_string(),
-            expected: Some(format!(
-                "expected one of: {}",
-                DisplayValues::new(
-                    [
-                        Token::String(""),
-                        Token::Int(""),
-                        Token::Hex(""),
-                        Token::Binary(""),
-                        Token::Bang,
-                        Token::At,
-                        Token::Lbracket,
-                        Token::Lbrace,
-                    ]
-                    .into_iter()
+            expected: Some(
+                format!(
+                    "one of: {}",
+                    DisplayValues::new(
+                        [
+                            Token::String(""),
+                            Token::Int(""),
+                            Token::Hex(""),
+                            Token::Binary(""),
+                            Token::Bang,
+                            Token::At,
+                            Token::Lbracket,
+                            Token::Lbrace,
+                        ]
+                        .into_iter()
+                    )
                 )
-            )),
+                .into(),
+            ),
         }),
     }
 }
@@ -1349,6 +1352,14 @@ fn integer_literal_attr(
     ty: Type,
 ) -> ParseResult<Span<AttributeRef>> {
     let (span, literal) = literal.into_parts();
+    if ty.is_unknown() {
+        return Err(ParserError::InvalidAttributeValue {
+            span,
+            reason: "an integer literal has no type here: write it with its type, as \
+                     `#builtin.int<1 : i32>` or `#builtin.i32<1>`"
+                .into(),
+        });
+    }
     if !ty.is_integer() {
         return Err(ParserError::InvalidAttributeValue {
             span,

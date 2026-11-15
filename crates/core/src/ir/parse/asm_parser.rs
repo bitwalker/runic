@@ -91,8 +91,10 @@ impl AsmParserState {
         if is_symbol_table {
             // Reporting a conflict borrows `op` to compute a path, so build the map before
             // borrowing it mutably.
-            let symbol_table = SymbolMap::try_build(&op.borrow())
-                .map_err(|conflict| super::ParserError::SymbolConflict { span: at, conflict })?;
+            let symbol_table = SymbolMap::try_build(&op.borrow()).map_err(|conflict| {
+                let span = redefinition_span(&op.borrow(), &conflict).unwrap_or(at);
+                super::ParserError::SymbolConflict { span, conflict }
+            })?;
             let mut op = op.borrow_mut();
             let op_symbol_table = op.as_trait_mut::<dyn SymbolTable>().unwrap();
             **op_symbol_table.symbol_manager_mut().symbols_mut() = symbol_table;
@@ -413,4 +415,26 @@ impl TypeAliasDefinition {
             value,
         }
     }
+}
+
+/// The span of the symbol of `table` that `conflict` says cannot be defined: the last one of its
+/// kind and name, which the text defines after the symbol it conflicts with.
+fn redefinition_span(
+    table: &crate::Operation,
+    conflict: &crate::SymbolConflict,
+) -> Option<SourceSpan> {
+    let region = table.regions().front().get()?;
+    if region.is_empty() {
+        return None;
+    }
+    region
+        .entry()
+        .body()
+        .iter()
+        .rev()
+        .find(|op| {
+            op.name().name() == conflict.kind
+                && op.as_symbol().is_some_and(|symbol| symbol.name() == conflict.name)
+        })
+        .map(|op| op.span)
 }

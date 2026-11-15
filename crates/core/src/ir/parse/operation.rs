@@ -653,7 +653,10 @@ where
                     })?;
                     // A shared name encodes the result index in the value id, which bounds it.
                     if count == 0 || count > ValueId::MAX_NAMED_RESULTS {
-                        return Err(ParserError::InvalidResultCount { span: count_span });
+                        return Err(ParserError::InvalidResultCount {
+                            span: count_span,
+                            limit: ValueId::MAX_NAMED_RESULTS,
+                        });
                     }
                     end = count_span.range().end();
                     expected_sub_results = count;
@@ -692,7 +695,7 @@ where
                 return Err(ParserError::UnexpectedToken {
                     span: name_span,
                     token: invalid.to_string(),
-                    expected: Some("operation name".to_string()),
+                    expected: Some("an operation name".into()),
                 });
             }
         };
@@ -1549,9 +1552,9 @@ where
         // Add arguments to the entry block if we had the form with explicit names.
         if !entry_arguments.is_empty() && entry_arguments[0].name.name.is_user_defined() {
             // If we had named arguments, then don't allow a block name.
-            if self.token_stream_mut().is_next(|tok| matches!(tok, Token::CaretIdent(_))) {
+            if let Some((start, Token::CaretIdent(_), end)) = self.token_stream_mut().peek()? {
                 return Err(ParserError::BlockNameInRegionWithNamedArgs {
-                    span: self.parser.current_location(),
+                    span: span!(self.source_id(), start, end),
                 });
             }
 
@@ -1646,15 +1649,14 @@ where
             return Ok(block);
         }
 
-        let (name_span, name) = self
+        let (name_span, written) = self
             .token_stream_mut()
-            .expect_map("block name", |tok| match tok {
-                Token::CaretIdent(name) => {
-                    Some(BlockId::from_symbol(interner::Symbol::intern(name)))
-                }
+            .expect_map("a block name", |tok| match tok {
+                Token::CaretIdent(name) => Some(interner::Symbol::intern(name)),
                 _ => None,
             })?
             .into_parts();
+        let name = BlockId::from_symbol(written);
 
         // Define the block with the specified name.
         //
@@ -1667,10 +1669,9 @@ where
             // so if this name already resolves to a non-forward-declared block, it is a
             // redeclaration.
             if !self.erase_forward_ref(forward_declared.into_inner()) {
-                // "redefinition of block {name}"
                 return Err(ParserError::BlockAlreadyDefined {
                     span: name_span,
-                    name,
+                    name: alloc::format!("^{written}"),
                 });
             }
             // A caller that provided a block expects it to be the one populated, but branch
@@ -2452,7 +2453,7 @@ where
                 return Err(ParserError::UnexpectedToken {
                     span: span!(parser.source_id(), start, end),
                     token: token.to_string(),
-                    expected: Some("a type declaration, 'type !name = ..;', or '}'".to_string()),
+                    expected: Some("a type declaration, 'type !name = ..;', or '}'".into()),
                 });
             }
         }

@@ -405,8 +405,8 @@ impl<'input> Lexer<'input> {
             if !(c.is_ascii_alphabetic() || c == '_') {
                 return Err(ParserError::UnexpectedToken {
                     span: self.span(),
-                    token: format!("'{c}'"),
-                    expected: Some("expected identifier".to_string()),
+                    token: c.to_string(),
+                    expected: Some("an identifier".into()),
                 });
             }
             let Token::BareIdent(s) = self.lex_identifier()? else {
@@ -438,8 +438,8 @@ impl<'input> Lexer<'input> {
         } else {
             return Err(ParserError::UnexpectedToken {
                 span: self.span(),
-                token: format!("'{c}'"),
-                expected: Some("expected identifier".to_string()),
+                token: c.to_string(),
+                expected: Some("an identifier".into()),
             });
         }
 
@@ -793,7 +793,7 @@ impl<'input> TokenStream<'input> {
             Some(spanned) => Err(ParserError::UnexpectedToken {
                 token: spanned.to_string(),
                 span: span!(spanned.span().source().id(), spanned.span().range().start()),
-                expected: Some(expected.to_string()),
+                expected: Some(expected.to_string().into()),
             }),
             None => Err(ParserError::UnexpectedEof {
                 expected: vec![expected.to_string()],
@@ -817,7 +817,7 @@ impl<'input> TokenStream<'input> {
                     Err(ParserError::UnexpectedToken {
                         span: spanned.span(),
                         token: spanned.to_string(),
-                        expected: Some(expected.to_string()),
+                        expected: Some(expected.to_string().into()),
                     })
                 }
             }
@@ -843,7 +843,7 @@ impl<'input> TokenStream<'input> {
                     None => Err(ParserError::UnexpectedToken {
                         span,
                         token: tok.to_string(),
-                        expected: Some(expected.to_string()),
+                        expected: Some(expected.to_string().into()),
                     }),
                 }
             }

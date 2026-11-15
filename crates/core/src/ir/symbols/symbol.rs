@@ -70,14 +70,10 @@ pub trait Symbol: Usable<Use = SymbolUse> + 'static {
                     parts.push_front(SymbolNameComponent::Component(segment));
                 }
                 symbol_table = sym_table_op.nearest_symbol_table();
-            } else {
-                // This is an anonymous symbol table - for now we require all symbol tables to be
-                // symbols unless it is the root symbol table
-                assert!(
-                    sym_table_op.parent_op().is_none(),
-                    "anonymous symbol tables cannot have parents"
-                );
             }
+            // Otherwise this is an anonymous symbol table, a world, which is the root of every
+            // path. It has no parent once built; while it is parsed it is held by the parser's
+            // anchor, another world, and the path ends at it all the same.
         }
 
         parts.push_front(SymbolNameComponent::Root);

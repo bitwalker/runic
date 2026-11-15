@@ -19,8 +19,9 @@ pub enum ParserError {
         #[label(primary, "unexpected token '{token}'")]
         span: SourceSpan,
         token: String,
+        /// What was expected instead, shown as the help `expected ..`
         #[help]
-        expected: Option<String>,
+        expected: Option<Expected>,
     },
     #[error("expected the end of the input after the top-level operation")]
     TrailingInput {
@@ -123,11 +124,11 @@ pub enum ParserError {
         ty: CompactString,
         prev_ty: CompactString,
     },
-    #[error("invalid use of result number in argument list")]
+    #[error("invalid use of a result number")]
     ResultNumberUsedInArgumentList {
-        #[label(primary)]
+        #[label(primary, "a result number is not accepted here")]
         span: SourceSpan,
-        #[label]
+        #[label("this operand names a value, not one result of a pack")]
         value_span: SourceSpan,
     },
     #[error("invalid result index")]
@@ -155,11 +156,22 @@ pub enum ParserError {
         num_types: usize,
     },
     #[error("invalid result count")]
-    InvalidResultCount { span: SourceSpan },
-    #[error("named op with no results")]
-    NamedOpWithNoResults { span: SourceSpan },
+    InvalidResultCount {
+        #[label(primary, "a result pack holds 1 to {limit} results")]
+        span: SourceSpan,
+        limit: usize,
+    },
+    #[error("results are named for an operation that has none")]
+    NamedOpWithNoResults {
+        #[label(primary, "this operation has no results")]
+        span: SourceSpan,
+    },
     #[error("result count mismatch")]
     ResultCountMismatch {
+        #[label(
+            primary,
+            "this operation has {count} result(s), but {expected} are named"
+        )]
         span: SourceSpan,
         count: usize,
         expected: usize,
@@ -339,7 +351,10 @@ pub enum ParserError {
     },
     #[error("invalid block name in region with named arguments")]
     BlockNameInRegionWithNamedArgs {
-        #[label(primary)]
+        #[label(
+            primary,
+            "the arguments of this entry block are named by the operation; it takes no label"
+        )]
         span: SourceSpan,
     },
     #[error("entry block arguments were already defined")]
@@ -347,17 +362,18 @@ pub enum ParserError {
         #[label(primary)]
         span: SourceSpan,
     },
-    #[error("redefinition of block {name}")]
+    #[error("redefinition of block '{name}'")]
     BlockAlreadyDefined {
-        #[label(primary)]
+        #[label(primary, "'{name}' is defined again here")]
         span: SourceSpan,
-        name: BlockId,
+        /// The name as written, `^name`
+        name: String,
     },
     /// A symbol table defines two symbols with one name, or with one path (see
     /// [crate::SymbolConflict])
     #[error("{conflict}")]
     SymbolConflict {
-        #[label(primary)]
+        #[label(primary, "this definition conflicts with an earlier one")]
         span: SourceSpan,
         conflict: crate::SymbolConflict,
     },
@@ -417,6 +433,29 @@ pub enum ParserError {
     #[error("{0}")]
     #[diagnostic(transparent)]
     Report(#[diagnostic_source] OwnedDiagnostic),
+}
+
+/// What a parser expected where it found something else: `type`, `';'`, `one of: a, b`. It is
+/// shown as `expected {what}`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Expected(pub String);
+
+impl core::fmt::Display for Expected {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "expected {}", self.0)
+    }
+}
+
+impl From<String> for Expected {
+    fn from(what: String) -> Self {
+        Self(what)
+    }
+}
+
+impl From<&str> for Expected {
+    fn from(what: &str) -> Self {
+        Self(what.into())
+    }
 }
 
 impl ParserError {
