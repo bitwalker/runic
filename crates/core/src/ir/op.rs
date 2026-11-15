@@ -3,15 +3,15 @@ use alloc::{boxed::Box, format, rc::Rc};
 use super::*;
 use crate::{AttributeRef, any::AsAny, interner, traits::TraitInfo};
 
-/// How an operation's declared successors map to generic assembly's single unkeyed list.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum GenericSuccessorLayout {
-    /// Keys or multiple successor groups cannot be represented by generic assembly.
-    Unsupported,
-    /// A fixed number of successors, including zero for operations without successors.
-    Fixed(usize),
-    /// A single group with any number of unkeyed successors.
-    Variadic,
+/// One successor group an operation declares: how many successors it holds, and whether each of
+/// them is selected by a key.
+#[derive(Debug, Copy, Clone)]
+pub struct SuccessorGroupShape {
+    /// `Some(n)` for a group of exactly `n` successors, `None` for a group of any number
+    pub size: Option<usize>,
+    /// For a keyed group, whether an attribute is a key of the kind the group stores
+    /// ([crate::is_successor_key_of]); `None` for a group whose successors have no key
+    pub key: Option<fn(&AttributeRef) -> bool>,
 }
 
 pub trait OpRegistration: Op {
@@ -40,13 +40,19 @@ pub trait OpRegistration: Op {
     /// `Some(n)` requires exactly `n` operands; `None` denotes a variadic group. The operation
     /// macro derives these entries from `#[operand]` and `#[operands]` declarations.
     fn operand_group_sizes() -> &'static [Option<usize>];
-    /// The successor layout and cardinality accepted by generic assembly.
+    /// The number of regions the operation declares, which it holds at least.
     ///
-    /// The `operation` macro derives this from the successor declarations. Hand-written
-    /// registrations conservatively reject generic parsing unless they opt in.
-    fn generic_successor_layout() -> GenericSuccessorLayout {
-        GenericSuccessorLayout::Unsupported
-    }
+    /// The operation macro derives it from the `#[region]` declarations.
+    fn region_count() -> usize;
+    /// The number of results the operation declares: `Some(n)` for its `n` `#[result]`s, `None`
+    /// for a `#[results]` group of any number, or when it declares none (an operation such as
+    /// `scf.if` is given its results when it is built).
+    fn result_count() -> Option<usize>;
+    /// The successor groups the operation declares, in order.
+    ///
+    /// The operation macro derives these from the `#[successor]` and `#[successors]`
+    /// declarations: consecutive `#[successor]`s form one group of that many.
+    fn successor_groups() -> Box<[SuccessorGroupShape]>;
     /// Allocate a new, default-initialized instance of this op in `context`
     fn alloc_uninit(context: Rc<Context>) -> OperationRef;
 }

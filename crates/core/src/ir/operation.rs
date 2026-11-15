@@ -518,6 +518,37 @@ impl Operation {
         Ok(())
     }
 
+    /// Check that this operation has at least the regions its registration declares (an
+    /// operation may hold more, as `scf.index_switch` holds one per case after the declared
+    /// default region), and the number of results it declares when that number is fixed.
+    ///
+    /// Like [Self::verify_operand_cardinality], this runs before type inference and the
+    /// operation's own verifiers, which may access a declared region or result by its index.
+    pub fn verify_region_and_result_counts(&self) -> Result<(), Report> {
+        let name = self.name();
+        let invalid = |what: &str, expected: alloc::string::String, actual: usize| {
+            crate::diagnostics::report!(
+                message: (alloc::format!("invalid {what} count")),
+                labels: [
+                    primary(
+                        self.span(),
+                        alloc::format!("'{name}' has {expected} {what}(s), but this has {actual}")
+                    ),
+                ],
+            )
+        };
+        if self.regions.len() < name.region_count() {
+            let expected = alloc::format!("at least {}", name.region_count());
+            return Err(invalid("region", expected, self.regions.len()));
+        }
+        if let Some(expected) = name.result_count()
+            && self.num_results() != expected
+        {
+            return Err(invalid("result", alloc::format!("{expected}"), self.num_results()));
+        }
+        Ok(())
+    }
+
     /// Run any verifiers for this operation
     ///
     /// The generic checks run first, for every operation. The first, in one walk of the

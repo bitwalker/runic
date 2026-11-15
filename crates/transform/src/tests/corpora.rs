@@ -34,15 +34,15 @@ enum Root {
     Function,
 }
 
-struct Case {
-    name: String,
-    text: String,
+pub(super) struct Case {
+    pub(super) name: String,
+    pub(super) text: String,
     root: Root,
     /// Argument vectors for the interpreter, when `@f` (or the function) can be run.
     args: Vec<Vec<u64>>,
 }
 
-fn corpus() -> Vec<Case> {
+pub(super) fn corpus() -> Vec<Case> {
     let mut cases = Vec::new();
     let mut rng = Rng(super::seed(0x5e3e_c0de));
     for (name, body) in drive::FIXTURES {
@@ -126,7 +126,7 @@ fn corpus() -> Vec<Case> {
     cases
 }
 
-fn new_context() -> Rc<Context> {
+pub(super) fn new_context() -> Rc<Context> {
     use runic_dialect_arith as _;
     use runic_dialect_mem as _;
     use runic_dialect_scf as _;

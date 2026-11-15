@@ -844,16 +844,25 @@ builtin.function public extern("C") @branch(%c: i1, %a: i32, %b: i32) -> i32 {
         }
     }
 
+    /// The generic form of a switch states its two successor groups, the keyed cases and the
+    /// fallback, separated by `|`, each case with its key; anything else is rejected.
     #[test]
-    fn parse_generic_switch_rejects_unsupported_successor_layout() {
+    fn parse_generic_switch_checks_its_successor_groups() {
         use runic_core::{
             dialects::builtin::Function,
             parse::{ParserConfig, parse},
         };
 
-        // A flat successor list cannot distinguish the keyed cases from the fallback. Omitting
-        // the list must not bypass the diagnostic and produce missing successor groups either.
-        for successors in ["[^dest]", "[^dest, ^dest]", "[]", ""] {
+        for (successors, expected) in [
+            ("[^dest]", "has 2 successor group(s), but this list has 1"),
+            ("[^dest, ^dest]", "has 2 successor group(s), but this list has 1"),
+            ("[]", "expected at least one successor"),
+            ("", "expected 1 successors, but found 0"),
+            ("[^dest | ^dest]", "successor group 0 of 'cf.switch' takes a key"),
+            ("[#builtin.i32<1>: ^dest | #builtin.i32<2>: ^dest]", "takes no key"),
+            (r#"[#builtin.string<"a">: ^dest | ^dest]"#, "is not a key of the kind"),
+            ("[#builtin.i32<1>: ^dest | ^dest, ^dest]", "expected 1 successors, but found 2"),
+        ] {
             let context = Rc::new(Context::default());
             context.get_or_register_dialect::<ControlFlowDialect>();
             let source = format!(
@@ -871,14 +880,90 @@ builtin.function public extern("C") @branch(%c: i1, %a: i32, %b: i32) -> i32 {
             .into_result() else {
                 panic!("expected generic cf.switch with successors '{successors}' to be rejected");
             };
-            let message = format!("{error}");
-            assert!(
-                message.contains(
-                    "generic assembly cannot represent the successor layout of 'cf.switch'"
-                ),
-                "{message}"
-            );
+            let message = runic_core::testing::text::describe(&error);
+            assert!(message.contains(expected), "{successors}: {message}");
         }
+    }
+
+    /// A switch written in the generic form reads back the switch its custom form gives, keys,
+    /// fallback and forwarded arguments included, and prints the same generic text again.
+    #[test]
+    fn a_generic_switch_reads_back() -> Result<(), Report> {
+        use runic_core::{
+            dialects::builtin::Function,
+            parse::{ParserConfig, parse},
+            print::same_program,
+            testing::text::print_all_generic as print_generic,
+        };
+
+        let context = Rc::new(Context::default());
+        let source = "\
+builtin.function public extern(\"C\") @branch(%s: i32, %a: i32) -> i32 {
+    cf.switch %s [#builtin.i32<1> -> ^one(%a : i32), #builtin.i32<-2> -> ^two], ^fallback(%s : \
+                      i32) : (i32);
+^one(%x: i32):
+    builtin.ret %x : (i32);
+^two:
+    builtin.ret %a : (i32);
+^fallback(%y: i32):
+    builtin.ret %y : (i32);
+};";
+        let function = parse::<Function>(ParserConfig::new(context.clone()), "switch.hir", source)
+            .into_result()?;
+        let custom = format!("{}", function.borrow().as_operation());
+        let generic = print_generic(function.borrow().as_operation());
+        assert!(
+            generic.contains(
+                "\"cf.switch\"(%0) [ #builtin.i32<1>: ^block2(%1 : i32), #builtin.i32<-2>: \
+                 ^block3 | ^block4(%0 : i32) ] : i32 -> ();"
+            ),
+            "{generic}"
+        );
+        let again =
+            parse::<Function>(ParserConfig::new(context.clone()), "generic.hir", generic.clone())
+                .into_result()?;
+        assert!(same_program(&format!("{}", again.borrow().as_operation()), &custom));
+        assert!(same_program(&print_generic(again.borrow().as_operation()), &generic));
+        Ok(())
+    }
+
+    /// The generic form of a branch gives the arguments it forwards with their types, and reads
+    /// back.
+    #[test]
+    fn a_generic_branch_states_the_types_of_its_arguments() -> Result<(), Report> {
+        use runic_core::{
+            dialects::builtin::Function,
+            parse::{ParserConfig, parse},
+            print::same_program,
+            testing::text::print_all_generic,
+        };
+
+        let context = Rc::new(Context::default());
+        let source = "\
+builtin.function public extern(\"C\") @branch(%c: i1, %a: i32, %b: i64) -> i32 {
+    cf.cond_br %c ^yes(%a, %b : i32, i64), ^no : (i1);
+^yes(%x: i32, %y: i64):
+    cf.br ^no;
+^no:
+    builtin.ret %a : (i32);
+};";
+        let function = parse::<Function>(ParserConfig::new(context.clone()), "branch.hir", source)
+            .into_result()?;
+        let generic = print_all_generic(function.borrow().as_operation());
+        assert!(
+            generic
+                .contains("\"cf.cond_br\"(%0) [ ^block2(%1, %2 : i32, i64), ^block3 ] : i1 -> ();"),
+            "{generic}"
+        );
+        let again =
+            parse::<Function>(ParserConfig::new(context.clone()), "generic.hir", generic.clone())
+                .into_result()?;
+        assert!(same_program(&print_all_generic(again.borrow().as_operation()), &generic));
+        assert!(same_program(
+            &format!("{}", again.borrow().as_operation()),
+            &format!("{}", function.borrow().as_operation())
+        ));
+        Ok(())
     }
 
     /// Statically-known successor lists (`cf.cond_br %c ^a, ^b`) parse with the `, ` separator

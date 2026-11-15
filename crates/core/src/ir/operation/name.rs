@@ -7,8 +7,8 @@ use core::{
 
 use super::{OpRegistration, OperationRef};
 use crate::{
-    Attribute, AttributeRef, AttributeRegistration, Context, EntityMut, EntityRef,
-    GenericSuccessorLayout, OperationState, UnsafeIntrusiveEntityRef, interner, parse,
+    Attribute, AttributeRef, AttributeRegistration, Context, EntityMut, EntityRef, OperationState,
+    SuccessorGroupShape, UnsafeIntrusiveEntityRef, interner, parse,
     patterns::RewritePatternSet,
     traits::{Canonicalizable, TraitInfo},
 };
@@ -40,10 +40,14 @@ struct OperationInfo {
     alloc_default: AllocDefaultFn,
     /// The custom assembly parser for this operation
     parse_assembly: Option<ParseAssemblyFn>,
-    /// The successor layout and cardinality accepted by generic assembly
-    generic_successor_layout: GenericSuccessorLayout,
     /// Cardinalities of the declared ordinary operand groups, excluding successor arguments
     operand_group_sizes: &'static [Option<usize>],
+    /// The number of declared regions, which an operation holds at least
+    region_count: usize,
+    /// The number of declared results, `None` when it is not fixed
+    result_count: Option<usize>,
+    /// The declared successor groups
+    successor_groups: Box<[SuccessorGroupShape]>,
 }
 
 type AttrValueGetRaw = unsafe fn(*const (), &AttrInfo) -> AttributeRef;
@@ -290,8 +294,10 @@ impl OperationName {
             get_canonicalization_patterns,
             alloc_default,
             parse_assembly,
-            generic_successor_layout: T::generic_successor_layout(),
             operand_group_sizes: T::operand_group_sizes(),
+            region_count: T::region_count(),
+            result_count: T::result_count(),
+            successor_groups: T::successor_groups(),
         }))
     }
 
@@ -323,16 +329,29 @@ impl OperationName {
         self.0.parse_assembly
     }
 
-    /// Returns the successor layout and cardinality accepted by generic assembly.
-    #[inline]
-    pub fn generic_successor_layout(&self) -> GenericSuccessorLayout {
-        self.0.generic_successor_layout
-    }
-
     /// Returns the declared ordinary operand group sizes (`None` for variadic groups).
     #[inline]
     pub fn operand_group_sizes(&self) -> &'static [Option<usize>] {
         self.0.operand_group_sizes
+    }
+
+    /// Returns the number of regions the operation declares, which it holds at least.
+    #[inline]
+    pub fn region_count(&self) -> usize {
+        self.0.region_count
+    }
+
+    /// Returns the number of results the operation declares, `None` when it is not fixed (see
+    /// [OpRegistration::result_count]).
+    #[inline]
+    pub fn result_count(&self) -> Option<usize> {
+        self.0.result_count
+    }
+
+    /// Returns the successor groups the operation declares, in order.
+    #[inline]
+    pub fn successor_groups(&self) -> &[SuccessorGroupShape] {
+        &self.0.successor_groups
     }
 
     /// Populates `rewrites` with the set of canonicalization patterns registered for this operation

@@ -70,6 +70,8 @@ mod extended;
 mod patterns;
 mod random;
 
+pub(super) use self::random::sample_modules;
+
 /// What a type becomes.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum Family {

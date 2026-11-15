@@ -234,13 +234,10 @@ pub enum ParserError {
         #[label(primary, "non-terminator operations cannot have successors")]
         span: SourceSpan,
     },
-    #[error("generic assembly cannot represent the successor layout of '{name}'")]
-    #[diagnostic(help = "use the operation's custom assembly syntax instead")]
-    UnsupportedGenericSuccessorLayout {
-        #[label(
-            primary,
-            "generic successors cannot encode keys or multiple successor groups"
-        )]
+    #[error("a list of successors cannot give the successors of '{name}'")]
+    #[diagnostic(help = "its successors have keys or are in more than one group")]
+    UngroupedSuccessors {
+        #[label(primary, "a list without keys or groups is given for this operation")]
         span: SourceSpan,
         name: String,
     },
@@ -251,14 +248,54 @@ pub enum ParserError {
         expected: usize,
         actual: usize,
     },
+    #[error("invalid successor groups")]
+    #[diagnostic(help = "the groups of a successor list are separated by '|'")]
+    InvalidSuccessorGroupCount {
+        #[label(
+            primary,
+            "'{name}' has {expected} successor group(s), but this list has {actual}"
+        )]
+        span: SourceSpan,
+        name: String,
+        expected: usize,
+        actual: usize,
+    },
+    #[error("invalid successor key")]
+    InvalidSuccessorKey {
+        #[label(primary, "{reason}")]
+        span: SourceSpan,
+        reason: String,
+    },
     #[error("too many operand groups")]
     TooManyOperandGroups {
         #[label(
             primary,
-            "this successor needs an operand group past the limit of {limit}"
+            "this operation needs an operand group past the limit of {limit}"
         )]
         span: SourceSpan,
         limit: usize,
+    },
+    #[error("'{name}' is not a property of '{op}'")]
+    #[diagnostic(
+        help = "an operation's properties are written between '<' and '>', and any other \
+                attribute in the dictionary after its regions"
+    )]
+    NotAProperty {
+        #[label(primary, "not a property")]
+        span: SourceSpan,
+        name: interner::Symbol,
+        op: String,
+    },
+    #[error("invalid result type")]
+    ResultTypeMismatch {
+        #[label(
+            primary,
+            "this result is written as '{stated}', but '{op}' gives it '{inferred}'"
+        )]
+        span: SourceSpan,
+        stated: String,
+        inferred: String,
+        op: String,
     },
     #[error("invalid operation type")]
     InvalidOperationType {

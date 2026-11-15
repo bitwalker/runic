@@ -1285,13 +1285,6 @@ builtin.module public @m {
         let (_context, module) = parse_text(CALLS, true).unwrap_or_else(|err| panic!("{err}"));
         let mut skipped = Vec::new();
         let failures = round_trip::<Module>(module, true, &mut skipped);
-        // The generic form of an operation with two operand groups does not parse back (as
-        // `scf.condition`'s does not): `builtin.call_indirect` and `test.call_one_of` are two more.
-        let (known, failures): (Vec<_>, Vec<_>) = failures.into_iter().partition(|failure| {
-            failure.starts_with("generic form of 'builtin.call_indirect' does not parse")
-                || failure.starts_with("generic form of 'test.call_one_of' does not parse")
-        });
-        assert_eq!(known.len(), 4, "{known:#?}");
         assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n\n"));
         assert!(skipped.is_empty(), "skipped: {skipped:#?}");
     }

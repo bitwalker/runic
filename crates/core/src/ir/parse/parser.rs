@@ -787,6 +787,16 @@ pub trait Parser<'input> {
     /// A key given twice in the dictionary is a [ParserError::DuplicateAttribute] at its second
     /// occurrence.
     fn parse_attribute_dict(&mut self, attrs: &mut ParsedAttrs) -> ParseResult {
+        self.parse_attribute_dict_checking_keys(attrs, &mut |_| Ok(()))
+    }
+
+    /// Parse an attribute dictionary, as [Self::parse_attribute_dict] does, calling `check` with
+    /// each key, where it is written, before its value is read.
+    fn parse_attribute_dict_checking_keys(
+        &mut self,
+        attrs: &mut ParsedAttrs,
+        check: &mut dyn FnMut(Span<interner::Symbol>) -> ParseResult,
+    ) -> ParseResult {
         // The entries of this dictionary are the ones pushed after `start`
         let start = attrs.len();
         self.parse_lbrace()?;
@@ -817,6 +827,7 @@ pub trait Parser<'input> {
                         name: key.into_inner(),
                     });
                 }
+                check(key)?;
 
                 parser.parse_equal()?;
 

@@ -61,7 +61,7 @@ pub use self::{
     ident::{FunctionIdent, Ident, IdentAttr},
     int::{Int, IsizeFold, fold_isize},
     int_range::{ConstantIntRange, IntegerValueRange},
-    op::{BuildableOp, GenericSuccessorLayout, Op, OpExt, OpRegistration},
+    op::{BuildableOp, Op, OpExt, OpRegistration, SuccessorGroupShape},
     operands::{
         OpOperand, OpOperandImpl, OpOperandList, OpOperandRange, OpOperandRangeMut,
         OpOperandStorage,
@@ -86,7 +86,7 @@ pub use self::{
         KeyedSuccessor, KeyedSuccessorRange, KeyedSuccessorRangeMut, OpSuccessor, OpSuccessorMut,
         OpSuccessorRange, OpSuccessorRangeMut, OpSuccessorStorage, SuccessorInfo, SuccessorOperand,
         SuccessorOperandRange, SuccessorOperandRangeMut, SuccessorOperands, SuccessorWithKey,
-        SuccessorWithKeyMut,
+        SuccessorWithKeyMut, is_successor_key_of,
     },
     symbols::*,
     traits::{FoldResult, OpFoldResult},

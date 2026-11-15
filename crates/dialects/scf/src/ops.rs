@@ -2000,6 +2000,55 @@ builtin.function public extern(\"C\") @wide(%c: i1, %a: i32) -> i32 {{
         Ok(())
     }
 
+    /// In the generic form, `scf.index_switch` prints its regions in the order they are stored,
+    /// the default region first, and `scf.if` its two regions separated by a comma; both read
+    /// back as the same program (the values are numbered again, since the custom form of the
+    /// switch prints its default region last).
+    #[test]
+    fn the_generic_form_prints_regions_in_their_stored_order() -> Result<(), Report> {
+        use runic_core::{
+            parse::{ParserConfig, parse},
+            print::same_program,
+            testing::text::print_all_generic,
+        };
+
+        let context = Rc::new(Context::default());
+        let source = "\
+builtin.function public extern(\"C\") @dispatch(%sel: i32, %c: i1, %a: i32, %b: i32) -> i32 {
+    %r = scf.index_switch %sel
+    case 1 {
+        %x = arith.add %a, %a;
+        scf.yield %x : (i32);
+    }
+    default {
+        %y = arith.add %b, %b;
+        scf.yield %y : (i32);
+    } : (i32);
+    %s = scf.if %c then {
+        scf.yield %r : (i32);
+    } else {
+        scf.yield %a : (i32);
+    } : (i1) -> (i32);
+    builtin.ret %s : (i32);
+};";
+        let function = parse::<Function>(ParserConfig::new(context.clone()), "order.hir", source)
+            .into_result()?;
+        let generic = print_all_generic(function.borrow().as_operation());
+        let default = generic.find("\"arith.add\"(%3, %3)").expect(&generic);
+        let case = generic.find("\"arith.add\"(%2, %2)").expect(&generic);
+        assert!(default < case, "the default region is stored first:\n{generic}");
+        assert!(generic.contains("}, {"), "{generic}");
+        let again =
+            parse::<Function>(ParserConfig::new(context.clone()), "generic.hir", generic.clone())
+                .into_result()?;
+        assert!(same_program(&print_all_generic(again.borrow().as_operation()), &generic));
+        assert!(same_program(
+            &format!("{}", again.borrow().as_operation()),
+            &format!("{}", function.borrow().as_operation())
+        ));
+        Ok(())
+    }
+
     /// `scf.index_switch` regions parse with the default region first, matching the accessors
     /// (`default_region` is region 0, case regions follow in case order).
     #[test]

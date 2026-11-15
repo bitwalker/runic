@@ -1071,14 +1071,40 @@ impl quote::ToTokens for OpDefinition {
             }
             OpOperandGroup::Named(..) => quote! { ::core::option::Option::None },
         });
-        let generic_successor_layout = match self.successors.as_slice() {
-            [] => quote! { ::runic_core::GenericSuccessorLayout::Fixed(0) },
-            [SuccessorGroup::Unnamed(successors)] => {
+        let successor_groups = self.successors.iter().map(|group| match group {
+            SuccessorGroup::Unnamed(successors) => {
                 let count = successors.len();
-                quote! { ::runic_core::GenericSuccessorLayout::Fixed(#count) }
+                quote! {
+                    ::runic_core::SuccessorGroupShape {
+                        size: ::core::option::Option::Some(#count),
+                        key: ::core::option::Option::None,
+                    }
+                }
             }
-            [SuccessorGroup::Named(_)] => quote! { ::runic_core::GenericSuccessorLayout::Variadic },
-            _ => quote! { ::runic_core::GenericSuccessorLayout::Unsupported },
+            SuccessorGroup::Named(_) => quote! {
+                ::runic_core::SuccessorGroupShape {
+                    size: ::core::option::Option::None,
+                    key: ::core::option::Option::None,
+                }
+            },
+            SuccessorGroup::Keyed(_, group_ty) => quote! {
+                ::runic_core::SuccessorGroupShape {
+                    size: ::core::option::Option::None,
+                    key: ::core::option::Option::Some(
+                        ::runic_core::is_successor_key_of::<#group_ty>,
+                    ),
+                }
+            },
+        });
+        let region_count = self.regions.len();
+        // An operation that declares no results may still be given some (`scf.if` is given one
+        // per value it yields), so only `#[result]`s fix the number.
+        let result_count = match &self.results {
+            Some(OpResultGroup::Unnamed(results)) => {
+                let count = results.len();
+                quote! { ::core::option::Option::Some(#count) }
+            }
+            Some(OpResultGroup::Named(..)) | None => quote! { ::core::option::Option::None },
         };
         tokens.extend(quote_spanned! { op_span =>
             impl #impl_generics ::runic_core::Op for #op_ident #ty_generics #where_clause {
@@ -1121,8 +1147,18 @@ impl quote::ToTokens for OpDefinition {
                     ])
                 }
 
-                fn generic_successor_layout() -> ::runic_core::GenericSuccessorLayout {
-                    #generic_successor_layout
+                fn region_count() -> usize {
+                    #region_count
+                }
+
+                fn result_count() -> ::core::option::Option<usize> {
+                    #result_count
+                }
+
+                fn successor_groups() -> ::alloc::boxed::Box<[::runic_core::SuccessorGroupShape]> {
+                    ::alloc::boxed::Box::from([
+                        #(#successor_groups),*
+                    ])
                 }
 
                 fn operand_group_sizes() -> &'static [::core::option::Option<usize>] {

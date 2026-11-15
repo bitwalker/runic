@@ -290,9 +290,11 @@ where
 
         self.builder.inherit_debug_info(&mut op);
 
-        // Type inference may access declared operands by index and assume their types.
+        // Type inference may access declared operands, regions and results by index, and assume
+        // the operands' types.
         op.verify_operand_cardinality()?;
         op.as_ref().verify_operand_types()?;
+        op.verify_region_and_result_counts()?;
 
         // Infer result types and apply any associated validation
         if let Some(interface) = op.as_trait_mut::<dyn crate::traits::InferTypeOpInterface>() {

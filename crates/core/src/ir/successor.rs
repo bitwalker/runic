@@ -279,6 +279,12 @@ pub trait KeyedSuccessor {
     ) -> Self::ReprMut<'_>;
 }
 
+/// Whether `attr` is a key of the kind a keyed successor `T` stores, so that [SuccessorWithKey]
+/// can read it.
+pub fn is_successor_key_of<T: KeyedSuccessor>(attr: &AttributeRef) -> bool {
+    attr.try_downcast_attr::<<T as KeyedSuccessor>::KeyStorage>().is_ok()
+}
+
 /// This struct tracks successor metadata needed by [crate::Operation]
 #[derive(Copy, Clone)]
 pub struct SuccessorInfo {

@@ -515,6 +515,17 @@ impl Gen<'_> {
     }
 }
 
+/// `count` random modules of each family, the first from `seed`: the texts the conversion tests
+/// start from, for the tests of printing and parsing.
+pub(in crate::tests) fn sample_modules(seed: u64, count: usize) -> Vec<String> {
+    let mut rng = Rng(seed);
+    [Family::Wide, Family::Size]
+        .into_iter()
+        .flat_map(|family| (0..count).map(move |_| family))
+        .map(|family| module(&mut rng, family).0)
+        .collect()
+}
+
 /// A random module of `family`, and the calls to evaluate: three of each function.
 fn module(rng: &mut Rng, family: Family) -> (String, Vec<Input>) {
     let count = 2 + rng.below(3);

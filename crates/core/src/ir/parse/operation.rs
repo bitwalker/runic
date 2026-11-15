@@ -2,8 +2,8 @@ use compact_str::format_compact;
 
 use super::*;
 use crate::{
-    BlockArgument, Builder, EntityWithId, Forward, FunctionType, FxHashSet, GenericSuccessorLayout,
-    InsertionGuard, Op, PendingSuccessorInfo, RawWalk, Value, WalkResult,
+    BlockArgument, Builder, EntityWithId, Forward, FunctionType, FxHashSet, InsertionGuard, Op,
+    PendingSuccessorInfo, RawWalk, SuccessorGroupShape, Value, WalkResult,
     adt::{SmallDenseMap, SmallSet},
     dialects::builtin::{
         WorldRef,
@@ -122,15 +122,16 @@ impl OpOrArgument {
     }
 }
 
-/// The operand group of the `index`th successor of a generic-form operation, whose successor
-/// operands follow the single operand group of the op itself.
-///
-/// Fails when the group index does not fit the 16-bit index an operation stores.
-fn successor_operand_group(index: usize, span: SourceSpan) -> ParseResult<u16> {
-    u16::try_from(index + 1).map_err(|_| ParserError::TooManyOperandGroups {
-        span,
-        limit: u16::MAX as usize,
-    })
+/// A successor of an operation in the generic form, as the text gives it.
+struct GenericSuccessor {
+    /// The destination, where the text names it
+    block: Span<BlockRef>,
+    /// The key the text gives the successor, where it is written
+    key: Option<Span<AttributeRef>>,
+    /// The index of the successor group it is in
+    group: usize,
+    /// The arguments forwarded to `block`
+    operands: SmallVec<[ValueRef; 2]>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -839,43 +840,152 @@ where
         Ok(self.get_block_named(id, span))
     }
 
-    /// Parse a comma-separated list of operation successors in brackets.
+    /// Parse the successor list of an operation in the generic form, appending each successor to
+    /// `successors` with the index of its group.
     ///
-    ///   successor-list ::= `[` successor (`,` successor )* `]`
+    ///   successors      ::= `[` successor-group (`|` successor-group)* `]`
+    ///   successor-group ::= (successor (`,` successor)*)?
+    ///   successor       ::= (attribute-value `:`)? block-id successor-arguments?
+    ///   successor-arguments ::= `(` value-use-list `:` type-list-no-parens `)`
     ///
-    pub fn parse_successors<const N: usize>(
+    /// Returns the number of groups the list has. A list without a successor is an error.
+    fn parse_generic_successors(
         &mut self,
-        destinations: &mut SmallVec<[BlockRef; N]>,
-    ) -> ParseResult {
-        let mut succ_ids = SmallVec::<[Span<BlockId>; N]>::new_const();
-
-        self.parse_comma_separated_list(Delimiter::Bracket, Some("successor list"), |parser| {
-            // Verify branch is identifier and get the matching block.
-            let id = parser.token_stream_mut().expect_map("block name", |tok| match tok {
-                Token::CaretIdent(id) => Some(BlockId::from_symbol(interner::Symbol::intern(id))),
-                _ => None,
-            })?;
-
-            succ_ids.push(id);
-
-            Ok(true)
-        })?;
-
-        // The ids are resolved after the list is parsed, since the list parser holds the parser
-        for id in succ_ids {
-            let (span, id) = id.into_parts();
-            destinations.push(self.get_block_named(id, span).into_inner());
+        successors: &mut SmallVec<[GenericSuccessor; 2]>,
+    ) -> ParseResult<usize> {
+        let start = self.parser.current_location();
+        self.parser.parse_lbracket()?;
+        let mut group = 0usize;
+        loop {
+            if !self
+                .token_stream_mut()
+                .is_next(|tok| matches!(tok, Token::Pipe | Token::Rbracket))
+            {
+                loop {
+                    let successor = self.parse_generic_successor(group)?;
+                    successors.push(successor);
+                    if !self.token_stream_mut().next_if_eq(Token::Comma)? {
+                        break;
+                    }
+                }
+            }
+            if !self.token_stream_mut().next_if_eq(Token::Pipe)? {
+                break;
+            }
+            group += 1;
         }
+        self.parser.parse_rbracket()?;
 
-        if destinations.is_empty() {
-            let source_id = self.source_id();
-            let at = self.parser.token_stream().current_position();
-            Err(ParserError::InvalidEmptySuccessorList {
-                span: span!(source_id, at),
-            })
+        if successors.is_empty() {
+            return Err(ParserError::InvalidEmptySuccessorList { span: start });
+        }
+        Ok(group + 1)
+    }
+
+    /// Parse one successor of the generic form, in the successor group `group`.
+    fn parse_generic_successor(&mut self, group: usize) -> ParseResult<GenericSuccessor> {
+        let key = if self.token_stream_mut().is_next(|tok| matches!(tok, Token::CaretIdent(_))) {
+            None
         } else {
-            Ok(())
+            let unknown = self.context().unknown_type();
+            let key = self.parser.parse_attribute(unknown)?;
+            self.parser.parse_colon()?;
+            Some(key)
+        };
+        let block = self.parse_successor()?;
+        let mut operands = SmallVec::new_const();
+        if self.token_stream_mut().next_if_eq(Token::Lparen)? {
+            self.parse_optional_ssa_use_and_type_list(&mut operands)?;
+            self.parser.parse_rparen()?;
         }
+        Ok(GenericSuccessor {
+            block,
+            key,
+            group,
+            operands,
+        })
+    }
+
+    /// Check the successors of the generic form against the successor groups `name` declares:
+    /// as many groups, the number of successors each declares, and a key of the kind a keyed
+    /// group stores on each of its successors and on no other.
+    ///
+    /// `groups` is the number of groups the text gives, `None` when it gives no successor list.
+    fn check_generic_successors(
+        name: &OperationName,
+        span: SourceSpan,
+        successors: &[GenericSuccessor],
+        groups: Option<usize>,
+    ) -> ParseResult {
+        let declared = name.successor_groups();
+        if declared.is_empty() && !successors.is_empty() {
+            return Err(ParserError::InvalidSuccessorCount {
+                span,
+                expected: 0,
+                actual: successors.len(),
+            });
+        }
+        if let Some(groups) = groups
+            && groups != declared.len()
+        {
+            return Err(ParserError::InvalidSuccessorGroupCount {
+                span,
+                name: name.to_string(),
+                expected: declared.len(),
+                actual: groups,
+            });
+        }
+        if let Some(extra) = successors.iter().find(|successor| successor.group >= declared.len()) {
+            return Err(ParserError::InvalidSuccessorCount {
+                span: extra.block.span(),
+                expected: 0,
+                actual: successors.len(),
+            });
+        }
+        for (index, shape) in declared.iter().enumerate() {
+            let members = || successors.iter().filter(move |successor| successor.group == index);
+            let actual = members().count();
+            if let Some(expected) = shape.size
+                && actual != expected
+            {
+                return Err(ParserError::InvalidSuccessorCount {
+                    span,
+                    expected,
+                    actual,
+                });
+            }
+            for successor in members() {
+                match (shape.key, successor.key) {
+                    (None, None) => (),
+                    (Some(is_key), Some(key)) if is_key(key.inner()) => (),
+                    (Some(_), Some(key)) => {
+                        return Err(ParserError::InvalidSuccessorKey {
+                            span: key.span(),
+                            reason: format!(
+                                "this is not a key of the kind successor group {index} of \
+                                 '{name}' takes"
+                            ),
+                        });
+                    }
+                    (Some(_), None) => {
+                        return Err(ParserError::InvalidSuccessorKey {
+                            span: successor.block.span(),
+                            reason: format!(
+                                "successor group {index} of '{name}' takes a key before each \
+                                 successor"
+                            ),
+                        });
+                    }
+                    (None, Some(key)) => {
+                        return Err(ParserError::InvalidSuccessorKey {
+                            span: key.span(),
+                            reason: format!("successor group {index} of '{name}' takes no key"),
+                        });
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Parse an operation instance that is in the generic form.
@@ -889,6 +999,10 @@ where
     }
 
     /// Parse a generic operation, optionally leaving source-state finalization to the caller.
+    ///
+    /// The operation is built from the text alone, never with its custom parser. A result type
+    /// the text states that differs from the type the operation gives the result once built (by
+    /// inferring it) is an error at the stated type.
     fn parse_generic_operation_internal(
         &mut self,
         ip: Option<ProgramPoint>,
@@ -941,10 +1055,11 @@ where
             asm_state.start_operation_definition();
         }
 
-        let mut result = OperationState::new(span, op_name);
+        let mut result = OperationState::new(span, op_name.clone());
         let mut guard = CleanupOpStateRegions { state: &mut result };
 
-        self.parse_generic_operation_after_name(&mut guard, None, None, None, None, None)?;
+        let stated_results =
+            self.parse_generic_operation_parts(&mut guard, None, None, None, None, None)?;
 
         // Create the operation and try to parse a location for it.
         let op = if let Some(ip) = ip {
@@ -954,6 +1069,20 @@ where
         } else {
             self.builder_mut().create_operation(&mut guard)?
         };
+        {
+            let built = op.borrow();
+            for (stated, result) in stated_results.iter().zip(built.results().all().iter()) {
+                let inferred = result.borrow().ty();
+                if inferred != *stated.inner() {
+                    return Err(ParserError::ResultTypeMismatch {
+                        span: stated.span(),
+                        stated: stated.inner().to_string(),
+                        inferred: inferred.to_string(),
+                        op: op_name.to_string(),
+                    });
+                }
+            }
+        }
         self.parse_trailing_location_specifier(OpOrArgument::Op(op))?;
 
         self.parse_semicolon()?;
@@ -972,7 +1101,10 @@ where
     /// attribute(s) and function-type, of the generic form of an operation instance and populate
     /// the input operation-state 'result' with those components.
     ///
-    /// If any of the components is explicitly provided, then skip parsing that component.
+    /// If any of the components is explicitly provided, then skip parsing that component. Given
+    /// operands are one operand group; given successors are one group of successors without
+    /// keys or arguments, so they cannot be given for an operation whose successors are keyed or
+    /// in more than one group.
     pub fn parse_generic_operation_after_name(
         &mut self,
         result: &mut OperationState,
@@ -982,13 +1114,32 @@ where
         parsed_attributes: Option<ParsedAttrs>,
         parsed_fn_type: Option<Type>,
     ) -> ParseResult {
-        let successor_layout = result.name.generic_successor_layout();
-        if successor_layout == GenericSuccessorLayout::Unsupported {
-            return Err(ParserError::UnsupportedGenericSuccessorLayout {
-                span: result.span,
-                name: result.name.to_string(),
-            });
-        }
+        self.parse_generic_operation_parts(
+            result,
+            parsed_operand_use_info,
+            parsed_successors,
+            parsed_regions,
+            parsed_attributes,
+            parsed_fn_type,
+        )
+        .map(drop)
+    }
+
+    /// [Self::parse_generic_operation_after_name], returning the result types the text states,
+    /// each with where it is written (the operation's own span for a given type).
+    ///
+    /// The operands are put in the operation's own groups, in order, as the signature divides
+    /// them, and the arguments of each successor in a group of its own after those.
+    fn parse_generic_operation_parts(
+        &mut self,
+        result: &mut OperationState,
+        parsed_operand_use_info: Option<&[UnresolvedOperand]>,
+        parsed_successors: Option<&[BlockRef]>,
+        parsed_regions: Option<&[RegionRef]>,
+        parsed_attributes: Option<ParsedAttrs>,
+        parsed_fn_type: Option<Type>,
+    ) -> ParseResult<SmallVec<[Span<Type>; 4]>> {
+        let name = result.name.clone();
 
         // Parse the operand list, if not explicitly provided.
         let mut operand_info = SmallVec::<[UnresolvedOperand; 8]>::default();
@@ -1001,64 +1152,63 @@ where
         }
 
         // Parse the successor list, if not explicitly provided.
-        if let Some(provided_succs) = parsed_successors {
-            for (i, block) in provided_succs.iter().copied().enumerate() {
-                result.successors.push(PendingSuccessorInfo {
-                    block,
-                    key: None,
-                    operand_group: successor_operand_group(i, result.span)?,
-                    successor_group: 0,
+        let mut successors = SmallVec::<[GenericSuccessor; 2]>::default();
+        let groups = if let Some(provided_succs) = parsed_successors {
+            if !matches!(name.successor_groups(), [] | [SuccessorGroupShape { key: None, .. }]) {
+                return Err(ParserError::UngroupedSuccessors {
+                    span: result.span,
+                    name: name.to_string(),
                 });
             }
+            successors.extend(provided_succs.iter().map(|block| GenericSuccessor {
+                block: Span::new(result.span, *block),
+                key: None,
+                group: 0,
+                operands: SmallVec::new_const(),
+            }));
+            None
         } else if self.parser.token_stream_mut().is_next(|tok| matches!(tok, Token::Lbracket)) {
             // Check if the operation is not a known terminator.
-            if !result.name.implements::<dyn Terminator>() {
+            if !name.implements::<dyn Terminator>() {
                 return Err(ParserError::NonTerminatorWithSuccessors { span: result.span });
             }
-            let mut successors = SmallVec::<[_; 2]>::default();
-            self.parse_successors(&mut successors)?;
-            for (i, block) in successors.into_iter().enumerate() {
-                result.successors.push(PendingSuccessorInfo {
-                    block,
-                    key: None,
-                    operand_group: successor_operand_group(i, result.span)?,
-                    successor_group: 0,
-                });
-            }
-        }
-
-        if let GenericSuccessorLayout::Fixed(expected) = successor_layout
-            && result.successors.len() != expected
-        {
-            return Err(ParserError::InvalidSuccessorCount {
-                span: result.span,
-                expected,
-                actual: result.successors.len(),
-            });
-        }
-
-        // Generic operations keep their own operands in group 0, followed by one group per
-        // successor. These groups must exist even when they have no operands.
-        result.operands.resize_with(result.successors.len() + 1, Default::default);
+            Some(self.parse_generic_successors(&mut successors)?)
+        } else {
+            None
+        };
+        Self::check_generic_successors(&name, result.span, &successors, groups)?;
 
         // Parse the properties, `<{ .. }>`, where the printer writes them. A property may also
-        // be given in the trailing attribute dictionary, but not in both.
+        // be given in the trailing attribute dictionary, but not in both. An entry that is not a
+        // property of the operation is an error.
         let properties_start = result.attrs.len();
         if self.token_stream_mut().next_if_eq(Token::Langle)? {
-            self.parse_attribute_dict(&mut result.attrs)?;
+            let op_name = &name;
+            self.parse_attribute_dict_checking_keys(&mut result.attrs, &mut |key| {
+                if op_name.has_property(*key.inner()) {
+                    Ok(())
+                } else {
+                    Err(ParserError::NotAProperty {
+                        span: key.span(),
+                        name: key.into_inner(),
+                        op: op_name.to_string(),
+                    })
+                }
+            })?;
             self.parser.parse_rangle()?;
         }
         let properties_end = result.attrs.len();
 
-        // Parse the region list, if not explicitly provided.
+        // Parse the region list, if not explicitly provided. The regions of an operation that is
+        // isolated from above are their own naming scopes, as in its custom form.
         if let Some(provided_regions) = parsed_regions {
             result.regions.extend_from_slice(provided_regions);
         } else if self.token_stream_mut().is_next(|tok| matches!(tok, Token::Lparen)) {
             self.parser.parse_lparen()?;
-            // Create temporary regions with the top level region as parent.
+            let isolated = name.implements::<dyn IsolatedFromAbove>();
             loop {
                 let region = self.builder().context().create_region();
-                self.parse_region(region, &[], /*isolated=*/ false)?;
+                self.parse_region(region, &[], isolated)?;
                 result.regions.push(region);
                 if !self.token_stream_mut().next_if_eq(Token::Comma)? {
                     break;
@@ -1088,7 +1238,8 @@ where
 
         // Parse the operation type, if not explicitly provided.
         let mut params = SmallVec::<[Type; 4]>::default();
-        let mut results = SmallVec::<[Type; 4]>::default();
+        let mut group_sizes = SmallVec::<[usize; 4]>::default();
+        let mut results = SmallVec::<[Span<Type>; 4]>::default();
         let ty_span = if let Some(provided_fn_ty) = parsed_fn_type {
             let Some(fn_ty) = provided_fn_ty.as_function() else {
                 return Err(ParserError::InvalidOperationType {
@@ -1098,17 +1249,19 @@ where
                 });
             };
             params.extend_from_slice(fn_ty.params());
-            results.extend_from_slice(fn_ty.results());
+            group_sizes.push(params.len());
+            results.extend(fn_ty.results().iter().map(|ty| Span::new(result.span, *ty)));
             result.span
         } else {
             self.parser.parse_colon()?;
             let start = self.parser.token_stream_mut().peek()?.map(|(start, ..)| start);
-            self.parser.parse_type_list(&mut params)?;
-            self.parser.parse_arrow_type_list(&mut results)?;
+            self.parse_generic_operand_types(&mut params, &mut group_sizes)?;
+            self.parser.parse_arrow()?;
+            self.parse_generic_result_types(&mut results)?;
             let end = self.parser.token_stream().previous_end();
             span!(self.parser.source_id(), start.unwrap_or(end), end)
         };
-        result.results.extend(results);
+        result.results.extend(results.iter().map(|ty| *ty.inner()));
 
         // Check that we have the right number of types for the operands.
         if operand_info.len() != params.len() {
@@ -1123,13 +1276,101 @@ where
             });
         }
 
-        // Resolve all of the operands.
-        for (use_info, ty) in operand_info.iter().zip(params) {
-            let value = self.resolve_ssa_use(*use_info, ty)?;
-            result.operands[0].push(value);
+        // The operation's own groups come first, then one group per successor. These groups
+        // must exist even when they have no operands, and the index of the last must fit the
+        // 16 bits an operation stores it in.
+        let own_groups = group_sizes.len();
+        let total_groups = own_groups + successors.len();
+        if total_groups > u16::MAX as usize + 1 {
+            return Err(ParserError::TooManyOperandGroups {
+                span: result.span,
+                limit: u16::MAX as usize,
+            });
+        }
+        result.operands.resize_with(total_groups, Default::default);
+
+        // Resolve all of the operands, into the groups the signature divides them into.
+        let mut operands = operand_info.iter().zip(params);
+        for (group, size) in group_sizes.iter().copied().enumerate() {
+            for (use_info, ty) in operands.by_ref().take(size) {
+                let value = self.resolve_ssa_use(*use_info, ty)?;
+                result.operands[group].push(value);
+            }
         }
 
-        Ok(())
+        for (index, successor) in successors.into_iter().enumerate() {
+            let operand_group = own_groups + index;
+            result.operands[operand_group] = successor.operands;
+            result.successors.push(PendingSuccessorInfo {
+                block: successor.block.into_inner(),
+                key: successor.key.map(Span::into_inner),
+                // Both fit: the number of operand groups is checked above, and the successor
+                // group is one of those the operation declares
+                operand_group: operand_group as u16,
+                successor_group: successor.group as u16,
+            });
+        }
+
+        Ok(results)
+    }
+
+    /// Parse the operand types of the signature of an operation in the generic form, appending
+    /// them to `types` and the size of each operand group to `group_sizes`.
+    ///
+    ///   generic-op-operand-types ::= `(` operand-group (`|` operand-group)* `)` | type
+    ///   operand-group ::= type-list-no-parens?
+    ///
+    /// A lone type is one group of one operand.
+    fn parse_generic_operand_types(
+        &mut self,
+        types: &mut SmallVec<[Type; 4]>,
+        group_sizes: &mut SmallVec<[usize; 4]>,
+    ) -> ParseResult {
+        if !self.token_stream_mut().next_if_eq(Token::Lparen)? {
+            types.push(self.parser.parse_type()?.into_inner());
+            group_sizes.push(1);
+            return Ok(());
+        }
+        loop {
+            let mut size = 0;
+            if !self
+                .token_stream_mut()
+                .is_next(|tok| matches!(tok, Token::Pipe | Token::Rparen))
+            {
+                loop {
+                    types.push(self.parser.parse_type()?.into_inner());
+                    size += 1;
+                    if !self.token_stream_mut().next_if_eq(Token::Comma)? {
+                        break;
+                    }
+                }
+            }
+            group_sizes.push(size);
+            if !self.token_stream_mut().next_if_eq(Token::Pipe)? {
+                break;
+            }
+        }
+        self.parser.parse_rparen()
+    }
+
+    /// Parse the result types of the signature of an operation in the generic form, each with
+    /// where it is written.
+    ///
+    ///   generic-op-types ::= `(` type-list-no-parens? `)` | type
+    fn parse_generic_result_types(&mut self, types: &mut SmallVec<[Span<Type>; 4]>) -> ParseResult {
+        if !self.token_stream_mut().next_if_eq(Token::Lparen)? {
+            types.push(self.parser.parse_type()?);
+            return Ok(());
+        }
+        if !self.token_stream_mut().is_next(|tok| matches!(tok, Token::Rparen)) {
+            loop {
+                types.push(self.parser.parse_type()?);
+                if !self.token_stream_mut().next_if_eq(Token::Comma)? {
+                    break;
+                }
+            }
+        }
+        self.parser.parse_rparen()
     }
 
     /// Parse an optional trailing location and add it to the specifier Operation or
@@ -2108,60 +2349,6 @@ where
     }
 }
 
-/// This parser handles entities that are only valid at the top level of the file.
-pub struct TopLevelOperationParser<P> {
-    parser: P,
-}
-
-impl<'input, P> TopLevelOperationParser<P>
-where
-    P: Parser<'input>,
-{
-    pub const fn new(parser: P) -> Self {
-        Self { parser }
-    }
-
-    /// Parse a set of operations into a fresh [World](crate::dialects::builtin::World)
-    pub fn parse(self, loc: SourceSpan) -> ParseResult<WorldRef> {
-        use crate::{BuilderExt, dialects::builtin::World};
-
-        let Self { mut parser } = self;
-
-        // Create a top-level operation to contain the parsed state.
-        let mut top_level_op = parser.builder_mut().create::<World, ()>(loc)()?;
-
-        let mut op_parser = OperationParser::new(parser, top_level_op);
-        loop {
-            let next = op_parser.token_stream_mut().peek()?;
-            let Some((start, next_token, end)) =
-                next.filter(|(_, token, _)| !matches!(token, Token::Eof))
-            else {
-                // If we got to the end of the file, then we're done.
-                op_parser.finalize()?;
-                break Ok(top_level_op);
-            };
-
-            if parse_optional_type_declaration(&mut op_parser)? {
-                continue;
-            }
-            match next_token {
-                // Parse an attribute alias
-                Token::HashIdent(_) => {
-                    parse_attribute_alias_def(&mut op_parser)?;
-                }
-                // Parse a file-level metadata dictionary.
-                Token::FileMetadataStart => {
-                    parse_file_metadata_dictionary(&mut op_parser)?;
-                }
-                // Parse a top-level operation
-                _ => {
-                    op_parser.parse_operation()?;
-                }
-            }
-        }
-    }
-}
-
 /// Parses the type declarations that come next at the top level, if any.
 ///
 ///   type-declarations ::= (type-alias-def | rec-group-def)*
@@ -2204,53 +2391,6 @@ where
         }),
         _ => Ok(false),
     }
-}
-
-/// Parse an attribute alias declaration.
-///
-///   attribute-alias-def ::= '#' alias-name `=` attribute-value
-///
-fn parse_attribute_alias_def<'input, P>(parser: &mut OperationParser<P>) -> ParseResult
-where
-    P: Parser<'input>,
-{
-    let (span, id) = parser
-        .token_stream_mut()
-        .expect_map("#-identifier", |tok| match tok {
-            Token::HashIdent(id) => Some(interner::Symbol::intern(id)),
-            _ => None,
-        })?
-        .into_parts();
-
-    // Check for redefinitions.
-    if parser.state().symbols.attribute_alias_definitions.contains_key(&id) {
-        return Err(ParserError::AttributeAliasAlreadyDefined { span, id });
-    }
-
-    // Make sure this isn't invading the dialect type namespace.
-    if id.as_str().contains('.') {
-        return Err(ParserError::InvalidAttributeAliasName {
-            span,
-            id,
-            reason: "attribute names with a '.' are reserved for dialect-defined names".to_string(),
-        });
-    }
-
-    parser.parse_equal()?;
-
-    // Parse the attribute
-    let unknown = parser.context().unknown_type();
-    let (alias_span, attr) = parser.parse_attribute(unknown)?.into_parts();
-
-    // Register this alias with the parser state.
-    let state = parser.state_mut();
-    if let Some(asm_state) = state.asm_state.as_deref_mut() {
-        asm_state.add_attr_alias_definition(id, span, Some(attr));
-    }
-
-    state.symbols.attribute_alias_definitions.insert(id, Span::new(span, attr));
-
-    Ok(())
 }
 
 /// Parse a type alias declaration.
@@ -2458,33 +2598,4 @@ fn define_type_alias<'input, P>(
         asm_state.add_type_alias_definition(id, span, ty);
     }
     state.symbols.type_alias_definitions.insert(id, Span::new(span, ty));
-}
-
-/// Parse a top-level file metadata dictionary.
-///
-///   file-metadata-dict ::= '{-#' file-metadata-entry* `#-}'
-///
-fn parse_file_metadata_dictionary<'input, P>(parser: &mut OperationParser<P>) -> ParseResult
-where
-    P: Parser<'input>,
-{
-    parser.token_stream_mut().expect(Token::FileMetadataStart)?;
-    parser.parse_comma_separated_list_until(
-        Token::FileMetadataEnd,
-        /*allow_empty_list=*/ false,
-        |parser| {
-            // Parse the key of the metadata dictionary.
-            let Some(key) = parser
-                .parse_optional_keyword()?
-                .map(|token| token.map(|t| t.into_compact_string()))
-            else {
-                return Ok(false);
-            };
-            parser.parse_colon()?;
-
-            // Process the metadata entry
-            let (span, key) = key.into_parts();
-            Err(ParserError::UnknownFileMetadata { span, key })
-        },
-    )
 }

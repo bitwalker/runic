@@ -226,9 +226,7 @@ fn generic_parser_rejects_provided_successors_with_multiple_groups() -> TestResu
         )
         .expect_err("generic parsing must not flatten distinct successor groups");
     assert!(
-        error
-            .to_string()
-            .contains("generic assembly cannot represent the successor layout"),
+        error.to_string().contains("a list of successors cannot give the successors of"),
         "{error}"
     );
     Ok(())
@@ -6924,4 +6922,129 @@ fn a_multi_result_name_defined_twice_in_one_scope_is_an_error() {
     assert!(!rendered.contains("%p#"), "{rendered}");
     assert!(rendered.contains("'%p' is defined again here"), "{rendered}");
     assert!(rendered.contains("'%p' is first defined here"), "{rendered}");
+}
+
+// ---------------------------------------------------------------------------------------------
+// The generic form reads back what the printer writes
+// ---------------------------------------------------------------------------------------------
+
+/// `text` parsed and verified, with the test dialect registered, and the context that owns it.
+fn parse_with_test_dialect(text: &str) -> Result<(Rc<Context>, OperationRef), String> {
+    use crate::testing::text::describe;
+
+    let context = Rc::new(Context::default());
+    context.get_or_register_dialect::<TestDialect>();
+    parse::parse_any(ParserConfig::new(context.clone()), "text.runic", text)
+        .into_result()
+        .map(|op| (context, op))
+        .map_err(|err| describe(&err))
+}
+
+/// `text` printed in the generic form, the generic text parsed again, and the second parse
+/// printed in both forms: the same programs as the first parse printed in each form.
+fn generic_reads_back(text: &str) -> String {
+    use crate::{print::same_program, testing::text::print_all_generic};
+
+    let (_context, first) = parse_with_test_dialect(text).unwrap_or_else(|err| panic!("{err}"));
+    let custom = first.borrow().to_string();
+    let generic = print_all_generic(&first.borrow());
+    let (_context, second) =
+        parse_with_test_dialect(&generic).unwrap_or_else(|err| panic!("{err}\n{generic}"));
+    assert!(same_program(&second.borrow().to_string(), &custom), "{custom}\n{generic}");
+    assert!(same_program(&print_all_generic(&second.borrow()), &generic), "{generic}");
+    generic
+}
+
+/// An operation with more than one operand group divides its operand types into the groups with
+/// `|`, an empty group included, and reads back with the same groups.
+#[test]
+fn the_generic_form_states_operand_group_sizes() {
+    let text = "\
+builtin.function public extern(\"C\") @f(%a: i32, %b: i64, %c: (i32) -> i32) -> i32 {
+    test.sink %a, %b, %a : (i32, i64, i32);
+    test.sink %b : (i64);
+    %r = builtin.call_indirect %c(%a) : extern(\"C\") (i32) -> i32;
+    builtin.ret %r : (i32);
+};";
+    let generic = generic_reads_back(text);
+    assert!(
+        generic.contains("\"test.sink\"(%0, %1, %0) : (i32 | i64, i32) -> ();"),
+        "{generic}"
+    );
+    assert!(generic.contains("\"test.sink\"(%1) : (i64 |) -> ();"), "{generic}");
+    assert!(generic.contains(": ((i32) -> i32 | i32) -> i32;"), "{generic}");
+
+    let (_context, function) = parse_with_test_dialect(&generic).unwrap();
+    let mut groups = Vec::new();
+    function.borrow().prewalk_all(|op: &crate::Operation| {
+        if op.name().to_string() == "test.sink" {
+            groups.push(op.operands().groups().map(|group| group.len()).collect::<Vec<_>>());
+        }
+    });
+    assert_eq!(groups, [alloc::vec![1, 2], alloc::vec![1, 0]]);
+}
+
+/// A result type written in the generic form that differs from the one the operation gives the
+/// result is an error at the type written.
+#[test]
+fn a_generic_result_type_the_operation_does_not_infer_is_an_error() {
+    let err = parse_with_test_dialect(
+        "builtin.function public extern(\"C\") @f(%a: i32) -> i32 {\n    %r = \"test.add\"(%a, \
+         %a) <{ overflow = #builtin.overflow<wrapping> }> : (i32, i32) -> i64;\n    builtin.ret \
+         %a : (i32);\n};",
+    )
+    .err()
+    .expect("the stated type is not the inferred one");
+    assert!(err.contains("invalid result type"), "{err}");
+    assert!(
+        err.contains("this result is written as 'i64', but 'test.add' gives it 'i32'"),
+        "{err}"
+    );
+}
+
+/// An entry of the properties braces that is not a property of the operation is an error at the
+/// entry, rather than an attribute of it.
+#[test]
+fn a_generic_property_the_operation_does_not_have_is_an_error() {
+    let err = parse_with_test_dialect(
+        "builtin.function public extern(\"C\") @f(%a: i32) -> i32 {\n    %r = \"test.add\"(%a, \
+         %a) <{ overflow = #builtin.overflow<wrapping>, note = #builtin.i32<1> }> : (i32, i32) -> \
+         i32;\n    builtin.ret %a : (i32);\n};",
+    )
+    .err()
+    .expect("`note` is not a property of test.add");
+    assert!(err.contains("'note' is not a property of 'test.add'"), "{err}");
+
+    // In the attribute dictionary it is an attribute.
+    let generic = generic_reads_back(
+        "builtin.function public extern(\"C\") @f(%a: i32) -> i32 {\n    %r = \"test.add\"(%a, \
+         %a) <{ overflow = #builtin.overflow<wrapping> }> { note = #builtin.i32<1> } : (i32, i32) \
+         -> i32;\n    builtin.ret %r : (i32);\n};",
+    );
+    assert!(generic.contains("{ note = #builtin.i32<1> } : (i32, i32) -> i32;"), "{generic}");
+}
+
+/// A generic operation with fewer regions or another number of results than it declares is an
+/// error, not a panic in what reads them.
+#[test]
+fn a_generic_operation_of_the_wrong_shape_is_an_error() {
+    for (text, expected) in [
+        (
+            "%r = \"test.add\"(%a, %a) <{ overflow = #builtin.overflow<wrapping> }> : (i32, i32) \
+             -> ();",
+            "'test.add' has 1 result(s), but this has 0",
+        ),
+        (
+            "\"builtin.module\"() <{ name = #builtin.ident<@m>, visibility = \
+             #builtin.visibility<public> }> : () -> ();",
+            "'builtin.module' has at least 1 region(s), but this has 0",
+        ),
+    ] {
+        let source = alloc::format!(
+            "builtin.function public extern(\"C\") @f(%a: i32) {{\n    {text}\n    \
+             builtin.ret;\n}};"
+        );
+        let err = parse_with_test_dialect(&source).err().expect(text);
+        assert!(err.contains(expected), "{err}");
+    }
 }

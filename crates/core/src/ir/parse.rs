@@ -286,62 +286,6 @@ impl RecScope {
     }
 }
 
-/// Parse IR assembly in the generic format from `source`, registered with the context under `name`
-pub fn parse_generic(
-    config: ParserConfig,
-    name: impl Into<String>,
-    source: impl Into<String>,
-) -> Outcome<WorldRef> {
-    match config.context.add_source(name, source) {
-        Ok(id) => parse_source_generic(config, id),
-        Err(err) => Outcome::from_report(Report::from_error(err)),
-    }
-}
-
-/// Parse IR assembly in the generic format from the file at `path`
-#[cfg(feature = "std")]
-pub fn parse_file_generic(
-    config: ParserConfig,
-    path: impl AsRef<std::path::Path>,
-) -> Outcome<WorldRef> {
-    match config.context.load_source_file(path) {
-        Ok(id) => parse_source_generic(config, id),
-        Err(err) => Outcome::from_report(Report::from_error(err)),
-    }
-}
-
-/// This parses the given source and appends parsed operations to a new
-/// [World](crate::dialects::builtin::World).
-///
-/// If parsing is successful, the populated [World](crate::dialects::builtin::World) is returned.
-/// Otherwise, the error that caused parsing to fail is recorded in the outcome's diagnostics.
-///
-/// **This wraps unconditionally, unlike [`parse_anchored_source`]**, which returns a parsed
-/// `builtin.world` as the root rather than nesting it in the world it created to parse into. A
-/// generic-format source that is itself a world therefore still yields a world within a world,
-/// which is invalid IR — see [`parse_anchored_source`] for why. Left as it is because these entry
-/// points have no callers outside this module's tests, none of which parses a world.
-fn parse_source_generic(config: ParserConfig, source_id: SourceId) -> Outcome<WorldRef> {
-    let context = config.context.clone();
-    let scope = context.diagnostic_scope();
-    let sources = context.sources();
-    let Some(source) = sources.get(source_id).and_then(|source| source.text) else {
-        return parse_outcome(
-            scope,
-            Err(Report::msg("source is not registered with this context")),
-        );
-    };
-    let scanner = Scanner::new(source);
-    let token_stream = TokenStream::new(source_id, scanner);
-    let mut parser = DefaultParser::new(ParserState::new(config, token_stream));
-    parser.state_mut().asm_state = Some(Default::default());
-
-    let span = parser.current_location();
-    let operation_parser = operation::TopLevelOperationParser::new(parser);
-    let result = operation_parser.parse(span).map_err(Report::from);
-    parse_outcome(scope, result)
-}
-
 /// End the parse's diagnostic `scope` and build the [Outcome] of the parse from what it collected
 /// and `result`, attaching the context's sources as they are *now*.
 ///
@@ -543,13 +487,6 @@ pub fn parse_file_anchored(
 /// IR after detachment. This function then verifies the root if the parser configuration requests
 /// it. Verification failures are reported as [`ParserError::Report`], exactly as when `finalize`
 /// verified.
-///
-/// **Note that [`parse_source_generic`] does none of this.** The generic-format entry points —
-/// [`parse_generic`] and [`parse_file_generic`] — go through `TopLevelOperationParser` instead,
-/// return the anchor world itself rather than what was parsed into it, and would still nest a
-/// world inside a world. That is deliberate rather than overlooked: those functions have no
-/// callers outside this module's tests, and the one test covering them is `#[ignore]`d. If the
-/// generic format is ever revived, it needs the same treatment.
 fn parse_anchored_source(
     anchor_name: Option<OperationName>,
     config: ParserConfig,
