@@ -30,10 +30,12 @@ pub(crate) fn test_seeds(count: u64) -> alloc::vec::Vec<u64> {
     (1..=count).map(|i| 0x5e3e_1000 + i).collect()
 }
 
-/// Enable compiler-internal tracing and instrumentation during tests
+/// Enable compiler-internal tracing and instrumentation during tests: the logger reads the
+/// variables a Runic tool's logger reads (`RUNIC_TRACE`, `RUNIC_TRACE_FILTER`,
+/// `RUNIC_TRACE_STYLE`), and its records are captured by the test harness
 #[cfg(feature = "logging")]
 pub fn enable_compiler_instrumentation() {
-    let _ = runic_log::Builder::from_env("MIDENC_TRACE")
+    let _ = runic_log::Builder::from_default_env()
         .format_timestamp(None)
         .is_test(true)
         .try_init();

@@ -9,6 +9,11 @@ use std::{
 
 const BIN: &str = env!("CARGO_BIN_EXE_runic-opt");
 
+/// The variables the logger reads: removed from every run, so that a run sees only those its test
+/// sets.
+const TRACE_VARIABLES: [&str; 4] =
+    ["RUNIC_TRACE", "RUNIC_TRACE_FILTER", "RUNIC_TRACE_STYLE", "RUNIC_TRACE_TIMING"];
+
 /// How long a run may take before the test says it hangs.
 const LIMIT: Duration = Duration::from_secs(60);
 
@@ -19,12 +24,14 @@ fn opt(args: &[&str], stdin: &str, env: &[(&str, &str)]) -> Output {
     let mut command = Command::new(BIN);
     command
         .args(args)
-        .env_remove("RUNIC_TRACE")
         .env_remove("RUST_BACKTRACE")
         .env_remove("RUST_LIB_BACKTRACE")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    for variable in TRACE_VARIABLES {
+        command.env_remove(variable);
+    }
     for (key, value) in env {
         command.env(key, value);
     }
@@ -94,6 +101,82 @@ fn runic_trace_that_logs_does_not_hang_the_tool() {
     let quiet = opt(&["-p", "cse"], REPEATED_ADD, &[]);
     assert!(quiet.status.success(), "{}", text(&quiet.stderr));
     assert_eq!(text(&output.stdout), text(&quiet.stdout));
+}
+
+/// What the canonicalizer's pattern driver logs at `trace`: some of its records carry the
+/// key-value pairs `dialect` and `op` of the operation they are about.
+const DRIVER_TRACE: (&str, &str) = ("RUNIC_TRACE", "pattern-rewrite-driver=trace");
+
+#[test]
+fn runic_trace_filter_drops_the_records_whose_key_value_it_does_not_match() {
+    const KEYED: &str = "op-specific patterns";
+    let all = opt(&["-p", "canonicalizer"], REPEATED_ADD, &[DRIVER_TRACE]);
+    assert!(all.status.success(), "{}", text(&all.stderr));
+    assert!(text(&all.stderr).contains(KEYED), "{}", text(&all.stderr));
+    // A filter on `op` that matches the operation keeps its records.
+    let kept = opt(
+        &["-p", "canonicalizer"],
+        REPEATED_ADD,
+        &[DRIVER_TRACE, ("RUNIC_TRACE_FILTER", "op:add")],
+    );
+    assert!(kept.status.success(), "{}", text(&kept.stderr));
+    assert!(text(&kept.stderr).contains(KEYED), "{}", text(&kept.stderr));
+    // One that matches nothing drops every record with an `op`, and only those.
+    let dropped = opt(
+        &["-p", "canonicalizer"],
+        REPEATED_ADD,
+        &[DRIVER_TRACE, ("RUNIC_TRACE_FILTER", "op:nothing")],
+    );
+    assert!(dropped.status.success(), "{}", text(&dropped.stderr));
+    assert!(!text(&dropped.stderr).contains(KEYED), "{}", text(&dropped.stderr));
+    assert!(!dropped.stderr.is_empty());
+    assert_eq!(text(&dropped.stdout), text(&all.stdout));
+}
+
+#[test]
+fn runic_trace_style_selects_whether_records_are_styled() {
+    let styled = |style: Option<&str>| {
+        let mut env = vec![DRIVER_TRACE];
+        env.extend(style.map(|style| ("RUNIC_TRACE_STYLE", style)));
+        let output = opt(&["-p", "canonicalizer"], REPEATED_ADD, &env);
+        assert!(output.status.success(), "{}", text(&output.stderr));
+        assert!(!output.stderr.is_empty());
+        output.stderr.contains(&0x1b)
+    };
+    // Standard error is a pipe: `auto`, the default, writes no styles to it.
+    assert!(!styled(None));
+    assert!(styled(Some("always")));
+    assert!(!styled(Some("never")));
+}
+
+#[test]
+fn runic_trace_timing_gives_records_a_timestamp_of_its_precision() {
+    let first_record = |timing: Option<&str>| {
+        let mut env = vec![DRIVER_TRACE];
+        env.extend(timing.map(|timing| ("RUNIC_TRACE_TIMING", timing)));
+        let output = opt(&["-p", "canonicalizer"], REPEATED_ADD, &env);
+        assert!(output.status.success(), "{}", text(&output.stderr));
+        text(&output.stderr).lines().next().unwrap().to_string()
+    };
+    // Without it, a record starts with its level.
+    let plain = first_record(None);
+    assert!(plain.starts_with("[DEBUG ") || plain.starts_with("[TRACE "), "{plain}");
+    // With it, a record starts with a timestamp of that precision: `[YYYY-MM-DDTHH:MM:SS.mmmZ`.
+    let timed = first_record(Some("ms"));
+    let stamp = timed.strip_prefix('[').and_then(|rest| rest.split_once(' ')).unwrap().0;
+    assert!(
+        stamp.len() == "2000-01-01T00:00:00.000Z".len() && stamp.ends_with('Z'),
+        "{timed}"
+    );
+    // Anything else is an error, and nothing is run.
+    let wrong = opt(&["-p", "canonicalizer"], REPEATED_ADD, &[("RUNIC_TRACE_TIMING", "hours")]);
+    assert_eq!(wrong.status.code(), Some(1));
+    assert_eq!(
+        text(&wrong.stderr),
+        "error: invalid RUNIC_TRACE_TIMING precision, expected one of [s, ms, us, ns], got \
+         'hours'\n"
+    );
+    assert!(wrong.stdout.is_empty());
 }
 
 /// The location of the panic in the `test-panic` pass, as the report gives it.
@@ -252,10 +335,12 @@ fn a_diagnostic_in_another_file_does_not_meet_an_expectation_by_its_line_number(
     command
         .arg("--verify-diagnostics")
         .current_dir(dir.path())
-        .env_remove("RUNIC_TRACE")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    for variable in TRACE_VARIABLES {
+        command.env_remove(variable);
+    }
     let mut child = command.spawn().unwrap();
     child.stdin.take().unwrap().write_all(source.as_bytes()).unwrap();
     let output = child.wait_with_output().unwrap();

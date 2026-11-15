@@ -2,7 +2,7 @@
 //!
 //! Designed for use with [`log`](log-crate-url).
 //!
-//! This crate is inspired by [`runic_log`](https://crates.io/crates/runic_log), but provides
+//! This crate is inspired by [`env_logger`](https://crates.io/crates/env_logger), but provides
 //! additional features for compilers built with Runic that make it more useful when diagnosing
 //! issues in a pipeline that has an enormous quantity of verbose trace logs that are emitted for
 //! a large number of different entities in the compilation graph. Typically, we're interested in
@@ -315,7 +315,6 @@
 
 pub mod filter;
 mod logger;
-mod suppress;
 mod writer;
 
 pub mod fmt;
@@ -323,21 +322,21 @@ pub mod fmt;
 pub use self::{
     fmt::{Target, TimestampPrecision, WriteStyle},
     logger::*,
-    suppress::SuppressKnownDependencyErrors,
 };
 
-/// The logger every `runic` front end installs, and the level it is to be installed at.
+/// The logger a Runic tool installs (`runic-opt` does), and the level it is to be installed at.
 ///
 /// Built, not installed: a caller that embeds the compiler decides when — and whether — the
 /// global logger is set. `RUNIC_TRACE` selects what is logged (see the module documentation for
-/// its syntax) and `RUNIC_TRACE_TIMING` selects the timestamp precision, one of `s`, `ms`, `us` or
-/// `ns`; without it, records carry no timestamp. Anything else in `RUNIC_TRACE_TIMING` is an
-/// error, described by the returned message.
+/// its syntax), `RUNIC_TRACE_FILTER` filters records by their key-value pairs, `RUNIC_TRACE_STYLE`
+/// selects whether styles are written (`auto`, `always` or `never`), and `RUNIC_TRACE_TIMING`
+/// selects the timestamp precision, one of `s`, `ms`, `us` or `ns`; without it, records carry no
+/// timestamp. Anything else in `RUNIC_TRACE_TIMING` is an error, described by the returned message.
 ///
-/// One function rather than one per binary, so that `runic` is configured by
-/// the same variables and format their output the same way.
+/// One function rather than one per binary, so that every tool is configured by the same variables
+/// and formats its output the same way.
 pub fn runic_logger() -> Result<(Box<dyn log::Log>, log::LevelFilter), String> {
-    let mut builder = Builder::from_env("RUNIC_TRACE");
+    let mut builder = Builder::from_default_env();
     builder.format_indent(Some(2));
     match std::env::var("RUNIC_TRACE_TIMING") {
         Ok(precision) => match precision.as_str() {
@@ -356,6 +355,5 @@ pub fn runic_logger() -> Result<(Box<dyn log::Log>, log::LevelFilter), String> {
     };
     let logger = builder.build();
     let filter = logger.filter();
-    // Suppress the known-harmless dependency errors until the upstream fix ships
-    Ok((Box::new(SuppressKnownDependencyErrors::new(logger)), filter))
+    Ok((Box::new(logger), filter))
 }

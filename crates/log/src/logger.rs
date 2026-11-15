@@ -9,13 +9,13 @@ use crate::{
 };
 
 /// The default name for the environment variable to read filters from.
-pub const DEFAULT_FILTER_ENV: &str = "MIDENC_TRACE";
+pub const DEFAULT_FILTER_ENV: &str = "RUNIC_TRACE";
 
 /// The default name for the environment variable to read kv filters from.
-pub const DEFAULT_KV_FILTER_ENV: &str = "MIDENC_TRACE_FILTER";
+pub const DEFAULT_KV_FILTER_ENV: &str = "RUNIC_TRACE_FILTER";
 
 /// The default name for the environment variable to read style preferences from.
-pub const DEFAULT_WRITE_STYLE_ENV: &str = "MIDENC_TRACE_STYLE";
+pub const DEFAULT_WRITE_STYLE_ENV: &str = "RUNIC_TRACE_STYLE";
 
 /// `Builder` acts as builder for initializing a `Logger`.
 ///
@@ -402,7 +402,7 @@ impl Builder {
         self
     }
 
-    /// Parses the directives string in the same form as the `MIDENC_TRACE`
+    /// Parses the directives string in the same form as the `RUNIC_TRACE`
     /// environment variable.
     ///
     /// See the module documentation for more details.
@@ -411,7 +411,7 @@ impl Builder {
         self
     }
 
-    /// Parses a kv filter string from the `MIDENC_TRACE_FILTER` environment variable.
+    /// Parses a kv filter string from the `RUNIC_TRACE_FILTER` environment variable.
     ///
     /// See the module documentation for more details.
     pub fn parse_kv_filters(&mut self, filters: &str) -> &mut Self {
@@ -470,7 +470,7 @@ impl Builder {
         self
     }
 
-    /// Parses whether or not to write styles in the same form as the `MIDENC_LOG_STYLE`
+    /// Parses whether or not to write styles in the same form as the `RUNIC_TRACE_STYLE`
     /// environment variable.
     ///
     /// See the module documentation for more details.
@@ -727,9 +727,9 @@ impl std::fmt::Debug for Logger {
 ///
 /// By default, the `Env` will read the following environment variables:
 ///
-/// - `MIDENC_TRACE`: the level filter
-/// - `MIDENC_TRACE_FILTER`: a key-value filter to apply
-/// - `MIDENC_TRACE_STYLE`: whether or not to print styles with records.
+/// - `RUNIC_TRACE`: the level filter
+/// - `RUNIC_TRACE_FILTER`: a key-value filter to apply
+/// - `RUNIC_TRACE_STYLE`: whether or not to print styles with records.
 ///
 /// These sources can be configured using the builder methods on `Env`.
 #[derive(Debug)]
@@ -1052,5 +1052,17 @@ mod tests {
         builder.parse_env(env);
 
         assert_eq!(builder.filter.build().filter(), LevelFilter::Debug);
+    }
+
+    /// The default environment, which `runic_logger` and the tests' logger of `runic-core` read,
+    /// takes its directives from `RUNIC_TRACE`. The only test of this crate that sets it.
+    #[test]
+    fn the_default_environment_reads_runic_trace() {
+        unsafe {
+            env::set_var("RUNIC_TRACE", "pass=debug");
+        }
+
+        assert_eq!(Env::default().get_filter().as_deref(), Some("pass=debug"));
+        assert_eq!(Builder::from_default_env().build().filter(), LevelFilter::Debug);
     }
 }
