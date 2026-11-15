@@ -1,0 +1,16 @@
+// RUN: not runic-opt %s -p 'builtin.module(builtin.function(test-print-int-ranges))' --verify-diagnostics 2>&1 | filecheck %s
+
+// What `--verify-diagnostics` reports, as errors, when the diagnostics and the expectations do not
+// meet: an expectation that nothing meets (an `info`, which no pass or verifier of runic-opt
+// emits; a hint of another text), and a diagnostic that nothing expects. The exit code is 1.
+
+// CHECK-DAG: error: expected info "never produced" was not produced
+// CHECK-DAG: error: expected hint "u[11, 11]" was not produced
+// CHECK-DAG: error: unexpected hint: range of result 0: u[10, 10] s[10, 10] width 32
+builtin.module public @m {
+    builtin.function public extern("C") @f() -> i32 {
+        %x = arith.constant 10 : i32; // expected-hint {{u[11, 11]}}
+        // expected-info@unknown {{never produced}}
+        builtin.ret %x : (i32);
+    };
+};

@@ -1,0 +1,68 @@
+// RUN: runic-opt %s -p cse,local2reg,dce --print-ir-before=cse --print-ir-after=local2reg,dce 2>&1 >/dev/null | filecheck %s --check-prefix=NAMED
+// RUN: runic-opt %s -p cse,local2reg,dce --print-ir-before=all 2>&1 >/dev/null | filecheck %s --check-prefix=BEFORE
+// RUN: runic-opt %s -p cse,local2reg,dce --print-ir-after=all 2>&1 >/dev/null | filecheck %s --check-prefix=AFTER
+// RUN: runic-opt %s -p cse,local2reg,dce --print-ir-after-change 2>&1 >/dev/null | filecheck %s --check-prefix=CHANGE
+// RUN: runic-opt %s -p cse,local2reg,dce --print-ir-after=local2reg,dce --print-ir-after-change 2>&1 >/dev/null | filecheck %s --check-prefix=NAMED-CHANGE
+// RUN: not runic-opt %s -p 'cse,test-fail{after-change}' --print-ir-after-change --print-ir-after-failure 2>&1 | filecheck %s --check-prefix=FAILED
+// RUN: runic-opt %s -p cse,local2reg,dce --print-ir-after=all | filecheck %s --check-prefix=STDOUT
+
+// The IR printed between passes, to standard error. `--print-ir-before` and `--print-ir-after`
+// take the passes they print for, or `all`; `--print-ir-after-change` prints after a pass only
+// when the pass changed the IR (alone, after every pass that did; with `--print-ir-after`, after
+// the named passes that did). Here CSE merges the two constants and erases the unused sum, and DCE
+// the constant left unused; local2reg, which runs on each function, finds no local and changes
+// nothing. `--print-ir-after-failure` prints the IR a failed
+// pass left, once, marked as failed: a pass that says it changed the IR and then fails
+// (`test-fail{after-change}`) is not printed as a change. Standard output holds the result only.
+
+// NAMED: // ----- IR before cse on builtin.module -----
+// NAMED-NEXT: builtin.module public @m {
+// NAMED-NOT: IR before
+// NAMED: // ----- IR after local2reg on builtin.function -----
+// NAMED-NOT: IR before
+// NAMED: // ----- IR after dce on builtin.module -----
+// NAMED-NOT: IR after cse
+
+// BEFORE: // ----- IR before cse on builtin.module -----
+// BEFORE: // ----- IR before local2reg on builtin.function -----
+// BEFORE: // ----- IR before dce on builtin.module -----
+// BEFORE-NOT: IR after
+
+// AFTER: // ----- IR after cse on builtin.module -----
+// AFTER-NEXT: builtin.module public @m {
+// AFTER-NEXT: builtin.function public extern("C") @f(
+// AFTER-NEXT: {{%[0-9]+}} = arith.constant 1 : i32;
+// AFTER-NEXT: builtin.ret
+// AFTER: // ----- IR after local2reg on builtin.function -----
+// AFTER: // ----- IR after dce on builtin.module -----
+// AFTER-NEXT: builtin.module public @m {
+// AFTER-NEXT: builtin.function public extern("C") @f(
+// AFTER-NEXT: builtin.ret
+
+// CHANGE-NOT: IR before
+// CHANGE: // ----- IR after cse on builtin.module -----
+// CHANGE-NOT: IR after local2reg
+// CHANGE: // ----- IR after dce on builtin.module -----
+
+// NAMED-CHANGE-NOT: IR after cse
+// NAMED-CHANGE-NOT: IR after local2reg
+// NAMED-CHANGE: // ----- IR after dce on builtin.module -----
+
+// FAILED: // ----- IR after cse on builtin.module -----
+// FAILED-NOT: IR after test-fail
+// FAILED: // ----- IR after failed test-fail on builtin.module -----
+// FAILED-NOT: IR after test-fail
+// FAILED: error: test-fail
+
+// STDOUT-NOT: -----
+// STDOUT-LABEL: @f(
+// STDOUT-NEXT: builtin.ret
+// STDOUT-NOT: -----
+builtin.module public @m {
+    builtin.function public extern("C") @f(%a: i32) -> i32 {
+        %x = arith.constant 1 : i32;
+        %y = arith.constant 1 : i32;
+        %s = arith.add %x, %y;
+        builtin.ret %a : (i32);
+    };
+};

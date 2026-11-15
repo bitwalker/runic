@@ -1,0 +1,50 @@
+// RUN: runic-opt %s -p 'builtin.module(builtin.module(builtin.function(local2reg)))' | filecheck %s
+// RUN: runic-opt %s -p 'recursive(builtin.function(local2reg))' | filecheck %s
+// RUN: runic-opt %s -p 'builtin.module(recursive(builtin.function(local2reg)))' | filecheck %s
+// RUN: runic-opt %s -p 'builtin.module(builtin.module(local2reg))' | filecheck %s
+// RUN: runic-opt %s -p 'any(builtin.module(local2reg))' | filecheck %s
+// RUN: runic-opt %s -p 'cse,builtin.module(local2reg),dce' | filecheck %s
+// RUN: runic-opt %s -p 'builtin.module(builtin.module(local2reg))' --dump-pass-pipeline 2>&1 >/dev/null | filecheck %s --check-prefix=ANCHORED
+// RUN: runic-opt %s -p 'cse, builtin.module(local2reg) ,dce' --dump-pass-pipeline 2>&1 >/dev/null | filecheck %s --check-prefix=LIST
+// RUN: runic-opt %s -p 'recursive(builtin.function(local2reg))' --dump-pass-pipeline 2>&1 >/dev/null | filecheck %s --check-prefix=RECURSIVE
+// RUN: not runic-opt %s -p 'builtin.module(builtin.module(builtin.function(test-fail{message="one, two } three"})))' --dump-pass-pipeline 2>&1 | filecheck %s --check-prefix=OPTION
+// RUN: not runic-opt %s -p 'builtin.function(local2reg)' 2>&1 | filecheck %s --check-prefix=WRONG-ANCHOR
+// RUN: not runic-opt %s -p 'builtin.module(local2reg' 2>&1 | filecheck %s --check-prefix=UNCLOSED
+// RUN: not runic-opt %s -p 'no-such-pass' 2>&1 | filecheck %s --check-prefix=UNKNOWN
+
+// Pipeline text. The function is two levels down: in `@inner`, in `@outer`. Text that is one
+// whole pipeline is anchored on its first name, `any` or the top-level operation's; any other
+// text is a list run on the top-level operation. A pass that runs on one kind of operation is
+// nested one level under the operations of its kind; `recursive(..)`, or the operations in between
+// named, reach deeper. Each of the first six RUN lines reaches the function and promotes its local.
+// `--dump-pass-pipeline` prints the pipeline as it was loaded, to standard error: a list is
+// anchored on the top-level operation, the implicit nesting is written out, and spaces around
+// the names are not kept. A pass option's
+// quoted value may hold commas, spaces and braces. A pipeline the tool rejects is rejected before
+// the input is read, so those RUN lines check standard error with `not`.
+
+// CHECK-LABEL: @f(
+// CHECK-SAME: [[X:%[0-9]+]]: i32) -> i32 locals(i32) {
+// CHECK-NEXT: builtin.ret [[X]] : (i32);
+
+// ANCHORED: builtin.module(builtin.module(builtin.function(local2reg)))
+// LIST: builtin.module(cse,builtin.module(builtin.function(local2reg)),dce)
+// RECURSIVE: builtin.module(recursive(builtin.function(local2reg)))
+
+// The message reaches the pass whole, and the pipeline is dumped with it.
+// OPTION: builtin.module(builtin.module(builtin.function(test-fail{message="one, two } three"})))
+// OPTION-NEXT: error: one, two } three
+// OPTION-NOT: builtin.module public @outer
+
+// WRONG-ANCHOR: error: the pass pipeline is anchored on 'builtin.function', but the input's top-level operation is 'builtin.module'
+// UNCLOSED: error: invalid pass pipeline: expected ',' or ')', found the end of the pipeline
+// UNKNOWN: error: unknown pass 'no-such-pass'
+builtin.module public @outer {
+    builtin.module public @inner {
+        builtin.function public extern("C") @f(%x: i32) -> i32 locals(i32) {
+            builtin.store_local 0, %x;
+            %l = builtin.load_local 0 : i32;
+            builtin.ret %l : (i32);
+        };
+    };
+};

@@ -1,0 +1,29 @@
+// RUN: runic-opt %s --verify-diagnostics
+// RUN: runic-opt %s -p cse --verify-diagnostics
+// RUN: runic-opt %s -p cse --verify-each=false --verify-diagnostics
+// RUN: runic-opt %s -p cse --verify-each --verify-diagnostics
+// RUN: runic-opt %s -p cse --no-verify | filecheck %s
+// RUN: not runic-opt %s -p cse --verify-each false 2>&1 | filecheck %s --check-prefix=VALUE
+
+// The verification modes. By default the parsed input is verified, and the IR after each pass; with
+// `--verify-each=false` the parsed input is still verified (and the result once, before it is
+// printed); `--verify-each` alone is `--verify-each=true`; with `--no-verify` nothing is: the
+// invalid input below is printed, and CSE runs on it. That `--verify-each=false` leaves out the
+// verification between passes can be shown only with a pass that breaks the IR, which only the
+// tool's Rust tests have (`tools/runic-opt/src/tests/verification.rs`). The value of
+// `--verify-each` is given with `=`.
+
+// CHECK-LABEL: @f(
+// CHECK-SAME: [[A:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[ONE:%[0-9]+]] = arith.constant 1 : i32;
+// CHECK-NEXT: builtin.ret [[A]], [[ONE]] : (i32, i32);
+
+// VALUE: error: unexpected argument 'false' found
+builtin.module public @m {
+    builtin.function public extern("C") @f(%a: i32) -> i32 {
+        %x = arith.constant 1 : i32;
+        %y = arith.constant 1 : i32;
+        // expected-error@+1 {{this returns (i32, i32), but the function returns (i32)}}
+        builtin.ret %a, %x : (i32, i32);
+    };
+};

@@ -1,0 +1,27 @@
+// RUN: runic-opt %s -p local2reg --verify-diagnostics
+// RUN: runic-opt %s -p local2reg 2>&1 | filecheck %s
+// RUN: runic-opt %s -p 'recursive(builtin.function(local2reg))' 2>&1 | filecheck %s --check-prefix=REACHED
+
+// A pass that ran on no operation is warned about, with no location, and the tool still succeeds:
+// implicit nesting runs `local2reg` on the functions directly inside the top-level module, and the
+// only function is one level deeper. The help says how to reach it. With `recursive(..)` the pass
+// reaches the function, and nothing is warned about.
+
+// expected-warning@unknown {{pass 'local2reg' ran on no operation}}
+// CHECK: warning: pass 'local2reg' ran on no operation
+// CHECK: help: implicit nesting runs a pass on the operations of its type directly inside 'builtin.module', not deeper
+// CHECK-LABEL: @f(
+// CHECK-NEXT: builtin.store_local
+
+// REACHED-NOT: warning
+// REACHED-LABEL: @f(
+// REACHED-NEXT: builtin.ret
+builtin.module public @outer {
+    builtin.module public @inner {
+        builtin.function public extern("C") @f(%x: i32) -> i32 locals(i32) {
+            builtin.store_local 0, %x;
+            %l = builtin.load_local 0 : i32;
+            builtin.ret %l : (i32);
+        };
+    };
+};

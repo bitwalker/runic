@@ -1,0 +1,85 @@
+// RUN: not runic-opt %s --verify-roundtrip 2>&1 | filecheck %s
+// RUN: runic-opt %s | filecheck %s --check-prefix=PRINTED
+
+// `--verify-roundtrip` fails when a form of the parsed input does not parse back. Through type
+// aliases the input names a type 65 pointers deep, one more than the parser reads written out; the
+// printer writes the type out, so neither form parses back, and each failure carries what the
+// parser said. The error has no location in the input. Of the check's other two failures, a form
+// that parses to another program, and one that loses part of the operation, only a printer that is
+// wrong can show them: the tool's Rust tests do, with operations of their own
+// (`tools/runic-opt/src/tests/roundtrip.rs`). Without the option the output is printed, though it
+// does not read back (a defect of the printer, which writes out what the parser limits).
+
+// CHECK: error: the custom form does not parse back
+// CHECK: type nesting is too deep (limit 64)
+// CHECK: error: the generic form does not parse back
+// CHECK: type nesting is too deep (limit 64)
+// PRINTED: @f({{%[0-9]+}}: ptr<ptr<ptr<
+type !a0 = ptr<i8>;
+type !a1 = ptr<!a0>;
+type !a2 = ptr<!a1>;
+type !a3 = ptr<!a2>;
+type !a4 = ptr<!a3>;
+type !a5 = ptr<!a4>;
+type !a6 = ptr<!a5>;
+type !a7 = ptr<!a6>;
+type !a8 = ptr<!a7>;
+type !a9 = ptr<!a8>;
+type !a10 = ptr<!a9>;
+type !a11 = ptr<!a10>;
+type !a12 = ptr<!a11>;
+type !a13 = ptr<!a12>;
+type !a14 = ptr<!a13>;
+type !a15 = ptr<!a14>;
+type !a16 = ptr<!a15>;
+type !a17 = ptr<!a16>;
+type !a18 = ptr<!a17>;
+type !a19 = ptr<!a18>;
+type !a20 = ptr<!a19>;
+type !a21 = ptr<!a20>;
+type !a22 = ptr<!a21>;
+type !a23 = ptr<!a22>;
+type !a24 = ptr<!a23>;
+type !a25 = ptr<!a24>;
+type !a26 = ptr<!a25>;
+type !a27 = ptr<!a26>;
+type !a28 = ptr<!a27>;
+type !a29 = ptr<!a28>;
+type !a30 = ptr<!a29>;
+type !a31 = ptr<!a30>;
+type !a32 = ptr<!a31>;
+type !a33 = ptr<!a32>;
+type !a34 = ptr<!a33>;
+type !a35 = ptr<!a34>;
+type !a36 = ptr<!a35>;
+type !a37 = ptr<!a36>;
+type !a38 = ptr<!a37>;
+type !a39 = ptr<!a38>;
+type !a40 = ptr<!a39>;
+type !a41 = ptr<!a40>;
+type !a42 = ptr<!a41>;
+type !a43 = ptr<!a42>;
+type !a44 = ptr<!a43>;
+type !a45 = ptr<!a44>;
+type !a46 = ptr<!a45>;
+type !a47 = ptr<!a46>;
+type !a48 = ptr<!a47>;
+type !a49 = ptr<!a48>;
+type !a50 = ptr<!a49>;
+type !a51 = ptr<!a50>;
+type !a52 = ptr<!a51>;
+type !a53 = ptr<!a52>;
+type !a54 = ptr<!a53>;
+type !a55 = ptr<!a54>;
+type !a56 = ptr<!a55>;
+type !a57 = ptr<!a56>;
+type !a58 = ptr<!a57>;
+type !a59 = ptr<!a58>;
+type !a60 = ptr<!a59>;
+type !a61 = ptr<!a60>;
+type !a62 = ptr<!a61>;
+type !a63 = ptr<!a62>;
+type !a64 = ptr<!a63>;
+builtin.function public extern("C") @f(%p: !a64) {
+    builtin.ret;
+};

@@ -496,7 +496,7 @@ dependencies = ["litcheck", "runic-opt"]
 
 [tasks.lit-coverage]
 category = "Test"
-description = "Builds runic-opt into bin and lists the operations that no test of tests/lit/parse names"
+description = "Builds runic-opt into bin and lists the operations that no test of tests/lit/parse names, and the passes that no RUN line of tests/lit names"
 command = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/tests/lit/coverage.sh"
 args = ["${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/bin/runic-opt"]
 dependencies = ["runic-opt"]

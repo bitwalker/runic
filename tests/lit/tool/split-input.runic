@@ -1,0 +1,33 @@
+// RUN: not runic-opt %s --split-input-file=//==== 2>&1 | filecheck %s
+// RUN: not runic-opt %s 2>&1 | filecheck %s --check-prefix=WHOLE
+// RUN: not runic-opt %s --split-input-file 2>&1 | filecheck %s --check-prefix=DEFAULT
+// RUN: printf '// nothing here\n// -----\n' | not runic-opt - --split-input-file 2>&1 | filecheck %s --check-prefix=EMPTY
+
+// A custom split marker, given with `=`. Each case is read on its own; a case that fails prints
+// nothing and does not stop the others, and its diagnostic has the file's line number. The
+// results are printed in order with the marker between them; a case of only comments is skipped.
+// The marker is compared without the whitespace around it. Without the option the file is one
+// input with three top-level operations; with the default marker, which the file does not hold,
+// too. An input whose only case is comments is an error.
+
+// All of standard error comes first.
+// CHECK: error: invalid operation
+// CHECK-NEXT: --> {{.*}}split-input.runic:[[@LINE+16]]:44
+// CHECK: builtin.function public extern("C") @a() {
+// CHECK-NEXT: builtin.ret;
+// CHECK-NEXT: };
+// CHECK-NEXT: //====
+// CHECK-NEXT: builtin.function public extern("C") @c() {
+// CHECK-NOT: //====
+
+// WHOLE: error: expected the end of the input after the top-level operation
+// DEFAULT: error: expected the end of the input after the top-level operation
+
+// EMPTY: error: no operation found in <stdin>
+builtin.function public extern("C") @a() { builtin.ret; };
+//====
+// A case of only a comment.
+//====
+builtin.function public extern("C") @b() { builtin.bogus; };
+   //====   
+builtin.function public extern("C") @c() { builtin.ret; };

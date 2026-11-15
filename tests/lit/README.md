@@ -38,7 +38,7 @@ variable.
 A clean machine needs the pinned toolchain (`rust-toolchain.toml`), the `cargo-make` crate
 installed, and network access once, for the `litcheck` task's `cargo install`.
 
-### Which operations have a parse test
+### Which operations have a parse test, and which passes a test
 
 ```sh
 cargo make lit-coverage
@@ -46,10 +46,12 @@ tests/lit/coverage.sh bin/runic-opt
 ```
 
 Both list, one per line, each operation runic-opt registers (`runic-opt --list-operations`)
-whose name appears in no test under `parse/` outside a `//` comment, and fail if there is one;
-the first builds the tool first. They print nothing when every operation has a parse test. They
-check that each operation's name appears, not that every form of it does (each optional part, an
-attribute dictionary): that is what the parse tests themselves are written to cover. Each
+whose name appears in no test under `parse/` outside a `//` comment (`operation arith.add`), and
+each pass it registers (`runic-opt --list-passes`) that no `// RUN:` line under `tests/lit` names
+(`pass cse`), and fail if there is one; the first builds the tool first. They print nothing when
+every operation has a parse test and every pass a test. They check that each operation's name
+appears, not that every form of it does (each optional part, an attribute dictionary): that is
+what the parse tests themselves are written to cover. Each
 dialect's operations are in `parse/<dialect>.runic`, which the Rust tests of the generic form
 read too (`crates/transform/src/tests/dialect_modules.rs`).
 
@@ -62,8 +64,9 @@ lit.suite.toml        the suite: name `runic`, files `*.runic`, `pipefail = true
 parse/                reading and printing IR
 verify/               the verifier's rules, one diagnostic per case
 roundtrip/            both forms read back
-dialects/<dialect>/   the operations of a dialect
-transforms/<pass>/    a pass: cse, dce, sccp, canonicalizer, sink, local2reg, cfg-to-scf
+dialects/<dialect>/   a dialect's folds (fold.runic) and canonicalization patterns (canonicalize.runic)
+transforms/<pass>/    a pass: cse, dce, sccp, canonicalizer, control-flow-sink, sink
+                      (sink-operand-defs), local2reg, cfg-to-scf
 conversion/           dialect conversion, through the test passes
 analysis/             analyses, through the test passes
 tool/                 options and behaviour of runic-opt itself
@@ -85,7 +88,8 @@ A test is RUN lines, IR, and checks in comments:
 // RUN: runic-opt %s --split-input-file --verify-diagnostics | filecheck %s
 ```
 
-`%s` is the test file. `--split-input-file` runs each case between lines `// -----` on its own;
+`%s` is the test file, and `%t` a file of the test's own that a RUN line may write
+(`runic-opt %s -o %t`). `--split-input-file` runs each case between lines `// -----` on its own;
 diagnostics keep the file's line numbers, and a case that fails prints nothing.
 
 ### A failure is checked, never ignored
@@ -144,6 +148,15 @@ checks the whole output:
 // GONE: builtin.module public @m {
 // GONE-NOT: {{[(: ]i128[),; ]}}
 // GONE: {{^}}};
+```
+
+A test that shows a pass leaving something alone also holds a case the pass changes, so that the
+test fails when the pass does not run at all. A test of one canonicalization pattern restricts the
+canonicalizer to it, one RUN line and one check prefix per pattern; the greedy driver still folds
+and erases dead operations:
+
+```
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(canonicalizer{enable-patterns=erase-true-assert}))' | filecheck %s --check-prefix=ASSERT
 ```
 
 ### Reading output back

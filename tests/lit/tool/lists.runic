@@ -1,0 +1,41 @@
+// RUN: runic-opt --list-passes | filecheck %s --check-prefix=PASSES
+// RUN: runic-opt --list-dialects | filecheck %s --check-prefix=DIALECTS
+// RUN: runic-opt --list-operations | filecheck %s --check-prefix=OPERATIONS
+// RUN: runic-opt %s --list-passes | filecheck %s --check-prefix=PASSES
+
+// What runic-opt registers, each list on standard output: the passes, each with its description;
+// the dialects, each with the number of its operations; the operations, one name per line, sorted.
+// A list does not read the input: given a file, the tool still only lists. The counts are those of
+// this build, and change when an operation is added.
+
+// PASSES: canonicalizer {{ +}}Applies the canonicalization patterns of all loaded dialects
+// PASSES-NEXT: cfg-to-scf
+// PASSES-NEXT: control-flow-sink
+// PASSES-NEXT: cse
+// PASSES-NEXT: dce
+// PASSES-NEXT: local2reg
+// PASSES-NEXT: sccp
+// PASSES-NEXT: sink-operand-defs
+// PASSES-NEXT: test-convert-wide-ints
+// PASSES-NEXT: test-fail
+// PASSES-NEXT: test-print-int-ranges {{ +}}Emits a hint{{.*}}
+// PASSES-NOT: {{.}}
+
+// DIALECTS: arith {{ +}}36 operations
+// DIALECTS-NEXT: builtin {{ +}}17 operations
+// DIALECTS-NEXT: cf {{ +}}5 operations
+// DIALECTS-NEXT: di {{ +}}3 operations
+// DIALECTS-NEXT: mem {{ +}}13 operations
+// DIALECTS-NEXT: scf {{ +}}7 operations
+// DIALECTS-NEXT: test {{ +}}18 operations
+// DIALECTS-NEXT: ub {{ +}}2 operations
+// DIALECTS-NOT: {{.}}
+
+// OPERATIONS: {{^}}arith.add{{$}}
+// OPERATIONS-NEXT: {{^}}arith.add_overflowing{{$}}
+// OPERATIONS: {{^}}builtin.call{{$}}
+// OPERATIONS: {{^}}ub.unreachable{{$}}
+// OPERATIONS-NOT: {{.}}
+builtin.module public @not_read {
+    this is not read;
+};

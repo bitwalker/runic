@@ -1,0 +1,35 @@
+// RUN: runic-opt %s --split-input-file -p 'builtin.module(builtin.function(test-print-int-ranges))' --verify-diagnostics
+
+// Expected diagnostics of the kinds text can produce, and each way of placing an expectation: on
+// the diagnostic's line, `@+N`, `@-N`, `@above`, `@below` (which skip lines that hold only
+// expectations), and a regular expression with `-re`. A hint comes from the range
+// pass, an error from the verifier. A warning (a pass that ran on no operation, expected with
+// `@unknown`) is in `ran-on-nothing.runic`; what is reported when an expectation is not met, or a
+// diagnostic is not expected, and the kind no pass of runic-opt emits, are in
+// `unmet-expectations.runic`.
+
+builtin.module public @kinds {
+    builtin.function public extern("C") @f(%a: i32) -> i32 {
+        %x = arith.constant 10 : i32; // expected-hint {{range of result 0: u[10, 10]}}
+        // expected-hint@+1 {{u[20, 20]}}
+        %y = arith.constant 20 : i32;
+        %s = arith.add %x, %y;
+        // expected-hint@-1 {{u[30, 30]}}
+        %t = arith.add %s, %x;
+        // expected-hint@above {{u[40, 40]}}
+        // expected-hint@below {{u[0, 4294967295]}}
+        %u = arith.add %a, %x;
+        %v = arith.add %t, %x;
+        // expected-hint-re@-1 {{^range of result 0: u\[50, 50\] s\[50, 50\] width [0-9]+$}}
+        builtin.ret %u : (i32);
+    };
+};
+
+// -----
+
+builtin.module public @an_error {
+    // expected-error@+2 {{this returns (i32, i32), but the function returns (i32)}}
+    builtin.function public extern("C") @g(%a: i32) -> i32 {
+        builtin.ret %a, %a : (i32, i32);
+    };
+};

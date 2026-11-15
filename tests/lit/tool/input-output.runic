@@ -1,0 +1,21 @@
+// RUN: runic-opt %s -p cse -o %t && filecheck %s --input-file %t
+// RUN: runic-opt %s -p cse -o %t | filecheck %s --check-prefix=NOTHING --allow-empty
+// RUN: runic-opt - -p cse < %s | filecheck %s
+// RUN: runic-opt -p cse < %s | filecheck %s
+// RUN: not runic-opt %s.missing 2>&1 | filecheck %s --check-prefix=MISSING
+
+// Where runic-opt reads and writes: `-o FILE` writes the result to the file and nothing to
+// standard output; `-` (or no file at all) reads standard input. A file that does not exist is an
+// error that names it.
+
+// CHECK-LABEL: @f(
+// CHECK-NEXT: [[ONE:%[0-9]+]] = arith.constant 1 : i32;
+// CHECK-NEXT: builtin.ret [[ONE]], [[ONE]] : (i32, i32);
+
+// NOTHING-NOT: {{.}}
+// MISSING: error: could not read '{{.*}}input-output.runic.missing': 
+builtin.function public extern("C") @f() -> (i32, i32) {
+    %a = arith.constant 1 : i32;
+    %b = arith.constant 1 : i32;
+    builtin.ret %a, %b : (i32, i32);
+};
