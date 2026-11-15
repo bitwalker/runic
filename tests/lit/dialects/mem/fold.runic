@@ -1,0 +1,67 @@
+// RUN: runic-opt %s -p canonicalizer --split-input-file | filecheck %s
+// RUN: runic-opt %s -p canonicalizer --split-input-file | runic-opt - --split-input-file --verify-roundtrip | filecheck %s
+
+// The folds of `mem` that do not compute a layout (sizes, alignments and offsets are in
+// `transforms/canonicalizer/layout-folds.runic`). A `mem.gep` with neither an index nor a path is
+// its base, and a `mem.ptrcast` to its operand's own type is the operand, under any layout. A
+// round trip between a pointer and an integer (`mem.inttoptr` of `mem.ptrtoint`, or the reverse)
+// is the value it started from only when the type in between holds every bit of it, which only
+// the data layout says: both fold under a layout whose pointers are as wide as `isize`, only the
+// one that loses no bits under a layout where they differ, and neither without a layout. The
+// second RUN line reads the output back.
+
+// CHECK-LABEL: @with_layout(
+// CHECK-SAME: [[P:%[0-9]+]]: ptr<i32>, [[A:%[0-9]+]]: isize) -> (ptr<i32>, ptr<i32>, ptr<i32>, isize) {
+// CHECK-NEXT: builtin.ret [[P]], [[P]], [[P]], [[A]] : (ptr<i32>, ptr<i32>, ptr<i32>, isize);
+builtin.module public @m64 attributes { data_layout = #builtin.data_layout<little, ptr = 64> } {
+    builtin.function public extern("C") @with_layout(%p: ptr<i32>, %a: isize) -> (ptr<i32>, ptr<i32>, ptr<i32>, isize) {
+        %gep = mem.gep %p;
+        %cast = mem.ptrcast %p : ptr<i32>;
+        %int = mem.ptrtoint %p;
+        %back = mem.inttoptr %int : ptr<i32>;
+        %ptr = mem.inttoptr %a : ptr<i32>;
+        %again = mem.ptrtoint %ptr;
+        builtin.ret %gep, %cast, %back, %again : (ptr<i32>, ptr<i32>, ptr<i32>, isize);
+    };
+};
+
+// -----
+
+// CHECK-LABEL: @without_layout(
+// CHECK-SAME: [[P:%[0-9]+]]: ptr<i32>, [[A:%[0-9]+]]: isize) -> (ptr<i32>, ptr<i32>, ptr<i32>, isize) {
+// CHECK-NEXT: [[INT:%[0-9]+]] = mem.ptrtoint [[P]];
+// CHECK-NEXT: [[BACK:%[0-9]+]] = mem.inttoptr [[INT]] : ptr<i32>;
+// CHECK-NEXT: [[PTR:%[0-9]+]] = mem.inttoptr [[A]] : ptr<i32>;
+// CHECK-NEXT: [[AGAIN:%[0-9]+]] = mem.ptrtoint [[PTR]];
+// CHECK-NEXT: builtin.ret [[P]], [[P]], [[BACK]], [[AGAIN]] : (ptr<i32>, ptr<i32>, ptr<i32>, isize);
+builtin.module public @no_layout {
+    builtin.function public extern("C") @without_layout(%p: ptr<i32>, %a: isize) -> (ptr<i32>, ptr<i32>, ptr<i32>, isize) {
+        %gep = mem.gep %p;
+        %cast = mem.ptrcast %p : ptr<i32>;
+        %int = mem.ptrtoint %p;
+        %back = mem.inttoptr %int : ptr<i32>;
+        %ptr = mem.inttoptr %a : ptr<i32>;
+        %again = mem.ptrtoint %ptr;
+        builtin.ret %gep, %cast, %back, %again : (ptr<i32>, ptr<i32>, ptr<i32>, isize);
+    };
+};
+
+// -----
+
+// Under a layout whose pointers are 64 bits and whose `isize` (the index width) is 32, an integer
+// loses bits of a pointer: the pointer's round trip stays. A pointer holds every bit of an
+// integer: the integer's round trip folds.
+// CHECK-LABEL: @narrow_isize(
+// CHECK-SAME: [[P:%[0-9]+]]: ptr<i32>, [[A:%[0-9]+]]: isize) -> (ptr<i32>, isize) {
+// CHECK-NEXT: [[INT:%[0-9]+]] = mem.ptrtoint [[P]];
+// CHECK-NEXT: [[BACK:%[0-9]+]] = mem.inttoptr [[INT]] : ptr<i32>;
+// CHECK-NEXT: builtin.ret [[BACK]], [[A]] : (ptr<i32>, isize);
+builtin.module public @narrow attributes { data_layout = #builtin.data_layout<little, ptr = 64 index 32> } {
+    builtin.function public extern("C") @narrow_isize(%p: ptr<i32>, %a: isize) -> (ptr<i32>, isize) {
+        %int = mem.ptrtoint %p;
+        %back = mem.inttoptr %int : ptr<i32>;
+        %ptr = mem.inttoptr %a : ptr<i32>;
+        %again = mem.ptrtoint %ptr;
+        builtin.ret %back, %again : (ptr<i32>, isize);
+    };
+};

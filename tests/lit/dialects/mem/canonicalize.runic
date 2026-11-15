@@ -1,0 +1,52 @@
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(canonicalizer{enable-patterns=erase-zero-length}))' | runic-opt - --verify-roundtrip | filecheck %s --check-prefix=ZERO
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(canonicalizer{enable-patterns=merge-gep-of-gep}))' | runic-opt - --verify-roundtrip | filecheck %s --check-prefix=GEP
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(canonicalizer{enable-patterns=merge-ptrcast-of-ptrcast}))' | runic-opt - --verify-roundtrip | filecheck %s --check-prefix=CAST
+
+// The canonicalization patterns of `mem`, one RUN line each with the canonicalizer restricted to
+// that pattern, checked under its prefix. Each RUN line reads the output back.
+builtin.module public @mem_canonicalize {
+    // A copy, move or fill of the constant length 0 accesses no memory and is erased; one of an
+    // unknown length stays.
+    // ZERO-LABEL: @zero_length(
+    // ZERO-SAME: [[D:%[0-9]+]]: ptr<i8>, [[S:%[0-9]+]]: ptr<i8>, {{%[0-9]+}}: i8, [[N:%[0-9]+]]: isize) {
+    // ZERO-NEXT: mem.memcpy [[D]], [[S]], [[N]];
+    // ZERO-NEXT: builtin.ret;
+    builtin.function public extern("C") @zero_length(%d: ptr<i8>, %s: ptr<i8>, %b: i8, %n: isize) {
+        %zero = arith.constant 0 : isize;
+        mem.memcpy %d, %s, %zero;
+        mem.memmove %d, %s, %zero;
+        mem.memset %d, %b, %zero;
+        mem.memcpy %d, %s, %n;
+        builtin.ret;
+    };
+
+    // A gep with no index whose base is a gep is one gep, the paths joined; a gep with an index
+    // is left alone (here the second, whose base has a path), and is the base of a merge itself.
+    // GEP-LABEL: @gep_of_gep(
+    // GEP-SAME: [[P:%[0-9]+]]: ptr<struct<i32, array<i8; 4>>>, [[I:%[0-9]+]]: isize) -> (ptr<i8>, ptr<i8>) {
+    // GEP-NEXT: [[OUTER:%[0-9]+]] = mem.gep [[P]], [[I]], [1, 2];
+    // GEP-NEXT: [[STEPPED:%[0-9]+]] = mem.gep [[P]], [1];
+    // GEP-NEXT: [[ELEM:%[0-9]+]] = mem.gep [[STEPPED]], [[I]], [0];
+    // GEP-NEXT: builtin.ret [[OUTER]], [[ELEM]] : (ptr<i8>, ptr<i8>);
+    builtin.function public extern("C") @gep_of_gep(%p: ptr<struct<i32, array<i8; 4>>>, %i: isize) -> (ptr<i8>, ptr<i8>) {
+        %inner = mem.gep %p, %i, [1];
+        %outer = mem.gep %inner, [2];
+        %stepped = mem.gep %p, [1];
+        %indexed = mem.gep %stepped, %i;
+        %elem = mem.gep %indexed, [0];
+        builtin.ret %outer, %elem : (ptr<i8>, ptr<i8>);
+    };
+
+    // A cast of a cast is one cast of the first operand; one back to the operand's own type then
+    // folds to the operand.
+    // CAST-LABEL: @ptrcast_of_ptrcast(
+    // CAST-SAME: [[P:%[0-9]+]]: ptr<i32>) -> (ptr<i16>, ptr<i32>) {
+    // CAST-NEXT: [[H:%[0-9]+]] = mem.ptrcast [[P]] : ptr<i16>;
+    // CAST-NEXT: builtin.ret [[H]], [[P]] : (ptr<i16>, ptr<i32>);
+    builtin.function public extern("C") @ptrcast_of_ptrcast(%p: ptr<i32>) -> (ptr<i16>, ptr<i32>) {
+        %bytes = mem.ptrcast %p : ptr<i8>;
+        %halves = mem.ptrcast %bytes : ptr<i16>;
+        %back = mem.ptrcast %bytes : ptr<i32>;
+        builtin.ret %halves, %back : (ptr<i16>, ptr<i32>);
+    };
+};

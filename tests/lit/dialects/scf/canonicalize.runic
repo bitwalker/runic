@@ -1,0 +1,122 @@
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(canonicalizer{enable-patterns=fold-constant-index-switch}))' | runic-opt - --verify-roundtrip | filecheck %s --check-prefix=SWITCH
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(canonicalizer{enable-patterns=fold-redundant-yields}))' | runic-opt - --verify-roundtrip | filecheck %s --check-prefix=YIELDS
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(canonicalizer{enable-patterns=index-switch-remove-unused-results}))' | runic-opt - --verify-roundtrip | filecheck %s --check-prefix=UNUSED
+
+// The canonicalization patterns of `scf` that no file under `transforms/canonicalizer` has, one
+// RUN line each with the canonicalizer restricted to that pattern, checked under its prefix. Each
+// RUN line reads the output back. `scf` has no folds.
+builtin.module public @scf_canonicalize {
+    // A switch on a constant is replaced by the region of its case.
+    // SWITCH-LABEL: @constant_index_switch(
+    // SWITCH-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+    // SWITCH-NEXT: [[S:%[0-9]+]] = arith.add [[A]], [[B]];
+    // SWITCH-NEXT: builtin.ret [[S]] : (i32);
+    builtin.function public extern("C") @constant_index_switch(%a: i32, %b: i32) -> i32 {
+        %two = arith.constant 2 : i32;
+        %r = scf.index_switch %two
+        case 1 {
+            scf.yield %a : (i32);
+        }
+        case 2 {
+            %s = arith.add %a, %b;
+            scf.yield %s : (i32);
+        }
+        default {
+            scf.yield %b : (i32);
+        } : (i32);
+        builtin.ret %r : (i32);
+    };
+
+    // A constant that no case names takes the default region.
+    // SWITCH-LABEL: @constant_index_switch_default(
+    // SWITCH-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+    // SWITCH-NEXT: [[M:%[0-9]+]] = arith.mul [[A]], [[B]];
+    // SWITCH-NEXT: builtin.ret [[M]] : (i32);
+    builtin.function public extern("C") @constant_index_switch_default(%a: i32, %b: i32) -> i32 {
+        %nine = arith.constant 9 : i32;
+        %r = scf.index_switch %nine
+        case 1 {
+            scf.yield %a : (i32);
+        }
+        default {
+            %m = arith.mul %a, %b;
+            scf.yield %m : (i32);
+        } : (i32);
+        builtin.ret %r : (i32);
+    };
+
+    // A result that every region yields the same value for is that value: it is lifted out, and
+    // the operation, which holds a store, keeps its other result.
+    // YIELDS-LABEL: @redundant_yields(
+    // YIELDS-SAME: [[C:%[0-9]+]]: i1, [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32, [[P:%[0-9]+]]: ptr<i32>) -> (i32, i32) {
+    // YIELDS-NEXT: [[Y:%[0-9]+]] = scf.if [[C]] then {
+    // YIELDS-NEXT: test.store [[P]], [[A]] : (ptr<i32>, i32);
+    // YIELDS-NEXT: scf.yield [[B]] : (i32);
+    // YIELDS-NEXT: } else {
+    // YIELDS-NEXT: scf.yield [[A]] : (i32);
+    // YIELDS-NEXT: } : (i1) -> (i32);
+    // YIELDS-NEXT: builtin.ret [[A]], [[Y]] : (i32, i32);
+    builtin.function public extern("C") @redundant_yields(%c: i1, %a: i32, %b: i32, %p: ptr<i32>) -> (i32, i32) {
+        %x, %y = scf.if %c then {
+            test.store %p, %a : (ptr<i32>, i32);
+            scf.yield %a, %b : (i32, i32);
+        } else {
+            scf.yield %a, %a : (i32, i32);
+        } : (i1) -> (i32, i32);
+        builtin.ret %x, %y : (i32, i32);
+    };
+
+    // UNUSED-LABEL: @index_switch_unused_results(
+    // UNUSED-SAME: [[S:%[0-9]+]]: i32, [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+    // UNUSED-NEXT: [[Y:%[0-9]+]] = scf.index_switch [[S]]
+    // UNUSED-NEXT: case 1 {
+    // UNUSED-NEXT: scf.yield [[B]] : (i32);
+    // UNUSED-NEXT: }
+    // UNUSED-NEXT: default {
+    // UNUSED-NEXT: scf.yield [[A]] : (i32);
+    // UNUSED-NEXT: } : (i32);
+    // UNUSED-NEXT: builtin.ret [[Y]] : (i32);
+    builtin.function public extern("C") @index_switch_unused_results(%s: i32, %a: i32, %b: i32) -> i32 {
+        %x, %y = scf.index_switch %s
+        case 1 {
+            scf.yield %a, %b : (i32, i32);
+        }
+        default {
+            scf.yield %b, %a : (i32, i32);
+        } : (i32, i32);
+        builtin.ret %y : (i32);
+    };
+
+    // With every result redundant and nothing with effects inside, the operation goes.
+    // YIELDS-LABEL: @all_redundant(
+    // YIELDS-SAME: {{%[0-9]+}}: i1, [[A:%[0-9]+]]: i32) -> i32 {
+    // YIELDS-NEXT: builtin.ret [[A]] : (i32);
+    builtin.function public extern("C") @all_redundant(%c: i1, %a: i32) -> i32 {
+        %x = scf.if %c then {
+            scf.yield %a : (i32);
+        } else {
+            scf.yield %a : (i32);
+        } : (i1) -> (i32);
+        builtin.ret %x : (i32);
+    };
+
+    // With every result redundant but a store inside, the operation stays, without results.
+    // YIELDS-LABEL: @all_redundant_with_a_store(
+    // YIELDS-SAME: [[C:%[0-9]+]]: i1, [[A:%[0-9]+]]: i32, [[P:%[0-9]+]]: ptr<i32>) -> i32 {
+    // YIELDS-NEXT: scf.if [[C]] then {
+    // YIELDS-NEXT: test.store [[P]], [[A]] : (ptr<i32>, i32);
+    // YIELDS-NEXT: scf.yield : ();
+    // YIELDS-NEXT: } else {
+    // YIELDS-NEXT: scf.yield : ();
+    // YIELDS-NEXT: } : (i1) -> ();
+    // YIELDS-NEXT: builtin.ret [[A]] : (i32);
+    builtin.function public extern("C") @all_redundant_with_a_store(%c: i1, %a: i32, %p: ptr<i32>) -> i32 {
+        %x = scf.if %c then {
+            test.store %p, %a : (ptr<i32>, i32);
+            scf.yield %a : (i32);
+        } else {
+            scf.yield %a : (i32);
+        } : (i1) -> (i32);
+        builtin.ret %x : (i32);
+    };
+};

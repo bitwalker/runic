@@ -1,0 +1,29 @@
+// RUN: runic-opt %s -p canonicalizer | filecheck %s
+// RUN: runic-opt %s -p canonicalizer | runic-opt - --verify-roundtrip | filecheck %s
+
+// The folds of `builtin`: an `builtin.unrealized_conversion_cast` of one value to its own type is
+// that value, and one to another type stays; `builtin.bytes` folds to its attribute, so two equal
+// byte strings become one. The second RUN line reads the output back.
+builtin.module public @builtin_fold {
+    // CHECK-LABEL: @casts(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32) -> (i32, i64) {
+    // CHECK-NEXT: [[OTHER:%[0-9]+]] = builtin.unrealized_conversion_cast [[A]] : i32 to i64;
+    // CHECK-NEXT: builtin.ret [[A]], [[OTHER]] : (i32, i64);
+    builtin.function public extern("C") @casts(%a: i32) -> (i32, i64) {
+        %same = builtin.unrealized_conversion_cast %a : i32 to i32;
+        %other = builtin.unrealized_conversion_cast %a : i32 to i64;
+        builtin.ret %same, %other : (i32, i64);
+    };
+
+    // CHECK-LABEL: @bytes(
+    // CHECK-SAME: ) -> (array<i8; 2>, array<i8; 2>, array<i8; 2>) {
+    // CHECK-NEXT: [[B:%[0-9]+]] = builtin.bytes "0201" : array<i8; 2>;
+    // CHECK-NEXT: [[C:%[0-9]+]] = builtin.bytes "0102" : array<i8; 2>;
+    // CHECK-NEXT: builtin.ret [[B]], [[B]], [[C]] : (array<i8; 2>, array<i8; 2>, array<i8; 2>);
+    builtin.function public extern("C") @bytes() -> (array<i8; 2>, array<i8; 2>, array<i8; 2>) {
+        %a = builtin.bytes "0201" : array<i8; 2>;
+        %b = builtin.bytes "0201" : array<i8; 2>;
+        %c = builtin.bytes "0102" : array<i8; 2>;
+        builtin.ret %a, %b, %c : (array<i8; 2>, array<i8; 2>, array<i8; 2>);
+    };
+};

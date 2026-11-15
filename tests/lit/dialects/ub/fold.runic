@@ -1,0 +1,32 @@
+// RUN: runic-opt %s -p canonicalizer | filecheck %s
+// RUN: runic-opt %s -p canonicalizer | runic-opt - --verify-roundtrip | filecheck %s
+
+// `ub.poison` folds to its attribute: it is a constant, and two equal poisons become one, while
+// poisons of different types stay apart. A fold of `arith` does not read a poison operand: it is
+// not an integer constant. The second RUN line reads the output back.
+builtin.module public @ub_fold {
+    // CHECK-LABEL: @poisons(
+    // CHECK-SAME: ) -> (i32, i32, i64) {
+    // CHECK-NEXT: [[P32:%[0-9]+]] = ub.poison <{ value = #ub.poison<i32> }>;
+    // CHECK-NEXT: [[P64:%[0-9]+]] = ub.poison <{ value = #ub.poison<i64> }>;
+    // CHECK-NEXT: builtin.ret [[P32]], [[P32]], [[P64]] : (i32, i32, i64);
+    builtin.function public extern("C") @poisons() -> (i32, i32, i64) {
+        %a = ub.poison <{ value = #ub.poison<i32> }>;
+        %b = ub.poison <{ value = #ub.poison<i32> }>;
+        %c = ub.poison <{ value = #ub.poison<i64> }>;
+        builtin.ret %a, %b, %c : (i32, i32, i64);
+    };
+
+    // CHECK-LABEL: @poison_operand(
+    // CHECK-SAME: ) -> i32 {
+    // CHECK-NEXT: [[P:%[0-9]+]] = ub.poison <{ value = #ub.poison<i32> }>;
+    // CHECK-NEXT: [[ONE:%[0-9]+]] = arith.constant 1 : i32;
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[P]], [[ONE]];
+    // CHECK-NEXT: builtin.ret [[S]] : (i32);
+    builtin.function public extern("C") @poison_operand() -> i32 {
+        %p = ub.poison <{ value = #ub.poison<i32> }>;
+        %one = arith.constant 1 : i32;
+        %s = arith.add %p, %one;
+        builtin.ret %s : (i32);
+    };
+};

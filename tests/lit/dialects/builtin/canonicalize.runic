@@ -1,0 +1,32 @@
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(canonicalizer{enable-patterns=call-indirect-of-function-ref}))' | filecheck %s
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(canonicalizer{enable-patterns=call-indirect-of-function-ref}))' | runic-opt - --verify-roundtrip | filecheck %s
+
+// The canonicalization pattern of `builtin`: a `builtin.call_indirect` through a
+// `builtin.function_ref` is a `builtin.call` of the symbol the reference names, when the callee's
+// signature is the call's; the reference, once unused, is erased as dead. A call whose signature
+// differs from the callee's (`extern("fast")` here) is left alone. The second RUN line
+// reads the output back.
+builtin.module public @builtin_canonicalize {
+    builtin.function public extern("C") @callee(i32) -> i32;
+
+    // CHECK-LABEL: @indirect(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[R:%[0-9]+]] = builtin.call @callee([[A]]) : extern("C") (i32) -> i32;
+    // CHECK-NEXT: builtin.ret [[R]] : (i32);
+    builtin.function public extern("C") @indirect(%a: i32) -> i32 {
+        %f = builtin.function_ref @callee : (i32) -> i32;
+        %r = builtin.call_indirect %f(%a) : extern("C") (i32) -> i32;
+        builtin.ret %r : (i32);
+    };
+
+    // CHECK-LABEL: @other_convention(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[F:%[0-9]+]] = builtin.function_ref @callee : (i32) -> i32;
+    // CHECK-NEXT: [[R:%[0-9]+]] = builtin.call_indirect [[F]]([[A]]) : extern("fast") (i32) -> i32;
+    // CHECK-NEXT: builtin.ret [[R]] : (i32);
+    builtin.function public extern("C") @other_convention(%a: i32) -> i32 {
+        %f = builtin.function_ref @callee : (i32) -> i32;
+        %r = builtin.call_indirect %f(%a) : extern("fast") (i32) -> i32;
+        builtin.ret %r : (i32);
+    };
+};

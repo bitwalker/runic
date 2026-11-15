@@ -1,0 +1,452 @@
+// RUN: runic-opt %s -p canonicalizer | filecheck %s
+// RUN: runic-opt %s -p canonicalizer | runic-opt - --verify-roundtrip | filecheck %s
+
+// The folds of `arith`: each operation whose operands are constants folds to a constant, computed
+// at the operands' width, and the constants it read are then erased as dead. An operation that
+// would trap or whose result is undefined (a checked overflow, a division by zero or of `MIN` by
+// -1, a shift by the width or more) does not fold. An `isize` operation folds to what both a 32-bit
+// and a 64-bit target compute, and not at all when they disagree; no arith fold reads the data
+// layout. The second RUN line reads the output back.
+builtin.module public @arith_fold {
+    // A constant folds to its own value: it stays.
+    // CHECK-LABEL: @constant(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant 42 : i32;
+    // CHECK-NEXT: builtin.ret [[R0]] : (i32);
+    builtin.function public extern("C") @constant() -> (i32) {
+        %r = arith.constant 42 : i32;
+        builtin.ret %r : (i32);
+    };
+
+    // The default `wrapping` overflow wraps: 100 + 100 is -56 in `i8`.
+    // CHECK-LABEL: @add(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant -56 : i8;
+    // CHECK-NEXT: builtin.ret [[R0]] : (i8);
+    builtin.function public extern("C") @add() -> (i8) {
+        %a = arith.constant 100 : i8;
+        %b = arith.constant 100 : i8;
+        %r = arith.add %a, %b;
+        builtin.ret %r : (i8);
+    };
+
+    // A checked sum that overflows would trap at run time: it does not fold.
+    // CHECK-LABEL: @add_checked_signed_overflow(
+    // CHECK: [[R:%[0-9]+]] = arith.add 
+    // CHECK-NEXT: builtin.ret [[R]] : (i8);
+    builtin.function public extern("C") @add_checked_signed_overflow() -> (i8) {
+        %a = arith.constant 100 : i8;
+        %b = arith.constant 100 : i8;
+        %r = arith.add %a, %b <{ overflow = #builtin.overflow<checked signed> }>;
+        builtin.ret %r : (i8);
+    };
+
+    // An unchecked unsigned sum that fits folds: 200 is -56 printed signed.
+    // CHECK-LABEL: @add_unchecked_unsigned(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant -56 : i8;
+    // CHECK-NEXT: builtin.ret [[R0]] : (i8);
+    builtin.function public extern("C") @add_unchecked_unsigned() -> (i8) {
+        %a = arith.constant 100 : i8;
+        %b = arith.constant 100 : i8;
+        %r = arith.add %a, %b <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+        builtin.ret %r : (i8);
+    };
+
+    // The flag and the wrapped value.
+    // CHECK-LABEL: @add_overflowing(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant 1 : i1;
+    // CHECK-NEXT: [[R1:%[0-9]+]] = arith.constant -56 : i8;
+    // CHECK-NEXT: builtin.ret [[R0]], [[R1]] : (i1, i8);
+    builtin.function public extern("C") @add_overflowing() -> (i1, i8) {
+        %a = arith.constant 100 : i8;
+        %b = arith.constant 100 : i8;
+        %r0, %r1 = arith.add_overflowing %a, %b <{ signedness = #builtin.signedness<signed> }>;
+        builtin.ret %r0, %r1 : (i1, i8);
+    };
+
+    // CHECK-LABEL: @sub(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant -2 : i32;
+    // CHECK-NEXT: builtin.ret [[R0]] : (i32);
+    builtin.function public extern("C") @sub() -> (i32) {
+        %a = arith.constant 3 : i32;
+        %b = arith.constant 5 : i32;
+        %r = arith.sub %a, %b;
+        builtin.ret %r : (i32);
+    };
+
+    // CHECK-LABEL: @sub_overflowing(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant 1 : i1;
+    // CHECK-NEXT: [[R1:%[0-9]+]] = arith.constant -1 : i8;
+    // CHECK-NEXT: builtin.ret [[R0]], [[R1]] : (i1, i8);
+    builtin.function public extern("C") @sub_overflowing() -> (i1, i8) {
+        %a = arith.constant 0 : i8;
+        %b = arith.constant 1 : i8;
+        %r0, %r1 = arith.sub_overflowing %a, %b <{ signedness = #builtin.signedness<unsigned> }>;
+        builtin.ret %r0, %r1 : (i1, i8);
+    };
+
+    // CHECK-LABEL: @mul(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant 42 : i32;
+    // CHECK-NEXT: builtin.ret [[R0]] : (i32);
+    builtin.function public extern("C") @mul() -> (i32) {
+        %a = arith.constant 6 : i32;
+        %b = arith.constant 7 : i32;
+        %r = arith.mul %a, %b;
+        builtin.ret %r : (i32);
+    };
+
+    // CHECK-LABEL: @mul_overflowing(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant 1 : i1;
+    // CHECK-NEXT: [[R1:%[0-9]+]] = arith.constant 0 : i8;
+    // CHECK-NEXT: builtin.ret [[R0]], [[R1]] : (i1, i8);
+    builtin.function public extern("C") @mul_overflowing() -> (i1, i8) {
+        %a = arith.constant 16 : i8;
+        %b = arith.constant 16 : i8;
+        %r0, %r1 = arith.mul_overflowing %a, %b <{ signedness = #builtin.signedness<unsigned> }>;
+        builtin.ret %r0, %r1 : (i1, i8);
+    };
+
+    // 255 / 2 unsigned.
+    // CHECK-LABEL: @udiv(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant 127 : i8;
+    // CHECK-NEXT: builtin.ret [[R0]] : (i8);
+    builtin.function public extern("C") @udiv() -> (i8) {
+        %a = arith.constant -1 : i8;
+        %b = arith.constant 2 : i8;
+        %r = arith.udiv %a, %b;
+        builtin.ret %r : (i8);
+    };
+
+    // A division by zero does not fold.
+    // CHECK-LABEL: @udiv_by_zero(
+    // CHECK: [[R:%[0-9]+]] = arith.udiv 
+    // CHECK-NEXT: builtin.ret [[R]] : (i32);
+    builtin.function public extern("C") @udiv_by_zero() -> (i32) {
+        %a = arith.constant 1 : i32;
+        %b = arith.constant 0 : i32;
+        %r = arith.udiv %a, %b;
+        builtin.ret %r : (i32);
+    };
+
+    // Truncating toward zero.
+    // CHECK-LABEL: @sdiv(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant -3 : i32;
+    // CHECK-NEXT: builtin.ret [[R0]] : (i32);
+    builtin.function public extern("C") @sdiv() -> (i32) {
+        %a = arith.constant -7 : i32;
+        %b = arith.constant 2 : i32;
+        %r = arith.sdiv %a, %b;
+        builtin.ret %r : (i32);
+    };
+
+    // `MIN / -1` overflows: it does not fold.
+    // CHECK-LABEL: @sdiv_overflow(
+    // CHECK: [[R:%[0-9]+]] = arith.sdiv 
+    // CHECK-NEXT: builtin.ret [[R]] : (i8);
+    builtin.function public extern("C") @sdiv_overflow() -> (i8) {
+        %a = arith.constant -128 : i8;
+        %b = arith.constant -1 : i8;
+        %r = arith.sdiv %a, %b;
+        builtin.ret %r : (i8);
+    };
+
+    // CHECK-LABEL: @urem(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant 5 : i8;
+    // CHECK-NEXT: builtin.ret [[R0]] : (i8);
+    builtin.function public extern("C") @urem() -> (i8) {
+        %a = arith.constant -1 : i8;
+        %b = arith.constant 10 : i8;
+        %r = arith.urem %a, %b;
+        builtin.ret %r : (i8);
+    };
+
+    // CHECK-LABEL: @srem(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant -1 : i32;
+    // CHECK-NEXT: builtin.ret [[R0]] : (i32);
+    builtin.function public extern("C") @srem() -> (i32) {
+        %a = arith.constant -7 : i32;
+        %b = arith.constant 2 : i32;
+        %r = arith.srem %a, %b;
+        builtin.ret %r : (i32);
+    };
+
+    // CHECK-LABEL: @udivrem(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant 3 : i32;
+    // CHECK-NEXT: [[R1:%[0-9]+]] = arith.constant 1 : i32;
+    // CHECK-NEXT: builtin.ret [[R0]], [[R1]] : (i32, i32);
+    builtin.function public extern("C") @udivrem() -> (i32, i32) {
+        %a = arith.constant 7 : i32;
+        %b = arith.constant 2 : i32;
+        %r0, %r1 = arith.udivrem %a, %b;
+        builtin.ret %r0, %r1 : (i32, i32);
+    };
+
+    // CHECK-LABEL: @sdivrem(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant -3 : i32;
+    // CHECK-NEXT: [[R1:%[0-9]+]] = arith.constant -1 : i32;
+    // CHECK-NEXT: builtin.ret [[R0]], [[R1]] : (i32, i32);
+    builtin.function public extern("C") @sdivrem() -> (i32, i32) {
+        %a = arith.constant -7 : i32;
+        %b = arith.constant 2 : i32;
+        %r0, %r1 = arith.sdivrem %a, %b;
+        builtin.ret %r0, %r1 : (i32, i32);
+    };
+
+    // CHECK-LABEL: @band(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant 8 : i8;
+    // CHECK-NEXT: builtin.ret [[R0]] : (i8);
+    builtin.function public extern("C") @band() -> (i8) {
+        %a = arith.constant 12 : i8;
+        %b = arith.constant 10 : i8;
+        %r = arith.band %a, %b;
+        builtin.ret %r : (i8);
+    };
+
+    // CHECK-LABEL: @bor(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant 14 : i8;
+    // CHECK-NEXT: builtin.ret [[R0]] : (i8);
+    builtin.function public extern("C") @bor() -> (i8) {
+        %a = arith.constant 12 : i8;
+        %b = arith.constant 10 : i8;
+        %r = arith.bor %a, %b;
+        builtin.ret %r : (i8);
+    };
+
+    // CHECK-LABEL: @bxor(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant 6 : i8;
+    // CHECK-NEXT: builtin.ret [[R0]] : (i8);
+    builtin.function public extern("C") @bxor() -> (i8) {
+        %a = arith.constant 12 : i8;
+        %b = arith.constant 10 : i8;
+        %r = arith.bxor %a, %b;
+        builtin.ret %r : (i8);
+    };
+
+    // The bits shifted out are lost.
+    // CHECK-LABEL: @shl(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant -64 : i8;
+    // CHECK-NEXT: builtin.ret [[R0]] : (i8);
+    builtin.function public extern("C") @shl() -> (i8) {
+        %a = arith.constant 3 : i8;
+        %b = arith.constant 6 : i8;
+        %r = arith.shl %a, %b;
+        builtin.ret %r : (i8);
+    };
+
+    // A shift by the width or more is undefined: it does not fold.
+    // CHECK-LABEL: @shl_by_width(
+    // CHECK: [[R:%[0-9]+]] = arith.shl 
+    // CHECK-NEXT: builtin.ret [[R]] : (i8);
+    builtin.function public extern("C") @shl_by_width() -> (i8) {
+        %a = arith.constant 1 : i8;
+        %b = arith.constant 8 : i8;
+        %r = arith.shl %a, %b;
+        builtin.ret %r : (i8);
+    };
+
+    // A logical shift brings in zeros.
+    // CHECK-LABEL: @shr(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant 1 : i8;
+    // CHECK-NEXT: builtin.ret [[R0]] : (i8);
+    builtin.function public extern("C") @shr() -> (i8) {
+        %a = arith.constant -128 : i8;
+        %b = arith.constant 7 : i8;
+        %r = arith.shr %a, %b;
+        builtin.ret %r : (i8);
+    };
+
+    // An arithmetic shift brings in the sign.
+    // CHECK-LABEL: @ashr(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant -1 : i8;
+    // CHECK-NEXT: builtin.ret [[R0]] : (i8);
+    builtin.function public extern("C") @ashr() -> (i8) {
+        %a = arith.constant -128 : i8;
+        %b = arith.constant 7 : i8;
+        %r = arith.ashr %a, %b;
+        builtin.ret %r : (i8);
+    };
+
+    // CHECK-LABEL: @rotl(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant 3 : i8;
+    // CHECK-NEXT: builtin.ret [[R0]] : (i8);
+    builtin.function public extern("C") @rotl() -> (i8) {
+        %a = arith.constant -127 : i8;
+        %b = arith.constant 1 : i8;
+        %r = arith.rotl %a, %b;
+        builtin.ret %r : (i8);
+    };
+
+    // CHECK-LABEL: @rotr(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant -127 : i8;
+    // CHECK-NEXT: builtin.ret [[R0]] : (i8);
+    builtin.function public extern("C") @rotr() -> (i8) {
+        %a = arith.constant 3 : i8;
+        %b = arith.constant 1 : i8;
+        %r = arith.rotr %a, %b;
+        builtin.ret %r : (i8);
+    };
+
+    // Unsigned, -1 is the largest.
+    // CHECK-LABEL: @min(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant 1 : i8;
+    // CHECK-NEXT: builtin.ret [[R0]] : (i8);
+    builtin.function public extern("C") @min() -> (i8) {
+        %a = arith.constant -1 : i8;
+        %b = arith.constant 1 : i8;
+        %r = arith.min %a, %b <{ signedness = #builtin.signedness<unsigned> }>;
+        builtin.ret %r : (i8);
+    };
+
+    // CHECK-LABEL: @max(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant 1 : i8;
+    // CHECK-NEXT: builtin.ret [[R0]] : (i8);
+    builtin.function public extern("C") @max() -> (i8) {
+        %a = arith.constant -1 : i8;
+        %b = arith.constant 1 : i8;
+        %r = arith.max %a, %b <{ signedness = #builtin.signedness<signed> }>;
+        builtin.ret %r : (i8);
+    };
+
+    // Unsigned, -1 is not less than 1.
+    // CHECK-LABEL: @cmpi(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant 0 : i1;
+    // CHECK-NEXT: builtin.ret [[R0]] : (i1);
+    builtin.function public extern("C") @cmpi() -> (i1) {
+        %a = arith.constant -1 : i32;
+        %b = arith.constant 1 : i32;
+        %r = arith.cmpi ult %a, %b;
+        builtin.ret %r : (i1);
+    };
+
+    // CHECK-LABEL: @neg(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant -5 : i32;
+    // CHECK-NEXT: builtin.ret [[R0]] : (i32);
+    builtin.function public extern("C") @neg() -> (i32) {
+        %a = arith.constant 5 : i32;
+        %r = arith.neg %a;
+        builtin.ret %r : (i32);
+    };
+
+    // CHECK-LABEL: @bnot(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant -13 : i8;
+    // CHECK-NEXT: builtin.ret [[R0]] : (i8);
+    builtin.function public extern("C") @bnot() -> (i8) {
+        %a = arith.constant 12 : i8;
+        %r = arith.bnot %a;
+        builtin.ret %r : (i8);
+    };
+
+    // CHECK-LABEL: @popcnt(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant 3 : i8;
+    // CHECK-NEXT: builtin.ret [[R0]] : (i8);
+    builtin.function public extern("C") @popcnt() -> (i8) {
+        %a = arith.constant 7 : i8;
+        %r = arith.popcnt %a;
+        builtin.ret %r : (i8);
+    };
+
+    // CHECK-LABEL: @clz(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant 5 : i8;
+    // CHECK-NEXT: builtin.ret [[R0]] : (i8);
+    builtin.function public extern("C") @clz() -> (i8) {
+        %a = arith.constant 7 : i8;
+        %r = arith.clz %a;
+        builtin.ret %r : (i8);
+    };
+
+    // CHECK-LABEL: @ctz(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant 3 : i8;
+    // CHECK-NEXT: builtin.ret [[R0]] : (i8);
+    builtin.function public extern("C") @ctz() -> (i8) {
+        %a = arith.constant 8 : i8;
+        %r = arith.ctz %a;
+        builtin.ret %r : (i8);
+    };
+
+    // CHECK-LABEL: @clo(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant 7 : i8;
+    // CHECK-NEXT: builtin.ret [[R0]] : (i8);
+    builtin.function public extern("C") @clo() -> (i8) {
+        %a = arith.constant -2 : i8;
+        %r = arith.clo %a;
+        builtin.ret %r : (i8);
+    };
+
+    // CHECK-LABEL: @cto(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant 3 : i8;
+    // CHECK-NEXT: builtin.ret [[R0]] : (i8);
+    builtin.function public extern("C") @cto() -> (i8) {
+        %a = arith.constant 7 : i8;
+        %r = arith.cto %a;
+        builtin.ret %r : (i8);
+    };
+
+    // CHECK-LABEL: @trunc(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant 1 : i8;
+    // CHECK-NEXT: builtin.ret [[R0]] : (i8);
+    builtin.function public extern("C") @trunc() -> (i8) {
+        %a = arith.constant 257 : i32;
+        %r = arith.trunc %a <{ ty = i8 }>;
+        builtin.ret %r : (i8);
+    };
+
+    // CHECK-LABEL: @zext(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant 255 : i32;
+    // CHECK-NEXT: builtin.ret [[R0]] : (i32);
+    builtin.function public extern("C") @zext() -> (i32) {
+        %a = arith.constant -1 : i8;
+        %r = arith.zext %a <{ ty = i32 }>;
+        builtin.ret %r : (i32);
+    };
+
+    // CHECK-LABEL: @sext(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant -1 : i32;
+    // CHECK-NEXT: builtin.ret [[R0]] : (i32);
+    builtin.function public extern("C") @sext() -> (i32) {
+        %a = arith.constant -1 : i8;
+        %r = arith.sext %a <{ ty = i32 }>;
+        builtin.ret %r : (i32);
+    };
+
+    // An `isize` result folds to what both a 32-bit and a 64-bit target compute: zero-extending
+    // -1 gives 4294967295, whose low 32 bits are what a 32-bit target holds.
+    // CHECK-LABEL: @zext_or_trunc(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant 4294967295 : isize;
+    // CHECK-NEXT: builtin.ret [[R0]] : (isize);
+    builtin.function public extern("C") @zext_or_trunc() -> (isize) {
+        %a = arith.constant -1 : i32;
+        %r = arith.zext_or_trunc %a <{ ty = isize }>;
+        builtin.ret %r : (isize);
+    };
+
+    // Sign-extending -1 is -1 on either target.
+    // CHECK-LABEL: @sext_or_trunc(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant -1 : isize;
+    // CHECK-NEXT: builtin.ret [[R0]] : (isize);
+    builtin.function public extern("C") @sext_or_trunc() -> (isize) {
+        %a = arith.constant -1 : i32;
+        %r = arith.sext_or_trunc %a <{ ty = isize }>;
+        builtin.ret %r : (isize);
+    };
+
+    // `isize` arithmetic folds when both targets agree.
+    // CHECK-LABEL: @isize_add(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constant 5 : isize;
+    // CHECK-NEXT: builtin.ret [[R0]] : (isize);
+    builtin.function public extern("C") @isize_add() -> (isize) {
+        %a = arith.constant 2 : isize;
+        %b = arith.constant 3 : isize;
+        %r = arith.add %a, %b;
+        builtin.ret %r : (isize);
+    };
+
+    // A checked signed sum of `isize` constants that fits in 64 bits but overflows 32 would trap
+    // on a 32-bit target: the two targets disagree, and it does not fold.
+    // CHECK-LABEL: @isize_targets_disagree(
+    // CHECK: [[R:%[0-9]+]] = arith.add 
+    // CHECK-NEXT: builtin.ret [[R]] : (isize);
+    builtin.function public extern("C") @isize_targets_disagree() -> (isize) {
+        %a = arith.constant 2147483647 : isize;
+        %b = arith.constant 1 : isize;
+        %r = arith.add %a, %b <{ overflow = #builtin.overflow<checked signed> }>;
+        builtin.ret %r : (isize);
+    };
+};

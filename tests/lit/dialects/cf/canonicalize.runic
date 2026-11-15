@@ -1,0 +1,161 @@
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(canonicalizer{enable-patterns=erase-true-assert}))' | runic-opt - --verify-roundtrip | filecheck %s --check-prefix=ASSERT
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(canonicalizer{enable-patterns=simplify-br-to-block-with-single-predecessor}))' | runic-opt - --verify-roundtrip | filecheck %s --check-prefix=SINGLE
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(canonicalizer{enable-patterns=simplify-br-to-return}))' | runic-opt - --verify-roundtrip | filecheck %s --check-prefix=RET
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(canonicalizer{enable-patterns=simplify-cond-br-like-switch}))' | runic-opt - --verify-roundtrip | filecheck %s --check-prefix=SWITCH
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(canonicalizer{enable-patterns=simplify-passthrough-br}))' | runic-opt - --verify-roundtrip | filecheck %s --check-prefix=PBR
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(canonicalizer{enable-patterns=simplify-passthrough-cond-br}))' | runic-opt - --verify-roundtrip | filecheck %s --check-prefix=PCOND
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(canonicalizer{enable-patterns=remove-unused-single-pred-block-args}))' | runic-opt - --verify-roundtrip | filecheck %s --check-prefix=ARGS
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(canonicalizer{enable-patterns=simplify-switch-fallback-overlap}))' | runic-opt - --verify-roundtrip | filecheck %s --check-prefix=OVERLAP
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(canonicalizer{enable-patterns=split-critical-edges}))' | runic-opt - --verify-roundtrip | filecheck %s --check-prefix=SPLIT
+
+// The canonicalization patterns of `cf`, one RUN line each with the canonicalizer restricted to
+// that pattern (the greedy driver still folds and erases trivially dead operations), and one case
+// each, checked under the pattern's prefix. Each RUN line reads the output back. The select
+// patterns and folds are in `transforms/canonicalizer/select-of-bools.runic`.
+builtin.module public @cf_canonicalize {
+    // An assertion of the constant true cannot trap and is erased; one of an unknown condition
+    // or of false is kept.
+    // ASSERT-LABEL: @erase_true_assert(
+    // ASSERT-SAME: [[C:%[0-9]+]]: i1) {
+    // ASSERT-NEXT: [[FALSE:%[0-9]+]] = arith.constant 0 : i1;
+    // ASSERT-NEXT: cf.assert [[C]], "maybe";
+    // ASSERT-NEXT: cf.assert [[FALSE]], "always";
+    // ASSERT-NEXT: builtin.ret;
+    builtin.function public extern("C") @erase_true_assert(%c: i1) {
+        %true = arith.constant 1 : i1;
+        %false = arith.constant 0 : i1;
+        cf.assert %true, "never";
+        cf.assert %c, "maybe";
+        cf.assert %false, "always";
+        builtin.ret;
+    };
+
+    // A branch to a block with one predecessor merges the two blocks.
+    // SINGLE-LABEL: @br_to_single_predecessor(
+    // SINGLE-SAME: [[A:%[0-9]+]]: i32) -> i32 {
+    // SINGLE-NEXT: [[S:%[0-9]+]] = arith.add [[A]], [[A]];
+    // SINGLE-NEXT: builtin.ret [[S]] : (i32);
+    builtin.function public extern("C") @br_to_single_predecessor(%a: i32) -> i32 {
+        cf.br ^next(%a : i32);
+    ^next(%x: i32):
+        %s = arith.add %x, %x;
+        builtin.ret %s : (i32);
+    };
+
+    // A branch to a block that only returns becomes the return.
+    // RET-LABEL: @br_to_return(
+    // RET-SAME: [[C:%[0-9]+]]: i1, [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+    // RET-NEXT: cf.cond_br [[C]] ^[[L:block[0-9]+]], ^[[R:block[0-9]+]] : (i1);
+    // RET-NEXT: ^[[L]]:
+    // RET-NEXT: [[S:%[0-9]+]] = arith.add [[A]], [[B]];
+    // RET-NEXT: builtin.ret [[S]] : (i32);
+    // RET-NEXT: ^[[R]]:
+    // RET-NEXT: [[M:%[0-9]+]] = arith.mul [[A]], [[B]];
+    // RET-NEXT: builtin.ret [[M]] : (i32);
+    // RET-NEXT: };
+    builtin.function public extern("C") @br_to_return(%c: i1, %a: i32, %b: i32) -> i32 {
+        cf.cond_br %c ^left, ^right : (i1);
+    ^left:
+        %s = arith.add %a, %b;
+        cf.br ^exit(%s : i32);
+    ^right:
+        %m = arith.mul %a, %b;
+        cf.br ^exit(%m : i32);
+    ^exit(%r: i32):
+        builtin.ret %r : (i32);
+    };
+
+    // A switch of one case is a conditional branch on an equality.
+    // SWITCH-LABEL: @switch_like_cond_br(
+    // SWITCH-SAME: [[S:%[0-9]+]]: i32, {{%[0-9]+}}: i32, {{%[0-9]+}}: i32) -> i32 {
+    // SWITCH-NEXT: [[THREE:%[0-9]+]] = arith.constant 3 : i32;
+    // SWITCH-NEXT: [[EQ:%[0-9]+]] = arith.cmpi eq [[S]], [[THREE]];
+    // SWITCH-NEXT: cf.cond_br [[EQ]] ^{{block[0-9]+}}, ^{{block[0-9]+}} : (i1);
+    builtin.function public extern("C") @switch_like_cond_br(%s: i32, %a: i32, %b: i32) -> i32 {
+        cf.switch %s [#builtin.i32<3> -> ^three], ^other : (i32);
+    ^three:
+        builtin.ret %a : (i32);
+    ^other:
+        builtin.ret %b : (i32);
+    };
+
+    // A branch to a block that only branches on goes to that block's successor.
+    // PBR-LABEL: @passthrough_br(
+    // PBR-SAME: [[A:%[0-9]+]]: i32) -> i32 {
+    // PBR-NEXT: cf.br ^[[LAST:block[0-9]+]]([[A]] : i32);
+    // PBR-NEXT: ^[[LAST]]([[X:%[0-9]+]]: i32):
+    // PBR-NEXT: builtin.ret [[X]] : (i32);
+    builtin.function public extern("C") @passthrough_br(%a: i32) -> i32 {
+        cf.br ^forward;
+    ^forward:
+        cf.br ^last(%a : i32);
+    ^last(%x: i32):
+        builtin.ret %x : (i32);
+    };
+
+    // A conditional branch to blocks that only branch on goes to their successors.
+    // PCOND-LABEL: @passthrough_cond_br(
+    // PCOND-SAME: [[C:%[0-9]+]]: i1, [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+    // PCOND-NEXT: cf.cond_br [[C]] ^{{block[0-9]+}}([[A]] : i32), ^{{block[0-9]+}}([[B]] : i32) : (i1);
+    builtin.function public extern("C") @passthrough_cond_br(%c: i1, %a: i32, %b: i32) -> i32 {
+        cf.cond_br %c ^left, ^right : (i1);
+    ^left:
+        cf.br ^l(%a : i32);
+    ^right:
+        cf.br ^r(%b : i32);
+    ^l(%x: i32):
+        builtin.ret %x : (i32);
+    ^r(%y: i32):
+        %z = arith.add %y, %y;
+        builtin.ret %z : (i32);
+    };
+
+    // The arguments of a block with one predecessor are replaced by what the branch passes.
+    // ARGS-LABEL: @unused_single_pred_block_args(
+    // ARGS-SAME: [[C:%[0-9]+]]: i1, [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+    // ARGS-NEXT: cf.cond_br [[C]] ^[[L:block[0-9]+]], ^[[R:block[0-9]+]] : (i1);
+    // ARGS-NEXT: ^[[L]]:
+    // ARGS-NEXT: builtin.ret [[A]] : (i32);
+    // ARGS-NEXT: ^[[R]]:
+    // ARGS-NEXT: builtin.ret [[B]] : (i32);
+    builtin.function public extern("C") @unused_single_pred_block_args(%c: i1, %a: i32, %b: i32) -> i32 {
+        cf.cond_br %c ^left(%a : i32), ^right(%b : i32) : (i1);
+    ^left(%x: i32):
+        builtin.ret %a : (i32);
+    ^right(%y: i32):
+        builtin.ret %y : (i32);
+    };
+
+    // A case that goes where the fallback goes, with the same operands, is removed.
+    // OVERLAP-LABEL: @switch_fallback_overlap(
+    // OVERLAP-SAME: [[S:%[0-9]+]]: i32, [[A:%[0-9]+]]: i32, {{%[0-9]+}}: i32) -> i32 {
+    // OVERLAP-NEXT: cf.switch [[S]] [#builtin.i32<1> -> ^{{block[0-9]+}}], ^{{block[0-9]+}}([[A]] : i32) : (i32);
+    builtin.function public extern("C") @switch_fallback_overlap(%s: i32, %a: i32, %b: i32) -> i32 {
+        cf.switch %s [#builtin.i32<1> -> ^one, #builtin.i32<2> -> ^other(%a : i32)], ^other(%a : i32) : (i32);
+    ^one:
+        builtin.ret %b : (i32);
+    ^other(%x: i32):
+        builtin.ret %x : (i32);
+    };
+
+    // Each edge from a block with two successors to a block with two predecessors gets a block
+    // of its own, which passes the operands on.
+    // SPLIT-LABEL: @critical_edges(
+    // SPLIT-SAME: [[C0:%[0-9]+]]: i1, [[C1:%[0-9]+]]: i1, [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+    // SPLIT-NEXT: cf.cond_br [[C0]] ^[[E0:block[0-9]+]], ^[[SECOND:block[0-9]+]] : (i1);
+    // SPLIT-NEXT: ^[[SECOND]]:
+    // SPLIT-NEXT: cf.cond_br [[C1]] ^[[E1:block[0-9]+]], ^{{block[0-9]+}} : (i1);
+    // SPLIT-NEXT: ^[[E0]]:
+    // SPLIT-NEXT: cf.br ^[[JOIN:block[0-9]+]]([[A]] : i32);
+    // SPLIT-NEXT: ^[[E1]]:
+    // SPLIT-NEXT: cf.br ^[[JOIN]]([[B]] : i32);
+    builtin.function public extern("C") @critical_edges(%c0: i1, %c1: i1, %a: i32, %b: i32) -> i32 {
+        cf.cond_br %c0 ^join(%a : i32), ^second : (i1);
+    ^second:
+        cf.cond_br %c1 ^join(%b : i32), ^other : (i1);
+    ^join(%x: i32):
+        builtin.ret %x : (i32);
+    ^other:
+        builtin.ret %b : (i32);
+    };
+};
