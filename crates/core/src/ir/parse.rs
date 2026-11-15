@@ -546,8 +546,8 @@ fn parse_anchored_source(
         let end = match operation_parser.token_stream_mut().next() {
             Ok(None) => None,
             Ok(Some(token)) if matches!(token.inner(), Token::Eof) => None,
-            // The span of a token can leave out its sigil (`%0` is lexed as `0`), so the label
-            // starts where the text after the operation does.
+            // The span of a token can leave out its sigil (`#foo` and `!foo` are lexed as `foo`;
+            // `%` and `^` are kept), so the label starts where the text after the operation does.
             Ok(Some(token)) => Some(token.span().range().end().max(start)),
             // Text the lexer cannot read is labelled to the end of the word it starts.
             Err(_) => Some(end_of_word(source, start as usize) as u32),

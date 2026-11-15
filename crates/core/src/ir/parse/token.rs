@@ -177,12 +177,38 @@ impl fmt::Display for Token<'_> {
         match self {
             // A token that carries text is shown as it is written
             Self::BareIdent(name) => f.write_str(name),
-            Self::AtIdent(name) => write!(f, "@{name}"),
+            // The token holds a quoted name unescaped: it is shown quoted again
+            Self::AtIdent(name) if crate::ir::print::is_valid_bare_identifier(name) => {
+                write!(f, "@{name}")
+            }
+            Self::AtIdent(name) => {
+                let mut quoted = String::from("@");
+                crate::ir::symbols::push_quoted(&mut quoted, name);
+                f.write_str(&quoted)
+            }
             Self::HashIdent(name) => write!(f, "#{name}"),
             Self::PercentIdent(name) => write!(f, "%{name}"),
             Self::CaretIdent(name) => write!(f, "^{name}"),
             Self::BangIdent(name) => write!(f, "!{name}"),
-            Self::String(text) => write!(f, "\"{text}\""),
+            // The token holds the text as written; an escaped line break is shown as `\n` (and
+            // a carriage return or a tab as `\r` or `\t`), so that the token is shown on one line
+            Self::String(text) => {
+                f.write_char('"')?;
+                let mut chars = text.chars().peekable();
+                while let Some(c) = chars.next() {
+                    match c {
+                        '\\' if chars.peek() == Some(&'\n') => {
+                            chars.next();
+                            f.write_str("\\n")?;
+                        }
+                        '\n' => f.write_str("\\n")?,
+                        '\r' => f.write_str("\\r")?,
+                        '\t' => f.write_str("\\t")?,
+                        c => f.write_char(c)?,
+                    }
+                }
+                f.write_char('"')
+            }
             Self::Int(digits) => f.write_str(digits),
             Self::Hex(digits) => write!(f, "0x{digits}"),
             Self::Binary(digits) => write!(f, "0b{digits}"),

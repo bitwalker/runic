@@ -926,7 +926,7 @@ impl AddAssign<Document> for AsmPrinter<'_> {
 
 /// Returns true if `id` reads back as one bare identifier, mirroring the lexer's
 /// `lex_identifier`: an ASCII letter or `_`, followed by ASCII letters, digits, `_`, `$` and `.`.
-fn is_valid_bare_identifier(id: &str) -> bool {
+pub(crate) fn is_valid_bare_identifier(id: &str) -> bool {
     let mut chars = id.chars();
     chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '$'))

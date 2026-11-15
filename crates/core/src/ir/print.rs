@@ -350,6 +350,7 @@
 //!   property.
 
 mod asm_printer;
+pub(crate) use self::asm_printer::is_valid_bare_identifier;
 mod renumber;
 #[cfg(test)]
 mod tests;

@@ -2547,6 +2547,27 @@ fn an_unexpected_token_is_shown_as_written() {
     }
 }
 
+/// A quoted symbol name is shown quoted, with `"` and `\` escaped as the printer writes them,
+/// though the token holds the name unescaped; a bare name is shown bare.
+#[test]
+fn an_unexpected_quoted_symbol_name_is_shown_quoted() {
+    let context = Rc::new(Context::default());
+    for (text, shown) in
+        [(r#"@"a b""#, r#"'@"a b"'"#), (r#"@"a\"b""#, r#"'@"a\"b"'"#), ("@a.b", "'@a.b'")]
+    {
+        let message = type_error_text(&context, text);
+        assert!(message.contains(&format!("unexpected token {shown}")), "{text}: {message}");
+    }
+}
+
+/// A string with an escaped line break is shown on one line, the line break as `\n`.
+#[test]
+fn an_unexpected_string_is_shown_on_one_line() {
+    let context = Rc::new(Context::default());
+    let message = type_error_text(&context, "\"a\\\nb\"");
+    assert!(message.contains(r#"unexpected token '"a\nb"'"#), "{message}");
+}
+
 /// A word spelled like an integer type too wide to name one is an identifier, keeping its
 /// spelling, rather than a type token with a clamped width.
 #[test]
