@@ -1,0 +1,65 @@
+// RUN: runic-opt %s | filecheck %s
+// RUN: runic-opt %s --verify-roundtrip | filecheck %s
+
+// The early exits of the structured control flow dialect, read and printed: `scf.break` and
+// `scf.continue` inside an `scf.if` inside the loop they leave, and an `scf.break` of two levels,
+// from an inner loop out of the outer one. The level count is written before the operands. The
+// reprint is the input.
+
+// CHECK-LABEL: builtin.function public extern("C") @early_exits(
+// CHECK-SAME: [[N:%[0-9]+]]: i32, [[LIMIT:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[ZERO:%[0-9]+]] = arith.constant 0 : i32;
+// CHECK-NEXT: [[RESULT:%[0-9]+]] = scf.while [[ZERO]] before {
+// CHECK-NEXT: ^[[B_OUTER_HEAD:block[0-9]+]]([[I:%[0-9]+]]: i32):
+// CHECK-NEXT: [[IN_RANGE:%[0-9]+]] = arith.cmpi ult [[I]], [[N]];
+// CHECK-NEXT: scf.condition [[IN_RANGE]], [[I]] : (i1, i32);
+// CHECK-NEXT: } after {
+// CHECK-NEXT: ^[[B_OUTER_BODY:block[0-9]+]]([[J:%[0-9]+]]: i32):
+// CHECK-NEXT: [[OVER:%[0-9]+]] = arith.cmpi ugt [[J]], [[LIMIT]];
+// CHECK-NEXT: [[STEP:%[0-9]+]] = scf.if [[OVER]] then {
+// CHECK-NEXT: [[INNER:%[0-9]+]] = scf.while [[J]] before {
+// CHECK-NEXT: ^[[B_INNER_HEAD:block[0-9]+]]([[K:%[0-9]+]]: i32):
+// CHECK-NEXT: [[BELOW:%[0-9]+]] = arith.cmpi ult [[K]], [[LIMIT]];
+// CHECK-NEXT: scf.condition [[BELOW]], [[K]] : (i1, i32);
+// CHECK-NEXT: } after {
+// CHECK-NEXT: ^[[B_INNER_BODY:block[0-9]+]]([[L:%[0-9]+]]: i32):
+// CHECK-NEXT: scf.break 2 [[L]] : (i32);
+// CHECK-NEXT: } : (i32) -> (i32);
+// CHECK-NEXT: scf.continue 1 [[INNER]] : (i32);
+// CHECK-NEXT: } else {
+// CHECK-NEXT: scf.yield [[J]] : (i32);
+// CHECK-NEXT: } : (i1) -> (i32);
+// CHECK-NEXT: [[ONE:%[0-9]+]] = arith.constant 1 : i32;
+// CHECK-NEXT: [[NEXT:%[0-9]+]] = arith.add [[STEP]], [[ONE]];
+// CHECK-NEXT: scf.yield [[NEXT]] : (i32);
+// CHECK-NEXT: } : (i32) -> (i32);
+// CHECK-NEXT: builtin.ret [[RESULT]] : (i32);
+// CHECK-NEXT: };
+builtin.function public extern("C") @early_exits(%n: i32, %limit: i32) -> i32 {
+    %zero = arith.constant 0 : i32;
+    %result = scf.while %zero before {
+    ^outer_head(%i: i32):
+        %in_range = arith.cmpi ult %i, %n;
+        scf.condition %in_range, %i : (i1, i32);
+    } after {
+    ^outer_body(%j: i32):
+        %over = arith.cmpi ugt %j, %limit;
+        %step = scf.if %over then {
+            %inner = scf.while %j before {
+            ^inner_head(%k: i32):
+                %below = arith.cmpi ult %k, %limit;
+                scf.condition %below, %k : (i1, i32);
+            } after {
+            ^inner_body(%l: i32):
+                scf.break 2 %l : (i32);
+            } : (i32) -> (i32);
+            scf.continue 1 %inner : (i32);
+        } else {
+            scf.yield %j : (i32);
+        } : (i1) -> (i32);
+        %one = arith.constant 1 : i32;
+        %next = arith.add %step, %one;
+        scf.yield %next : (i32);
+    } : (i32) -> (i32);
+    builtin.ret %result : (i32);
+};

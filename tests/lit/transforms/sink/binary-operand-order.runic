@@ -1,0 +1,25 @@
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(sink-operand-defs))' | filecheck %s
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(sink-operand-defs))' | runic-opt - --verify-roundtrip | filecheck %s
+
+// Sinking visits a binary operation's left operand's definition before its right one's, each with
+// its own operands, so the right value is defined last, just before the operation. Subtraction
+// makes the order of the operands observable; the nested definitions make the walk resume after
+// each. The second RUN line reads the output back.
+builtin.module private @sink_binary {
+    // CHECK-LABEL: @nested(
+    // CHECK-SAME: [[X:%[0-9]+]]: i32, [[Y:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[THREE:%[0-9]+]] = arith.constant 3 : i32;
+    // CHECK-NEXT: [[LHS:%[0-9]+]] = arith.sub [[X]], [[THREE]];
+    // CHECK-NEXT: [[SEVEN:%[0-9]+]] = arith.constant 7 : i32;
+    // CHECK-NEXT: [[RHS:%[0-9]+]] = arith.sub [[Y]], [[SEVEN]];
+    // CHECK-NEXT: [[RESULT:%[0-9]+]] = arith.sub [[LHS]], [[RHS]];
+    // CHECK-NEXT: builtin.ret [[RESULT]] : (i32);
+    builtin.function public extern("C") @nested(%x: i32, %y: i32) -> i32 {
+        %seven = arith.constant 7 : i32;
+        %three = arith.constant 3 : i32;
+        %rhs = arith.sub %y, %seven;
+        %lhs = arith.sub %x, %three;
+        %result = arith.sub %lhs, %rhs;
+        builtin.ret %result : (i32);
+    };
+};

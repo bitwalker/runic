@@ -1,0 +1,33 @@
+// RUN: runic-opt %s | filecheck %s
+// RUN: runic-opt %s --verify-roundtrip | filecheck %s
+
+// The attributes of the debug-info dialect, read and printed: variables with the column, argument
+// and type properties; expressions over frame bases (a local slot with a positive offset, a named
+// global with a negative one), local and global slots, an operand stack slot, and expressions of
+// several operations; and a subprogram on the function. The reprint is the input.
+
+// CHECK-LABEL: builtin.function public extern("C") @debuginfo(
+// CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: di.debug_declare <{ variable = #di.variable<{ name = "a", file = "test.rs", line = 19, column = 7, arg = 0, ty = i32 }>, expression = #di.expression<[DI_OP_frame_base(local_slot, 2+8)]> }>;
+// CHECK-NEXT: di.debug_declare <{ variable = #di.variable<{ name = "b", file = "test.rs", line = 20, arg = 1 }>, expression = #di.expression<[DI_OP_frame_base(global_slot, "__stack_pointer"-16)]> }>;
+// CHECK-NEXT: di.debug_declare <{ variable = #di.variable<{ name = "s", file = "test.rs", line = 21 }>, expression = #di.expression<[DI_OP_local_slot(3), DW_OP_deref]> }>;
+// CHECK-NEXT: di.debug_declare <{ variable = #di.variable<{ name = "g", file = "test.rs", line = 21 }>, expression = #di.expression<[DI_OP_global_slot("global4")]> }>;
+// CHECK-NEXT: di.debug_declare <{ variable = #di.variable<{ name = "o", file = "test.rs", line = 21 }>, expression = #di.expression<[DI_OP_operand_stack_slot(1)]> }>;
+// CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[A]], [[B]];
+// CHECK-NEXT: di.debug_value [[S]] <{ variable = #di.variable<{ name = "x", file = "test.rs", line = 22, ty = i32 }>, expression = #di.expression<[]> }> : (i32);
+// CHECK-NEXT: di.debug_value [[S]] <{ variable = #di.variable<{ name = "y", file = "test.rs", line = 23 }>, expression = #di.expression<[DW_OP_constu(4), DW_OP_plus, DW_OP_stack_value]> }> : (i32);
+// CHECK-NEXT: di.debug_kill <{ variable = #di.variable<{ name = "x", file = "test.rs", line = 22, ty = i32 }> }>;
+// CHECK-NEXT: builtin.ret [[S]] : (i32);
+// CHECK-NEXT: } attributes { di.subprogram = #di.subprogram<{ name = "fib", file = "test.rs", line = 3, column = 5, linkage = "_ZN3fib", params = ["a", "b"], definition = true, local = true }> };
+builtin.function public extern("C") @debuginfo(%a: i32, %b: i32) -> i32 {
+    di.debug_declare <{ variable = #di.variable<{ name = "a", file = "test.rs", line = 19, column = 7, arg = 0, ty = i32 }>, expression = #di.expression<[DI_OP_frame_base(local_slot, 2+8)]> }>;
+    di.debug_declare <{ variable = #di.variable<{ name = "b", file = "test.rs", line = 20, arg = 1 }>, expression = #di.expression<[DI_OP_frame_base(global_slot, "__stack_pointer"-16)]> }>;
+    di.debug_declare <{ variable = #di.variable<{ name = "s", file = "test.rs", line = 21 }>, expression = #di.expression<[DI_OP_local_slot(3), DW_OP_deref]> }>;
+    di.debug_declare <{ variable = #di.variable<{ name = "g", file = "test.rs", line = 21 }>, expression = #di.expression<[DI_OP_global_slot("global4")]> }>;
+    di.debug_declare <{ variable = #di.variable<{ name = "o", file = "test.rs", line = 21 }>, expression = #di.expression<[DI_OP_operand_stack_slot(1)]> }>;
+    %s = arith.add %a, %b;
+    di.debug_value %s <{ variable = #di.variable<{ name = "x", file = "test.rs", line = 22, ty = i32 }>, expression = #di.expression<[]> }> : (i32);
+    di.debug_value %s <{ variable = #di.variable<{ name = "y", file = "test.rs", line = 23 }>, expression = #di.expression<[DW_OP_constu(4), DW_OP_plus, DW_OP_stack_value]> }> : (i32);
+    di.debug_kill <{ variable = #di.variable<{ name = "x", file = "test.rs", line = 22, ty = i32 }> }>;
+    builtin.ret %s : (i32);
+} attributes { di.subprogram = #di.subprogram<{ name = "fib", file = "test.rs", line = 3, column = 5, linkage = "_ZN3fib", params = ["a", "b"], definition = true, local = true }> };

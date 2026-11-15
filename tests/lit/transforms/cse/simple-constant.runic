@@ -1,0 +1,15 @@
+// RUN: runic-opt %s -p 'builtin.function(cse)' | filecheck %s
+// RUN: runic-opt %s -p 'builtin.function(cse)' | runic-opt - --verify-roundtrip | filecheck %s
+
+// The simplest pipeline, anchored on a function at the top level: CSE replaces the second of two
+// equal constants by the first. The second RUN line reads the output back.
+
+// CHECK-LABEL: @simple_constant(
+// CHECK-SAME: ) -> (i32, i32) {
+// CHECK-NEXT: [[V:%[0-9]+]] = arith.constant 1 : i32;
+// CHECK-NEXT: builtin.ret [[V]], [[V]] : (i32, i32);
+builtin.function public extern("C") @simple_constant() -> (i32, i32) {
+    %a = arith.constant 1 : i32;
+    %b = arith.constant 1 : i32;
+    builtin.ret %a, %b : (i32, i32);
+};

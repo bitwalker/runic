@@ -1,0 +1,439 @@
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(canonicalizer{enable-patterns=remove-loop-invariant-args-from-before-block}))' | filecheck %s
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(canonicalizer{enable-patterns=remove-loop-invariant-args-from-before-block}))' | runic-opt - --verify-roundtrip | filecheck %s
+
+// The `remove-loop-invariant-args-from-before-block` canonicalization of `scf.while`, with the
+// canonicalizer restricted to that pattern (the greedy driver still folds, erases trivially dead
+// operations and simplifies regions). The second RUN line reads the rewritten IR back.
+//
+// A before-block argument is loop invariant when the value fed back to it over the back edge is
+// always its initial value, i.e. when the i-th `scf.yield` operand
+//   1. is the i-th `scf.while` operand itself, or
+//   2. is the k-th after-block argument and the k-th `scf.condition` forwarded operand is either
+//      the i-th before-block argument or the i-th `scf.while` operand.
+// Such a column is dropped from the loop (`scf.while` operand, before-block argument, `scf.yield`
+// operand) and the uses of the before-block argument are replaced with the initial value. The
+// results of the loop and the after block keep their arity, and the `scf.condition` operands keep
+// their count and positions (one that was the removed argument becomes the initial value).
+builtin.module private @remove_loop_invariant_args {
+    // Case 1: the yield operand for column 0 is the loop operand `%0` itself.
+    // CHECK-LABEL: @yield_init(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32)
+    // CHECK-NEXT: [[TEN:%[0-9]+]] = arith.constant 10 : i32;
+    // CHECK-NEXT: [[R0:%[0-9]+]], [[R1:%[0-9]+]] = scf.while [[B]] before {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[Y:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[C:%[0-9]+]] = arith.cmpi ult [[Y]], [[TEN]];
+    // CHECK-NEXT: scf.condition [[C]], [[A]], [[Y]] : (i1, i32, i32);
+    // CHECK-NEXT: } after {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[Q]], [[P]]
+    // CHECK-NEXT: scf.yield [[S]] : (i32);
+    // CHECK-NEXT: } : (i32) -> (i32, i32);
+    // CHECK-NEXT: arith.add [[R0]], [[R1]]
+    builtin.function public extern("C") @yield_init(%0: i32, %1: i32) -> i32 {
+        %2 = arith.constant 10 : i32;
+        %3, %4 = scf.while %0, %1 before {
+        ^block1(%5: i32, %6: i32):
+            %7 = arith.cmpi ult %6, %2;
+            scf.condition %7, %5, %6 : (i1, i32, i32);
+        } after {
+        ^block2(%8: i32, %9: i32):
+            %10 = arith.add %9, %8 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+            scf.yield %0, %10 : (i32, i32);
+        } : (i32, i32) -> (i32, i32);
+        %11 = arith.add %3, %4 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+        builtin.ret %11 : (i32);
+    };
+
+    // Case 2: the yield operand for column 0 is after-block argument 0, and `scf.condition`
+    // forwards before-block argument 0 in position 0, so the column is passed around unchanged.
+    // CHECK-LABEL: @yield_forwarded_before_arg(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32)
+    // CHECK-NEXT: [[TEN:%[0-9]+]] = arith.constant 10 : i32;
+    // CHECK-NEXT: [[R0:%[0-9]+]], [[R1:%[0-9]+]] = scf.while [[B]] before {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[Y:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[C:%[0-9]+]] = arith.cmpi ult [[Y]], [[TEN]];
+    // CHECK-NEXT: scf.condition [[C]], [[A]], [[Y]] : (i1, i32, i32);
+    // CHECK-NEXT: } after {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[Q]], [[P]]
+    // CHECK-NEXT: scf.yield [[S]] : (i32);
+    // CHECK-NEXT: } : (i32) -> (i32, i32);
+    // CHECK-NEXT: arith.add [[R0]], [[R1]]
+    builtin.function public extern("C") @yield_forwarded_before_arg(%0: i32, %1: i32) -> i32 {
+        %2 = arith.constant 10 : i32;
+        %3, %4 = scf.while %0, %1 before {
+        ^block1(%5: i32, %6: i32):
+            %7 = arith.cmpi ult %6, %2;
+            scf.condition %7, %5, %6 : (i1, i32, i32);
+        } after {
+        ^block2(%8: i32, %9: i32):
+            %10 = arith.add %9, %8 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+            scf.yield %8, %10 : (i32, i32);
+        } : (i32, i32) -> (i32, i32);
+        %11 = arith.add %3, %4 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+        builtin.ret %11 : (i32);
+    };
+
+    // Case 2, second form: `scf.condition` forwards the loop operand `%0` itself (not the
+    // before-block argument) in position 0, and the yield feeds after-block argument 0 back.
+    // The before-block argument is used in the before body; that use becomes `%0`.
+    // CHECK-LABEL: @yield_forwarded_init(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32)
+    // CHECK-NEXT: [[TEN:%[0-9]+]] = arith.constant 10 : i32;
+    // CHECK-NEXT: [[ONE:%[0-9]+]] = arith.constant 1 : i32;
+    // CHECK-NEXT: [[R0:%[0-9]+]], [[R1:%[0-9]+]] = scf.while [[B]] before {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[Y:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[A]], [[Y]]
+    // CHECK-NEXT: [[C:%[0-9]+]] = arith.cmpi ult [[S]], [[TEN]];
+    // CHECK-NEXT: scf.condition [[C]], [[A]], [[S]] : (i1, i32, i32);
+    // CHECK-NEXT: } after {
+    // CHECK-NEXT: ^{{block[0-9]+}}({{%[0-9]+}}: i32, [[Q:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[N:%[0-9]+]] = arith.add [[Q]], [[ONE]]
+    // CHECK-NEXT: scf.yield [[N]] : (i32);
+    // CHECK-NEXT: } : (i32) -> (i32, i32);
+    // CHECK-NEXT: arith.add [[R0]], [[R1]]
+    builtin.function public extern("C") @yield_forwarded_init(%0: i32, %1: i32) -> i32 {
+        %2 = arith.constant 10 : i32;
+        %3 = arith.constant 1 : i32;
+        %4, %5 = scf.while %0, %1 before {
+        ^block1(%6: i32, %7: i32):
+            %8 = arith.add %6, %7 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+            %9 = arith.cmpi ult %8, %2;
+            scf.condition %9, %0, %8 : (i1, i32, i32);
+        } after {
+        ^block2(%10: i32, %11: i32):
+            %12 = arith.add %11, %3 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+            scf.yield %10, %12 : (i32, i32);
+        } : (i32, i32) -> (i32, i32);
+        %13 = arith.add %4, %5 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+        builtin.ret %13 : (i32);
+    };
+
+    // Columns 0 (case 1) and 2 (case 2) are invariant, columns 1 and 3 are not: the loop keeps
+    // operands `%1, %3`, the surviving before-block arguments keep their relative order, and all
+    // four results stay in place.
+    // CHECK-LABEL: @mixed_positions(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32, [[C:%[0-9]+]]: i32, [[D:%[0-9]+]]: i32)
+    // CHECK-NEXT: [[TEN:%[0-9]+]] = arith.constant 10 : i32;
+    // CHECK-NEXT: [[R0:%[0-9]+]], [[R1:%[0-9]+]], [[R2:%[0-9]+]], [[R3:%[0-9]+]] = scf.while [[B]], [[D]] before {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[X:%[0-9]+]]: i32, [[Y:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[S0:%[0-9]+]] = arith.add [[A]], [[C]]
+    // CHECK-NEXT: [[S1:%[0-9]+]] = arith.add [[S0]], [[X]]
+    // CHECK-NEXT: [[CND:%[0-9]+]] = arith.cmpi ult [[S1]], [[TEN]];
+    // CHECK-NEXT: scf.condition [[CND]], [[A]], [[X]], [[C]], [[Y]] : (i1, i32, i32, i32, i32);
+    // CHECK-NEXT: } after {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[P0:%[0-9]+]]: i32, [[P1:%[0-9]+]]: i32, [[P2:%[0-9]+]]: i32, [[P3:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[N1:%[0-9]+]] = arith.add [[P1]], [[P0]]
+    // CHECK-NEXT: [[N3:%[0-9]+]] = arith.add [[P3]], [[P2]]
+    // CHECK-NEXT: scf.yield [[N1]], [[N3]] : (i32, i32);
+    // CHECK-NEXT: } : (i32, i32) -> (i32, i32, i32, i32);
+    // CHECK-NEXT: [[T0:%[0-9]+]] = arith.add [[R0]], [[R1]]
+    // CHECK-NEXT: [[T1:%[0-9]+]] = arith.add [[T0]], [[R2]]
+    // CHECK-NEXT: arith.add [[T1]], [[R3]]
+    builtin.function public extern("C") @mixed_positions(%0: i32, %1: i32, %2: i32, %3: i32) -> i32 {
+        %4 = arith.constant 10 : i32;
+        %5, %6, %7, %8 = scf.while %0, %1, %2, %3 before {
+        ^block1(%9: i32, %10: i32, %11: i32, %12: i32):
+            %13 = arith.add %9, %11 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+            %14 = arith.add %13, %10 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+            %15 = arith.cmpi ult %14, %4;
+            scf.condition %15, %9, %10, %11, %12 : (i1, i32, i32, i32, i32);
+        } after {
+        ^block2(%16: i32, %17: i32, %18: i32, %19: i32):
+            %20 = arith.add %17, %16 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+            %21 = arith.add %19, %18 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+            scf.yield %0, %20, %18, %21 : (i32, i32, i32, i32);
+        } : (i32, i32, i32, i32) -> (i32, i32, i32, i32);
+        %22 = arith.add %5, %6 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+        %23 = arith.add %22, %7 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+        %24 = arith.add %23, %8 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+        builtin.ret %24 : (i32);
+    };
+
+    // Every column is invariant (column 0 by case 2, column 1 by case 1): the loop is left with
+    // no operands, an argument-less before block and an empty yield, while its results survive.
+    // CHECK-LABEL: @all_invariant(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32)
+    // CHECK-NEXT: [[TEN:%[0-9]+]] = arith.constant 10 : i32;
+    // CHECK-NEXT: [[R0:%[0-9]+]], [[R1:%[0-9]+]] = scf.while before {
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[A]], [[B]]
+    // CHECK-NEXT: [[C:%[0-9]+]] = arith.cmpi ult [[S]], [[TEN]];
+    // CHECK-NEXT: scf.condition [[C]], [[A]], [[S]] : (i1, i32, i32);
+    // CHECK-NEXT: } after {
+    // CHECK-NEXT: ^{{block[0-9]+}}({{%[0-9]+}}: i32, {{%[0-9]+}}: i32):
+    // CHECK-NEXT: scf.yield : ();
+    // CHECK-NEXT: } : () -> (i32, i32);
+    // CHECK-NEXT: arith.add [[R0]], [[R1]]
+    builtin.function public extern("C") @all_invariant(%0: i32, %1: i32) -> i32 {
+        %2 = arith.constant 10 : i32;
+        %3, %4 = scf.while %0, %1 before {
+        ^block1(%5: i32, %6: i32):
+            %7 = arith.add %5, %6 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+            %8 = arith.cmpi ult %7, %2;
+            scf.condition %8, %5, %7 : (i1, i32, i32);
+        } after {
+        ^block2(%9: i32, %10: i32):
+            scf.yield %9, %1 : (i32, i32);
+        } : (i32, i32) -> (i32, i32);
+        %11 = arith.add %3, %4 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+        builtin.ret %11 : (i32);
+    };
+
+    // The invariant before-block argument is used inside a nested region of the before body;
+    // those uses are replaced too.
+    // CHECK-LABEL: @nested_use(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32)
+    // CHECK-NEXT: [[TEN:%[0-9]+]] = arith.constant 10 : i32;
+    // CHECK-NEXT: [[ONE:%[0-9]+]] = arith.constant 1 : i32;
+    // CHECK-NEXT: [[R0:%[0-9]+]], [[R1:%[0-9]+]] = scf.while [[B]] before {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[Y:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[C:%[0-9]+]] = arith.cmpi ult [[Y]], [[TEN]];
+    // CHECK-NEXT: [[V:%[0-9]+]] = scf.if [[C]] then {
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[A]], [[ONE]]
+    // CHECK-NEXT: scf.yield [[S]] : (i32);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: scf.yield [[A]] : (i32);
+    // CHECK-NEXT: } : (i1) -> (i32);
+    // CHECK-NEXT: scf.condition [[C]], [[V]], [[Y]] : (i1, i32, i32);
+    // CHECK-NEXT: } after {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[N:%[0-9]+]] = arith.add [[Q]], [[P]]
+    // CHECK-NEXT: scf.yield [[N]] : (i32);
+    // CHECK-NEXT: } : (i32) -> (i32, i32);
+    // CHECK-NEXT: arith.add [[R0]], [[R1]]
+    builtin.function public extern("C") @nested_use(%0: i32, %1: i32) -> i32 {
+        %2 = arith.constant 10 : i32;
+        %3 = arith.constant 1 : i32;
+        %4, %5 = scf.while %0, %1 before {
+        ^block1(%6: i32, %7: i32):
+            %8 = arith.cmpi ult %7, %2;
+            %9 = scf.if %8 then {
+                %10 = arith.add %6, %3 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+                scf.yield %10 : (i32);
+            } else {
+                scf.yield %6 : (i32);
+            } : (i1) -> (i32);
+            scf.condition %8, %9, %7 : (i1, i32, i32);
+        } after {
+        ^block2(%11: i32, %12: i32):
+            %13 = arith.add %12, %11 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+            scf.yield %0, %13 : (i32, i32);
+        } : (i32, i32) -> (i32, i32);
+        %14 = arith.add %4, %5 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+        builtin.ret %14 : (i32);
+    };
+
+    // Negative: both yield operands are computed in the after body, nothing is invariant and
+    // the loop is left untouched.
+    // CHECK-LABEL: @no_invariant(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32)
+    // CHECK-NEXT: [[TEN:%[0-9]+]] = arith.constant 10 : i32;
+    // CHECK-NEXT: [[R0:%[0-9]+]], [[R1:%[0-9]+]] = scf.while [[A]], [[B]] before {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[X:%[0-9]+]]: i32, [[Y:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[C:%[0-9]+]] = arith.cmpi ult [[Y]], [[TEN]];
+    // CHECK-NEXT: scf.condition [[C]], [[X]], [[Y]] : (i1, i32, i32);
+    // CHECK-NEXT: } after {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[Q]], [[P]]
+    // CHECK-NEXT: scf.yield [[S]], [[S]] : (i32, i32);
+    // CHECK-NEXT: } : (i32, i32) -> (i32, i32);
+    builtin.function public extern("C") @no_invariant(%0: i32, %1: i32) -> i32 {
+        %2 = arith.constant 10 : i32;
+        %3, %4 = scf.while %0, %1 before {
+        ^block1(%5: i32, %6: i32):
+            %7 = arith.cmpi ult %6, %2;
+            scf.condition %7, %5, %6 : (i1, i32, i32);
+        } after {
+        ^block2(%8: i32, %9: i32):
+            %10 = arith.add %9, %8 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+            scf.yield %10, %10 : (i32, i32);
+        } : (i32, i32) -> (i32, i32);
+        %11 = arith.add %3, %4 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+        builtin.ret %11 : (i32);
+    };
+
+    // Negative: the yield operand for column 0 is the function argument `%0`, a block argument
+    // of the entry block with index 0. Only after-block arguments are mirrored by the
+    // `scf.condition` operands, so the fact that operand 0 of the condition is the before-block
+    // argument must not make column 0 invariant (its value is `0` on the first trip and `%0`
+    // afterwards).
+    // CHECK-LABEL: @foreign_block_arg(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32)
+    // CHECK-NEXT: [[TEN:%[0-9]+]] = arith.constant 10 : i32;
+    // CHECK-NEXT: [[ZERO:%[0-9]+]] = arith.constant 0 : i32;
+    // CHECK-NEXT: [[R0:%[0-9]+]], [[R1:%[0-9]+]] = scf.while [[ZERO]], [[B]] before {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[X:%[0-9]+]]: i32, [[Y:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[C:%[0-9]+]] = arith.cmpi ult [[Y]], [[TEN]];
+    // CHECK-NEXT: scf.condition [[C]], [[X]], [[Y]] : (i1, i32, i32);
+    // CHECK-NEXT: } after {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[Q]], [[P]]
+    // CHECK-NEXT: scf.yield [[A]], [[S]] : (i32, i32);
+    // CHECK-NEXT: } : (i32, i32) -> (i32, i32);
+    builtin.function public extern("C") @foreign_block_arg(%0: i32, %1: i32) -> i32 {
+        %2 = arith.constant 10 : i32;
+        %3 = arith.constant 0 : i32;
+        %4, %5 = scf.while %3, %1 before {
+        ^block1(%6: i32, %7: i32):
+            %8 = arith.cmpi ult %7, %2;
+            scf.condition %8, %6, %7 : (i1, i32, i32);
+        } after {
+        ^block2(%9: i32, %10: i32):
+            %11 = arith.add %10, %9 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+            scf.yield %0, %11 : (i32, i32);
+        } : (i32, i32) -> (i32, i32);
+        %12 = arith.add %4, %5 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+        builtin.ret %12 : (i32);
+    };
+
+    // Negative: the yield operand for column 0 is after-block argument 0, but the condition
+    // forwards a value computed from the before-block argument, so the column changes every
+    // trip.
+    // CHECK-LABEL: @forwarded_other_value(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32)
+    // CHECK-NEXT: [[TEN:%[0-9]+]] = arith.constant 10 : i32;
+    // CHECK-NEXT: [[ONE:%[0-9]+]] = arith.constant 1 : i32;
+    // CHECK-NEXT: [[R0:%[0-9]+]], [[R1:%[0-9]+]] = scf.while [[A]], [[B]] before {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[X:%[0-9]+]]: i32, [[Y:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[X]], [[ONE]]
+    // CHECK-NEXT: [[C:%[0-9]+]] = arith.cmpi ult [[Y]], [[TEN]];
+    // CHECK-NEXT: scf.condition [[C]], [[S]], [[Y]] : (i1, i32, i32);
+    // CHECK-NEXT: } after {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[N:%[0-9]+]] = arith.add [[Q]], [[P]]
+    // CHECK-NEXT: scf.yield [[P]], [[N]] : (i32, i32);
+    // CHECK-NEXT: } : (i32, i32) -> (i32, i32);
+    builtin.function public extern("C") @forwarded_other_value(%0: i32, %1: i32) -> i32 {
+        %2 = arith.constant 10 : i32;
+        %3 = arith.constant 1 : i32;
+        %4, %5 = scf.while %0, %1 before {
+        ^block1(%6: i32, %7: i32):
+            %8 = arith.add %6, %3 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+            %9 = arith.cmpi ult %7, %2;
+            scf.condition %9, %8, %7 : (i1, i32, i32);
+        } after {
+        ^block2(%10: i32, %11: i32):
+            %12 = arith.add %11, %10 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+            scf.yield %10, %12 : (i32, i32);
+        } : (i32, i32) -> (i32, i32);
+        %13 = arith.add %4, %5 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+        builtin.ret %13 : (i32);
+    };
+
+    // Case 2 with a permuted condition: the condition forwards the before-block arguments in
+    // swapped order, so column 0 yields after-block argument 1, which carries before-block
+    // argument 0. Column 0 is invariant (the yielded index differs from the column), column 1 is
+    // computed.
+    // CHECK-LABEL: @yield_forwarded_permuted(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32)
+    // CHECK-NEXT: [[TEN:%[0-9]+]] = arith.constant 10 : i32;
+    // CHECK-NEXT: [[R0:%[0-9]+]], [[R1:%[0-9]+]] = scf.while [[B]] before {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[Y:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[C:%[0-9]+]] = arith.cmpi ult [[Y]], [[TEN]];
+    // CHECK-NEXT: scf.condition [[C]], [[Y]], [[A]] : (i1, i32, i32);
+    // CHECK-NEXT: } after {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[P]], [[Q]]
+    // CHECK-NEXT: scf.yield [[S]] : (i32);
+    // CHECK-NEXT: } : (i32) -> (i32, i32);
+    // CHECK-NEXT: arith.add [[R0]], [[R1]]
+    builtin.function public extern("C") @yield_forwarded_permuted(%0: i32, %1: i32) -> i32 {
+        %2 = arith.constant 10 : i32;
+        %3, %4 = scf.while %0, %1 before {
+        ^block1(%5: i32, %6: i32):
+            %7 = arith.cmpi ult %6, %2;
+            scf.condition %7, %6, %5 : (i1, i32, i32);
+        } after {
+        ^block2(%8: i32, %9: i32):
+            %10 = arith.add %8, %9 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+            scf.yield %9, %10 : (i32, i32);
+        } : (i32, i32) -> (i32, i32);
+        %11 = arith.add %3, %4 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+        builtin.ret %11 : (i32);
+    };
+
+    // Negative: an inner loop sits in the after block of an outer loop, and the inner column 0
+    // yields argument 0 of the OUTER after block while the inner condition forwards inner
+    // before-block argument 0 at index 0. A yielded block argument only mirrors a condition
+    // operand when it belongs to the loop's own after block, so inner column 0 is not invariant
+    // (its value is `1` on the first trip and the outer argument afterwards). Nothing changes.
+    // CHECK-LABEL: @nested_after_arg(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32)
+    // CHECK-NEXT: [[TEN:%[0-9]+]] = arith.constant 10 : i32;
+    // CHECK-NEXT: [[ONE:%[0-9]+]] = arith.constant 1 : i32;
+    // CHECK-NEXT: [[R0:%[0-9]+]], [[R1:%[0-9]+]] = scf.while [[A]], [[B]] before {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[X:%[0-9]+]]: i32, [[Y:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[C:%[0-9]+]] = arith.cmpi ult [[Y]], [[TEN]];
+    // CHECK-NEXT: scf.condition [[C]], [[X]], [[Y]] : (i1, i32, i32);
+    // CHECK-NEXT: } after {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[I0:%[0-9]+]], [[I1:%[0-9]+]] = scf.while [[ONE]], [[Q]] before {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[U:%[0-9]+]]: i32, [[V:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[IC:%[0-9]+]] = arith.cmpi ult [[V]], [[TEN]];
+    // CHECK-NEXT: scf.condition [[IC]], [[U]], [[V]] : (i1, i32, i32);
+    // CHECK-NEXT: } after {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[G:%[0-9]+]]: i32, [[H:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[H]], [[G]]
+    // CHECK-NEXT: scf.yield [[P]], [[S]] : (i32, i32);
+    // CHECK-NEXT: } : (i32, i32) -> (i32, i32);
+    // CHECK-NEXT: [[T:%[0-9]+]] = arith.add [[I0]], [[I1]]
+    // CHECK-NEXT: scf.yield [[T]], [[T]] : (i32, i32);
+    // CHECK-NEXT: } : (i32, i32) -> (i32, i32);
+    // CHECK-NEXT: arith.add [[R0]], [[R1]]
+    builtin.function public extern("C") @nested_after_arg(%0: i32, %1: i32) -> i32 {
+        %2 = arith.constant 10 : i32;
+        %3 = arith.constant 1 : i32;
+        %4, %5 = scf.while %0, %1 before {
+        ^block1(%6: i32, %7: i32):
+            %8 = arith.cmpi ult %7, %2;
+            scf.condition %8, %6, %7 : (i1, i32, i32);
+        } after {
+        ^block2(%9: i32, %10: i32):
+            %11, %12 = scf.while %3, %10 before {
+            ^block3(%13: i32, %14: i32):
+                %15 = arith.cmpi ult %14, %2;
+                scf.condition %15, %13, %14 : (i1, i32, i32);
+            } after {
+            ^block4(%16: i32, %17: i32):
+                %18 = arith.add %17, %16 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+                scf.yield %9, %18 : (i32, i32);
+            } : (i32, i32) -> (i32, i32);
+            %19 = arith.add %11, %12 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+            scf.yield %19, %19 : (i32, i32);
+        } : (i32, i32) -> (i32, i32);
+        %20 = arith.add %4, %5 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+        builtin.ret %20 : (i32);
+    };
+
+    // Case 1 with a debug use: the invariant before-block argument is also described by a
+    // `di.debug_value`, which is replaced like any other use and now describes the initial value.
+    // CHECK-LABEL: @debug_use(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32)
+    // CHECK-NEXT: [[TEN:%[0-9]+]] = arith.constant 10 : i32;
+    // CHECK-NEXT: [[R0:%[0-9]+]], [[R1:%[0-9]+]] = scf.while [[B]] before {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[Y:%[0-9]+]]: i32):
+    // CHECK-NEXT: di.debug_value [[A]] <{ variable = #di.variable<{ name = "k", file = "test.rs", line = 2 }>, expression = #di.expression<[]> }> : (i32);
+    // CHECK-NEXT: [[C:%[0-9]+]] = arith.cmpi ult [[Y]], [[TEN]];
+    // CHECK-NEXT: scf.condition [[C]], [[A]], [[Y]] : (i1, i32, i32);
+    // CHECK-NEXT: } after {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[Q]], [[P]]
+    // CHECK-NEXT: scf.yield [[S]] : (i32);
+    // CHECK-NEXT: } : (i32) -> (i32, i32);
+    // CHECK-NEXT: arith.add [[R0]], [[R1]]
+    builtin.function public extern("C") @debug_use(%0: i32, %1: i32) -> i32 {
+        %2 = arith.constant 10 : i32;
+        %3, %4 = scf.while %0, %1 before {
+        ^block1(%5: i32, %6: i32):
+            di.debug_value %5 <{ variable = #di.variable<{ name = "k", file = "test.rs", line = 2 }>, expression = #di.expression<[]> }> : (i32);
+            %7 = arith.cmpi ult %6, %2;
+            scf.condition %7, %5, %6 : (i1, i32, i32);
+        } after {
+        ^block2(%8: i32, %9: i32):
+            %10 = arith.add %9, %8 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+            scf.yield %0, %10 : (i32, i32);
+        } : (i32, i32) -> (i32, i32);
+        %11 = arith.add %3, %4 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+        builtin.ret %11 : (i32);
+    };
+};

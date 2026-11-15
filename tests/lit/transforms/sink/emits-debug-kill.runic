@@ -1,0 +1,21 @@
+// RUN: runic-opt %s -p 'builtin.function(sink-operand-defs)' | filecheck %s
+// RUN: runic-opt %s -p 'builtin.function(sink-operand-defs)' | runic-opt - --verify-roundtrip | filecheck %s
+
+// When sinking erases a dead computation whose only remaining use is a `di.debug_value`, the
+// debug value cannot be kept, but the variable is marked dead with a `di.debug_kill` at the same
+// point, so a debugger reports it optimized out instead of showing an earlier location. %dead is
+// dead but for its debug use, and is on the pass's worklist because it reads a constant. The
+// second RUN line reads the output back.
+// CHECK-LABEL: @sink_test(
+// CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: arith.constant 7 : i32;
+// CHECK-NEXT: di.debug_kill <{ variable = #di.variable<{ name = "dead", file = "test.rs", line = 3 }> }>;
+// CHECK-NEXT: [[SUM:%[0-9]+]] = arith.add [[A]], [[B]];
+// CHECK-NEXT: builtin.ret [[SUM]] : (i32);
+builtin.function public extern("C") @sink_test(%a: i32, %b: i32) -> i32 {
+    %seven = arith.constant 7 : i32;
+    %dead = arith.mul %a, %seven;
+    di.debug_value %dead <{ variable = #di.variable<{ name = "dead", file = "test.rs", line = 3 }>, expression = #di.expression<[]> }> : (i32);
+    %sum = arith.add %a, %b;
+    builtin.ret %sum : (i32);
+};

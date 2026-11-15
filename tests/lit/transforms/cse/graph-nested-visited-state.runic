@@ -1,0 +1,49 @@
+// RUN: runic-opt %s -p 'builtin.module(cse)' | filecheck %s
+// RUN: runic-opt %s -p 'builtin.module(cse)' | runic-opt - --verify-roundtrip | filecheck %s
+
+// A use nested in a graph operation CSE has already visited. The then region yields %dup before
+// %dup is defined, inside the `scf.if` CSE has visited; rewriting that yield would make the if's
+// result the canonical constant, so the yield stays on %dup, and the last store keeps reading the
+// if's result. `scf.yield` states its operand types, so the forward use is written, and printed, in
+// the custom form. The function after the graph shows the pass live: its duplicate constant is
+// replaced. The second RUN line reads the output back.
+//
+// CHECK-LABEL: builtin.module private @nested_graph_visited_state {
+// CHECK-NEXT: [[ADDR:%[0-9]+]] = arith.constant 0 : isize;
+// CHECK-NEXT: [[PTR:%[0-9]+]] = mem.inttoptr [[ADDR]] : ptr<i32>;
+// CHECK-NEXT: [[CANONICAL:%[0-9]+]] = arith.constant 1 : i32;
+// CHECK-NEXT: mem.store [[CANONICAL]], [[PTR]];
+// CHECK-NEXT: [[COND:%[0-9]+]] = arith.constant 1 : i1;
+// CHECK-NEXT: [[IF:%[0-9]+]] = scf.if [[COND]] then {
+// CHECK-NEXT: scf.yield [[DUP:%[0-9]+]] : (i32);
+// CHECK-NEXT: } else {
+// CHECK-NEXT: scf.yield [[CANONICAL]] : (i32);
+// CHECK-NEXT: } : (i1) -> (i32);
+// CHECK-NEXT: [[DUP]] = arith.constant 1 : i32;
+// CHECK-NEXT: mem.store [[IF]], [[PTR]];
+builtin.module private @nested_graph_visited_state {
+    %addr = arith.constant 0 : isize;
+    %ptr = mem.inttoptr %addr : ptr<i32>;
+    %canonical = arith.constant 1 : i32;
+    mem.store %canonical, %ptr;
+    %cond = arith.constant 1 : i1;
+    %if = scf.if %cond then {
+        // This nested forward use has been visited through the scf.if.
+        scf.yield %dup : (i32);
+    } else {
+        scf.yield %canonical : (i32);
+    } : (i1) -> (i32);
+    %dup = arith.constant 1 : i32;
+    // This store keeps reading the if's result, not %canonical.
+    mem.store %if, %ptr;
+
+    // CHECK-LABEL: @live(
+    // CHECK-SAME: ) -> (i32, i32) {
+    // CHECK-NEXT: [[A:%[0-9]+]] = arith.constant 1 : i32;
+    // CHECK-NEXT: builtin.ret [[A]], [[A]] : (i32, i32);
+    builtin.function public extern("C") @live() -> (i32, i32) {
+        %a = arith.constant 1 : i32;
+        %b = arith.constant 1 : i32;
+        builtin.ret %a, %b : (i32, i32);
+    };
+};

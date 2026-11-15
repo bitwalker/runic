@@ -1,0 +1,29 @@
+// RUN: runic-opt %s -p 'builtin.module(cse)' | filecheck %s
+// RUN: runic-opt %s -p 'builtin.module(cse)' | runic-opt - --verify-roundtrip | filecheck %s
+
+// Which uses of a duplicate CSE replaces in a graph region: those it has not visited yet. The
+// first use of %dup, a forward use, has been visited when CSE reaches %dup, and stays on it; the
+// later use has not, and is rewritten to %canonical. %dup stays, since the forward use still reads
+// it. `mem.store` infers its operand types, so its custom form cannot name a value defined later:
+// the forward use is written, and printed, in the generic form. The second RUN line reads the
+// output back.
+//
+// CHECK-LABEL: builtin.module private @identity_visited_state {
+// CHECK-NEXT: [[ADDR:%[0-9]+]] = arith.constant 0 : isize;
+// CHECK-NEXT: [[PTR:%[0-9]+]] = mem.inttoptr [[ADDR]] : ptr<i32>;
+// CHECK-NEXT: [[CANONICAL:%[0-9]+]] = arith.constant 1 : i32;
+// CHECK-NEXT: mem.store [[CANONICAL]], [[PTR]];
+// CHECK-NEXT: "mem.store"([[DUP:%[0-9]+]], [[PTR]]) <{ align = #mem.align<natural> }> : (i32, ptr<i32>) -> ();
+// CHECK-NEXT: [[DUP]] = arith.constant 1 : i32;
+// CHECK-NEXT: mem.store [[CANONICAL]], [[PTR]];
+builtin.module private @identity_visited_state {
+    %addr = arith.constant 0 : isize;
+    %ptr = mem.inttoptr %addr : ptr<i32>;
+    %canonical = arith.constant 1 : i32;
+    mem.store %canonical, %ptr;
+    // This forward use has been visited when CSE considers %dup.
+    "mem.store"(%dup, %ptr) <{ align = #mem.align<natural> }> : (i32, ptr<i32>) -> ();
+    %dup = arith.constant 1 : i32;
+    // This later use is rewritten from %dup to %canonical.
+    mem.store %dup, %ptr;
+};

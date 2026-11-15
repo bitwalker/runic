@@ -1,0 +1,85 @@
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(canonicalizer{disable-patterns=remove-loop-invariant-args-from-before-block}))' | filecheck %s
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(canonicalizer{enable-patterns="remove-loop-invariant-args-from-before-block;while-unused-result"}))' | filecheck %s --check-prefix=ENABLE
+// RUN: not runic-opt %s -p 'builtin.module(builtin.function(canonicalizer{bogus=1}))' 2>&1 | filecheck %s --check-prefix=ERR
+// RUN: not runic-opt %s -p 'builtin.module(builtin.function(canonicalizer{enable-patterns=no-such-pattern}))' 2>&1 | filecheck %s --check-prefix=UNKNOWN
+// RUN: not runic-opt %s -p 'builtin.module(builtin.function(canonicalizer{enable-patterns=""}))' 2>&1 | filecheck %s --check-prefix=EMPTY
+// RUN: not runic-opt %s -p 'builtin.module(builtin.function(canonicalizer{disable-patterns=a disable-patterns=b}))' 2>&1 | filecheck %s --check-prefix=DUP
+// RUN: not runic-opt %s -p 'builtin.module(builtin.function(canonicalizer{enable-patterns=while-unused-result disable-patterns=while-unused-result}))' 2>&1 | filecheck %s --check-prefix=BOTH
+// RUN: not runic-opt %s -p 'builtin.module(builtin.function(dce{x=1}))' 2>&1 | filecheck %s --check-prefix=NOOPT
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(dce{}))' | filecheck %s --check-prefix=EMPTYOPTS
+
+// The `enable-patterns` and `disable-patterns` options of the canonicalizer. The pipeline is
+// checked before the input is read, so a rejected option has no location to expect: those RUN
+// lines check standard error with `not`.
+//
+// Two patterns have work on the loop below:
+// - column 0 is invariant (the yield feeds the loop operand %a back), so
+//   `remove-loop-invariant-args-from-before-block` drops operand 0 and before-block argument 0;
+// - result 0 and after-block argument 0 are unused, so `while-unused-result` drops result 0,
+//   after-block argument 0 and condition operand 0.
+// Before-block argument 0 stays used by the `arith.cmpi`, so `while-remove-unused-args` does not
+// drop it on its own.
+//
+// With only the invariant-argument pattern disabled, the loop keeps both operands and a
+// two-argument before block, while `while-unused-result` still runs: one result, a one-argument
+// after block, and a condition forwarding one value.
+// CHECK-LABEL: @unused_result(
+// CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+// CHECK: scf.while [[A]], [[B]] before {
+// CHECK-NEXT: ^{{block[0-9]+}}([[X:%[0-9]+]]: i32, [[Y:%[0-9]+]]: i32):
+// CHECK-NEXT: [[LT:%[0-9]+]] = arith.cmpi ult [[X]], {{%[0-9]+}};
+// CHECK-NEXT: scf.condition [[LT]], [[Y]] : (i1, i32);
+// CHECK-NEXT: } after {
+// CHECK-NEXT: ^{{block[0-9]+}}({{%[0-9]+}}: i32):
+// CHECK: scf.yield [[A]], {{%[0-9]+}} : (i32, i32);
+// CHECK-NEXT: } : (i32, i32) -> (i32);
+//
+// With both patterns enabled (a `;`-separated list) both rewrites happen: the invariant operand is
+// removed and its before-block argument replaced by the init value, and the unused result is
+// removed.
+// ENABLE-LABEL: @unused_result(
+// ENABLE-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+// ENABLE: scf.while [[B]] before {
+// ENABLE-NEXT: ^{{block[0-9]+}}([[Y:%[0-9]+]]: i32):
+// ENABLE-NEXT: [[LT:%[0-9]+]] = arith.cmpi ult [[A]], {{%[0-9]+}};
+// ENABLE-NEXT: scf.condition [[LT]], [[Y]] : (i1, i32);
+// ENABLE-NEXT: } after {
+// ENABLE-NEXT: ^{{block[0-9]+}}({{%[0-9]+}}: i32):
+// ENABLE: scf.yield {{%[0-9]+}} : (i32);
+// ENABLE-NEXT: } : (i32) -> (i32);
+//
+// An unknown option is rejected, naming the options the pass takes.
+// ERR: error: pass 'canonicalizer' has no option 'bogus'; it takes 'enable-patterns', 'disable-patterns'
+//
+// An unknown pattern name is rejected.
+// UNKNOWN: error: unknown canonicalization pattern 'no-such-pattern' in the options of pass 'canonicalizer'
+//
+// An empty pattern list is rejected.
+// EMPTY: error: option 'enable-patterns' of pass 'canonicalizer' has no pattern names
+//
+// A repeated option is rejected by the pipeline parser.
+// DUP: error: invalid pass pipeline: expected each option of pass 'canonicalizer' at most once, found 'disable-patterns' again
+//
+// A pattern named in both lists is rejected.
+// BOTH: error: pattern 'while-unused-result' is both enabled and disabled in the options of pass 'canonicalizer'
+//
+// An option given to a pass that takes none is rejected, naming the pass.
+// NOOPT: error: pass 'dce' takes no options
+//
+// An empty option list is accepted by a pass that takes none.
+// EMPTYOPTS-LABEL: @unused_result(
+builtin.module private @pattern_filter {
+    builtin.function public extern("C") @unused_result(%a: i32, %b: i32) -> i32 {
+        %ten = arith.constant 10 : i32;
+        %r0, %r1 = scf.while %a, %b before {
+        ^head(%x: i32, %y: i32):
+            %lt = arith.cmpi ult %x, %ten;
+            scf.condition %lt, %x, %y : (i1, i32, i32);
+        } after {
+        ^body(%u: i32, %v: i32):
+            %w = arith.add %v, %v <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+            scf.yield %a, %w : (i32, i32);
+        } : (i32, i32) -> (i32, i32);
+        builtin.ret %r1 : (i32);
+    };
+};

@@ -1,0 +1,37 @@
+// RUN: runic-opt %s | filecheck %s
+// RUN: runic-opt %s --verify-roundtrip | filecheck %s
+
+// Symbol references, read and printed. A call names its callee, a function of the same module
+// declared after it; the callee's single result type may be written in parentheses and prints
+// bare. A symbol reference as an attribute value is written `@name`, as a rooted path, or
+// `#builtin.symbol<..>`, and each prints as `#builtin.symbol<..>`.
+
+// CHECK: builtin.module public @test {
+// CHECK-LABEL: builtin.function public extern("C") @entrypoint(
+// CHECK-SAME: [[A:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[RESULT:%[0-9]+]] = builtin.call @callee([[A]]) : extern("C") (i32) -> i32;
+// CHECK-NEXT: builtin.ret [[RESULT]] : (i32);
+// CHECK-NEXT: };
+// CHECK-LABEL: builtin.function private extern("C") @callee(
+// CHECK-SAME: [[ARG:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: builtin.ret [[ARG]] : (i32);
+// CHECK-NEXT: };
+// CHECK-LABEL: builtin.function public extern("C") @named(
+// CHECK-SAME: ) {
+// CHECK-NEXT: builtin.ret;
+// CHECK-NEXT: } attributes { bare = #builtin.symbol<@callee>, rooted = #builtin.symbol<::@test::@callee>, spelled = #builtin.symbol<@callee> };
+// CHECK-NEXT: };
+builtin.module public @test {
+    builtin.function public extern("C") @entrypoint(%a: i32) -> i32 {
+        %result = builtin.call @callee(%a) : extern("C") (i32) -> (i32);
+        builtin.ret %result : (i32);
+    };
+
+    builtin.function private extern("C") @callee(%arg: i32) -> i32 {
+        builtin.ret %arg : (i32);
+    };
+
+    builtin.function public extern("C") @named() {
+        builtin.ret;
+    } attributes { bare = @callee, rooted = ::@test::@callee, spelled = #builtin.symbol<@callee> };
+};

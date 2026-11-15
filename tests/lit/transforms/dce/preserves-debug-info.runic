@@ -1,0 +1,24 @@
+// RUN: runic-opt %s -p 'builtin.function(dce)' | filecheck %s
+// RUN: runic-opt %s -p 'builtin.function(dce)' | runic-opt - --verify-roundtrip | filecheck %s
+
+// Dead-code elimination does not treat the debug-info operations as dead: they have no results and
+// no memory effects, but they are kept. It still erases a dead operation (%product), and a value
+// whose only remaining use is a `di.debug_value` (%difference) is erased with the debug value
+// replaced by a `di.debug_kill` of its variable, so the end of the variable's lifetime is kept. The
+// second RUN line reads the output back.
+// CHECK-LABEL: @dce_test(
+// CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[SUM:%[0-9]+]] = arith.add [[A]], [[B]];
+// CHECK-NEXT: di.debug_value [[SUM]] <{ variable = #di.variable<{ name = "x", file = "test.rs", line = 2 }>, expression = #di.expression<[]> }> : (i32);
+// CHECK-NEXT: di.debug_kill <{ variable = #di.variable<{ name = "y", file = "test.rs", line = 4 }> }>;
+// CHECK-NEXT: di.debug_kill <{ variable = #di.variable<{ name = "x", file = "test.rs", line = 2 }> }>;
+// CHECK-NEXT: builtin.ret [[SUM]] : (i32);
+builtin.function public extern("C") @dce_test(%a: i32, %b: i32) -> i32 {
+    %sum = arith.add %a, %b;
+    %product = arith.mul %a, %b;
+    %difference = arith.sub %a, %b;
+    di.debug_value %sum <{ variable = #di.variable<{ name = "x", file = "test.rs", line = 2 }>, expression = #di.expression<[]> }> : (i32);
+    di.debug_value %difference <{ variable = #di.variable<{ name = "y", file = "test.rs", line = 4 }>, expression = #di.expression<[]> }> : (i32);
+    di.debug_kill <{ variable = #di.variable<{ name = "x", file = "test.rs", line = 2 }> }>;
+    builtin.ret %sum : (i32);
+};

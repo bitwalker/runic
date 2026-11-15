@@ -1,0 +1,196 @@
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(canonicalizer{enable-patterns="simplify-bool-compare;simplify-not-compare;simplify-trunc-to-bool"}))' | filecheck %s
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(canonicalizer{enable-patterns="simplify-bool-compare;simplify-not-compare;simplify-trunc-to-bool"}))' | runic-opt - --verify-roundtrip | filecheck %s
+
+// The boolean simplifications of `arith.cmpi eq`/`ne`, `arith.bnot` and `arith.trunc`. The
+// canonicalizer is restricted to those patterns (the greedy driver still folds and erases
+// trivially dead operations). The second RUN line reads the rewritten IR back.
+//
+// A frontend widens a boolean to an integer (`arith.zext`) and tests it against 0 again before
+// using it as a condition; the patterns look through the widening.
+builtin.module private @bool_compare {
+    // `ne(x, 0)` of a widened boolean is the boolean itself.
+    // CHECK-LABEL: @ne_zero(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i1 {
+    // CHECK-NEXT: [[C:%[0-9]+]] = arith.cmpi ne [[A]], [[B]];
+    // CHECK-NEXT: builtin.ret [[C]] : (i1);
+    builtin.function public extern("C") @ne_zero(%a: i32, %b: i32) -> i1 {
+        %zero = arith.constant 0 : i32;
+        %c = arith.cmpi ne %a, %b;
+        %w = arith.zext %c <{ ty = #builtin.type<i32> }>;
+        %t = arith.cmpi ne %w, %zero;
+        builtin.ret %t : (i1);
+    };
+
+    // `eq(x, 1)` is the boolean itself; the constant may be on either side.
+    // CHECK-LABEL: @eq_one_lhs(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i1 {
+    // CHECK-NEXT: [[C:%[0-9]+]] = arith.cmpi eq [[A]], [[B]];
+    // CHECK-NEXT: builtin.ret [[C]] : (i1);
+    builtin.function public extern("C") @eq_one_lhs(%a: i32, %b: i32) -> i1 {
+        %one = arith.constant 1 : i32;
+        %c = arith.cmpi eq %a, %b;
+        %w = arith.zext %c <{ ty = #builtin.type<i32> }>;
+        %t = arith.cmpi eq %one, %w;
+        builtin.ret %t : (i1);
+    };
+
+    // `eq(x, 0)` negates the boolean, and the negation of a single-use comparison becomes the
+    // complementary comparison.
+    // CHECK-LABEL: @eq_zero(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i1 {
+    // CHECK-NEXT: [[C:%[0-9]+]] = arith.cmpi ult [[A]], [[B]];
+    // CHECK-NEXT: builtin.ret [[C]] : (i1);
+    builtin.function public extern("C") @eq_zero(%a: i32, %b: i32) -> i1 {
+        %zero = arith.constant 0 : i32;
+        %c = arith.cmpi uge %a, %b;
+        %w = arith.zext %c <{ ty = #builtin.type<i32> }>;
+        %t = arith.cmpi eq %w, %zero;
+        builtin.ret %t : (i1);
+    };
+
+    // `ne(x, 1)` of a single-use equality becomes the inequality.
+    // CHECK-LABEL: @ne_one(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i1 {
+    // CHECK-NEXT: [[C:%[0-9]+]] = arith.cmpi ne [[A]], [[B]];
+    // CHECK-NEXT: builtin.ret [[C]] : (i1);
+    builtin.function public extern("C") @ne_one(%a: i32, %b: i32) -> i1 {
+        %one = arith.constant 1 : i32;
+        %c = arith.cmpi eq %a, %b;
+        %w = arith.zext %c <{ ty = #builtin.type<i32> }>;
+        %t = arith.cmpi ne %w, %one;
+        builtin.ret %t : (i1);
+    };
+
+    // A comparison with other uses is kept, so its negation stays an `arith.bnot`.
+    // CHECK-LABEL: @not_shared_compare(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> (i1, i1) {
+    // CHECK-NEXT: [[C:%[0-9]+]] = arith.cmpi eq [[A]], [[B]];
+    // CHECK-NEXT: [[N:%[0-9]+]] = arith.bnot [[C]];
+    // CHECK-NEXT: builtin.ret [[C]], [[N]] : (i1, i1);
+    builtin.function public extern("C") @not_shared_compare(%a: i32, %b: i32) -> (i1, i1) {
+        %c = arith.cmpi eq %a, %b;
+        %n = arith.bnot %c;
+        builtin.ret %c, %n : (i1, i1);
+    };
+
+    // `bnot (bnot b)` folds to `b`, and `bnot` of a constant folds.
+    // CHECK-LABEL: @not_not(
+    // CHECK-SAME: [[A:%[0-9]+]]: i1) -> (i1, i1) {
+    // CHECK-NEXT: [[F:%[0-9]+]] = arith.constant 0 : i1;
+    // CHECK-NEXT: builtin.ret [[A]], [[F]] : (i1, i1);
+    builtin.function public extern("C") @not_not(%a: i1) -> (i1, i1) {
+        %true = arith.constant 1 : i1;
+        %n = arith.bnot %a;
+        %nn = arith.bnot %n;
+        %nt = arith.bnot %true;
+        builtin.ret %nn, %nt : (i1, i1);
+    };
+
+    // `trunc` to `i1` of a widened boolean is the boolean itself.
+    // CHECK-LABEL: @trunc_widened(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i1 {
+    // CHECK-NEXT: [[C:%[0-9]+]] = arith.cmpi ult [[A]], [[B]];
+    // CHECK-NEXT: builtin.ret [[C]] : (i1);
+    builtin.function public extern("C") @trunc_widened(%a: i32, %b: i32) -> i1 {
+        %c = arith.cmpi ult %a, %b;
+        %w = arith.zext %c <{ ty = #builtin.type<i32> }>;
+        %t = arith.trunc %w <{ ty = #builtin.type<i1> }>;
+        builtin.ret %t : (i1);
+    };
+
+    // A comparison against a constant other than 0 or 1, or of a value that is not a widened
+    // boolean, is left alone.
+    // CHECK-LABEL: @unrelated(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> (i1, i1) {
+    // CHECK-NEXT: [[TWO:%[0-9]+]] = arith.constant 2 : i32;
+    // CHECK-NEXT: [[ZERO:%[0-9]+]] = arith.constant 0 : i32;
+    // CHECK-NEXT: [[C:%[0-9]+]] = arith.cmpi eq [[A]], [[B]];
+    // CHECK-NEXT: [[W:%[0-9]+]] = arith.zext [[C]] <{ ty = #builtin.type<i32> }>;
+    // CHECK-NEXT: [[X:%[0-9]+]] = arith.cmpi ne [[W]], [[TWO]];
+    // CHECK-NEXT: [[Y:%[0-9]+]] = arith.cmpi ne [[A]], [[ZERO]];
+    // CHECK-NEXT: builtin.ret [[X]], [[Y]] : (i1, i1);
+    builtin.function public extern("C") @unrelated(%a: i32, %b: i32) -> (i1, i1) {
+        %two = arith.constant 2 : i32;
+        %zero = arith.constant 0 : i32;
+        %c = arith.cmpi eq %a, %b;
+        %w = arith.zext %c <{ ty = #builtin.type<i32> }>;
+        %x = arith.cmpi ne %w, %two;
+        %y = arith.cmpi ne %a, %zero;
+        builtin.ret %x, %y : (i1, i1);
+    };
+
+    // The complementary comparison that replaces a `bnot` is placed at the comparison, not at the
+    // `bnot`: here the `bnot` is inside the `scf.if`, and the comparison is outside it.
+    // CHECK-LABEL: @not_in_nested_region(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32, [[F:%[0-9]+]]: i1) -> i1 {
+    // CHECK-NEXT: [[C:%[0-9]+]] = arith.cmpi ne [[A]], [[B]];
+    // CHECK-NEXT: [[R:%[0-9]+]] = scf.if [[F]] then {
+    // CHECK-NEXT: scf.yield [[C]] : (i1);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: scf.yield [[F]] : (i1);
+    // CHECK-NEXT: } : (i1) -> (i1);
+    // CHECK-NEXT: builtin.ret [[R]] : (i1);
+    builtin.function public extern("C") @not_in_nested_region(%a: i32, %b: i32, %f: i1) -> i1 {
+        %c = arith.cmpi eq %a, %b;
+        %r = scf.if %f then {
+            %n = arith.bnot %c;
+            scf.yield %n : (i1);
+        } else {
+            scf.yield %f : (i1);
+        } : (i1) -> (i1);
+        builtin.ret %r : (i1);
+    };
+
+    // The complementary comparison belongs to the comparison's inline frame: the `bnot`'s
+    // `di.inline_call_chain` is not copied onto it (the printed comparison has no attributes).
+    // CHECK-LABEL: @not_in_inlined_frame(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i1 {
+    // CHECK-NEXT: [[C:%[0-9]+]] = arith.cmpi ne [[A]], [[B]];
+    // CHECK-NEXT: builtin.ret [[C]] : (i1);
+    builtin.function public extern("C") @not_in_inlined_frame(%a: i32, %b: i32) -> i1 {
+        %c = arith.cmpi eq %a, %b;
+        %n = arith.bnot %c attributes { di.inline_call_chain = #di.inline_call_chain<[{ name = "negate", linkage = "", file = "lib.rs", line = 5, column = 1, call_file = "main.rs", call_line = 9, call_column = 3 }]> };
+        builtin.ret %n : (i1);
+    };
+
+    // The patterns look through at most four widening operations: `eq(x, 0)` of a boolean widened
+    // four times still negates it.
+    // CHECK-LABEL: @widened_four_times(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i1 {
+    // CHECK-NEXT: [[C:%[0-9]+]] = arith.cmpi ne [[A]], [[B]];
+    // CHECK-NEXT: builtin.ret [[C]] : (i1);
+    builtin.function public extern("C") @widened_four_times(%a: i32, %b: i32) -> i1 {
+        %zero = arith.constant 0 : i64;
+        %c = arith.cmpi eq %a, %b;
+        %w1 = arith.zext %c <{ ty = #builtin.type<i8> }>;
+        %w2 = arith.zext %w1 <{ ty = #builtin.type<i16> }>;
+        %w3 = arith.zext %w2 <{ ty = #builtin.type<i32> }>;
+        %w4 = arith.zext %w3 <{ ty = #builtin.type<i64> }>;
+        %t = arith.cmpi eq %w4, %zero;
+        builtin.ret %t : (i1);
+    };
+
+    // A boolean widened five times is past the limit and left alone.
+    // CHECK-LABEL: @widened_five_times(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i1 {
+    // CHECK-NEXT: [[ZERO:%[0-9]+]] = arith.constant 0 : i128;
+    // CHECK-NEXT: [[C:%[0-9]+]] = arith.cmpi eq [[A]], [[B]];
+    // CHECK-NEXT: [[W1:%[0-9]+]] = arith.zext [[C]] <{ ty = #builtin.type<i8> }>;
+    // CHECK-NEXT: [[W2:%[0-9]+]] = arith.zext [[W1]] <{ ty = #builtin.type<i16> }>;
+    // CHECK-NEXT: [[W3:%[0-9]+]] = arith.zext [[W2]] <{ ty = #builtin.type<i32> }>;
+    // CHECK-NEXT: [[W4:%[0-9]+]] = arith.zext [[W3]] <{ ty = #builtin.type<i64> }>;
+    // CHECK-NEXT: [[W5:%[0-9]+]] = arith.zext [[W4]] <{ ty = #builtin.type<i128> }>;
+    // CHECK-NEXT: [[X:%[0-9]+]] = arith.cmpi eq [[W5]], [[ZERO]];
+    // CHECK-NEXT: builtin.ret [[X]] : (i1);
+    builtin.function public extern("C") @widened_five_times(%a: i32, %b: i32) -> i1 {
+        %zero = arith.constant 0 : i128;
+        %c = arith.cmpi eq %a, %b;
+        %w1 = arith.zext %c <{ ty = #builtin.type<i8> }>;
+        %w2 = arith.zext %w1 <{ ty = #builtin.type<i16> }>;
+        %w3 = arith.zext %w2 <{ ty = #builtin.type<i32> }>;
+        %w4 = arith.zext %w3 <{ ty = #builtin.type<i64> }>;
+        %w5 = arith.zext %w4 <{ ty = #builtin.type<i128> }>;
+        %t = arith.cmpi eq %w5, %zero;
+        builtin.ret %t : (i1);
+    };
+};

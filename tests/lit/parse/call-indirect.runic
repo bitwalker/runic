@@ -1,0 +1,30 @@
+// RUN: runic-opt %s | filecheck %s
+// RUN: runic-opt %s --verify-roundtrip | filecheck %s
+
+// An indirect call, read and printed: `builtin.function_ref` makes a function value of a symbol
+// in the module, and `builtin.call_indirect` calls it with the signature written. The reprint is
+// the input.
+
+// CHECK: builtin.module public @test {
+// CHECK-LABEL: builtin.function public extern("C") @dispatch(
+// CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[F:%[0-9]+]] = builtin.function_ref @callee : (i32, i32) -> i32;
+// CHECK-NEXT: [[RESULT:%[0-9]+]] = builtin.call_indirect [[F]]([[A]], [[B]]) : extern("C") (i32, i32) -> i32;
+// CHECK-NEXT: builtin.ret [[RESULT]] : (i32);
+// CHECK-NEXT: };
+// CHECK-LABEL: builtin.function internal extern("C") @callee(
+// CHECK-SAME: [[X:%[0-9]+]]: i32, [[Y:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: builtin.ret [[X]] : (i32);
+// CHECK-NEXT: };
+// CHECK-NEXT: };
+builtin.module public @test {
+    builtin.function public extern("C") @dispatch(%a: i32, %b: i32) -> i32 {
+        %f = builtin.function_ref @callee : (i32, i32) -> i32;
+        %result = builtin.call_indirect %f(%a, %b) : extern("C") (i32, i32) -> i32;
+        builtin.ret %result : (i32);
+    };
+
+    builtin.function internal extern("C") @callee(%x: i32, %y: i32) -> i32 {
+        builtin.ret %x : (i32);
+    };
+};

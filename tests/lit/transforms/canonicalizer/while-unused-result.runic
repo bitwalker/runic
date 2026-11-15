@@ -1,0 +1,196 @@
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(canonicalizer{enable-patterns=while-unused-result}))' | filecheck %s
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(canonicalizer{enable-patterns=while-unused-result}))' | runic-opt - --verify-roundtrip | filecheck %s
+
+// The `while-unused-result` canonicalization of `scf.while`, with the canonicalizer restricted to
+// that pattern (the greedy driver still folds, erases trivially dead operations and simplifies
+// regions). The second RUN line reads the rewritten IR back.
+//
+// A result is removed when neither the result nor the after-block argument at the same position
+// has real uses (a `di.debug_value` does not count). The result, the after-block argument and the
+// `scf.condition` operand forwarded to them go away; the iteration arguments (`scf.while`
+// operands, before-block arguments and `scf.yield` operands) are untouched.
+builtin.module private @while_unused_result {
+    // Results 0, 2 and 4 (first, middle and last) and their after-block arguments are unused;
+    // results 1 and 3 are used after the loop and their after-block arguments in the after body.
+    // The condition keeps the operands forwarded at positions 1 and 3.
+    // CHECK-LABEL: @unused_positions(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32, [[C:%[0-9]+]]: i32)
+    // CHECK-NEXT: [[TEN:%[0-9]+]] = arith.constant 10 : i32;
+    // CHECK-NEXT: [[R0:%[0-9]+]], [[R1:%[0-9]+]] = scf.while [[A]], [[B]], [[C]] before {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[X:%[0-9]+]]: i32, [[Y:%[0-9]+]]: i32, {{%[0-9]+}}: i32):
+    // CHECK-NEXT: [[CND:%[0-9]+]] = arith.cmpi ult [[X]], [[TEN]];
+    // CHECK-NEXT: scf.condition [[CND]], [[Y]], [[X]] : (i1, i32, i32);
+    // CHECK-NEXT: } after {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[P]], [[Q]]
+    // CHECK-NEXT: scf.yield [[S]], [[P]], [[Q]] : (i32, i32, i32);
+    // CHECK-NEXT: } : (i32, i32, i32) -> (i32, i32);
+    // CHECK-NEXT: arith.add [[R0]], [[R1]]
+    builtin.function public extern("C") @unused_positions(%0: i32, %1: i32, %2: i32) -> i32 {
+        %3 = arith.constant 10 : i32;
+        %4, %5, %6, %7, %8 = scf.while %0, %1, %2 before {
+        ^block1(%9: i32, %10: i32, %11: i32):
+            %12 = arith.cmpi ult %9, %3;
+            scf.condition %12, %9, %10, %11, %9, %10 : (i1, i32, i32, i32, i32, i32);
+        } after {
+        ^block2(%13: i32, %14: i32, %15: i32, %16: i32, %17: i32):
+            %18 = arith.add %14, %16 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+            scf.yield %18, %14, %16 : (i32, i32, i32);
+        } : (i32, i32, i32) -> (i32, i32, i32, i32, i32);
+        %19 = arith.add %5, %7 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+        builtin.ret %19 : (i32);
+    };
+
+    // Negative: result 0 is unused, but after-block argument 0 is used in the after body, so the
+    // result is kept and the loop is left untouched.
+    // CHECK-LABEL: @result_unused_arg_used(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32)
+    // CHECK-NEXT: [[TEN:%[0-9]+]] = arith.constant 10 : i32;
+    // CHECK-NEXT: {{%[0-9]+}}, [[R1:%[0-9]+]] = scf.while [[A]], [[B]] before {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[X:%[0-9]+]]: i32, [[Y:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[CND:%[0-9]+]] = arith.cmpi ult [[X]], [[TEN]];
+    // CHECK-NEXT: scf.condition [[CND]], [[X]], [[Y]] : (i1, i32, i32);
+    // CHECK-NEXT: } after {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[P]], [[Q]]
+    // CHECK-NEXT: scf.yield [[S]], [[Q]] : (i32, i32);
+    // CHECK-NEXT: } : (i32, i32) -> (i32, i32);
+    // CHECK-NEXT: builtin.ret [[R1]] : (i32);
+    builtin.function public extern("C") @result_unused_arg_used(%0: i32, %1: i32) -> i32 {
+        %2 = arith.constant 10 : i32;
+        %3, %4 = scf.while %0, %1 before {
+        ^block1(%5: i32, %6: i32):
+            %7 = arith.cmpi ult %5, %2;
+            scf.condition %7, %5, %6 : (i1, i32, i32);
+        } after {
+        ^block2(%8: i32, %9: i32):
+            %10 = arith.add %8, %9 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+            scf.yield %10, %9 : (i32, i32);
+        } : (i32, i32) -> (i32, i32);
+        builtin.ret %4 : (i32);
+    };
+
+    // Negative: after-block argument 0 is unused, but result 0 is used after the loop, so the
+    // result is kept and the loop is left untouched.
+    // CHECK-LABEL: @result_used_arg_unused(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32)
+    // CHECK-NEXT: [[TEN:%[0-9]+]] = arith.constant 10 : i32;
+    // CHECK-NEXT: [[R0:%[0-9]+]], [[R1:%[0-9]+]] = scf.while [[A]], [[B]] before {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[X:%[0-9]+]]: i32, [[Y:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[CND:%[0-9]+]] = arith.cmpi ult [[X]], [[TEN]];
+    // CHECK-NEXT: scf.condition [[CND]], [[X]], [[Y]] : (i1, i32, i32);
+    // CHECK-NEXT: } after {
+    // CHECK-NEXT: ^{{block[0-9]+}}({{%[0-9]+}}: i32, [[Q:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[Q]], [[TEN]]
+    // CHECK-NEXT: scf.yield [[S]], [[Q]] : (i32, i32);
+    // CHECK-NEXT: } : (i32, i32) -> (i32, i32);
+    // CHECK-NEXT: arith.add [[R0]], [[R1]]
+    builtin.function public extern("C") @result_used_arg_unused(%0: i32, %1: i32) -> i32 {
+        %2 = arith.constant 10 : i32;
+        %3, %4 = scf.while %0, %1 before {
+        ^block1(%5: i32, %6: i32):
+            %7 = arith.cmpi ult %5, %2;
+            scf.condition %7, %5, %6 : (i1, i32, i32);
+        } after {
+        ^block2(%8: i32, %9: i32):
+            %10 = arith.add %9, %2 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+            scf.yield %10, %9 : (i32, i32);
+        } : (i32, i32) -> (i32, i32);
+        %11 = arith.add %3, %4 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+        builtin.ret %11 : (i32);
+    };
+
+    // Every result and every after-block argument is unused: the loop is left with no results, an
+    // argument-less after block and a condition that forwards nothing, while its iteration
+    // arguments survive.
+    // CHECK-LABEL: @all_unused(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32)
+    // CHECK-NEXT: [[TEN:%[0-9]+]] = arith.constant 10 : i32;
+    // CHECK-NEXT: scf.while [[A]], [[B]] before {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[X:%[0-9]+]]: i32, {{%[0-9]+}}: i32):
+    // CHECK-NEXT: [[CND:%[0-9]+]] = arith.cmpi ult [[X]], [[TEN]];
+    // CHECK-NEXT: scf.condition [[CND]] : (i1);
+    // CHECK-NEXT: } after {
+    // CHECK-NEXT: ^{{block[0-9]+}}:
+    // CHECK-NEXT: [[N:%[0-9]+]] = arith.neg [[A]];
+    // CHECK-NEXT: scf.yield [[N]], [[B]] : (i32, i32);
+    // CHECK-NEXT: } : (i32, i32) -> ();
+    // CHECK-NEXT: builtin.ret [[A]] : (i32);
+    builtin.function public extern("C") @all_unused(%0: i32, %1: i32) -> i32 {
+        %2 = arith.constant 10 : i32;
+        %3, %4 = scf.while %0, %1 before {
+        ^block1(%5: i32, %6: i32):
+            %7 = arith.cmpi ult %5, %2;
+            scf.condition %7, %5, %6 : (i1, i32, i32);
+        } after {
+        ^block2(%8: i32, %9: i32):
+            %10 = arith.neg %0;
+            scf.yield %10, %1 : (i32, i32);
+        } : (i32, i32) -> (i32, i32);
+        builtin.ret %0 : (i32);
+    };
+
+    // Negative: every result is used after the loop and every after-block argument in the after
+    // body, so the loop is left untouched.
+    // CHECK-LABEL: @none_unused(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32)
+    // CHECK-NEXT: [[TEN:%[0-9]+]] = arith.constant 10 : i32;
+    // CHECK-NEXT: [[R0:%[0-9]+]], [[R1:%[0-9]+]] = scf.while [[A]], [[B]] before {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[X:%[0-9]+]]: i32, [[Y:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[CND:%[0-9]+]] = arith.cmpi ult [[Y]], [[TEN]];
+    // CHECK-NEXT: scf.condition [[CND]], [[X]], [[Y]] : (i1, i32, i32);
+    // CHECK-NEXT: } after {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[Q]], [[P]]
+    // CHECK-NEXT: scf.yield [[P]], [[S]] : (i32, i32);
+    // CHECK-NEXT: } : (i32, i32) -> (i32, i32);
+    // CHECK-NEXT: arith.add [[R0]], [[R1]]
+    builtin.function public extern("C") @none_unused(%0: i32, %1: i32) -> i32 {
+        %2 = arith.constant 10 : i32;
+        %3, %4 = scf.while %0, %1 before {
+        ^block1(%5: i32, %6: i32):
+            %7 = arith.cmpi ult %6, %2;
+            scf.condition %7, %5, %6 : (i1, i32, i32);
+        } after {
+        ^block2(%8: i32, %9: i32):
+            %10 = arith.add %9, %8 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+            scf.yield %8, %10 : (i32, i32);
+        } : (i32, i32) -> (i32, i32);
+        %11 = arith.add %3, %4 <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+        builtin.ret %11 : (i32);
+    };
+
+    // Debug uses do not keep a column alive. Result 1 is only described by a `di.debug_value`
+    // after the loop and after-block argument 2 only by one in the after body; both columns are
+    // removed and each `di.debug_value` becomes a `di.debug_kill` of its variable in place.
+    // CHECK-LABEL: @debug_uses(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32)
+    // CHECK-NEXT: [[TEN:%[0-9]+]] = arith.constant 10 : i32;
+    // CHECK-NEXT: [[R0:%[0-9]+]] = scf.while [[A]], [[B]] before {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[X:%[0-9]+]]: i32, {{%[0-9]+}}: i32):
+    // CHECK-NEXT: [[CND:%[0-9]+]] = arith.cmpi ult [[X]], [[TEN]];
+    // CHECK-NEXT: scf.condition [[CND]], [[X]] : (i1, i32);
+    // CHECK-NEXT: } after {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[P:%[0-9]+]]: i32):
+    // CHECK-NEXT: di.debug_kill <{ variable = #di.variable<{ name = "a", file = "test.rs", line = 3 }> }>;
+    // CHECK-NEXT: [[N:%[0-9]+]] = arith.neg [[P]];
+    // CHECK-NEXT: scf.yield [[N]], [[B]] : (i32, i32);
+    // CHECK-NEXT: } : (i32, i32) -> (i32);
+    // CHECK-NEXT: di.debug_kill <{ variable = #di.variable<{ name = "r", file = "test.rs", line = 5 }> }>;
+    // CHECK-NEXT: builtin.ret [[R0]] : (i32);
+    builtin.function public extern("C") @debug_uses(%0: i32, %1: i32) -> i32 {
+        %2 = arith.constant 10 : i32;
+        %3, %4, %5 = scf.while %0, %1 before {
+        ^block1(%6: i32, %7: i32):
+            %8 = arith.cmpi ult %6, %2;
+            scf.condition %8, %6, %7, %6 : (i1, i32, i32, i32);
+        } after {
+        ^block2(%9: i32, %10: i32, %11: i32):
+            di.debug_value %11 <{ variable = #di.variable<{ name = "a", file = "test.rs", line = 3 }>, expression = #di.expression<[]> }> : (i32);
+            %12 = arith.neg %9;
+            scf.yield %12, %1 : (i32, i32);
+        } : (i32, i32) -> (i32, i32, i32);
+        di.debug_value %4 <{ variable = #di.variable<{ name = "r", file = "test.rs", line = 5 }>, expression = #di.expression<[]> }> : (i32);
+        builtin.ret %3 : (i32);
+    };
+};

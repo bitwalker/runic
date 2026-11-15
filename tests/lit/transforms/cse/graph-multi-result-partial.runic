@@ -1,0 +1,35 @@
+// RUN: runic-opt %s -p 'builtin.module(cse)' | filecheck %s
+// RUN: runic-opt %s -p 'builtin.module(cse)' | runic-opt - --verify-roundtrip | filecheck %s
+
+// A duplicate operation of two results in a graph region, replaced in part. The forward use of the
+// duplicate's first result has been visited, so that result stays on the duplicate; the later use
+// of its second result has not, and is rewritten to the canonical operation's second result. The
+// duplicate stays, since one of its results is still read. The forward use is written, and
+// printed, in the generic form (`mem.store` infers its operand types). The second RUN line reads
+// the output back.
+//
+// CHECK-LABEL: builtin.module private @graph_multi_result_partial {
+// CHECK-NEXT: [[ADDR:%[0-9]+]] = arith.constant 0 : isize;
+// CHECK-NEXT: [[I32_PTR:%[0-9]+]] = mem.inttoptr [[ADDR]] : ptr<i32>;
+// CHECK-NEXT: [[I1_PTR:%[0-9]+]] = mem.inttoptr [[ADDR]] : ptr<i1>;
+// CHECK-NEXT: [[LHS:%[0-9]+]] = arith.constant 1 : i32;
+// CHECK-NEXT: [[RHS:%[0-9]+]] = arith.constant 2 : i32;
+// CHECK-NEXT: [[CANONICAL_OVERFLOW:%[0-9]+]], [[CANONICAL_SUM:%[0-9]+]] = arith.add_overflowing [[LHS]], [[RHS]] <{ signedness = #builtin.signedness<unsigned> }>;
+// CHECK-NEXT: mem.store [[CANONICAL_SUM]], [[I32_PTR]];
+// CHECK-NEXT: "mem.store"([[DUP_OVERFLOW:%[0-9]+]], [[I1_PTR]]) <{ align = #mem.align<natural> }> : (i1, ptr<i1>) -> ();
+// CHECK-NEXT: [[DUP_OVERFLOW]], [[DUP_SUM:%[0-9]+]] = arith.add_overflowing [[LHS]], [[RHS]] <{ signedness = #builtin.signedness<unsigned> }>;
+// CHECK-NEXT: mem.store [[CANONICAL_SUM]], [[I32_PTR]];
+builtin.module private @graph_multi_result_partial {
+    %addr = arith.constant 0 : isize;
+    %ptr_i32 = mem.inttoptr %addr : ptr<i32>;
+    %ptr_i1 = mem.inttoptr %addr : ptr<i1>;
+    %lhs = arith.constant 1 : i32;
+    %rhs = arith.constant 2 : i32;
+    %canonical_overflow, %canonical_sum = arith.add_overflowing %lhs, %rhs <{ signedness = #builtin.signedness<unsigned> }>;
+    mem.store %canonical_sum, %ptr_i32;
+    // This visited use keeps the duplicate's first result alive.
+    "mem.store"(%dup_overflow, %ptr_i1) <{ align = #mem.align<natural> }> : (i1, ptr<i1>) -> ();
+    %dup_overflow, %dup_sum = arith.add_overflowing %lhs, %rhs <{ signedness = #builtin.signedness<unsigned> }>;
+    // This use has not been visited: it is rewritten to %canonical_sum.
+    mem.store %dup_sum, %ptr_i32;
+};

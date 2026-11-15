@@ -1,0 +1,14 @@
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(sccp))' --verify-diagnostics
+
+// A `cf.cond_br` written in the generic form without its condition is rejected when it is read,
+// so SCCP never runs on a branch whose condition is missing.
+builtin.module public @test {
+    builtin.function public extern("C") @branch(%a: i32) -> i32 {
+        // expected-error@+1 {{operand group 0 of 'cf.cond_br' expects 1 operands, but has 0}}
+        "cf.cond_br"()[^yes, ^no] : () -> ();
+    ^yes:
+        builtin.ret %a : (i32);
+    ^no:
+        builtin.ret %a : (i32);
+    };
+};

@@ -1,0 +1,84 @@
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(canonicalizer{enable-patterns=if-remove-unused-results}))' | filecheck %s
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(canonicalizer{enable-patterns=if-remove-unused-results}))' | runic-opt - --verify-roundtrip | filecheck %s
+
+// The `if-remove-unused-results` canonicalization of `scf.if`, with the canonicalizer restricted
+// to that pattern (the greedy driver still folds, erases trivially dead operations and simplifies
+// regions). A result without uses is removed, with the `scf.yield` operands that give it in every
+// branch. The second RUN line reads the rewritten IR back.
+builtin.module private @if_remove_unused_results {
+    // Result 1 is unused: the `scf.if` keeps result 0 only.
+    // CHECK-LABEL: @unused_result(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[ONE:%[0-9]+]] = arith.constant 1 : i32;
+    // CHECK-NEXT: [[C:%[0-9]+]] = arith.cmpi ult [[A]], [[B]];
+    // CHECK-NEXT: [[R:%[0-9]+]] = scf.if [[C]] then {
+    // CHECK-NEXT: [[N:%[0-9]+]] = arith.add [[A]], [[ONE]];
+    // CHECK-NEXT: scf.yield [[N]] : (i32);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: scf.yield [[B]] : (i32);
+    // CHECK-NEXT: } : (i1) -> (i32);
+    // CHECK-NEXT: builtin.ret [[R]] : (i32);
+    builtin.function public extern("C") @unused_result(%a: i32, %b: i32) -> i32 {
+        %one = arith.constant 1 : i32;
+        %c = arith.cmpi ult %a, %b;
+        %r0, %r1 = scf.if %c then {
+            %n = arith.add %a, %one;
+            scf.yield %n, %b : (i32, i32);
+        } else {
+            scf.yield %b, %a : (i32, i32);
+        } : (i1) -> (i32, i32);
+        builtin.ret %r0 : (i32);
+    };
+
+    // Result 1 is only described by a `di.debug_value`, which does not keep it alive: the
+    // `di.debug_value` goes with the replaced `scf.if`.
+    // CHECK-LABEL: @debug_only_use(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[ONE:%[0-9]+]] = arith.constant 1 : i32;
+    // CHECK-NEXT: [[C:%[0-9]+]] = arith.cmpi ult [[A]], [[B]];
+    // CHECK-NEXT: [[R:%[0-9]+]] = scf.if [[C]] then {
+    // CHECK-NEXT: [[N:%[0-9]+]] = arith.add [[A]], [[ONE]];
+    // CHECK-NEXT: scf.yield [[N]] : (i32);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: scf.yield [[B]] : (i32);
+    // CHECK-NEXT: } : (i1) -> (i32);
+    // CHECK-NEXT: builtin.ret [[R]] : (i32);
+    builtin.function public extern("C") @debug_only_use(%a: i32, %b: i32) -> i32 {
+        %one = arith.constant 1 : i32;
+        %c = arith.cmpi ult %a, %b;
+        %r0, %r1 = scf.if %c then {
+            %n = arith.add %a, %one;
+            scf.yield %n, %b : (i32, i32);
+        } else {
+            scf.yield %b, %a : (i32, i32);
+        } : (i1) -> (i32, i32);
+        di.debug_value %r1 <{ variable = #di.variable<{ name = "u", file = "test.rs", line = 4 }>, expression = #di.expression<[]> }> : (i32);
+        builtin.ret %r0 : (i32);
+    };
+
+    // Both results are used, so the `scf.if` is left alone.
+    // CHECK-LABEL: @all_used(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[ONE:%[0-9]+]] = arith.constant 1 : i32;
+    // CHECK-NEXT: [[C:%[0-9]+]] = arith.cmpi ult [[A]], [[B]];
+    // CHECK-NEXT: [[R0:%[0-9]+]], [[R1:%[0-9]+]] = scf.if [[C]] then {
+    // CHECK-NEXT: [[N:%[0-9]+]] = arith.add [[A]], [[ONE]];
+    // CHECK-NEXT: scf.yield [[N]], [[B]] : (i32, i32);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: scf.yield [[B]], [[A]] : (i32, i32);
+    // CHECK-NEXT: } : (i1) -> (i32, i32);
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[R0]], [[R1]];
+    // CHECK-NEXT: builtin.ret [[S]] : (i32);
+    builtin.function public extern("C") @all_used(%a: i32, %b: i32) -> i32 {
+        %one = arith.constant 1 : i32;
+        %c = arith.cmpi ult %a, %b;
+        %r0, %r1 = scf.if %c then {
+            %n = arith.add %a, %one;
+            scf.yield %n, %b : (i32, i32);
+        } else {
+            scf.yield %b, %a : (i32, i32);
+        } : (i1) -> (i32, i32);
+        %s = arith.add %r0, %r1;
+        builtin.ret %s : (i32);
+    };
+};

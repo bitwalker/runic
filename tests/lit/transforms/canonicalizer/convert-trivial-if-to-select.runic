@@ -1,0 +1,79 @@
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(canonicalizer{enable-patterns=convert-trivial-if-to-select}))' | filecheck %s
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(canonicalizer{enable-patterns=convert-trivial-if-to-select}))' | runic-opt - --verify-roundtrip | filecheck %s
+
+// The `convert-trivial-if-to-select` canonicalization of `scf.if`, with the canonicalizer
+// restricted to that pattern. The second RUN line reads the rewritten IR back.
+//
+// `cf.select` takes integer operands only, so a yielded value of another type (a pointer here) is
+// not hoisted, even when both branches yield values defined outside the `scf.if`: it stays a
+// result of the `scf.if`. A value both branches yield alike needs no select and is forwarded,
+// whatever its type.
+builtin.module private @convert_trivial_if_to_select {
+    // The integer result is hoisted to a `cf.select`; the pointer result stays in the `scf.if`.
+    // CHECK-LABEL: @mixed_results(
+    // CHECK-SAME: [[C:%[0-9]+]]: i1, [[P1:%[0-9]+]]: ptr<i32>, [[P2:%[0-9]+]]: ptr<i32>, [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[S:%[0-9]+]] = cf.select [[C]], [[A]], [[B]];
+    // CHECK-NEXT: [[P:%[0-9]+]] = scf.if [[C]] then {
+    // CHECK-NEXT: scf.yield [[P1]] : (ptr<i32>);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: scf.yield [[P2]] : (ptr<i32>);
+    // CHECK-NEXT: } : (i1) -> (ptr<i32>);
+    // CHECK-NEXT: [[L:%[0-9]+]] = mem.load [[P]];
+    // CHECK-NEXT: [[R:%[0-9]+]] = arith.add [[L]], [[S]];
+    // CHECK-NEXT: builtin.ret [[R]] : (i32);
+    builtin.function public extern("C") @mixed_results(%c: i1, %p1: ptr<i32>, %p2: ptr<i32>, %a: i32, %b: i32) -> i32 {
+        %p, %s = scf.if %c then {
+            scf.yield %p1, %a : (ptr<i32>, i32);
+        } else {
+            scf.yield %p2, %b : (ptr<i32>, i32);
+        } : (i1) -> (ptr<i32>, i32);
+        %l = mem.load %p;
+        %r = arith.add %l, %s;
+        builtin.ret %r : (i32);
+    };
+
+    // A pointer both branches yield alike is forwarded; the other pointer result stays in the
+    // `scf.if`.
+    // CHECK-LABEL: @same_pointer(
+    // CHECK-SAME: [[C:%[0-9]+]]: i1, [[P1:%[0-9]+]]: ptr<i32>, [[P2:%[0-9]+]]: ptr<i32>) -> i32 {
+    // CHECK-NEXT: [[P:%[0-9]+]] = scf.if [[C]] then {
+    // CHECK-NEXT: scf.yield [[P1]] : (ptr<i32>);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: scf.yield [[P2]] : (ptr<i32>);
+    // CHECK-NEXT: } : (i1) -> (ptr<i32>);
+    // CHECK-NEXT: [[L1:%[0-9]+]] = mem.load [[P1]];
+    // CHECK-NEXT: [[L2:%[0-9]+]] = mem.load [[P]];
+    // CHECK-NEXT: [[R:%[0-9]+]] = arith.add [[L1]], [[L2]];
+    // CHECK-NEXT: builtin.ret [[R]] : (i32);
+    builtin.function public extern("C") @same_pointer(%c: i1, %p1: ptr<i32>, %p2: ptr<i32>) -> i32 {
+        %x, %y = scf.if %c then {
+            scf.yield %p1, %p1 : (ptr<i32>, ptr<i32>);
+        } else {
+            scf.yield %p1, %p2 : (ptr<i32>, ptr<i32>);
+        } : (i1) -> (ptr<i32>, ptr<i32>);
+        %l1 = mem.load %x;
+        %l2 = mem.load %y;
+        %r = arith.add %l1, %l2;
+        builtin.ret %r : (i32);
+    };
+
+    // The only result is a pointer, so the `scf.if` is left alone.
+    // CHECK-LABEL: @pointer_result(
+    // CHECK-SAME: [[C:%[0-9]+]]: i1, [[P1:%[0-9]+]]: ptr<i32>, [[P2:%[0-9]+]]: ptr<i32>) -> i32 {
+    // CHECK-NEXT: [[P:%[0-9]+]] = scf.if [[C]] then {
+    // CHECK-NEXT: scf.yield [[P1]] : (ptr<i32>);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: scf.yield [[P2]] : (ptr<i32>);
+    // CHECK-NEXT: } : (i1) -> (ptr<i32>);
+    // CHECK-NEXT: [[L:%[0-9]+]] = mem.load [[P]];
+    // CHECK-NEXT: builtin.ret [[L]] : (i32);
+    builtin.function public extern("C") @pointer_result(%c: i1, %p1: ptr<i32>, %p2: ptr<i32>) -> i32 {
+        %p = scf.if %c then {
+            scf.yield %p1 : (ptr<i32>);
+        } else {
+            scf.yield %p2 : (ptr<i32>);
+        } : (i1) -> (ptr<i32>);
+        %l = mem.load %p;
+        builtin.ret %l : (i32);
+    };
+};

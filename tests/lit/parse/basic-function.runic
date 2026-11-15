@@ -1,0 +1,12 @@
+// RUN: runic-opt %s | filecheck %s
+// RUN: runic-opt %s --verify-roundtrip | filecheck %s
+
+// The smallest program: a function that returns its argument, read and printed.
+
+// CHECK-LABEL: builtin.function public extern("C") @entrypoint(
+// CHECK-SAME: [[A:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: builtin.ret [[A]] : (i32);
+// CHECK-NEXT: };
+builtin.function public extern("C") @entrypoint(%a: i32) -> i32 {
+    builtin.ret %a : (i32);
+};
