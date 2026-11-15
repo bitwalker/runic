@@ -164,6 +164,14 @@ fn find_all(root: OperationRef, name: &str) -> Vec<OperationRef> {
     found
 }
 
+/// Every operation under `root`, `root` excluded, in order.
+fn nested_ops(root: OperationRef) -> Vec<OperationRef> {
+    let mut found = Vec::new();
+    root.borrow().prewalk_all(|op: &Operation| found.push(op.as_operation_ref()));
+    found.retain(|op| *op != root);
+    found
+}
+
 /// The `index`-th operation under `root` named `name`.
 fn find(root: OperationRef, name: &str, index: usize) -> OperationRef {
     find_all(root, name)[index]
@@ -750,9 +758,10 @@ fn each_verification_computes_dominance_afresh() {
     assert!(error.contains("in a block that does not dominate the use"), "{error}");
 }
 
-/// Verifying an operation nested in a function checks its uses of the function's values too.
+/// Verifying an operation nested in a function checks the uses inside it, but not its uses of the
+/// function's values: the walk does not look at regions it was not asked to verify.
 #[test]
-fn a_nested_operation_verified_alone_is_checked_against_the_values_outside_it() {
+fn a_nested_operation_verified_alone_does_not_check_the_values_outside_it() {
     let (_context, module) = parse_body(&format!(
         "    %x = test.constant 1 : i32;
 {}",
@@ -760,18 +769,317 @@ fn a_nested_operation_verified_alone_is_checked_against_the_values_outside_it() 
             "    %y = test.constant 2 : i32;",
             "    test.dom_region {
         test.sink %x : (i32);
+        test.sink %z : (i32);
+        %z = test.constant 3 : i32;
     };",
             ""
         )
     ));
     let region_op = find(module, "test.dom_region", 0);
-    region_op.borrow().recursively_verify().expect("the region verifies");
-    let y = result(find(module, "test.constant", 1));
-    set_operand(find(module, "test.sink", 0), 0, y);
     let error = match region_op.borrow().recursively_verify() {
         Ok(()) => panic!("the region verifies"),
         Err(err) => describe(&err),
     };
     assert!(error.starts_with(&not_dominated(0, "test.sink")), "{error}");
+    assert!(error.contains("later in the same block"), "{error}");
+
+    // Without the use inside it that fails, the region verifies, even reading a value of `^left`
+    // from `^right`.
+    let sinks = find_all(module, "test.sink");
+    let z = result(find(module, "test.constant", 2));
+    let y = result(find(module, "test.constant", 1));
+    let mut late = find(module, "test.constant", 2);
+    let before_sink = crate::ProgramPoint::before(sinks[0]);
+    late.borrow_mut().move_to(before_sink);
+    set_operand(sinks[0], 0, y);
+    set_operand(sinks[1], 0, z);
+    region_op.borrow().recursively_verify().expect("the region verifies");
+    // The module does not.
+    let error = rejected(module);
     assert!(error.contains("in a block that does not dominate the use"), "{error}");
+}
+
+/// A nested operation in a region that no operation holds any more is verified alone without
+/// looking at that region.
+#[test]
+fn a_nested_operation_in_an_orphaned_region_is_verified_alone() {
+    let (_context, module) = parse_body(
+        "    test.dom_region {
+        test.sink %a : (i32);
+    };
+    builtin.ret;",
+    );
+    let mut function = find(module, "builtin.function", 0);
+    let region_op = find(module, "test.dom_region", 0);
+    let body = function
+        .borrow_mut()
+        .regions_mut()
+        .pop_front()
+        .expect("the function has a body");
+    assert!(body.parent().is_none(), "the body is orphaned");
+    region_op.borrow().recursively_verify().expect("the region verifies");
+}
+
+/// A value defined by an operation in no block is reported as such, also when the use crosses
+/// an operation isolated from above to look for it.
+#[test]
+fn a_detached_definition_across_an_isolated_operation_is_reported_as_detached() {
+    let (_context, module) = parse_body(
+        "    %x = test.constant 1 : i32;
+    test.dom_region {
+        test.sink %a : (i32);
+    };
+    builtin.ret;",
+    );
+    let mut constant = find(module, "test.constant", 0);
+    constant.borrow_mut().remove();
+    set_operand(find(module, "test.sink", 0), 0, result(constant));
+    let error = rejected(module);
+    assert!(error.starts_with(&not_dominated(0, "test.sink")), "{error}");
+    assert!(error.contains("outside of every region"), "{error}");
+    assert!(!error.contains("isolated from above"), "{error}");
+}
+
+/// A graph region reads a value of the region around it where it is defined before the graph
+/// region's operation.
+#[test]
+fn a_graph_region_that_reads_an_earlier_value_of_the_function_is_accepted() {
+    body_accepted(
+        "    %x = test.constant 1 : i32;
+    test.dom_graph {
+        test.sink %x, %a : (i32, i32);
+    };
+    builtin.ret;",
+    );
+}
+
+/// A region with a block that cannot be reached, two levels above a use: walked out to the
+/// definition's region (the middle one), the use sits in that dead block and is not checked; a
+/// use of a value of the function is checked in the function, where it can be reached.
+#[test]
+fn a_use_in_dead_code_of_an_intermediate_region_is_not_checked() {
+    let middle = |entry: &str| {
+        format!(
+            "    %x = test.constant 1 : i32;
+    test.dom_region {{
+        test.dom_br ^{entry};
+    ^dead:
+        test.dom_region {{
+            test.sink %late : (i32);
+        }};
+        %late = test.constant 2 : i32;
+        test.dom_br ^live;
+    ^live:
+        test.sink %x : (i32);
+    }};
+    builtin.ret;"
+        )
+    };
+    body_accepted(&middle("live"));
+    // The same block, reached, is checked.
+    let error = body_rejected(&middle("dead"));
+    assert!(error.starts_with(&not_dominated(0, "test.sink")), "{error}");
+    assert!(error.contains("later in the same block"), "{error}");
+
+    // A use of a value of the function, from the dead block, is checked in the function.
+    let (_context, module) = parse_body(&middle("live"));
+    let mut x = find(module, "test.constant", 0);
+    let after_region = crate::ProgramPoint::after(find(module, "test.dom_region", 0));
+    x.borrow_mut().move_to(after_region);
+    set_operand(find(module, "test.sink", 0), 0, result(x));
+    let error = rejected(module);
+    assert!(error.starts_with(&not_dominated(0, "test.sink")), "{error}");
+}
+
+// ----- The walk against the shared query -----
+
+/// Random functions: blocks with random branches (never to the entry), operations with regions
+/// (`test.dom_region`, `test.dom_holder`, `test.dom_graph`, nested up to two deep), and every
+/// operand then set to a random value of the function. For every operand of every operation, the
+/// walk's verdict equals the shared query's: `properly_dominates` of
+/// `impl Dominates<Operation> for dyn Value`, which does not count an enclosing operation.
+///
+/// They are meant to differ in one place: a use in code that cannot be reached (its block, or the
+/// block that holds it in the definition's region, is not reachable from that region's entry),
+/// which the walk does not check and the shared query may call not dominated. The test asserts
+/// the walk accepts such a use, and counts the uses where the two differ there. An operation that
+/// reads its own result is not such a place: both reject it in an SSA region and accept it in a
+/// graph region, and the test compares them there like everywhere else.
+#[test]
+fn the_walk_agrees_with_the_shared_query() {
+    use crate::{
+        dominance::{DominanceInfo, Dominates},
+        testing::text::Rng,
+    };
+
+    let mut counts = [0usize; 4];
+    for seed in crate::testing::test_seeds(3) {
+        let mut rng = Rng(seed);
+        for case in 0..60 {
+            let body = random_body(&mut rng);
+            let (_context, module) = parse_body(&body);
+            let function = find(module, "builtin.function", 0);
+            let values = function_values(function);
+            for op in nested_ops(function) {
+                let operands = op.borrow().operands().len();
+                for index in 0..operands {
+                    set_operand(op, index, values[rng.below(values.len() as u64) as usize]);
+                }
+            }
+
+            let dom_info = DominanceInfo::new(&module.borrow());
+            let verdicts = crate::verifier::dominance::dominance_verdicts(&module.borrow());
+            let mut operands = 0;
+            for op in nested_ops(function) {
+                operands += op.borrow().operands().len();
+            }
+            assert_eq!(verdicts.len(), operands, "seed {seed:#x} case {case}: every operand");
+            for (user, index, verdict) in verdicts {
+                let user = user.borrow();
+                let value_ref = user.operands()[index].borrow().as_value_ref();
+                let value = value_ref.borrow();
+                let shared = <dyn Value as Dominates<Operation>>::properly_dominates(
+                    &*value, &user, &dom_info,
+                );
+                let context = || {
+                    format!(
+                        "seed {seed:#x} (set CORE_TEST_SEED to rerun) case {case}: operand \
+                         #{index} of '{}' reading {}: the walk says {verdict:?}, the shared query \
+                         {shared}\n{}",
+                        user.name(),
+                        value_ref,
+                        function.borrow()
+                    )
+                };
+                if reachable_use(&dom_info, &user, &*value) {
+                    let walk = match &verdict {
+                        Ok(crate::verifier::dominance::Checked::Dominated) => true,
+                        Err(_) => false,
+                        Ok(_) => panic!("a reachable use is checked: {}", context()),
+                    };
+                    assert_eq!(walk, shared, "{}", context());
+                    counts[usize::from(walk)] += 1;
+                } else {
+                    assert!(
+                        matches!(verdict, Ok(crate::verifier::dominance::Checked::Unreachable)),
+                        "a use in dead code is not checked: {}",
+                        context()
+                    );
+                    counts[2 + usize::from(shared)] += 1;
+                }
+            }
+        }
+    }
+    let [rejected, accepted, dead_not_dominated, dead_dominated] = counts;
+    assert!(rejected > 0 && accepted > 0, "{counts:?}");
+    // Where the two differ: dead code the shared query calls not dominated
+    assert!(dead_not_dominated > 0 && dead_dominated > 0, "{counts:?}");
+}
+
+/// Whether a use by `user` of `value` can be reached, by the rule the walk documents: the use's
+/// block is reachable from its region's entry, and so is the block that holds it in the region of
+/// the definition, when that region holds it.
+fn reachable_use(
+    dom_info: &crate::dominance::DominanceInfo,
+    user: &Operation,
+    value: &dyn Value,
+) -> bool {
+    let block = user.parent().unwrap();
+    if !dom_info.info().is_reachable_from_entry(block) {
+        return false;
+    }
+    let def_region = value.parent_block().and_then(|block| block.parent());
+    match def_region.and_then(|region| region.borrow().find_ancestor_block(block)) {
+        Some(ancestor) => dom_info.info().is_reachable_from_entry(ancestor),
+        None => true,
+    }
+}
+
+/// Every value of `function`: its arguments, the arguments of its blocks, and the results of the
+/// operations in it at any depth.
+fn function_values(function: OperationRef) -> Vec<ValueRef> {
+    let mut values = Vec::new();
+    let body = function.borrow().regions().front().as_pointer().unwrap();
+    for block in body.borrow().body().iter() {
+        for argument in block.arguments() {
+            values.push(argument.borrow().as_value_ref());
+        }
+    }
+    for op in nested_ops(function) {
+        for result in op.borrow().results().iter() {
+            values.push(result.borrow().as_value_ref());
+        }
+    }
+    values
+}
+
+/// The body of a random function `@f(%a: i32)`: two to five blocks, each branching to one or two
+/// later-numbered or earlier non-entry blocks, the last returning. Operands are all `%a`; the test
+/// sets them afterwards.
+fn random_body(rng: &mut crate::testing::text::Rng) -> String {
+    let blocks = 2 + rng.below(4) as usize;
+    let with_argument = (0..blocks).map(|block| block > 0 && rng.below(2) == 0).collect::<Vec<_>>();
+    let target = |rng: &mut crate::testing::text::Rng| {
+        let block = 1 + rng.below(blocks as u64 - 1) as usize;
+        if with_argument[block] {
+            format!("^b{block}(%a : i32)")
+        } else {
+            format!("^b{block}")
+        }
+    };
+    let mut next = 0;
+    let mut text = String::new();
+    for (block, &argument) in with_argument.iter().enumerate() {
+        if block > 0 {
+            if argument {
+                text.push_str(&format!("^b{block}(%p{block}: i32):\n"));
+            } else {
+                text.push_str(&format!("^b{block}:\n"));
+            }
+        }
+        random_ops(rng, &mut text, &mut next, 1);
+        if block + 1 == blocks {
+            text.push_str("    builtin.ret;\n");
+        } else if rng.below(2) == 0 {
+            text.push_str(&format!("    test.dom_br {};\n", target(rng)));
+        } else {
+            let (first, second) = (target(rng), target(rng));
+            text.push_str(&format!("    test.dom_either {first}, {second};\n"));
+        }
+    }
+    text
+}
+
+/// One to three random operations at nesting `depth` (1 is the function body).
+fn random_ops(
+    rng: &mut crate::testing::text::Rng,
+    text: &mut String,
+    next: &mut usize,
+    depth: usize,
+) {
+    let indent = "    ".repeat(depth);
+    for _ in 0..1 + rng.below(3) {
+        let kind = if depth < 3 {
+            rng.below(6)
+        } else {
+            rng.below(3)
+        };
+        let name = *next;
+        *next += 1;
+        match kind {
+            0 => text.push_str(&format!("{indent}%v{name} = test.constant {name} : i32;\n")),
+            1 => text.push_str(&format!("{indent}%v{name} = test.add %a, %a;\n")),
+            2 => text.push_str(&format!("{indent}test.sink %a, %a : (i32, i32);\n")),
+            _ => {
+                let open = match kind {
+                    3 => "test.dom_region {".to_string(),
+                    4 => format!("%v{name} = test.dom_holder {{"),
+                    _ => "test.dom_graph {".to_string(),
+                };
+                text.push_str(&format!("{indent}{open}\n"));
+                random_ops(rng, text, next, depth + 1);
+                text.push_str(&format!("{indent}}};\n"));
+            }
+        }
+    }
 }

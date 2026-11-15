@@ -320,6 +320,9 @@ fn replacing_an_operation_twice_goes_unnoticed() {
 
 /// Replacing by values defined after the users (the halves are built after the sink) is an
 /// error: the driver reports the use before the definition when it applies the replacement.
+///
+/// The conversion driver reports this before the verifier runs: the error asserted here is the
+/// driver's, not the verifier's dominance check (which would also reject the IR).
 #[test]
 fn replacing_by_values_defined_after_their_users_is_an_error() {
     let outcome = outcome(

@@ -1,16 +1,30 @@
 //! The checks [Operation::recursively_verify] makes beyond each operation's own: the shape of
 //! blocks and regions ([verify_structure]), and that every value is defined before it is read
 //! and no value crosses an operation isolated from above ([verify_dominance]).
+//!
+//! # Why the walk has its own dominance query
+//!
+//! The walk answers "does the definition dominate this use" itself, beside the shared query
+//! (`impl Dominates<Operation> for dyn Value` over a [crate::dominance::DominanceInfo]), and does
+//! not call it. [crate::dominance::DominanceInfo] finds the information of a region by a linear
+//! search over every region it has seen, so asking it once per operand makes verification
+//! quadratic in the size of a module (measured at 4.9x the cost of verification without the walk
+//! on a module of 200 functions). The walk instead keeps the kind and the dominator tree of each
+//! region on a stack of the regions that hold the operation being checked, and it has to walk a
+//! use out to its definition's region anyway, for the isolation rule and for the reachability
+//! rule. Its answer, for a use it checks, is the shared query's
+//! `properly_dominates` with enclosing operations not counted; the randomized test
+//! `the_walk_agrees_with_the_shared_query` (in `tests`) ties the two together.
 
 #[cfg(test)]
 mod tests;
 
-use alloc::{format, rc::Rc, string::String, vec::Vec};
-use core::cell::{OnceCell, RefCell};
+use alloc::{format, string::String, vec::Vec};
+use core::cell::OnceCell;
 
 use crate::{
-    BlockRef, FxHashMap, Operation, OperationRef, Region, RegionKindInterface, RegionRef, Report,
-    Value, diagnostics::Spanned, dominance::DomTreeBase, traits::IsolatedFromAbove,
+    BlockRef, Operation, OperationRef, Region, RegionKindInterface, RegionRef, Report, Value,
+    diagnostics::Spanned, dominance::DomTreeBase, traits::IsolatedFromAbove,
 };
 
 /// The structural rules of blocks and regions that hold at `op`, checked once `op` has verified:
@@ -121,20 +135,52 @@ pub(crate) fn verify_structure(op: &Operation) -> Result<(), Report> {
 /// * the definition's block properly dominates the use's block.
 ///
 /// A use in a region that is not nested in the definition's region is never dominated, nor is a
-/// use inside the operation that defines the value. The operands of `root` itself are not
-/// checked.
+/// use inside the operation that defines the value, nor a use of a value defined in no region.
+/// The operands of `root` itself are not checked, nor is a use of a value defined outside `root`
+/// (when `root` is verified alone): the walk does not look at regions it was not asked to verify.
+/// Isolation is still checked up to `root`, `root` included.
 ///
 /// The kind and the dominator tree of each region are computed once per call: the kind when the
 /// walk enters the region, the tree (for a region with more than one block) the first time it is
 /// needed. They are kept on a stack of the regions that hold the operation being checked, which a
-/// use walked out to its definition's region climbs; a region outside `root` is looked up in a
-/// map.
+/// use walked out to its definition's region climbs.
 pub(crate) fn verify_dominance(root: &Operation) -> Result<(), Report> {
     let mut walk = DominanceWalk {
+        root: root.as_operation_ref(),
         frames: Vec::new(),
-        outside: RefCell::new(FxHashMap::default()),
+        #[cfg(test)]
+        verdicts: None,
     };
     walk.regions_of(root)
+}
+
+/// The walk's verdict on every operand of every operation in the regions of `root`, in walk order,
+/// instead of the first failure.
+#[cfg(test)]
+pub(crate) fn dominance_verdicts(root: &Operation) -> Vec<(OperationRef, usize, Verdict)> {
+    let mut walk = DominanceWalk {
+        root: root.as_operation_ref(),
+        frames: Vec::new(),
+        verdicts: Some(Vec::new()),
+    };
+    walk.regions_of(root)
+        .expect("recording the verdicts does not stop at a failure");
+    walk.verdicts.unwrap()
+}
+
+/// What the walk concluded about one use.
+#[cfg(test)]
+pub(crate) type Verdict = Result<Checked, Report>;
+
+/// A use the walk accepts: dominated by its definition, or not checked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Checked {
+    /// The definition dominates the use
+    Dominated,
+    /// The use, walked out to the definition's region, is in a block that cannot be reached
+    Unreachable,
+    /// The definition is outside the root being verified
+    OutsideRoot,
 }
 
 /// What the walk knows of one region.
@@ -182,10 +228,14 @@ impl Frame {
 }
 
 struct DominanceWalk {
-    /// The regions that hold the operation being checked, outermost first
+    /// The operation being verified
+    root: OperationRef,
+    /// The regions that hold the operation being checked, outermost first: the first is a region
+    /// of `root`
     frames: Vec<Frame>,
-    /// The regions outside the root that a use was walked out to
-    outside: RefCell<FxHashMap<RegionRef, Rc<Frame>>>,
+    /// When set, every verdict is recorded here and the walk does not stop at a failure
+    #[cfg(test)]
+    verdicts: Option<Vec<(OperationRef, usize, Verdict)>>,
 }
 
 /// Where a definition that does not dominate its use is, relative to the use.
@@ -248,7 +298,13 @@ impl DominanceWalk {
             for child in block.body().iter() {
                 for (index, operand) in child.operands().iter().enumerate() {
                     let operand = operand.borrow();
-                    self.check_use(&child, index, &*operand.value(), reachable)?;
+                    let verdict = self.check_use(&child, index, &*operand.value(), reachable);
+                    #[cfg(test)]
+                    if let Some(verdicts) = self.verdicts.as_mut() {
+                        verdicts.push((child.as_operation_ref(), index, verdict));
+                        continue;
+                    }
+                    verdict?;
                 }
                 if child.has_regions() {
                     self.regions_of(&child)?;
@@ -266,85 +322,76 @@ impl DominanceWalk {
         index: usize,
         value: &dyn Value,
         reachable: bool,
-    ) -> Result<(), Report> {
+    ) -> Result<Checked, Report> {
         let def_block = value.parent_block();
-        let def_region = def_block.and_then(|block| block.parent());
+        let Some(def_region) = def_block.and_then(|block| block.parent()) else {
+            // A value defined in no region dominates nothing; it is not "outside" an isolated
+            // operation either, so this is checked before isolation
+            if !reachable {
+                return Ok(Checked::Unreachable);
+            }
+            return Err(dominance_error(user, index, value, Placement::Detached));
+        };
 
         // Walk the use out, through the operations that hold it, to the definition's region,
         // checking that it crosses no operation isolated from above on the way. `level` is the
-        // frame of the region the walk is in, while it is under the root.
+        // frame of the region the walk is in; the walk stops at the regions of the root.
         let mut at = user.as_operation_ref();
         let mut at_block = user.parent().expect("a checked operation is in a block");
-        let mut level = Some(self.frames.len() - 1);
-        let found = loop {
-            let Some(region) = at_block.parent() else {
-                break None;
-            };
-            if Some(region) == def_region {
-                break Some((at, at_block, level));
+        let mut level = self.frames.len() - 1;
+        loop {
+            let region = self.frames[level].region;
+            debug_assert!(at_block.parent() == Some(region));
+            if region == def_region {
+                break;
             }
-            let Some(holder) = region.parent() else {
-                break None;
-            };
+            let holder = region.parent().expect("a region under the root is held by an operation");
             // A definition outside the region of the use, but inside the isolated operation,
             // is not in an ancestor region: the walk goes on, and fails to find it.
             if holder.borrow().implements::<dyn IsolatedFromAbove>()
-                && !def_region.is_some_and(|def_region| is_inside(def_region, holder))
+                && !is_inside(def_region, holder)
             {
                 return Err(isolation_error(user, index, value, holder));
             }
-            at = holder;
-            level = level.and_then(|level| level.checked_sub(1));
-            match holder.parent() {
-                Some(block) => at_block = block,
-                None => break None,
+            if level == 0 {
+                // `holder` is the root: the definition is outside it, or in a region under it
+                // that does not hold the use
+                if !is_inside(def_region, self.root) {
+                    return Ok(Checked::OutsideRoot);
+                }
+                if !reachable {
+                    return Ok(Checked::Unreachable);
+                }
+                let use_region = self.frames.last().unwrap().region;
+                let placement = if is_nested_in(def_region, use_region) {
+                    Placement::NestedRegion
+                } else {
+                    Placement::UnrelatedRegion
+                };
+                return Err(dominance_error(user, index, value, placement));
             }
-        };
+            at = holder;
+            at_block = holder.parent().expect("an operation under the root is in a block");
+            level -= 1;
+        }
 
         if !reachable {
-            return Ok(());
+            return Ok(Checked::Unreachable);
         }
-        let Some((ancestor, block, level)) = found else {
-            let placement = match def_region {
-                None => Placement::Detached,
-                Some(def_region) => {
-                    let use_region = self.frames.last().unwrap().region;
-                    if is_nested_in(def_region, use_region) {
-                        Placement::NestedRegion
-                    } else {
-                        Placement::UnrelatedRegion
-                    }
-                }
-            };
-            return Err(dominance_error(user, index, value, placement));
-        };
-        let outside;
-        let frame = match level {
-            Some(level) => &self.frames[level],
-            None => {
-                let region = block.parent().expect("the walk found a block in a region");
-                outside = self
-                    .outside
-                    .borrow_mut()
-                    .entry(region)
-                    .or_insert_with(|| Rc::new(Frame::new(region)))
-                    .clone();
-                &*outside
-            }
-        };
-        debug_assert!(Some(frame.region) == def_region);
+        let (ancestor, block) = (at, at_block);
+        let frame = &self.frames[level];
         if !frame.ssa {
-            return Ok(());
+            return Ok(Checked::Dominated);
         }
         // A use in an unreachable block of the definition's region is in dead code
         if ancestor != user.as_operation_ref() && !frame.is_reachable(block) {
-            return Ok(());
+            return Ok(Checked::Unreachable);
         }
         let def_block = def_block.expect("the definition is in the region the walk found");
         let placement = if def_block == block {
             let Some(def_op) = value.get_defining_op() else {
                 // A block argument dominates every operation of its block
-                return Ok(());
+                return Ok(Checked::Dominated);
             };
             if def_op == ancestor {
                 if ancestor == user.as_operation_ref() {
@@ -353,12 +400,12 @@ impl DominanceWalk {
                     Placement::Encloses(def_op)
                 }
             } else if def_op.borrow().is_before_in_block(&ancestor) {
-                return Ok(());
+                return Ok(Checked::Dominated);
             } else {
                 Placement::LaterInBlock
             }
         } else if frame.properly_dominates(def_block, block) {
-            return Ok(());
+            return Ok(Checked::Dominated);
         } else {
             Placement::NonDominatingBlock
         };
