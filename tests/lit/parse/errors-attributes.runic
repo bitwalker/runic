@@ -57,7 +57,7 @@ builtin.function public extern("C") @f() {
 
 builtin.function public extern("C") @f() {
     builtin.ret;
-} attributes { a = #builtin.bool<maybe> }; // expected-error {{unexpected token 'bare identifier'}}
+} attributes { a = #builtin.bool<maybe> }; // expected-error {{unexpected token 'maybe'}}
 
 // -----
 
@@ -69,7 +69,7 @@ builtin.function public extern("C") @f() {
 
 builtin.function public extern("C") @f() {
     builtin.ret;
-} attributes { a = unit }; // expected-error {{unexpected token 'bare identifier'}}
+} attributes { a = unit }; // expected-error {{unexpected token 'unit'}}
 
 // -----
 

@@ -2504,6 +2504,28 @@ fn a_built_constant_equals_the_same_constant_parsed_from_text() -> TestResult {
     Ok(())
 }
 
+/// A token that carries text is shown in an "unexpected token" error as it is written, not by its
+/// kind; the end of the input is shown by its kind.
+#[test]
+fn an_unexpected_token_is_shown_as_written() {
+    let context = Rc::new(Context::default());
+    for (text, shown) in [
+        ("publik", "'publik'"),
+        ("42", "'42'"),
+        ("0x1f", "'0x1f'"),
+        ("0b101", "'0b101'"),
+        ("\"s\"", "'\"s\"'"),
+        ("%v", "'%v'"),
+        ("^b", "'^b'"),
+        ("@f", "'@f'"),
+        ("#builtin.unit", "'#builtin.unit'"),
+        ("", "'end of input'"),
+    ] {
+        let message = type_error_text(&context, text);
+        assert!(message.contains(&format!("unexpected token {shown}")), "{text}: {message}");
+    }
+}
+
 /// A word spelled like an integer type too wide to name one is an identifier, keeping its
 /// spelling, rather than a type token with a clamped width.
 #[test]
@@ -2512,7 +2534,7 @@ fn an_over_wide_integer_type_spelling_is_an_identifier() {
 
     let context = Rc::new(Context::default());
     let message = type_error_text(&context, "i99999999999");
-    assert!(message.contains("unexpected token 'bare identifier'"), "{message}");
+    assert!(message.contains("unexpected token 'i99999999999'"), "{message}");
     assert!(message.contains("help: expected a type"), "{message}");
 
     let id = context.add_source("key.runic", "i99999999999").unwrap();
@@ -3831,7 +3853,7 @@ fn list_attributes_round_trip_through_text() -> TestResult {
         ("[#builtin.i32<1>,]", r#"token: "]""#),
         (
             "[#builtin.i32<1> #builtin.i32<2>]",
-            r##"token: "#-identifier", expected: Some(Expected("]"))"##,
+            r##"token: "#builtin.i32", expected: Some(Expected("]"))"##,
         ),
         // A bare integer has no type to be read with.
         ("[1]", "an integer literal has no type here"),

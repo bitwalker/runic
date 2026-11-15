@@ -175,16 +175,17 @@ impl fmt::Display for Token<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use core::fmt::Write;
         match self {
-            Self::BareIdent(_) => f.write_str("bare identifier"),
-            Self::AtIdent(_) => f.write_str("@-identifier"),
-            Self::HashIdent(_) => f.write_str("#-identifier"),
-            Self::PercentIdent(_) => f.write_str("%-identifier"),
-            Self::CaretIdent(_) => f.write_str("^-identifier"),
-            Self::BangIdent(_) => f.write_str("!-identifier"),
-            Self::String(_) => f.write_str("string"),
-            Self::Int(_) => f.write_str("integer"),
-            Self::Hex(_) => f.write_str("hex-encoded integer"),
-            Self::Binary(_) => f.write_str("binary-encoded integer"),
+            // A token that carries text is shown as it is written
+            Self::BareIdent(name) => f.write_str(name),
+            Self::AtIdent(name) => write!(f, "@{name}"),
+            Self::HashIdent(name) => write!(f, "#{name}"),
+            Self::PercentIdent(name) => write!(f, "%{name}"),
+            Self::CaretIdent(name) => write!(f, "^{name}"),
+            Self::BangIdent(name) => write!(f, "!{name}"),
+            Self::String(text) => write!(f, "\"{text}\""),
+            Self::Int(digits) => f.write_str(digits),
+            Self::Hex(digits) => write!(f, "0x{digits}"),
+            Self::Binary(digits) => write!(f, "0b{digits}"),
             Self::Comment => f.write_str("comment"),
             Self::Eof => f.write_str("end of input"),
             Self::True => f.write_str("true"),

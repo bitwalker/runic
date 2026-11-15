@@ -5,7 +5,7 @@
 // error (the limit is not configurable). The parser stops at its first error, so each case holds
 // one.
 
-builtin.function public extern("C") @f(i0); // expected-error {{unexpected token 'bare identifier'}}
+builtin.function public extern("C") @f(i0); // expected-error {{unexpected token 'i0'}}
 
 // -----
 
@@ -13,7 +13,7 @@ builtin.function public extern("C") @f(i16777216); // expected-error {{an intege
 
 // -----
 
-builtin.function public extern("C") @f(f16); // expected-error {{unexpected token 'bare identifier'}}
+builtin.function public extern("C") @f(f16); // expected-error {{unexpected token 'f16'}}
 
 // -----
 
@@ -62,7 +62,7 @@ builtin.function public extern("C") @f(enum<i8; a = 300>); // expected-error {{v
 
 // -----
 
-builtin.function public extern("C") @f(ptr<i32, x>); // expected-error {{unexpected token 'bare identifier'}}
+builtin.function public extern("C") @f(ptr<i32, x>); // expected-error {{unexpected token 'x'}}
 
 // -----
 
