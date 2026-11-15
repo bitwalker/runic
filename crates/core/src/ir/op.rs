@@ -44,9 +44,10 @@ pub trait OpRegistration: Op {
     ///
     /// The operation macro derives it from the `#[region]` declarations.
     fn region_count() -> usize;
-    /// The number of results the operation declares: `Some(n)` for its `n` `#[result]`s, `None`
-    /// for a `#[results]` group of any number, or when it declares none (an operation such as
-    /// `scf.if` is given its results when it is built).
+    /// The number of results the operation declares: `Some(n)` for its `n` `#[result]`s,
+    /// `Some(0)` when it declares none, and `None` for a `#[results]` group of any number (an
+    /// operation such as `scf.if` is given its results when it is built). An operation that is
+    /// given results declares a `#[results]` group.
     fn result_count() -> Option<usize>;
     /// The successor groups the operation declares, in order.
     ///

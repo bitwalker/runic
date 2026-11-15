@@ -1012,6 +1012,14 @@ where
         };
         {
             let built = op.borrow();
+            if stated_results.len() != built.num_results() {
+                return Err(ParserError::StatedResultCountMismatch {
+                    span: stated_results.first().map_or(span, |stated| stated.span()),
+                    stated: stated_results.len(),
+                    built: built.num_results(),
+                    op: op_name.to_string(),
+                });
+            }
             for (stated, result) in stated_results.iter().zip(built.results().all().iter()) {
                 let inferred = result.borrow().ty();
                 if inferred != *stated.inner() {

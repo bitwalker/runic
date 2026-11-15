@@ -547,6 +547,8 @@ pub struct IndexSwitch {
     cases: I32ArrayAttr,
     #[region]
     default_region: Region,
+    #[results]
+    returns: AnyType,
 }
 
 /// The case values are distinct, and there is one region for each after the default region; and

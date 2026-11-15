@@ -210,8 +210,6 @@ impl<'input> ParserState<'input> {
 /// This struct records all parsed top-level symbols
 #[derive(Default)]
 pub struct SymbolState {
-    /// A map from attribute alias identifier to Attribute
-    pub attribute_alias_definitions: FxHashMap<interner::Symbol, Span<AttributeRef>>,
     /// A map from type alias identifier to Type
     pub type_alias_definitions: FxHashMap<interner::Symbol, Span<Type>>,
     /// The aliases of the `rec` block being parsed, if one is.

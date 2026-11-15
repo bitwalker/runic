@@ -313,22 +313,10 @@ impl<'input> Lexer<'input> {
             ',' => pop!(self, Token::Comma),
             ';' => pop!(self, Token::Semicolon),
             '=' => pop!(self, Token::Equal),
-            '#' => match self.peek() {
-                '-' => match self.peek_next() {
-                    '}' => pop3!(self, Token::FileMetadataEnd),
-                    _ => self.lex_prefixed_identifier(),
-                },
-                _ => self.lex_prefixed_identifier(),
-            },
+            '#' => self.lex_prefixed_identifier(),
             '|' => pop!(self, Token::Pipe),
             '<' => pop!(self, Token::Langle),
-            '{' => match self.peek() {
-                '-' => match self.peek_next() {
-                    '#' => pop3!(self, Token::FileMetadataStart),
-                    _ => pop!(self, Token::Lbrace),
-                },
-                _ => pop!(self, Token::Lbrace),
-            },
+            '{' => pop!(self, Token::Lbrace),
             '[' => pop!(self, Token::Lbracket),
             '(' => pop!(self, Token::Lparen),
             '>' => pop!(self, Token::Rangle),

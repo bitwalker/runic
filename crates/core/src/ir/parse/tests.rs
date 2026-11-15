@@ -7156,3 +7156,58 @@ fn a_generic_operation_of_the_wrong_shape_is_an_error() {
         assert!(err.contains(expected), "{err}");
     }
 }
+
+/// An operation that declares no results has none: generic text that gives it a result is an
+/// error, not an operation with a result it cannot have.
+#[test]
+fn a_generic_operation_that_declares_no_results_cannot_be_given_one() {
+    for (text, name) in [
+        (
+            "%m = \"builtin.module\"() <{ name = #builtin.ident<@m>, visibility = \
+             #builtin.visibility<public> }> ({ }) : () -> i32;",
+            "builtin.module",
+        ),
+        ("%s = \"test.sink\"(%a) : (i32 |) -> i32;", "test.sink"),
+    ] {
+        let source = alloc::format!(
+            "builtin.function public extern(\"C\") @f(%a: i32) {{\n    {text}\n    \
+             builtin.ret;\n}};"
+        );
+        let err = parse_with_test_dialect(&source).err().expect(text);
+        assert!(err.contains("invalid result count"), "{err}");
+        assert!(
+            err.contains(&alloc::format!("'{name}' has 0 result(s), but this has 1")),
+            "{err}"
+        );
+    }
+}
+
+/// Generic text that states another number of result types than the built operation has is an
+/// error: a call given no result types still has the results of its signature.
+#[test]
+fn a_generic_result_count_the_operation_does_not_have_is_an_error() {
+    let text = "\
+builtin.module public @m {
+    builtin.function public extern(\"C\") @g(i32) -> i32;
+    builtin.function public extern(\"C\") @f(%a: i32) {
+        %r = builtin.call @g(%a) : extern(\"C\") (i32) -> i32;
+        builtin.ret;
+    };
+};";
+    let generic = generic_reads_back(text);
+    let call = generic
+        .lines()
+        .map(str::trim_start)
+        .find(|line| line.contains("\"builtin.call\""))
+        .expect("the generic text holds the call");
+    let (_, without_result) = call.split_once(" = ").expect("the call has a result");
+    let without_result = without_result.replace(" -> i32;", " -> ();");
+    assert_ne!(without_result, call);
+    let source = generic.replace(call, &without_result);
+    let err = parse_with_test_dialect(&source).err().expect(&source);
+    assert!(err.contains("invalid result count"), "{err}\n{source}");
+    assert!(
+        err.contains("this gives 0 result type(s), but 'builtin.call' has 1 result(s)"),
+        "{err}"
+    );
+}

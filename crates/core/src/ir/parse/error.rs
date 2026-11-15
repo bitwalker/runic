@@ -281,6 +281,17 @@ pub enum ParserError {
         name: interner::Symbol,
         op: String,
     },
+    #[error("invalid result count")]
+    StatedResultCountMismatch {
+        #[label(
+            primary,
+            "this gives {stated} result type(s), but '{op}' has {built} result(s)"
+        )]
+        span: SourceSpan,
+        stated: usize,
+        built: usize,
+        op: String,
+    },
     #[error("invalid result type")]
     ResultTypeMismatch {
         #[label(
@@ -359,19 +370,6 @@ pub enum ParserError {
         span: SourceSpan,
         name: interner::Symbol,
     },
-    #[error("invalid attribute alias definition")]
-    AttributeAliasAlreadyDefined {
-        #[label(primary, "alias '{id}' is already defined")]
-        span: SourceSpan,
-        id: interner::Symbol,
-    },
-    #[error("invalid attribute alias name '{id}'")]
-    InvalidAttributeAliasName {
-        #[label(primary, "{reason}")]
-        span: SourceSpan,
-        id: interner::Symbol,
-        reason: String,
-    },
     #[error("invalid type alias definition")]
     TypeAliasAlreadyDefined {
         #[label(primary, "alias '{id}' is already defined")]
@@ -395,12 +393,6 @@ pub enum ParserError {
         span: SourceSpan,
         id: interner::Symbol,
         reason: String,
-    },
-    #[error("invalid file metadata")]
-    UnknownFileMetadata {
-        #[label(primary, "'{key}' is not a recognized metadata key")]
-        span: SourceSpan,
-        key: CompactString,
     },
     /// The name of a component or module cannot name it, e.g. one of its segments is not
     /// valid.

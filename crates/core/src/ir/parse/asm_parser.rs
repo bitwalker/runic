@@ -24,10 +24,6 @@ pub struct AsmParserState {
     blocks: SmallVec<[BlockDefinition; 4]>,
     block_to_idx: SmallDenseMap<BlockRef, usize, 4>,
 
-    /// A mapping from attribute aliases in the input source file to their parser state
-    attr_aliases: SmallVec<[AttributeAliasDefinition; 4]>,
-    attr_alias_to_idx: FxHashMap<interner::Symbol, usize>,
-
     /// A mapping from type aliases in the input source file to their parser state
     type_aliases: SmallVec<[TypeAliasDefinition; 4]>,
     type_alias_to_idx: FxHashMap<interner::Symbol, usize>,
@@ -135,29 +131,6 @@ impl AsmParserState {
         def.arguments[arg_index] = SourceDefinition::new(span);
     }
 
-    /// Add a definition of the given attribute alias.
-    pub fn add_attr_alias_definition(
-        &mut self,
-        name: interner::Symbol,
-        span: SourceSpan,
-        value: Option<AttributeRef>,
-    ) {
-        use hashbrown::hash_map::Entry;
-
-        // Location aliases may be referenced before they are defined.
-        match self.attr_alias_to_idx.entry(name) {
-            Entry::Vacant(entry) => {
-                entry.insert(self.attr_aliases.len());
-                self.attr_aliases.push(AttributeAliasDefinition::new(name, span, value));
-            }
-            Entry::Occupied(entry) => {
-                let mut attr = &mut self.attr_aliases[*entry.get()];
-                attr.definition.span = span;
-                attr.value = value;
-            }
-        }
-    }
-
     /// Add a definition of the given type alias.
     pub fn add_type_alias_definition(
         &mut self,
@@ -230,23 +203,6 @@ impl AsmParserState {
         }
     }
 
-    /// Add a source uses of the given attribute alias.
-    pub fn add_attr_alias_uses(&mut self, name: interner::Symbol, locations: &[SourceSpan]) {
-        use hashbrown::hash_map::Entry;
-
-        match self.attr_alias_to_idx.entry(name) {
-            Entry::Vacant(entry) => {
-                entry.insert(self.attr_aliases.len());
-                let mut def = AttributeAliasDefinition::new(name, SourceSpan::UNKNOWN, None);
-                def.definition.uses.extend_from_slice(locations);
-                self.attr_aliases.push(def);
-            }
-            Entry::Occupied(entry) => {
-                self.attr_aliases[*entry.get()].definition.uses.extend_from_slice(locations);
-            }
-        }
-    }
-
     /// Add a source uses of the given type alias.
     pub fn add_type_alias_uses(&mut self, name: interner::Symbol, locations: &[SourceSpan]) {
         let index =
@@ -292,18 +248,6 @@ impl AsmParserState {
     pub fn get_op_def(&self, op: OperationRef) -> Option<&OperationDefinition> {
         let index = self.operation_to_idx.get(&op).copied()?;
         Some(&self.operations[index])
-    }
-
-    pub fn attribute_alias_defs(&self) -> &[AttributeAliasDefinition] {
-        &self.attr_aliases
-    }
-
-    pub fn get_attribute_alias_def(
-        &self,
-        alias: interner::Symbol,
-    ) -> Option<&AttributeAliasDefinition> {
-        let index = self.attr_alias_to_idx.get(&alias).copied()?;
-        Some(&self.attr_aliases[index])
     }
 
     pub fn type_alias_defs(&self) -> &[TypeAliasDefinition] {
@@ -448,25 +392,6 @@ impl BlockDefinition {
             block,
             definition: SourceDefinition::new(span),
             arguments: SmallVec::new_const(),
-        }
-    }
-}
-
-pub struct AttributeAliasDefinition {
-    /// The name of the attribute alias
-    pub name: interner::Symbol,
-    /// The source location of the alias
-    pub definition: SourceDefinition,
-    /// The value of the alias
-    pub value: Option<AttributeRef>,
-}
-
-impl AttributeAliasDefinition {
-    pub fn new(name: interner::Symbol, span: SourceSpan, value: Option<AttributeRef>) -> Self {
-        Self {
-            name,
-            definition: SourceDefinition::new(span),
-            value,
         }
     }
 }

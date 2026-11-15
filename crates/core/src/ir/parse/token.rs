@@ -71,10 +71,6 @@ pub enum Token<'input> {
     Lparen,
     /// )
     Rparen,
-    /// {-#
-    FileMetadataStart,
-    /// #-}
-    FileMetadataEnd,
 
     // Punctuation
     /// @
@@ -152,8 +148,6 @@ impl Token<'_> {
             Self::Rbracket => CompactString::const_new("]"),
             Self::Lparen => CompactString::const_new("("),
             Self::Rparen => CompactString::const_new(")"),
-            Self::FileMetadataStart => CompactString::const_new("{-#"),
-            Self::FileMetadataEnd => CompactString::const_new("#-}"),
             Self::At => CompactString::const_new("@"),
             Self::Bang => CompactString::const_new("!"),
             Self::Comma => CompactString::const_new(","),
@@ -213,8 +207,6 @@ impl fmt::Display for Token<'_> {
             Self::Rbracket => f.write_char(']'),
             Self::Lparen => f.write_char('('),
             Self::Rparen => f.write_char(')'),
-            Self::FileMetadataStart => f.write_str("{-#"),
-            Self::FileMetadataEnd => f.write_str("#-}"),
             Self::At => f.write_char('@'),
             Self::Bang => f.write_char('!'),
             Self::Comma => f.write_char(','),
@@ -349,8 +341,6 @@ impl<'input> Token<'input> {
                     "*" => Some(Token::Star),
                     "->" => Some(Token::Rstab),
                     "?" => Some(Token::Question),
-                    "{-#" => Some(Token::FileMetadataStart),
-                    "#-}" => Some(Token::FileMetadataEnd),
                     "comment" => Some(Token::Comment),
                     "bare identifier" => Some(Token::BareIdent("")),
                     "'@'-identifier" => Some(Token::AtIdent("")),

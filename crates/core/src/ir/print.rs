@@ -38,7 +38,9 @@
 //!   not follow (`scf.index_switch` writes its default region last).
 //! * The result types are those the operation has: a type the text gives a result that differs
 //!   from the type the operation gives it once built (inferring it from its operands, say) is an
-//!   error at the type written.
+//!   error at the type written, and so is a number of result types other than the number of
+//!   results it has once built. An operation that declares no results has none, so text that
+//!   gives it one is an error.
 //! * The location follows the signature after a space, as in the custom form.
 //!
 //! A generic operation's signature lists its operand types and its result types. It is not

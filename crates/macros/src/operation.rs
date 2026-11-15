@@ -1097,14 +1097,15 @@ impl quote::ToTokens for OpDefinition {
             },
         });
         let region_count = self.regions.len();
-        // An operation that declares no results may still be given some (`scf.if` is given one
-        // per value it yields), so only `#[result]`s fix the number.
+        // `#[result]`s fix the number of results, and an operation that declares none has none;
+        // a `#[results]` group holds any number (`scf.if` is given one per value it yields).
         let result_count = match &self.results {
             Some(OpResultGroup::Unnamed(results)) => {
                 let count = results.len();
                 quote! { ::core::option::Option::Some(#count) }
             }
-            Some(OpResultGroup::Named(..)) | None => quote! { ::core::option::Option::None },
+            None => quote! { ::core::option::Option::Some(0usize) },
+            Some(OpResultGroup::Named(..)) => quote! { ::core::option::Option::None },
         };
         tokens.extend(quote_spanned! { op_span =>
             impl #impl_generics ::runic_core::Op for #op_ident #ty_generics #where_clause {
