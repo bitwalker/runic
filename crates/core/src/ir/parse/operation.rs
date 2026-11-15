@@ -387,6 +387,7 @@ where
                 return Err(ParserError::ValueRedefinition {
                     span: use_info.loc,
                     prev_span: existing.span(),
+                    name: use_info.name,
                 });
             }
 
@@ -807,7 +808,7 @@ where
                     };
                     let value = results[result_offset] as ValueRef;
                     result_offset += 1;
-                    self.add_definition(use_info, value);
+                    self.add_definition(use_info, value)?;
                 }
             }
         } else if let Some(asm_state) = self.state_mut().asm_state.as_deref_mut() {
@@ -1323,7 +1324,8 @@ where
         result
     }
 
-    /// The error for a region nested in more than `limit` regions, at the `{` that opens it.
+    /// The error for a region nested in more than `limit` regions, at the `{` that opens it: it
+    /// is the region `limit + 1` deep (parsing stops there, so deeper regions are not seen).
     #[cold]
     #[inline(never)]
     fn region_nesting_too_deep(&mut self, limit: u32) -> ParserError {
@@ -1332,7 +1334,11 @@ where
             Ok(None) => self.parser.current_location(),
             Err(err) => return err,
         };
-        ParserError::RegionNestingTooDeep { span, limit }
+        ParserError::RegionNestingTooDeep {
+            span,
+            limit,
+            depth: limit.saturating_add(1),
+        }
     }
 
     /// [Self::parse_region], once the nesting has been accounted for.
@@ -1399,8 +1405,8 @@ where
 
                 // Ensure that the argument was not already defined.
                 if let Some(def_loc) = self.get_reference_loc(arg_info.name) {
-                    return Err(ParserError::RegionArgumentAlreadyDefined {
-                        arg: arg_info.name,
+                    return Err(ParserError::ValueRedefinition {
+                        name: arg_info.name,
                         span: arg_info.loc,
                         prev_span: def_loc,
                     });

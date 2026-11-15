@@ -155,7 +155,7 @@ fn on_a_2_mib_stack(f: impl FnOnce() + Send + 'static) {
 const LIMIT: u32 = ParserConfig::DEFAULT_MAX_REGION_DEPTH;
 
 fn message() -> String {
-    format!("regions are nested more than {LIMIT} deep; the limit is set by `ParserConfig`")
+    format!("regions are nested more than {LIMIT} deep")
 }
 
 #[test]
@@ -193,7 +193,8 @@ fn a_region_one_over_the_limit_is_a_diagnostic_at_the_region() {
             let error = parse(ParserConfig::new(Rc::new(Context::default())), &text)
                 .expect_err("one region over the limit");
             assert!(error.starts_with(&message()), "{shape}: {error}");
-            let label = format!("this region is nested more than {LIMIT} deep");
+            let label =
+                format!("this region is nested {} deep; at most {LIMIT} is accepted", LIMIT + 1);
             assert!(error.contains(&label), "{shape}: {error}");
         }
     });

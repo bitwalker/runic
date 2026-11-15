@@ -145,15 +145,19 @@ fn regions_nested_1001_deep_are_the_parsers_diagnostic() {
     output.failed();
     assert_eq!(output.stdout, "");
     assert!(
-        output.stderr.starts_with("error: regions are nested more than 1000 deep"),
+        output.stderr.starts_with("error: regions are nested more than 1000 deep\n"),
         "{}",
         output.stderr
     );
     assert!(
-        output.stderr.contains("this region is nested more than 1000 deep"),
+        output
+            .stderr
+            .contains("this region is nested 1001 deep; at most 1000 is accepted"),
         "{}",
         output.stderr
     );
+    // The message names no API type.
+    assert!(!output.stderr.contains("ParserConfig"), "{}", output.stderr);
 }
 
 /// A module of a function with the parameters `params`, which returns `results` and whose body is
@@ -229,4 +233,89 @@ fn an_operation_of_every_linked_dialect_parses() {
         assert_eq!(output.code, std::process::ExitCode::SUCCESS, "{dialect}: {}", output.stderr);
         assert!(output.stdout.contains(&format!("{dialect}.")), "{dialect}: {}", output.stdout);
     }
+}
+
+/// The rejection of a value defined twice: the name, at the second definition (`line:column`),
+/// with a label at the first, on line `first`.
+#[track_caller]
+fn assert_redefined(text: &str, name: &str, second: &str, first: usize) {
+    let output = opt(&[], text);
+    output.failed();
+    assert_eq!(output.stdout, "");
+    let stderr = &output.stderr;
+    let message = format!("error: redefinition of value '{name}'\n --> <stdin>:{second}\n");
+    assert!(stderr.starts_with(&message), "{stderr}");
+    assert!(stderr.contains(&format!("^ '{name}' is defined again here")), "{stderr}");
+    assert!(stderr.contains(&format!("'{name}' is first defined here")), "{stderr}");
+    // The line of the first definition is shown.
+    assert!(stderr.contains(&format!("\n{first} |")), "{stderr}");
+}
+
+#[test]
+fn a_result_defined_twice_is_an_error() {
+    let body =
+        "%x = arith.constant 1 : i32;\n%x = arith.constant 2 : i32;\nbuiltin.ret %x : (i32);";
+    assert_redefined(&function("", " -> i32", body), "%x", "4:2", 3);
+    // The same in the generic form.
+    let body = "%x = \"arith.constant\"() <{ value = #builtin.int<1 : i32> }> : () -> i32;\n%x = \
+                \"arith.constant\"() <{ value = #builtin.int<2 : i32> }> : () -> \
+                i32;\nbuiltin.ret %x : (i32);";
+    assert_redefined(&function("", " -> i32", body), "%x", "4:2", 3);
+}
+
+#[test]
+fn a_result_with_the_name_of_a_parameter_is_an_error() {
+    let body = "%a = arith.constant 1 : i32;\nbuiltin.ret %a : (i32);";
+    assert_redefined(&function("%a: i32", " -> i32", body), "%a", "3:2", 2);
+}
+
+#[test]
+fn two_parameters_of_one_name_are_an_error() {
+    assert_redefined(
+        &function("%a: i32, %a: i32", " -> i32", "builtin.ret %a : (i32);"),
+        "%a",
+        "2:54",
+        2,
+    );
+}
+
+#[test]
+fn a_block_argument_defined_twice_in_a_region_is_an_error() {
+    // With the name of a parameter.
+    let body = "cf.br ^b(%a : i32);\n^b(%a: i32):\nbuiltin.ret %a : (i32);";
+    assert_redefined(&function("%a: i32", " -> i32", body), "%a", "4:5", 2);
+    // With the name of an argument of another block of the region.
+    let body = "cf.br ^b(%a : i32);\n^b(%x: i32):\ncf.br ^c(%x : i32);\n^c(%x: i32):\nbuiltin.ret \
+                %x : (i32);";
+    assert_redefined(&function("%a: i32", " -> i32", body), "%x", "6:5", 4);
+}
+
+#[test]
+fn a_nested_region_cannot_reuse_a_name_defined_around_it() {
+    let body = "%r = scf.if %c then {\n%a = arith.add %a, %a;\nscf.yield %a : (i32);\n} else \
+                {\nscf.yield %a : (i32);\n} : (i1) -> (i32);\nbuiltin.ret %r : (i32);";
+    assert_redefined(&function("%a: i32, %c: i1", " -> i32", body), "%a", "4:2", 2);
+}
+
+/// A name goes out of scope at the end of the region it is defined in, and every function (an
+/// operation isolated from above) starts its names afresh.
+#[test]
+fn a_name_may_be_reused_in_a_sibling_region_after_its_region_and_in_another_function() {
+    let body = "%r = scf.if %c then {\n%x = arith.add %a, %a;\nscf.yield %x : (i32);\n} else \
+                {\n%x = arith.mul %a, %a;\nscf.yield %x : (i32);\n} : (i1) -> (i32);\n%x = \
+                arith.add %r, %r;\nbuiltin.ret %x : (i32);";
+    let output = opt(&[], &function("%a: i32, %c: i1", " -> i32", body));
+    output.succeeded();
+    // `%x` after the `scf.if` is the sum of its result.
+    assert!(
+        output.stdout.contains("%5 = arith.add %4, %4;\n        builtin.ret %5"),
+        "{}",
+        output.stdout
+    );
+
+    let text = "builtin.module public @m {\n    builtin.function public extern(\"C\") @f(%a: i32) \
+                -> i32 {\n        %x = arith.add %a, %a;\n        builtin.ret %x : (i32);\n    \
+                };\n    builtin.function public extern(\"C\") @g(%a: i32) -> i32 {\n        %x = \
+                arith.mul %a, %a;\n        builtin.ret %x : (i32);\n    };\n};\n";
+    opt(&[], text).succeeded();
 }

@@ -111,12 +111,13 @@ pub enum ParserError {
         #[labels]
         labels: Vec<OwnedLabel>,
     },
-    #[error("redefinition of SSA value")]
+    #[error("redefinition of value '{name}'")]
     ValueRedefinition {
-        #[label(primary, "occurs here")]
+        #[label(primary, "'{name}' is defined again here")]
         span: SourceSpan,
-        #[label("previously defined here")]
+        #[label("'{name}' is first defined here")]
         prev_span: SourceSpan,
+        name: ValueId,
     },
     #[error("definition of SSA value does not match expected type")]
     ValueDefinitionTypeMismatch {
@@ -206,11 +207,15 @@ pub enum ParserError {
         span: SourceSpan,
         name: String,
     },
-    #[error("regions are nested more than {limit} deep; the limit is set by `ParserConfig`")]
+    #[error("regions are nested more than {limit} deep")]
     RegionNestingTooDeep {
-        #[label(primary, "this region is nested more than {limit} deep")]
+        #[label(
+            primary,
+            "this region is nested {depth} deep; at most {limit} is accepted"
+        )]
         span: SourceSpan,
         limit: u32,
+        depth: u32,
     },
     #[error("invalid type")]
     InvalidType {
@@ -283,14 +288,6 @@ pub enum ParserError {
     BlockNameInRegionWithNamedArgs {
         #[label(primary)]
         span: SourceSpan,
-    },
-    #[error("region entry argument is already in use")]
-    RegionArgumentAlreadyDefined {
-        #[label(primary, "attempted to redefine {arg} here")]
-        span: SourceSpan,
-        #[label("previously defined here")]
-        prev_span: SourceSpan,
-        arg: ValueId,
     },
     #[error("entry block arguments were already defined")]
     EntryBlockArgumentsAlreadyDefined {

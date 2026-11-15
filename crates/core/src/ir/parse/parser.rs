@@ -261,7 +261,7 @@ pub trait Parser<'input> {
         );
         match self.token_stream_mut().next_if(|tok| keywords.contains(&tok))? {
             Some(tok) => Ok(tok.map(|tok| tok.into_compact_string())),
-            None => match self.token_stream_mut().peek().unwrap() {
+            None => match self.token_stream_mut().peek()? {
                 Some((start, t, end)) => {
                     let expected = format!(
                         "any keyword in: {}",
