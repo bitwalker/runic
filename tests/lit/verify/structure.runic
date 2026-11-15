@@ -1,12 +1,14 @@
 // RUN: runic-opt %s --split-input-file --verify-diagnostics
 
-// The structural rules of blocks and regions, checked for every operation: a terminator is the
-// last operation of its block, and so is an operation with successors; every block of a region
-// ends with a terminator unless the operation that holds it needs none; the entry block of a
-// region has no predecessors. A graph region has at most one block, and a successor is a block of
-// its own region: text cannot break either (`SingleBlock` answers first for every operation with a
-// graph region, and the parser rejects a successor that is not a block of the region as undefined),
-// so both are tested in Rust.
+// The structural rules checked for every operation. No operation reads its own result: in a
+// block of a function, in a graph region (a module's body, where a later value may be read but
+// not this one), or in a block that cannot be reached, whose uses the dominance rule does not
+// check. The rules of blocks and regions: a terminator is the last operation of its block, and so
+// is an operation with successors; every block of a region ends with a terminator unless the
+// operation that holds it needs none; the entry block of a region has no predecessors. A graph
+// region has at most one block, and a successor is a block of its own region: text cannot break
+// either (`SingleBlock` answers first for every operation with a graph region, and the parser
+// rejects a successor that is not a block of the region as undefined), so both are tested in Rust.
 
 // A function whose blocks end with terminators, a module and a global initializer, which need
 // none, and a branch that is the last operation of its block.
@@ -19,6 +21,32 @@ builtin.module public @valid {
     ^next:
         builtin.ret %a : (i32);
     };
+};
+
+// -----
+
+// An operation does not read its own result.
+builtin.function public extern("C") @its_own_user(%a: i32) -> i32 {
+    %x = "arith.add"(%x, %a) <{ overflow = #builtin.overflow<wrapping> }> : (i32, i32) -> i32; // expected-error {{operand #0 of 'arith.add' is a result of the operation itself}}
+    builtin.ret %x : (i32);
+};
+
+// -----
+
+// Nor in a graph region, where it may read a value defined after it. The label says the rule.
+builtin.module public @graph_region {
+    %x = "arith.add"(%later, %x) <{ overflow = #builtin.overflow<wrapping> }> : (i32, i32) -> i32; // expected-error {{an operation may not read its own result}}
+    %later = arith.constant 1 : i32;
+};
+
+// -----
+
+// Nor in a block that cannot be reached.
+builtin.function public extern("C") @unreachable_block(%a: i32) -> i32 {
+    builtin.ret %a : (i32);
+^dead:
+    %x = "arith.add"(%a, %x) <{ overflow = #builtin.overflow<wrapping> }> : (i32, i32) -> i32; // expected-error {{operand #1 of 'arith.add' is a result of the operation itself}}
+    builtin.ret %x : (i32);
 };
 
 // -----

@@ -233,3 +233,49 @@ fn folding_releases_the_op_before_notifying_listeners() {
     // The duplicate constant folds to the known one, which erases it and replaces its uses
     assert!(matches!(folder.try_fold(second_op), FoldResult::Ok(())));
 }
+
+/// In a graph region two casts between equal types read each other. Each folds to its operand,
+/// but replacing the result of either by the other's would leave the other reading its own
+/// result: the fold is refused and the operations stay. A cast in no cycle folds.
+#[test]
+fn a_fold_that_would_make_an_operation_read_its_own_result_is_refused() {
+    use alloc::string::ToString;
+
+    use crate::{
+        dialects::{builtin::UnrealizedConversionCast, test::TestDialect},
+        parse::{ParserConfig, parse_any},
+        testing::text::describe,
+    };
+
+    let source = "builtin.module public @m {
+    %0 = builtin.unrealized_conversion_cast %1 : i32 to i32;
+    %1 = builtin.unrealized_conversion_cast %0 : i32 to i32;
+    %2 = test.constant 1 : i32;
+    %3 = builtin.unrealized_conversion_cast %2 : i32 to i32;
+    test.sink %0, %3 : (i32, i32);
+};";
+    let context = Rc::new(Context::default());
+    context.get_or_register_dialect::<TestDialect>();
+    let module = parse_any(ParserConfig::new(context.clone()), "folder", source)
+        .into_result()
+        .unwrap_or_else(|err| panic!("{}", describe(&err)));
+    let mut casts = alloc::vec::Vec::new();
+    module.borrow().prewalk_all(|op: &crate::Operation| {
+        if op.is::<UnrealizedConversionCast>() {
+            casts.push(op.as_operation_ref());
+        }
+    });
+    let printed = module.borrow().to_string();
+    let mut folder = OperationFolder::new(context.clone(), NoopRewriterListener);
+    assert!(matches!(folder.try_fold(casts[0]), FoldResult::Failed));
+    assert!(matches!(folder.try_fold(casts[1]), FoldResult::Failed));
+    assert_eq!(module.borrow().to_string(), printed);
+
+    assert!(folder.try_fold(casts[2]).is_ok());
+    module
+        .borrow()
+        .recursively_verify()
+        .unwrap_or_else(|err| panic!("{}", describe(&err)));
+    let after = module.borrow().to_string();
+    assert_eq!(after.matches("unrealized_conversion_cast").count(), 2, "{after}");
+}

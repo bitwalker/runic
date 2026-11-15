@@ -305,7 +305,8 @@ struct Graph {
 
 impl Graph {
     /// A random graph. With `cyclic`, a cast may read values defined later (the graph is then
-    /// printed in a graph region).
+    /// printed in a graph region), but never one of its own: the verifier refuses an operation
+    /// that reads its own result.
     fn random(rng: &mut Rng, cyclic: bool) -> Self {
         let mut graph = Graph {
             nodes: vec![],
@@ -336,7 +337,7 @@ impl Graph {
         for (index, (kind, outputs)) in plans.iter().enumerate() {
             let mut inputs = vec![];
             if *kind == NodeKind::Cast {
-                let visible = |other: usize| cyclic || other < index;
+                let visible = |other: usize| (cyclic && other != index) || other < index;
                 // Mostly: all the results of one cast, in order (a chain link).
                 let links = plans
                     .iter()
@@ -354,6 +355,7 @@ impl Graph {
                             let width = graph.widths[link[at]];
                             let others = (0..graph.widths.len())
                                 .filter(|v| graph.widths[*v] == width)
+                                .filter(|v| !outputs.contains(v))
                                 .filter(|v| {
                                     cyclic || plans[..index].iter().any(|(_, o)| o.contains(v))
                                 })
@@ -370,6 +372,7 @@ impl Graph {
                     for width in shape {
                         let candidates = (0..graph.widths.len())
                             .filter(|v| graph.widths[*v] == *width)
+                            .filter(|v| !outputs.contains(v))
                             .filter(|v| cyclic || plans[..index].iter().any(|(_, o)| o.contains(v)))
                             .collect::<Vec<_>>();
                         if candidates.is_empty() {

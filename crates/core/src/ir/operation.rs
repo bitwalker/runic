@@ -808,8 +808,9 @@ impl Operation {
     ///
     /// The first phase visits the operations in post-order, so that when the verifier(s) for an
     /// operation run, it is known that all of its children have successfully verified. Each
-    /// operation is checked by [Self::verify], then by the structural rules of its block and
-    /// regions: an operation with successors is the last of its block and branches only to blocks
+    /// operation is checked by [Self::verify], then by the structural rules of its operands, its
+    /// block and its regions: no operand of an operation is one of its own results, in a region of
+    /// any kind; an operation with successors is the last of its block and branches only to blocks
     /// of its own region; a terminator is the last operation of its block; unless the operation
     /// has `NoTerminator`, every block of its regions ends with a terminator; the entry block of a
     /// region has no predecessors; a graph region has at most one block.

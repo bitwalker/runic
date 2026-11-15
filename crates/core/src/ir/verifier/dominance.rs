@@ -31,8 +31,10 @@ use crate::{
     traits::{IsolatedFromAbove, NoTerminator, Terminator},
 };
 
-/// The structural rules of blocks and regions that hold at `op`, checked once `op` has verified:
+/// The structural rules that hold at `op`, checked once `op` has verified:
 ///
+/// * no operand of an operation is one of its own results, in a region of any kind and whether or
+///   not the operation can be reached;
 /// * an operation with successors is the last operation of its block;
 /// * every successor of an operation is a block of the region that holds the operation;
 /// * an operation with the [Terminator] trait is the last operation of its block;
@@ -42,7 +44,27 @@ use crate::{
 /// * a graph region of `op` (see [RegionKindInterface]) has at most one block.
 ///
 /// The dominance walk ([verify_dominance]) and the dominator trees it builds rely on these.
+///
+/// The first rule is the one a graph region would otherwise allow, since every definition there
+/// dominates every use. An analysis reads the definitions of an operation's operands while it
+/// holds the operation, so an operation that is its own definition is refused once, here, and no
+/// pass has to expect one.
 pub(crate) fn verify_structure(op: &Operation) -> Result<(), Report> {
+    let this = op.as_operation_ref();
+    for (index, operand) in op.operands().iter().enumerate() {
+        if operand.borrow().value().get_defining_op() == Some(this) {
+            return Err(crate::diagnostics::report!(
+                message: (format!(
+                    "operand #{index} of '{}' is a result of the operation itself",
+                    op.name()
+                )),
+                labels: [
+                    primary(op.span(), "an operation may not read its own result"),
+                ],
+            ));
+        }
+    }
+
     if op.has_successors()
         && let Some(block) = op.parent()
     {
@@ -208,6 +230,7 @@ pub(crate) fn verify_structure(op: &Operation) -> Result<(), Report> {
 ///
 /// A use in a region that is not nested in the definition's region is never dominated, nor is a
 /// use inside the operation that defines the value, nor a use of a value defined in no region.
+/// An operation that reads its own result does not reach the walk: [verify_structure] refuses it.
 /// The operands of `root` itself are not checked, nor is a use of a value defined outside `root`
 /// (when `root` is verified alone): the walk does not look at regions it was not asked to verify.
 /// Isolation is still checked up to `root`, `root` included.
@@ -312,8 +335,6 @@ struct DominanceWalk {
 
 /// Where a definition that does not dominate its use is, relative to the use.
 enum Placement {
-    /// Defined by the operation that reads it
-    ItsOwnUser,
     /// Defined by an operation that holds the use in one of its regions
     Encloses(OperationRef),
     /// Defined later in the block that holds the use (or the operation holding it)
@@ -331,7 +352,6 @@ enum Placement {
 impl Placement {
     fn describe(&self) -> String {
         match self {
-            Self::ItsOwnUser => "it is defined by the operation that reads it".into(),
             Self::Encloses(op) => format!(
                 "it is defined here by '{}', which holds the use in one of its regions",
                 op.borrow().name()
@@ -466,11 +486,11 @@ impl DominanceWalk {
                 return Ok(Checked::Dominated);
             };
             if def_op == ancestor {
-                if ancestor == user.as_operation_ref() {
-                    Placement::ItsOwnUser
-                } else {
-                    Placement::Encloses(def_op)
-                }
+                debug_assert!(
+                    ancestor != user.as_operation_ref(),
+                    "an operation that reads its own result is refused before the walk"
+                );
+                Placement::Encloses(def_op)
             } else if def_op.borrow().is_before_in_block(&ancestor) {
                 return Ok(Checked::Dominated);
             } else {
@@ -527,14 +547,6 @@ fn dominance_error(
     placement: Placement,
 ) -> Report {
     let name = user.name();
-    if let Placement::ItsOwnUser = placement {
-        return crate::diagnostics::report!(
-            message: (format!("operand #{index} of '{name}' is not dominated by its definition")),
-            labels: [
-                primary(user.span(), placement.describe()),
-            ],
-        );
-    }
     crate::diagnostics::report!(
         message: (format!("operand #{index} of '{name}' is not dominated by its definition")),
         labels: [

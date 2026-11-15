@@ -1,0 +1,27 @@
+// RUN: runic-opt %s -p canonicalizer | filecheck %s
+// RUN: runic-opt %s -p canonicalizer | runic-opt - --verify-roundtrip | filecheck %s
+
+// In a graph region two operations may read each other. Here each is a cast between equal types,
+// which folds to its operand: folding either would replace its result by the other's, and the
+// other, which reads it, would then read its own result. The verifier refuses an operation that
+// reads its own result, so neither fold is applied and the cycle stays. The cast of `%addr`,
+// which is in no cycle, is folded: the pass ran.
+// CHECK: builtin.world {
+builtin.world {
+    // CHECK-LABEL: builtin.module private @cycle
+    // CHECK-SAME:  {
+    // CHECK-NEXT: [[ADDR:%[0-9]+]] = arith.constant 0 : isize;
+    // CHECK-NEXT: [[PTR:%[0-9]+]] = mem.inttoptr [[ADDR]] : ptr<i32>;
+    // CHECK-NEXT: [[A:%[0-9]+]] = builtin.unrealized_conversion_cast [[B:%[0-9]+]] : i32 to i32;
+    // CHECK-NEXT: [[B]] = builtin.unrealized_conversion_cast [[A]] : i32 to i32;
+    // CHECK-NEXT: mem.store [[A]], [[PTR]];
+    // CHECK-NEXT: };
+    builtin.module private @cycle {
+        %addr = arith.constant 0 : isize;
+        %same = builtin.unrealized_conversion_cast %addr : isize to isize;
+        %ptr = mem.inttoptr %same : ptr<i32>;
+        %a = builtin.unrealized_conversion_cast %b : i32 to i32;
+        %b = builtin.unrealized_conversion_cast %a : i32 to i32;
+        "mem.store"(%a, %ptr) <{ align = #mem.align<natural> }> : (i32, ptr<i32>) -> ();
+    };
+};

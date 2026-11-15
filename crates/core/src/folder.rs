@@ -108,6 +108,9 @@ impl OperationFolder {
         // below, which a `match` on the borrowed call would keep alive for its whole body.
         let mut fold_results = SmallVec::default();
         let folded = op.borrow().fold(&mut fold_results);
+        if replacement_is_read_by_its_definer(&op.borrow(), fold_results.iter().map(folded_value)) {
+            return FoldResult::Failed;
+        }
         match folded {
             FoldResult::InPlace => {
                 // Folding API does not notify listeners, so we need to do so manually
@@ -465,6 +468,35 @@ fn get_insertion_region(insertion_block: BlockRef) -> RegionRef {
     }
 
     unreachable!("expected valid insertion region")
+}
+
+/// The value a fold result names, if it names one.
+pub(crate) fn folded_value(result: &OpFoldResult) -> Option<ValueRef> {
+    match result {
+        OpFoldResult::Value(value) => Some(*value),
+        OpFoldResult::Attribute(_) => None,
+    }
+}
+
+/// Whether replacing the results of `op` by `replacements`, one for one, would leave an operation
+/// reading its own result: a result would be replaced by a value whose defining operation reads
+/// that result.
+///
+/// Only a graph region allows such a cycle (two operations that read each other, each of which
+/// folds to its operand). A replacement for which this holds is not made: the verifier refuses an
+/// operation that reads its own result, and the operations of the cycle are left as they are.
+pub(crate) fn replacement_is_read_by_its_definer(
+    op: &crate::Operation,
+    replacements: impl IntoIterator<Item = Option<ValueRef>>,
+) -> bool {
+    use crate::Usable;
+
+    op.results().iter().zip(replacements).any(|(result, replacement)| {
+        let Some(definer) = replacement.and_then(|value| value.borrow().get_defining_op()) else {
+            return false;
+        };
+        result.borrow().iter_uses().any(|user| user.owner == definer)
+    })
 }
 
 #[cfg(test)]

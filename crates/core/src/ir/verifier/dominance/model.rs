@@ -152,6 +152,11 @@ fn model(user: OperationRef, value: ValueRef, root: OperationRef) -> Model {
     let def_block = value.parent_block().expect("the model has no detached definitions");
     let def_region = def_block.parent().unwrap();
     let def_op = value.get_defining_op();
+    // An operation that reads its own result is refused in a region of any kind, whether or not
+    // it can be reached
+    if def_op == Some(user) {
+        return Model::NotDominated;
+    }
     let links = chain(user, root);
 
     // Isolation: an operation isolated from above that holds the user (the root included), and
@@ -402,8 +407,9 @@ fn modules() -> impl Iterator<Item = (u64, u64)> {
     })
 }
 
-/// Every operand set to a random value of the module; the walk's verdict on each operand equals
-/// the model's. (Per operand, so independent of what the walk reports first.)
+/// Every operand set to a random value of the module that its operation does not define (the
+/// verifier refuses that before the walk); the walk's verdict on each operand equals the model's.
+/// (Per operand, so independent of what the walk reports first.)
 #[test]
 fn every_verdict_of_the_walk_is_the_models() {
     let mut counts = BTreeMap::<Model, usize>::new();
@@ -417,7 +423,9 @@ fn every_verdict_of_the_walk_is_the_models() {
         let mut rng = Rng(module_seed ^ 0xabcdef);
         let pool = values(module);
         for (op, index) in uses(module) {
-            set_operand(op, index, rng.pick(&pool));
+            let value =
+                pick_where(&mut rng, &pool, |value| value.borrow().get_defining_op() != Some(op));
+            set_operand(op, index, value.unwrap_or_else(|| panic!("{seed}: another value")));
         }
         let verdicts = dominance_verdicts(&module.borrow());
         assert_eq!(verdicts.len(), uses(module).len());

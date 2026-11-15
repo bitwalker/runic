@@ -26,8 +26,10 @@ pub struct ReconciledCasts {
 /// itself. Types are compared pairwise and in count. A cast with no inputs is never folded, only
 /// erased when unused; neither is a cast whose chain stops at one. A cast holding only some
 /// results of another, all of them in another order, or results of two casts, is not part of a
-/// chain. A fold whose replacement values include a result of the cast folded (possible in a
-/// graph region) is not made: it could not leave the cast unused. The casts that remain are given
+/// chain. Two folds that only a graph region allows are not made: one whose replacement values
+/// include a result of the cast folded, which could not leave the cast unused; and one that would
+/// replace a result by a value whose defining operation reads that result, which would leave that
+/// operation reading its own result (the verifier refuses that). The casts that remain are given
 /// in program order (a pre-order walk of `root`).
 ///
 /// Folding is sound when casts compose: a cast from one type list to a second, followed by a cast
@@ -88,11 +90,19 @@ fn same_types(values: &[ValueRef], types: &[crate::Type]) -> bool {
     values.len() == types.len() && values.iter().zip(types).all(|(v, ty)| v.borrow().ty() == *ty)
 }
 
-/// The values that replace the results of `cast`, when it folds: never one of its own results.
+/// The values that replace the results of `cast`, when it folds: never one of its own results,
+/// and never a value whose defining operation reads the result it would replace.
 fn folded_results(cast: &Operation) -> Option<SmallVec<[ValueRef; 2]>> {
     let replacements = chain_end(cast)?;
     let own = |value: &ValueRef| value.borrow().get_defining_op() == Some(cast.as_operation_ref());
-    (!replacements.iter().any(own)).then_some(replacements)
+    if replacements.iter().any(own) {
+        return None;
+    }
+    let read_by_its_definer = crate::folder::replacement_is_read_by_its_definer(
+        cast,
+        replacements.iter().copied().map(Some),
+    );
+    (!read_by_its_definer).then_some(replacements)
 }
 
 /// The inputs of `cast` when they have its result types, or else the inputs of the first cast up
@@ -328,6 +338,32 @@ mod tests {
         let again = reconcile_unrealized_casts(module);
         assert!(!again.changed);
         assert_eq!(again.remaining.as_slice(), reconciled.remaining.as_slice());
+    }
+
+    /// In a graph region two identity casts may read each other. Folding either would replace
+    /// its results by the other's, which the other reads: the other would then read its own
+    /// results, which the verifier refuses. Neither fold is made, and both casts remain.
+    #[test]
+    fn two_casts_that_read_each_other_stay() {
+        let source = "builtin.module public @m {
+    %0, %1 = builtin.unrealized_conversion_cast %2, %3 : (i64, i64) to (i64, i64);
+    %2, %3 = builtin.unrealized_conversion_cast %0, %1 : (i64, i64) to (i64, i64);
+    %4 = test.add %0, %3;
+};";
+        let context = Rc::new(Context::default());
+        context.get_or_register_dialect::<TestDialect>();
+        let module = parse_any(ParserConfig::new(context.clone()), "reconcile", source)
+            .into_result()
+            .unwrap_or_else(|err| panic!("{}", describe(&err)));
+        let printed = module.borrow().to_string();
+        let reconciled = reconcile_unrealized_casts(module);
+        module
+            .borrow()
+            .recursively_verify()
+            .unwrap_or_else(|err| panic!("{}", describe(&err)));
+        assert!(!reconciled.changed);
+        assert_eq!(reconciled.remaining.len(), 2);
+        assert_eq!(module.borrow().to_string(), printed);
         assert_eq!(module.borrow().to_string(), printed);
     }
 

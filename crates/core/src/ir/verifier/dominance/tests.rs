@@ -192,6 +192,11 @@ fn not_dominated(index: usize, op: &str) -> String {
     format!("operand #{index} of '{op}' is not dominated by its definition")
 }
 
+/// The message for operand `index` of `op` being a result of `op`.
+fn own_result(index: usize, op: &str) -> String {
+    format!("operand #{index} of '{op}' is a result of the operation itself")
+}
+
 // ----- In one block -----
 
 #[test]
@@ -236,8 +241,33 @@ fn an_operation_that_reads_its_own_result_is_rejected() {
     let add = find(module, "test.add", 0);
     set_operand(add, 1, result(add));
     let error = rejected(module);
-    assert!(error.starts_with(&not_dominated(1, "test.add")), "{error}");
-    assert!(error.contains("it is defined by the operation that reads it"), "{error}");
+    assert!(error.starts_with(&own_result(1, "test.add")), "{error}");
+    assert!(error.contains("an operation may not read its own result"), "{error}");
+}
+
+/// The rule is the operation's own, not the walk's: it holds where the walk checks no use, in a
+/// block that cannot be reached, and for the operation being verified, whose operands the walk
+/// does not look at.
+#[test]
+fn an_operation_that_reads_its_own_result_is_rejected_wherever_it_is() {
+    let (_context, module) = parse_body(
+        "    builtin.ret;
+^dead:
+    %c = test.constant 1 : i32;
+    %y = test.add %c, %c;
+    builtin.ret;",
+    );
+    accepted(module);
+    let add = find(module, "test.add", 0);
+    set_operand(add, 0, result(add));
+    let error = rejected(module);
+    assert!(error.starts_with(&own_result(0, "test.add")), "{error}");
+
+    let error = match add.borrow().recursively_verify() {
+        Ok(()) => panic!("the operation verifies alone"),
+        Err(err) => describe(&err),
+    };
+    assert!(error.starts_with(&own_result(0, "test.add")), "{error}");
 }
 
 // ----- Across blocks -----
@@ -601,7 +631,7 @@ fn a_use_before_its_definition_in_a_graph_region_is_accepted() {
 }
 
 #[test]
-fn an_operation_that_reads_its_own_result_in_a_graph_region_is_accepted() {
+fn an_operation_that_reads_its_own_result_in_a_graph_region_is_rejected() {
     let (_context, module) = parse_body(
         "    test.dom_graph {
         %c = test.constant 1 : i32;
@@ -609,9 +639,12 @@ fn an_operation_that_reads_its_own_result_in_a_graph_region_is_accepted() {
     };
     builtin.ret;",
     );
+    accepted(module);
     let add = find(module, "test.add", 0);
     set_operand(add, 0, result(add));
-    accepted(module);
+    let error = rejected(module);
+    assert!(error.starts_with(&own_result(0, "test.add")), "{error}");
+    assert!(error.contains("an operation may not read its own result"), "{error}");
 }
 
 /// A graph region orders nothing in the region outside it.
@@ -1020,7 +1053,8 @@ fn a_use_in_dead_code_of_an_intermediate_region_is_not_checked() {
 
 /// Random functions: blocks with random branches (never to the entry), operations with regions
 /// (`test.dom_region`, `test.dom_holder`, `test.dom_graph`, nested up to two deep), and every
-/// operand then set to a random value of the function. For every operand of every operation, the
+/// operand then set to a random value of the function that its operation does not define. For
+/// every operand of every operation, the
 /// walk's verdict equals the shared query's: `properly_dominates` of
 /// `impl Dominates<Operation> for dyn Value`, which does not count an enclosing operation.
 ///
@@ -1028,8 +1062,8 @@ fn a_use_in_dead_code_of_an_intermediate_region_is_not_checked() {
 /// block that holds it in the definition's region, is not reachable from that region's entry),
 /// which the walk does not check and the shared query may call not dominated. The test asserts
 /// the walk accepts such a use, and counts the uses where the two differ there. An operation that
-/// reads its own result is not such a place: both reject it in an SSA region and accept it in a
-/// graph region, and the test compares them there like everywhere else.
+/// reads its own result is left out: the verifier refuses it before the walk, in a region of any
+/// kind, while the shared query accepts it in a graph region.
 #[test]
 fn the_walk_agrees_with_the_shared_query() {
     use crate::{
@@ -1048,7 +1082,13 @@ fn the_walk_agrees_with_the_shared_query() {
             for op in nested_ops(function) {
                 let operands = op.borrow().operands().len();
                 for index in 0..operands {
-                    set_operand(op, index, values[rng.below(values.len() as u64) as usize]);
+                    let value = loop {
+                        let value = values[rng.below(values.len() as u64) as usize];
+                        if value.borrow().get_defining_op() != Some(op) {
+                            break value;
+                        }
+                    };
+                    set_operand(op, index, value);
                 }
             }
 

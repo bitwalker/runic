@@ -511,7 +511,14 @@ impl GreedyPatternRewriteDriver {
         if !op.implements::<dyn ConstantLike>() {
             let mut results = SmallVec::<[OpFoldResult; 1]>::default();
             log::trace!(target: "pattern-rewrite-driver", "attempting to fold operation..");
-            if op.fold(&mut results).is_ok() {
+            // A fold that would leave an operation reading its own result is not applied: the
+            // patterns are tried instead
+            let folded = op.fold(&mut results).is_ok()
+                && !crate::folder::replacement_is_read_by_its_definer(
+                    &op,
+                    results.iter().map(crate::folder::folded_value),
+                );
+            if folded {
                 if results.is_empty() {
                     // Op was modified in-place
                     self.notify_operation_modified(op_ref);

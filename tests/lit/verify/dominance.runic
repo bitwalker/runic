@@ -1,9 +1,9 @@
 // RUN: runic-opt %s --split-input-file --verify-diagnostics
 
 // The definition of every operand dominates its use. Each kind of definition that does not is a
-// case: the operation that reads the value defines it, an operation that holds the use in one of
-// its regions defines it, it is defined later in the same block, or in a block that does not
-// dominate the use's. The message is the same for every placement; the expectations of those
+// case: an operation that holds the use in one of its regions defines it, it is defined later in
+// the same block, or in a block that does not dominate the use's. (An operation that reads its
+// own result is refused by a rule of its own, in `verify/structure.runic`.) The message is the same for every placement; the expectations of those
 // cases name the label that says where the definition is. An operand that reads a value printed
 // later is written in the generic form (or in a custom form that states its operand types, as
 // `scf.yield` and `cf.br` do). In a block of a function, a value of a nested or sibling region
@@ -32,14 +32,6 @@ builtin.module public @valid {
         %later = arith.add %a, %a;
         builtin.ret %later : (i32);
     };
-};
-
-// -----
-
-// The operation that reads the value defines it.
-builtin.function public extern("C") @its_own_user(%a: i32) -> i32 {
-    %x = "arith.add"(%x, %a) : (i32, i32) -> i32; // expected-error {{it is defined by the operation that reads it}}
-    builtin.ret %x : (i32);
 };
 
 // -----
