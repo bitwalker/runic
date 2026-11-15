@@ -1,0 +1,127 @@
+// RUN: runic-opt %s -p sccp | filecheck %s
+// RUN: runic-opt %s -p sccp | runic-opt - --verify-roundtrip | filecheck %s
+
+// Sparse conditional constant propagation: a value proven constant is replaced by a constant,
+// through operations whose operands are themselves computed, through block arguments when only
+// the branches that can execute are followed, and through a region operation whose taken region is
+// known. A value that is not one constant on every path that can execute is left alone (a branch
+// on an unknown condition, a loop counter), and an operation with effects stays even when what it
+// reads is constant. The constants SCCP materializes are placed at the start of the function, so
+// each case checks the uses, not where the constants are. The second RUN line reads the output
+// back.
+builtin.module public @sccp_propagation {
+    // CHECK-LABEL: @fold_chain(
+    // CHECK-NOT: arith.mul
+    // CHECK: [[TEN:%[0-9]+]] = arith.constant 10 : i32;
+    // CHECK-NOT: arith.mul
+    // CHECK: builtin.ret [[TEN]] : (i32);
+    builtin.function public extern("C") @fold_chain() -> i32 {
+        %two = arith.constant 2 : i32;
+        %three = arith.constant 3 : i32;
+        %sum = arith.add %two, %three;
+        %product = arith.mul %sum, %two;
+        builtin.ret %product : (i32);
+    };
+
+    // Only `^yes` can execute, so the argument of `^join` is 1, and the sum 2.
+    // CHECK-LABEL: @known_branch(
+    // CHECK: [[TWO:%[0-9]+]] = arith.constant 2 : i32;
+    // CHECK-NOT: arith.add
+    // CHECK: builtin.ret [[TWO]] : (i32);
+    builtin.function public extern("C") @known_branch(%x: i32) -> i32 {
+        %true = arith.constant 1 : i1;
+        %one = arith.constant 1 : i32;
+        cf.cond_br %true ^yes, ^no : (i1);
+    ^yes:
+        cf.br ^join(%one : i32);
+    ^no:
+        cf.br ^join(%x : i32);
+    ^join(%j: i32):
+        %r = arith.add %j, %one;
+        builtin.ret %r : (i32);
+    };
+
+    // CHECK-LABEL: @unknown_branch(
+    // CHECK: ^[[JOIN:block[0-9]+]]([[J:%[0-9]+]]: i32):
+    // CHECK-NEXT: builtin.ret [[J]] : (i32);
+    builtin.function public extern("C") @unknown_branch(%c: i1, %x: i32) -> i32 {
+        %one = arith.constant 1 : i32;
+        cf.cond_br %c ^yes, ^no : (i1);
+    ^yes:
+        cf.br ^join(%one : i32);
+    ^no:
+        cf.br ^join(%x : i32);
+    ^join(%j: i32):
+        builtin.ret %j : (i32);
+    };
+
+    // Both arms pass 1: the argument is 1 on every path.
+    // CHECK-LABEL: @same_on_both_arms(
+    // CHECK-NEXT: [[ONE:%[0-9]+]] = arith.constant 1 : i32;
+    // CHECK: ^{{block[0-9]+}}({{%[0-9]+}}: i32):
+    // CHECK-NEXT: builtin.ret [[ONE]] : (i32);
+    builtin.function public extern("C") @same_on_both_arms(%c: i1) -> i32 {
+        %one = arith.constant 1 : i32;
+        %one_again = arith.constant 1 : i32;
+        cf.cond_br %c ^yes, ^no : (i1);
+    ^yes:
+        cf.br ^join(%one : i32);
+    ^no:
+        cf.br ^join(%one_again : i32);
+    ^join(%j: i32):
+        builtin.ret %j : (i32);
+    };
+
+    // CHECK-LABEL: @store_of_a_constant(
+    // CHECK-SAME: [[P:%[0-9]+]]: ptr<i32>) {
+    // CHECK: [[FIVE:%[0-9]+]] = arith.constant 5 : i32;
+    // CHECK: test.store [[P]], [[FIVE]] : (ptr<i32>, i32);
+    // CHECK-NEXT: {{%[0-9]+}} = test.load [[P]];
+    // CHECK-NEXT: builtin.ret;
+    builtin.function public extern("C") @store_of_a_constant(%p: ptr<i32>) {
+        %two = arith.constant 2 : i32;
+        %three = arith.constant 3 : i32;
+        %sum = arith.add %two, %three;
+        test.store %p, %sum : (ptr<i32>, i32);
+        %l = test.load %p;
+        builtin.ret;
+    };
+
+    // The condition is true: the result is the then-region's 7.
+    // CHECK-LABEL: @known_if(
+    // CHECK: [[SEVEN:%[0-9]+]] = arith.constant 7 : i32;
+    // CHECK: scf.if
+    // CHECK: builtin.ret [[SEVEN]] : (i32);
+    builtin.function public extern("C") @known_if() -> i32 {
+        %true = arith.constant 1 : i1;
+        %r = scf.if %true then {
+            %a = arith.constant 7 : i32;
+            scf.yield %a : (i32);
+        } else {
+            %b = arith.constant 9 : i32;
+            scf.yield %b : (i32);
+        } : (i1) -> (i32);
+        builtin.ret %r : (i32);
+    };
+
+    // The counter is 0 on entry and changes in the body: it is not a constant.
+    // CHECK-LABEL: @loop_counter(
+    // CHECK: [[R:%[0-9]+]] = scf.while
+    // CHECK: ^{{block[0-9]+}}([[I:%[0-9]+]]: i32):
+    // CHECK-NEXT: {{%[0-9]+}} = arith.cmpi ult [[I]],
+    // CHECK: builtin.ret [[R]] : (i32);
+    builtin.function public extern("C") @loop_counter(%n: i32) -> i32 {
+        %zero = arith.constant 0 : i32;
+        %r = scf.while %zero before {
+        ^head(%i: i32):
+            %lt = arith.cmpi ult %i, %n;
+            scf.condition %lt, %i : (i1, i32);
+        } after {
+        ^body(%j: i32):
+            %one = arith.constant 1 : i32;
+            %next = arith.add %j, %one;
+            scf.yield %next : (i32);
+        } : (i32) -> (i32);
+        builtin.ret %r : (i32);
+    };
+};
