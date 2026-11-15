@@ -174,6 +174,20 @@ fn a_malformed_runic_trace_filter_is_an_error() {
 }
 
 #[test]
+fn help_is_given_whatever_the_trace_variables_hold() {
+    // The logger is set up once the arguments are read: a variable it cannot use does not stand
+    // between the user and the help text.
+    let help = opt(&["--help"], "", &[("RUNIC_TRACE_FILTER", "op")]);
+    assert_eq!(help.status.code(), Some(0), "{}", text(&help.stderr));
+    assert!(text(&help.stdout).contains("Usage:"), "{}", text(&help.stdout));
+    assert!(help.stderr.is_empty(), "{}", text(&help.stderr));
+    // Arguments that are wrong are reported as such, not as the variable's error.
+    let usage = opt(&["--no-such-option"], "", &[("RUNIC_TRACE_FILTER", "op")]);
+    assert_eq!(usage.status.code(), Some(1));
+    assert!(!text(&usage.stderr).contains("RUNIC_TRACE_FILTER"), "{}", text(&usage.stderr));
+}
+
+#[test]
 fn runic_trace_style_selects_whether_records_are_styled() {
     let styled = |style: Option<&str>, forced: bool| {
         let mut env = vec![DRIVER_TRACE];

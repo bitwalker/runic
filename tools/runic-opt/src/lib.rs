@@ -120,11 +120,27 @@ pub fn run(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> ExitCode {
+    run_with_setup(args, stdin, stdout, stderr, || Ok(()))
+}
+
+/// [`run`], with `setup` called once the arguments are read and before the tool does anything
+/// else: the place for what the process sets up for a run, such as its logger.
+///
+/// `setup` is not called when the arguments ask for help or the version, or are invalid: asking
+/// for help does not depend on it. An error it returns is written to `stderr` as `error: ...`,
+/// and the tool fails.
+pub fn run_with_setup(
+    args: impl IntoIterator<Item = OsString>,
+    stdin: &mut dyn Read,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+    setup: impl FnOnce() -> Result<(), String>,
+) -> ExitCode {
     install_panic_hook();
     let mut failed = false;
     let mut out = String::new();
     let mut err = String::new();
-    match run_to_buffers(args, stdin, &mut out, &mut err) {
+    match run_to_buffers(args, stdin, &mut out, &mut err, setup) {
         Ok(true) => {}
         Ok(false) => failed = true,
         Err(Exit::Help(text)) => out = text,
@@ -260,7 +276,8 @@ impl ChunkPanic {
 enum Exit {
     /// Help or the version was asked for: the text goes to standard output and the tool succeeds
     Help(String),
-    /// The arguments are invalid: the text goes to standard error and the tool fails
+    /// The arguments are invalid, or the setup of the run failed: the text goes to standard error
+    /// and the tool fails
     Usage(String),
 }
 
@@ -271,6 +288,7 @@ fn run_to_buffers(
     stdin: &mut dyn Read,
     out: &mut String,
     err: &mut String,
+    setup: impl FnOnce() -> Result<(), String>,
 ) -> Result<bool, Exit> {
     let args = core::iter::once(OsString::from("runic-opt")).chain(args);
     let options = Options::try_parse_from(args).map_err(|error| {
@@ -282,6 +300,7 @@ fn run_to_buffers(
             _ => Exit::Usage(text),
         }
     })?;
+    setup().map_err(|message| Exit::Usage(format!("error: {message}\n")))?;
 
     if options.list_passes {
         list_passes(out);
