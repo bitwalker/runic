@@ -143,8 +143,9 @@
 //! Its value is a comma-separated list of `key:value` filters, where `value` is a regular
 //! expression; a filter written with a leading `-` (`-key:value`) is negated. A record that
 //! carries none of the keys is not affected. A record that carries a key is written only when its
-//! value matches one of that key's filters and none of its negated ones: `op:.*,-op:constant`
-//! keeps the records about every operation but the `constant` operations.
+//! value matches one of that key's filters and none of its negated ones, so a key with only
+//! negated filters keeps none of its records: `op:.*,-op:constant` keeps the records about every
+//! operation but the `constant` operations.
 //!
 //! The pattern rewrite driver (`RUNIC_TRACE=pattern-rewrite-driver=trace`) logs records with the
 //! keys `dialect` (the dialect of the operation, for example `arith`) and `op` (its name within

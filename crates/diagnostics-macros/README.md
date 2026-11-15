@@ -44,7 +44,6 @@ This crate runs on the compiler host and depends on `syn`, `quote`,
 `proc-macro2`, and `proc-macro-crate`. Generated code refers to the consumer's
 `runic-diagnostics` crate, or to the one `runic-core` re-exports.
 
-See the [runtime crate README](../diagnostics/README.md) for the data model and
-the [workspace README](../../README.md) for end-to-end usage.
+See the [runtime crate README](../diagnostics/README.md) for the data model.
 
-This crate is licensed under Apache-2.0 OR MIT.
+This crate is licensed under the MIT license: see [`LICENSE.md`](../../LICENSE.md).

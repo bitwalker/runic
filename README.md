@@ -10,9 +10,8 @@ of their own. A region is either an SSA region (a control-flow graph of blocks) 
 The IR has a textual form, written in files with the extension `.runic`, in two forms, both parsed
 and printed: a custom form, defined per operation, and a generic form that every operation has.
 
-What exists today is the core IR, its dialects and passes, and the test tool. There is no frontend
-and no backend in this repository, by design: a compiler built on Runic brings its own. A harness
-that drives a whole compilation comes in a later stage.
+What exists today is the core IR, its dialects and passes, and the test tool. No workspace member
+is a frontend or a backend: a compiler built on Runic brings its own.
 
 ## The crates
 
@@ -39,8 +38,8 @@ The workspace has sixteen members:
 
 The directories `runic/`, `crates/driver`, `crates/compile`, `crates/eval` and
 `crates/dialects/wasm` hold a compile harness and driver, an evaluator and a WebAssembly dialect
-from before Runic was split out of an earlier compiler, kept for a later stage. They are not
-workspace members: they are not built and not tested.
+from before Runic was split out of an earlier compiler, kept, not built: they are not workspace
+members, and they are not tested.
 
 ## Building
 
@@ -109,20 +108,21 @@ is an error, and the tool runs nothing.
 
 ## Testing
 
-There are two test suites, the Rust tests and the lit suite:
+There are two test suites, the Rust tests and the lit suite, and unit tests of the Python scripts
+in `tools/`:
 
 ```sh
 cargo test --workspace     # the Rust tests
 cargo make test            # the Rust tests under cargo-nextest, and the tests of the Python scripts in tools/
 cargo make test-lit        # builds runic-opt into bin/ and runs the lit suite in tests/lit
-cargo make test-all        # the two above, then removes unused build output from target/
+cargo make test-all        # the two above, then removes old unused build output from target/
 ```
 
 `cargo make test` installs `cargo-nextest`, and `cargo make test-lit` installs `litcheck`, when
 they are missing (this needs the network). At its end, `cargo make test-all` deletes the build
-output in `target/` that the workspace's build no longer uses (`tools/sweep-target.py`); set
-`RUNIC_SKIP_SWEEP` to skip that. How
-the lit suite is written and run, and how to run one test or one directory, is in
+output in `target/` that the workspace's build no longer uses and that is older than a day
+(`tools/sweep-target.py`, `--age`); set `RUNIC_SKIP_SWEEP` to skip that. How the lit suite is
+written and run, and how to run one test or one directory, is in
 [`tests/lit/README.md`](tests/lit/README.md).
 
 How to contribute, and the lint and format commands, are in [`CONTRIBUTING.md`](CONTRIBUTING.md).

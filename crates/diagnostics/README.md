@@ -57,8 +57,4 @@ flow. The smaller [fail-fast](examples/fail_fast.rs),
 [explanation lookup](examples/explain.rs) examples isolate individual use
 cases.
 
-The [workspace README](../../README.md) contains installation instructions and
-usage-oriented examples. Detailed implementation contracts live in the
-workspace architecture document.
-
-This crate is licensed under Apache-2.0 OR MIT.
+This crate is licensed under the MIT license: see [`LICENSE.md`](../../LICENSE.md).
