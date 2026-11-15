@@ -3,7 +3,8 @@
 // The verifiers of the operation traits that text can break: `SingleRegion`, `SingleBlock`,
 // `NoRegionArguments` and `SameTypeOperands`. One case per rule, on a representative operation.
 // `UnaryOp`, `BinaryOp`, `Transparent`, `SameOperandsAndResultType`, `TransparentCast` and
-// `Variadic` cannot be broken in text (see the report of the task that wrote this file).
+// `Variadic` have no case: the first four are answered first by the parser or by the check of the
+// operand and result counts, and no operation runic-opt registers has the last two.
 
 // A module (one region of one block, no arguments) holding a function whose `scf.if` has regions
 // without arguments, and an `arith.add` of two operands of one type.

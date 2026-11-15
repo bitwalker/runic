@@ -3,7 +3,8 @@
 // The rules of the integer casts of `arith`: `arith.trunc` narrows, `arith.zext` and `arith.sext`
 // widen, both between fixed-width types; `arith.zext_or_trunc` and `arith.sext_or_trunc` convert
 // between `isize` and a fixed-width type. That the result has the type `ty` the cast states is a
-// rule the parser answers first (see the report of the task that wrote this file).
+// rule the parser answers first: a cast's custom form infers its result from `ty`, and the generic
+// form's mismatch is a parser error, so that rule's verifier message is tested in Rust.
 
 // Each cast between the types it takes.
 builtin.function public extern("C") @valid(%a: i32, %w: i64) -> i32 {

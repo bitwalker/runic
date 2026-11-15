@@ -4,7 +4,9 @@
 // last operation of its block, and so is an operation with successors; every block of a region
 // ends with a terminator unless the operation that holds it needs none; the entry block of a
 // region has no predecessors. A graph region has at most one block, and a successor is a block of
-// its own region: text cannot break either (see the report of the task that wrote this file).
+// its own region: text cannot break either (`SingleBlock` answers first for every operation with a
+// graph region, and the parser rejects a successor that is not a block of the region as undefined),
+// so both are tested in Rust.
 
 // A function whose blocks end with terminators, a module and a global initializer, which need
 // none, and a branch that is the last operation of its block.

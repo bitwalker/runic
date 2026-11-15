@@ -4,8 +4,7 @@
 // gives a successor agree with the block's arguments in number and, position by position, in
 // type. One case per rule; the number on `cf.cond_br` and `cf.switch` too, since each names its
 // successor by its position. The message names the block by the number it prints with, which
-// is not the name written (the report of the task that wrote this file says so), so the
-// expectations leave it out. Whether `cf.switch` may have two cases with one value is not decided,
+// is not the name written (written names are not kept), so the expectations leave it out. Whether `cf.switch` may have two cases with one value is not decided,
 // and has no case.
 
 builtin.function public extern("C") @valid(%c: i1, %s: i32, %a: i32) -> i32 {
