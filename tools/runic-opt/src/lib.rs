@@ -43,8 +43,8 @@ use clap::Parser;
 use runic_core::{
     Context, OpPrinter, OpPrintingFlags, OperationRef, Report,
     diagnostics::{
-        DiagnosticDisplay, DiagnosticSet, OwnedDiagnostic, RenderConfig, SourceId, SourceSpan,
-        TextRange, diagnostic,
+        DiagnosticDisplay, DiagnosticSet, NoteKind, OwnedDiagnostic, RenderConfig, SourceId,
+        SourceSpan, TextRange, diagnostic,
     },
     parse::{ParserConfig, parse_any},
     pass::{
@@ -93,6 +93,11 @@ const RENDER_CONFIG: RenderConfig = RenderConfig {
 /// the hook installed before. A host that replaces the hook after the first call loses those
 /// reports: a panic while processing an input is then an internal error with its message alone,
 /// and the hook it installed also sees that panic.
+///
+/// When logging is enabled (`RUNIC_TRACE`), the logger writes to the process's standard error from
+/// the thread that processes the input, while `run` waits for that thread: `stdout` and `stderr`
+/// must then not be locked standard streams (such as `io::stderr().lock()`), or the tool
+/// deadlocks.
 pub fn run(
     args: impl IntoIterator<Item = OsString>,
     stdin: &mut dyn Read,
@@ -156,18 +161,19 @@ fn install_panic_hook() {
             };
             let mut recorded = slot.panic.lock().unwrap_or_else(PoisonError::into_inner);
             if info.can_unwind() {
-                *recorded = Some(panic);
+                // The first panic is the one that says what went wrong; a later one (a destructor
+                // that panics while the first unwinds) is kept after it.
+                recorded.push(panic);
             } else {
-                // The process aborts after the hook: nothing would write what the chunk wrote.
-                // A panic that reaches a function that cannot unwind is a second panic; the first
-                // is the one that says what went wrong.
+                // The process aborts after the hook: nothing would write what the cases that
+                // finished and this chunk wrote. A panic that reaches a function that cannot
+                // unwind may follow others; the first is the one that says what went wrong.
                 let mut stderr = io::stderr();
+                let _ = stderr.write_all(slot.finished.take().as_bytes());
                 let _ = stderr.write_all(slot.stderr.take().as_bytes());
-                if let Some(first) = recorded.take() {
-                    let _ = stderr.write_all(first.report().as_bytes());
-                }
+                recorded.push(panic);
+                let _ = stderr.write_all(ChunkPanic::report(&recorded).as_bytes());
                 drop(recorded);
-                let _ = stderr.write_all(panic.report().as_bytes());
                 let _ = stderr.flush();
                 previous(info);
             }
@@ -178,10 +184,12 @@ fn install_panic_hook() {
 /// What a chunk's thread shares with the panic hook.
 #[derive(Clone)]
 struct PanicSlot {
+    /// What the cases processed before this chunk wrote to standard error
+    finished: SharedBuffer,
     /// What the chunk wrote to its standard error
     stderr: SharedBuffer,
-    /// The panic, once there was one
-    panic: Arc<Mutex<Option<ChunkPanic>>>,
+    /// The panics, in the order they happened, once there was one
+    panic: Arc<Mutex<Vec<ChunkPanic>>>,
 }
 
 /// A panic on a chunk's thread, as the panic hook saw it.
@@ -194,10 +202,14 @@ struct ChunkPanic {
 }
 
 impl ChunkPanic {
-    /// The internal error, rendered: the message, where the panic happened, and its backtrace.
-    fn report(&self) -> String {
-        let message = format!("internal error: {}", self.message);
-        let error = match &self.location {
+    /// The internal error, rendered: the first panic's message, where it happened, a note for
+    /// each later panic, and the first's backtrace.
+    fn report(panics: &[Self]) -> String {
+        let Some((first, later)) = panics.split_first() else {
+            return String::new();
+        };
+        let message = format!("internal error: {}", first.message);
+        let mut error = match &first.location {
             Some(location) => diagnostic!(
                 severity: Error,
                 message: (message),
@@ -205,8 +217,19 @@ impl ChunkPanic {
             ),
             None => diagnostic!(severity: Error, message: (message)),
         };
+        for panic in later {
+            match &panic.location {
+                Some(location) => error.push_note(
+                    NoteKind::Note,
+                    format_args!("then a panic at {location}: {}", panic.message),
+                ),
+                None => {
+                    error.push_note(NoteKind::Note, format_args!("then a panic: {}", panic.message))
+                }
+            }
+        }
         let mut text = render(OwnedDiagnostic::new(error).display());
-        if let Some(backtrace) = &self.backtrace {
+        if let Some(backtrace) = &first.backtrace {
             text += "stack backtrace:\n";
             text += backtrace;
             if !text.ends_with('\n') {
@@ -294,6 +317,8 @@ fn run_to_buffers(
     }
     let mut written = Vec::new();
     let mut succeeded = true;
+    // What the cases wrote to standard error, also where the panic hook can reach it.
+    let finished = SharedBuffer::default();
     for case in cases {
         let chunk = Chunk {
             name: name.clone(),
@@ -307,9 +332,9 @@ fn run_to_buffers(
             flags: options.printing_flags(),
             verify_diagnostics: options.verify_diagnostics,
         };
-        match chunk.process_on_its_own_thread() {
+        match chunk.process_on_its_own_thread(&finished) {
             Ok(output) => {
-                *err += &output.stderr;
+                finished.push(&output.stderr);
                 if output.succeeded && !output.skipped {
                     written.push(output.stdout);
                 }
@@ -324,11 +349,12 @@ fn run_to_buffers(
                 }
             }
             Err(error) => {
-                *err += &render(error.display());
+                finished.push(&render(error.display()));
                 succeeded = false;
             }
         }
     }
+    *err += &finished.take();
 
     let separator = match marker {
         Some(marker) => format!("{marker}\n"),
@@ -599,10 +625,14 @@ impl Chunk {
     ///
     /// What the chunk wrote to its standard error survives a panic: it is kept, and followed by
     /// the internal error, and the chunk failed (and, when diagnostics are checked, mismatched).
-    fn process_on_its_own_thread(self) -> Result<ChunkOutput, Report> {
+    ///
+    /// `finished` holds what the cases before it wrote to standard error, which a panic that
+    /// cannot unwind writes first.
+    fn process_on_its_own_thread(self, finished: &SharedBuffer) -> Result<ChunkOutput, Report> {
         let stderr = SharedBuffer::default();
         let chunk_stderr = stderr.clone();
         let slot = PanicSlot {
+            finished: finished.clone(),
             stderr: stderr.clone(),
             panic: Arc::default(),
         };
@@ -628,14 +658,18 @@ impl Chunk {
             Err(payload) => {
                 // The hook recorded the panic, unless a host replaced it: then its message is all
                 // there is.
-                let panic = slot.panic.lock().unwrap_or_else(PoisonError::into_inner).take();
-                let panic = panic.unwrap_or_else(|| ChunkPanic {
-                    message: panic_message(payload.as_ref()),
-                    location: None,
-                    backtrace: None,
-                });
+                let mut panics = core::mem::take(
+                    &mut *slot.panic.lock().unwrap_or_else(PoisonError::into_inner),
+                );
+                if panics.is_empty() {
+                    panics.push(ChunkPanic {
+                        message: panic_message(payload.as_ref()),
+                        location: None,
+                        backtrace: None,
+                    });
+                }
                 let mut written = stderr.take();
-                written += &panic.report();
+                written += &ChunkPanic::report(&panics);
                 Ok(ChunkOutput {
                     stdout: String::new(),
                     stderr: written,

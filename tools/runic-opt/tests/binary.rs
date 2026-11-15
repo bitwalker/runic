@@ -2,7 +2,7 @@
 //! panic that reaches the process's panic hook).
 
 use std::{
-    io::Write,
+    io::{Read, Write},
     process::{Command, Output, Stdio},
     time::{Duration, Instant},
 };
@@ -13,7 +13,8 @@ const BIN: &str = env!("CARGO_BIN_EXE_runic-opt");
 const LIMIT: Duration = Duration::from_secs(60);
 
 /// Runs the binary with `args`, `stdin` and the environment variables `env`; fails the test when
-/// it has not exited after [`LIMIT`].
+/// it has not exited after [`LIMIT`]. Its standard output and error are read while it runs, so
+/// that a run which writes more than a pipe holds does not block on the pipe.
 fn opt(args: &[&str], stdin: &str, env: &[(&str, &str)]) -> Output {
     let mut command = Command::new(BIN);
     command
@@ -28,11 +29,24 @@ fn opt(args: &[&str], stdin: &str, env: &[(&str, &str)]) -> Output {
         command.env(key, value);
     }
     let mut child = command.spawn().expect("the binary starts");
+    let drain = |mut pipe: Box<dyn Read + Send>| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            pipe.read_to_end(&mut bytes).unwrap();
+            bytes
+        })
+    };
+    let stdout = drain(Box::new(child.stdout.take().unwrap()));
+    let stderr = drain(Box::new(child.stderr.take().unwrap()));
     child.stdin.take().unwrap().write_all(stdin.as_bytes()).unwrap();
     let start = Instant::now();
     loop {
-        if child.try_wait().unwrap().is_some() {
-            return child.wait_with_output().unwrap();
+        if let Some(status) = child.try_wait().unwrap() {
+            return Output {
+                status,
+                stdout: stdout.join().unwrap(),
+                stderr: stderr.join().unwrap(),
+            };
         }
         if start.elapsed() > LIMIT {
             let _ = child.kill();
@@ -85,6 +99,28 @@ fn runic_trace_that_logs_does_not_hang_the_tool() {
 /// The location of the panic in the `test-panic` pass, as the report gives it.
 const LOCATION: &str = "the panic happened at tools/runic-opt/src/test_passes/panic.rs:";
 
+/// The first line of the report of the `test-panic` pass's panic.
+const REPORT: &str = "error: internal error: the test-panic pass panicked\n";
+
+/// Whether `text` is the whole report of one panic in the `test-panic` pass: the message, then the
+/// note with its location, and nothing after it.
+fn is_the_whole_report(text: &str) -> bool {
+    let Some(rest) = text.strip_prefix(REPORT) else {
+        return false;
+    };
+    let Some(rest) =
+        rest.strip_prefix(" |\n = note: ").and_then(|rest| rest.strip_prefix(LOCATION))
+    else {
+        return false;
+    };
+    let Some(position) = rest.strip_suffix('\n') else {
+        return false;
+    };
+    let mut parts = position.split(':');
+    parts.clone().count() == 2
+        && parts.all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
 #[test]
 fn a_panic_is_reported_by_the_tool_alone() {
     let output = opt(&["-p", "test-panic", "--print-ir-before", "all"], REPEATED_ADD, &[]);
@@ -95,12 +131,11 @@ fn a_panic_is_reported_by_the_tool_alone() {
     // hook's "thread .. panicked at" is not there.
     let header = "// ----- IR before test-panic on builtin.module -----\n";
     assert!(stderr.starts_with(header), "{stderr}");
-    let report = stderr.find("error: internal error: the test-panic pass panicked\n");
+    let report = stderr.find(REPORT);
     let report = report.unwrap_or_else(|| panic!("the report is there: {stderr}"));
     assert!(stderr[..report].contains("arith.add"), "{stderr}");
-    assert!(stderr[report..].contains(LOCATION), "{stderr}");
+    assert!(is_the_whole_report(&stderr[report..]), "{stderr}");
     assert!(!stderr.contains("panicked at"), "{stderr}");
-    assert!(!stderr.contains("stack backtrace"), "{stderr}");
 }
 
 #[test]
@@ -108,10 +143,7 @@ fn a_backtrace_is_in_the_report_when_asked_for() {
     let output = opt(&["-p", "test-panic"], REPEATED_ADD, &[("RUST_BACKTRACE", "1")]);
     assert_eq!(output.status.code(), Some(1));
     let stderr = text(&output.stderr);
-    assert!(
-        stderr.starts_with("error: internal error: the test-panic pass panicked\n"),
-        "{stderr}"
-    );
+    assert!(stderr.starts_with(REPORT), "{stderr}");
     assert!(stderr.contains(LOCATION), "{stderr}");
     assert!(stderr.contains("stack backtrace:\n"), "{stderr}");
     assert!(!stderr.contains("panicked at"), "{stderr}");
@@ -130,10 +162,46 @@ fn a_panic_that_cannot_unwind_keeps_what_the_chunk_wrote() {
     let stderr = text(&output.stderr);
     let header = "// ----- IR before test-panic on builtin.module -----\n";
     assert!(stderr.starts_with(header), "{stderr}");
-    let report = stderr.find("error: internal error: the test-panic pass panicked\n");
+    let report = stderr.find(REPORT);
     let report = report.unwrap_or_else(|| panic!("the report is there: {stderr}"));
     assert!(stderr[..report].contains("arith.add"), "{stderr}");
     assert!(stderr[report..].contains(LOCATION), "{stderr}");
+}
+
+/// A panic that cannot unwind in a later case keeps what the cases before it wrote.
+#[test]
+fn a_panic_that_cannot_unwind_keeps_what_earlier_cases_wrote() {
+    let source =
+        "builtin.module public @a {\n  bogus\n};\n// -----\nbuiltin.module public @b {\n};\n";
+    let output = opt(&["--split-input-file", "-p", "test-panic{cannot-unwind}"], source, &[]);
+    assert!(!output.status.success());
+    assert_ne!(output.status.code(), Some(1));
+    let stderr = text(&output.stderr);
+    // The first case's error, then the second case's report.
+    assert!(stderr.starts_with("error: invalid operation\n"), "{stderr}");
+    let report = stderr.find(REPORT);
+    let report = report.unwrap_or_else(|| panic!("the report is there: {stderr}"));
+    assert!(stderr[..report].contains("bogus"), "{stderr}");
+    assert!(stderr[report..].contains(LOCATION), "{stderr}");
+}
+
+/// A destructor that panics while the panic unwinds aborts the process; the report names the
+/// first panic, and the destructor's after it.
+#[test]
+fn the_first_panic_is_reported_when_a_destructor_panics_during_unwinding() {
+    let output = opt(&["-p", "test-panic{destructor}"], REPEATED_ADD, &[]);
+    assert!(!output.status.success());
+    assert_ne!(output.status.code(), Some(1));
+    let stderr = text(&output.stderr);
+    assert!(stderr.starts_with(REPORT), "{stderr}");
+    let first = stderr.find(LOCATION).unwrap_or_else(|| panic!("{stderr}"));
+    let destructor = "then a panic at tools/runic-opt/src/test_passes/panic.rs:";
+    let then = stderr.find(destructor).unwrap_or_else(|| panic!("{stderr}"));
+    assert!(first < then, "{stderr}");
+    assert!(
+        stderr[then..].contains(": a destructor of the test-panic pass panicked\n"),
+        "{stderr}"
+    );
 }
 
 #[test]

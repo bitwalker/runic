@@ -71,12 +71,17 @@ fn a_panic_in_a_pass_keeps_what_the_chunk_wrote_before_it() {
     assert!(output.stderr.starts_with(header), "{}", output.stderr);
     assert!(output.stderr.contains("builtin.load_local 0"), "{}", output.stderr);
     let error = "error: internal error: the test-panic pass panicked\n";
-    assert!(output.stderr.contains(error), "{}", output.stderr);
-    // The report says where the panic happened.
-    let location = "the panic happened at tools/runic-opt/src/test_passes/panic.rs:";
-    assert!(output.stderr.contains(location), "{}", output.stderr);
+    let report = output.stderr.find(error);
+    let report = report.unwrap_or_else(|| panic!("the report is there: {}", output.stderr));
     // The print comes before the error.
-    assert!(output.stderr.find("load_local") < output.stderr.find(error));
+    assert!(output.stderr[..report].contains("load_local"), "{}", output.stderr);
+    // The report says where the panic happened, and nothing follows it.
+    let location = "the panic happened at tools/runic-opt/src/test_passes/panic.rs:";
+    let note = output.stderr[report + error.len()..].strip_prefix(" |\n = note: ");
+    let note = note.unwrap_or_else(|| panic!("a note follows: {}", output.stderr));
+    assert!(note.starts_with(location), "{}", output.stderr);
+    assert_eq!(note.lines().count(), 1, "{}", output.stderr);
+    assert!(note.ends_with('\n'), "{}", output.stderr);
 }
 
 #[test]
