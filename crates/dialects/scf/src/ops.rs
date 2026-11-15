@@ -1345,9 +1345,13 @@ impl RegionBranchTerminatorOpInterface for Continue {
             // be addressed by a `scf.continue` in verified IR.
             return SmallVec::new();
         };
-        let values = header
+        // A header with no block is reported by the loop's own verifier, which runs after this
+        // operation's (the walk is post-order): until then there is nothing to continue to.
+        let Some(entry) = header.borrow().entry_block_ref() else {
+            return SmallVec::new();
+        };
+        let values = entry
             .borrow()
-            .entry()
             .arguments()
             .iter()
             .map(|arg| arg.borrow().as_value_ref())

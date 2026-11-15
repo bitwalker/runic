@@ -754,9 +754,13 @@ fn verify_exit(
                 );
             }
 
-            let expected = header
+            // A header with no block has no iter_args to compare with: the loop's own verifier,
+            // which runs after this one (the walk is post-order), reports the empty region.
+            let Some(entry) = header.borrow().entry_block_ref() else {
+                return Ok(());
+            };
+            let expected = entry
                 .borrow()
-                .entry()
                 .arguments()
                 .iter()
                 .map(|arg| arg.borrow().ty())

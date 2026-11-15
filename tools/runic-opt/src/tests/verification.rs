@@ -212,3 +212,64 @@ fn print_ir_after_failure_prints_the_operation_the_failed_pass_ran_on() {
     // The function is printed on its own, as the pass left it.
     assert!(output.stderr.contains("\n    builtin.ret;\n};\n"), "{}", output.stderr);
 }
+
+/// An exit whose loop, or a structured operation whose region, has no block: the loop's (or the
+/// operation's) own verifier reports the empty region, in both forms, and nothing panics.
+#[test]
+fn an_exit_in_a_loop_with_an_empty_region_is_a_diagnostic() {
+    let exits = r#"builtin.function public extern("C") @f(%n: i32, %c: i1) -> i32 {
+    %8 = scf.while %n before {
+    } after {
+    ^b3(%6: i32):
+        %7 = scf.if %c then {
+            scf.continue 1 %6 : (i32);
+        } else {
+            scf.break 1 %6 : (i32);
+        } : (i1) -> (i32);
+        scf.yield %7 : (i32);
+    } : (i32) -> (i32);
+    builtin.ret %8 : (i32);
+};
+"#;
+    let condition = r#"builtin.function public extern("C") @f(%n: i32, %c: i1) -> i32 {
+    %8 = scf.while %n before {
+    ^b(%i: i32):
+        %7 = scf.if %c then {
+            scf.break 1 %i : (i32);
+        } else {
+            scf.yield %i : (i32);
+        } : (i1) -> (i32);
+        scf.condition %c, %7 : (i1, i32);
+    } after {
+    } : (i32) -> (i32);
+    builtin.ret %8 : (i32);
+};
+"#;
+    let yields = r#"builtin.function public extern("C") @f(%n: i32, %c: i1) -> i32 {
+    %r = scf.if %c then {
+    } else {
+        scf.yield %n : (i32);
+    } : (i1) -> (i32);
+    builtin.ret %r : (i32);
+};
+"#;
+    for (text, region) in [
+        (exits, "region 0 of scf.while"),
+        (condition, "region 1 of scf.while"),
+        (yields, "region 0 of scf.if"),
+    ] {
+        let generic = opt(&["--no-verify", "--print-generic"], text);
+        generic.succeeded();
+        for input in [text, generic.stdout.as_str()] {
+            let output = opt(&[], input);
+            output.failed();
+            assert!(!output.stderr.contains("internal error"), "{}", output.stderr);
+            assert!(output.stderr.contains("<stdin>:"), "{}", output.stderr);
+            assert!(
+                output.stderr.contains(&format!("successor 0 ({region}) has no entry block")),
+                "{}",
+                output.stderr
+            );
+        }
+    }
+}
