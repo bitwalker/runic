@@ -331,12 +331,13 @@ pub use self::{
 /// its syntax), `RUNIC_TRACE_FILTER` filters records by their key-value pairs, `RUNIC_TRACE_STYLE`
 /// selects whether styles are written (`auto`, `always` or `never`), and `RUNIC_TRACE_TIMING`
 /// selects the timestamp precision, one of `s`, `ms`, `us` or `ns`; without it, records carry no
-/// timestamp. Anything else in `RUNIC_TRACE_TIMING` is an error, described by the returned message.
+/// timestamp. Anything else in `RUNIC_TRACE_TIMING`, and a `RUNIC_TRACE_FILTER` that is not a list
+/// of `key:value` filters with valid patterns, is an error, described by the returned message.
 ///
 /// One function rather than one per binary, so that every tool is configured by the same variables
 /// and formats its output the same way.
 pub fn runic_logger() -> Result<(Box<dyn log::Log>, log::LevelFilter), String> {
-    let mut builder = Builder::from_default_env();
+    let mut builder = Builder::try_from_default_env()?;
     builder.format_indent(Some(2));
     match std::env::var("RUNIC_TRACE_TIMING") {
         Ok(precision) => match precision.as_str() {

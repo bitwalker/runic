@@ -134,6 +134,29 @@ fn runic_trace_filter_drops_the_records_whose_key_value_it_does_not_match() {
 }
 
 #[test]
+fn a_malformed_runic_trace_filter_is_an_error() {
+    // A filter that is not `key:value`, and one whose value is not a regular expression: an error
+    // that names the variable, and nothing is run.
+    let not_key_value = opt(&["-p", "cse"], REPEATED_ADD, &[("RUNIC_TRACE_FILTER", "op")]);
+    assert_eq!(not_key_value.status.code(), Some(1));
+    assert_eq!(
+        text(&not_key_value.stderr),
+        "error: invalid RUNIC_TRACE_FILTER: expected filters of the form \
+         `key:value[,key2:value2,..]`, got 'op'\n"
+    );
+    assert!(not_key_value.stdout.is_empty());
+    let bad_pattern = opt(&["-p", "cse"], REPEATED_ADD, &[("RUNIC_TRACE_FILTER", "op:(")]);
+    assert_eq!(bad_pattern.status.code(), Some(1));
+    let stderr = text(&bad_pattern.stderr);
+    assert!(
+        stderr.starts_with("error: invalid RUNIC_TRACE_FILTER: invalid pattern '(' of key 'op': "),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    assert!(bad_pattern.stdout.is_empty());
+}
+
+#[test]
 fn runic_trace_style_selects_whether_records_are_styled() {
     let styled = |style: Option<&str>| {
         let mut env = vec![DRIVER_TRACE];

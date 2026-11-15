@@ -29,17 +29,20 @@ impl KvFilter {
         Some(was_matched)
     }
 
-    pub fn insert_value_filter(&mut self, pattern: &str, negated: bool) {
+    /// Adds `pattern` to the patterns of this key; an error when `pattern` is not a valid pattern
+    /// (with the `regex` feature, a regular expression), described by the message.
+    pub fn insert_value_filter(&mut self, pattern: &str, negated: bool) -> Result<(), String> {
         if self
             .patterns
             .iter()
             .any(|p| p.value.as_str() == pattern && p.negated == negated)
         {
-            return;
+            return Ok(());
         }
         self.patterns.push(KvFilterOp {
-            value: FilterOp::new(pattern).expect("invalid value filter"),
+            value: FilterOp::new(pattern)?,
             negated,
         });
+        Ok(())
     }
 }

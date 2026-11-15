@@ -147,24 +147,42 @@ impl Builder {
     }
 
     /// Adds a key/value filter to the overall filter.
+    ///
+    /// # Panics
+    ///
+    /// When `value` is not a valid pattern; [`Builder::try_filter_key_value`] returns the error.
     pub fn filter_key_value(&mut self, key: &str, value: &str, negated: bool) -> &mut Self {
+        if let Err(error) = self.try_filter_key_value(key, value, negated) {
+            panic!("invalid value filter '{value}' of key '{key}': {error}");
+        }
+        self
+    }
+
+    /// Adds a key/value filter to the overall filter; an error when `value` is not a valid
+    /// pattern (with the `regex` feature, a regular expression), described by the message.
+    pub fn try_filter_key_value(
+        &mut self,
+        key: &str,
+        value: &str,
+        negated: bool,
+    ) -> Result<&mut Self, String> {
         for kv_filter in self.kv_filters.iter_mut() {
             if kv_filter.key != key {
                 continue;
             }
 
-            kv_filter.insert_value_filter(value, negated);
-            return self;
+            kv_filter.insert_value_filter(value, negated)?;
+            return Ok(self);
         }
 
         self.kv_filters.push(KvFilter {
             key: key.to_owned(),
             patterns: vec![KvFilterOp {
-                value: FilterOp::new(value).expect("invalid value filter"),
+                value: FilterOp::new(value)?,
                 negated,
             }],
         });
-        self
+        Ok(self)
     }
 
     /// Parses the directives string.

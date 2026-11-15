@@ -115,6 +115,17 @@ impl Builder {
         builder
     }
 
+    /// Initializes the log builder from the environment, as [`Builder::from_env`] does; an error,
+    /// which names the variable, when a variable's value is malformed.
+    pub fn try_from_env<'a, E>(env: E) -> Result<Self, String>
+    where
+        E: Into<Env<'a>>,
+    {
+        let mut builder = Builder::new();
+        builder.try_parse_env(env)?;
+        Ok(builder)
+    }
+
     /// Applies the configuration from the environment.
     ///
     /// This function allows a builder to be configured with default parameters,
@@ -151,7 +162,24 @@ impl Builder {
     /// builder.parse_env(env);
     /// builder.init();
     /// ```
+    ///
+    /// # Panics
+    ///
+    /// When the kv filter variable's value is malformed; [`Builder::try_parse_env`] returns the
+    /// error.
     pub fn parse_env<'a, E>(&mut self, env: E) -> &mut Self
+    where
+        E: Into<Env<'a>>,
+    {
+        if let Err(error) = self.try_parse_env(env) {
+            panic!("{error}");
+        }
+        self
+    }
+
+    /// Applies the configuration from the environment, as [`Builder::parse_env`] does; an error,
+    /// which names the variable, when the kv filter variable's value is malformed.
+    pub fn try_parse_env<'a, E>(&mut self, env: E) -> Result<&mut Self, String>
     where
         E: Into<Env<'a>>,
     {
@@ -162,14 +190,15 @@ impl Builder {
         }
 
         if let Some(s) = env.get_kv_filter() {
-            self.parse_kv_filters(&s);
+            self.try_parse_kv_filters(&s)
+                .map_err(|error| format!("invalid {}: {error}", env.kv_filter.name))?;
         }
 
         if let Some(s) = env.get_write_style() {
             self.parse_write_style(&s);
         }
 
-        self
+        Ok(self)
     }
 
     /// Initializes the log builder from the environment using default variable names.
@@ -192,6 +221,13 @@ impl Builder {
     /// [default environment variables]: struct.Env.html#default-environment-variables
     pub fn from_default_env() -> Self {
         Self::from_env(Env::default())
+    }
+
+    /// Initializes the log builder from the environment using default variable names, as
+    /// [`Builder::from_default_env`] does; an error, which names the variable, when a variable's
+    /// value is malformed.
+    pub fn try_from_default_env() -> Result<Self, String> {
+        Self::try_from_env(Env::default())
     }
 
     /// Applies the configuration from the environment using default variable names.
@@ -411,19 +447,35 @@ impl Builder {
         self
     }
 
-    /// Parses a kv filter string from the `RUNIC_TRACE_FILTER` environment variable.
+    /// Parses a kv filter string in the form of the `RUNIC_TRACE_FILTER` environment variable.
     ///
     /// See the module documentation for more details.
+    ///
+    /// # Panics
+    ///
+    /// When `filters` is malformed; [`Builder::try_parse_kv_filters`] returns the error.
     pub fn parse_kv_filters(&mut self, filters: &str) -> &mut Self {
-        for filter in filters.split(',').map(|f| f.trim()) {
-            let (filter, negated) =
-                filter.strip_prefix('-').map(|f| (f, true)).unwrap_or((filter, false));
-            let (key, value) = filter
-                .split_once(':')
-                .expect("invalid kv filter spec: expected format is `key:value[,key2:value2,..]`");
-            self.filter.filter_key_value(key, value, negated);
+        if let Err(error) = self.try_parse_kv_filters(filters) {
+            panic!("invalid kv filter '{filters}': {error}");
         }
         self
+    }
+
+    /// Parses a kv filter string in the form of the `RUNIC_TRACE_FILTER` environment variable;
+    /// an error, described by the message, when a filter is not of the form `key:value` or its
+    /// value is not a valid pattern.
+    pub fn try_parse_kv_filters(&mut self, filters: &str) -> Result<&mut Self, String> {
+        for filter in filters.split(',').map(|f| f.trim()) {
+            let (spec, negated) =
+                filter.strip_prefix('-').map(|f| (f, true)).unwrap_or((filter, false));
+            let (key, value) = spec.split_once(':').ok_or_else(|| {
+                format!("expected filters of the form `key:value[,key2:value2,..]`, got '{filter}'")
+            })?;
+            self.filter
+                .try_filter_key_value(key, value, negated)
+                .map_err(|error| format!("invalid pattern '{value}' of key '{key}': {error}"))?;
+        }
+        Ok(self)
     }
 
     /// Sets the target for the log output.
@@ -1052,6 +1104,24 @@ mod tests {
         builder.parse_env(env);
 
         assert_eq!(builder.filter.build().filter(), LevelFilter::Debug);
+    }
+
+    /// A kv filter that is not `key:value`, or whose value is not a pattern, is an error from
+    /// `try_parse_kv_filters` and a panic from `parse_kv_filters`.
+    #[test]
+    fn a_malformed_kv_filter_is_an_error() {
+        assert!(Builder::new().try_parse_kv_filters("op:add,-symbol:foo").is_ok());
+        let error = Builder::new().try_parse_kv_filters("op").map(|_| ()).unwrap_err();
+        assert_eq!(error, "expected filters of the form `key:value[,key2:value2,..]`, got 'op'");
+        #[cfg(feature = "regex")]
+        {
+            let error = Builder::new().try_parse_kv_filters("op:(").map(|_| ()).unwrap_err();
+            assert!(error.starts_with("invalid pattern '(' of key 'op': "), "{error}");
+        }
+        let panicked = std::panic::catch_unwind(|| {
+            Builder::new().parse_kv_filters("op");
+        });
+        assert!(panicked.is_err());
     }
 
     /// The default environment, which `runic_logger` and the tests' logger of `runic-core` read,
