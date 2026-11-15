@@ -1,0 +1,63 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// The rules of `mem.load`, `mem.store` and `mem.alloca` that do not depend on a data layout
+// (those are in `mem-layout.runic`). A result type the custom form infers is written in the
+// generic form to disagree.
+
+// Loads through a typed pointer and an opaque one, a store, an alloca.
+builtin.function public extern("C") @valid(%p: ptr<i32>, %o: ptr, %v: i32) -> i32 {
+    %slot = mem.alloca i32;
+    %typed = mem.load %p;
+    %opaque = mem.load %o : i32;
+    mem.store %v, %slot;
+    mem.store %v, %o;
+    builtin.ret %typed : (i32);
+};
+
+// -----
+
+// The type a load states is the pointee of a typed pointer.
+builtin.function public extern("C") @load_states_other(%p: ptr<i32>) {
+    %x = mem.load %p : i64; // expected-error {{the pointer points to `i32`, but the load states that it reads `i64`}}
+    builtin.ret;
+};
+
+// -----
+
+// A load through an opaque pointer states the type it reads.
+builtin.function public extern("C") @load_opaque_unstated(%o: ptr) {
+    %x = mem.load %o; // expected-error {{a load through the opaque pointer type `ptr` must state the type it reads}}
+    builtin.ret;
+};
+
+// -----
+
+// The result has the type read.
+builtin.function public extern("C") @load_result(%p: ptr<i32>) {
+    %x = "mem.load"(%p) <{ ty = #builtin.type<?>, align = #mem.align<natural> }> : ptr<i32> -> i64; // expected-error {{the result has type `i64`, but the load reads `i32`}}
+    builtin.ret;
+};
+
+// -----
+
+// The value stored has the pointee type of a typed pointer.
+builtin.function public extern("C") @store_other(%p: ptr<i32>, %w: i64) {
+    mem.store %w, %p; // expected-error {{the value has type `i64`, but the pointer points to `i32`}}
+    builtin.ret;
+};
+
+// -----
+
+// The result of an alloca is a pointer to the type allocated.
+builtin.function public extern("C") @alloca_result() {
+    %x = "mem.alloca"() <{ ty = #builtin.type<i32>, align = #mem.align<natural> }> : () -> ptr<i64>; // expected-error {{the result has type `ptr<i64>`, but an alloca of `i32` gives `ptr<i32>`}}
+    builtin.ret;
+};
+
+// -----
+
+// The type allocated is known.
+builtin.function public extern("C") @alloca_unknown() {
+    %x = "mem.alloca"() <{ ty = #builtin.type<?>, align = #mem.align<natural> }> : () -> ptr<i64>; // expected-error {{the allocated type is not known}}
+    builtin.ret;
+};

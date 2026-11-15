@@ -1,0 +1,87 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// The rules the `#[operation]` derive generates for every operation, from what the operation
+// declares: the number of operands in each group, the operand groups present, the number of
+// regions and results, and the type constraint of each operand and result. They are checked when
+// an operation is built, which for text is when it is read, so the generic form writes what the
+// custom forms cannot. One case per rule, on a representative operation.
+
+// An operation of each shape: fixed operands, a group of any number, regions, results.
+builtin.function public extern("C") @valid(%c: i1, %a: i32, %s: ptr<struct<i32, i8>>, %i: isize) -> isize {
+    %sum = "arith.add"(%a, %a) : (i32, i32) -> i32;
+    %e = "mem.gep"(%s, %i) <{ path = #builtin.array_i32<> }> : (ptr<struct<i32, i8>> | isize) -> ptr<struct<i32, i8>>;
+    %int = "mem.ptrtoint"(%e) : ptr<struct<i32, i8>> -> isize;
+    "scf.if"(%c) ({
+        "scf.yield"() : () -> ();
+    }, {
+        "scf.yield"() : () -> ();
+    }) : (i1) -> ();
+    builtin.ret %int : (isize);
+};
+
+// -----
+
+// A group of a fixed number of operands has that number.
+builtin.function public extern("C") @operand_count(%a: i32) {
+    %x = "arith.add"(%a) : (i32) -> i32; // expected-error {{operand group 0 of 'arith.add' expects 2 operands, but has 1}}
+    builtin.ret;
+};
+
+// -----
+
+// Every operand group the operation declares is present: `mem.gep` declares two, the base and the
+// index.
+builtin.function public extern("C") @missing_group(%s: ptr<struct<i32, i8>>) {
+    %x = "mem.gep"(%s) <{ path = #builtin.array_i32<> }> : ptr<struct<i32, i8>> -> ptr<struct<i32, i8>>; // expected-error {{'mem.gep' requires operand group 1}}
+    builtin.ret;
+};
+
+// -----
+
+// A group the operation does not declare holds no operand.
+builtin.function public extern("C") @extra_group(%a: i32) {
+    %x = "arith.add"(%a, %a, %a) : (i32, i32 | i32) -> i32; // expected-error {{operand group 1 of 'arith.add' expects 0 operands, but has 1}}
+    builtin.ret;
+};
+
+// -----
+
+// The operation has at least the regions it declares.
+builtin.function public extern("C") @region_count(%c: i1) {
+    "scf.if"(%c) ({ // expected-error {{'scf.if' has at least 2 region(s), but this has 1}}
+        "scf.yield"() : () -> ();
+    }) : (i1) -> ();
+    builtin.ret;
+};
+
+// -----
+
+// An operation that declares its results has that many.
+builtin.function public extern("C") @result_count(%a: i32) {
+    %x, %y = "arith.add"(%a, %a) : (i32, i32) -> (i32, i32); // expected-error {{'arith.add' has 1 result(s), but this has 2}}
+    builtin.ret;
+};
+
+// -----
+
+// An operand meets its type constraint.
+builtin.function public extern("C") @operand_constraint(%p: ptr<i8>) {
+    %x = "arith.add"(%p, %p) : (ptr<i8>, ptr<i8>) -> ptr<i8>; // expected-error {{invalid operand for 'arith.add': expected an integral type, got ptr<i8>}}
+    builtin.ret;
+};
+
+// -----
+
+// So does each operand of a group of any number.
+builtin.function public extern("C") @group_constraint(%s: ptr<struct<i32, i8>>, %a: i32) {
+    %x = "mem.gep"(%s, %a) <{ path = #builtin.array_i32<> }> : (ptr<struct<i32, i8>> | i32) -> ptr<struct<i32, i8>>; // expected-error {{type constraint violation for operand in 'index'}}
+    builtin.ret;
+};
+
+// -----
+
+// A result meets its type constraint.
+builtin.function public extern("C") @result_constraint(%p: ptr<i8>) {
+    %x = "mem.ptrtoint"(%p) : ptr<i8> -> i32; // expected-error {{invalid result 'result' of 'mem.ptrtoint': expected the pointer-width integer type `isize`, got i32}}
+    builtin.ret;
+};

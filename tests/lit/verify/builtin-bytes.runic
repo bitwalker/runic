@@ -1,0 +1,16 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// `builtin.bytes`: its result is an `array<i8; N>`, `N` the number of bytes. The custom form states
+// the result type too.
+
+builtin.function public extern("C") @valid() {
+    %b = builtin.bytes "0201" : array<i8; 2>;
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @length() {
+    %b = builtin.bytes "0201" : array<i8; 3>; // expected-error {{the result has type `array<i8; 3>`, but 2 byte(s) make a `array<i8; 2>`}}
+    builtin.ret;
+};

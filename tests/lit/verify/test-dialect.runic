@@ -1,0 +1,45 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// The rules of the `test` dialect's own operations: the bounds of `test.check_range` have the
+// operand's type and `umin <= umax` unsigned; the arguments of `test.call_one_of` agree with its
+// signature. That a `test.constant`'s result has its value's type the parser answers first.
+
+builtin.module public @valid {
+    builtin.function public extern("C") @callee(i32) -> i32;
+    builtin.function public extern("C") @f(%s: i8, %a: i32) -> i32 {
+        %c = test.check_range %s <{ umin = #builtin.int<1 : i8>, umax = #builtin.int<-56 : i8> }>;
+        %r = test.call_one_of %a, @callee, @callee(%a) : extern("C") (i32) -> i32;
+        builtin.ret %r : (i32);
+    };
+};
+
+// -----
+
+builtin.function public extern("C") @umin_type(%s: i8) {
+    %c = test.check_range %s <{ umin = #builtin.int<1 : i16>, umax = #builtin.int<-56 : i8> }>; // expected-error {{the umin of 'test.check_range' has type `i16`, but its operand has type `i8`}}
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @umax_type(%s: i8) {
+    %c = test.check_range %s <{ umin = #builtin.int<1 : i8>, umax = #builtin.int<-56 : i16> }>; // expected-error {{the umax of 'test.check_range' has type `i16`, but its operand has type `i8`}}
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @umin_above_umax(%s: i8) {
+    %c = test.check_range %s <{ umin = #builtin.int<5 : i8>, umax = #builtin.int<4 : i8> }>; // expected-error {{the umin of 'test.check_range' (5) is greater than its umax (4)}}
+    builtin.ret;
+};
+
+// -----
+
+builtin.module public @call_one_of {
+    builtin.function public extern("C") @callee(i32) -> i32;
+    builtin.function public extern("C") @f(%a: i32) {
+        %x = "test.call_one_of"(%a, %a) <{ first = #builtin.symbol<@callee>, second = #builtin.symbol<@callee>, signature = #builtin.signature<extern("C") (i64) -> i32> }> : (i32 | i32) -> i32; // expected-error {{argument 0 has type `i32`, but parameter 0 of the signature has type `i64`}}
+        builtin.ret;
+    };
+};

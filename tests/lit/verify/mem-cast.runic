@@ -1,0 +1,53 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// The rules of `mem.ptrcast` and `mem.inttoptr`. That the result of `mem.ptrtoint` is an `isize` is
+// a type constraint (`operation.runic`).
+
+// Casts between pointers, from a pointer to an integer and back.
+builtin.function public extern("C") @valid(%p: ptr<i32>) -> isize {
+    %cast = mem.ptrcast %p : ptr<i8>;
+    %opaque = mem.ptrcast %cast : ptr;
+    %int = mem.ptrtoint %cast;
+    %back = mem.inttoptr %int : ptr<i8>;
+    builtin.ret %int : (isize);
+};
+
+// -----
+
+// `mem.ptrcast` casts to a pointer type.
+builtin.function public extern("C") @ptrcast_to_int(%p: ptr<i32>) {
+    %x = mem.ptrcast %p : i32; // expected-error {{the result type of a cast to a pointer is a pointer type, not `i32`}}
+    builtin.ret;
+};
+
+// -----
+
+// Its result has the type it casts to.
+builtin.function public extern("C") @ptrcast_result(%p: ptr<i32>) {
+    %x = "mem.ptrcast"(%p) <{ ty = #builtin.type<ptr<i8>> }> : ptr<i32> -> ptr<i16>; // expected-error {{the result has type `ptr<i16>`, but the cast is to `ptr<i8>`}}
+    builtin.ret;
+};
+
+// -----
+
+// It keeps the address space.
+builtin.function public extern("C") @ptrcast_addrspace(%q: ptr<i32, 1>) {
+    %x = mem.ptrcast %q : ptr<i8>; // expected-error {{a cast keeps the address space}}
+    builtin.ret;
+};
+
+// -----
+
+// `mem.inttoptr` casts to a pointer type.
+builtin.function public extern("C") @inttoptr_to_int(%i: isize) {
+    %x = mem.inttoptr %i : i32; // expected-error {{the result type of a cast to a pointer is a pointer type, not `i32`}}
+    builtin.ret;
+};
+
+// -----
+
+// Its result has the type it casts to.
+builtin.function public extern("C") @inttoptr_result(%i: isize) {
+    %x = "mem.inttoptr"(%i) <{ ty = #builtin.type<ptr<i8>> }> : isize -> ptr<i16>; // expected-error {{the result has type `ptr<i16>`, but the cast is to `ptr<i8>`}}
+    builtin.ret;
+};

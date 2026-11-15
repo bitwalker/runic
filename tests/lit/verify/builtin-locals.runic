@@ -1,0 +1,26 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// The rules of `builtin.load_local` and `builtin.store_local`: the value read or written has the
+// type of the local the operation names. The custom forms take the type from the value, so the
+// generic form states another. That the local is one of the function's is a rule of
+// `builtin-function.runic`.
+
+builtin.function public extern("C") @valid(%a: i32) -> i32 locals(i32) {
+    builtin.store_local 0, %a;
+    %l = builtin.load_local 0 : i32;
+    builtin.ret %l : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @load_type() locals(i32) {
+    %x = "builtin.load_local"() <{ local = #builtin.local_variable<0, i32> }> : () -> i64; // expected-error {{the result has type `i64`, but local 0 has type `i32`}}
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @store_type(%w: i64) locals(i32) {
+    "builtin.store_local"(%w) <{ local = #builtin.local_variable<0, i32> }> : (i64) -> (); // expected-error {{the value has type `i64`, but local 0 has type `i32`}}
+    builtin.ret;
+};

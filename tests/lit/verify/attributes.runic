@@ -1,0 +1,32 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// Every attribute an operation holds, at any depth, is valid by itself; a data layout attribute is
+// a `#builtin.data_layout`. Most attribute kinds' rules are the parser's when it reads them
+// (an integer's width, an effect that names an argument and a result, an enumeration's values);
+// a signature's are the verifier's. The diagnostic is the operation's.
+
+builtin.module public @valid attributes { data_layout = #builtin.data_layout<little, ptr = 32>, sig = #builtin.signature<extern("C") (i32) -> never>, list = [#builtin.signature<extern("C") () -> i32>] } {
+};
+
+// -----
+
+// `never` is a result only, and alone.
+builtin.module public @result_never attributes { a = #builtin.signature<extern("C") (i32) -> (never, i32)> } { // expected-error {{attribute 'a' of 'builtin.module' is an invalid signature: result 0 has type `never`, which is only valid as the single result of a function that never returns}}
+};
+
+// -----
+
+builtin.module public @parameter_never attributes { a = #builtin.signature<extern("C") (never) -> i32> } { // expected-error {{is an invalid signature: parameter 0 has type `never`}}
+};
+
+// -----
+
+// An attribute held by another is checked too.
+builtin.module public @nested attributes { a = [#builtin.signature<extern("C") (never) -> i32>] } { // expected-error {{an attribute held by attribute 'a' of 'builtin.module' is an invalid signature}}
+};
+
+// -----
+
+// An operation that states a data layout (`DataLayoutOpInterface`) states a `#builtin.data_layout`.
+builtin.module public @layout attributes { data_layout = #builtin.i32<1> } { // expected-error {{the attribute 'data_layout' of this operation is not a '#builtin.data_layout'}}
+};

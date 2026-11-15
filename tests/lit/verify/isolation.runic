@@ -1,0 +1,53 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// No operand of an operation inside an operation isolated from above (`builtin.function`,
+// `builtin.global_variable`) is defined outside it. A module's body is a graph region whose values
+// the parser lets a function in it name; the verifier rejects the use.
+
+// A function and a global initializer that read only their own values.
+builtin.module public @valid {
+    %outside = arith.constant 1 : i32;
+    builtin.global_variable public @data : array<i8; 2> {
+        %bytes = builtin.bytes "0201" : array<i8; 2>;
+    };
+    builtin.function public extern("C") @f(%a: i32) -> i32 {
+        %own = arith.constant 1 : i32;
+        %sum = arith.add %a, %own;
+        builtin.ret %sum : (i32);
+    };
+};
+
+// -----
+
+// A function reads a value of its module.
+builtin.module public @function_reads_module {
+    %outside = arith.constant 1 : i32;
+    builtin.function public extern("C") @f() -> i32 {
+        builtin.ret %outside : (i32); // expected-error {{operand #0 of 'builtin.ret' is defined outside 'builtin.function', which is isolated from above}}
+    };
+};
+
+// -----
+
+// The use is in a region nested in the function: the rule holds at any depth.
+builtin.module public @nested_use {
+    %outside = arith.constant 1 : i32;
+    builtin.function public extern("C") @f(%c: i1) -> i32 {
+        %r = scf.if %c then {
+            scf.yield %outside : (i32); // expected-error {{operand #0 of 'scf.yield' is defined outside 'builtin.function', which is isolated from above}}
+        } else {
+            scf.yield %outside : (i32);
+        } : (i1) -> (i32);
+        builtin.ret %r : (i32);
+    };
+};
+
+// -----
+
+// A global variable's initializer reads a value of its module.
+builtin.module public @initializer_reads_module {
+    %outside = builtin.bytes "0201" : array<i8; 2>;
+    builtin.global_variable public @data : array<i8; 2> {
+        %copy = builtin.unrealized_conversion_cast %outside : (array<i8; 2>) to array<i8; 2>; // expected-error {{is defined outside 'builtin.global_variable', which is isolated from above}}
+    };
+};

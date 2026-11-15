@@ -1,0 +1,107 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// The structural rules of blocks and regions, checked for every operation: a terminator is the
+// last operation of its block, and so is an operation with successors; every block of a region
+// ends with a terminator unless the operation that holds it needs none; the entry block of a
+// region has no predecessors. A graph region has at most one block, and a successor is a block of
+// its own region: text cannot break either (see the report of the task that wrote this file).
+
+// A function whose blocks end with terminators, a module and a global initializer, which need
+// none, and a branch that is the last operation of its block.
+builtin.module public @valid {
+    builtin.global_variable public @data : array<i8; 2> {
+        %bytes = builtin.bytes "0201" : array<i8; 2>;
+    };
+    builtin.function public extern("C") @f(%a: i32) -> i32 {
+        cf.br ^next;
+    ^next:
+        builtin.ret %a : (i32);
+    };
+};
+
+// -----
+
+// A terminator is the last operation of its block.
+builtin.function public extern("C") @after_ret(%a: i32) -> i32 {
+    builtin.ret %a : (i32); // expected-error {{'builtin.ret' is a terminator, but is not the last operation of its block}}
+    %b = arith.add %a, %a;
+};
+
+// -----
+
+// That holds in a region that needs no terminator too: a module's body.
+builtin.module public @module_body {
+    builtin.ret; // expected-error {{'builtin.ret' is a terminator, but is not the last operation of its block}}
+    builtin.function public extern("C") @g();
+};
+
+// -----
+
+// And in a global variable's initializer.
+builtin.module public @initializer {
+    builtin.global_variable public @data : array<i8; 2> {
+        ub.unreachable; // expected-error {{'ub.unreachable' is a terminator, but is not the last operation of its block}}
+        %bytes = builtin.bytes "0201" : array<i8; 2>;
+    };
+};
+
+// -----
+
+// An operation with successors is the last operation of its block.
+builtin.function public extern("C") @branch_not_last(%a: i32) -> i32 {
+    cf.br ^next; // expected-error {{'cf.br' has successors, but is not the last operation of its block}}
+    builtin.ret %a : (i32);
+^next:
+    builtin.ret %a : (i32);
+};
+
+// -----
+
+// A block ends with a terminator: this one falls off its end.
+builtin.function public extern("C") @falls_off(%a: i32) -> i32 {
+    %b = arith.add %a, %a; // expected-error {{block #0 of region #0 of 'builtin.function' does not end with a terminator}}
+};
+
+// -----
+
+// The same in a region of `scf.if`.
+builtin.function public extern("C") @arm_falls_off(%c: i1, %a: i32) {
+    scf.if %c then {
+        %x = arith.add %a, %a; // expected-error {{block #0 of region #0 of 'scf.if' does not end with a terminator}}
+    } else {
+        scf.yield : ();
+    } : (i1) -> ();
+    builtin.ret;
+};
+
+// -----
+
+// An empty block does not end with a terminator. The diagnostic points at the operation that
+// holds the block.
+builtin.function public extern("C") @empty_block(%a: i32) -> i32 { // expected-error {{block #1 of region #0 of 'builtin.function' is empty, and does not end with a terminator}}
+    cf.br ^next;
+^next:
+};
+
+// -----
+
+// An arm written `{ }` is a region with no block, which `scf.if` reports itself; an empty arm is
+// a labelled block with nothing in it.
+builtin.function public extern("C") @empty_arm(%c: i1) {
+    scf.if %c then { // expected-error {{block #0 of region #0 of 'scf.if' is empty, and does not end with a terminator}}
+    ^arm:
+    } else {
+        scf.yield : ();
+    } : (i1) -> ();
+    builtin.ret;
+};
+
+// -----
+
+// The entry block of a region has no predecessors. A function's entry block is labelled only in
+// the generic form.
+// expected-error@+1 {{the entry block of region #0 of 'builtin.function' has predecessors}}
+"builtin.function"() <{ name = #builtin.ident<@entry_branched_to>, linkage = #builtin.visibility<public>, signature = #builtin.signature<extern("C") (i32) -> i32>, memory_effects = #builtin.declared_effects<unknown>, locals = #builtin.type_array<> }> ({
+^entry(%a: i32):
+    "cf.br"() [ ^entry(%a : i32) ] : () -> ();
+}) : () -> ();

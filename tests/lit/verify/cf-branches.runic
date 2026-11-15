@@ -1,0 +1,55 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// The rule of `BranchOpInterface`, for `cf.br`, `cf.cond_br` and `cf.switch`: the operands a branch
+// gives a successor agree with the block's arguments in number and, position by position, in
+// type. One case per rule; the number on `cf.cond_br` and `cf.switch` too, since each names its
+// successor by its position. The message names the block by the number it prints with, which
+// is not the name written (the report of the task that wrote this file says so), so the
+// expectations leave it out. Whether `cf.switch` may have two cases with one value is not decided,
+// and has no case.
+
+builtin.function public extern("C") @valid(%c: i1, %s: i32, %a: i32) -> i32 {
+    cf.cond_br %c ^left(%a : i32), ^right : (i1);
+^left(%l: i32):
+    cf.switch %s [#builtin.i32<1> -> ^join(%l : i32)], ^right : (i32);
+^right:
+    cf.br ^join(%a : i32);
+^join(%j: i32):
+    builtin.ret %j : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @br_count(%a: i32) -> i32 {
+    cf.br ^next(%a : i32); // expected-error-re {{invalid operation cf.br: successor 0 \(.*\) takes 0 block argument\(s\), but cf.br gives it 1 operand\(s\)}}
+^next:
+    builtin.ret %a : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @br_type(%a: i32, %w: i64) -> i32 {
+    cf.br ^next(%w : i64); // expected-error-re {{invalid operation cf.br: operand 0 for successor 0 \(.*\) has type 'i64', but the block argument it binds has type 'i32'}}
+^next(%n: i32):
+    builtin.ret %a : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @cond_br_count(%c: i1, %a: i32) -> i32 {
+    cf.cond_br %c ^yes, ^no(%a : i32) : (i1); // expected-error-re {{invalid operation cf.cond_br: successor 1 \(.*\) takes 0 block argument\(s\), but cf.cond_br gives it 1 operand\(s\)}}
+^yes:
+    builtin.ret %a : (i32);
+^no:
+    builtin.ret %a : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @switch_count(%s: i32, %a: i32) -> i32 {
+    cf.switch %s [#builtin.i32<1> -> ^one(%a : i32)], ^done : (i32); // expected-error-re {{invalid operation cf.switch: successor 0 \(.*\) takes 0 block argument\(s\), but cf.switch gives it 1 operand\(s\)}}
+^one:
+    builtin.ret %a : (i32);
+^done:
+    builtin.ret %a : (i32);
+};

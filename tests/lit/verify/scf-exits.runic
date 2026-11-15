@@ -1,0 +1,110 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// The rules of `scf.break` and `scf.continue` (`RegionExitTerminatorOpInterface`): `levels` counts
+// enclosing loops from 1, inside the function; every operation the exit crosses forwards it; a
+// break carries the types of the results of the loop it exits, a continue those of the arguments
+// of its header, from outside the header.
+
+// A continue and a break out of an `scf.if` in a loop, and a break out of two loops.
+builtin.function public extern("C") @valid(%c: i1, %x: i32) -> i32 {
+    %r = scf.while %x before {
+    ^outer(%i: i32):
+        scf.condition %c, %i : (i1, i32);
+    } after {
+    ^outer_body(%j: i32):
+        scf.while before {
+            scf.condition %c : (i1);
+        } after {
+            scf.if %c then {
+                scf.break 2 %j : (i32);
+            } else {
+                scf.continue 1 : ();
+            } : (i1) -> ();
+            scf.yield : ();
+        } : () -> ();
+        scf.yield %j : (i32);
+    } : (i32) -> (i32);
+    builtin.ret %r : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @level_zero(%c: i1) {
+    scf.while before {
+        scf.condition %c : (i1);
+    } after {
+        scf.break 0 : (); // expected-error {{`levels` is 1-based and counts enclosing loops, so it must be at least 1, but this break names level 0}}
+    } : () -> ();
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @too_many_levels(%c: i1) {
+    scf.while before {
+        scf.condition %c : (i1);
+    } after {
+        scf.break 2 : (); // expected-error {{this break names enclosing loop 2, but only 1 enclosing loop(s) were found before the enclosing function body was reached}}
+    } : () -> ();
+    builtin.ret;
+};
+
+// -----
+
+// An exit outside any loop names a level that is not there.
+builtin.function public extern("C") @no_loop(%c: i1) {
+    scf.if %c then {
+        scf.break 1 : (); // expected-error {{this break names enclosing loop 1, but only 0 enclosing loop(s) were found}}
+    } else {
+        scf.yield : ();
+    } : (i1) -> ();
+    builtin.ret;
+};
+
+// -----
+
+// `test.reads_locals_and_holds` does not forward an exit (it has no custom form).
+builtin.function public extern("C") @crosses_opaque(%c: i1) {
+    scf.while before {
+        scf.condition %c : (i1);
+    } after {
+        "test.reads_locals_and_holds"() ({
+            scf.break 1 : (); // expected-error {{this break would have to cross 'test.reads_locals_and_holds', which has not declared that it forwards breaking control flow}}
+        }) : () -> ();
+        scf.yield : ();
+    } : () -> ();
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @break_types(%c: i1, %a: i32) {
+    scf.while before {
+        scf.condition %c : (i1);
+    } after {
+        scf.break 1 %a : (i32); // expected-error {{this break carries (i32), but the loop it exits produces ()}}
+    } : () -> ();
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @continue_types(%c: i1, %a: i32) {
+    scf.while before {
+        scf.condition %c : (i1);
+    } after {
+        scf.continue 1 %a : (i32); // expected-error {{this continue carries (i32), but the loop it targets iterates on ()}}
+    } : () -> ();
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @continue_in_header(%c: i1) {
+    scf.while before {
+        scf.continue 1 : (); // expected-error {{this continue originates in the header of the loop it targets}}
+    } after {
+        scf.yield : ();
+    } : () -> ();
+    builtin.ret;
+};

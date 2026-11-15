@@ -1,0 +1,41 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// The rules of `scf.index_switch`: one region per case value after the default region, and no
+// case value twice. The custom form gives a region to each case and refuses a repeated value
+// itself, so the cases are written in the generic form. What a yield gives the results is a rule
+// of `region-branch.runic`.
+
+builtin.function public extern("C") @valid(%s: i32, %a: i32) -> i32 {
+    %r = scf.index_switch %s
+    case 1 {
+        scf.yield %a : (i32);
+    }
+    default {
+        scf.yield %a : (i32);
+    } : (i32);
+    builtin.ret %r : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @region_per_case(%s: i32) {
+    "scf.index_switch"(%s) <{ cases = #builtin.array_i32<1, 2> }> ({ // expected-error {{2 case value(s) need 2 region(s) after the default region, but there are 1}}
+        "scf.yield"() : () -> ();
+    }, {
+        "scf.yield"() : () -> ();
+    }) : (i32) -> ();
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @repeated_case(%s: i32) {
+    "scf.index_switch"(%s) <{ cases = #builtin.array_i32<1, 1> }> ({ // expected-error {{the case value 1 is used more than once}}
+        "scf.yield"() : () -> ();
+    }, {
+        "scf.yield"() : () -> ();
+    }, {
+        "scf.yield"() : () -> ();
+    }) : (i32) -> ();
+    builtin.ret;
+};

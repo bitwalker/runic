@@ -1,0 +1,35 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// Symbols and references to them: every symbol reference an operation holds names a symbol visible
+// to it; a symbol is in a symbol table (or in nothing). A reference whose link and path disagree,
+// or that shares another's use, cannot be written in text.
+
+builtin.module public @valid {
+    builtin.global_variable public @g : i32;
+    builtin.function public extern("C") @f() -> ptr<i32> {
+        %p = builtin.global_symbol @g : ptr<i32>;
+        builtin.ret %p : (ptr<i32>);
+    };
+};
+
+// -----
+
+builtin.module public @unresolved {
+    builtin.function public extern("C") @f() {
+        %x = builtin.global_symbol @nosuch : ptr<i64>; // expected-error {{symbol '@nosuch' does not resolve}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// A global variable in a region of `scf.if`, which is not a symbol table.
+builtin.function public extern("C") @symbol_outside_table(%c: i1) {
+    scf.if %c then {
+        builtin.global_variable public @g : i32; // expected-error {{expected parent of this operation to be a symbol table}}
+        scf.yield : ();
+    } else {
+        scf.yield : ();
+    } : (i1) -> ();
+    builtin.ret;
+};

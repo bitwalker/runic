@@ -1,0 +1,64 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// The verifiers of the operation traits that text can break: `SingleRegion`, `SingleBlock`,
+// `NoRegionArguments` and `SameTypeOperands`. One case per rule, on a representative operation.
+// `UnaryOp`, `BinaryOp`, `Transparent`, `SameOperandsAndResultType`, `TransparentCast` and
+// `Variadic` cannot be broken in text (see the report of the task that wrote this file).
+
+// A module (one region of one block, no arguments) holding a function whose `scf.if` has regions
+// without arguments, and an `arith.add` of two operands of one type.
+builtin.module public @valid {
+    builtin.function public extern("C") @f(%c: i1, %a: i32) -> i32 {
+        %sum = arith.add %a, %a;
+        scf.if %c then {
+            scf.yield : ();
+        } else {
+            scf.yield : ();
+        } : (i1) -> ();
+        builtin.ret %sum : (i32);
+    };
+};
+
+// -----
+
+// `SingleRegion`: `builtin.module` has exactly one region.
+"builtin.module"() <{ name = #builtin.ident<@two_regions>, visibility = #builtin.visibility<public> }> ({ }, { }) : () -> (); // expected-error {{this operation requires exactly one region, but got 2}}
+
+// -----
+
+// `SingleBlock`: each region of `builtin.module` has one block.
+builtin.module public @two_blocks { // expected-error {{this operation requires single-block regions, but regions with multiple blocks were found}}
+^one:
+    builtin.function public extern("C") @g();
+^two:
+    builtin.function public extern("C") @h();
+};
+
+// -----
+
+// `NoRegionArguments`: the regions of `builtin.module` have no arguments.
+builtin.module public @module_argument { // expected-error {{this operation does not permit regions with arguments, but one was found}}
+^entry(%x: i32):
+    builtin.function public extern("C") @g();
+};
+
+// -----
+
+// Nor do those of `scf.if`.
+builtin.function public extern("C") @arm_argument(%c: i1) {
+    scf.if %c then { // expected-error {{this operation does not permit regions with arguments, but one was found}}
+    ^arm(%x: i32):
+        scf.yield : ();
+    } else {
+        scf.yield : ();
+    } : (i1) -> ();
+    builtin.ret;
+};
+
+// -----
+
+// `SameTypeOperands`: the operands of `arith.add` have one type.
+builtin.function public extern("C") @operand_types(%a: i32, %w: i64) {
+    %x = arith.add %a, %w; // expected-error {{this operation expects all operands to be of the same type}}
+    builtin.ret;
+};

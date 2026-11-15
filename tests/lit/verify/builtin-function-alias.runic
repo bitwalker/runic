@@ -1,0 +1,43 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// `builtin.function_alias`: it resolves, through any chain of aliases, to a callable; its target,
+// if private, is in the alias's own symbol table; an alias that is not private does not expose a
+// private callable.
+
+builtin.module public @valid {
+    builtin.function public extern("C") @callee(i32) -> i32;
+    builtin.function private extern("C") @hidden(i32) -> i32;
+    builtin.function_alias public @first -> @callee;
+    builtin.function_alias public @chained -> @first;
+    builtin.function_alias private @private -> @hidden;
+};
+
+// -----
+
+builtin.module public @not_callable {
+    builtin.global_variable public @g : i32;
+    builtin.function_alias public @alias -> @g; // expected-error {{invalid builtin.function_alias 'alias': symbol 'g' is not callable}}
+};
+
+// -----
+
+builtin.module public @cycle {
+    builtin.function_alias public @a1 -> @a2; // expected-error {{invalid builtin.function_alias 'a1': alias cycle at 'a1'}}
+    builtin.function_alias public @a2 -> @a1;
+};
+
+// -----
+
+builtin.module public @m {
+    builtin.module public @inner {
+        builtin.function private extern("C") @hidden(i32) -> i32;
+    };
+    builtin.function_alias private @alias -> ::@m::@inner::@hidden; // expected-error {{target '::m::inner::hidden' is private to another symbol table}}
+};
+
+// -----
+
+builtin.module public @m {
+    builtin.function private extern("C") @hidden(i32) -> i32;
+    builtin.function_alias public @alias -> @hidden; // expected-error {{public alias cannot expose private target '::m::hidden'}}
+};

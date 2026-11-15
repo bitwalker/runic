@@ -1,0 +1,52 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// The rules of `mem.gep` that do not depend on a data layout (those are in `mem-layout.runic`).
+
+// A gep with neither an index nor a path, with an index, with a path, and with both.
+builtin.function public extern("C") @valid(%s: ptr<struct<i32, array<i8; 4>>>, %i: isize) {
+    %same = mem.gep %s;
+    %stepped = mem.gep %s, %i;
+    %field = mem.gep %s, [1];
+    %elem = mem.gep %s, %i, [1, 2];
+    builtin.ret;
+};
+
+// -----
+
+// A gep has at most one index (the generic form can write two).
+builtin.function public extern("C") @two_indices(%s: ptr<struct<i32, i8>>, %i: isize) {
+    %x = "mem.gep"(%s, %i, %i) <{ path = #builtin.array_i32<> }> : (ptr<struct<i32, i8>> | isize, isize) -> ptr<struct<i32, i8>>; // expected-error {{a gep has at most one index, but this one has 2}}
+    builtin.ret;
+};
+
+// -----
+
+// The base is a typed pointer.
+builtin.function public extern("C") @opaque_base(%o: ptr) {
+    %x = mem.gep %o; // expected-error {{the base has the opaque pointer type `ptr`, but a gep steps through a typed pointer}}
+    builtin.ret;
+};
+
+// -----
+
+// No step of the path is negative.
+builtin.function public extern("C") @negative_step(%s: ptr<struct<i32, i8>>) {
+    %x = mem.gep %s, [-1]; // expected-error {{the path [-1] has the negative step -1}}
+    builtin.ret;
+};
+
+// -----
+
+// The path selects an element of the pointee.
+builtin.function public extern("C") @no_element(%s: ptr<struct<i32, i8>>) {
+    %x = mem.gep %s, [5]; // expected-error {{the path [5] selects no element of `struct<i32, i8>`}}
+    builtin.ret;
+};
+
+// -----
+
+// The result is a pointer to the element selected.
+builtin.function public extern("C") @result(%s: ptr<struct<i32, i8>>) {
+    %x = "mem.gep"(%s) <{ path = #builtin.array_i32<1> }> : (ptr<struct<i32, i8>> |) -> ptr<i32>; // expected-error {{the result has type `ptr<i32>`, but the gep gives `ptr<i8>`}}
+    builtin.ret;
+};

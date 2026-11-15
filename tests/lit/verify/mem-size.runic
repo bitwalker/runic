@@ -1,0 +1,37 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// The rules of `mem.sizeof`, `mem.alignof` and `mem.offsetof` that do not depend on a data layout
+// (those are in `mem-layout.runic`).
+
+// A size, an alignment, an offset with and without a path.
+builtin.function public extern("C") @valid() -> isize {
+    %size = mem.sizeof struct<i32, i8>;
+    %align = mem.alignof i64;
+    %offset = mem.offsetof struct<i32, i8>, [1];
+    %start = mem.offsetof struct<i32, i8>;
+    builtin.ret %offset : (isize);
+};
+
+// -----
+
+// The type measured is known. The rule is the same for `mem.alignof` and `mem.offsetof`.
+builtin.function public extern("C") @unknown() {
+    %x = mem.sizeof ?; // expected-error {{the type measured is not known}}
+    builtin.ret;
+};
+
+// -----
+
+// No step of the path of `mem.offsetof` is negative.
+builtin.function public extern("C") @negative_step() {
+    %x = mem.offsetof struct<i32, i8>, [-1]; // expected-error {{the path [-1] has the negative step -1}}
+    builtin.ret;
+};
+
+// -----
+
+// The path selects an element of the type.
+builtin.function public extern("C") @no_element() {
+    %x = mem.offsetof struct<i32, i8>, [3]; // expected-error {{the path [3] selects no element of `struct<i32, i8>`}}
+    builtin.ret;
+};

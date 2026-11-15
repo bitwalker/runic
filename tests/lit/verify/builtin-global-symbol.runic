@@ -1,0 +1,45 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// `builtin.global_symbol`: the symbol is a global variable, and the result is a pointer to its
+// type, which the operation infers when it is written `?`. A symbol that names nothing is a rule
+// of `symbols.runic`.
+
+builtin.module public @valid {
+    builtin.global_variable public @g : i32;
+    builtin.function public extern("C") @f() -> ptr<i32> {
+        %p = builtin.global_symbol @g : ptr<i32>;
+        builtin.ret %p : (ptr<i32>);
+    };
+};
+
+// -----
+
+builtin.module public @not_a_global {
+    builtin.function public extern("C") @callee(i32) -> i32;
+    builtin.function public extern("C") @f() {
+        %x = builtin.global_symbol @callee : ptr<i32>; // expected-error {{'callee' is not linked to a global variable}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+builtin.module public @result_type {
+    builtin.global_variable public @g : i32;
+    builtin.function public extern("C") @f() {
+        %x = builtin.global_symbol @g : ptr<i64>; // expected-error {{the result has type `ptr<i64>`, but a pointer to the global has type `ptr<i32>`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// A result written with the unknown type `?` is inferred from the global, which a symbol that is
+// not one cannot give; the diagnostic comes when the operation is read.
+builtin.module public @not_inferred {
+    builtin.function public extern("C") @callee(i32) -> i32;
+    builtin.function public extern("C") @f() {
+        %x = "builtin.global_symbol"() <{ symbol = #builtin.symbol<@callee> }> : () -> ?; // expected-error {{the result type cannot be inferred: 'callee' is not linked to a global variable}}
+        builtin.ret;
+    };
+};

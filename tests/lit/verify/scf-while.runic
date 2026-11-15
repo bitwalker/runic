@@ -1,0 +1,58 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// The rules of `scf.while` that `scf-while-invalid.runic` does not have: each region's block ends
+// with a terminator, which the loop checks before the structural rule does, and the first region
+// has a block.
+
+builtin.function public extern("C") @valid(%c: i1) {
+    scf.while before {
+        scf.condition %c : (i1);
+    } after {
+        scf.yield : ();
+    } : () -> ();
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @before_falls_off(%c: i1, %a: i32) {
+    scf.while before { // expected-error {{the before block has no terminator}}
+        %x = arith.add %a, %a;
+    } after {
+        scf.yield : ();
+    } : () -> ();
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @after_falls_off(%c: i1, %a: i32) {
+    scf.while before { // expected-error {{the after block has no terminator}}
+        scf.condition %c : (i1);
+    } after {
+        %x = arith.add %a, %a;
+    } : () -> ();
+    builtin.ret;
+};
+
+// -----
+
+// The loop enters its first region, which has no block.
+builtin.function public extern("C") @no_before_block(%c: i1) {
+    scf.while before { // expected-error {{successor 0 (region 0 of scf.while) has no entry block}}
+    } after {
+        scf.yield : ();
+    } : () -> ();
+    builtin.ret;
+};
+
+// -----
+
+// A continue in a loop whose first region has no block is the same error (it once panicked).
+builtin.function public extern("C") @continue_no_before_block(%c: i1) {
+    scf.while before { // expected-error {{successor 0 (region 0 of scf.while) has no entry block}}
+    } after {
+        scf.continue 1 : ();
+    } : () -> ();
+    builtin.ret;
+};

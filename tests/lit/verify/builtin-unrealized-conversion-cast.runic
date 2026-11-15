@@ -1,0 +1,16 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// `builtin.unrealized_conversion_cast` has at least one result.
+
+builtin.function public extern("C") @valid(%a: i32) {
+    %same = builtin.unrealized_conversion_cast %a : (i32) to i32;
+    %none = builtin.unrealized_conversion_cast : () to i32;
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @no_result() {
+    "builtin.unrealized_conversion_cast"() : () -> (); // expected-error {{a cast has at least one result}}
+    builtin.ret;
+};

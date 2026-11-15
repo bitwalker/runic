@@ -1,0 +1,162 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// The rules of `builtin.call`, `builtin.call_indirect` and `builtin.function_ref`: a call's
+// arguments and results agree with the signature it carries; a call's callee and a reference's
+// resolve to a callable, whose signature is the call's (the first difference is named) or whose
+// function type is the reference's; an indirect call's callee has the function type of its
+// signature. The custom forms take the argument and result types from the signature, so the
+// generic form writes others.
+
+builtin.module public @valid {
+    builtin.function public extern("C") @callee(i32) -> i32;
+    builtin.function_alias public @alias -> @callee;
+    builtin.function public extern("C") @f(%a: i32) -> i32 {
+        %c = builtin.call @alias(%a) : extern("C") (i32) -> i32;
+        %fn = builtin.function_ref @callee : (i32) -> i32;
+        %i = builtin.call_indirect %fn(%c) : extern("C") (i32) -> i32;
+        builtin.ret %i : (i32);
+    };
+};
+
+// -----
+
+builtin.module public @call_param_count {
+    builtin.function public extern("C") @callee(i32) -> i32;
+    builtin.global_variable public @g : i32;
+    builtin.function public extern("C") @f(%a: i32, %w: i64, %fn: (i32) -> i32) {
+        %x = builtin.call @callee(%a, %a) : extern("C") (i32, i32) -> i32; // expected-error {{the call's signature differs from its callee's: the call has 2 parameter(s), the callee 1}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+builtin.module public @call_param_type {
+    builtin.function public extern("C") @callee(i32) -> i32;
+    builtin.global_variable public @g : i32;
+    builtin.function public extern("C") @f(%a: i32, %w: i64, %fn: (i32) -> i32) {
+        %x = builtin.call @callee(%w) : extern("C") (i64) -> i32; // expected-error {{parameter 0 has type `i64` in the call, `i32` in the callee}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+builtin.module public @call_result_type {
+    builtin.function public extern("C") @callee(i32) -> i32;
+    builtin.global_variable public @g : i32;
+    builtin.function public extern("C") @f(%a: i32, %w: i64, %fn: (i32) -> i32) {
+        %x = builtin.call @callee(%a) : extern("C") (i32) -> i64; // expected-error {{result 0 has type `i64` in the call, `i32` in the callee}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+builtin.module public @call_convention {
+    builtin.function public extern("C") @callee(i32) -> i32;
+    builtin.global_variable public @g : i32;
+    builtin.function public extern("C") @f(%a: i32, %w: i64, %fn: (i32) -> i32) {
+        %x = builtin.call @callee(%a) : extern("fast") (i32) -> i32; // expected-error {{the call uses the calling convention "fast", the callee "C"}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+builtin.module public @call_not_callable {
+    builtin.function public extern("C") @callee(i32) -> i32;
+    builtin.global_variable public @g : i32;
+    builtin.function public extern("C") @f(%a: i32, %w: i64, %fn: (i32) -> i32) {
+        %x = builtin.call @g(%a) : extern("C") (i32) -> i32; // expected-error {{the callee does not resolve to a callable: symbol 'g' is not callable}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+builtin.module public @call_argument_count {
+    builtin.function public extern("C") @callee(i32) -> i32;
+    builtin.global_variable public @g : i32;
+    builtin.function public extern("C") @f(%a: i32, %w: i64, %fn: (i32) -> i32) {
+        %x = "builtin.call"() <{ callee = #builtin.symbol<@callee>, signature = #builtin.signature<extern("C") (i32) -> i32> }> : () -> i32; // expected-error {{the call passes 0 argument(s), but its signature has 1 parameter(s)}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+builtin.module public @call_argument_type {
+    builtin.function public extern("C") @callee(i32) -> i32;
+    builtin.global_variable public @g : i32;
+    builtin.function public extern("C") @f(%a: i32, %w: i64, %fn: (i32) -> i32) {
+        %x = "builtin.call"(%w) <{ callee = #builtin.symbol<@callee>, signature = #builtin.signature<extern("C") (i32) -> i32> }> : (i64) -> i32; // expected-error {{argument 0 has type `i64`, but parameter 0 of the signature has type `i32`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+builtin.module public @call_result_count {
+    builtin.function public extern("C") @callee(i32) -> i32;
+    builtin.global_variable public @g : i32;
+    builtin.function public extern("C") @f(%a: i32, %w: i64, %fn: (i32) -> i32) {
+        %x:2 = "builtin.call"(%a) <{ callee = #builtin.symbol<@callee>, signature = #builtin.signature<extern("C") (i32) -> i32> }> : (i32) -> (i32, i32); // expected-error {{the call has 2 result(s), but its signature has 1}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+builtin.module public @call_result_of_signature {
+    builtin.function public extern("C") @callee(i32) -> i32;
+    builtin.global_variable public @g : i32;
+    builtin.function public extern("C") @f(%a: i32, %w: i64, %fn: (i32) -> i32) {
+        %x = "builtin.call"(%a) <{ callee = #builtin.symbol<@callee>, signature = #builtin.signature<extern("C") (i32) -> i32> }> : (i32) -> i64; // expected-error {{result 0 has type `i64`, but result 0 of the signature has type `i32`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+builtin.module public @indirect_callee_type {
+    builtin.function public extern("C") @callee(i32) -> i32;
+    builtin.global_variable public @g : i32;
+    builtin.function public extern("C") @f(%a: i32, %w: i64, %fn: (i32) -> i32) {
+        %x = "builtin.call_indirect"(%fn, %a) <{ signature = #builtin.signature<extern("C") (i64) -> i32> }> : ((i32) -> i32 | i32) -> i32; // expected-error {{the callee has type `(i32) -> i32`, but the call's signature gives `(i64) -> i32`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+builtin.module public @ref_callee_type {
+    builtin.function public extern("C") @callee(i32) -> i32;
+    builtin.global_variable public @g : i32;
+    builtin.function public extern("C") @f(%a: i32, %w: i64, %fn: (i32) -> i32) {
+        %x = builtin.function_ref @callee : (i64) -> i32; // expected-error {{the reference has type `(i64) -> i32`, but its callee has type `(i32) -> i32`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+builtin.module public @ref_result_type {
+    builtin.function public extern("C") @callee(i32) -> i32;
+    builtin.global_variable public @g : i32;
+    builtin.function public extern("C") @f(%a: i32, %w: i64, %fn: (i32) -> i32) {
+        %x = "builtin.function_ref"() <{ callee = #builtin.symbol<@callee>, ty = #builtin.type<(i32) -> i32> }> : () -> ((i64) -> i32); // expected-error {{the result has type `(i64) -> i32`, but the reference is typed `(i32) -> i32`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+builtin.module public @ref_not_callable {
+    builtin.function public extern("C") @callee(i32) -> i32;
+    builtin.global_variable public @g : i32;
+    builtin.function public extern("C") @f(%a: i32, %w: i64, %fn: (i32) -> i32) {
+        %x = builtin.function_ref @g : (i32) -> i32; // expected-error {{the callee does not resolve to a callable: symbol 'g' is not callable}}
+        builtin.ret;
+    };
+};

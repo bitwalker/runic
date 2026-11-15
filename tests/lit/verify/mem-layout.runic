@@ -1,0 +1,95 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// The rules of `mem` that need a data layout: each type an operation reads, writes, allocates,
+// measures or steps over has a layout under the data layout in scope (the closest one, here the
+// module's). Without a data layout in scope none of them is checked, which the first case shows
+// too.
+
+// Types with a layout, under a data layout; and `never`, which has none, where no data layout is
+// in scope.
+builtin.module public @valid {
+    builtin.module public @with_layout attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+        builtin.function public extern("C") @f(%p: ptr<i32>, %s: ptr<struct<i32, i8>>, %i: isize, %v: i32) {
+            %slot = mem.alloca i64;
+            %x = mem.load %p;
+            mem.store %v, %p;
+            %e = mem.gep %s, %i, [1];
+            %size = mem.sizeof struct<i32, i8>;
+            %align = mem.alignof i64;
+            %offset = mem.offsetof struct<i32, i8>, [1];
+            builtin.ret;
+        };
+    };
+    builtin.module public @no_layout {
+        builtin.function public extern("C") @f() {
+            %never = mem.sizeof never;
+            builtin.ret;
+        };
+    };
+};
+
+// -----
+
+builtin.module public @alloca attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @f() {
+        %x = mem.alloca never; // expected-error {{the allocated type, `never`, has no layout under the data layout in scope}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+builtin.module public @load attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @f(%p: ptr<(i32) -> i32>) {
+        %x = mem.load %p; // expected-error {{the type read, `(i32) -> i32`, has no layout under the data layout in scope}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+builtin.module public @store attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @f(%o: ptr, %fn: (i32) -> i32) {
+        mem.store %fn, %o; // expected-error {{the type written, `(i32) -> i32`, has no layout under the data layout in scope}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// An index steps over the pointee.
+builtin.module public @gep_index attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @f(%fp: ptr<(i32) -> i32>, %i: isize) {
+        %x = mem.gep %fp, %i; // expected-error {{the pointee stepped over, `(i32) -> i32`, has no layout under the data layout in scope}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// A path selects an element in the pointee.
+builtin.module public @gep_path attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @f(%s: ptr<struct<i32, never>>) {
+        %x = mem.gep %s, [1]; // expected-error {{the type the element is selected in, `struct<i32, never>`, has no layout under the data layout in scope}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// The rule is the same for `mem.alignof`.
+builtin.module public @sizeof attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @f() {
+        %x = mem.sizeof never; // expected-error {{the type measured, `never`, has no layout under the data layout in scope}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+builtin.module public @offsetof attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @f() {
+        %x = mem.offsetof struct<i8, never>, [1]; // expected-error {{the type the element is selected in, `struct<i8, never>`, has no layout under the data layout in scope}}
+        builtin.ret;
+    };
+};

@@ -1,0 +1,105 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// The rules of `RegionBranchOpInterface` and `RegionBranchTerminatorOpInterface`, on `scf.if`
+// and `scf.while` and their terminators: a terminator of a region is nested in a region branch
+// operation, under which it states a successor; the operands it gives a successor agree with the
+// successor's inputs (the results of the operation, or a region's entry block arguments) in
+// number and type; a region the operation branches to has an entry block. The operands the loop
+// gives its first region on entry are in `scf-while-invalid.runic`; early exits are in
+// `scf-exits.runic`.
+
+builtin.function public extern("C") @valid(%c: i1, %a: i32) -> i32 {
+    %r = scf.if %c then {
+        scf.yield %a : (i32);
+    } else {
+        scf.yield %a : (i32);
+    } : (i1) -> (i32);
+    %w = scf.while %r before {
+    ^before(%i: i32):
+        scf.condition %c, %i : (i1, i32);
+    } after {
+    ^after(%j: i32):
+        scf.yield %j : (i32);
+    } : (i32) -> (i32);
+    builtin.ret %w : (i32);
+};
+
+// -----
+
+// A yield gives the results of `scf.if` as many values as it has.
+builtin.function public extern("C") @yield_count(%c: i1, %a: i32) -> i32 {
+    %r = scf.if %c then {
+        scf.yield : (); // expected-error {{successor 0 (the results of scf.if) takes 1 result(s), but scf.yield gives it 0 operand(s)}}
+    } else {
+        scf.yield %a : (i32);
+    } : (i1) -> (i32);
+    builtin.ret %r : (i32);
+};
+
+// -----
+
+// Of the results' types.
+builtin.function public extern("C") @yield_type(%c: i1, %a: i32, %w: i64) -> i32 {
+    %r = scf.if %c then {
+        scf.yield %w : (i64); // expected-error {{operand 0 for successor 0 (the results of scf.if) has type 'i64', but the result it binds has type 'i32'}}
+    } else {
+        scf.yield %a : (i32);
+    } : (i1) -> (i32);
+    builtin.ret %r : (i32);
+};
+
+// -----
+
+// The values `scf.condition` gives the results of `scf.while` have the results' types.
+builtin.function public extern("C") @condition_result_type(%c: i1, %a: i32) -> i32 {
+    %r = scf.while before {
+        scf.condition %c, %a : (i1, i32); // expected-error {{operand 0 for successor 1 (the results of scf.while) has type 'i32', but the result it binds has type 'i64'}}
+    } after {
+    ^body(%x: i32):
+        scf.yield : ();
+    } : () -> (i64);
+    builtin.ret %a : (i32);
+};
+
+// -----
+
+// A region branch terminator is nested in a region branch operation.
+builtin.function public extern("C") @not_nested(%a: i32) -> i32 {
+    scf.yield %a : (i32); // expected-error {{a region branch terminator must be nested in an operation that implements RegionBranchOpInterface}}
+};
+
+// -----
+
+// It states a successor under the operation: `scf.condition` ends only the first region of
+// `scf.while`.
+builtin.function public extern("C") @no_successor(%c: i1) {
+    scf.if %c then {
+        scf.condition %c : (i1); // expected-error {{`scf.condition` cannot end a region of `scf.if`}}
+    } else {
+        scf.yield : ();
+    } : (i1) -> ();
+    builtin.ret;
+};
+
+// -----
+
+// A region the operation branches to has an entry block: an arm written `{ }` has none.
+builtin.function public extern("C") @no_entry_block(%c: i1) {
+    scf.if %c then { // expected-error {{successor 0 (region 0 of scf.if) has no entry block}}
+    } else {
+        scf.yield : ();
+    } : (i1) -> ();
+    builtin.ret;
+};
+
+// -----
+
+// So is the region a terminator branches to: `scf.condition` enters the second region of
+// `scf.while`, which the operation's line names.
+builtin.function public extern("C") @no_after_block(%c: i1) {
+    scf.while before { // expected-error {{successor 0 (region 1 of scf.while) has no entry block}}
+        scf.condition %c : (i1);
+    } after {
+    } : () -> ();
+    builtin.ret;
+};

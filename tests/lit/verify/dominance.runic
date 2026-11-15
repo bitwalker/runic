@@ -1,0 +1,91 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// The definition of every operand dominates its use. Each kind of definition that does not is a
+// case: the operation that reads the value defines it, an operation that holds the use in one of
+// its regions defines it, it is defined later in the same block, or in a block that does not
+// dominate the use's. An operand that reads a value printed later is written in the generic form
+// (or in a custom form that states its operand types, as `scf.yield` and `cf.br` do). A value of
+// a nested or sibling region, or one defined in no region, cannot be read in text: the parser
+// knows no such name there.
+
+// Uses that are dominated: a value of an enclosing region, a block argument, a value of a block
+// that dominates the use's; a use in a block that cannot be reached is not checked, nor one in a
+// graph region (a module's body), where every definition dominates every use.
+builtin.module public @valid {
+    test.sink %defined_after : (i32);
+    %defined_after = arith.constant 1 : i32;
+    builtin.function public extern("C") @f(%c: i1, %a: i32) -> i32 {
+        %sum = arith.add %a, %a;
+        %r = scf.if %c then {
+            scf.yield %sum : (i32);
+        } else {
+            scf.yield %a : (i32);
+        } : (i1) -> (i32);
+        cf.br ^next(%r : i32);
+    ^next(%n: i32):
+        builtin.ret %n : (i32);
+    ^dead:
+        builtin.ret %later : (i32);
+    ^unreached:
+        %later = arith.add %a, %a;
+        builtin.ret %later : (i32);
+    };
+};
+
+// -----
+
+// The operation that reads the value defines it.
+builtin.function public extern("C") @its_own_user(%a: i32) -> i32 {
+    %x = "arith.add"(%x, %a) : (i32, i32) -> i32; // expected-error {{it is defined by the operation that reads it}}
+    builtin.ret %x : (i32);
+};
+
+// -----
+
+// An operation that holds the use in one of its regions defines the value.
+builtin.function public extern("C") @enclosing_result(%c: i1, %a: i32) -> i32 {
+    %r = scf.if %c then {
+        scf.yield %r : (i32); // expected-error {{operand #0 of 'scf.yield' is not dominated by its definition}}
+    } else {
+        scf.yield %a : (i32);
+    } : (i1) -> (i32);
+    builtin.ret %r : (i32);
+};
+
+// -----
+
+// The value is defined later in the same block.
+builtin.function public extern("C") @later_in_block(%a: i32) -> i32 {
+    %b = "arith.add"(%later, %a) : (i32, i32) -> i32; // expected-error {{operand #0 of 'arith.add' is not dominated by its definition}}
+    %later = arith.add %a, %a;
+    builtin.ret %b : (i32);
+};
+
+// -----
+
+// The value is defined in a block that does not dominate the use's: only one of the two ways into
+// `^join` passes through `^yes`.
+builtin.function public extern("C") @other_block(%c: i1, %a: i32) -> i32 {
+    cf.cond_br %c ^yes, ^no : (i1);
+^yes:
+    %y = arith.add %a, %a;
+    cf.br ^join;
+^no:
+    cf.br ^join;
+^join:
+    builtin.ret %y : (i32); // expected-error {{operand #0 of 'builtin.ret' is not dominated by its definition}}
+};
+
+// -----
+
+// A successor operand is an operand too.
+builtin.function public extern("C") @successor_operand(%c: i1, %a: i32) -> i32 {
+    cf.cond_br %c ^yes, ^no : (i1);
+^yes:
+    %y = arith.add %a, %a;
+    cf.br ^join(%a : i32);
+^no:
+    cf.br ^join(%y : i32); // expected-error {{operand #0 of 'cf.br' is not dominated by its definition}}
+^join(%j: i32):
+    builtin.ret %j : (i32);
+};

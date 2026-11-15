@@ -1,0 +1,17 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// `cf.select`: both arms and the result have one type. That the condition is an `i1` and the arms
+// integers are type constraints (`operation.runic`); that the result has the first arm's type the
+// parser answers first.
+
+builtin.function public extern("C") @valid(%c: i1, %a: i32, %b: i32) -> i32 {
+    %sel = cf.select %c, %a, %b;
+    builtin.ret %sel : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @arms_differ(%c: i1, %a: i32, %w: i64) {
+    %x = cf.select %c, %a, %w; // expected-error {{the arms and the result of 'cf.select' must have one type, but they have `i32`, `i64` and `i32`}}
+    builtin.ret;
+};

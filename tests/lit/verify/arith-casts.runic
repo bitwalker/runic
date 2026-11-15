@@ -1,0 +1,62 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// The rules of the integer casts of `arith`: `arith.trunc` narrows, `arith.zext` and `arith.sext`
+// widen, both between fixed-width types; `arith.zext_or_trunc` and `arith.sext_or_trunc` convert
+// between `isize` and a fixed-width type. That the result has the type `ty` the cast states is a
+// rule the parser answers first (see the report of the task that wrote this file).
+
+// Each cast between the types it takes.
+builtin.function public extern("C") @valid(%a: i32, %w: i64) -> i32 {
+    %z = arith.zext %a <{ ty = i64 }>;
+    %s = arith.sext %a <{ ty = i64 }>;
+    %t = arith.trunc %w <{ ty = i32 }>;
+    %zt = arith.zext_or_trunc %a <{ ty = isize }>;
+    %st = arith.sext_or_trunc %zt <{ ty = i32 }>;
+    builtin.ret %st : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @trunc_wider(%a: i32) {
+    %x = arith.trunc %a <{ ty = i64 }>; // expected-error {{invalid 'arith.trunc' from `i32` to `i64`: `i64` is not narrower than `i32`}}
+    builtin.ret;
+};
+
+// -----
+
+// The rule is the same for `arith.sext`.
+builtin.function public extern("C") @zext_narrower(%w: i64) {
+    %x = arith.zext %w <{ ty = i32 }>; // expected-error {{invalid 'arith.zext' from `i64` to `i32`: `i32` is not wider than `i64`}}
+    builtin.ret;
+};
+
+// -----
+
+// A cast to the same width does not widen.
+builtin.function public extern("C") @sext_same(%a: i32) {
+    %x = arith.sext %a <{ ty = i32 }>; // expected-error {{invalid 'arith.sext' from `i32` to `i32`: `i32` is not wider than `i32`}}
+    builtin.ret;
+};
+
+// -----
+
+// `arith.trunc`, `arith.zext` and `arith.sext` do not take an `isize`.
+builtin.function public extern("C") @zext_isize(%s: isize) {
+    %x = arith.zext %s <{ ty = i64 }>; // expected-error {{it resizes between fixed-width integer types, and `isize` to `i64` is not}}
+    builtin.ret;
+};
+
+// -----
+
+// The rule is the same for `arith.zext_or_trunc`.
+builtin.function public extern("C") @sext_or_trunc_fixed(%a: i32) {
+    %x = arith.sext_or_trunc %a <{ ty = i64 }>; // expected-error {{exactly one of its types must be `isize` and the other fixed-width, but it converts `i32` to `i64`}}
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @zext_or_trunc_isize(%s: isize) {
+    %x = arith.zext_or_trunc %s <{ ty = isize }>; // expected-error {{exactly one of its types must be `isize` and the other fixed-width, but it converts `isize` to `isize`}}
+    builtin.ret;
+};
