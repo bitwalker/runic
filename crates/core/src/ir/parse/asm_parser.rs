@@ -417,8 +417,9 @@ impl TypeAliasDefinition {
     }
 }
 
-/// The span of the symbol of `table` that `conflict` says cannot be defined: the last one of its
-/// kind and name, which the text defines after the symbol it conflicts with.
+/// The span of the symbol of `table` that `conflict` says cannot be defined: the first one of its
+/// kind and name that the text defines after another symbol of that name (the first
+/// redefinition, however many follow).
 fn redefinition_span(
     table: &crate::Operation,
     conflict: &crate::SymbolConflict,
@@ -427,14 +428,18 @@ fn redefinition_span(
     if region.is_empty() {
         return None;
     }
+    let mut named_before = false;
     region
         .entry()
         .body()
         .iter()
-        .rev()
         .find(|op| {
-            op.name().name() == conflict.kind
-                && op.as_symbol().is_some_and(|symbol| symbol.name() == conflict.name)
+            if !op.as_symbol().is_some_and(|symbol| symbol.name() == conflict.name) {
+                return false;
+            }
+            let redefines = named_before && op.name().name() == conflict.kind;
+            named_before = true;
+            redefines
         })
         .map(|op| op.span)
 }

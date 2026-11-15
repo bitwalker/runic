@@ -3101,6 +3101,21 @@ fn range_of(source: &str, text: &str) -> (usize, usize) {
     (start, start + text.len())
 }
 
+/// A symbol defined three times is reported at its first redefinition, the second definition.
+#[test]
+fn a_symbol_defined_three_times_is_reported_at_the_second_definition() {
+    let declaration = "builtin.function public extern(\"C\") @f();";
+    let source = format!(
+        "builtin.module public @m {{\n    {declaration}\n    {declaration}\n    {declaration}\n}};"
+    );
+    let (message, labels) = parse_error_labels(&source);
+    assert!(message.contains("redefinition of symbol f"), "{message}");
+    let first = source.find(declaration).unwrap();
+    let second =
+        first + declaration.len() + source[first + declaration.len()..].find(declaration).unwrap();
+    assert_eq!(labels.first().map(|(start, _)| *start), Some(second), "{message}");
+}
+
 /// The span of a value or block name starts at its sigil: a diagnostic about one points at the
 /// `%` or the `^` it is written with.
 #[test]
