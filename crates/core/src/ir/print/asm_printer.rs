@@ -4,7 +4,7 @@ use core::{cell::RefCell, ops::AddAssign};
 use super::*;
 use crate::{
     AsValueRange, Attribute, Block, Context, EntityList, FunctionType, Int, Location,
-    NamedAttribute, OpSuccessorRange, SuccessorOperands, SymbolPath, Type, ValueRef,
+    NamedAttribute, SuccessorOperands, SymbolPath, Type, ValueRef,
     attributes::Marker,
     formatter::{Document, concat_balanced},
     interner,
@@ -132,41 +132,30 @@ impl<'a> AsmPrinter<'a> {
 
         self.document += text(format!("\"{}\"", op.name()));
 
-        // Print operand list and successors
-        //
         // The operand list holds the operands of every group that no successor forwards, in group
-        // order; each successor prints the arguments of its own group. Operand groups are not
-        // delimited in the operand list, so an operation with more than one such group does not
-        // read back with its groups.
-        let operands: ValueRange<'static, 4> = if op.has_successors() {
-            // Indexed by group, so that a switch of many successors costs one pass over them.
-            let mut forwarded = alloc::vec![false; op.operands().num_groups()];
-            for successor in op.successors().all().iter() {
-                if let Some(group) = forwarded.get_mut(successor.successor_operand_group()) {
-                    *group = true;
-                }
+        // order; each successor prints the arguments of its own group. The signature divides the
+        // operand types into those groups when there is more than one.
+        let mut forwarded = alloc::vec![false; op.operands().num_groups()];
+        for successor in op.successors().all().iter() {
+            if let Some(group) = forwarded.get_mut(successor.successor_operand_group()) {
+                *group = true;
             }
-            let mut operands = crate::SmallVec::<[ValueRef; 4]>::new();
-            for group in (0..op.operands().num_groups()).filter(|&g| !forwarded[g]) {
-                operands.extend(
-                    op.operands()
-                        .group(group)
-                        .iter()
-                        .map(|operand| operand.borrow().as_value_ref()),
-                );
-            }
-            operands.into()
-        } else {
-            op.operands().all().iter().copied().collect()
-        };
-        let operand_types: crate::SmallVec<[Type; 4]> =
-            operands.iter().map(|operand| operand.borrow().ty()).collect();
+        }
+        let own_groups = (0..op.operands().num_groups()).filter(|&g| !forwarded[g]);
+        let mut operands = crate::SmallVec::<[ValueRef; 4]>::new();
+        let mut operand_types = crate::SmallVec::<[crate::SmallVec<[Type; 4]>; 1]>::new();
+        for group in own_groups {
+            let group = op.operands().group(group);
+            operands.extend(group.iter().map(|operand| operand.borrow().as_value_ref()));
+            operand_types.push(group.iter().map(|operand| operand.borrow().ty()).collect());
+        }
+        let operands: ValueRange<'static, 4> = operands.into();
         self.document += const_text("(");
         self.print_value_uses(operands);
         self.document += const_text(")");
         if op.has_successors() {
             self.document += const_text(" ");
-            self.print_successors(op.successors().all());
+            self.print_generic_successors(op);
         }
 
         // Print properties
@@ -176,10 +165,18 @@ impl<'a> AsmPrinter<'a> {
             self.document += const_text(">");
         }
 
-        // Print regions
+        // Print regions, in the order they are stored
         if op.has_regions() {
             self.document += const_text(" (");
-            self.print_regions(op.regions());
+            let mut printer = self.nested();
+            let doc = join_balanced(
+                op.regions().iter().map(|region| {
+                    printer.print_region_in_form(&region, /*generic=*/ true);
+                    printer.render()
+                }),
+                || const_text(", "),
+            );
+            self.document += doc;
             self.document += const_text(")");
         }
 
@@ -195,10 +192,26 @@ impl<'a> AsmPrinter<'a> {
         // Print operation type
         self.document += const_text(" : ");
         // A lone operand type prints without parentheses, unless it is a function type, which
-        // would otherwise run into the `->` of the operation's type.
+        // would otherwise run into the `->` of the operation's type. Groups are separated by `|`.
         match operand_types.as_slice() {
-            [ty] if !ty.is_function() => self.print_type(*ty),
-            _ => self.print_type_list(operand_types),
+            [group] => match group.as_slice() {
+                [ty] if !ty.is_function() => self.print_type(*ty),
+                _ => self.print_type_list(group.iter().copied()),
+            },
+            groups => {
+                self.document += const_text("(");
+                for (index, group) in groups.iter().enumerate() {
+                    if index > 0 {
+                        self.document += if group.is_empty() {
+                            const_text(" |")
+                        } else {
+                            const_text(" | ")
+                        };
+                    }
+                    self.print_types(group.iter().copied());
+                }
+                self.document += const_text(")");
+            }
         }
 
         self.document += const_text(" ");
@@ -215,6 +228,42 @@ impl<'a> AsmPrinter<'a> {
         }
 
         self.document += const_text(";");
+    }
+
+    /// Print the successors of `op` in the generic form, in `[` `]`: each with its key, if it has
+    /// one, and the arguments it forwards with their types, the successor groups separated by
+    /// `|` when there is more than one.
+    fn print_generic_successors(&mut self, op: &Operation) {
+        use crate::formatter::*;
+
+        let successors = op.successors();
+        self.document += const_text("[");
+        let mut groups = alloc::vec::Vec::with_capacity(successors.num_groups());
+        let mut printer = self.nested();
+        for group in successors.groups() {
+            let doc = join_balanced(
+                group.iter().map(|successor| {
+                    if let Some(key) = successor.key {
+                        printer.print_attribute_value(&*key.borrow());
+                        printer.document += const_text(": ");
+                    }
+                    printer.document += display(successor.successor().borrow().id());
+                    printer.print_successor_arguments(successor.successor_operands());
+                    printer.render()
+                }),
+                || const_text(", "),
+            );
+            groups.push(doc);
+        }
+        for (index, group) in groups.into_iter().enumerate() {
+            if index > 0 {
+                self.document += const_text(" |");
+            }
+            if !group.is_empty() {
+                self.document += const_text(" ") + group;
+            }
+        }
+        self.document += const_text(" ]");
     }
 
     /// Prints operation results ungrouped, i.e. `%0, %1, %2 =`
@@ -466,23 +515,23 @@ impl<'a> AsmPrinter<'a> {
         self.print_arrow_type_list(/*elide_single_type_parens=*/ true, results);
     }
 
-    /// Prints zero or more regions, separated by a space and a newline
-    pub fn print_regions(&mut self, regions: &RegionList) {
-        use crate::formatter::*;
-
-        let mut printer = self.nested();
-        let doc = join_balanced(
-            regions.iter().map(|region| {
-                printer.print_region(&region);
-                printer.render()
-            }),
-            || const_text(" ") + nl(),
-        );
-        self.document += doc;
+    /// Print a single region in `{` `}`, as an operation's custom form writes it.
+    ///
+    /// The label of the entry block is left out when the operation's custom form gives the
+    /// block's arguments (a callable's parameters, say) or the block has none; see
+    /// [Self::print_region_in_form].
+    pub fn print_region(&mut self, region: &Region) {
+        self.print_region_in_form(region, /*generic=*/ false);
     }
 
-    /// Print a single region in `{` `}`
-    pub fn print_region(&mut self, region: &Region) {
+    /// Print a single region in `{` `}`, for an operation printed in the generic form when
+    /// `generic` is set, and in its custom form otherwise.
+    ///
+    /// In the generic form the entry block is labelled whenever it has arguments, since nothing
+    /// else in the text gives them. In either form, a region whose one block has no arguments
+    /// and no operations, and needs no label, is printed as `{ }`, as a region parsed from that
+    /// text is.
+    fn print_region_in_form(&mut self, region: &Region, generic: bool) {
         use crate::formatter::*;
 
         if region.is_empty() {
@@ -490,12 +539,13 @@ impl<'a> AsmPrinter<'a> {
             return;
         }
 
-        let elide_entry_block_label = if self.flags.print_entry_block_headers
-            || region
-                .entry_block_ref()
-                .is_some_and(|entry| Self::is_labelled_entry_target(&entry.borrow()))
-        {
+        let labelled_target = region
+            .entry_block_ref()
+            .is_some_and(|entry| Self::is_labelled_entry_target(&entry.borrow()));
+        let elide_entry_block_label = if self.flags.print_entry_block_headers || labelled_target {
             false
+        } else if generic {
+            region.entry_block_ref().is_some_and(|entry| !entry.borrow().has_arguments())
         } else {
             // This is the entry region - if we have the parent operation, and that operation
             // has operands, then we need to print the block labels
@@ -521,6 +571,16 @@ impl<'a> AsmPrinter<'a> {
                 }
             })
         };
+
+        let mut blocks = region.body().iter();
+        if elide_entry_block_label
+            && let (Some(only), None) = (blocks.next(), blocks.next())
+            && !only.has_arguments()
+            && only.body().is_empty()
+        {
+            self.document += const_text("{ }");
+            return;
+        }
 
         self.document += const_text("{");
         let mut printer = self.nested();
@@ -591,35 +651,6 @@ impl<'a> AsmPrinter<'a> {
             self.print_value_id_and_type_list(block.argument_values());
         }
         self.document += const_text(":");
-    }
-
-    /// Print successors of an operation in `[` `]`
-    ///
-    /// If there are no successors, this is a no-op.
-    pub fn print_successors(&mut self, successors: OpSuccessorRange<'_>) {
-        use crate::formatter::*;
-
-        if successors.is_empty() {
-            return;
-        }
-
-        self.document += const_text("[ ");
-        let mut printer = self.nested();
-        let doc = join_balanced(
-            successors.iter().map(|successor| {
-                printer.document += display(successor.successor().borrow().id());
-                let operands = successor.successor_operands();
-                if !operands.is_empty() {
-                    printer.document += const_text(":(");
-                    printer.print_value_uses(operands);
-                    printer.document += const_text(")");
-                }
-                printer.render()
-            }),
-            || const_text(", "),
-        );
-        self.document += doc;
-        self.document += const_text(" ]");
     }
 
     /// Print an attribute value

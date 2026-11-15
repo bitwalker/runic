@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! # File
-//! top-level := (operation | attribute-alias-def | type-alias-def | rec-group-def)+
+//! top-level := (type-alias-def | rec-group-def)* operation
 //!
 //! A root operation is printed after the declarations of the recursion groups it refers to, one
 //! `rec` block per group, each after the groups it refers to, then a blank line.
@@ -14,20 +14,43 @@
 //! custom-operation  := custom-op-name custom-operation-format
 //! generic-operation := generic-op-name '(' value-uses? ')' successors? properties?
 //!                        regions? attributes? ':' generic-op-signature
-//! generic-op-signature := generic-op-types '->' generic-op-types
-//! generic-op-types     := type-list-parens | type
+//! generic-op-signature     := generic-op-operand-types '->' generic-op-types
+//! generic-op-operand-types := '(' operand-group ('|' operand-group)* ')' | type
+//! operand-group            := type-list-no-parens?
+//! generic-op-types         := type-list-parens | type
 //!
-//! A generic operation's properties are written in `properties`, every one of them, a property at
-//! its default included. A parser also takes a property from the trailing `attributes`
-//! dictionary; a property given in both is an error.
+//! The generic form holds the whole operation, and the parser builds the operation from it alone,
+//! never with the operation's custom parser, then verifies it as it does any operation:
+//!
+//! * The operand list holds the operands of every operand group that no successor forwards, in
+//!   group order. The signature lists their types and, when there is more than one such group,
+//!   divides them into the groups with `|`; a group may be empty (`(ptr<i8> |)` is a group of one
+//!   operand and an empty one). The division is written in the signature, where each operand is
+//!   matched with its type, rather than as a property in the manner of MLIR's
+//!   `operandSegmentSizes`: an entry of `properties` must be a property of the operation, and the
+//!   group sizes are not one.
+//! * Each successor gives the arguments it forwards, with their types; see `successors`.
+//! * `properties` holds every property of the operation, a property at its default included. A
+//!   parser also takes a property from the trailing `attributes` dictionary; a property given in
+//!   both is an error, and so is an entry of `properties` that is not a property of the
+//!   operation.
+//! * The regions are written in the order the operation stores them, which a custom form need
+//!   not follow (`scf.index_switch` writes its default region last).
+//! * The result types are those the operation has: a type the text gives a result that differs
+//!   from the type the operation gives it once built (inferring it from its operands, say) is an
+//!   error at the type written.
+//! * The location follows the signature after a space, as in the custom form.
 //!
 //! A generic operation's signature lists its operand types and its result types. It is not
 //! itself a type: a lone operand or result type may be written bare (`i32 -> ()`), and `(i32)`
 //! alone is not a type at all, since tuples are not a type form.
 //!
-//! An operation prints in the generic form when it has no custom printer, and every operation does
-//! when [OpPrintingFlags::generic] is set. The operand list holds the operands of the groups that
-//! no successor forwards; each successor lists the arguments it forwards.
+//! An operation prints in the generic form when it has no custom printer; every operation does
+//! when [OpPrintingFlags::generic] is set; and an operation with a custom printer does when one of
+//! its operands is defined after it in the text (by itself, by an operation that holds it, or by
+//! an operation later in its block or in the block of an operation that holds it), which only a
+//! graph region allows: a custom form that takes an operand's type from the operand could not be
+//! read back, since the type is not known where the use is read.
 //!
 //! # Locations
 //!
@@ -78,8 +101,17 @@
 //!
 //! # Successors
 //!
-//! successors := '[' successor (',' successor)* ']'
-//! successor  := block-id (':' block-arguments)?
+//! successors          := '[' successor-group ('|' successor-group)* ']'
+//! successor-group     := (successor (',' successor)*)?
+//! successor           := (attribute-value ':')? block-id successor-arguments?
+//! successor-arguments := '(' value-uses ':' type-list-no-parens ')'
+//!
+//! The successors are written in the groups the operation stores them in, separated by `|` when
+//! it has more than one (`cf.switch` holds its keyed cases, then its fallback:
+//! `[ #builtin.i32<0>: ^a, #builtin.i32<1>: ^b | ^c ]`); the text gives as many groups as the
+//! operation declares, and as many successors in each as a group of fixed size declares. A
+//! successor in a keyed group is written after its key, an attribute of the kind the group
+//! stores; a successor in any other group has no key. A list holds at least one successor.
 //!
 //! # Regions
 //!
@@ -92,6 +124,12 @@
 //! block           := block-label operation+
 //! block-label     := block-id block-arguments? ':'
 //! block-arguments := '(' value-id-and-type-list? ')'
+//!
+//! The label of a region's entry block is left out when nothing needs it: in the generic form,
+//! when the block has no arguments; in a custom form, also when the form gives the arguments
+//! itself (a function's parameters, say). An entry block that a branch targets is labelled. A
+//! region whose one block has no arguments and no operations is written `{ }`, as a region with
+//! no block is.
 //!
 //! # Properties and Attributes
 //!
@@ -122,10 +160,6 @@
 //! non-empty list is a definition exactly when its first element starts with a value id, and an
 //! element of the other form is an error. A declaration has no body. A function that never returns
 //! has the single result `never`.
-//!
-//! # Attribute Aliases
-//!
-//! attribute-alias-def := '#' alias-name '=' attribute-value ';'
 //!
 //! # Builtin Attributes
 //!
@@ -259,35 +293,28 @@
 //!
 //! ## Examples
 //!
-//! The following example demonstrates a few things:
+//! A function in the generic form, with these features:
 //!
-//! * A generic operation with results, a multi-block region, properties and attributes
-//! * A few operations with custom formats
-//! * Named values (e.g. `%flag`) and result packs (i.e. `%out:2`)
-//! * An example location specifier
-//!
-//! ```text
-//! %flag, %out:2 = "dialect.op"(%arg0, %0) <{ prop = true }> ({
-//!     builtin.br ^after(%arg0, %0);
-//! ^after(%1: i32, %2 : ptr<i8>):
-//!     %3 = arith.constant 0 : i32;
-//!     %4 = arith.cmpi eq %1, %3;
-//!     builtin.ret %4, %1, %3;
-//! }) { attr = "string" } : (i32, ptr<i8>) -> (i1, i32, i32) loc<"file.hir":1:1 to :32>;
-//! ```
-//!
-//! This example shows the `cf.cond_br` operation in generic form, with some other notable features:
-//!
-//! * The operation has no results, regions, properties, attributes, or location specifier
-//! * The operand and successor arguments both show how individual values of a result pack produced
-//!   by a previous operation can be referenced.
+//! * The entry block of the function's body, labelled with the function's arguments
+//! * A result pack (`%sum:2`) and the use of one of its values (`%sum#1`)
+//! * An operation with two operand groups (`test.sink`: one operand, then the rest)
+//! * Successors that forward arguments, and the keyed cases and the fallback of a `cf.switch`
 //!
 //! ```text
-//! %overflowing_add:2 = arith.add_overflowing %lhs, %rhs <{ signedness = #builtin.signedness<signed> }>;
-//! "cf.cond_br"(%overflowing_add#0) [
-//!     ^overflowed,
-//!     ^didnt:(%overflowing_add#1)
-//! ] : (i1, i32) -> ();
+//! "builtin.function"() <{ name = #builtin.ident<@f>, linkage = #builtin.visibility<public>,
+//!         signature = #builtin.signature<extern("C") (i32, i64) -> i32>,
+//!         memory_effects = #builtin.declared_effects<unknown>, locals = #builtin.type_array<> }> ({
+//! ^entry(%a: i32, %b: i64):
+//!     %sum:2 = "arith.add_overflowing"(%a, %a) <{ signedness = #builtin.signedness<signed> }>
+//!         : (i32, i32) -> (i1, i32);
+//!     "test.sink"(%a, %b, %a) : (i32 | i64, i32) -> ();
+//!     "cf.cond_br"(%sum#0) [ ^overflowed, ^done(%sum#1 : i32) ] : i1 -> ();
+//! ^overflowed:
+//!     "cf.switch"(%a) [ #builtin.i32<0>: ^done(%a : i32), #builtin.i32<1>: ^overflowed
+//!         | ^done(%sum#1 : i32) ] : i32 -> ();
+//! ^done(%r: i32):
+//!     "builtin.ret"(%r) : i32 -> ();
+//! }) : () -> () loc("file.runic":1:1);
 //! ```
 //!
 //! Additional notes about the printed format:
@@ -302,14 +329,18 @@
 //!   property.
 
 mod asm_printer;
+mod renumber;
 #[cfg(test)]
 mod tests;
 
 use alloc::format;
 use core::fmt;
 
-pub use self::asm_printer::{AsmPrinter, PrimitiveInteger};
-use super::{OpOperandRange, OpResultRange, Operation, Region, RegionList, ValueRange};
+pub use self::{
+    asm_printer::{AsmPrinter, PrimitiveInteger},
+    renumber::{renumbered, same_program},
+};
+use super::{OpOperandRange, OpResultRange, Operation, Region, ValueRange};
 use crate::{EntityWithId, Location, Value, formatter::Document};
 
 /// Options which configure how IR entities are printed to IR assembly
@@ -356,6 +387,7 @@ impl OpPrinter for Operation {
 
         if !printer.flags().generic
             && let Some(custom_printer) = self.as_trait::<dyn OpPrinter>()
+            && !has_forward_operand(self)
         {
             printer.print_results(self.results().all());
             *printer += display(self.name());
@@ -371,6 +403,44 @@ impl OpPrinter for Operation {
             printer.print_operation_generic(self);
         }
     }
+}
+
+/// Whether an operand of `op` is defined after `op` in the printed text: by `op` itself, by an
+/// operation that holds `op`, or by an operation later in the block of `op` or of an operation
+/// that holds it. Only a graph region allows such a use.
+///
+/// A custom form that infers its operands' types cannot name such a value, since its type is
+/// not known where the parser reads the use, so `op` is printed in the generic form, which
+/// states every operand's type.
+fn has_forward_operand(op: &Operation) -> bool {
+    let this = op.as_operation_ref();
+    op.operands().iter().any(|operand| {
+        let Some(def) = operand.borrow().value().get_defining_op() else {
+            return false;
+        };
+        let Some(block) = def.borrow().parent() else {
+            return false;
+        };
+        // Find the operation in `block` that is `op` or holds it.
+        let mut ancestor = this;
+        loop {
+            if ancestor == def {
+                return true;
+            }
+            let (parent_block, parent_op) = {
+                let ancestor = ancestor.borrow();
+                (ancestor.parent(), ancestor.parent_op())
+            };
+            if parent_block == Some(block) {
+                break;
+            }
+            match parent_op {
+                Some(parent) => ancestor = parent,
+                None => return false,
+            }
+        }
+        !def.borrow().is_before_in_block(&ancestor)
+    })
 }
 
 /// Renders an operation as IR assembly.

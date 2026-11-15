@@ -563,6 +563,16 @@ mod tests {
         assert_eq!(before.matches("test.add").count(), 2);
         assert_eq!(after.matches("test.debug_value").count(), 1);
         assert_eq!(after.matches("test.add").count(), 1);
+
+        // Both texts read back, `test.debug_value` in the generic form included.
+        for text in [before, after] {
+            let config = crate::parse::ParserConfig::new(test.context_rc());
+            let parsed = crate::parse::parse_any(config, "golden.hir", text.clone())
+                .into_result()
+                .unwrap_or_else(|err| panic!("{err}\n{text}"));
+            let printed = format!("{}", parsed.borrow());
+            assert!(crate::print::same_program(&printed, &text), "{text}\nbecame\n{printed}");
+        }
     }
 
     #[test]

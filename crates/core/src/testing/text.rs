@@ -65,6 +65,18 @@ pub fn print_generic(op: &Operation) -> String {
     printer.finish().to_string()
 }
 
+/// `op` and every operation it holds in the generic form, as the root of a print
+/// ([OpPrintingFlags::generic](crate::OpPrintingFlags::generic)).
+pub fn print_all_generic(op: &Operation) -> String {
+    let flags = crate::OpPrintingFlags {
+        generic: true,
+        ..Default::default()
+    };
+    let mut printer = AsmPrinter::root(op.context_rc(), &flags);
+    crate::print::OpPrinter::print(op, &mut printer);
+    printer.finish().to_string()
+}
+
 /// `op` in its derived or hand-written form.
 pub fn print_custom(op: &Operation) -> String {
     let flags = Default::default();

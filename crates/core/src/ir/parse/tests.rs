@@ -314,8 +314,7 @@ fn parse_simple_function_generic() -> TestResult {
     "builtin.ret"(%a) : (i32) -> ();
 }) : () -> ();"#;
 
-    let world = test.parse_generic("parse_simple_function_generic.hir", source)?;
-    let entrypoint = world.borrow().body().entry().front().unwrap();
+    let entrypoint = test.parse_any("parse_simple_function_generic.hir", source)?;
     let entrypoint = entrypoint.borrow();
     let entrypoint = entrypoint.downcast_ref::<Function>().expect("expected to parse a function");
 
@@ -856,12 +855,6 @@ impl DerefMut for ParserTest {
 }
 
 impl ParserTest {
-    #[allow(unused)]
-    pub fn parse_generic(&self, name: &str, source: &str) -> TestResult<WorldRef> {
-        let config = ParserConfig::new(self.test.context_rc());
-        parse::parse_generic(config, name, source).into_result()
-    }
-
     pub fn parse<T: OpParser + OpRegistration>(
         &self,
         name: &str,
@@ -4929,9 +4922,7 @@ fn declared_effects_attributes_round_trip_through_text() -> TestResult {
 }
 
 /// The generic form of a function writes its declared effects and locals as properties, and
-/// reads them back. (The effects on a declaration, and the locals on a definition without
-/// parameters: the generic print of a definition does not write the arguments of its entry block,
-/// and a declaration has no locals.)
+/// reads them back: the effects on a declaration, and the locals on a definition.
 #[test]
 fn the_generic_form_of_a_function_reads_its_effects_and_locals() -> TestResult {
     use crate::{CallableOpInterface, Op, dialects::builtin::attributes::DeclaredEffects};
@@ -4945,8 +4936,7 @@ fn the_generic_form_of_a_function_reads_its_effects_and_locals() -> TestResult {
         "{generic}"
     );
 
-    let world = test.parse_generic("generic_second.hir", &generic)?;
-    let parsed = world.borrow().body().entry().front().unwrap();
+    let parsed = test.parse_any("generic_second.hir", &generic)?;
     let parsed = parsed.borrow();
     let parsed = parsed.downcast_ref::<Function>().expect("a function");
     assert_eq!(parsed.declared_effects(), function.borrow().declared_effects());
@@ -4957,8 +4947,7 @@ fn the_generic_form_of_a_function_reads_its_effects_and_locals() -> TestResult {
     let function = test.parse::<Function>("generic_third.hir", source)?;
     let generic = print_generic(function.borrow().as_operation());
     assert!(generic.contains("locals = #builtin.type_array<i64>"), "{generic}");
-    let world = test.parse_generic("generic_fourth.hir", &generic)?;
-    let parsed = world.borrow().body().entry().front().unwrap();
+    let parsed = test.parse_any("generic_fourth.hir", &generic)?;
     let parsed = parsed.borrow();
     let parsed = parsed.downcast_ref::<Function>().expect("a function");
     assert_eq!(parsed.num_locals(), 1);
@@ -6572,8 +6561,8 @@ fn parse_holds_the_context_until_the_operation_is_downcast() {
 }
 
 /// Random functions, declarations and definitions, in every effect state and (a definition) with
-/// locals: the text parses to the effects and locals written, prints back the same, and (a
-/// declaration, or a definition without parameters) reads back the same from the generic form.
+/// locals: the text parses to the effects and locals written, prints back the same, and reads back
+/// the same from the generic form.
 #[test]
 fn fuzz_function_effects_and_locals_round_trip() {
     use crate::{
@@ -6595,7 +6584,6 @@ fn fuzz_function_effects_and_locals_round_trip() {
     };
     let mut rng = Rng(seed);
     let mut states = [0usize; 3];
-    let mut generic_errors = alloc::collections::BTreeMap::<String, usize>::new();
     for round in 0..ROUNDS {
         let round = format!("seed {seed:#x} (CALLS_TEST_SEED={seed}), round {round}");
         let definition = rng.below(2) == 0;
@@ -6672,42 +6660,20 @@ fn fuzz_function_effects_and_locals_round_trip() {
             "round {round}: `effects(..)` is printed exactly when the effects are known: {printed}"
         );
 
-        // the generic form (a declaration: that of a definition does not parse back)
+        // the generic form
         let generic = print_generic(&function.as_operation_ref().borrow());
         let context = Rc::new(Context::default());
-        let parsed = parse::parse_generic(ParserConfig::new(context.clone()), "generic", &*generic)
-            .into_result();
-        if definition && !params.is_empty() {
-            // the old reason: the arguments of the entry block are not printed, so the block
-            // parsed has none, and a use of one is a use of an undeclared value
-            let err = match parsed {
-                Ok(_) => {
-                    panic!("round {round}: the generic form of a definition parsed\n{generic}")
-                }
-                Err(err) => describe(&err),
-            };
-            *generic_errors
-                .entry(String::from(if err.contains("undeclared") {
-                    "use of undeclared values"
-                } else if err.contains("entry block") || err.contains("argument") {
-                    "entry block arguments disagree with the signature"
-                } else {
-                    panic!("round {round}: {err}\n{generic}")
-                }))
-                .or_default() += 1;
-            continue;
-        }
-        let world =
-            parsed.unwrap_or_else(|err| panic!("round {round}: {}\n{generic}", describe(&err)));
-        let parsed = world.borrow().body().entry().front().unwrap();
+        let parsed = parse::parse_any(ParserConfig::new(context.clone()), "generic", &*generic)
+            .into_result()
+            .unwrap_or_else(|err| panic!("round {round}: {}\n{generic}", describe(&err)));
         let parsed = parsed.borrow();
         let parsed = parsed.downcast_ref::<Function>().expect("a function");
         assert_eq!(parsed.declared_effects(), effects, "round {round}: {generic}");
         assert_eq!(parsed.num_locals(), locals.len(), "round {round}: {generic}");
         assert_eq!(parsed.as_operation().to_string(), printed, "round {round}: {generic}");
+        assert_eq!(print_generic(parsed.as_operation()), generic, "round {round}");
     }
     assert!(states.iter().all(|count| *count > ROUNDS / 12), "seed {seed:#x}: {states:?}");
-    std::eprintln!("generic form of a definition with parameters: {generic_errors:?}");
 }
 
 /// `effects()` stays "no effects" through the function's own form and the
@@ -6732,15 +6698,9 @@ fn no_effects_never_becomes_unknown() {
 
     for (form, text) in [("custom", custom), ("generic", generic)] {
         let context = Rc::new(Context::default());
-        let world = parse::parse_generic(ParserConfig::new(context.clone()), form, &*text)
+        let parsed = parse::parse_any(ParserConfig::new(context.clone()), form, &*text)
             .into_result()
-            .or_else(|_| {
-                parse::parse_any(ParserConfig::new(context.clone()), form, &*text)
-                    .into_result()
-                    .map(|op| op.parent_op().unwrap().try_downcast_op::<World>().unwrap())
-            })
             .unwrap_or_else(|err| panic!("{form}: {}\n{text}", describe(&err)));
-        let parsed = world.borrow().body().entry().front().unwrap();
         let parsed = parsed.borrow();
         let parsed = parsed.downcast_ref::<Function>().expect("a function");
         assert_eq!(parsed.declared_effects(), DeclaredEffects::none(), "{form}: {text}");

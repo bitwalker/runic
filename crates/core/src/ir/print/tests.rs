@@ -526,7 +526,7 @@ fn the_generic_flag_prints_every_operation_generically() {
     };
     let generic = print_with(&module, &flags);
     // An operation line is a quoted name, or a result list and a quoted name; every other line
-    // closes the regions of an operation.
+    // closes the regions of an operation or labels a block.
     let mut operations = 0;
     for line in generic.lines().map(str::trim_start) {
         let name = match line.split_once(" = \"") {
@@ -537,7 +537,7 @@ fn the_generic_flag_prints_every_operation_generically() {
             {
                 rest
             }
-            _ if line.starts_with('}') => continue,
+            _ if line.starts_with(['}', '^']) => continue,
             _ => line
                 .strip_prefix('"')
                 .unwrap_or_else(|| panic!("not generic: {line}\n{generic}")),
@@ -571,4 +571,118 @@ fn the_generic_flag_prints_every_operation_generically() {
 
     // The flags have not changed the default print.
     assert_eq!(module.to_string(), NESTED_MODULE);
+}
+
+/// `text` parsed and verified, with the test dialect registered, and the context that owns it.
+fn parse_with_test_dialect(
+    text: &str,
+) -> Result<(alloc::rc::Rc<Context>, OperationRef), alloc::string::String> {
+    use alloc::rc::Rc;
+
+    use crate::{
+        dialects::test::TestDialect,
+        parse::{ParserConfig, parse_any},
+        testing::text::describe,
+    };
+
+    let context = Rc::new(Context::default());
+    context.get_or_register_dialect::<TestDialect>();
+    parse_any(ParserConfig::new(context.clone()), "text.runic", text)
+        .into_result()
+        .map(|op| (context, op))
+        .map_err(|err| describe(&err))
+}
+
+/// `text` printed in the generic form, the generic text parsed again, and the second parse
+/// printed in both forms: the same programs as the first parse printed in each form.
+fn generic_reads_back(text: &str) -> alloc::string::String {
+    use crate::print::same_program;
+
+    let generic_flags = crate::OpPrintingFlags {
+        generic: true,
+        ..Default::default()
+    };
+    let (_context, first) = parse_with_test_dialect(text).unwrap_or_else(|err| panic!("{err}"));
+    let custom = first.borrow().to_string();
+    let generic = print_with(&first.borrow(), &generic_flags);
+    let (_context, second) =
+        parse_with_test_dialect(&generic).unwrap_or_else(|err| panic!("{err}\n{generic}"));
+    assert!(same_program(&second.borrow().to_string(), &custom), "{custom}\n{generic}");
+    assert!(
+        same_program(&print_with(&second.borrow(), &generic_flags), &generic),
+        "{generic}"
+    );
+    generic
+}
+
+/// The entry block of a callable is printed with its label and arguments in the generic form, as
+/// nothing else in the text gives them, and reads back.
+#[test]
+fn the_generic_form_labels_the_entry_block_of_a_callable() {
+    let generic = generic_reads_back(
+        "builtin.function public extern(\"C\") @f(%a: i32, %b: i64) -> i32 {\n    builtin.ret %a \
+         : (i32);\n};",
+    );
+    assert!(generic.contains("({\n^block1(%0: i32, %1: i64):\n"), "{generic}");
+}
+
+/// The regions of an operation in the generic form are separated by commas.
+#[test]
+fn the_generic_form_separates_regions_with_commas() {
+    let generic =
+        generic_reads_back("builtin.module public @m {\n    builtin.module public @a { };\n};");
+    // One region each here; the separator is checked on the text of two.
+    assert!(generic.contains("({ })"), "{generic}");
+    let (_context, module) = parse_with_test_dialect("builtin.module public @m { };")
+        .unwrap_or_else(|err| panic!("{err}"));
+    let flags = crate::OpPrintingFlags {
+        generic: true,
+        ..Default::default()
+    };
+    let mut module = module;
+    let region = module.borrow().context_rc().create_region();
+    module.borrow_mut().regions_mut().push_back(region);
+    let two = print_with(&module.borrow(), &flags);
+    assert!(two.contains("({ }, { })"), "{two}");
+}
+
+/// An operation that reads a value defined later in its block, which only a graph region allows,
+/// is printed in the generic form, which states the operand's type: its custom form, which takes
+/// the type from the operand, could not be read back. The operations around it keep their custom
+/// forms.
+#[test]
+fn an_operation_with_a_forward_operand_prints_in_the_generic_form() {
+    let text = "\
+builtin.module public @m {
+    %0 = \"test.add\"(%1, %1) <{ overflow = #builtin.overflow<wrapping> }> : (i32, i32) -> i32;
+    %1 = test.constant 1 : i32;
+    %2 = test.add %0, %1;
+};";
+    let (_context, module) = parse_with_test_dialect(text).unwrap_or_else(|err| panic!("{err}"));
+    let printed = module.borrow().to_string();
+    assert_eq!(
+        printed,
+        "\
+builtin.module public @m {
+    %1 = \"test.add\"(%2, %2) <{ overflow = #builtin.overflow<wrapping> }> : (i32, i32) -> i32;
+    %2 = test.constant 1 : i32;
+    %3 = test.add %1, %2;
+};"
+    );
+    let (_context, again) = parse_with_test_dialect(&printed).unwrap_or_else(|err| panic!("{err}"));
+    assert!(crate::print::same_program(&again.borrow().to_string(), &printed));
+}
+
+/// A region whose one block a pass emptied prints as the region parsed from `{ }` does.
+#[test]
+fn an_emptied_region_prints_as_an_empty_region() {
+    let (_context, module) =
+        parse_with_test_dialect("builtin.module public @m {\n    %0 = test.constant 1 : i32;\n};")
+            .unwrap_or_else(|err| panic!("{err}"));
+    let mut constant = module.borrow().regions().front().get().unwrap().entry().front().unwrap();
+    constant.borrow_mut().erase();
+    assert_eq!(module.borrow().to_string(), "builtin.module public @m { };");
+    let (_context, parsed) = parse_with_test_dialect("builtin.module public @m { };")
+        .unwrap_or_else(|err| panic!("{err}"));
+    assert_eq!(parsed.borrow().to_string(), module.borrow().to_string());
 }

@@ -706,13 +706,13 @@ fn the_generic_forms_of_address_and_size_operations() {
         .collect::<Vec<_>>()
         .join("\n");
     expect![[r#"
-        %3 = "mem.gep"(%0, %1) <{ path = #builtin.array_i32<1, 2> }> : (ptr<struct<i32, array<i8; 4>>>, isize) -> ptr<i8>;
-        %4 = "mem.gep"(%0) <{ path = #builtin.array_i32<1> }> : ptr<struct<i32, array<i8; 4>>> -> ptr<array<i8; 4>>;
-        %5 = "mem.gep"(%0, %1) <{ path = #builtin.array_i32<> }> : (ptr<struct<i32, array<i8; 4>>>, isize) -> ptr<struct<i32, array<i8; 4>>>;
-        %6 = "mem.gep"(%0) <{ path = #builtin.array_i32<> }> : ptr<struct<i32, array<i8; 4>>> -> ptr<struct<i32, array<i8; 4>>>;
-        %7 = "mem.gep"(%2, %1) <{ path = #builtin.array_i32<> }> : (ptr<i64, 1>, isize) -> ptr<i64, 1>;
-        %8 = "mem.gep"(%0, %1) <{ path = #builtin.array_i32<> }> { note = #builtin.string<"kept"> } : (ptr<struct<i32, array<i8; 4>>>, isize) -> ptr<struct<i32, array<i8; 4>>>;
-        %9 = "mem.gep"(%0) <{ path = #builtin.array_i32<> }> : ptr<struct<i32, array<i8; 4>>> -> ptr<struct<i32, array<i8; 4>>>;
+        %3 = "mem.gep"(%0, %1) <{ path = #builtin.array_i32<1, 2> }> : (ptr<struct<i32, array<i8; 4>>> | isize) -> ptr<i8>;
+        %4 = "mem.gep"(%0) <{ path = #builtin.array_i32<1> }> : (ptr<struct<i32, array<i8; 4>>> |) -> ptr<array<i8; 4>>;
+        %5 = "mem.gep"(%0, %1) <{ path = #builtin.array_i32<> }> : (ptr<struct<i32, array<i8; 4>>> | isize) -> ptr<struct<i32, array<i8; 4>>>;
+        %6 = "mem.gep"(%0) <{ path = #builtin.array_i32<> }> : (ptr<struct<i32, array<i8; 4>>> |) -> ptr<struct<i32, array<i8; 4>>>;
+        %7 = "mem.gep"(%2, %1) <{ path = #builtin.array_i32<> }> : (ptr<i64, 1> | isize) -> ptr<i64, 1>;
+        %8 = "mem.gep"(%0, %1) <{ path = #builtin.array_i32<> }> { note = #builtin.string<"kept"> } : (ptr<struct<i32, array<i8; 4>>> | isize) -> ptr<struct<i32, array<i8; 4>>>;
+        %9 = "mem.gep"(%0) <{ path = #builtin.array_i32<> }> : (ptr<struct<i32, array<i8; 4>>> |) -> ptr<struct<i32, array<i8; 4>>>;
         %10 = "mem.sizeof"() <{ ty = #builtin.type<struct<i32, i8>> }> : () -> isize;
         %11 = "mem.alignof"() <{ ty = #builtin.type<i64> }> : () -> isize;
         %12 = "mem.offsetof"() <{ ty = #builtin.type<struct<i32, i8>>, path = #builtin.array_i32<1> }> : () -> isize;
@@ -738,6 +738,32 @@ fn the_generic_forms_of_address_and_size_operations() {
             builtin.ret;
         };"#]]
     .assert_eq(&format!("{}", parsed.borrow().as_operation()));
+}
+
+/// A load through a typed pointer leaves its `ty` unknown, which the generic form writes as
+/// `#builtin.type<?>` and reads back; a load through an opaque pointer writes the type it reads.
+#[test]
+fn the_generic_form_of_a_load_reads_back_its_type() {
+    use runic_core::{print::same_program, testing::text::print_all_generic};
+
+    let text =
+        function("%p: ptr<i32>, %o: ptr", "    %0 = mem.load %p;\n    %1 = mem.load %o : i64;");
+    let (_context, parsed) = parse_function(&text).expect("valid ir");
+    let generic = print_all_generic(parsed.borrow().as_operation());
+    assert!(
+        generic.contains("<{ ty = #builtin.type<?>, align = #mem.align<natural> }>"),
+        "{generic}"
+    );
+    assert!(
+        generic.contains("<{ ty = #builtin.type<i64>, align = #mem.align<natural> }>"),
+        "{generic}"
+    );
+    let (_context, again) = parse_function(&generic).expect("the generic text reads back");
+    assert!(same_program(&print_all_generic(again.borrow().as_operation()), &generic));
+    assert!(same_program(
+        &format!("{}", again.borrow().as_operation()),
+        &format!("{}", parsed.borrow().as_operation())
+    ));
 }
 
 /// The parameters the gep tests use: a struct holding an array of structs, an enum in address
