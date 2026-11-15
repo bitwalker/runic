@@ -25,7 +25,7 @@ pub use self::arith::{IsizeFold, fold_isize};
 /// | Overflow flag, checked | `overflowing_*_{signed,unsigned}`, `checked_*_{signed,unsigned}` | the suffix |
 /// | Division | `div_`/`rem_` `{signed,unsigned}` | the suffix; `None` for a zero divisor |
 /// | Shifts, rotates | `shl` (the `Shl<u32>` impl), `lshr`, `ashr`, `rotl`, `rotr` | `ashr` uses the sign bit; the rest are plain bits |
-/// | Bitwise | `&`, `|`, `^`, `!` | plain bits |
+/// | Bitwise | `&`, `\|`, `^`, `!` | plain bits |
 /// | Min, max | `{min,max}_{signed,unsigned}` | the suffix |
 /// | Counting | `count_ones`, `{leading,trailing}_{zeros,ones}` | plain bits, within the width |
 ///

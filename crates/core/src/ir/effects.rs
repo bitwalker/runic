@@ -23,9 +23,9 @@ pub trait Effect: AsAny + fmt::Debug {
     /// **THE MARKER AN OP ACTUALLY REGISTERS IS THE CONCRETE ONE.**
     /// `#[operation(traits(HasRecursiveMemoryEffects))]` puts `dyn HasRecursiveMemoryEffects` in
     /// the op's trait table. `dyn HasRecursiveEffects<MemoryEffect>` is a different `TypeId` that
-    /// no op registers, even though the blanket impl in [`interface`] makes the bound hold — so
-    /// asking for the generic form answered `false` for every op in the compiler. This hook asks
-    /// for the marker the op really carries.
+    /// no op registers, even though the blanket impl of [`HasRecursiveEffects`] makes the bound
+    /// hold — so asking for the generic form answered `false` for every op in the compiler. This
+    /// hook asks for the marker the op really carries.
     fn is_recursive_on(op: &crate::Operation) -> bool
     where
         Self: Sized;

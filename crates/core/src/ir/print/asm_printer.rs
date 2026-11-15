@@ -543,7 +543,7 @@ impl<'a> AsmPrinter<'a> {
     ///
     /// The label of the entry block is left out when the operation's custom form gives the
     /// block's arguments (a callable's parameters, say) or the block has none; see
-    /// [Self::print_region_in_form].
+    /// `Self::print_region_in_form`.
     pub fn print_region(&mut self, region: &Region) {
         self.print_region_in_form(region, /*generic=*/ false);
     }

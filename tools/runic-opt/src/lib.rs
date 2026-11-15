@@ -11,8 +11,8 @@
 //! the input is read.
 //!
 //! With `--verify-diagnostics` the diagnostics of each case are not rendered: they are checked
-//! against the expectations written in the case (see [`expect`]), and what does not match is
-//! rendered instead. The exit code is then 1 exactly when something did not match, and a case's
+//! against the expectations written in the case (see the module `expect`), and what does not match
+//! is rendered instead. The exit code is then 1 exactly when something did not match, and a case's
 //! result is printed when the case was processed without error, whether or not its diagnostics
 //! met the expectations.
 //!
@@ -21,8 +21,8 @@
 //! `test-print-int-ranges`.
 //!
 //! With `--verify-roundtrip`, after the input is parsed and before any pass, both forms of the
-//! operation are checked to read back (see [`roundtrip`]); a form that does not is an error of the
-//! case.
+//! operation are checked to read back (see the module `roundtrip`); a form that does not is an
+//! error of the case.
 //!
 //! [`run`] is the whole tool, given its arguments and streams; the binary calls it with the
 //! process's.

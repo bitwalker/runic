@@ -51,8 +51,8 @@ const MAX_NESTING: usize = 64;
 
 /// A pass pipeline read from text: the operations it runs on and what it runs on them.
 ///
-/// See the [module documentation](self) for the grammar. `Display` prints the canonical text, which
-/// parses back to an equal pipeline.
+/// See the documentation of the `pipeline` module (`pass/pipeline.rs`) for the grammar. `Display`
+/// prints the canonical text, which parses back to an equal pipeline.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PassPipeline {
     anchor: Anchor,
@@ -185,7 +185,7 @@ pub enum Anchor {
 }
 
 impl PassPipeline {
-    /// Parses `text` as a pipeline (see the [module documentation](self)).
+    /// Parses `text` as a pipeline (see the documentation of the `pipeline` module).
     ///
     /// A malformed text is an error that says what was expected and what was found, at which byte
     /// offset of `text`, with the line of `text` and a caret under the fault.

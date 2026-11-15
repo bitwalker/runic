@@ -70,7 +70,8 @@ pub trait EffectOpInterface<T: Effect> {
 impl<T: Effect> dyn EffectOpInterface<T> {
     /// Return the set all of the operation's effects that correspond to effect type `T`
     ///
-    /// Empty when the operation's effects are unknown: check [Self::effects_are_known] first.
+    /// Empty when the operation's effects are unknown: check
+    /// [EffectOpInterface::effects_are_known] first.
     pub fn effects_of_type<E>(&self) -> impl Iterator<Item = EffectInstance<T>> + '_
     where
         E: Effect,
