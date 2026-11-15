@@ -1,0 +1,58 @@
+// RUN: runic-opt %s -p canonicalizer --split-input-file | filecheck %s
+// RUN: runic-opt %s -p canonicalizer --split-input-file | runic-opt - --split-input-file --verify-roundtrip | filecheck %s
+
+// Sizes, alignments and offsets fold to `isize` constants under the data layout the module
+// states, and do not fold without one. A test that expects layout folds states the layout: the
+// size of a pointer differs between the first two cases. The second RUN line reads the output
+// back.
+
+// CHECK-LABEL: @ptr32(
+// CHECK-SAME: ) -> (isize, isize, isize, isize) {
+// CHECK-NEXT: [[EIGHT:%[0-9]+]] = arith.constant 8 : isize;
+// CHECK-NEXT: [[FOUR:%[0-9]+]] = arith.constant 4 : isize;
+// CHECK-NEXT: builtin.ret [[EIGHT]], [[EIGHT]], [[FOUR]], [[FOUR]] : (isize, isize, isize, isize);
+builtin.module public @m32 attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @ptr32() -> (isize, isize, isize, isize) {
+        %size = mem.sizeof struct<i32, i8>;
+        %align = mem.alignof i64;
+        %offset = mem.offsetof struct<i8, i32>, [1];
+        %ptr = mem.sizeof ptr<i8>;
+        builtin.ret %size, %align, %offset, %ptr : (isize, isize, isize, isize);
+    };
+};
+
+// -----
+
+// CHECK-LABEL: @ptr64(
+// CHECK-SAME: ) -> (isize, isize, isize, isize) {
+// CHECK-NEXT: [[EIGHT:%[0-9]+]] = arith.constant 8 : isize;
+// CHECK-NEXT: [[FOUR:%[0-9]+]] = arith.constant 4 : isize;
+// CHECK-NEXT: builtin.ret [[EIGHT]], [[EIGHT]], [[FOUR]], [[EIGHT]] : (isize, isize, isize, isize);
+builtin.module public @m64 attributes { data_layout = #builtin.data_layout<little, ptr = 64> } {
+    builtin.function public extern("C") @ptr64() -> (isize, isize, isize, isize) {
+        %size = mem.sizeof struct<i32, i8>;
+        %align = mem.alignof i64;
+        %offset = mem.offsetof struct<i8, i32>, [1];
+        %ptr = mem.sizeof ptr<i8>;
+        builtin.ret %size, %align, %offset, %ptr : (isize, isize, isize, isize);
+    };
+};
+
+// -----
+
+// CHECK-LABEL: @no_layout(
+// CHECK-SAME: ) -> (isize, isize, isize, isize) {
+// CHECK-NEXT: [[SIZE:%[0-9]+]] = mem.sizeof struct<i32, i8>;
+// CHECK-NEXT: [[ALIGN:%[0-9]+]] = mem.alignof i64;
+// CHECK-NEXT: [[OFFSET:%[0-9]+]] = mem.offsetof struct<i8, i32>, [1];
+// CHECK-NEXT: [[PTR:%[0-9]+]] = mem.sizeof ptr<i8>;
+// CHECK-NEXT: builtin.ret [[SIZE]], [[ALIGN]], [[OFFSET]], [[PTR]] : (isize, isize, isize, isize);
+builtin.module public @none {
+    builtin.function public extern("C") @no_layout() -> (isize, isize, isize, isize) {
+        %size = mem.sizeof struct<i32, i8>;
+        %align = mem.alignof i64;
+        %offset = mem.offsetof struct<i8, i32>, [1];
+        %ptr = mem.sizeof ptr<i8>;
+        builtin.ret %size, %align, %offset, %ptr : (isize, isize, isize, isize);
+    };
+};

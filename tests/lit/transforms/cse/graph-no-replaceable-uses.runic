@@ -5,8 +5,9 @@
 // replace. The second `mem.store` reads %dup before CSE reaches its definition, so replacing that
 // operand would change IR already visited: the pass leaves both constants and the forward use in
 // place. `mem.store` infers its operand types, so its custom form cannot name a value defined
-// later: the forward use is written, and printed, in the generic form. The second RUN line reads
-// the output back.
+// later: the forward use is written, and printed, in the generic form. The function after the
+// graph shows the pass live: its duplicate constant is replaced. The second RUN line reads the
+// output back.
 //
 // CHECK-LABEL: builtin.module private @graph_no_replaceable_uses {
 // CHECK-NEXT: [[ADDR:%[0-9]+]] = arith.constant 0 : isize;
@@ -22,4 +23,14 @@ builtin.module private @graph_no_replaceable_uses {
     mem.store %canonical, %ptr;
     "mem.store"(%dup, %ptr) <{ align = #mem.align<natural> }> : (i32, ptr<i32>) -> ();
     %dup = arith.constant 1 : i32;
+
+    // CHECK-LABEL: @live(
+    // CHECK-SAME: ) -> (i32, i32) {
+    // CHECK-NEXT: [[A:%[0-9]+]] = arith.constant 1 : i32;
+    // CHECK-NEXT: builtin.ret [[A]], [[A]] : (i32, i32);
+    builtin.function public extern("C") @live() -> (i32, i32) {
+        %a = arith.constant 1 : i32;
+        %b = arith.constant 1 : i32;
+        builtin.ret %a, %b : (i32, i32);
+    };
 };

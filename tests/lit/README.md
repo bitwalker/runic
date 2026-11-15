@@ -78,11 +78,14 @@ diagnostics keep the file's line numbers, and a case that fails prints nothing.
 `lit.suite.toml` sets `[format.shtest] pipefail = true`. Without it a RUN line
 `runic-opt .. | filecheck %s` passes when `runic-opt` fails, as long as `filecheck` matches what was
 printed (by other cases, say). With it, every command of a pipeline must succeed. A RUN line whose
-tool fails on purpose says so, with `not` or with `--verify-diagnostics`:
+tool fails on purpose says so, with `--verify-diagnostics` when the failure is a diagnostic the
+input can expect, and with `not` otherwise: to check how a diagnostic is shown on standard error,
+or for a pipeline the tool rejects before it reads the input (so no expectation is read either):
 
 ```
 // RUN: runic-opt %s -p 'builtin.module(builtin.function(test-fail{message="no good"}))' --verify-diagnostics
 // RUN: not runic-opt %s -p test-fail 2>&1 | filecheck %s --check-prefix=PLAIN
+// RUN: not runic-opt %s -p 'builtin.module(builtin.function(dce{x=1}))' 2>&1 | filecheck %s --check-prefix=NOOPT
 ```
 
 ### One function per case, under a label that names it
@@ -94,7 +97,9 @@ block name, `[[V:%[0-9]+]]` or `^[[B:block[0-9]+]]`, and uses it as `[[V]]`; it 
 number. A value not used again is matched with `{{%[0-9]+}}`.
 
 A `CHECK-LABEL` holds no variable: the label is the function's name, `CHECK-LABEL: @name(`, and
-the rest of that line, with its captures, follows in a `CHECK-SAME` (or a `CHECK`).
+the rest of that line, with its captures, follows in a `CHECK-SAME`, which must match on the
+label's line, so the signature checked is the labelled function's. The body follows with
+`CHECK-NEXT`.
 
 ```
 // CHECK-LABEL: @select_false_true(
@@ -107,7 +112,11 @@ the rest of that line, with its captures, follows in a `CHECK-SAME` (or a `CHECK
 
 A test of a pass checks what the pass did, not how the printer lays the IR out (indentation, the
 closing lines of a function or module). A test of the printer, under `parse/` or `roundtrip/`,
-checks the layout. A test that expects layout folds states the module's `data_layout`.
+checks the layout. A test that expects layout folds states the module's `data_layout`:
+
+```
+builtin.module public @m32 attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+```
 
 To check that something is gone, check where it would be: a `CHECK-NOT` before the first label
 covers the output before it, one after the last check covers only what follows. A separate prefix
@@ -130,7 +139,13 @@ A test of a pass that wants its output to read back pipes it into a second run:
 ```
 
 A test that prints locations (`--print-locations`) reads its input from `%s`, never from a pipe: a
-location that names standard input cannot be resolved by a second run.
+location that names standard input cannot be resolved by a second run. The path in a location is
+the path as given, matched with `{{.*}}`:
+
+```
+// RUN: runic-opt %s --print-locations | filecheck %s
+// CHECK-NEXT: builtin.ret {{%[0-9]+}} : (i32) loc("{{.*}}locations.runic":[[@LINE+3]]:5 to [[@LINE+3]]:16);
+```
 
 An operation that reads a value printed later (in a graph region, or a block printed later) prints
 in the generic form unless its custom form states its operand types; the input writes it the same
@@ -145,7 +160,12 @@ way:
 
 - Every block ends with a terminator, unless the test is about that rule.
 - A symbol reference as an attribute value is written `#builtin.symbol<@name>`, `@name`, or, rooted,
-  `::@m::@name`; each prints as `#builtin.symbol<..>`, which is what a check matches.
+  `::@m::@name`; each prints as `#builtin.symbol<..>`, which is what a check matches:
+
+  ```
+  } attributes { bare = @callee, rooted = ::@test::@callee, spelled = #builtin.symbol<@callee> };
+  // CHECK-NEXT: } attributes { bare = #builtin.symbol<@callee>, rooted = #builtin.symbol<::@test::@callee>, spelled = #builtin.symbol<@callee> };
+  ```
 - A location is not usable as an attribute value.
 
 ### Diagnostics
@@ -183,7 +203,8 @@ the path in a `-->` line with `{{.*}}`, since it is the path as given:
 ### A known defect
 
 A test that shows a defect is not bent to pass. It is committed with `// XFAIL: *` and a comment
-that says what is wrong, until the defect is fixed; a test marked so that passes fails the run.
+that says what is wrong, until the defect is fixed; a test marked so that passes fails the run (no
+test of the suite is marked so today).
 
 ```
 // XFAIL: *

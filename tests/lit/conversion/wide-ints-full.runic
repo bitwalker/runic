@@ -1,7 +1,12 @@
 // RUN: runic-opt %s -p 'test-convert-wide-ints{full}' --split-input-file --verify-diagnostics | filecheck %s
+// RUN: runic-opt %s -p 'test-convert-wide-ints{full}' --split-input-file --verify-diagnostics | filecheck %s --check-prefix=ONLY
 
 // The full conversion. A module the builtin patterns convert completely succeeds; an `arith`
-// operation over `i128`, which has no pattern, is an error and the case prints nothing.
+// operation over `i128`, which has no pattern, is an error and the case prints nothing. The second
+// RUN line checks the whole output: the module that converts, and nothing of the one that fails.
+// ONLY-NOT: @fails
+// ONLY: builtin.module public @converts {
+// ONLY-NOT: @fails
 
 // CHECK-LABEL: @id(
 // CHECK-SAME: [[LO:%[0-9]+]]: i64, [[HI:%[0-9]+]]: i64) -> (i64, i64) {
@@ -22,5 +27,3 @@ builtin.module public @fails {
         builtin.ret %s : (i128);
     };
 };
-
-// CHECK-NOT: @fails
