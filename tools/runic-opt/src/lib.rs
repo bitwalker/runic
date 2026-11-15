@@ -18,13 +18,23 @@
 //! what has no pass of its own (in `test_passes`): `test-convert-wide-ints`, `test-fail` and
 //! `test-print-int-ranges`.
 //!
+//! With `--verify-roundtrip`, after the input is parsed and before any pass, both forms of the
+//! operation are checked to read back (see [`roundtrip`]); a form that does not is an error of the
+//! case.
+//!
 //! [`run`] is the whole tool, given its arguments and streams; the binary calls it with the
 //! process's.
 #![feature(panic_can_unwind)]
+// The operations the tests declare are built by the operation derive, which needs these.
+#![cfg_attr(test, feature(unboxed_closures, fn_traits))]
 #![deny(warnings)]
+
+#[cfg(test)]
+extern crate alloc;
 
 mod expect;
 mod options;
+mod roundtrip;
 mod split;
 mod test_passes;
 
@@ -331,6 +341,7 @@ fn run_to_buffers(
             printing: Some(printing.clone()),
             flags: options.printing_flags(),
             verify_diagnostics: options.verify_diagnostics,
+            verify_roundtrip: options.verify_roundtrip,
         };
         match chunk.process_on_its_own_thread(&finished) {
             Ok(output) => {
@@ -598,6 +609,8 @@ struct Chunk {
     flags: OpPrintingFlags,
     /// Whether diagnostics are checked against the expectations in the text
     verify_diagnostics: bool,
+    /// Whether both forms of the parsed operation are checked to read back
+    verify_roundtrip: bool,
 }
 
 /// What processing a chunk wrote, whether it succeeded, and whether its diagnostics did not
@@ -787,6 +800,17 @@ impl Chunk {
             Ok(op) if !parsed.diagnostics.has_errors() => op,
             _ => return false,
         };
+
+        if self.verify_roundtrip {
+            let errors = roundtrip::check(op, self.verification != Verification::None);
+            let failed = !errors.is_empty();
+            for error in errors {
+                diagnostics.owned(error);
+            }
+            if failed {
+                return false;
+            }
+        }
 
         match self.pipeline.take() {
             Some(pipeline) => {

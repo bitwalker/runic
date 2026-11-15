@@ -63,7 +63,7 @@ fn register() {
 const CHECK: &str = "--verify-diagnostics";
 
 /// A function whose return lacks its `;`: the parser reports `}` on line 4, column 5.
-const MISSING_SEMICOLON: &str = "builtin.module public @m {
+pub(super) const MISSING_SEMICOLON: &str = "builtin.module public @m {
     builtin.function public extern(\"C\") @f() {
         builtin.ret
     };

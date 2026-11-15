@@ -4,6 +4,7 @@ mod cli;
 mod dominance;
 mod expectations;
 mod pipeline;
+mod roundtrip;
 mod splitting;
 mod test_passes;
 mod text;

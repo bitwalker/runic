@@ -98,7 +98,7 @@ fn optimized(pipeline: &str, text: &str) -> String {
 }
 
 /// A module whose function keeps its argument in a local and adds it to itself twice.
-const LOCALS_AND_REPEATS: &str = r#"builtin.module public @m {
+pub(super) const LOCALS_AND_REPEATS: &str = r#"builtin.module public @m {
     builtin.function public extern("C") @f(%a: i32) -> i32 locals(i32) {
         builtin.store_local 0, %a;
         %v = builtin.load_local 0 : i32;
@@ -201,7 +201,7 @@ fn an_unknown_canonicalization_pattern_is_reported_when_the_pipeline_runs_before
 }
 
 /// A world whose function is inside a module, out of the reach of implicit nesting from it.
-const WORLD: &str = r#"builtin.world {
+pub(super) const WORLD: &str = r#"builtin.world {
     builtin.module public @m {
         builtin.function public extern("C") @f(%a: i32) -> i32 locals(i32) {
             builtin.store_local 0, %a;

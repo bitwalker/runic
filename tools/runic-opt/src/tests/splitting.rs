@@ -149,9 +149,8 @@ fn without_the_option_the_marker_is_only_a_comment() {
 }
 
 /// A case that does not parse: a return without its `;`, whose error is on its fourth line.
-const BAD: &str =
-    "builtin.module public @m {\n    builtin.function public extern(\"C\") @f() {\n        \
-     builtin.ret\n    };\n};\n";
+pub(super) const BAD: &str = "builtin.module public @m {\n    builtin.function public \
+                              extern(\"C\") @f() {\n        builtin.ret\n    };\n};\n";
 
 #[test]
 fn a_case_after_a_failed_one_has_its_lines_in_the_file_and_is_printed() {

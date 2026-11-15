@@ -8,7 +8,7 @@ const CHECK: &str = "--verify-diagnostics";
 
 /// A module with `i128` parameters and results, an addition over `i128`, a call, a branch that
 /// forwards an `i128`, and a local of `i128`.
-const WIDE: &str = r#"builtin.module public @m {
+pub(super) const WIDE: &str = r#"builtin.module public @m {
     builtin.function public extern("C") @sum(%a: i128, %b: i128) -> i128 {
         %s = arith.add %a, %b;
         builtin.ret %s : (i128);
@@ -30,7 +30,7 @@ const WIDE: &str = r#"builtin.module public @m {
 
 /// [WIDE] converted: everything but the addition is over `(i64, i64)`; the addition reads two
 /// joins of halves, and its result is split for the return.
-const WIDE_CONVERTED: &str = r#"builtin.module public @m {
+pub(super) const WIDE_CONVERTED: &str = r#"builtin.module public @m {
     builtin.function public extern("C") @sum(%10: i64, %11: i64, %12: i64, %13: i64) -> (i64, i64) {
         %37 = arith.zext %10 <{ ty = #builtin.type<i128> }>;
         %38 = arith.zext %11 <{ ty = #builtin.type<i128> }>;
@@ -319,7 +319,7 @@ fn the_test_passes_are_listed() {
 /// `comparisons_remain_unknown_when_ranges_overlap` (an argument below 10 may or may not be) and
 /// `a_comparison_decided_by_the_type_is_exact` (every `i32` is `uge 0`); and a block no branch
 /// reaches, whose values have no range.
-const RANGES: &str = r#"builtin.module public @m {
+pub(super) const RANGES: &str = r#"builtin.module public @m {
     builtin.function public extern("C") @inferrable_add_uses_operand_ranges() -> i32 {
         %lhs = arith.constant 1 : i32; // expected-hint {{range of result 0: u[1, 1] s[1, 1] width 32}}
         %rhs = arith.constant 2 : i32; // expected-hint {{range of result 0: u[2, 2] s[2, 2] width 32}}

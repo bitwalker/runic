@@ -40,6 +40,7 @@ fn help_goes_to_the_given_stdout() {
         "--no-verify",
         "--verify-each",
         "--print-generic",
+        "--verify-roundtrip",
         "--print-locations",
         "--print-ir-before",
         "--print-ir-after",
@@ -52,7 +53,7 @@ fn help_goes_to_the_given_stdout() {
         assert!(output.stdout.contains(switch), "{switch}: {}", output.stdout);
     }
     assert!(output.stdout.contains("1,000 deep"), "{}", output.stdout);
-    assert!(output.stdout.contains("not guaranteed to parse back"), "{}", output.stdout);
+    assert!(!output.stdout.contains("not guaranteed to parse back"), "{}", output.stdout);
 }
 
 /// A directory for files a test writes, removed when it is dropped.

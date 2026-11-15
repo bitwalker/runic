@@ -6,7 +6,7 @@ use super::opt;
 
 /// One case per diagnostic text can express, each with the expectation it must meet, and cases
 /// that verify.
-const CASES: &str = r#"// A return reads a value of a block that cannot be reached.
+pub(super) const CASES: &str = r#"// A return reads a value of a block that cannot be reached.
 builtin.module public @m {
     builtin.function public extern("C") @f(%a: i32) -> i32 {
         cf.br ^next;

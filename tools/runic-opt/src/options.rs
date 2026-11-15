@@ -98,9 +98,16 @@ pub struct Options {
     #[arg(long)]
     pub verify_diagnostics: bool,
 
-    /// Print operations in the generic form. The generic text is not guaranteed to parse back.
+    /// Print operations in the generic form.
     #[arg(long)]
     pub print_generic: bool,
+
+    /// Check that both forms of the parsed operation read back: each of the custom and the
+    /// generic text must parse in a fresh context and print the same program (equal after value
+    /// and block names are renumbered). Runs after the input is parsed and before any pass; a form
+    /// that does not is an error of the case, with no location in the input.
+    #[arg(long)]
+    pub verify_roundtrip: bool,
 
     /// Print the source location of each operation.
     #[arg(long)]
