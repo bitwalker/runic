@@ -32,9 +32,32 @@ use crate::{
 /// * Provide a uniqued constant pool
 /// * Provide configuration used during compilation
 ///
-/// # Safety
+/// # The context outlives every handle
 ///
-/// The [Context] _must_ live as long as any reference to an IR entity may be dereferenced.
+/// Everything the IR is made of is allocated in the context and freed with it: operations,
+/// blocks, regions, values, the uses that link them, and the types, attributes and constants
+/// interned here. A handle to any of them ([OperationRef], [BlockRef], [RegionRef], [ValueRef],
+/// a typed operation handle, a [Type](crate::Type), an [AttributeRef], and every other
+/// [RawEntityRef]) is a plain copyable pointer into that storage. It does not keep the context
+/// alive, and nothing checks, when it is used, that the context still exists.
+///
+/// **Whoever holds a handle keeps the context alive for as long as the handle may be used.**
+/// This is the caller's obligation, and it is not enforced: using a handle after the last
+/// `Rc<Context>` is dropped is undefined behaviour (in practice, a crash), and safe code can do
+/// it.
+///
+/// In practice:
+///
+/// * Hold an `Rc<Context>` for the whole of the work on the IR it owns, and drop it last. A
+///   compilation session creates one context and keeps it until the session ends; the IR it
+///   parses, transforms and emits never outlives it.
+/// * A function that takes an `Rc<Context>` by value (a pass manager, a rewriter, a pattern set)
+///   may become its last owner. Give it a clone when handles are still held elsewhere, so that
+///   dropping it does not drop the context.
+/// * A handle stored in a longer-lived structure (a cache, a table keyed by operation) is stored
+///   with, or inside something that holds, the `Rc<Context>` it came from.
+/// * Handles of one context are not used with another. For types, [Context::owns_type] tells
+///   whether a type was interned by this context.
 pub struct Context {
     /// Identifies this context among all contexts created by the process; recorded in every type
     /// it interns. See [Context::owns_type].

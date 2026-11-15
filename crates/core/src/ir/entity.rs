@@ -173,7 +173,9 @@ pub type UnsafeIntrusiveMapEntityRef<T> = RawEntityRef<T, map::IntrusiveLink>;
 /// against the underlying allocation being deallocated (i.e. the arena it points into is dropped).
 /// This is by design, as the type is meant to be stored in objects inside the arena, and
 /// _not_ dropped when the arena is dropped. This requires care when using it however, to ensure
-/// that no [RawEntityRef] lives longer than the arena that allocated it.
+/// that no [RawEntityRef] lives longer than the arena that allocated it: see "The context
+/// outlives every handle" in the documentation of [Context](crate::Context), which states the
+/// obligation and how to meet it.
 ///
 /// For a safe entity reference, see [EntityRef], which binds a [RawEntityRef] to the lifetime
 /// of the arena.
