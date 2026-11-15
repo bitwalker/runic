@@ -77,6 +77,29 @@ builtin.function public extern("C") @operand_types(%a: i32) -> i32 {
 
 // -----
 
+// The same for an early exit: a type with no operand, and an operand with no type.
+builtin.function public extern("C") @exit_types(%c: i1) {
+    scf.while before {
+        scf.condition %c : (i1);
+    } after {
+        scf.break 1 : (i32, i64); // expected-error {{there are 0 operands, but 2 types}}
+    } : () -> ();
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @exit_operands(%c: i1, %v: i32) {
+    scf.while before {
+        scf.condition %c : (i1);
+    } after {
+        scf.continue 1 %v, %v : (i32); // expected-error {{there are 2 operands, but 1 types}}
+    } : () -> ();
+    builtin.ret;
+};
+
+// -----
+
 // The index of `test.call_one_of` is a value, not one result of a pack.
 builtin.module public @m {
     builtin.function public extern("C") @callee(i32) -> i32;

@@ -1187,13 +1187,23 @@ fn parse_exit(state: &mut OperationState, parser: &mut dyn OpAsmParser<'_>) -> P
     state.add_attribute("levels", parser.context_rc().create_attribute::<I32Attr, _>(levels));
 
     // An exit that carries no values is printed `scf.break 1 : ()`, with no operand list.
+    let start = parser.token_stream().current_position();
     let mut operands = SmallVec::default();
     parser.parse_optional_operand_list(&mut operands)?;
     parser.parse_optional_attribute_dict_with_keyword(&mut state.attrs)?;
     let mut types = SmallVec::<[Type; 4]>::default();
     parser.parse_colon_type_list(&mut types)?;
-    for (operand, ty) in operands.into_iter().zip(types) {
-        state.add_operand(parser.resolve_operand(operand, ty)?);
+
+    // The operands and the types are as many: one that has no partner is an error, not dropped.
+    let end = parser.token_stream().current_span();
+    let span = runic_core::diagnostics::SourceSpan::session(
+        end.source().id(),
+        runic_core::diagnostics::TextRange::new(start, end.range().end()).expect("valid range"),
+    );
+    let mut values = SmallVec::default();
+    parser.resolve_operands(span, &operands, &types, &mut values)?;
+    for value in values {
+        state.add_operand(value);
     }
 
     Ok(())
@@ -1399,6 +1409,30 @@ builtin.function public extern("C") @exit(%flag: i1, %value: i32) -> i32 {
 
     /// An `scf.break` or `scf.continue` that carries no values prints `scf.break 1 : ()`, and
     /// that reads back.
+    /// An exit whose operands and types differ in number is an error, whichever has more.
+    #[test]
+    fn an_exit_whose_operands_and_types_differ_in_number_is_a_diagnostic() {
+        let context = Rc::new(Context::default());
+        for exit in ["scf.break 1 : (i32, i64);", "scf.continue 1 %v, %v : (i32);"] {
+            let source = format!(
+                r#"
+builtin.function public extern("C") @exit(%flag: i1, %v: i32) {{
+    scf.while before {{
+        scf.condition %flag : (i1);
+    }} after {{
+        {exit}
+    }} : () -> ();
+    builtin.ret;
+}};"#
+            );
+            let Err(err) = parse_function_fixpoint(&context, "exit_mismatch.hir", &source) else {
+                panic!("{exit} must not parse");
+            };
+            let text = runic_core::testing::text::describe(&err);
+            assert!(text.contains("operands, but"), "{exit}: {text}");
+        }
+    }
+
     #[test]
     fn an_exit_without_values_reads_back() -> Result<(), Report> {
         let context = Rc::new(Context::default());
