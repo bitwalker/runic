@@ -1231,8 +1231,12 @@ fn parse_attribute_value<'input, P: ?Sized + Parser<'input>>(
         return integer_literal_attr(&parser.context_rc(), literal, ty);
     }
 
-    // A bare symbol reference, `@g` or `@m::@g`, is what `#builtin.symbol<..>` holds
-    if parser.token_stream_mut().is_next(|tok| matches!(tok, Token::AtIdent(_))) {
+    // A bare symbol reference, `@g`, `@m::@g` or the rooted `::@m::@g`, is what
+    // `#builtin.symbol<..>` holds
+    if parser
+        .token_stream_mut()
+        .is_next(|tok| matches!(tok, Token::AtIdent(_) | Token::ColonColon))
+    {
         return parser
             .parse_symbol_ref()
             .map(|spanned| spanned.map(|sym| sym.as_attribute_ref()));

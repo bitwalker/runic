@@ -404,3 +404,28 @@ fn a_bare_symbol_reference_is_an_attribute_value() {
     output.failed();
     assert!(output.stderr.contains("'@nosuch'"), "{}", output.stderr);
 }
+
+/// A bare rooted path, `::@m::@g`, is read and printed as `#builtin.symbol<::@m::@g>` is, alone
+/// and in a list, and reads back under `--verify-roundtrip`; one that names nothing is the
+/// verifier's error.
+#[test]
+fn a_bare_rooted_path_is_an_attribute_value() {
+    let bare = opt(&["--verify-roundtrip"], &with_note("::@m::@g"));
+    bare.succeeded();
+    assert_eq!(bare.stderr, "");
+    assert!(bare.stdout.contains("note = #builtin.symbol<::@m::@g>"), "{}", bare.stdout);
+    let spelled = opt(&["--verify-roundtrip"], &with_note("#builtin.symbol<::@m::@g>"));
+    assert_eq!(bare.stdout, spelled.stdout);
+    let listed = opt(&["--verify-roundtrip"], &with_note("[::@m::@g, @g]"));
+    listed.succeeded();
+    assert!(
+        listed
+            .stdout
+            .contains("note = [#builtin.symbol<::@m::@g>, #builtin.symbol<@g>]"),
+        "{}",
+        listed.stdout
+    );
+    let output = opt(&[], &with_note("::@m::@nosuch"));
+    output.failed();
+    assert!(output.stderr.contains("@nosuch"), "{}", output.stderr);
+}

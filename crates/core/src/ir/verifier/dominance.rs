@@ -134,7 +134,10 @@ pub(crate) fn verify_structure(op: &Operation) -> Result<(), Report> {
                         labels: [
                             primary(
                                 last.span(),
-                                format!("the block ends with '{}', which is not a terminator", last.name())
+                                format!(
+                                    "the block ends with '{}', which is not a terminator",
+                                    last.name()
+                                )
                             ),
                             context(
                                 op.span(),

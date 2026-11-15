@@ -2,14 +2,14 @@
 //!
 //! For each of the custom and the generic form, the operation is printed, the text is parsed in a
 //! context of its own (with the parser configured as for the input: verification as the options
-//! say, the same region depth and list nesting limits), and the result is printed in the same form. The two texts
-//! are the same program when they are equal after value and block names are renumbered in order
-//! of first appearance (see [`runic_core::print::same_program`]). For the custom form, what the
-//! text read back to is also printed in the generic form, which holds every part of an operation,
-//! and compared with the generic print of the input: a custom form that leaves a part out prints
-//! the same text twice, and only this comparison sees it. A difference is reported with the first
-//! differing line of each text, as printed (renumbered, not trimmed). What is parsed lives and
-//! dies inside the check.
+//! say, the same region depth and list nesting limits), and the result is printed in the same form.
+//! The two texts are the same program when they are equal after value and block names are
+//! renumbered in order of first appearance (see [`runic_core::print::same_program`]). For the
+//! custom form, what the text read back to is also printed in the generic form, which holds every
+//! part of an operation, and compared with the generic print of the input: a custom form that
+//! leaves a part out prints the same text twice, and only this comparison sees it. A difference is
+//! reported with the first differing line of each text, as printed (renumbered, not trimmed). What
+//! is parsed lives and dies inside the check.
 
 use std::rc::Rc;
 

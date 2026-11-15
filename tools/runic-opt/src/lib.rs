@@ -3,11 +3,12 @@
 //!
 //! The input is one top-level operation, or with `--split-input-file` several, one per case. Each
 //! is parsed in a context of its own, on a thread with a stack large enough for regions nested
-//! [`MAX_REGION_DEPTH`] deep (and lists nested [`MAX_LIST_NESTING`] deep); the pass manager is anchored on the operation with implicit
-//! nesting. Standard output holds only what was asked for: the printed IR, or a listing. Every
-//! diagnostic, and every print of IR between passes, goes to standard error. The exit code is 0
-//! when no case produced an error (a pass that emits one fails its case like a pass that fails)
-//! and 1 otherwise. The pipeline's text is checked once, before the input is read.
+//! [`MAX_REGION_DEPTH`] deep (and lists nested [`MAX_LIST_NESTING`] deep); the pass manager is
+//! anchored on the operation with implicit nesting. Standard output holds only what was asked for:
+//! the printed IR, or a listing. Every diagnostic, and every print of IR between passes, goes to
+//! standard error. The exit code is 0 when no case produced an error (a pass that emits one fails
+//! its case like a pass that fails) and 1 otherwise. The pipeline's text is checked once, before
+//! the input is read.
 //!
 //! With `--verify-diagnostics` the diagnostics of each case are not rendered: they are checked
 //! against the expectations written in the case (see [`expect`]), and what does not match is

@@ -3836,6 +3836,38 @@ builtin.world {
     Ok(())
 }
 
+/// A bare rooted path, `::@name`, is the reference `#builtin.symbol<::@name>` spells: alone and in
+/// a list it prints in that spelling, and each is linked to its symbol as a use.
+#[test]
+fn a_bare_rooted_path_is_an_attribute_value() -> TestResult {
+    let test = ParserTest::default();
+    let source = "\
+builtin.world {
+    builtin.module public @reader attributes { one = ::@target, more = [::@target], spelled = \
+                  #builtin.symbol<::@target> } {};
+    builtin.module public @target {};
+};";
+    let parsed = test.parse_any("bare_rooted_ref.runic", source)?;
+    let printed = format!("{}", parsed.borrow());
+    assert!(
+        printed.contains(
+            "attributes { more = [#builtin.symbol<::@target>], one = #builtin.symbol<::@target>, \
+             spelled = #builtin.symbol<::@target> }"
+        ),
+        "{printed}"
+    );
+    let (reader, target) = {
+        let world = parsed.borrow();
+        let symbols = world.as_symbol_table().unwrap().symbol_manager();
+        (symbols.lookup_op("reader").unwrap(), symbols.lookup_op("target").unwrap())
+    };
+    let target = target.borrow();
+    let uses = target.as_symbol().unwrap().iter_uses().collect::<Vec<_>>();
+    assert_eq!(uses.len(), 3, "each reference is a use of the target");
+    assert!(uses.iter().all(|usage| usage.owner == reader));
+    Ok(())
+}
+
 /// A list in an attribute dictionary holds symbol references (nested, and twice the same) that are
 /// linked to their symbol when parsed, and unlinked when the operation holding them is erased.
 #[test]
