@@ -1187,7 +1187,11 @@ fn parse_exit(state: &mut OperationState, parser: &mut dyn OpAsmParser<'_>) -> P
     state.add_attribute("levels", parser.context_rc().create_attribute::<I32Attr, _>(levels));
 
     // An exit that carries no values is printed `scf.break 1 : ()`, with no operand list.
-    let start = parser.token_stream().current_position();
+    // The operands and types are labelled from the start of the token after the level count.
+    let start = match parser.token_stream_mut().peek()? {
+        Some((start, ..)) => start,
+        None => parser.token_stream().current_position(),
+    };
     let mut operands = SmallVec::default();
     parser.parse_optional_operand_list(&mut operands)?;
     parser.parse_optional_attribute_dict_with_keyword(&mut state.attrs)?;
@@ -1195,10 +1199,11 @@ fn parse_exit(state: &mut OperationState, parser: &mut dyn OpAsmParser<'_>) -> P
     parser.parse_colon_type_list(&mut types)?;
 
     // The operands and the types are as many: one that has no partner is an error, not dropped.
-    let end = parser.token_stream().current_span();
+    // ..to the end of the last token of the types.
+    let end = parser.token_stream().previous_end();
     let span = runic_core::diagnostics::SourceSpan::session(
-        end.source().id(),
-        runic_core::diagnostics::TextRange::new(start, end.range().end()).expect("valid range"),
+        parser.token_stream().source_id(),
+        runic_core::diagnostics::TextRange::new(start, end).expect("valid range"),
     );
     let mut values = SmallVec::default();
     parser.resolve_operands(span, &operands, &types, &mut values)?;
@@ -1407,13 +1412,29 @@ builtin.function public extern("C") @exit(%flag: i1, %value: i32) -> i32 {
         Ok(())
     }
 
-    /// An `scf.break` or `scf.continue` that carries no values prints `scf.break 1 : ()`, and
-    /// that reads back.
-    /// An exit whose operands and types differ in number is an error, whichever has more.
+    /// An exit whose operands and types differ in number is an error, whichever has more, labelled
+    /// at the operands, the attribute dictionary if there is one, and the types.
     #[test]
     fn an_exit_whose_operands_and_types_differ_in_number_is_a_diagnostic() {
+        use runic_core::diagnostics::{Label, VisitDiagnostic};
+
+        struct Labels(Vec<core::ops::Range<usize>>);
+        impl VisitDiagnostic for Labels {
+            fn label(&mut self, label: Label<'_>) {
+                let range = label.span.range();
+                self.0.push(range.start() as usize..range.end() as usize);
+            }
+        }
+
         let context = Rc::new(Context::default());
-        for exit in ["scf.break 1 : (i32, i64);", "scf.continue 1 %v, %v : (i32);"] {
+        for (exit, labelled) in [
+            ("scf.break 1 : (i32, i64);", ": (i32, i64)"),
+            ("scf.continue 1 %v, %v : (i32);", "%v, %v : (i32)"),
+            (
+                "scf.continue 1 %v attributes { note = #builtin.i32<1> } : ();",
+                "%v attributes { note = #builtin.i32<1> } : ()",
+            ),
+        ] {
             let source = format!(
                 r#"
 builtin.function public extern("C") @exit(%flag: i1, %v: i32) {{
@@ -1430,9 +1451,15 @@ builtin.function public extern("C") @exit(%flag: i1, %v: i32) {{
             };
             let text = runic_core::testing::text::describe(&err);
             assert!(text.contains("operands, but"), "{exit}: {text}");
+            let mut labels = Labels(Vec::new());
+            err.as_diagnostic().visit(&mut labels);
+            let texts = labels.0.into_iter().map(|range| &source[range]).collect::<Vec<_>>();
+            assert_eq!(texts, [labelled], "{exit}: {text}");
         }
     }
 
+    /// An `scf.break` or `scf.continue` that carries no values prints `scf.break 1 : ()`, and
+    /// that reads back.
     #[test]
     fn an_exit_without_values_reads_back() -> Result<(), Report> {
         let context = Rc::new(Context::default());
