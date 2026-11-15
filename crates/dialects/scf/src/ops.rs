@@ -3131,9 +3131,9 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
     }
 
     /// The memory effects of `scf` operations: a region operation has the effects of its regions
-    /// and none of its own; the terminators have none. (No region operation is trivially dead,
-    /// effect-free ones included, because `Operation::carries_a_nested_exit` counts any nested
-    /// terminator, `scf.yield` included.)
+    /// and none of its own; the terminators have none. An unused region operation is trivially
+    /// dead when its regions only read and every nested terminator stays inside it; a loop never
+    /// is (`Operation::has_nested_exit_or_loop`).
     #[test]
     fn memory_effect_answers_of_scf_operations() {
         use alloc::string::ToString;
@@ -3199,10 +3199,10 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
             }
         });
         expect![[r#"
-            scf.if effects=Some([]) free=true dead_if_unused=false
+            scf.if effects=Some([]) free=true dead_if_unused=true
             scf.yield effects=Some([]) free=true dead_if_unused=false
             scf.yield effects=Some([]) free=true dead_if_unused=false
-            scf.if effects=Some(["read"]) free=false dead_if_unused=false
+            scf.if effects=Some(["read"]) free=false dead_if_unused=true
             scf.yield effects=Some([]) free=true dead_if_unused=false
             scf.yield effects=Some([]) free=true dead_if_unused=false
             scf.if effects=Some(["write"]) free=false dead_if_unused=false

@@ -1713,14 +1713,68 @@ impl Operation {
         !self.is_used() && self.would_be_trivially_dead()
     }
 
-    /// Whether any nested operation terminates control flow.
-    pub fn carries_a_nested_exit(&self) -> bool {
+    /// Whether erasing this operation could take away more than what it computes: control that
+    /// leaves it by a nested terminator, or a loop that may never end.
+    ///
+    /// A nested terminator, at any depth, counts unless it is known to keep control inside this
+    /// operation:
+    ///
+    /// * an early exit ([RegionExitTerminatorOpInterface]) whose target is this operation or one
+    ///   nested in it;
+    /// * any other [RegionBranchTerminatorOpInterface], which goes to a sibling region or back to
+    ///   its own parent.
+    ///
+    /// Every other terminator counts: a return (which leaves the enclosing function from any
+    /// depth), an early exit that addresses an ancestor of this operation or does not resolve, a
+    /// terminator with block successors (it may close a cycle) and one whose meaning is unknown.
+    ///
+    /// A loop counts, whether it is this operation or one nested in it
+    /// ([RegionBranchOpInterface::has_loop], [LoopLikeOpInterface]): nothing here shows that it
+    /// ends, and whether a program ends can be observed.
+    ///
+    /// [RegionExitTerminatorOpInterface]: crate::RegionExitTerminatorOpInterface
+    /// [RegionBranchTerminatorOpInterface]: crate::RegionBranchTerminatorOpInterface
+    /// [RegionBranchOpInterface::has_loop]: crate::RegionBranchOpInterface::has_loop
+    /// [LoopLikeOpInterface]: crate::LoopLikeOpInterface
+    pub fn has_nested_exit_or_loop(&self) -> bool {
+        use crate::{
+            LoopLikeOpInterface, RegionBranchOpInterface, RegionBranchTerminatorOpInterface,
+            RegionExitTerminatorOpInterface,
+        };
+
+        fn is_loop(op: &Operation) -> bool {
+            op.implements::<dyn LoopLikeOpInterface>()
+                || op.as_trait::<dyn RegionBranchOpInterface>().is_some_and(|op| op.has_loop())
+        }
+
+        if !self.has_regions() {
+            return false;
+        }
+        if is_loop(self) {
+            return true;
+        }
+        let this = self.as_operation_ref();
         for region in self.regions() {
             let walk = region.prewalk(|op| {
-                if op.implements::<dyn crate::traits::Terminator>() {
-                    WalkResult::Break(())
-                } else {
+                if is_loop(op) {
+                    return WalkResult::Break(());
+                }
+                if !op.implements::<dyn crate::traits::Terminator>() {
+                    return WalkResult::Continue(());
+                }
+                let stays_inside = match op.as_trait::<dyn RegionExitTerminatorOpInterface>() {
+                    Some(exit) => exit.get_exit_target().is_some_and(|target| {
+                        target == this || self.is_proper_ancestor_of(&target.borrow())
+                    }),
+                    None => {
+                        op.implements::<dyn RegionBranchTerminatorOpInterface>()
+                            && !op.has_successors()
+                    }
+                };
+                if stays_inside {
                     WalkResult::Continue(())
+                } else {
+                    WalkResult::Break(())
                 }
             });
             if walk.was_interrupted() {
@@ -1749,7 +1803,9 @@ impl Operation {
     pub fn would_be_trivially_dead_even_if_terminator(&self) -> bool {
         use crate::effects::RecursiveEffectIterator;
 
-        if self.carries_a_nested_exit() {
+        // Control that leaves this operation, and a loop that may not end, are not memory effects:
+        // the effects below do not show them.
+        if self.has_nested_exit_or_loop() {
             return false;
         }
 

@@ -87,10 +87,11 @@ builtin.module public @sccp_propagation {
         builtin.ret;
     };
 
-    // The condition is true: the result is the then-region's 7.
+    // The condition is true: the result is the then-region's 7. The `scf.if` is then unused, and
+    // nothing in it has an effect or leaves it: the pass erases it.
     // CHECK-LABEL: @known_if(
     // CHECK: [[SEVEN:%[0-9]+]] = arith.constant 7 : i32;
-    // CHECK: scf.if
+    // CHECK-NOT: scf.if
     // CHECK: builtin.ret [[SEVEN]] : (i32);
     builtin.function public extern("C") @known_if() -> i32 {
         %true = arith.constant 1 : i1;

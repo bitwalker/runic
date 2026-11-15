@@ -1,27 +1,92 @@
 // RUN: runic-opt %s -p dce | filecheck %s
 // RUN: runic-opt %s -p dce | runic-opt - --verify-roundtrip | filecheck %s
 
-// Dead-code elimination keeps a region operation whose results are unused, even when nothing in
-// its regions has an effect: an operation that holds a terminator is taken to carry an exit
-// (`scf.yield` included), which `scf` documents as deliberate. The unused sum beside it is
-// erased, so the test fails when the pass does not run. (On the ledger: whether an unused
-// `scf.if` of effect-free regions should go; this case changes when that is decided.)
+// Dead-code elimination and operations that hold regions. An unused one is erased when its
+// regions do nothing but read and every terminator in them stays inside it. It is kept when
+// erasing it would take away more than a value: an effect, control that leaves it (a return, an
+// exit that addresses an enclosing operation), or a loop, which may never end.
 builtin.module public @dce_region_operations {
+    // Both regions only yield: the operation goes, and the sum inside it with it.
     // CHECK-LABEL: @unused_if(
-    // CHECK-SAME: [[C:%[0-9]+]]: i1, [[A:%[0-9]+]]: i32) {
-    // CHECK-NEXT: {{%[0-9]+}} = scf.if [[C]] then {
-    // CHECK-NEXT: scf.yield [[A]] : (i32);
-    // CHECK-NEXT: } else {
-    // CHECK-NEXT: scf.yield [[A]] : (i32);
-    // CHECK-NEXT: } : (i1) -> (i32);
     // CHECK-NEXT: builtin.ret;
     builtin.function public extern("C") @unused_if(%c: i1, %a: i32) {
         %r = scf.if %c then {
+            %s = arith.add %a, %a;
+            scf.yield %s : (i32);
+        } else {
+            scf.yield %a : (i32);
+        } : (i1) -> (i32);
+        builtin.ret;
+    };
+
+    // A read is not a reason to keep it, and neither is an unused operation nested in it.
+    // CHECK-LABEL: @unused_if_that_reads(
+    // CHECK-NEXT: builtin.ret;
+    builtin.function public extern("C") @unused_if_that_reads(%c: i1, %p: ptr<i32>, %a: i32) {
+        %r = scf.if %c then {
+            %x = test.load %p;
+            %inner = scf.if %c then {
+                scf.yield %x : (i32);
+            } else {
+                scf.yield %a : (i32);
+            } : (i1) -> (i32);
+            scf.yield %inner : (i32);
+        } else {
+            scf.yield %a : (i32);
+        } : (i1) -> (i32);
+        builtin.ret;
+    };
+
+    // A write in a region keeps the operation.
+    // CHECK-LABEL: @unused_if_that_writes(
+    // CHECK-NEXT: {{%[0-9]+}} = scf.if
+    // CHECK-NEXT: test.store
+    builtin.function public extern("C") @unused_if_that_writes(%c: i1, %p: ptr<i32>, %a: i32) {
+        %r = scf.if %c then {
+            test.store %p, %a : (ptr<i32>, i32);
             scf.yield %a : (i32);
         } else {
             scf.yield %a : (i32);
         } : (i1) -> (i32);
-        %dead = arith.add %a, %a;
+        builtin.ret;
+    };
+
+    // A return in a region leaves the function: the operation stays.
+    // CHECK-LABEL: @unused_if_that_returns(
+    // CHECK-NEXT: {{%[0-9]+}} = scf.if
+    // CHECK-NEXT: builtin.ret [[A:%[0-9]+]] : (i32);
+    builtin.function public extern("C") @unused_if_that_returns(%c: i1, %a: i32) -> i32 {
+        %r = scf.if %c then {
+            builtin.ret %a : (i32);
+        } else {
+            scf.yield %a : (i32);
+        } : (i1) -> (i32);
+        builtin.ret %a : (i32);
+    };
+
+    // A loop is kept, though nothing in it has an effect and its result is unused: nothing shows
+    // that it ends. The `scf.if` in its body is unused too, and holds exits that address the
+    // loop: they leave the `scf.if`, so it is kept as well.
+    // CHECK-LABEL: @unused_loop(
+    // CHECK-NEXT: {{%[0-9]+}} = scf.while
+    // CHECK: {{%[0-9]+}} = scf.if
+    // CHECK-NEXT: scf.break 1
+    // CHECK: scf.continue 1
+    builtin.function public extern("C") @unused_loop(%n: i32) {
+        %loop = scf.while %n before {
+        ^head(%i: i32):
+            %more = arith.cmpi ult %i, %n;
+            scf.condition %more, %i : (i1, i32);
+        } after {
+        ^body(%j: i32):
+            %stop = arith.cmpi ugt %j, %n;
+            %q = scf.if %stop then {
+                scf.break 1 %j : (i32);
+            } else {
+                scf.continue 1 %j : (i32);
+            } : (i1) -> (i32);
+            scf.yield %j : (i32);
+        } : (i32) -> (i32);
         builtin.ret;
     };
 };

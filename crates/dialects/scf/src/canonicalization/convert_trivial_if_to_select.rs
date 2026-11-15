@@ -518,7 +518,8 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
     /// only (its operands are `AnyInteger`), so a pair of pointers the branches yield is not
     /// hoisted into one: the `scf.if` keeps yielding it, and an integer pair beside it still
     /// hoists. The pointer-only `scf.if` is declined and left as it was; the mixed one rewrites
-    /// into one `cf.select` and one `scf.if` of the pointer result; both verify.
+    /// into one `cf.select` and one `scf.if` of the pointer result; both verify. (The pointer is
+    /// stored through, so that the `scf.if` left for it has a use and is not erased as dead.)
     #[test]
     fn convert_trivial_if_to_select_keeps_a_pointer_pair_in_the_if() {
         const POINTERS: &str = "\
@@ -544,6 +545,7 @@ builtin.function public extern(\"C\") @f(%p: ptr<i32>, %q: ptr<i32>, %n: i32, %m
     } else {
         scf.yield %q, %m : (ptr<i32>, i32);
     } : (i1) -> (ptr<i32>, i32);
+    test.store %r, %k : (ptr<i32>, i32);
     builtin.ret %k : (i32);
 };";
         let (changed, verified, _, after) =

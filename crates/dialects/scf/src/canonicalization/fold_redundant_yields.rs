@@ -112,16 +112,16 @@ impl RewritePattern for FoldRedundantYields {
         // flow is not a memory effect, so an `scf.break` that honestly declares it touches no
         // memory leaves the whole subtree looking free of effects.
         //
-        // So ask [`Operation::carries_a_nested_exit`] of the operations INSIDE the regions rather
-        // than of this op: the vetted `scf.yield`s must not answer for themselves, and anything
-        // below them is unvetted. This is blunt in the same way the predicate is — a nested
-        // `scf.if` that only yields also declines the fold — and blunt in the safe direction: it
-        // only ever refuses a deletion that used to happen.
+        // So ask [`Operation::has_nested_exit_or_loop`] of the operations INSIDE the regions: the
+        // direct terminators are vetted above, and the question is what lies below them. It
+        // answers for an exit that leaves the operation it is asked of, so an `scf.break` that
+        // addresses this op or an ancestor of it from inside a nested `scf.if` declines the fold,
+        // and a nested `scf.if` that only yields does not.
         let carries_a_nested_exit = op.regions().iter().any(|region| {
             region
                 .body()
                 .iter()
-                .any(|block| block.body().iter().any(|nested| nested.carries_a_nested_exit()))
+                .any(|block| block.body().iter().any(|nested| nested.has_nested_exit_or_loop()))
         });
 
         if all_results_are_redundant && op.is_memory_effect_free() && !carries_a_nested_exit {

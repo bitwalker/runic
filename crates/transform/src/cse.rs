@@ -1164,21 +1164,28 @@ cf.assert %c, "between";"#;
     }
 
     /// A function that is a tower of `scf.if`, `depth` deep, whose arms hold nothing but their
-    /// yields and the next level.
+    /// yields and the next level. Each level yields the result of the next, and the function
+    /// returns the outermost: every level is used, so none is dead.
     fn if_tower(depth: usize) -> alloc::string::String {
-        let mut text =
-            alloc::string::String::from("builtin.function public extern(\"C\") @f(%c: i1) {\n");
+        let mut text = alloc::string::String::from(
+            "builtin.function public extern(\"C\") @f(%c: i1, %x: i32) -> i32 {\n",
+        );
         for level in 0..depth {
-            text += &format!("{}scf.if %c then {{\n", "    ".repeat(level + 1));
+            text += &format!("{}%r{level} = scf.if %c then {{\n", "    ".repeat(level + 1));
         }
         for level in (0..depth).rev() {
             let (outer, inner) = ("    ".repeat(level + 1), "    ".repeat(level + 2));
+            let yielded = if level + 1 == depth {
+                alloc::string::String::from("%x")
+            } else {
+                format!("%r{}", level + 1)
+            };
             text += &format!(
-                "{inner}scf.yield : ();\n{outer}}} else {{\n{inner}scf.yield : ();\n{outer}}} : \
-                 (i1) -> ();\n"
+                "{inner}scf.yield {yielded} : (i32);\n{outer}}} else {{\n{inner}scf.yield %x : \
+                 (i32);\n{outer}}} : (i1) -> (i32);\n"
             );
         }
-        text + "    builtin.ret;\n};\n"
+        text + "    builtin.ret %r0 : (i32);\n};\n"
     }
 
     /// CSE visits each nested region once, and asks each operation once whether it is free of
