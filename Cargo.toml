@@ -80,6 +80,7 @@ proptest = "1.11"
 proc-macro2 = "1.0"
 proc-macro-crate = "3.5"
 quote = "1.0"
+regex = { version = "1.0", default-features = false, features = ["std", "perf"] }
 rustc-hash = { version = "2.1", default-features = false }
 serde = { version = "1.0", default-features = false, features = [
     "serde_derive",
@@ -107,7 +108,6 @@ runic-dialect-mem = { version = "0.1.0", path = "crates/dialects/mem" }
 runic-dialect-scf = { version = "0.1.0", path = "crates/dialects/scf" }
 runic-dialect-cf = { version = "0.1.0", path = "crates/dialects/cf" }
 runic-dialect-ub = { version = "0.1.0", path = "crates/dialects/ub" }
-runic-expect-test = { path = "tools/expect-test" }
 runic-log = { version = "0.1.0", path = "crates/log", features = ["kv"] }
 runic-macros = { version = "0.1.0", path = "crates/macros" }
 runic-symbol = { version = "0.1.0", path = "crates/symbol" }

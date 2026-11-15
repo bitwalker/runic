@@ -25,7 +25,7 @@ anstream = { version = "^1.0", default-features = false, features = ["wincon"], 
 anstyle = { version = "^1.0", optional = true }
 log = { workspace = true, features = ["std"] }
 jiff = { version = "0.2.3", default-features = false, features = ["std"], optional = true }
-regex = { version = "1.0", default-features = false, features = ["std", "perf"], optional = true }
+regex = { workspace = true, optional = true }
 
 [dev-dependencies]
 # NOTE: Use local paths for dev-only dependency to avoid relying on crates.io during packaging
