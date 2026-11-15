@@ -12,7 +12,9 @@ cargo make test-lit
 ```
 
 builds `runic-opt` into `bin/` (git-ignored) and runs every test. To run tests by hand, build once
-and point `litcheck` at `bin`:
+and point `litcheck` at `bin`. The suite is run from the repository root, as below: run from a
+directory inside the suite, `litcheck` does not find it, and it refuses a path outside the working
+directory:
 
 ```sh
 cargo make runic-opt
@@ -36,7 +38,11 @@ The tool is found through `--path bin`: the suite has no substitution and needs 
 variable.
 
 A clean machine needs the pinned toolchain (`rust-toolchain.toml`), the `cargo-make` crate
-installed, and network access once, for the `litcheck` task's `cargo install`.
+installed, and network access once, for the `litcheck` task's `cargo install`: the task installs
+`litcheck` only when no `litcheck` is installed.
+
+A checkout whose path holds a space is not supported: RUN lines write `%s` bare, as LLVM's suites
+do, and `litcheck` substitutes the path unquoted.
 
 ### Which operations have a parse test, and which passes a test
 
@@ -169,7 +175,10 @@ A test of a pass that wants its output to read back pipes it into a second run:
 ```
 
 A test that prints locations (`--print-locations`) reads its input from `%s`, never from a pipe: a
-location that names standard input cannot be resolved by a second run. The path in a location is
+location that names standard input cannot be resolved by a second run. The one exception is piped
+text that carries written locations naming the file, such as the generic form printed with
+`--print-locations` from `%s`: a second run reads those locations back and prints them again
+(`roundtrip/locations.runic`). The path in a location is
 the path as given, matched with `{{.*}}`, or with `{{[^"]*}}` on a line that holds several
 locations (`litcheck` does not take `{{.*}}` back to an earlier match, so it runs to the last):
 
@@ -238,9 +247,12 @@ the path in a `-->` line with `{{.*}}`, since it is the path as given:
 
 ### A known defect
 
-A test that shows a defect is not bent to pass. It is committed with `// XFAIL: *` and a comment
-that says what is wrong, until the defect is fixed; a test marked so that passes fails the run (no
-test of the suite is marked so today).
+A test that shows a defect is not bent to pass. The defect is fixed if the fix is small. Otherwise
+the test is committed with `// XFAIL: *` and a comment that says what is wrong, until the defect is
+fixed; a test marked so that passes fails the run (no test of the suite is marked so today). Or,
+where the defect is in text the test checks anyway (a parse test checks every line it prints), the
+check that holds it is pinned under a `Known defect (ledger)` comment that says what is wrong and
+that the check changes when it is fixed.
 
 ```
 // XFAIL: *

@@ -505,7 +505,7 @@ dependencies = ["runic-opt"]
 category = "Test"
 description = "Set up the litcheck utility"
 # The version the lit suite (tests/lit) is written for.
-install_crate = { crate_name = "litcheck", min_version = "0.5.0", test_arg = "--help" }
+install_crate = { crate_name = "litcheck", binary = "litcheck", min_version = "0.5.0", test_arg = "--help" }
 
 [tasks.docs]
 category = "Documentation"
