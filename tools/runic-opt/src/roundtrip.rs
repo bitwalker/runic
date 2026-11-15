@@ -4,8 +4,12 @@
 //! context of its own (with the parser configured as for the input: verification as the options
 //! say, the same region depth limit), and the result is printed in the same form. The two texts
 //! are the same program when they are equal after value and block names are renumbered in order
-//! of first appearance (see [`runic_core::print::same_program`]). What is parsed lives and dies
-//! inside the check.
+//! of first appearance (see [`runic_core::print::same_program`]). For the custom form, what the
+//! text read back to is also printed in the generic form, which holds every part of an operation,
+//! and compared with the generic print of the input: a custom form that leaves a part out prints
+//! the same text twice, and only this comparison sees it. A difference is reported with the first
+//! differing line of each text, as printed (renumbered, not trimmed). What is parsed lives and
+//! dies inside the check.
 
 use std::rc::Rc;
 
@@ -69,16 +73,42 @@ fn check_form(
         }
     };
     let again = print_operation(reparsed, &flags);
-    drop(parsed.diagnostics);
-    if same_program(&printed, &again) {
-        return Ok(());
+    if !same_program(&printed, &again) {
+        return Err(difference(
+            format!("the {form} form does not print the same program when parsed back"),
+            &printed,
+            &again,
+        ));
     }
-    let (before, after) = (renumbered(&printed), renumbered(&again));
+    if !generic {
+        // The generic form holds every part of an operation, so a custom form that leaves one
+        // out shows as a difference between the generic prints of the input and of what the
+        // custom text read back to.
+        let flags = OpPrintingFlags {
+            generic: true,
+            ..OpPrintingFlags::default()
+        };
+        let expected = print_operation(op, &flags);
+        let read_back = print_operation(reparsed, &flags);
+        if !same_program(&expected, &read_back) {
+            return Err(difference(
+                format!("the {form} form loses part of the operation"),
+                &expected,
+                &read_back,
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The error `message`, with the first line at which `printed` (from the input) and `again`
+/// (after parsing it back) differ once renumbered, as they are.
+fn difference(message: String, printed: &str, again: &str) -> OwnedDiagnostic {
+    let (before, after) = (renumbered(printed), renumbered(again));
     let (first, second) = first_difference(&before, &after);
-    let (first, second) = (first.trim(), second.trim());
     let mut error = diagnostic!(
         severity: Error,
-        message: (format!("the {form} form does not print the same program when parsed back")),
+        message: message,
     );
     error.push_note(
         NoteKind::Note,
@@ -88,7 +118,7 @@ fn check_form(
         NoteKind::Note,
         format_args!("first differing line, printed after parsing it back: {second}"),
     );
-    Err(OwnedDiagnostic::new(error))
+    OwnedDiagnostic::new(error)
 }
 
 /// The first line of `a` and the first line of `b` at which they differ (an empty line stands for
