@@ -596,3 +596,19 @@ impl PathMut for std::path::PathBuf {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use alloc::string::ToString;
+
+    use super::OutputType;
+
+    /// The IR output kind is spelled `ir`, both ways, and its files have the extension `runic`.
+    #[test]
+    fn the_ir_output_kind_is_spelled_ir_with_the_extension_runic() {
+        assert_eq!("ir".parse::<OutputType>(), Ok(OutputType::Ir));
+        assert_eq!("hir".parse::<OutputType>(), Err(()));
+        assert_eq!(OutputType::Ir.extension(), "runic");
+        assert_eq!(OutputType::Ir.to_string(), "ir");
+    }
+}
