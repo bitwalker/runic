@@ -77,10 +77,20 @@ builtin.module public @gep_path attributes { data_layout = #builtin.data_layout<
 
 // -----
 
-// The rule is the same for `mem.alignof`.
+// The type `mem.sizeof` measures.
 builtin.module public @sizeof attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
     builtin.function public extern("C") @f() {
         %x = mem.sizeof never; // expected-error {{the type measured, `never`, has no layout under the data layout in scope}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// The type `mem.alignof` measures.
+builtin.module public @alignof attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @f() {
+        %x = mem.alignof never; // expected-error {{the type measured, `never`, has no layout under the data layout in scope}}
         builtin.ret;
     };
 };

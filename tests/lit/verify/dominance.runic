@@ -3,10 +3,12 @@
 // The definition of every operand dominates its use. Each kind of definition that does not is a
 // case: the operation that reads the value defines it, an operation that holds the use in one of
 // its regions defines it, it is defined later in the same block, or in a block that does not
-// dominate the use's. An operand that reads a value printed later is written in the generic form
-// (or in a custom form that states its operand types, as `scf.yield` and `cf.br` do). A value of
-// a nested or sibling region, or one defined in no region, cannot be read in text: the parser
-// knows no such name there.
+// dominate the use's. The message is the same for every placement; the expectations of those
+// cases name the label that says where the definition is. An operand that reads a value printed
+// later is written in the generic form (or in a custom form that states its operand types, as
+// `scf.yield` and `cf.br` do). In a block of a function, a value of a nested or sibling region
+// cannot be read in text (the parser knows no such name there); in a graph region it can, and
+// `verify/dominance-nested-regions.runic` holds those cases.
 
 // Uses that are dominated: a value of an enclosing region, a block argument, a value of a block
 // that dominates the use's; a use in a block that cannot be reached is not checked, nor one in a
@@ -45,7 +47,7 @@ builtin.function public extern("C") @its_own_user(%a: i32) -> i32 {
 // An operation that holds the use in one of its regions defines the value.
 builtin.function public extern("C") @enclosing_result(%c: i1, %a: i32) -> i32 {
     %r = scf.if %c then {
-        scf.yield %r : (i32); // expected-error {{operand #0 of 'scf.yield' is not dominated by its definition}}
+        scf.yield %r : (i32); // expected-error {{it is defined here by 'scf.if', which holds the use in one of its regions}}
     } else {
         scf.yield %a : (i32);
     } : (i1) -> (i32);
@@ -56,7 +58,8 @@ builtin.function public extern("C") @enclosing_result(%c: i1, %a: i32) -> i32 {
 
 // The value is defined later in the same block.
 builtin.function public extern("C") @later_in_block(%a: i32) -> i32 {
-    %b = "arith.add"(%later, %a) : (i32, i32) -> i32; // expected-error {{operand #0 of 'arith.add' is not dominated by its definition}}
+    // expected-error@+1 {{it is defined here, later in the same block}}
+    %b = "arith.add"(%later, %a) : (i32, i32) -> i32;
     %later = arith.add %a, %a;
     builtin.ret %b : (i32);
 };
@@ -73,7 +76,7 @@ builtin.function public extern("C") @other_block(%c: i1, %a: i32) -> i32 {
 ^no:
     cf.br ^join;
 ^join:
-    builtin.ret %y : (i32); // expected-error {{operand #0 of 'builtin.ret' is not dominated by its definition}}
+    builtin.ret %y : (i32); // expected-error {{it is defined here, in a block that does not dominate the use}}
 };
 
 // -----

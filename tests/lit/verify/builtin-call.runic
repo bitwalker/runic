@@ -2,7 +2,8 @@
 
 // The rules of `builtin.call`, `builtin.call_indirect` and `builtin.function_ref`: a call's
 // arguments and results agree with the signature it carries; a call's callee and a reference's
-// resolve to a callable, whose signature is the call's (the first difference is named) or whose
+// resolve to a callable, whose signature is the call's, in the types and the attributes of each
+// parameter and result and in the calling convention (the first difference is named), or whose
 // function type is the reference's; an indirect call's callee has the function type of its
 // signature. The custom forms take the argument and result types from the signature, so the
 // generic form writes others.
@@ -15,6 +16,11 @@ builtin.module public @valid {
         %fn = builtin.function_ref @callee : (i32) -> i32;
         %i = builtin.call_indirect %fn(%c) : extern("C") (i32) -> i32;
         builtin.ret %i : (i32);
+    };
+    builtin.function public extern("C") @extended(i8 { extend = #builtin.zext }) -> (i8 { extend = #builtin.sext });
+    builtin.function public extern("C") @g(%b: i8) -> i8 {
+        %x = builtin.call @extended(%b) : extern("C") (i8 { extend = #builtin.zext }) -> (i8 { extend = #builtin.sext });
+        builtin.ret %x : (i8);
     };
 };
 
@@ -48,6 +54,28 @@ builtin.module public @call_result_type {
     builtin.function public extern("C") @f(%a: i32, %w: i64, %fn: (i32) -> i32) {
         %x = builtin.call @callee(%a) : extern("C") (i32) -> i64; // expected-error {{result 0 has type `i64` in the call, `i32` in the callee}}
         builtin.ret;
+    };
+};
+
+// -----
+
+builtin.module public @call_param_attributes {
+    builtin.function public extern("C") @callee(i8 { extend = #builtin.zext }) -> i8;
+    builtin.function public extern("C") @f(%a: i8) -> i8 {
+        // expected-error@+1 {{the call's signature differs from its callee's: parameter 0 is `i8` in the call, `i8 { extend = #builtin.zext }` in the callee: their attributes differ}}
+        %x = builtin.call @callee(%a) : extern("C") (i8) -> i8;
+        builtin.ret %x : (i8);
+    };
+};
+
+// -----
+
+builtin.module public @call_result_attributes {
+    builtin.function public extern("C") @callee(i8) -> (i8 { extend = #builtin.sext });
+    builtin.function public extern("C") @f(%a: i8) -> i8 {
+        // expected-error@+1 {{result 0 is `i8` in the call, `i8 { extend = #builtin.sext }` in the callee: their attributes differ}}
+        %x = builtin.call @callee(%a) : extern("C") (i8) -> i8;
+        builtin.ret %x : (i8);
     };
 };
 

@@ -103,16 +103,34 @@ builtin.function public extern("C") @init_count(%n: i32, %b: i1) -> i32 {
 
 // -----
 
-// The type of a before-block argument must equal the type of the init operand at its position.
+// The type of an operand `scf.yield` passes back must equal the type of the before-block argument
+// it binds: the rule on the back edge. The init operand differs from the block argument too, but
+// the verifier reports the back edge first and stops there.
 builtin.function public extern("C") @iteration_type(%n: i32, %b: i1) -> i32 {
     scf.while %n before {
     ^head(%i: i64):
         scf.condition %b : (i1);
     } after {
     ^body:
-        // The verifier stops at its first error, which is the back edge, not the init operand.
         // expected-error@+1 {{has type 'i32', but the block argument it binds has type 'i64'}}
         scf.yield %n : (i32);
+    } : (i32) -> ();
+    builtin.ret %n : (i32);
+};
+
+// -----
+
+// The type of a before-block argument must equal the type of the init operand at its position:
+// the rule on the edge from `scf.while` into its first region. The yield agrees with the block
+// argument, so the init operand is the only mismatch.
+builtin.function public extern("C") @init_type(%n: i32, %w: i64, %b: i1) -> i32 {
+    // expected-error@+1 {{operand 0 for successor 0 (region 0 of scf.while) has type 'i32', but the block argument it binds has type 'i64'}}
+    scf.while %n before {
+    ^head(%i: i64):
+        scf.condition %b : (i1);
+    } after {
+    ^body:
+        scf.yield %w : (i64);
     } : (i32) -> ();
     builtin.ret %n : (i32);
 };

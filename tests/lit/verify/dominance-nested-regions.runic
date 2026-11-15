@@ -1,0 +1,79 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// A value read outside the region that defines it. In a block of a function the parser answers
+// first ("use of undeclared values"); in a graph region (the body of a module) a name may be read
+// before it is defined, so the read is resolved when the module ends, to a definition in a region
+// nested in a later operation or in a region beside the use, and the verifier answers. The first
+// error case expects the message; the others name the label that says where the definition is,
+// since the message is the same for every placement.
+
+// A graph region: a value is read before the operation that defines it, in the same region.
+builtin.module public @valid {
+    %copy = builtin.unrealized_conversion_cast %bytes : (array<i8; 2>) to array<i8; 2>;
+    %bytes = builtin.bytes "0102" : array<i8; 2>;
+};
+
+// -----
+
+// The definition is in a region nested in an operation of the use's region.
+builtin.module public @nested_region {
+    %flag = arith.constant 1 : i1;
+    // expected-error@+1 {{operand #0 of 'builtin.unrealized_conversion_cast' is not dominated by its definition}}
+    %copy = builtin.unrealized_conversion_cast %inner : (array<i8; 2>) to array<i8; 2>;
+    scf.if %flag then {
+        %inner = builtin.bytes "0102" : array<i8; 2>;
+        scf.yield : ();
+    } else {
+        scf.yield : ();
+    } : (i1) -> ();
+};
+
+// -----
+
+// The same, by the label.
+builtin.module public @nested_region_label {
+    %flag = arith.constant 1 : i1;
+    // expected-error@+1 {{it is defined here, inside a region nested in an operation of the use's region}}
+    %copy = builtin.unrealized_conversion_cast %inner : (array<i8; 2>) to array<i8; 2>;
+    scf.if %flag then {
+        %inner = builtin.bytes "0102" : array<i8; 2>;
+        scf.yield : ();
+    } else {
+        scf.yield : ();
+    } : (i1) -> ();
+};
+
+// -----
+
+// The definition is in a region that is not an ancestor of the use's region: the other arm.
+builtin.module public @sibling_region {
+    %flag = arith.constant 1 : i1;
+    scf.if %flag then {
+        // expected-error@+1 {{it is defined here, in a region that is not an ancestor of the use's region}}
+        %copy = builtin.unrealized_conversion_cast %other : (array<i8; 2>) to array<i8; 2>;
+        scf.yield : ();
+    } else {
+        %other = builtin.bytes "0102" : array<i8; 2>;
+        scf.yield : ();
+    } : (i1) -> ();
+};
+
+// -----
+
+// The definition is in a region of another operation of the module.
+builtin.module public @region_of_another_operation {
+    %flag = arith.constant 1 : i1;
+    scf.if %flag then {
+        // expected-error@+1 {{it is defined here, in a region that is not an ancestor of the use's region}}
+        %copy = builtin.unrealized_conversion_cast %other : (array<i8; 2>) to array<i8; 2>;
+        scf.yield : ();
+    } else {
+        scf.yield : ();
+    } : (i1) -> ();
+    scf.if %flag then {
+        %other = builtin.bytes "0102" : array<i8; 2>;
+        scf.yield : ();
+    } else {
+        scf.yield : ();
+    } : (i1) -> ();
+};
