@@ -1,0 +1,79 @@
+// RUN: runic-opt %s | filecheck %s
+// RUN: runic-opt %s --verify-roundtrip | filecheck %s
+// RUN: runic-opt %s --print-generic | runic-opt - --verify-roundtrip
+
+// Every kind of attribute that has text, read and printed as a value of a function's attribute
+// dictionary, a few kinds per function. The printer sorts a dictionary by key and writes every
+// value as `#dialect.kind<..>`; the input writes the keys out of order, and the bare spellings
+// where there are some: `true`/`false`, a string, a type, `@name`. A location is an attribute
+// kind (`builtin.loc`) that is not usable as a value: what it prints has no parser.
+// CHECK: builtin.module public @attributes {
+builtin.module public @attributes {
+    // Booleans, strings (bare and spelled, with an escape), bytes and the unit attribute.
+    // CHECK-LABEL: builtin.function public extern("C") @scalars(
+    // CHECK-SAME: ) {
+    // CHECK-NEXT: builtin.ret;
+    // CHECK-NEXT: } attributes { bytes = #builtin.bytes<"00ff">, f = #builtin.bool<false>, spelled = #builtin.bool<true>, sstr = #builtin.string<"x">, str = #builtin.string<"a\tb">, t = #builtin.bool<true>, unit = #builtin.unit };
+    builtin.function public extern("C") @scalars() {
+        builtin.ret;
+    } attributes { t = true, f = false, spelled = #builtin.bool<true>, str = "a\tb", sstr = #builtin.string<"x">, bytes = #builtin.bytes<"00ff">, unit = #builtin.unit };
+
+    // The integer attributes of each width, and `#builtin.int` of any integer type.
+    // CHECK-LABEL: builtin.function public extern("C") @integers(
+    // CHECK-SAME: ) {
+    // CHECK-NEXT: builtin.ret;
+    // CHECK-NEXT: } attributes { bool = #builtin.int<1 : i1>, i128 = #builtin.i128<-1>, i16 = #builtin.i16<300>, i32 = #builtin.i32<-7>, i64 = #builtin.i64<1>, i8 = #builtin.i8<-1>, int = #builtin.int<-1 : i7> };
+    builtin.function public extern("C") @integers() {
+        builtin.ret;
+    } attributes { i8 = #builtin.i8<-1>, i16 = #builtin.i16<300>, i32 = #builtin.i32<-7>, i64 = #builtin.i64<1>, i128 = #builtin.i128<-1>, int = #builtin.int<-1 : i7>, bool = #builtin.int<1 : i1> };
+
+    // Types (bare and spelled), arrays of integers and of types (empty ones too), and lists, which
+    // nest.
+    // CHECK-LABEL: builtin.function public extern("C") @aggregates(
+    // CHECK-SAME: ) {
+    // CHECK-NEXT: builtin.ret;
+    // CHECK-NEXT: } attributes { arr = #builtin.array_i32<1, -2, 3>, arr_empty = #builtin.array_i32<>, list = [#builtin.i32<1>, [], [#builtin.string<"s">, [#builtin.bool<true>]]], tarr = #builtin.type_array<i32, i64>, tarr_empty = #builtin.type_array<>, ty = #builtin.type<i32>, tyb = #builtin.type<ptr<i8>> };
+    builtin.function public extern("C") @aggregates() {
+        builtin.ret;
+    } attributes { ty = i32, tyb = #builtin.type<ptr<i8>>, arr = #builtin.array_i32<1, -2, 3>, arr_empty = #builtin.array_i32<>, tarr = #builtin.type_array<i32, i64>, tarr_empty = #builtin.type_array<>, list = [#builtin.i32<1>, [], ["s", [true]]] };
+
+    // Symbols: a reference (bare and spelled) and an identifier, a visibility, a signature with
+    // parameter attributes, and the parameter markers.
+    // CHECK-LABEL: builtin.function public extern("C") @symbols(
+    // CHECK-SAME: ) {
+    // CHECK-NEXT: builtin.ret;
+    // CHECK-NEXT: } attributes { ident = #builtin.ident<@symbols>, sext = #builtin.sext, sig = #builtin.signature<extern("C") (i32 { extend = #builtin.zext }, ptr { sret = #builtin.sret }) -> (i64 { extend = #builtin.sext })>, spelled = #builtin.symbol<@symbols>, sret = #builtin.sret, sym = #builtin.symbol<@symbols>, vis = #builtin.visibility<internal>, zext = #builtin.zext };
+    builtin.function public extern("C") @symbols() {
+        builtin.ret;
+    } attributes { sym = @symbols, spelled = #builtin.symbol<@symbols>, ident = #builtin.ident<@symbols>, vis = #builtin.visibility<internal>, sig = #builtin.signature<extern("C") (i32 { extend = #builtin.zext }, ptr { sret = #builtin.sret }) -> (i64 { extend = #builtin.sext })>, zext = #builtin.zext, sext = #builtin.sext, sret = #builtin.sret };
+
+    // The arithmetic modes: overflow, signedness, a comparison predicate.
+    // CHECK-LABEL: builtin.function public extern("C") @modes(
+    // CHECK-SAME: ) {
+    // CHECK-NEXT: builtin.ret;
+    // CHECK-NEXT: } attributes { checked = #builtin.overflow<checked signed>, pred = #arith.cmp_predicate<ult>, sgn = #builtin.signedness<signed>, unchecked = #builtin.overflow<unchecked unsigned>, usgn = #builtin.signedness<unsigned>, wrapping = #builtin.overflow<wrapping> };
+    builtin.function public extern("C") @modes() {
+        builtin.ret;
+    } attributes { wrapping = #builtin.overflow<wrapping>, checked = #builtin.overflow<checked signed>, unchecked = #builtin.overflow<unchecked unsigned>, sgn = #builtin.signedness<signed>, usgn = #builtin.signedness<unsigned>, pred = #arith.cmp_predicate<ult> };
+
+    // Declared effects (unknown, none, some), a local variable, data layouts (with pointers of
+    // address spaces, integer and float alignments), alignments, poison.
+    // CHECK-LABEL: builtin.function public extern("C") @misc(
+    // CHECK-SAME: ) {
+    // CHECK-NEXT: builtin.ret;
+    // CHECK-NEXT: } attributes { align = #mem.align<4>, dl = #builtin.data_layout<big, ptr = 64>, dl_full = #builtin.data_layout<little, ptr = 32 align 8 index 16, ptr<1> = 64, i64 = 4, f64 = 4>, known = #builtin.declared_effects<read, write(arg 0)>, lv = #builtin.local_variable<0, i32>, natural = #mem.align<natural>, none = #builtin.declared_effects<>, poison = #ub.poison<i32>, unknown = #builtin.declared_effects<unknown> };
+    builtin.function public extern("C") @misc() {
+        builtin.ret;
+    } attributes { unknown = #builtin.declared_effects<unknown>, known = #builtin.declared_effects<read, write(arg 0)>, none = #builtin.declared_effects<>, lv = #builtin.local_variable<0, i32>, dl = #builtin.data_layout<big, ptr = 64>, dl_full = #builtin.data_layout<little, ptr = 32 align 8 index 16, ptr<1> = 64, i64 = 4, f64 = 4>, natural = #mem.align<natural>, align = #mem.align<4>, poison = #ub.poison<i32> };
+
+    // The debug-info attributes: a compile unit, a subprogram, a variable, an expression, an
+    // inline call chain.
+    // CHECK-LABEL: builtin.function public extern("C") @debuginfo(
+    // CHECK-SAME: ) {
+    // CHECK-NEXT: builtin.ret;
+    // CHECK-NEXT: } attributes { chain = #di.inline_call_chain<[{ name = "g", linkage = "_g", file = "x.rs", line = 5, column = 6, call_file = "x.rs", call_line = 7, call_column = 8 }]>, cu = #di.compile_unit<{ language = "rust", file = "x.rs", directory = "/src", producer = "rustc", optimized = true }>, cu_min = #di.compile_unit<{ language = "c", file = "y.c", optimized = false }>, expr = #di.expression<[DW_OP_constu(4), DW_OP_plus]>, sp = #di.subprogram<{ name = "f", file = "x.rs", line = 3, definition = true, local = false }>, var = #di.variable<{ name = "v", file = "x.rs", line = 4, column = 2 }> };
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @debuginfo() {
+        builtin.ret;
+    } attributes { cu = #di.compile_unit<{ language = "rust", file = "x.rs", directory = "/src", producer = "rustc", optimized = true }>, cu_min = #di.compile_unit<{ language = "c", file = "y.c", optimized = false }>, sp = #di.subprogram<{ name = "f", file = "x.rs", line = 3 }>, var = #di.variable<{ name = "v", file = "x.rs", line = 4, column = 2 }>, expr = #di.expression<[DW_OP_constu(4), DW_OP_plus]>, chain = #di.inline_call_chain<[{ name = "g", linkage = "_g", file = "x.rs", line = 5, column = 6, call_file = "x.rs", call_line = 7, call_column = 8 }]> };
+};

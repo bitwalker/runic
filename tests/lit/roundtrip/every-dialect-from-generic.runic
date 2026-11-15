@@ -1,0 +1,64 @@
+// RUN: runic-opt %s | filecheck %s
+// RUN: runic-opt %s --verify-roundtrip | filecheck %s
+// RUN: runic-opt %s --print-generic | filecheck %s --check-prefix=GENERIC
+
+// A module that uses operations of every dialect, read from the generic form and printed in the
+// custom form; the second RUN line also reads both forms of it back. The generic form holds every
+// property, those at their default too, and the third RUN line checks that it prints them:
+// `test.add` holds its `overflow` and `mem.load` its `ty` (unknown through a typed pointer) and
+// `align`, none of which the custom form prints. The entry block of a function is labelled in the
+// generic form with the function's arguments.
+
+// CHECK: builtin.module public @every_dialect {
+// CHECK-LABEL: builtin.function public extern("C") @callee(
+// CHECK-SAME: i32) -> i32;
+// CHECK-LABEL: builtin.function public extern("C") @f(
+// CHECK-SAME: [[A:%[0-9]+]]: i32, [[P:%[0-9]+]]: ptr<i32>, [[C:%[0-9]+]]: i1) -> i32 locals(i32) {
+// CHECK-NEXT: [[SUM:%[0-9]+]] = arith.add [[A]], [[A]] <{ overflow = #builtin.overflow<checked signed> }>;
+// CHECK-NEXT: [[LT:%[0-9]+]] = arith.cmpi ult [[SUM]], [[A]];
+// CHECK-NEXT: di.debug_value [[SUM]] <{ variable = #di.variable<{ name = "sum", file = "x.rs", line = 1 }>, expression = #di.expression<[]> }> : (i32);
+// CHECK-NEXT: mem.store [[SUM]], [[P]];
+// CHECK-NEXT: [[LOADED:%[0-9]+]] = mem.load [[P]];
+// CHECK-NEXT: builtin.store_local 0, [[LOADED]];
+// CHECK-NEXT: [[CALLED:%[0-9]+]] = builtin.call @callee([[LOADED]]) : extern("C") (i32) -> i32;
+// CHECK-NEXT: [[T:%[0-9]+]] = test.add [[CALLED]], [[A]];
+// CHECK-NEXT: [[R:%[0-9]+]] = scf.if [[LT]] then {
+// CHECK-NEXT: scf.yield [[T]] : (i32);
+// CHECK-NEXT: } else {
+// CHECK-NEXT: scf.yield [[A]] : (i32);
+// CHECK-NEXT: } : (i1) -> (i32);
+// CHECK-NEXT: cf.cond_br [[C]] ^[[B_DONE:block[0-9]+]]([[R]] : i32), ^[[B_DEAD:block[0-9]+]] : (i1);
+// CHECK-NEXT: ^[[B_DEAD]]:
+// CHECK-NEXT: ub.unreachable;
+// CHECK-NEXT: ^[[B_DONE]]([[OUT:%[0-9]+]]: i32):
+// CHECK-NEXT: builtin.ret [[OUT]] : (i32);
+// CHECK-NEXT: };
+// CHECK-NEXT: };
+// GENERIC: "builtin.function"() <{ name = #builtin.ident<@f>,
+// GENERIC-NEXT: ^{{block[0-9]+}}([[A:%[0-9]+]]: i32, [[P:%[0-9]+]]: ptr<i32>, {{%[0-9]+}}: i1):
+// GENERIC: = "mem.load"([[P]]) <{ ty = #builtin.type<?>, align = #mem.align<natural> }> : ptr<i32> -> i32;
+// GENERIC: = "test.add"({{%[0-9]+}}, [[A]]) <{ overflow = #builtin.overflow<wrapping> }> : (i32, i32) -> i32;
+"builtin.module"() <{ name = #builtin.ident<@every_dialect>, visibility = #builtin.visibility<public> }> ({
+    "builtin.function"() <{ name = #builtin.ident<@callee>, linkage = #builtin.visibility<public>, signature = #builtin.signature<extern("C") (i32) -> i32>, memory_effects = #builtin.declared_effects<unknown>, locals = #builtin.type_array<> }> ({ }) : () -> ();
+    "builtin.function"() <{ name = #builtin.ident<@f>, linkage = #builtin.visibility<public>, signature = #builtin.signature<extern("C") (i32, ptr<i32>, i1) -> i32>, memory_effects = #builtin.declared_effects<unknown>, locals = #builtin.type_array<i32> }> ({
+    ^entry(%a: i32, %p: ptr<i32>, %c: i1):
+        %sum = "arith.add"(%a, %a) <{ overflow = #builtin.overflow<checked signed> }> : (i32, i32) -> i32;
+        %lt = "arith.cmpi"(%sum, %a) <{ predicate = #arith.cmp_predicate<ult> }> : (i32, i32) -> i1;
+        "di.debug_value"(%sum) <{ variable = #di.variable<{ name = "sum", file = "x.rs", line = 1 }>, expression = #di.expression<[]> }> : i32 -> ();
+        "mem.store"(%sum, %p) <{ align = #mem.align<natural> }> : (i32, ptr<i32>) -> ();
+        %loaded = "mem.load"(%p) <{ ty = #builtin.type<?>, align = #mem.align<natural> }> : ptr<i32> -> i32;
+        "builtin.store_local"(%loaded) <{ local = #builtin.local_variable<0, i32> }> : i32 -> ();
+        %called = "builtin.call"(%loaded) <{ callee = #builtin.symbol<@callee>, signature = #builtin.signature<extern("C") (i32) -> i32> }> : i32 -> i32;
+        %t = "test.add"(%called, %a) <{ overflow = #builtin.overflow<wrapping> }> : (i32, i32) -> i32;
+        %r = "scf.if"(%lt) ({
+            "scf.yield"(%t) : i32 -> ();
+        }, {
+            "scf.yield"(%a) : i32 -> ();
+        }) : i1 -> i32;
+        "cf.cond_br"(%c) [ ^done(%r : i32), ^dead ] : i1 -> ();
+    ^dead:
+        "ub.unreachable"() : () -> ();
+    ^done(%out: i32):
+        "builtin.ret"(%out) : i32 -> ();
+    }) : () -> ();
+}) : () -> ();

@@ -1,0 +1,76 @@
+// RUN: runic-opt %s | filecheck %s
+// RUN: runic-opt %s --verify-roundtrip | filecheck %s
+// RUN: runic-opt %s --print-generic | runic-opt - --verify-roundtrip | filecheck %s
+
+// A function with every kind of block argument, successor operand and nested region, read back
+// from both forms: the function's parameters (its entry block's arguments), later blocks with no
+// arguments, one and several; successors that forward nothing, a value, several values, a block
+// argument, and one result of a pack; a two-way and a keyed branch; and nested regions with and
+// without arguments (the regions of `scf.while`, `scf.if` and `scf.index_switch`), nested in one
+// another. The third RUN line prints the generic form and reads that back; it prints the same.
+// CHECK: builtin.function public extern("C") @blocks([[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32, [[C:%[0-9]+]]: i1, [[S:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[PAIR_0:%[0-9]+]], [[PAIR_1:%[0-9]+]] = arith.add_overflowing [[A]], [[B]] <{ signedness = #builtin.signedness<signed> }>;
+// CHECK-NEXT: cf.cond_br [[C]] ^[[B_ONE:block[0-9]+]]([[PAIR_1]] : i32), ^[[B_NONE:block[0-9]+]] : (i1);
+// CHECK-NEXT: ^[[B_NONE]]:
+// CHECK-NEXT: cf.switch [[S]] [#builtin.i32<0> -> ^[[B_ONE]]([[A]] : i32),
+// CHECK-NEXT: #builtin.i32<1> -> ^[[B_TWO:block[0-9]+]]([[A]], [[B]] : i32, i32)], ^[[B_NONE2:block[0-9]+]] : (i32);
+// CHECK-NEXT: ^[[B_NONE2]]:
+// CHECK-NEXT: cf.br ^[[B_TWO]]([[B]], [[PAIR_1]] : i32, i32);
+// CHECK-NEXT: ^[[B_ONE]]([[X:%[0-9]+]]: i32):
+// CHECK-NEXT: cf.br ^[[B_TWO]]([[X]], [[X]] : i32, i32);
+// CHECK-NEXT: ^[[B_TWO]]([[Y:%[0-9]+]]: i32, [[Z:%[0-9]+]]: i32):
+// CHECK-NEXT: [[LOOP_0:%[0-9]+]], [[LOOP_1:%[0-9]+]] = scf.while [[Y]], [[Z]] before {
+// CHECK-NEXT: ^[[B_HEAD:block[0-9]+]]([[I:%[0-9]+]]: i32, [[J:%[0-9]+]]: i32):
+// CHECK-NEXT: [[MORE:%[0-9]+]] = arith.cmpi ult [[I]], [[J]];
+// CHECK-NEXT: scf.condition [[MORE]], [[I]], [[J]] : (i1, i32, i32);
+// CHECK-NEXT: } after {
+// CHECK-NEXT: ^[[B_BODY:block[0-9]+]]([[K:%[0-9]+]]: i32, [[L:%[0-9]+]]: i32):
+// CHECK-NEXT: [[PICKED:%[0-9]+]] = scf.if [[C]] then {
+// CHECK-NEXT: [[INNER:%[0-9]+]] = scf.index_switch [[K]]
+// CHECK-NEXT: case 0 {
+// CHECK-NEXT: scf.yield [[L]] : (i32);
+// CHECK-NEXT: }
+// CHECK-NEXT: default {
+// CHECK-NEXT: scf.yield [[K]] : (i32);
+// CHECK-NEXT: } : (i32);
+// CHECK-NEXT: scf.yield [[INNER]] : (i32);
+// CHECK-NEXT: } else {
+// CHECK-NEXT: scf.yield [[L]] : (i32);
+// CHECK-NEXT: } : (i1) -> (i32);
+// CHECK-NEXT: scf.yield [[PICKED]], [[L]] : (i32, i32);
+// CHECK-NEXT: } : (i32, i32) -> (i32, i32);
+// CHECK-NEXT: builtin.ret [[LOOP_0]] : (i32);
+// CHECK-NEXT: };
+builtin.function public extern("C") @blocks(%a: i32, %b: i32, %c: i1, %s: i32) -> i32 {
+    %pair:2 = arith.add_overflowing %a, %b <{ signedness = #builtin.signedness<signed> }>;
+    cf.cond_br %c ^one(%pair#1 : i32), ^none : (i1);
+^none:
+    cf.switch %s [#builtin.i32<0> -> ^one(%a : i32),
+        #builtin.i32<1> -> ^two(%a, %b : i32, i32)], ^none2 : (i32);
+^none2:
+    cf.br ^two(%b, %pair#1 : i32, i32);
+^one(%x: i32):
+    cf.br ^two(%x, %x : i32, i32);
+^two(%y: i32, %z: i32):
+    %loop:2 = scf.while %y, %z before {
+    ^head(%i: i32, %j: i32):
+        %more = arith.cmpi ult %i, %j;
+        scf.condition %more, %i, %j : (i1, i32, i32);
+    } after {
+    ^body(%k: i32, %l: i32):
+        %picked = scf.if %c then {
+            %inner = scf.index_switch %k
+            case 0 {
+                scf.yield %l : (i32);
+            }
+            default {
+                scf.yield %k : (i32);
+            } : (i32);
+            scf.yield %inner : (i32);
+        } else {
+            scf.yield %l : (i32);
+        } : (i1) -> (i32);
+        scf.yield %picked, %l : (i32, i32);
+    } : (i32, i32) -> (i32, i32);
+    builtin.ret %loop#0 : (i32);
+};

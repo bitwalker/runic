@@ -1,0 +1,44 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// The parser's diagnostics about blocks: names used and never defined, defined twice, a label on
+// an entry block whose arguments the operation names, and block arguments defined twice. The
+// parser stops at its first error, so each case holds one.
+
+builtin.function public extern("C") @undefined(%a: i32) -> i32 {
+    cf.br ^nowhere; // expected-error {{use of undefined blocks}}
+};
+
+// -----
+
+builtin.function public extern("C") @twice(%a: i32) -> i32 {
+    cf.br ^b;
+^b:
+    cf.br ^b;
+^b: // expected-error {{redefinition of block '^b'}}
+    builtin.ret %a : (i32);
+};
+
+// -----
+
+// The parameters of a function are the arguments of its entry block, which has no label.
+builtin.function public extern("C") @labelled_entry(%a: i32) -> i32 {
+^entry(%b: i32): // expected-error {{invalid block name in region with named arguments}}
+    builtin.ret %a : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @argument_twice(%a: i32) -> i32 {
+    cf.br ^b(%a, %a : i32, i32);
+^b(%x: i32, %x: i32): // expected-error {{redefinition of value '%x'}}
+    builtin.ret %x : (i32);
+};
+
+// -----
+
+// A successor's operands and their types.
+builtin.function public extern("C") @successor_types(%a: i32) -> i32 {
+    cf.br ^b(%a, %a : i32); // expected-error {{there are 2 values, but 1 types}}
+^b(%x: i32, %y: i32):
+    builtin.ret %x : (i32);
+};

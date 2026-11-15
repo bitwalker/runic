@@ -1,0 +1,110 @@
+// RUN: runic-opt %s | filecheck %s
+// RUN: runic-opt %s --verify-roundtrip | filecheck %s
+// RUN: runic-opt %s --print-generic | runic-opt - --verify-roundtrip
+
+// Every operation of `mem`, read and printed in its custom form; the last RUN line reads the
+// generic form of each back. Each optional part is left out and written: `, align N`, the type
+// read through a pointer, the index and the path of `mem.gep` and `mem.offsetof`, and an
+// attribute dictionary. Where the parser takes more than the printer writes, the input uses the
+// other spelling: a type stated for a load through a typed pointer, which is the pointee and is not
+// printed.
+// CHECK: builtin.module public @mem {
+builtin.module public @mem {
+    // Allocation, loads and stores: natural and stated alignment, a typed and an opaque pointer.
+    // CHECK-LABEL: builtin.function public extern("C") @access(
+    // CHECK-SAME: [[P:%[0-9]+]]: ptr<i32>, [[O:%[0-9]+]]: ptr) -> i32 {
+    // CHECK-NEXT: [[SLOT:%[0-9]+]] = mem.alloca i32;
+    // CHECK-NEXT: [[ALIGNED:%[0-9]+]] = mem.alloca i64, align 16;
+    // CHECK-NEXT: [[NOTED:%[0-9]+]] = mem.alloca i8 attributes { note = #builtin.i32<1> };
+    // CHECK-NEXT: [[TYPED:%[0-9]+]] = mem.load [[P]];
+    // CHECK-NEXT: [[STATED:%[0-9]+]] = mem.load [[P]];
+    // CHECK-NEXT: [[OPAQUE:%[0-9]+]] = mem.load [[O]] : i32;
+    // CHECK-NEXT: [[OPAQUE_ALIGNED:%[0-9]+]] = mem.load [[O]], align 2 : i16 attributes { note = #builtin.i32<2> };
+    // CHECK-NEXT: [[TYPED_ALIGNED:%[0-9]+]] = mem.load [[P]], align 1;
+    // CHECK-NEXT: mem.store [[TYPED]], [[SLOT]];
+    // CHECK-NEXT: mem.store [[TYPED]], [[SLOT]], align 8;
+    // CHECK-NEXT: mem.store [[OPAQUE_ALIGNED]], [[O]] attributes { note = #builtin.i32<3> };
+    // CHECK-NEXT: builtin.ret [[OPAQUE]] : (i32);
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @access(%p: ptr<i32>, %o: ptr) -> i32 {
+        %slot = mem.alloca i32;
+        %aligned = mem.alloca i64, align 16;
+        %noted = mem.alloca i8 attributes { note = #builtin.i32<1> };
+        %typed = mem.load %p;
+        %stated = mem.load %p : i32;
+        %opaque = mem.load %o : i32;
+        %opaque_aligned = mem.load %o, align 2 : i16 attributes { note = #builtin.i32<2> };
+        %typed_aligned = mem.load %p, align 1;
+        mem.store %typed, %slot;
+        mem.store %typed, %slot, align 8;
+        mem.store %opaque_aligned, %o attributes { note = #builtin.i32<3> };
+        builtin.ret %opaque : (i32);
+    };
+
+    // Addresses: `mem.gep` with neither an index nor a path, either, and both; the pointer
+    // casts.
+    // CHECK-LABEL: builtin.function public extern("C") @address(
+    // CHECK-SAME: [[Q:%[0-9]+]]: ptr<struct<i32, array<i8; 4>>>, [[I:%[0-9]+]]: isize) -> isize {
+    // CHECK-NEXT: [[SAME:%[0-9]+]] = mem.gep [[Q]];
+    // CHECK-NEXT: [[STEPPED:%[0-9]+]] = mem.gep [[Q]], [[I]];
+    // CHECK-NEXT: [[FIELD:%[0-9]+]] = mem.gep [[Q]], [1];
+    // CHECK-NEXT: [[ELEM:%[0-9]+]] = mem.gep [[Q]], [[I]], [1, 2] attributes { note = #builtin.i32<1> };
+    // CHECK-NEXT: [[CAST:%[0-9]+]] = mem.ptrcast [[ELEM]] : ptr<i32>;
+    // CHECK-NEXT: [[OPAQUE:%[0-9]+]] = mem.ptrcast [[CAST]] : ptr attributes { note = #builtin.i32<2> };
+    // CHECK-NEXT: [[INT:%[0-9]+]] = mem.ptrtoint [[CAST]];
+    // CHECK-NEXT: [[INT2:%[0-9]+]] = mem.ptrtoint [[OPAQUE]] attributes { note = #builtin.i32<3> };
+    // CHECK-NEXT: [[BACK:%[0-9]+]] = mem.inttoptr [[INT]] : ptr<i8>;
+    // CHECK-NEXT: [[BACK2:%[0-9]+]] = mem.inttoptr [[INT2]] : ptr attributes { note = #builtin.i32<4> };
+    // CHECK-NEXT: builtin.ret [[INT]] : (isize);
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @address(%q: ptr<struct<i32, array<i8; 4>>>, %i: isize) -> isize {
+        %same = mem.gep %q;
+        %stepped = mem.gep %q, %i;
+        %field = mem.gep %q, [1];
+        %elem = mem.gep %q, %i, [1, 2] attributes { note = #builtin.i32<1> };
+        %cast = mem.ptrcast %elem : ptr<i32>;
+        %opaque = mem.ptrcast %cast : ptr attributes { note = #builtin.i32<2> };
+        %int = mem.ptrtoint %cast;
+        %int2 = mem.ptrtoint %opaque attributes { note = #builtin.i32<3> };
+        %back = mem.inttoptr %int : ptr<i8>;
+        %back2 = mem.inttoptr %int2 : ptr attributes { note = #builtin.i32<4> };
+        builtin.ret %int : (isize);
+    };
+
+    // The bulk operations, with and without an attribute dictionary.
+    // CHECK-LABEL: builtin.function public extern("C") @bulk(
+    // CHECK-SAME: [[D:%[0-9]+]]: ptr<i8>, [[S:%[0-9]+]]: ptr<i8>, [[N:%[0-9]+]]: isize, [[B:%[0-9]+]]: i8) {
+    // CHECK-NEXT: mem.memcpy [[D]], [[S]], [[N]];
+    // CHECK-NEXT: mem.memmove [[D]], [[S]], [[N]];
+    // CHECK-NEXT: mem.memset [[D]], [[B]], [[N]];
+    // CHECK-NEXT: mem.memcpy [[D]], [[S]], [[N]] attributes { note = #builtin.i32<1> };
+    // CHECK-NEXT: builtin.ret;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @bulk(%d: ptr<i8>, %s: ptr<i8>, %n: isize, %b: i8) {
+        mem.memcpy %d, %s, %n;
+        mem.memmove %d, %s, %n;
+        mem.memset %d, %b, %n;
+        mem.memcpy %d, %s, %n attributes { note = #builtin.i32<1> };
+        builtin.ret;
+    };
+
+    // Sizes, alignments and offsets of types; `mem.offsetof` with and without a path.
+    // CHECK-LABEL: builtin.function public extern("C") @sizes(
+    // CHECK-SAME: ) -> isize {
+    // CHECK-NEXT: [[SIZE:%[0-9]+]] = mem.sizeof struct<i32, i8>;
+    // CHECK-NEXT: [[ALIGN:%[0-9]+]] = mem.alignof i64;
+    // CHECK-NEXT: [[OFFSET:%[0-9]+]] = mem.offsetof struct<i32, i8>, [1];
+    // CHECK-NEXT: [[START:%[0-9]+]] = mem.offsetof struct<i32, i8>;
+    // CHECK-NEXT: [[NOTED:%[0-9]+]] = mem.sizeof i32 attributes { note = #builtin.i32<1> };
+    // CHECK-NEXT: builtin.ret [[OFFSET]] : (isize);
+    // CHECK-NEXT: };
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @sizes() -> isize {
+        %size = mem.sizeof struct<i32, i8>;
+        %align = mem.alignof i64;
+        %offset = mem.offsetof struct<i32, i8>, [1];
+        %start = mem.offsetof struct<i32, i8>;
+        %noted = mem.sizeof i32 attributes { note = #builtin.i32<1> };
+        builtin.ret %offset : (isize);
+    };
+};

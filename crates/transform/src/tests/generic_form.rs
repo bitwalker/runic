@@ -264,7 +264,7 @@ fn every_custom_form_holds_the_attribute_dictionary() {
         module.borrow().prewalk_all(|op: &Operation| ops.push(op.as_operation_ref()));
         for (index, mut op) in ops.iter().copied().enumerate() {
             let note = context.create_attribute::<I32Attr, _>(index as i32).as_attribute_ref();
-            let key = runic_core::interner::Symbol::intern(format!("note{index}").as_str());
+            let key = runic_core::interner::Symbol::intern(format!("added{index}").as_str());
             op.borrow_mut().set_attribute(key, note);
         }
         let generic = print(&module.borrow(), true);
@@ -278,6 +278,6 @@ fn every_custom_form_holds_the_attribute_dictionary() {
             "{name}: the custom form loses part of an \
              operation:\n{generic}\nbecame\n{generic_again}"
         );
-        assert_eq!(generic.matches("note").count(), ops.len(), "{name}: {generic}");
+        assert_eq!(generic.matches("added").count(), ops.len(), "{name}: {generic}");
     }
 }

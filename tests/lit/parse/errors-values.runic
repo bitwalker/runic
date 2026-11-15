@@ -1,0 +1,88 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// The parser's diagnostics about values: definitions, uses and their types, result packs, and
+// operand lists. The parser stops at its first error, so each case holds one.
+
+builtin.function public extern("C") @redefined(%a: i32) -> i32 {
+    %x = arith.add %a, %a;
+    %x = arith.add %a, %a; // expected-error {{redefinition of value '%x'}}
+    builtin.ret %x : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @undefined(%a: i32) -> i32 {
+    builtin.ret %nope : (i32); // expected-error {{use of undeclared values}}
+};
+
+// -----
+
+// A use before the definition, in a block stored earlier, states a type the definition does not
+// have.
+builtin.function public extern("C") @definition_type(%a: i32) -> i32 {
+    cf.br ^def;
+^use:
+    builtin.ret %x : (i64);
+^def:
+    %x = arith.add %a, %a; // expected-error {{definition of SSA value does not match expected type}}
+    cf.br ^use;
+};
+
+// -----
+
+// Two uses before the definition state different types.
+builtin.function public extern("C") @use_types(%a: i32) -> i32 {
+    cf.br ^def;
+^use:
+    test.sink %x : (i64);
+    builtin.ret %x : (i32); // expected-error {{use of value expects different type than prior uses}}
+^def:
+    %x = arith.add %a, %a;
+    cf.br ^use;
+};
+
+// -----
+
+builtin.function public extern("C") @result_index(%a: i32) -> i32 {
+    %p:2 = arith.add_overflowing %a, %a <{ signedness = #builtin.signedness<signed> }>;
+    builtin.ret %p#2 : (i32); // expected-error {{invalid result index}}
+};
+
+// -----
+
+builtin.function public extern("C") @empty_pack(%a: i32) -> i32 {
+    %p:0 = arith.add %a, %a; // expected-error {{a result pack holds 1 to 64 results}}
+    builtin.ret %a : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @named_without_results(%a: i32) -> i32 {
+    %x = test.sink %a : (i32); // expected-error {{results are named for an operation that has none}}
+    builtin.ret %a : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @result_count(%a: i32) -> i32 {
+    %x, %y = arith.add %a, %a; // expected-error {{this operation has 1 result(s), but 2 are named}}
+    builtin.ret %a : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @operand_types(%a: i32) -> i32 {
+    builtin.ret %a, %a : (i32); // expected-error {{there are 2 operands, but 1 types}}
+};
+
+// -----
+
+// The index of `test.call_one_of` is a value, not one result of a pack.
+builtin.module public @m {
+    builtin.function public extern("C") @callee(i32) -> i32;
+    builtin.function public extern("C") @f(%a: i32) -> i32 {
+        %p:2 = arith.add_overflowing %a, %a <{ signedness = #builtin.signedness<signed> }>;
+        %c = test.call_one_of %p#1, @callee, @callee(%a) : extern("C") (i32) -> i32; // expected-error {{invalid use of a result number}}
+        builtin.ret %c : (i32);
+    };
+};

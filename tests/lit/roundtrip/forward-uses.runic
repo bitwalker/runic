@@ -1,0 +1,64 @@
+// RUN: runic-opt %s | filecheck %s
+// RUN: runic-opt %s --verify-roundtrip | filecheck %s
+// RUN: runic-opt %s --print-generic | runic-opt - --verify-roundtrip | filecheck %s
+
+// Uses of a value the text defines later read back: in a graph region (a module's body), and in a
+// block stored before the block that defines the value. An operation whose custom form takes an
+// operand's type from the operand prints in the generic form for such a use, and the input writes
+// it so; one whose custom form states its operand types (`test.sink`, `builtin.ret`, `scf.yield`)
+// keeps it. The third RUN line prints the generic form and reads that back; it prints the same.
+// CHECK: builtin.world {
+builtin.world {
+    // CHECK-LABEL: builtin.module private @graph
+    // CHECK-SAME:  {
+    // CHECK-NEXT: [[ADDR:%[0-9]+]] = arith.constant 0 : isize;
+    // CHECK-NEXT: [[PTR:%[0-9]+]] = mem.inttoptr [[ADDR]] : ptr<i32>;
+    // CHECK-NEXT: "mem.store"([[LATER:%[0-9]+]], [[PTR]]) <{ align = #mem.align<natural> }> : (i32, ptr<i32>) -> ();
+    // CHECK-NEXT: test.sink [[LATER]] : (i32);
+    // CHECK-NEXT: [[LATER]] = arith.constant 1 : i32;
+    // CHECK-NEXT: };
+    builtin.module private @graph {
+        %addr = arith.constant 0 : isize;
+        %ptr = mem.inttoptr %addr : ptr<i32>;
+        "mem.store"(%later, %ptr) <{ align = #mem.align<natural> }> : (i32, ptr<i32>) -> ();
+        test.sink %later : (i32);
+        %later = arith.constant 1 : i32;
+    };
+    // CHECK-LABEL: builtin.module private @blocks
+    // CHECK-SAME:  {
+    builtin.module private @blocks {
+        // CHECK-LABEL: builtin.function public extern("C") @stored_later(
+        // CHECK-SAME: [[A:%[0-9]+]]: i32, [[C:%[0-9]+]]: i1) -> i32 {
+        // CHECK-NEXT: cf.br ^[[B_DEF:block[0-9]+]]([[A]] : i32);
+        // CHECK-NEXT: ^[[B_USE:block[0-9]+]]:
+        // CHECK-NEXT: [[Y:%[0-9]+]] = "test.add"([[X:%[0-9]+]], [[W:%[0-9]+]]) <{ overflow = #builtin.overflow<wrapping> }> : (i32, i32) -> i32;
+        // CHECK-NEXT: [[Z:%[0-9]+]] = scf.if [[C]] then {
+        // CHECK-NEXT: scf.yield [[X]] : (i32);
+        // CHECK-NEXT: } else {
+        // CHECK-NEXT: scf.yield [[Y]] : (i32);
+        // CHECK-NEXT: } : (i1) -> (i32);
+        // CHECK-NEXT: test.sink [[X]], [[W]] : (i32, i32);
+        // CHECK-NEXT: builtin.ret [[Z]] : (i32);
+        // CHECK-NEXT: ^[[B_DEF]]([[W]]: i32):
+        // CHECK-NEXT: [[X]] = test.add [[W]], [[W]];
+        // CHECK-NEXT: cf.br ^[[B_USE]];
+        // CHECK-NEXT: };
+        // CHECK-NEXT: };
+        // CHECK-NEXT: };
+        builtin.function public extern("C") @stored_later(%a: i32, %c: i1) -> i32 {
+            cf.br ^def(%a : i32);
+        ^use:
+            %y = "test.add"(%x, %w) <{ overflow = #builtin.overflow<wrapping> }> : (i32, i32) -> i32;
+            %z = scf.if %c then {
+                scf.yield %x : (i32);
+            } else {
+                scf.yield %y : (i32);
+            } : (i1) -> (i32);
+            test.sink %x, %w : (i32, i32);
+            builtin.ret %z : (i32);
+        ^def(%w: i32):
+            %x = test.add %w, %w;
+            cf.br ^use;
+        };
+    };
+};

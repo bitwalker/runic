@@ -1,0 +1,38 @@
+// RUN: runic-opt %s | filecheck %s
+// RUN: runic-opt %s --verify-roundtrip | filecheck %s
+// RUN: runic-opt %s --print-generic | runic-opt - --verify-roundtrip
+
+// Every operation of `ub`, read and printed in its custom form; the last RUN line reads the
+// generic form of each back: `ub.unreachable` ends a block, with and without an attribute
+// dictionary, and `ub.poison` gives a value of any type.
+// CHECK: builtin.module public @ub {
+builtin.module public @ub {
+    // CHECK-LABEL: builtin.function public extern("C") @ub(
+    // CHECK-SAME: [[C:%[0-9]+]]: i1) -> i32 {
+    // CHECK-NEXT: cf.cond_br [[C]] ^[[B_DEAD:block[0-9]+]], ^[[B_LIVE:block[0-9]+]] : (i1);
+    // CHECK-NEXT: ^[[B_DEAD]]:
+    // CHECK-NEXT: ub.unreachable;
+    // CHECK-NEXT: ^[[B_LIVE]]:
+    // CHECK-NEXT: [[POISON:%[0-9]+]] = ub.poison <{ value = #ub.poison<i32> }>;
+    // CHECK-NEXT: [[WIDE:%[0-9]+]] = ub.poison <{ value = #ub.poison<ptr<i8>> }> attributes { note = #builtin.i32<1> };
+    // CHECK-NEXT: cf.cond_br [[C]] ^[[B_NOTED:block[0-9]+]], ^[[B_DONE:block[0-9]+]] : (i1);
+    // CHECK-NEXT: ^[[B_NOTED]]:
+    // CHECK-NEXT: ub.unreachable attributes { note = #builtin.i32<2> };
+    // CHECK-NEXT: ^[[B_DONE]]:
+    // CHECK-NEXT: builtin.ret [[POISON]] : (i32);
+    // CHECK-NEXT: };
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @ub(%c: i1) -> i32 {
+        cf.cond_br %c ^dead, ^live : (i1);
+    ^dead:
+        ub.unreachable;
+    ^live:
+        %poison = ub.poison <{ value = #ub.poison<i32> }>;
+        %wide = ub.poison <{ value = #ub.poison<ptr<i8>> }> attributes { note = #builtin.i32<1> };
+        cf.cond_br %c ^noted, ^done : (i1);
+    ^noted:
+        ub.unreachable attributes { note = #builtin.i32<2> };
+    ^done:
+        builtin.ret %poison : (i32);
+    };
+};

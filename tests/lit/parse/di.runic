@@ -1,0 +1,30 @@
+// RUN: runic-opt %s | filecheck %s
+// RUN: runic-opt %s --verify-roundtrip | filecheck %s
+// RUN: runic-opt %s --print-generic | runic-opt - --verify-roundtrip
+
+// Every operation of `di`, read and printed in its custom form; the last RUN line reads the
+// generic form of each back. Each with an attribute dictionary and without; the attributes they
+// hold are tested in `debuginfo.runic` and `attributes.runic`.
+// CHECK: builtin.module public @di {
+builtin.module public @di {
+    // CHECK-LABEL: builtin.function public extern("C") @di(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32) -> i32 locals(i32) {
+    // CHECK-NEXT: di.debug_declare <{ variable = #di.variable<{ name = "x", file = "x.rs", line = 1 }>, expression = #di.expression<[DI_OP_frame_base(local_slot, 0+0)]> }>;
+    // CHECK-NEXT: di.debug_declare <{ variable = #di.variable<{ name = "y", file = "x.rs", line = 2 }>, expression = #di.expression<[DI_OP_local_slot(0)]> }> attributes { note = #builtin.i32<1> };
+    // CHECK-NEXT: di.debug_value [[A]] <{ variable = #di.variable<{ name = "a", file = "x.rs", line = 2, column = 1 }>, expression = #di.expression<[]> }> : (i32);
+    // CHECK-NEXT: di.debug_value [[A]] <{ variable = #di.variable<{ name = "b", file = "x.rs", line = 3 }>, expression = #di.expression<[DW_OP_stack_value]> }> attributes { note = #builtin.i32<2> } : (i32);
+    // CHECK-NEXT: di.debug_kill <{ variable = #di.variable<{ name = "a", file = "x.rs", line = 2, column = 1 }> }>;
+    // CHECK-NEXT: di.debug_kill <{ variable = #di.variable<{ name = "b", file = "x.rs", line = 3 }> }> attributes { note = #builtin.i32<3> };
+    // CHECK-NEXT: builtin.ret [[A]] : (i32);
+    // CHECK-NEXT: };
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @di(%a: i32) -> i32 locals(i32) {
+        di.debug_declare <{ variable = #di.variable<{ name = "x", file = "x.rs", line = 1 }>, expression = #di.expression<[DI_OP_frame_base(local_slot, 0+0)]> }>;
+        di.debug_declare <{ variable = #di.variable<{ name = "y", file = "x.rs", line = 2 }>, expression = #di.expression<[DI_OP_local_slot(0)]> }> attributes { note = #builtin.i32<1> };
+        di.debug_value %a <{ variable = #di.variable<{ name = "a", file = "x.rs", line = 2, column = 1 }>, expression = #di.expression<[]> }> : (i32);
+        di.debug_value %a <{ variable = #di.variable<{ name = "b", file = "x.rs", line = 3 }>, expression = #di.expression<[DW_OP_stack_value]> }> attributes { note = #builtin.i32<2> } : (i32);
+        di.debug_kill <{ variable = #di.variable<{ name = "a", file = "x.rs", line = 2, column = 1 }> }>;
+        di.debug_kill <{ variable = #di.variable<{ name = "b", file = "x.rs", line = 3 }> }> attributes { note = #builtin.i32<3> };
+        builtin.ret %a : (i32);
+    };
+};

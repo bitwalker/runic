@@ -1,0 +1,128 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// The parser's diagnostics about the generic form: operation names, properties, result types and
+// counts, operand groups, and successor lists. The parser stops at its first error, so each case
+// holds one.
+
+builtin.function public extern("C") @f(%a: i32, %c: i1) -> i32 {
+    %x = ""(%a) : (i32) -> i32; // expected-error {{operation names cannot be empty}}
+    builtin.ret %a : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @f(%a: i32, %c: i1) -> i32 {
+    %x = "nodot"(%a) : (i32) -> i32; // expected-error {{operation names must be fully-qualified}}
+    builtin.ret %a : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @f(%a: i32, %c: i1) -> i32 {
+    %x = "nodialect.op"(%a) : (i32) -> i32; // expected-error {{unknown dialect 'nodialect'}}
+    builtin.ret %a : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @f(%a: i32, %c: i1) -> i32 {
+    %x = "arith.nosuch"(%a) : (i32) -> i32; // expected-error {{unable to parse unregistered operations}}
+    builtin.ret %a : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @f(%a: i32, %c: i1) -> i32 {
+    %x = "arith.add"(%a, %a) <{ bogus = #builtin.i32<1> }> : (i32, i32) -> i32; // expected-error {{'bogus' is not a property of 'arith.add'}}
+    builtin.ret %x : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @f(%a: i32, %c: i1) -> i32 {
+    %x = "arith.add"(%a, %a) <{ overflow = #builtin.overflow<wrapping> }> { overflow = #builtin.overflow<wrapping> } : (i32, i32) -> i32; // expected-error {{attribute 'overflow' occurs more than once in the attribute list}}
+    builtin.ret %x : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @f(%a: i32, %c: i1) -> i32 {
+    %x = "arith.add"(%a, %a) : (i32, i32) -> i64; // expected-error {{this result is written as 'i64', but 'arith.add' gives it 'i32'}}
+    builtin.ret %a : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @f(%a: i32, %c: i1) -> i32 {
+    %x, %y = "arith.add"(%a, %a) : (i32, i32) -> (i32, i32); // expected-error {{'arith.add' has 1 result(s), but this has 2}}
+    builtin.ret %a : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @f(%a: i32, %c: i1) -> i32 {
+    %x = "cf.assert"(%c) <{ message = #builtin.string<"m"> }> : i1 -> i1; // expected-error {{'cf.assert' has 0 result(s), but this has 1}}
+    builtin.ret %a : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @f(%a: i32, %c: i1) -> i32 {
+    %x = "arith.zext"(%a) : (i32) -> i64; // expected-error {{missing required property 'ty'}}
+    builtin.ret %a : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @f(%a: i32, %c: i1) -> i32 {
+    %x = "arith.add"(%a, %a) : (i32) -> i32; // expected-error {{expected 2 operand type(s), but got 1}}
+    builtin.ret %a : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @f(%a: i32, %c: i1) -> i32 {
+    "cf.br"() [^b(%a : i32) | ^b(%a : i32)] : () -> (); // expected-error {{'cf.br' has 1 successor group(s), but this list has 2}}
+^b(%x: i32):
+    builtin.ret %x : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @f(%a: i32, %c: i1) -> i32 {
+    "cf.br"() [#builtin.i32<1>: ^b(%a : i32)] : () -> (); // expected-error {{invalid successor key}}
+^b(%x: i32):
+    builtin.ret %x : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @f(%a: i32, %c: i1) -> i32 {
+    "cf.switch"(%a) [^b, ^b] : (i32) -> (); // expected-error {{'cf.switch' has 2 successor group(s), but this list has 1}}
+^b:
+    builtin.ret %a : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @f(%a: i32, %c: i1) -> i32 {
+    "cf.br"() [^b, ^b] : () -> (); // expected-error {{expected 1 successors, but found 2}}
+^b:
+    builtin.ret %a : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @f(%a: i32, %c: i1) -> i32 {
+    "cf.br"() [] : () -> (); // expected-error {{expected at least one successor}}
+^b:
+    builtin.ret %a : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @f(%a: i32, %c: i1) -> i32 {
+    "test.sink"(%a) [^b] : (i32) -> (); // expected-error {{non-terminator operations cannot have successors}}
+^b:
+    builtin.ret %a : (i32);
+};

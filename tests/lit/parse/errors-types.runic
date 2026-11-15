@@ -1,0 +1,101 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// The parser's diagnostics about types: integer widths, aliases and recursion groups, dialect
+// types, the parameters of builtin types, and nesting. A type nested in more than 64 types is an
+// error (the limit is not configurable). The parser stops at its first error, so each case holds
+// one.
+
+builtin.function public extern("C") @f(i0); // expected-error {{unexpected token 'bare identifier'}}
+
+// -----
+
+builtin.function public extern("C") @f(i16777216); // expected-error {{an integer type is 1 to 16777215 bits wide}}
+
+// -----
+
+builtin.function public extern("C") @f(f16); // expected-error {{unexpected token 'bare identifier'}}
+
+// -----
+
+builtin.function public extern("C") @f(!undefined); // expected-error {{use of undefined type alias '!undefined'}}
+
+// -----
+
+builtin.function public extern("C") @f(!nodialect.t); // expected-error {{unknown dialect 'nodialect'}}
+
+// -----
+
+builtin.function public extern("C") @f(!test.nosuch); // expected-error {{unknown type 'nosuch' in dialect 'test'}}
+
+// -----
+
+builtin.function public extern("C") @f(!test.vector); // expected-error {{type 'test.vector' requires parameters in '<..>'}}
+
+// -----
+
+builtin.function public extern("C") @f(!test.vector<i32 x 0>); // expected-error {{a vector has at least one lane}}
+
+// -----
+
+// A builtin type is not written as a dialect type.
+builtin.function public extern("C") @f(!builtin.never); // expected-error {{builtin types are written without the '!builtin.' prefix}}
+
+// -----
+
+builtin.function public extern("C") @f(isize<i32>); // expected-error {{unexpected token '<'}}
+
+// -----
+
+builtin.function public extern("C") @f(array<i8>); // expected-error {{unexpected token '>'}}
+
+// -----
+
+builtin.function public extern("C") @f(struct<packed(0); i8>); // expected-error {{expected a non-zero alignment}}
+
+// -----
+
+builtin.function public extern("C") @f(enum<ptr; a>); // expected-error {{the discriminant of an enum is an integer type of at most 128 bits}}
+
+// -----
+
+builtin.function public extern("C") @f(enum<i8; a = 300>); // expected-error {{value is out of range for a discriminant of 8 bits}}
+
+// -----
+
+builtin.function public extern("C") @f(ptr<i32, x>); // expected-error {{unexpected token 'bare identifier'}}
+
+// -----
+
+// A parenthesised list is a type only as the parameters of a function type.
+builtin.function public extern("C") @f((i32)); // expected-error {{a parenthesised type list is only a type as the parameters of a function type}}
+
+// -----
+
+// 65 pointer types around an `i8`: the `i8` is nested in 65 types.
+builtin.function public extern("C") @f(ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<ptr<i8>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>); // expected-error {{type nesting is too deep (limit 64)}}
+
+// -----
+
+type !t = i32;
+type !t = i64; // expected-error {{alias 't' is already defined}}
+builtin.function public extern("C") @f(!t);
+
+// -----
+
+!t = i32; // expected-error {{a type alias is declared with `type !name = ..;`}}
+builtin.function public extern("C") @f(!t);
+
+// -----
+
+type !test.x = i32; // expected-error {{type names with a '.' are reserved for dialect-defined names}}
+builtin.function public extern("C") @f(i32);
+
+// -----
+
+rec { } // expected-error {{a `rec` block declares at least one type}}
+builtin.function public extern("C") @f(i32);
+
+// -----
+
+rec { rec { type !a = struct<ptr<!a>>; } } // expected-error {{`rec` blocks do not nest}}
+builtin.function public extern("C") @f(i32);

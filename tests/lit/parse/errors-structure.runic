@@ -1,0 +1,57 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// The parser's diagnostics about the structure of the text: operation names, an operation with
+// no custom form written in one, input after the top-level operation, input that ends early, an
+// unclosed string, a character the lexer does not read, and a location alias. The parser stops
+// at its first error, so each case holds one.
+
+builtin.function public extern("C") @f(%a: i32) -> i32 {
+    %x = arith.nosuch %a, %a; // expected-error {{unknown/unregistered operation}}
+    builtin.ret %a : (i32);
+};
+
+// -----
+
+// An operation without a custom form is written in the generic form only.
+builtin.function public extern("C") @f(%a: i32) -> i32 {
+    test.reads_locals_and_holds; // expected-error {{'test.reads_locals_and_holds' has no custom form}}
+    builtin.ret %a : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @f(%a: i32) -> i32 {
+    %x = nodialect.op %a; // expected-error {{unknown dialect 'nodialect'}}
+    builtin.ret %a : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @f(%a: i32) -> i32 {
+    builtin.ret %a : (i32) loc(#here); // expected-error {{location aliases are not supported}}
+};
+
+// -----
+
+builtin.function public extern("C") @f(%a: i32) -> i32 {
+    builtin.ret %a : (i32) ~; // expected-error {{unexpected character '~'}}
+};
+
+// -----
+
+builtin.function public extern("C") @f(%a: i32) -> i32 {
+    // The string runs to the end of the input, this comment's line included.
+    // expected-error@+1 {{missing closing quote for string starting here}}
+    cf.assert %a, "unterminated;
+    builtin.ret %a : (i32);
+};
+
+// -----
+
+builtin.module public @first { };
+builtin.module public @second { }; // expected-error {{expected the end of the input after the top-level operation}}
+
+// -----
+
+// expected-error@below {{unexpected token 'end of input'}}
+builtin.module public @open {

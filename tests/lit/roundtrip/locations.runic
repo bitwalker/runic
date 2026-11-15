@@ -1,0 +1,49 @@
+// RUN: runic-opt %s --print-locations | filecheck %s
+// RUN: runic-opt %s --print-locations --verify-roundtrip | filecheck %s
+// RUN: runic-opt %s --print-locations --print-generic | filecheck %s --check-prefix=GENERIC
+
+// Locations in both forms: each operation and each block argument (a function's parameters, the
+// arguments of a later block and of the blocks of nested regions) is printed with the range of
+// text it was read from, in the custom and the generic form; the second RUN line reads both forms
+// back with their locations. The input is read from `%s`, so the locations name this file (a
+// location that names standard input could not be resolved by a second run). The range of an
+// operation starts at its name, after its results. The path is matched with `{{[^"]*}}`: a line
+// holds several locations, and `{{.*}}` would run to the last.
+// CHECK: builtin.function public extern("C") @located({{%[0-9]+}}: i32 loc("{{[^"]*}}locations.runic":[[@LINE+26]]:47 to [[@LINE+26]]:48), {{%[0-9]+}}: i1 loc("{{[^"]*}}locations.runic":[[@LINE+26]]:56 to [[@LINE+26]]:57)) -> i32 {
+// CHECK-NEXT: {{%[0-9]+}} = scf.while {{%[0-9]+}} before {
+// CHECK-NEXT: ^{{block[0-9]+}}({{%[0-9]+}}: i32 loc("{{[^"]*}}locations.runic":[[@LINE+26]]:12 to [[@LINE+26]]:13)):
+// CHECK-NEXT: scf.condition {{%[0-9]+}}, {{%[0-9]+}} : (i1, i32) loc("{{[^"]*}}locations.runic":[[@LINE+26]]:9 to [[@LINE+26]]:22);
+// CHECK-NEXT: } after {
+// CHECK-NEXT: ^{{block[0-9]+}}({{%[0-9]+}}: i32 loc("{{[^"]*}}locations.runic":[[@LINE+26]]:12 to [[@LINE+26]]:13)):
+// CHECK-NEXT: scf.yield {{%[0-9]+}} : (i32) loc("{{[^"]*}}locations.runic":[[@LINE+26]]:9 to [[@LINE+26]]:18);
+// CHECK-NEXT: } : (i32) -> (i32) loc("{{[^"]*}}locations.runic":[[@LINE+20]]:10 to [[@LINE+20]]:19);
+// CHECK-NEXT: cf.br ^{{block[0-9]+}}({{%[0-9]+}} : i32) loc("{{[^"]*}}locations.runic":[[@LINE+26]]:5 to [[@LINE+26]]:10);
+// CHECK-NEXT: ^{{block[0-9]+}}({{%[0-9]+}}: i32 loc("{{[^"]*}}locations.runic":[[@LINE+26]]:8 to [[@LINE+26]]:9)):
+// CHECK-NEXT: builtin.ret {{%[0-9]+}} : (i32) loc("{{[^"]*}}locations.runic":[[@LINE+26]]:5 to [[@LINE+26]]:16);
+// CHECK-NEXT: } loc("{{[^"]*}}locations.runic":[[@LINE+15]]:1 to [[@LINE+15]]:17);
+
+// GENERIC: "builtin.function"() <{ name = #builtin.ident<@located>, linkage = #builtin.visibility<public>, signature = #builtin.signature<extern("C") (i32, i1) -> i32>, memory_effects = #builtin.declared_effects<unknown>, locals = #builtin.type_array<> }> ({
+// GENERIC-NEXT: ^{{block[0-9]+}}({{%[0-9]+}}: i32 loc("{{[^"]*}}locations.runic":[[@LINE+12]]:47 to [[@LINE+12]]:48), {{%[0-9]+}}: i1 loc("{{[^"]*}}locations.runic":[[@LINE+12]]:56 to [[@LINE+12]]:57)):
+// GENERIC-NEXT: {{%[0-9]+}} = "scf.while"({{%[0-9]+}}) ({
+// GENERIC-NEXT: ^{{block[0-9]+}}({{%[0-9]+}}: i32 loc("{{[^"]*}}locations.runic":[[@LINE+12]]:12 to [[@LINE+12]]:13)):
+// GENERIC-NEXT: "scf.condition"({{%[0-9]+}}, {{%[0-9]+}}) : (i1 | i32) -> () loc("{{[^"]*}}locations.runic":[[@LINE+12]]:9 to [[@LINE+12]]:22);
+// GENERIC-NEXT: }, {
+// GENERIC-NEXT: ^{{block[0-9]+}}({{%[0-9]+}}: i32 loc("{{[^"]*}}locations.runic":[[@LINE+12]]:12 to [[@LINE+12]]:13)):
+// GENERIC-NEXT: "scf.yield"({{%[0-9]+}}) : i32 -> () loc("{{[^"]*}}locations.runic":[[@LINE+12]]:9 to [[@LINE+12]]:18);
+// GENERIC-NEXT: }) : i32 -> i32 loc("{{[^"]*}}locations.runic":[[@LINE+6]]:10 to [[@LINE+6]]:19);
+// GENERIC-NEXT: "cf.br"() [ ^{{block[0-9]+}}({{%[0-9]+}} : i32) ] : () -> () loc("{{[^"]*}}locations.runic":[[@LINE+12]]:5 to [[@LINE+12]]:10);
+// GENERIC-NEXT: ^{{block[0-9]+}}({{%[0-9]+}}: i32 loc("{{[^"]*}}locations.runic":[[@LINE+12]]:8 to [[@LINE+12]]:9)):
+// GENERIC-NEXT: "builtin.ret"({{%[0-9]+}}) : i32 -> () loc("{{[^"]*}}locations.runic":[[@LINE+12]]:5 to [[@LINE+12]]:16);
+// GENERIC-NEXT: }) : () -> () loc("{{[^"]*}}locations.runic":[[@LINE+1]]:1 to [[@LINE+1]]:17);
+builtin.function public extern("C") @located(%a: i32, %c: i1) -> i32 {
+    %r = scf.while %a before {
+    ^head(%i: i32):
+        scf.condition %c, %i : (i1, i32);
+    } after {
+    ^body(%j: i32):
+        scf.yield %j : (i32);
+    } : (i32) -> (i32);
+    cf.br ^exit(%r : i32);
+^exit(%x: i32):
+    builtin.ret %x : (i32);
+};

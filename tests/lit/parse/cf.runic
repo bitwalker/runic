@@ -1,0 +1,79 @@
+// RUN: runic-opt %s | filecheck %s
+// RUN: runic-opt %s --verify-roundtrip | filecheck %s
+// RUN: runic-opt %s --print-generic | runic-opt - --verify-roundtrip
+
+// Every operation of `cf`, read and printed in its custom form; the last RUN line reads the
+// generic form of each back. Where the parser takes more than the printer writes, the input uses
+// the other spelling: block names, which print as numbers, a string with escapes, and the cases of
+// a switch on lines of their own (the printer breaks a long line where it chooses; the line breaks
+// here are where it breaks it).
+// CHECK: builtin.module public @cf {
+builtin.module public @cf {
+    // `cf.assert` with a message that holds escapes, and with an attribute dictionary;
+    // `cf.select`; `cf.cond_br` to a block with arguments and one without; `cf.br` with one
+    // argument and with none.
+    // CHECK-LABEL: builtin.function public extern("C") @branches(
+    // CHECK-SAME: [[C:%[0-9]+]]: i1, [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: cf.assert [[C]], "c \"holds\"\n";
+    // CHECK-NEXT: cf.assert [[C]], "noted" attributes { note = #builtin.i32<1> };
+    // CHECK-NEXT: [[SEL:%[0-9]+]] = cf.select [[C]], [[A]], [[B]];
+    // CHECK-NEXT: cf.cond_br [[C]] ^[[B_LEFT:block[0-9]+]]([[SEL]] : i32), ^[[B_RIGHT:block[0-9]+]] : (i1);
+    // CHECK-NEXT: ^[[B_LEFT]]([[X:%[0-9]+]]: i32):
+    // CHECK-NEXT: cf.br ^[[B_JOIN:block[0-9]+]]([[X]], [[A]] : i32, i32);
+    // CHECK-NEXT: ^[[B_RIGHT]]:
+    // CHECK-NEXT: cf.br ^[[B_EMPTY:block[0-9]+]];
+    // CHECK-NEXT: ^[[B_EMPTY]]:
+    // CHECK-NEXT: cf.br ^[[B_JOIN]]([[B]], [[B]] : i32, i32);
+    // CHECK-NEXT: ^[[B_JOIN]]([[R:%[0-9]+]]: i32, [[S:%[0-9]+]]: i32):
+    // CHECK-NEXT: builtin.ret [[R]] : (i32);
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @branches(%c: i1, %a: i32, %b: i32) -> i32 {
+        cf.assert %c, "c \"holds\"\n";
+        cf.assert %c, "noted" attributes { note = #builtin.i32<1> };
+        %sel = cf.select %c, %a, %b;
+        cf.cond_br %c ^left(%sel : i32), ^right : (i1);
+    ^left(%x: i32):
+        cf.br ^join(%x, %a : i32, i32);
+    ^right:
+        cf.br ^empty;
+    ^empty:
+        cf.br ^join(%b, %b : i32, i32);
+    ^join(%r: i32, %s: i32):
+        builtin.ret %r : (i32);
+    };
+
+    // `cf.switch` with keyed cases that forward values or nothing, and a fallback.
+    // CHECK-LABEL: builtin.function public extern("C") @switch(
+    // CHECK-SAME: [[S:%[0-9]+]]: i32, [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: cf.switch [[S]] [#builtin.i32<1> -> ^[[B_JOIN:block[0-9]+]]([[A]] : i32),
+    // CHECK-NEXT: #builtin.i32<-2> -> ^[[B_JOIN]]([[B]] : i32),
+    // CHECK-NEXT: #builtin.i32<7> -> ^[[B_OTHER:block[0-9]+]]], ^[[B_JOIN]]([[S]] : i32) : (i32);
+    // CHECK-NEXT: ^[[B_OTHER]]:
+    // CHECK-NEXT: builtin.ret [[A]] : (i32);
+    // CHECK-NEXT: ^[[B_JOIN]]([[R:%[0-9]+]]: i32):
+    // CHECK-NEXT: builtin.ret [[R]] : (i32);
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @switch(%s: i32, %a: i32, %b: i32) -> i32 {
+        cf.switch %s [#builtin.i32<1> -> ^join(%a : i32),
+            #builtin.i32<-2> -> ^join(%b : i32),
+            #builtin.i32<7> -> ^other], ^join(%s : i32) : (i32);
+    ^other:
+        builtin.ret %a : (i32);
+    ^join(%r: i32):
+        builtin.ret %r : (i32);
+    };
+
+    // `cf.switch` with no keyed case.
+    // CHECK-LABEL: builtin.function public extern("C") @fallback_only(
+    // CHECK-SAME: [[S:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: cf.switch [[S]] [], ^[[B_DONE:block[0-9]+]] : (i32);
+    // CHECK-NEXT: ^[[B_DONE]]:
+    // CHECK-NEXT: builtin.ret [[S]] : (i32);
+    // CHECK-NEXT: };
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @fallback_only(%s: i32) -> i32 {
+        cf.switch %s [], ^done : (i32);
+    ^done:
+        builtin.ret %s : (i32);
+    };
+};

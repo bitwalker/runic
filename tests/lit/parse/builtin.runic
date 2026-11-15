@@ -1,0 +1,150 @@
+// RUN: runic-opt %s | filecheck %s
+// RUN: runic-opt %s --verify-roundtrip | filecheck %s
+// RUN: runic-opt %s --print-generic | runic-opt - --verify-roundtrip
+
+// Every operation of `builtin`, read and printed in its custom form; the last RUN line reads the
+// generic form of each back. A world holds components and modules; a module holds globals,
+// segments, functions and aliases. Where the parser takes more than the printer writes, the input
+// uses the other spelling: a function without a visibility or without `extern` (printed
+// `private` and `extern`), a property at its default, a single result in parentheses, a hexadecimal
+// immediate, a result pack.
+// CHECK: builtin.world {
+builtin.world {
+    // A component with an empty body, and one with a path for a name and an attribute dictionary
+    // before its body; a module inside it.
+    // CHECK-LABEL: builtin.component private @c
+    // CHECK-SAME:  { };
+    builtin.component private @c { };
+    // CHECK-LABEL: builtin.component public @ns::@pkg
+    // CHECK-SAME:  attributes { note = #builtin.i32<1> } {
+    builtin.component public @ns::@pkg attributes { note = #builtin.i32<1> } {
+        // CHECK-LABEL: builtin.module internal @inner
+        // CHECK-SAME:  { };
+        // CHECK-NEXT: };
+        builtin.module internal @inner { };
+    };
+    // A module with an attribute dictionary (its data layout).
+    // CHECK-LABEL: builtin.module public @m
+    // CHECK-SAME:  attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.module public @m attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+        // A global variable with an initializer, which holds no terminator.
+        // CHECK-LABEL: builtin.global_variable public @data
+        // CHECK-SAME:  : array<i8; 2> {
+        // CHECK-NEXT: [[BYTES:%[0-9]+]] = builtin.bytes "0201" : array<i8; 2>;
+        // CHECK-NEXT: };
+        builtin.global_variable public @data : array<i8; 2> {
+            %bytes = builtin.bytes "0201" : array<i8; 2>;
+        };
+        // A global without an initializer, and one with an attribute dictionary; then segments,
+        // `readonly` at its default (left out, or written `false`) and not.
+        // CHECK-LABEL: builtin.global_variable private @zeroed
+        // CHECK-SAME:  : i32;
+        builtin.global_variable private @zeroed : i32;
+        // CHECK-LABEL: builtin.global_variable internal @noted
+        // CHECK-SAME:  : i32 attributes { note = #builtin.i32<1> };
+        // CHECK-NEXT: builtin.segment <{ offset = #builtin.i64<16>, data = #builtin.bytes<"cc3f"> }>;
+        // CHECK-NEXT: builtin.segment <{ offset = #builtin.i64<32>, data = #builtin.bytes<"00">, readonly = #builtin.bool<true> }>;
+        // CHECK-NEXT: builtin.segment <{ offset = #builtin.i64<48>, data = #builtin.bytes<"01"> }>;
+        builtin.global_variable internal @noted : i32 attributes { note = #builtin.i32<1> };
+        builtin.segment <{ offset = #builtin.i64<16>, data = #builtin.bytes<"cc3f"> }>;
+        builtin.segment <{ offset = #builtin.i64<32>, data = #builtin.bytes<"00">, readonly = #builtin.bool<true> }>;
+        builtin.segment <{ offset = #builtin.i64<48>, data = #builtin.bytes<"01">, readonly = #builtin.bool<false> }>;
+        // Declarations: parameter and result attributes, no visibility, no `extern`, several
+        // results, declared effects (none, or each kind with and without a target), `never`.
+        // CHECK-LABEL: builtin.function public extern("C") @callee(
+        // CHECK-SAME: i32) -> i32;
+        builtin.function public extern("C") @callee(i32) -> i32;
+        // CHECK-LABEL: builtin.function private extern("C") @no_visibility(
+        // CHECK-SAME: i32 { extend = #builtin.zext }, ptr<i8> { sret = #builtin.sret }) -> (i8 { extend = #builtin.sext });
+        builtin.function extern("C") @no_visibility(i32 { extend = #builtin.zext }, ptr<i8> { sret = #builtin.sret }) -> (i8 { extend = #builtin.sext });
+        // CHECK-LABEL: builtin.function internal extern("C") @no_extern(
+        // CHECK-SAME: ) -> (i32, i64);
+        builtin.function internal("C") @no_extern() -> (i32, i64);
+        // CHECK-LABEL: builtin.function public extern("fast") @effects(
+        // CHECK-SAME: ptr<i8>) -> ptr<i8> effects(read, write(arg 0), allocate(result 0), free);
+        builtin.function public extern("fast") @effects(ptr<i8>) -> ptr<i8> effects(read, write(arg 0), allocate(result 0), free);
+        // CHECK-LABEL: builtin.function public extern("C") @pure(
+        // CHECK-SAME: ) effects();
+        builtin.function public extern("C") @pure() effects();
+        // CHECK-LABEL: builtin.function public extern("C") @never(
+        // CHECK-SAME: ) -> never;
+        builtin.function public extern("C") @never() -> never;
+        // Aliases, without and with an attribute dictionary.
+        // CHECK-LABEL: builtin.function_alias private @alias
+        // CHECK-SAME:  -> @callee;
+        builtin.function_alias private @alias -> @callee;
+        // CHECK-LABEL: builtin.function_alias public @alias2
+        // CHECK-SAME:  -> @callee attributes { note = #builtin.i32<2> };
+        builtin.function_alias public @alias2 -> @callee attributes { note = #builtin.i32<2> };
+        // `builtin.ret_imm` of a narrow type, and of a hexadecimal literal with an attribute
+        // dictionary after the type.
+        // CHECK-LABEL: builtin.function public extern("C") @narrow(
+        // CHECK-SAME: ) -> i7 {
+        // CHECK-NEXT: builtin.ret_imm -1 : i7;
+        // CHECK-NEXT: };
+        builtin.function public extern("C") @narrow() -> i7 {
+            builtin.ret_imm -1 : i7;
+        };
+        // CHECK-LABEL: builtin.function public extern("C") @hex(
+        // CHECK-SAME: ) -> i8 {
+        // CHECK-NEXT: builtin.ret_imm -1 : i8 attributes { note = #builtin.i32<3> };
+        // CHECK-NEXT: };
+        builtin.function public extern("C") @hex() -> i8 {
+            builtin.ret_imm 0xff : i8 attributes { note = #builtin.i32<3> };
+        };
+        // `builtin.ret` of nothing with an attribute dictionary, and of two values with one before
+        // the types; an argument with attributes, locals, and a dictionary after the body.
+        // CHECK-LABEL: builtin.function public extern("C") @empty(
+        // CHECK-SAME: ) {
+        // CHECK-NEXT: builtin.ret attributes { note = #builtin.i32<4> };
+        // CHECK-NEXT: };
+        builtin.function public extern("C") @empty() {
+            builtin.ret attributes { note = #builtin.i32<4> };
+        };
+        // CHECK-LABEL: builtin.function public extern("C") @two(
+        // CHECK-SAME: [[A:%[0-9]+]]: i32 { extend = #builtin.zext }, [[B:%[0-9]+]]: i64) -> (i32, i64) locals(i32, i64) {
+        // CHECK-NEXT: builtin.ret [[A]], [[B]] attributes { note = #builtin.i32<5> } : (i32, i64);
+        // CHECK-NEXT: } attributes { note = #builtin.i32<6> };
+        builtin.function public extern("C") @two(%a: i32 { extend = #builtin.zext }, %b: i64) -> (i32, i64) locals(i32, i64) {
+            builtin.ret %a, %b attributes { note = #builtin.i32<5> } : (i32, i64);
+        } attributes { note = #builtin.i32<6> };
+        // Locals, calls (to an alias, and by a rooted path with a parenthesised result and an
+        // attribute dictionary), a function reference and an indirect call, the address of a
+        // global, and casts of one, two and no values.
+        // CHECK-LABEL: builtin.function public extern("C") @f(
+        // CHECK-SAME: [[A:%[0-9]+]]: i32) -> i32 locals(i32) {
+        // CHECK-NEXT: builtin.store_local 0, [[A]];
+        // CHECK-NEXT: builtin.store_local 0, [[A]] attributes { note = #builtin.i32<7> };
+        // CHECK-NEXT: [[LOADED:%[0-9]+]] = builtin.load_local 0 : i32;
+        // CHECK-NEXT: [[NOTED:%[0-9]+]] = builtin.load_local 0 : i32 attributes { note = #builtin.i32<8> };
+        // CHECK-NEXT: [[CALLED:%[0-9]+]] = builtin.call @alias([[LOADED]]) : extern("C") (i32) -> i32;
+        // CHECK-NEXT: [[ROOTED:%[0-9]+]] = builtin.call ::@m::@callee([[LOADED]]) : extern("C") (i32) -> i32 attributes { note = #builtin.i32<9> };
+        // CHECK-NEXT: [[FN:%[0-9]+]] = builtin.function_ref @callee : (i32) -> i32;
+        // CHECK-NEXT: [[IND:%[0-9]+]] = builtin.call_indirect [[FN]]([[CALLED]]) : extern("C") (i32) -> i32;
+        // CHECK-NEXT: [[ADDR:%[0-9]+]] = builtin.global_symbol @data : ptr<array<i8; 2>>;
+        // CHECK-NEXT: [[SAME:%[0-9]+]] = builtin.unrealized_conversion_cast [[IND]] : i32 to i32;
+        // CHECK-NEXT: [[PAIR_0:%[0-9]+]], [[PAIR_1:%[0-9]+]] = builtin.unrealized_conversion_cast [[IND]] : i32 to (i16, i16);
+        // CHECK-NEXT: [[JOINED:%[0-9]+]] = builtin.unrealized_conversion_cast [[PAIR_0]], [[PAIR_1]] : (i16, i16) to i32;
+        // CHECK-NEXT: [[NONE:%[0-9]+]] = builtin.unrealized_conversion_cast : () to i32;
+        // CHECK-NEXT: builtin.ret [[SAME]] : (i32);
+        // CHECK-NEXT: };
+        // CHECK-NEXT: };
+        // CHECK-NEXT: };
+        builtin.function public extern("C") @f(%a: i32) -> i32 locals(i32) {
+            builtin.store_local 0, %a;
+            builtin.store_local 0, %a attributes { note = #builtin.i32<7> };
+            %loaded = builtin.load_local 0 : i32;
+            %noted = builtin.load_local 0 : i32 attributes { note = #builtin.i32<8> };
+            %called = builtin.call @alias(%loaded) : extern("C") (i32) -> i32;
+            %rooted = builtin.call ::@m::@callee(%loaded) : extern("C") (i32) -> (i32) attributes { note = #builtin.i32<9> };
+            %fn = builtin.function_ref @callee : (i32) -> i32;
+            %ind = builtin.call_indirect %fn(%called) : extern("C") (i32) -> i32;
+            %addr = builtin.global_symbol @data : ptr<array<i8; 2>>;
+            %same = builtin.unrealized_conversion_cast %ind : (i32) to i32;
+            %pair:2 = builtin.unrealized_conversion_cast %ind : i32 to (i16, i16);
+            %joined = builtin.unrealized_conversion_cast %pair#0, %pair#1 : (i16, i16) to i32;
+            %none = builtin.unrealized_conversion_cast : () to i32;
+            builtin.ret %same : (i32);
+        };
+    };
+};

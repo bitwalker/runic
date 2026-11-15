@@ -38,6 +38,19 @@ variable.
 A clean machine needs the pinned toolchain (`rust-toolchain.toml`), the `cargo-make` crate
 installed, and network access once, for the `litcheck` task's `cargo install`.
 
+### Which operations have a parse test
+
+```sh
+cargo make lit-coverage
+tests/lit/coverage.sh bin/runic-opt
+```
+
+Both list, one per line, each operation runic-opt registers (`runic-opt --list-operations`)
+whose name appears in no test under `parse/` outside a `//` comment, and fail if there is one;
+the first builds the tool first. They print nothing when every operation has a parse test. Each
+dialect's operations are in `parse/<dialect>.runic`, which the Rust tests of the generic form
+read too (`crates/transform/src/tests/dialect_modules.rs`).
+
 ## Layout
 
 Directories are added with their first test.
@@ -112,7 +125,9 @@ label's line, so the signature checked is the labelled function's. The body foll
 
 A test of a pass checks what the pass did, not how the printer lays the IR out (indentation, the
 closing lines of a function or module). A test of the printer, under `parse/` or `roundtrip/`,
-checks the layout. A test that expects layout folds states the module's `data_layout`:
+checks the layout: a parse test checks every line of the reprint, and writes its input in another
+spelling wherever the parser takes more than the printer writes, so that it is more than an
+identity. A test that expects layout folds states the module's `data_layout`:
 
 ```
 builtin.module public @m32 attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
@@ -140,7 +155,8 @@ A test of a pass that wants its output to read back pipes it into a second run:
 
 A test that prints locations (`--print-locations`) reads its input from `%s`, never from a pipe: a
 location that names standard input cannot be resolved by a second run. The path in a location is
-the path as given, matched with `{{.*}}`:
+the path as given, matched with `{{.*}}`, or with `{{[^"]*}}` on a line that holds several
+locations (`litcheck` does not take `{{.*}}` back to an earlier match, so it runs to the last):
 
 ```
 // RUN: runic-opt %s --print-locations | filecheck %s

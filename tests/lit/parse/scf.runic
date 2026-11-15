@@ -1,0 +1,183 @@
+// RUN: runic-opt %s | filecheck %s
+// RUN: runic-opt %s --verify-roundtrip | filecheck %s
+// RUN: runic-opt %s --print-generic | runic-opt - --verify-roundtrip
+
+// Every operation of `scf`, read and printed in its custom form; the last RUN line reads the
+// generic form of each back. Each operation with results and without, and with an attribute
+// dictionary: before the types for `scf.break` and `scf.continue`, before the types of the
+// results for `scf.index_switch` (written there without the `attributes` keyword), before the
+// signature for the derived forms. Where the parser takes more than the printer writes, the input
+// uses the other spelling: block names, an entry block label with no arguments (which a then
+// region prints without), and a dictionary of `scf.index_switch` without spaces. The after
+// region of an `scf.while` prints the label of its entry block even when it has no arguments
+// (the input writes it so), and `scf.index_switch` prints a space after its selector.
+// CHECK: builtin.module public @scf {
+builtin.module public @scf {
+    // `scf.while` whose after region continues or breaks out of an `scf.if`, and an
+    // `scf.index_switch` with a case and a default, each yielding a value.
+    // CHECK-LABEL: builtin.function public extern("C") @loops(
+    // CHECK-SAME: [[N:%[0-9]+]]: i32, [[C:%[0-9]+]]: i1, [[S:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[ZERO:%[0-9]+]] = arith.constant 0 : i32;
+    // CHECK-NEXT: [[COUNT:%[0-9]+]] = scf.while [[ZERO]] before {
+    // CHECK-NEXT: ^[[B_BEFORE:block[0-9]+]]([[I:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[MORE:%[0-9]+]] = arith.cmpi ult [[I]], [[N]];
+    // CHECK-NEXT: scf.condition [[MORE]], [[I]] : (i1, i32);
+    // CHECK-NEXT: } after {
+    // CHECK-NEXT: ^[[B_AFTER:block[0-9]+]]([[J:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[NEXT:%[0-9]+]] = scf.if [[C]] then {
+    // CHECK-NEXT: scf.continue 1 [[J]] : (i32);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: scf.break 1 [[J]] : (i32);
+    // CHECK-NEXT: } : (i1) -> (i32);
+    // CHECK-NEXT: scf.yield [[NEXT]] : (i32);
+    // CHECK-NEXT: } : (i32) -> (i32);
+    // CHECK-NEXT: [[PICKED:%[0-9]+]] = scf.index_switch [[S]]
+    // CHECK-NEXT: case 1 {
+    // CHECK-NEXT: scf.yield [[COUNT]] : (i32);
+    // CHECK-NEXT: }
+    // CHECK-NEXT: case -2 {
+    // CHECK-NEXT: scf.yield [[N]] : (i32);
+    // CHECK-NEXT: }
+    // CHECK-NEXT: default {
+    // CHECK-NEXT: scf.yield [[ZERO]] : (i32);
+    // CHECK-NEXT: } : (i32);
+    // CHECK-NEXT: builtin.ret [[PICKED]] : (i32);
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @loops(%n: i32, %c: i1, %s: i32) -> i32 {
+        %zero = arith.constant 0 : i32;
+        %count = scf.while %zero before {
+        ^before(%i: i32):
+            %more = arith.cmpi ult %i, %n;
+            scf.condition %more, %i : (i1, i32);
+        } after {
+        ^after(%j: i32):
+            %next = scf.if %c then {
+                scf.continue 1 %j : (i32);
+            } else {
+                scf.break 1 %j : (i32);
+            } : (i1) -> (i32);
+            scf.yield %next : (i32);
+        } : (i32) -> (i32);
+        %picked = scf.index_switch %s
+        case 1 {
+            scf.yield %count : (i32);
+        }
+        case -2 {
+            scf.yield %n : (i32);
+        }
+        default {
+            scf.yield %zero : (i32);
+        } : (i32);
+        builtin.ret %picked : (i32);
+    };
+
+    // Without values: an `scf.if` and an `scf.index_switch` with no results, an `scf.while` with no
+    // operands or results; attribute dictionaries on each.
+    // CHECK-LABEL: builtin.function public extern("C") @no_values(
+    // CHECK-SAME: [[C:%[0-9]+]]: i1, [[S:%[0-9]+]]: i32) {
+    // CHECK-NEXT: scf.if [[C]] then {
+    // CHECK-NEXT: scf.yield attributes { note = #builtin.i32<1> } : ();
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: scf.yield : ();
+    // CHECK-NEXT: } attributes { note = #builtin.i32<2> } : (i1) -> ();
+    // CHECK-NEXT: scf.index_switch [[S]]
+    // CHECK-NEXT: default {
+    // CHECK-NEXT: scf.yield : ();
+    // CHECK-NEXT: } { note = #builtin.i32<3> } : ();
+    // CHECK-NEXT: scf.while before {
+    // CHECK-NEXT: scf.condition [[C]] attributes { note = #builtin.i32<4> } : (i1);
+    // CHECK-NEXT: } after {
+    // CHECK-NEXT: ^[[B_BODY:block[0-9]+]]:
+    // CHECK-NEXT: scf.yield : ();
+    // CHECK-NEXT: } attributes { note = #builtin.i32<5> } : () -> ();
+    // CHECK-NEXT: builtin.ret;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @no_values(%c: i1, %s: i32) {
+        scf.if %c then {
+        ^entry:
+            scf.yield attributes { note = #builtin.i32<1> } : ();
+        } else {
+            scf.yield : ();
+        } attributes { note = #builtin.i32<2> } : (i1) -> ();
+        scf.index_switch %s
+        default {
+            scf.yield : ();
+        } {note=#builtin.i32<3>} : ();
+        scf.while before {
+            scf.condition %c attributes { note = #builtin.i32<4> } : (i1);
+        } after {
+        ^body:
+            scf.yield : ();
+        } attributes { note = #builtin.i32<5> } : () -> ();
+        builtin.ret;
+    };
+
+    // `scf.break` and `scf.continue` out of two loops, with an attribute dictionary before the
+    // types, and out of one loop with no values.
+    // CHECK-LABEL: builtin.function public extern("C") @exits(
+    // CHECK-SAME: [[C:%[0-9]+]]: i1, [[X:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[R:%[0-9]+]] = scf.while [[X]] before {
+    // CHECK-NEXT: ^[[B_OUTER:block[0-9]+]]([[I:%[0-9]+]]: i32):
+    // CHECK-NEXT: scf.condition [[C]], [[I]] : (i1, i32);
+    // CHECK-NEXT: } after {
+    // CHECK-NEXT: ^[[B_OUTER_BODY:block[0-9]+]]([[J:%[0-9]+]]: i32):
+    // CHECK-NEXT: scf.while before {
+    // CHECK-NEXT: scf.condition [[C]] : (i1);
+    // CHECK-NEXT: } after {
+    // CHECK-NEXT: ^[[B_INNER:block[0-9]+]]:
+    // CHECK-NEXT: scf.if [[C]] then {
+    // CHECK-NEXT: scf.break 2 [[J]] attributes { note = #builtin.i32<1> } : (i32);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: scf.continue 2 [[J]] attributes { note = #builtin.i32<2> } : (i32);
+    // CHECK-NEXT: } : (i1) -> ();
+    // CHECK-NEXT: scf.yield : ();
+    // CHECK-NEXT: } : () -> ();
+    // CHECK-NEXT: scf.while before {
+    // CHECK-NEXT: scf.condition [[C]] : (i1);
+    // CHECK-NEXT: } after {
+    // CHECK-NEXT: ^[[B_INNER2:block[0-9]+]]:
+    // CHECK-NEXT: scf.if [[C]] then {
+    // CHECK-NEXT: scf.break 1 : ();
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: scf.continue 1 : ();
+    // CHECK-NEXT: } : (i1) -> ();
+    // CHECK-NEXT: scf.yield : ();
+    // CHECK-NEXT: } : () -> ();
+    // CHECK-NEXT: scf.yield [[J]] : (i32);
+    // CHECK-NEXT: } : (i32) -> (i32);
+    // CHECK-NEXT: builtin.ret [[R]] : (i32);
+    // CHECK-NEXT: };
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @exits(%c: i1, %x: i32) -> i32 {
+        %r = scf.while %x before {
+        ^outer(%i: i32):
+            scf.condition %c, %i : (i1, i32);
+        } after {
+        ^outer_body(%j: i32):
+            scf.while before {
+                scf.condition %c : (i1);
+            } after {
+            ^inner:
+                scf.if %c then {
+                    scf.break 2 %j attributes { note = #builtin.i32<1> } : (i32);
+                } else {
+                    scf.continue 2 %j attributes { note = #builtin.i32<2> } : (i32);
+                } : (i1) -> ();
+                scf.yield : ();
+            } : () -> ();
+            scf.while before {
+                scf.condition %c : (i1);
+            } after {
+            ^inner2:
+                scf.if %c then {
+                    scf.break 1 : ();
+                } else {
+                    scf.continue 1 : ();
+                } : (i1) -> ();
+                scf.yield : ();
+            } : () -> ();
+            scf.yield %j : (i32);
+        } : (i32) -> (i32);
+        builtin.ret %r : (i32);
+    };
+};

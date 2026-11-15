@@ -1,0 +1,52 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// The parser's diagnostics about symbols: a symbol defined twice in a module and in a world (at
+// the second definition), names a symbol table cannot have, a symbol name left out, and a
+// reference that does not resolve. The parser stops at its first error, so each case holds one.
+
+builtin.module public @twice {
+    builtin.function public extern("C") @f();
+    builtin.function public extern("C") @f(); // expected-error {{redefinition of symbol f}}
+};
+
+// -----
+
+builtin.world {
+    builtin.module public @c { };
+    builtin.module public @c { }; // expected-error {{redefinition of symbol c}}
+};
+
+// -----
+
+// A module is named by one segment: a path names a component.
+builtin.module public @a::@b { // expected-error {{unexpected token '::'}}
+};
+
+// -----
+
+builtin.world {
+    builtin.module public @"a::b" { // expected-error {{a module name cannot contain `::`}}
+    };
+};
+
+// -----
+
+builtin.module public @"" { // expected-error {{the segment `` is not a valid path segment}}
+};
+
+// -----
+
+builtin.module public @m {
+    builtin.function public extern("C") @f() {
+        builtin.ret;
+    } attributes { r = @ }; // expected-error {{unexpected token ' '}}
+};
+
+// -----
+
+builtin.module public @m {
+    builtin.function public extern("C") @f() -> i32 {
+        %r = builtin.call @missing() : extern("C") () -> i32; // expected-error {{symbol '@missing' does not resolve}}
+        builtin.ret %r : (i32);
+    };
+};

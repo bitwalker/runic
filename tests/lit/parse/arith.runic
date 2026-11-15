@@ -1,0 +1,187 @@
+// RUN: runic-opt %s | filecheck %s
+// RUN: runic-opt %s --verify-roundtrip | filecheck %s
+// RUN: runic-opt %s --print-generic | runic-opt - --verify-roundtrip
+
+// Every operation of `arith`, read and printed in its custom form; the last RUN line reads the
+// generic form of each back. Where the parser takes more than the printer writes, the input uses
+// the other spelling: a property at its default (it is not printed), a dictionary without spaces,
+// a bare type as a type attribute, a hexadecimal or binary literal, a result pack.
+// CHECK: builtin.module public @arith {
+builtin.module public @arith {
+    // `arith.constant`: decimal, negative, hexadecimal and binary literals, printed as signed
+    // decimals of the type; `i1`, `isize`, `i128`; and an attribute dictionary after the type.
+    // CHECK-LABEL: builtin.function public extern("C") @constants(
+    // CHECK-SAME: ) -> i32 {
+    // CHECK-NEXT: [[DEC:%[0-9]+]] = arith.constant 7 : i32;
+    // CHECK-NEXT: [[NEG:%[0-9]+]] = arith.constant -7 : i32;
+    // CHECK-NEXT: [[HEX:%[0-9]+]] = arith.constant -1 : i8;
+    // CHECK-NEXT: [[BIN:%[0-9]+]] = arith.constant 5 : i4;
+    // CHECK-NEXT: [[WIDE:%[0-9]+]] = arith.constant -1 : i128;
+    // CHECK-NEXT: [[FLAG:%[0-9]+]] = arith.constant 1 : i1;
+    // CHECK-NEXT: [[SIZE:%[0-9]+]] = arith.constant 3 : isize;
+    // CHECK-NEXT: [[NOTED:%[0-9]+]] = arith.constant 1 : i32 attributes { note = #builtin.string<"n"> };
+    // CHECK-NEXT: builtin.ret [[DEC]] : (i32);
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @constants() -> i32 {
+        %dec = arith.constant 7 : i32;
+        %neg = arith.constant -7 : i32;
+        %hex = arith.constant 0xff : i8;
+        %bin = arith.constant 0b101 : i4;
+        %wide = arith.constant 0xffffffffffffffffffffffffffffffff : i128;
+        %flag = arith.constant 1 : i1;
+        %size = arith.constant 3 : isize;
+        %noted = arith.constant 1 : i32 attributes {note="n"};
+        builtin.ret %dec : (i32);
+    };
+
+    // The additive and multiplicative operations: the `overflow` property at its default
+    // (`wrapping`, left out or written) and in each other mode, an attribute dictionary with and
+    // without properties, and the overflowing forms, whose two results may be a pack (`%pack:2`,
+    // used as `%pack#1`).
+    // CHECK-LABEL: builtin.function public extern("C") @overflow(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[WRAP:%[0-9]+]] = arith.add [[A]], [[B]];
+    // CHECK-NEXT: [[WRAP_WRITTEN:%[0-9]+]] = arith.add [[A]], [[B]];
+    // CHECK-NEXT: [[CHECKED:%[0-9]+]] = arith.add [[A]], [[B]] <{ overflow = #builtin.overflow<checked signed> }>;
+    // CHECK-NEXT: [[UNCHECKED:%[0-9]+]] = arith.sub [[A]], [[B]] <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+    // CHECK-NEXT: [[MUL:%[0-9]+]] = arith.mul [[A]], [[B]] <{ overflow = #builtin.overflow<checked unsigned> }>;
+    // CHECK-NEXT: [[NOTED:%[0-9]+]] = arith.mul [[A]], [[B]] attributes { note = #builtin.i32<1> };
+    // CHECK-NEXT: [[BOTH:%[0-9]+]] = arith.mul [[A]], [[B]] <{ overflow = #builtin.overflow<unchecked signed> }> attributes { note = #builtin.i32<2> };
+    // CHECK-NEXT: [[O1:%[0-9]+]], [[R1:%[0-9]+]] = arith.add_overflowing [[A]], [[B]] <{ signedness = #builtin.signedness<unsigned> }>;
+    // CHECK-NEXT: [[O2:%[0-9]+]], [[R2:%[0-9]+]] = arith.sub_overflowing [[A]], [[B]] <{ signedness = #builtin.signedness<signed> }>;
+    // CHECK-NEXT: [[O3:%[0-9]+]], [[R3:%[0-9]+]] = arith.mul_overflowing [[A]], [[B]] <{ signedness = #builtin.signedness<unsigned> }>;
+    // CHECK-NEXT: [[PACK_0:%[0-9]+]], [[PACK_1:%[0-9]+]] = arith.add_overflowing [[A]], [[B]] <{ signedness = #builtin.signedness<signed> }>;
+    // CHECK-NEXT: [[SUM:%[0-9]+]] = arith.add [[PACK_1]], [[R3]];
+    // CHECK-NEXT: builtin.ret [[SUM]] : (i32);
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @overflow(%a: i32, %b: i32) -> i32 {
+        %wrap = arith.add %a, %b;
+        %wrap_written = arith.add %a , %b <{overflow=#builtin.overflow<wrapping>}>;
+        %checked = arith.add %a, %b <{ overflow = #builtin.overflow<checked signed> }>;
+        %unchecked = arith.sub %a, %b <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+        %mul = arith.mul %a, %b <{ overflow = #builtin.overflow<checked unsigned> }>;
+        %noted = arith.mul %a,%b attributes {note=#builtin.i32<1>};
+        %both = arith.mul %a, %b <{ overflow = #builtin.overflow<unchecked signed> }> attributes { note = #builtin.i32<2> };
+        %o1, %r1 = arith.add_overflowing %a, %b <{ signedness = #builtin.signedness<unsigned> }>;
+        %o2, %r2 = arith.sub_overflowing %a, %b <{ signedness = #builtin.signedness<signed> }>;
+        %o3, %r3 = arith.mul_overflowing %a, %b <{ signedness = #builtin.signedness<unsigned> }>;
+        %pack:2 = arith.add_overflowing %a, %b <{ signedness = #builtin.signedness<signed> }>;
+        %sum = arith.add %pack#1, %r3;
+        builtin.ret %sum : (i32);
+    };
+
+    // Division and remainder, the pairs of quotient and remainder, `min` and `max` with their
+    // signedness, and negation.
+    // CHECK-LABEL: builtin.function public extern("C") @division(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[UDIV:%[0-9]+]] = arith.udiv [[A]], [[B]];
+    // CHECK-NEXT: [[SDIV:%[0-9]+]] = arith.sdiv [[A]], [[B]];
+    // CHECK-NEXT: [[UREM:%[0-9]+]] = arith.urem [[A]], [[B]];
+    // CHECK-NEXT: [[SREM:%[0-9]+]] = arith.srem [[A]], [[B]];
+    // CHECK-NEXT: [[UQ:%[0-9]+]], [[UR:%[0-9]+]] = arith.udivrem [[A]], [[B]];
+    // CHECK-NEXT: [[SQ:%[0-9]+]], [[SR:%[0-9]+]] = arith.sdivrem [[A]], [[B]];
+    // CHECK-NEXT: [[MIN:%[0-9]+]] = arith.min [[A]], [[B]] <{ signedness = #builtin.signedness<signed> }>;
+    // CHECK-NEXT: [[MAX:%[0-9]+]] = arith.max [[A]], [[B]] <{ signedness = #builtin.signedness<unsigned> }>;
+    // CHECK-NEXT: [[NEG:%[0-9]+]] = arith.neg [[A]];
+    // CHECK-NEXT: builtin.ret [[NEG]] : (i32);
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @division(%a: i32, %b: i32) -> i32 {
+        %udiv = arith.udiv %a, %b;
+        %sdiv = arith.sdiv %a, %b;
+        %urem = arith.urem %a, %b;
+        %srem = arith.srem %a, %b;
+        %uq, %ur = arith.udivrem %a, %b;
+        %sq, %sr = arith.sdivrem %a, %b;
+        %min = arith.min %a, %b <{ signedness = #builtin.signedness<signed> }>;
+        %max = arith.max %a, %b <{ signedness = #builtin.signedness<unsigned> }>;
+        %neg = arith.neg %a;
+        builtin.ret %neg : (i32);
+    };
+
+    // The bitwise operations, shifts, rotations and bit counts.
+    // CHECK-LABEL: builtin.function public extern("C") @bits(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[AND:%[0-9]+]] = arith.band [[A]], [[B]];
+    // CHECK-NEXT: [[OR:%[0-9]+]] = arith.bor [[A]], [[B]];
+    // CHECK-NEXT: [[XOR:%[0-9]+]] = arith.bxor [[A]], [[B]];
+    // CHECK-NEXT: [[NOT:%[0-9]+]] = arith.bnot [[A]];
+    // CHECK-NEXT: [[SHL:%[0-9]+]] = arith.shl [[A]], [[B]];
+    // CHECK-NEXT: [[SHR:%[0-9]+]] = arith.shr [[A]], [[B]];
+    // CHECK-NEXT: [[ASHR:%[0-9]+]] = arith.ashr [[A]], [[B]];
+    // CHECK-NEXT: [[ROTL:%[0-9]+]] = arith.rotl [[A]], [[B]];
+    // CHECK-NEXT: [[ROTR:%[0-9]+]] = arith.rotr [[A]], [[B]];
+    // CHECK-NEXT: [[POPCNT:%[0-9]+]] = arith.popcnt [[A]];
+    // CHECK-NEXT: [[CLZ:%[0-9]+]] = arith.clz [[A]];
+    // CHECK-NEXT: [[CTZ:%[0-9]+]] = arith.ctz [[A]];
+    // CHECK-NEXT: [[CLO:%[0-9]+]] = arith.clo [[A]];
+    // CHECK-NEXT: [[CTO:%[0-9]+]] = arith.cto [[A]];
+    // CHECK-NEXT: builtin.ret [[CTO]] : (i32);
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @bits(%a: i32, %b: i32) -> i32 {
+        %and = arith.band %a, %b;
+        %or = arith.bor %a, %b;
+        %xor = arith.bxor %a, %b;
+        %not = arith.bnot %a;
+        %shl = arith.shl %a, %b;
+        %shr = arith.shr %a, %b;
+        %ashr = arith.ashr %a, %b;
+        %rotl = arith.rotl %a, %b;
+        %rotr = arith.rotr %a, %b;
+        %popcnt = arith.popcnt %a;
+        %clz = arith.clz %a;
+        %ctz = arith.ctz %a;
+        %clo = arith.clo %a;
+        %cto = arith.cto %a;
+        builtin.ret %cto : (i32);
+    };
+
+    // The coercions: the target type is the `ty` property, written as `#builtin.type<..>` or as a
+    // bare type, and printed as `#builtin.type<..>`.
+    // CHECK-LABEL: builtin.function public extern("C") @coercions(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[W:%[0-9]+]]: i64) -> i32 {
+    // CHECK-NEXT: [[Z:%[0-9]+]] = arith.zext [[A]] <{ ty = #builtin.type<i64> }>;
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.sext [[A]] <{ ty = #builtin.type<i64> }>;
+    // CHECK-NEXT: [[T:%[0-9]+]] = arith.trunc [[W]] <{ ty = #builtin.type<i32> }>;
+    // CHECK-NEXT: [[ZT:%[0-9]+]] = arith.zext_or_trunc [[A]] <{ ty = #builtin.type<isize> }>;
+    // CHECK-NEXT: [[ST:%[0-9]+]] = arith.sext_or_trunc [[ZT]] <{ ty = #builtin.type<i32> }>;
+    // CHECK-NEXT: builtin.ret [[ST]] : (i32);
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @coercions(%a: i32, %w: i64) -> i32 {
+        %z = arith.zext %a <{ ty = #builtin.type<i64> }>;
+        %s = arith.sext %a <{ ty = i64 }>;
+        %t = arith.trunc %w <{ ty = #builtin.type<i32> }>;
+        %zt = arith.zext_or_trunc %a <{ ty = isize }>;
+        %st = arith.sext_or_trunc %zt <{ ty = #builtin.type<i32> }>;
+        builtin.ret %st : (i32);
+    };
+
+    // `arith.cmpi` with each predicate, and an attribute dictionary after the operands.
+    // CHECK-LABEL: builtin.function public extern("C") @comparisons(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i1 {
+    // CHECK-NEXT: [[EQ:%[0-9]+]] = arith.cmpi eq [[A]], [[B]];
+    // CHECK-NEXT: [[NE:%[0-9]+]] = arith.cmpi ne [[A]], [[B]];
+    // CHECK-NEXT: [[SLT:%[0-9]+]] = arith.cmpi slt [[A]], [[B]];
+    // CHECK-NEXT: [[SLE:%[0-9]+]] = arith.cmpi sle [[A]], [[B]];
+    // CHECK-NEXT: [[SGT:%[0-9]+]] = arith.cmpi sgt [[A]], [[B]];
+    // CHECK-NEXT: [[SGE:%[0-9]+]] = arith.cmpi sge [[A]], [[B]];
+    // CHECK-NEXT: [[ULT:%[0-9]+]] = arith.cmpi ult [[A]], [[B]];
+    // CHECK-NEXT: [[ULE:%[0-9]+]] = arith.cmpi ule [[A]], [[B]];
+    // CHECK-NEXT: [[UGT:%[0-9]+]] = arith.cmpi ugt [[A]], [[B]];
+    // CHECK-NEXT: [[UGE:%[0-9]+]] = arith.cmpi uge [[A]], [[B]] attributes { note = #builtin.bool<true> };
+    // CHECK-NEXT: builtin.ret [[UGE]] : (i1);
+    // CHECK-NEXT: };
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @comparisons(%a: i32, %b: i32) -> i1 {
+        %eq = arith.cmpi eq %a, %b;
+        %ne = arith.cmpi ne %a, %b;
+        %slt = arith.cmpi slt %a, %b;
+        %sle = arith.cmpi sle %a, %b;
+        %sgt = arith.cmpi sgt %a, %b;
+        %sge = arith.cmpi sge %a, %b;
+        %ult = arith.cmpi ult %a, %b;
+        %ule = arith.cmpi ule %a, %b;
+        %ugt = arith.cmpi ugt %a, %b;
+        %uge = arith.cmpi uge %a, %b attributes { note = #builtin.bool<true> };
+        builtin.ret %uge : (i1);
+    };
+};

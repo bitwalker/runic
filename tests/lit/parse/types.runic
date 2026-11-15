@@ -1,0 +1,67 @@
+// RUN: runic-opt %s | filecheck %s
+// RUN: runic-opt %s --verify-roundtrip | filecheck %s
+// RUN: runic-opt %s --print-generic | runic-opt - --verify-roundtrip
+
+// Every kind of type that has text, read and printed, as the parameter types of declarations:
+// integers of any width from 1, `isize`, floats, pointers (opaque, typed, in an address space),
+// arrays, structs (named, with a representation, with named and aligned fields), enums (with and
+// without values and payloads), function types, the unknown type, a dialect type, and type
+// aliases. Where the parser takes more than the printer writes, the input uses the other
+// spelling: an alias that is not recursive is replaced by its type; the members of a recursion
+// group without a named struct are renamed `!t0`, `!t1`; the printer writes `packed(1)` for
+// `packed`, every value of an enum once one is not its position, and a quoted name that needs no
+// quotes bare. A recursion group is printed before the operation, then a blank line.
+
+// CHECK: rec {
+// CHECK-NEXT: type !node = struct node<i32, ptr<!node>>;
+// CHECK-NEXT: }
+// CHECK-NEXT: rec {
+// CHECK-NEXT: type !t0 = struct<ptr<!t1>>;
+// CHECK-NEXT: type !t1 = struct<ptr<!t0>>;
+// CHECK-NEXT: }
+// CHECK-EMPTY:
+type !pair = struct<i32, i32>;
+rec {
+    type !node = struct node<i32, ptr<!node>>;
+}
+rec { type !a = struct<ptr<!b>>; type !b = struct<ptr<!a>>; }
+// CHECK-NEXT: builtin.module public @types {
+builtin.module public @types {
+    // CHECK-LABEL: builtin.function public extern("C") @ints(
+    // CHECK-SAME: i1, i7, i64, i128, i16777215, isize) -> never;
+    builtin.function public extern("C") @ints(i1, i7, i64, i128, i16777215, isize) -> never;
+    // CHECK-LABEL: builtin.function public extern("C") @floats(
+    // CHECK-SAME: f32, f64);
+    builtin.function public extern("C") @floats(f32, f64);
+    // CHECK-LABEL: builtin.function public extern("C") @pointers(
+    // CHECK-SAME: ptr, ptr<i32>, ptr<1>, ptr<i32, 2>, ptr<ptr<i8>>);
+    builtin.function public extern("C") @pointers(ptr, ptr<i32>, ptr<1>, ptr<i32, 2>, ptr<ptr<i8>>);
+    // CHECK-LABEL: builtin.function public extern("C") @arrays(
+    // CHECK-SAME: array<i8; 4>, array<array<i32; 2>; 3>, array<i8; 0>);
+    builtin.function public extern("C") @arrays(array<i8; 4>, array<array<i32; 2>; 3>, array<i8; 0>);
+    // CHECK-LABEL: builtin.function public extern("C") @structs(
+    // CHECK-SAME: struct<>, struct<i32, i8>, struct Named<i32>, struct "quoted name"<i32>);
+    builtin.function public extern("C") @structs(struct<>, struct<i32, i8>, struct Named<i32>, struct "quoted name"<i32>);
+    // CHECK-LABEL: builtin.function public extern("C") @struct_reprs(
+    // CHECK-SAME: struct<align(8); i32>, struct<packed(1); i8, i32>, struct<packed(2); i8, i32>, struct<transparent; i32>);
+    builtin.function public extern("C") @struct_reprs(struct<align(8); i32>, struct<packed; i8, i32>, struct<packed(2); i8, i32>, struct<transparent; i32>);
+    // CHECK-LABEL: builtin.function public extern("C") @struct_fields(
+    // CHECK-SAME: struct<x: i32, "y z": i8 align(4), i64 align(16)>);
+    builtin.function public extern("C") @struct_fields(struct<x: i32, "y z": i8 align(4), i64 align(16)>);
+    // CHECK-LABEL: builtin.function public extern("C") @enums(
+    // CHECK-SAME: enum<i8>, enum<i8; a, b, c>, enum<i32; a = 5, b = 6, c = -1>, enum Option<i8; None, Some: i32>, enum<isize; quoted>);
+    builtin.function public extern("C") @enums(enum<i8>, enum<i8; a, b, c>, enum<i32; a = 5, b, c = -1>, enum Option<i8; None, Some: i32>, enum<isize; "quoted">);
+    // CHECK-LABEL: builtin.function public extern("C") @functions(
+    // CHECK-SAME: (i32) -> i64, () -> (), () -> (() -> i32), (i32, i64) -> (i8, i16));
+    builtin.function public extern("C") @functions((i32) -> i64, () -> (), () -> (() -> i32), (i32, i64) -> (i8, i16));
+    // CHECK-LABEL: builtin.function public extern("C") @aliases(
+    // CHECK-SAME: struct<i32, i32>, !node, !t0, !t1);
+    builtin.function public extern("C") @aliases(!pair, !node, !a, !b);
+    // CHECK-LABEL: builtin.function public extern("C") @dialect(
+    // CHECK-SAME: !test.vector<i32 x 4>);
+    builtin.function public extern("C") @dialect(!test.vector<i32 x 4>);
+    // CHECK-LABEL: builtin.function public extern("C") @unknown(
+    // CHECK-SAME: ) attributes { t = #builtin.type<?> };
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @unknown() attributes { t = #builtin.type<?> };
+};
