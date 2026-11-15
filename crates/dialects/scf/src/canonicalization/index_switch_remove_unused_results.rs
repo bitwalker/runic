@@ -219,18 +219,17 @@ mod tests {
         Ok(())
     }
 
-    /// **A CASE REGION THAT DOES NOT YIELD IS SKIPPED, NOT UNWRAPPED**
-    /// (S7-F-6). The pattern narrows a switch's results by rewriting each
+    /// **A CASE REGION THAT DOES NOT YIELD IS SKIPPED, NOT UNWRAPPED.**
+    /// The pattern narrows a switch's results by rewriting each
     /// region's `scf.yield`; a region terminated by `ub.unreachable` has no
     /// yielded operands to narrow, and the pass used to `unwrap()` on it
     /// twice — once for the terminator and once for the downcast.
     ///
     /// It is not an exotic shape. An exhaustive enum match lowers its DEFAULT
     /// region to `ub.unreachable` by construction, so every exhaustive match
-    /// with an unused switch result reached this. The Sigma reproduction is
-    /// `let v = match o { Some(x) => x, None => 0u32 }; let _ = v;` in a
-    /// unit-returning function — ordinary source, with no `abort` in it —
-    /// and it panicked the compiler.
+    /// with an unused switch result reaches this: a match on an option whose
+    /// value is then not used, in a function that returns nothing, is
+    /// enough.
     #[test]
     fn an_unreachable_case_region_is_left_alone() -> Result<(), Report> {
         let mut test = Test::new("unreachable_case_region", |cx| ([cx.i32()], [cx.i32()]));

@@ -1163,8 +1163,8 @@ fn a_module_or_component_name_error_points_at_the_operation() {
 }
 
 /// A component prints its name as a symbol path, one raw segment per segment of the name (see
-/// `SymbolPath::to_symbol_name`), quoting a segment that is not a bare identifier of the IR, and that
-/// text parses back to the same name: the canonical spelling of the segments.
+/// `SymbolPath::to_symbol_name`), quoting a segment that is not a bare identifier of the IR, and
+/// that text parses back to the same name: the canonical spelling of the segments.
 #[test]
 fn component_name_roundtrips_through_the_printer() -> TestResult {
     use crate::{

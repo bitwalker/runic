@@ -50,7 +50,7 @@ impl clap::builder::TypedValueParser for LinkLibraryParser {
     ///
     /// `-l[KIND[:<LINKAGE>]=]NAME`
     ///
-    /// * `KIND` is one of: `masp`; defaults to `masp`
+    /// * `KIND` is one of: `a` (a static archive)
     /// * `LINKAGE` is one of: `static`, `dynamic`; defaults to `dynamic`
     /// * `NAME` is either an absolute path, or a name (without extension)
     fn parse_ref(

@@ -1299,10 +1299,9 @@ impl RegionBranchTerminatorOpInterface for Break {
             // VERIFIER-GUARDED LATENCY rather than a conservative answer, and it is worth being
             // precise about which.
             //
-            // An empty successor set is the BLIND state, not the unknown one: it is exactly the
-            // mutation N-1 uses to prove the framework can tell correct from blind, and an
-            // analysis reading it concludes that what follows the exit is unreachable — a *wrong*
-            // answer, not a safe one. `RegionExitTerminatorOpInterface::get_exit_target`'s own
+            // An empty successor set is the BLIND state, not the unknown one: an analysis reading
+            // it concludes that what follows the exit is unreachable — a *wrong* answer, not a
+            // safe one. `RegionExitTerminatorOpInterface::get_exit_target`'s own
             // doc says the same thing from the other side: a `None` there means "unknown control
             // flow", never "no control flow". The interface has no representation for unknown
             // successors, so this returns nothing and relies on the verifier having already
@@ -1486,9 +1485,10 @@ builtin.function public extern("C") @exit(%flag: i1) {
 
     /// An op with a region that has **not** declared [PropagateControlFlowBreak].
     ///
-    /// It exists only for V-3, and it has to exist because the tree has no such op today: the
-    /// region-bearing ops that can nest inside a function body are exactly `scf.if`,
-    /// `scf.index_switch` and `scf.while`, and all three opted in. Rule 3's whole job is to keep
+    /// It exists only for rule 3's test, `v3_rejects_an_exit_crossing_an_op_that_has_not_opted_in`,
+    /// and it has to exist because the tree has no such op today: the region-bearing ops that can
+    /// nest inside a function body are exactly `scf.if`, `scf.index_switch` and `scf.while`, and
+    /// all three opted in. Rule 3's whole job is to keep
     /// that true as the tree grows, so its witness has to bring its own non-member — otherwise
     /// the rule would be "tested" by a set that cannot violate it.
     #[derive(OpPrinter, OpParser, EffectOpInterface)]
@@ -1506,9 +1506,9 @@ builtin.function public extern("C") @exit(%flag: i1) {
     /// [OpaqueRegion]'s twin, identical in every respect except that it declares
     /// [PropagateControlFlowBreak].
     ///
-    /// The pair is what makes V-3 a test of the trait rather than of anything else about the two
-    /// programs: the accept and reject programs differ in exactly one token, and that token names
-    /// an op whose only difference is the marker.
+    /// The pair is what makes rule 3's test a test of the trait rather than of anything else about
+    /// the two programs: the accept and reject programs differ in exactly one token, and that token
+    /// names an op whose only difference is the marker.
     #[derive(OpPrinter, OpParser, EffectOpInterface)]
     #[effects(MemoryEffect())]
     #[operation(
@@ -1530,9 +1530,9 @@ builtin.function public extern("C") @exit(%flag: i1) {
     ///
     /// It exists to prove that the interface's blanket verifier CHECKS the resolver rather than
     /// restating it. `scf.break` in the same position reports the crossing itself, as an
-    /// [ExitDefectKind::Opaque] defect, and is rejected through the defect arm (V-3). This op
-    /// reports a confident `Resolved` and is rejected through the RE-DERIVATION arm, with the
-    /// same rule and the same wording — which is the whole claim of variant (B).
+    /// [ExitDefectKind::Opaque] defect, and is rejected through the defect arm (rule 3's test).
+    /// This op reports a confident `Resolved` and is rejected through the RE-DERIVATION arm, with
+    /// the same rule and the same wording — which is the whole claim of the check.
     #[derive(OpPrinter, OpParser, EffectOpInterface)]
     #[effects(MemoryEffect())]
     #[operation(
@@ -2618,9 +2618,9 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
         );
     }
 
-    /// V-3's program with the exit left as a hole, so that the resolver-check witnesses run on the
-    /// SAME shape the rule's own witness runs on, and the only variable is which op sits in the
-    /// hole and how deep.
+    /// Rule 3's program with the exit left as a hole, so that the resolver-check witnesses run on
+    /// the SAME shape the rule's own witness runs on, and the only variable is which op sits in
+    /// the hole and how deep.
     const RESOLVER_CHECK_PROGRAM: &str = "\
 builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
     %zero = arith.constant 0 : i32;

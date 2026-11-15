@@ -124,16 +124,16 @@ mod tests {
 
     use super::WhileConditionTruth;
 
-    /// **F-19 — the Sigma frontend's `loop` SHAPE, round-tripped through
-    /// this pattern.**
+    /// **An unconditional loop, round-tripped through this pattern.**
     ///
-    /// `loop { … break v; … }` lowers to an `scf.while` whose header is a
-    /// constant `true` and whose only exit is an `scf.break` carrying the
-    /// loop's result. This pattern is keyed on `scf.while` and inspects a
+    /// A loop with no condition of its own (`loop { … break v; … }` in a
+    /// source language) is an `scf.while` whose header is a constant `true`
+    /// and whose only exit is an `scf.break` carrying the loop's result.
+    /// This pattern is keyed on `scf.while` and inspects a
     /// constant condition, so it is the canonicalization in the best
     /// position to eat that header — and a loop whose header disappeared
     /// would be a silent miscompile rather than a verifier rejection, which
-    /// is why the shape is witnessed HERE and not only at emission.
+    /// is why the shape is witnessed HERE.
     ///
     /// The assertion is what makes this more than a smoke test: the loop
     /// must still be an `scf.while`, its `scf.break` must still be there,
@@ -142,13 +142,9 @@ mod tests {
     /// forwarded into the body — so "it left the loop alone" is the correct
     /// outcome and the IR is what proves it.
     ///
-    /// The frontend's own loop carries a poison filler on the forwarded
-    /// edge rather than an iteration argument; that difference is
-    /// immaterial to this pattern, which keys on the CONDITION, and the
-    /// executed half of F-19 covers the emitted shape end to end — the
-    /// default pipeline runs `Canonicalizer` twice over every function, so
-    /// every `loop` in `sigma-exec-tests` has been through this pattern
-    /// before it reaches the VM.
+    /// Whether the forwarded edge carries an iteration argument, as here, or
+    /// another value (a poison filler) is immaterial to this pattern, which
+    /// keys on the CONDITION.
     #[test]
     fn a_constant_true_header_with_a_break_survives_intact() {
         const PROGRAM: &str = "\
