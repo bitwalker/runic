@@ -1,0 +1,159 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// The reason a parser diagnostic gives, for errors whose other cases expect only the general
+// message (`invalid successor key`, `invalid result index`), which every reason shares, and for
+// errors of literals, attributes, operations' types and debug information that the other
+// `parse/errors-*.runic` files do not hold. The parser stops at its first error, so each case
+// holds one.
+
+// A hexadecimal literal with no digit.
+builtin.function public extern("C") @f() attributes { a = #builtin.i32<0x> }; // expected-error {{'0x' must be followed by a hexadecimal digit}}
+
+// -----
+
+// A binary literal with no digit.
+builtin.function public extern("C") @f() attributes { a = #builtin.i32<0b> }; // expected-error {{'0b' must be followed by a binary digit}}
+
+// -----
+
+// An integer attribute wider than a literal can be.
+builtin.function public extern("C") @f() attributes { a = #builtin.int<1 : i200> }; // expected-error {{integer literals wider than 128 bits are not supported}}
+
+// -----
+
+// An integer attribute of a type that is not an integer.
+builtin.function public extern("C") @f() attributes { a = #builtin.int<1 : ptr<i8>> }; // expected-error {{expected an integer type, got ptr<i8>}}
+
+// -----
+
+// An attribute kind that is not written with a body.
+builtin.function public extern("C") @f() attributes { a = #builtin.unit<1> }; // expected-error {{attribute 'builtin.unit' has no parser, so it cannot be written with a '<..>' body}}
+
+// -----
+
+// An attribute kind that has no value without a body.
+builtin.function public extern("C") @f() attributes { a = #builtin.data_layout }; // expected-error {{attribute 'builtin.data_layout' has no default value: it must have a '<..>' body}}
+
+// -----
+
+// A sigil with no name after it.
+builtin.function public extern("C") @f(% a: i32); // expected-error {{unexpected token ' ', expected an identifier}}
+
+// -----
+
+// A quoted name with an escape that is not one.
+builtin.function public extern("C") @f(enum<i8; "a\q">); // expected-error {{invalid escape sequence: a quoted name is escaped as by `str::escape_default`}}
+
+// -----
+
+// A recursion group holds type declarations only.
+rec { i32 } // expected-error {{unexpected token 'i32', expected a type declaration, 'type !name = ..;', or '}'}}
+builtin.function public extern("C") @f();
+
+// -----
+
+// A result number past the results of the pack.
+builtin.function public extern("C") @f(%a: i32) -> i32 {
+    %pair:2 = arith.add_overflowing %a, %a <{ signedness = #builtin.signedness<unsigned> }>;
+    %sum = arith.add %pair#5, %a; // expected-error {{%pair#5 has index 5}}
+    builtin.ret %sum : (i32);
+};
+
+// -----
+
+// A successor of `cf.switch`'s first group has a key.
+builtin.function public extern("C") @f(%a: i32) {
+    "cf.switch"(%a) [^b | ^b] : (i32) -> (); // expected-error {{successor group 0 of 'cf.switch' takes a key before each successor}}
+^b:
+    builtin.ret;
+};
+
+// -----
+
+// The key is an integer attribute.
+builtin.function public extern("C") @f(%a: i32) {
+    "cf.switch"(%a) ["one": ^b | ^b] : (i32) -> (); // expected-error {{this is not a key of the kind successor group 0 of 'cf.switch' takes}}
+^b:
+    builtin.ret;
+};
+
+// -----
+
+// The successor of `cf.br` has none.
+builtin.function public extern("C") @f(%a: i32) {
+    "cf.br"() [#builtin.i32<1>: ^b(%a : i32)] : () -> (); // expected-error {{successor group 0 of 'cf.br' takes no key}}
+^b(%x: i32):
+    builtin.ret;
+};
+
+// -----
+
+// A function's first keyword is a visibility or `extern`.
+builtin.function publik extern("C") @f(); // expected-error {{unexpected token 'publik', expected a visibility, `public`, `private` or `internal`, or `extern`}}
+
+// -----
+
+// After a visibility, the keyword is `extern`.
+builtin.function public extren("C") @f(); // expected-error {{unexpected token 'extren', expected `extern`}}
+
+// -----
+
+// The type of an `arith.constant` is an integer type.
+builtin.function public extern("C") @f() {
+    %x = arith.constant 1 : ptr<i8>; // expected-error {{expected integer type, got 'ptr<i8>'}}
+    builtin.ret;
+};
+
+// -----
+
+// The type of a `test.constant` too.
+builtin.function public extern("C") @f() {
+    %x = test.constant 1 : ptr<i8>; // expected-error {{expected integer type, got 'ptr<i8>'}}
+    builtin.ret;
+};
+
+// -----
+
+// The type of a `builtin.ret_imm` too.
+builtin.function public extern("C") @f() -> ptr<i8> {
+    builtin.ret_imm 1 : ptr<i8>; // expected-error {{expected an integer type, got ptr<i8>}}
+};
+
+// -----
+
+// A function reference is typed as a function.
+builtin.function public extern("C") @f() {
+    %x = builtin.function_ref @f : i32; // expected-error {{expected a function type, got 'i32'}}
+    builtin.ret;
+};
+
+// -----
+
+// A global's address is typed as a pointer.
+builtin.function public extern("C") @f() {
+    %x = builtin.global_symbol @f : i32; // expected-error {{expected pointer type, got 'i32'}}
+    builtin.ret;
+};
+
+// -----
+
+// A step of a `mem.gep` path fits in 31 bits.
+builtin.function public extern("C") @f(%p: ptr<struct<i32, i32>>) {
+    %x = mem.gep %p, [4294967296]; // expected-error {{the step 4294967296 is too large: a path step is at most 2147483647}}
+    builtin.ret;
+};
+
+// -----
+
+// The byte offset of a frame base fits in an `i64`.
+builtin.function public extern("C") @f() attributes { a = #di.expression<[DI_OP_frame_base(local_slot, 2+18446744073709551615)]> }; // expected-error {{byte offset '18446744073709551615' is out of range for i64}}
+
+// -----
+
+// A property of a debug variable is given once.
+builtin.function public extern("C") @f() attributes { a = #di.variable<{ name = "a", file = "t.rs", line = 1, column = 1, column = 2 }> }; // expected-error {{duplicate DILocalVariableAttr property 'column'}}
+
+// -----
+
+// A property of a subprogram is given once.
+builtin.function public extern("C") @f() attributes { a = #di.subprogram<{ name = "f", file = "t.rs", line = 1, column = 1, column = 2 }> }; // expected-error {{duplicate SubprogramAttr property 'column'}}

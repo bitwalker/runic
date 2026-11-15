@@ -1,0 +1,61 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// An unexpected token is shown as it is written, whatever its kind: the name of a value, a block,
+// an attribute or a type alias with its sigil, a number in the base it is written in, a string and
+// a quoted symbol name with their quotes, never as a word for its kind (`'%'-identifier`,
+// `integer`). The parser stops at its first error, so each case holds one.
+
+// A value name.
+builtin.function public extern("C") @f(%a: %b); // expected-error {{unexpected token '%b', expected a type}}
+
+// -----
+
+// A block name.
+builtin.function public extern("C") @f(%a: ^b); // expected-error {{unexpected token '^b', expected a type}}
+
+// -----
+
+// An attribute name.
+builtin.function public extern("C") @f(%a: #builtin.unit); // expected-error {{unexpected token '#builtin.unit', expected a type}}
+
+// -----
+
+// A decimal integer.
+builtin.function public extern("C") @f(%a: 42); // expected-error {{unexpected token '42', expected a type}}
+
+// -----
+
+// A hexadecimal integer.
+builtin.function public extern("C") @f(%a: 0x1f); // expected-error {{unexpected token '0x1f', expected a type}}
+
+// -----
+
+// A binary integer.
+builtin.function public extern("C") @f(%a: 0b101); // expected-error {{unexpected token '0b101', expected a type}}
+
+// -----
+
+// A string.
+builtin.function public extern("C") @f(%a: "s"); // expected-error {{unexpected token '"s"', expected a type}}
+
+// -----
+
+// A symbol name.
+builtin.function public extern("C") @f(%a: @g); // expected-error {{unexpected token '@g', expected a type}}
+
+// -----
+
+// A quoted symbol name, shown quoted.
+builtin.function public extern("C") @f(%a: @"a b"); // expected-error {{unexpected token '@"a b"', expected a type}}
+
+// -----
+
+// A type alias name, where a symbol name is expected.
+builtin.function public extern("C") !t(); // expected-error {{unexpected token '!t', expected a symbol name, `@name`}}
+
+// -----
+
+// A string that holds an escaped line break, shown on one line.
+// expected-error@+1 {{unexpected token '"a\nb"', expected a type}}
+builtin.function public extern("C") @f(%a: "a\
+b");

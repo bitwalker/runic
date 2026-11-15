@@ -1,0 +1,48 @@
+// RUN: not runic-opt %s --split-input-file 2>&1 | filecheck %s
+
+// Where on its line a parser diagnostic points. `--verify-diagnostics` compares lines only, so
+// these check the `-->` line of what is printed: a redefined value at its `%`, a redefined block
+// at its `^`, a label on an entry block whose arguments the operation names at the label, and an
+// exit whose operands and types differ in number at its first operand.
+
+// CHECK: error: redefinition of value '%x'
+// CHECK-NEXT: --> {{.*}}errors-columns.runic:[[@LINE+3]]:5
+builtin.function public extern("C") @value(%a: i32) {
+    %x = arith.add %a, %a;
+    %x = arith.add %a, %a;
+    builtin.ret;
+};
+
+// -----
+
+// CHECK: error: redefinition of block '^again'
+// CHECK-NEXT: --> {{.*}}errors-columns.runic:[[@LINE+5]]:3
+builtin.function public extern("C") @block() {
+    cf.br ^again;
+  ^again:
+    cf.br ^again;
+  ^again:
+    builtin.ret;
+};
+
+// -----
+
+// CHECK: error: invalid block name in region with named arguments
+// CHECK-NEXT: --> {{.*}}errors-columns.runic:[[@LINE+2]]:3
+builtin.function public extern("C") @label(%a: i32) {
+  ^entry:
+    builtin.ret;
+};
+
+// -----
+
+// CHECK: error: invalid operand and type list
+// CHECK-NEXT: --> {{.*}}errors-columns.runic:[[@LINE+5]]:24
+builtin.function public extern("C") @exit(%c: i1, %v: i32) {
+    scf.while before {
+        scf.condition %c : (i1);
+    } after {
+        scf.continue 1 %v, %v : (i32);
+    } : () -> ();
+    builtin.ret;
+};
