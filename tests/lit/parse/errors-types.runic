@@ -5,7 +5,7 @@
 // error (the limit is not configurable). The parser stops at its first error, so each case holds
 // one.
 
-builtin.function public extern("C") @f(i0); // expected-error {{expected a type}}
+builtin.function public extern("C") @f(i0); // expected-error {{unexpected token 'i0', expected a type}}
 
 // -----
 
@@ -13,7 +13,7 @@ builtin.function public extern("C") @f(i16777216); // expected-error {{an intege
 
 // -----
 
-builtin.function public extern("C") @f(f16); // expected-error {{expected a type}}
+builtin.function public extern("C") @f(f16); // expected-error {{unexpected token 'f16', expected a type}}
 
 // -----
 
@@ -42,11 +42,11 @@ builtin.function public extern("C") @f(!builtin.never); // expected-error {{buil
 
 // -----
 
-builtin.function public extern("C") @f(isize<i32>); // expected-error {{expected )}}
+builtin.function public extern("C") @f(isize<i32>); // expected-error {{unexpected token '<', expected )}}
 
 // -----
 
-builtin.function public extern("C") @f(array<i8>); // expected-error {{expected ;}}
+builtin.function public extern("C") @f(array<i8>); // expected-error {{unexpected token '>', expected ;}}
 
 // -----
 
@@ -62,7 +62,7 @@ builtin.function public extern("C") @f(enum<i8; a = 300>); // expected-error {{v
 
 // -----
 
-builtin.function public extern("C") @f(ptr<i32, x>); // expected-error {{expected decimal integer}}
+builtin.function public extern("C") @f(ptr<i32, x>); // expected-error {{unexpected token 'x', expected decimal integer}}
 
 // -----
 

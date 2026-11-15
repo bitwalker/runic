@@ -49,9 +49,9 @@ builtin.function public extern("C") @f(%a: i32) -> i32 {
 // -----
 
 builtin.module public @first { };
-builtin.module public @second { }; // expected-error {{expected the end of the input after the top-level operation}}
+builtin.module public @second { }; // expected-error {{unexpected token 'builtin.module', expected the end of the input}}
 
 // -----
 
-// expected-error@below {{expected an operation name}}
+// expected-error@below {{unexpected token 'end of input', expected an operation name}}
 builtin.module public @open {

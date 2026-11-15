@@ -19,7 +19,7 @@ builtin.world {
 // -----
 
 // A module is named by one segment: a path names a component.
-builtin.module public @a::@b { // expected-error {{expected {}}
+builtin.module public @a::@b { // expected-error {{unexpected token '::', expected {}}
 };
 
 // -----
@@ -39,7 +39,7 @@ builtin.module public @"" { // expected-error {{the segment `` is not a valid pa
 builtin.module public @m {
     builtin.function public extern("C") @f() {
         builtin.ret;
-    } attributes { r = @ }; // expected-error {{expected an identifier}}
+    } attributes { r = @ }; // expected-error {{unexpected token ' ', expected an identifier}}
 };
 
 // -----
