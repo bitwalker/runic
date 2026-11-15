@@ -21,8 +21,8 @@ use crate::filter::{
 /// let mut builder = Builder::new();
 ///
 /// // Parse a logging filter from an environment variable.
-/// if let Ok(rust_log) = env::var("RUST_LOG") {
-///     builder.parse(&rust_log);
+/// if let Ok(directives) = env::var("RUNIC_TRACE") {
+///     builder.parse(&directives);
 /// }
 ///
 /// let filter = builder.build();
