@@ -74,6 +74,40 @@ impl Pass for LiftControlFlowToSCF {
 
         log::debug!(target: "cfg-to-scf", "applying control flow lifting transformation pass starting from {}", root.borrow());
 
+        // A region with a block its entry cannot reach is refused, and is looked for in every
+        // region the pass would transform before any is transformed, so that a refusal leaves
+        // the IR as it was.
+        let reachable =
+            root.raw_prewalk::<Forward, _, _>(|operation: OperationRef| -> WalkResult {
+                let op = operation.borrow();
+                if op.is::<builtin::Function>() {
+                    drop(op);
+                    operation.raw_prewalk::<Forward, _, _>(
+                        |inner: OperationRef| -> WalkResult {
+                            for region in inner.borrow().regions() {
+                                if let Err(error) = transforms::check_all_blocks_reachable(&region)
+                                {
+                                    return WalkResult::Break(error);
+                                }
+                            }
+                            WalkResult::Continue(())
+                        },
+                    )?;
+                    WalkResult::Skip
+                } else if op.is::<builtin::World>()
+                    || op.is::<builtin::Component>()
+                    || op.is::<builtin::Module>()
+                {
+                    WalkResult::Continue(())
+                } else {
+                    WalkResult::Skip
+                }
+            });
+        if reachable.was_interrupted() {
+            state.set_post_pass_status(PostPassStatus::Unchanged);
+            return reachable.into_result();
+        }
+
         let result = root.raw_prewalk::<Forward, _, _>(|operation: OperationRef| -> WalkResult {
             let op = operation.borrow();
             if op.is::<builtin::Function>() {

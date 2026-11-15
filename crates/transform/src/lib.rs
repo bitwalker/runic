@@ -21,7 +21,7 @@ pub use self::dce::DeadCodeElimination;
 //pub use self::inliner::Inliner;
 pub use self::{
     canonicalization::Canonicalizer,
-    cfg_to_scf::{CFGToSCFInterface, transform_cfg_to_scf},
+    cfg_to_scf::{CFGToSCFInterface, check_all_blocks_reachable, transform_cfg_to_scf},
     cse::CommonSubexpressionElimination,
     local2reg::Local2Reg,
     sccp::SparseConditionalConstantPropagation,

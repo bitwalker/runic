@@ -107,6 +107,8 @@
 mod edges;
 mod transform;
 
+use alloc::collections::BTreeSet;
+
 use runic_core::{
     AsValueRange, BlockRef, Builder, OpBuilder, Operation, OperationRef, Region, RegionRef, Report,
     SmallVec, SourceSpan, Spanned, Type, Value, ValueRange, ValueRef, WalkResult, adt::SmallSet,
@@ -375,17 +377,42 @@ pub fn transform_cfg_to_scf(
     Ok(true)
 }
 
+/// Checks that every block of `region` can be reached from its entry block by following
+/// successors, which [transform_cfg_to_scf] requires.
+///
+/// A block with no predecessors is not the only kind of unreachable block: one whose
+/// predecessors are themselves unreachable (a block that branches to itself, or a chain from a
+/// block nothing branches to) is one too. Returns the error [transform_cfg_to_scf] gives for such a
+/// region; call it on each region to be transformed before transforming any, to refuse the whole
+/// without changing anything.
+pub fn check_all_blocks_reachable(region: &Region) -> Result<(), Report> {
+    let Some(entry) = region.entry_block_ref() else {
+        return Ok(());
+    };
+    let mut reached = BTreeSet::<BlockRef>::new();
+    let mut worklist = alloc::vec![entry];
+    while let Some(block) = worklist.pop() {
+        if !reached.insert(block) {
+            continue;
+        }
+        let block = block.borrow();
+        for index in 0..block.num_successors() {
+            worklist.push(block.get_successor(index));
+        }
+    }
+    if region.body().iter().any(|block| !reached.contains(&block.as_block_ref())) {
+        return Err(Report::msg("transformation does not support unreachable blocks"));
+    }
+    Ok(())
+}
+
 /// Checks all preconditions of the transformation prior to any transformations.
 ///
 /// Returns failure if any precondition is violated.
 fn check_transformation_preconditions(region: &Region) -> Result<(), Report> {
     use runic_core::SuccessorOperands;
 
-    for block in region.body() {
-        if !block.has_predecessors() && !block.is_entry_block() {
-            return Err(Report::msg("transformation does not support unreachable blocks"));
-        }
-    }
+    check_all_blocks_reachable(region)?;
 
     let walk_result = region.prewalk(|op: &Operation| {
         if !op.has_successors() {
@@ -432,6 +459,231 @@ fn check_transformation_preconditions(region: &Region) -> Result<(), Report> {
     });
 
     walk_result.into_result()
+}
+
+/// A region with a block that cannot be reached from its entry is refused before anything is
+/// changed, whatever the shape of the unreachable part: a block nothing branches to, a block that
+/// branches only to itself, a chain from either, into reachable code or not.
+#[cfg(test)]
+mod unreachable_block_tests {
+    use alloc::{boxed::Box, format, rc::Rc, string::String};
+
+    use runic_core::{
+        Context, Report,
+        dialects::builtin::Module,
+        parse::{self, ParserConfig},
+        pass::{Nesting, PassManager},
+    };
+
+    /// Runs `cfg-to-scf` on the module `source`; returns the error and checks that the module
+    /// prints as it did before.
+    fn refused(source: &str) -> String {
+        let context = Rc::new(Context::default());
+        let module =
+            parse::parse_any(ParserConfig::new(context.clone()), "unreachable.runic", source)
+                .into_result()
+                .expect("the input parses");
+        let before = format!("{}", module.borrow());
+        // The context outlives the module it holds.
+        let mut passes = PassManager::on::<Module>(context.clone(), Nesting::Implicit);
+        passes
+            .add_pass(Box::new(runic_dialect_scf::transforms::LiftControlFlowToSCF))
+            .unwrap();
+        let error: Report = passes.run(module).expect_err("the pass refuses");
+        drop(passes);
+        let after = format!("{}", module.borrow());
+        assert_eq!(after, before, "the pass changed the IR it refused");
+        format!("{error}")
+    }
+
+    const MESSAGE: &str = "transformation does not support unreachable blocks";
+
+    /// An unreachable block that loops on itself and branches into reachable code: the pass hung
+    /// with unbounded memory on it.
+    #[test]
+    fn an_unreachable_loop_into_reachable_code() {
+        assert!(refused(HANG).contains(MESSAGE));
+    }
+
+    /// An unreachable block that branches to itself and to the exit: the pass tripped an
+    /// assertion on it.
+    #[test]
+    fn an_unreachable_self_loop() {
+        assert!(refused(ASSERTION).contains(MESSAGE));
+    }
+
+    /// An unreachable cycle through two blocks, the first holding structured control flow: the
+    /// pass left a branch to an erased block on it.
+    #[test]
+    fn an_unreachable_cycle_holding_structured_control_flow() {
+        assert!(refused(ERASED_SUCCESSOR).contains(MESSAGE));
+    }
+
+    /// A block with no predecessors, as before.
+    #[test]
+    fn a_block_nothing_branches_to() {
+        let source = r#"builtin.module public @m {
+    builtin.function public extern("C") @f(%c: i1) -> i32 {
+        %one = arith.constant 1 : i32;
+        builtin.ret %one : (i32);
+    ^dead:
+        %two = arith.constant 2 : i32;
+        builtin.ret %two : (i32);
+    };
+};
+"#;
+        assert!(refused(source).contains(MESSAGE));
+    }
+
+    /// A function the pass could lift, before one it refuses: the refusal leaves the first as
+    /// it was too.
+    #[test]
+    fn a_refusal_changes_no_function() {
+        let source = r#"builtin.module public @m {
+    builtin.function public extern("C") @good(%c: i1, %a: i32, %b: i32) -> i32 {
+        cf.cond_br %c ^t, ^e : (i1);
+    ^t:
+        cf.br ^j(%a : i32);
+    ^e:
+        cf.br ^j(%b : i32);
+    ^j(%x: i32):
+        builtin.ret %x : (i32);
+    };
+    builtin.function public extern("C") @bad(%c: i1) -> i32 {
+        %one = arith.constant 1 : i32;
+        builtin.ret %one : (i32);
+    ^dead:
+        cf.br ^dead;
+    };
+};
+"#;
+        assert!(refused(source).contains(MESSAGE));
+    }
+
+    /// `c43613bfc1f3ff46.runic` of the review's corpus.
+    const HANG: &str = r#"builtin.module public @m {
+
+    builtin.function public extern("C") @pure(i32) -> i32 effects();
+    builtin.function public extern("C") @unknown(i32) -> i32;
+builtin.function public extern("C") @f(%a: i32, %b: i32, %c: i1, %d: i1, %p: ptr<i32>) -> i32 locals(i32, i32, i32, i32, i32, i32, i32) {
+    %r1 = arith.add %a, %b;
+    builtin.store_local 6, %r1;
+    builtin.store_local 5, %r1;
+    %r2 = builtin.load_local 6 : i32;
+    cf.cond_br %c ^b3, ^b2 : (i1);
+^b1:
+    %r3 = builtin.load_local 3 : i32;
+    %r4 = builtin.load_local 6 : i32;
+    %r5 = builtin.load_local 4 : i32;
+    cf.cond_br %d ^b1, ^b2 : (i1);
+^b2:
+    builtin.store_local 4, %b;
+    cf.br ^b3;
+^b3:
+    %r6 = builtin.load_local 1 : i32;
+    builtin.store_local 4, %r6;
+    %r7 = builtin.call @pure(%a) : extern("C") (i32) -> i32;
+    %r8 = scf.if %c then {
+        builtin.store_local 4, %r6;
+        builtin.store_local 6, %r6;
+        scf.yield %r6 : (i32);
+    } else {
+        %r9 = builtin.load_local 6 : i32;
+        scf.yield %r6 : (i32);
+    } : (i1) -> (i32);
+    %r10 = builtin.load_local 5 : i32;
+    builtin.store_local 6, %a;
+    builtin.store_local 2, %r7;
+    %r11 = arith.add %r8, %r6;
+    builtin.ret %a : (i32);
+};
+};
+"#;
+
+    /// `9b58d408350bb317.runic` of the review's corpus.
+    const ASSERTION: &str = r#"builtin.module public @m {
+
+    builtin.function public extern("C") @pure(i32) -> i32 effects();
+    builtin.function public extern("C") @unknown(i32) -> i32;
+builtin.function public extern("C") @f(%a: i32, %b: i32, %c: i1, %d: i1, %p: ptr<i32>) -> i32 locals(i32, i32) {
+    %r1 = builtin.load_local 0 : i32;
+    %r2 = builtin.load_local 0 : i32;
+    cf.cond_br %d ^b2, ^b2 : (i1);
+^b1:
+    builtin.store_local 0, %a;
+    %r3 = builtin.call @pure(%b) : extern("C") (i32) -> i32;
+    cf.cond_br %d ^b1, ^b2 : (i1);
+^b2:
+    builtin.store_local 1, %b;
+    builtin.store_local 1, %a;
+    builtin.store_local 1, %b;
+    %r4 = arith.add %b, %b;
+    %r5 = builtin.call @unknown(%a) : extern("C") (i32) -> i32;
+    builtin.store_local 0, %b;
+    %r6 = builtin.load_local 0 : i32;
+    builtin.ret %a : (i32);
+};
+};
+"#;
+
+    /// `72534fe42f992b6b.runic` of the review's corpus.
+    const ERASED_SUCCESSOR: &str = r#"builtin.module public @m {
+
+    builtin.function public extern("C") @pure(i32) -> i32 effects();
+    builtin.function public extern("C") @unknown(i32) -> i32;
+builtin.function public extern("C") @f(%a: i32, %b: i32, %c: i1, %d: i1, %p: ptr<i32>) -> i32 locals(i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32) {
+    builtin.store_local 3, %a;
+    builtin.store_local 9, %a;
+    %r1 = builtin.load_local 9 : i32;
+    %r2 = builtin.load_local 6 : i32;
+    %r3 = arith.add %r1, %b;
+    mem.store %a, %p;
+    %r4 = builtin.load_local 1 : i32;
+    %r5 = builtin.load_local 5 : i32;
+    cf.br ^b3;
+^b1:
+    %r6 = scf.if %c then {
+        %r7 = builtin.call @unknown(%b) : extern("C") (i32) -> i32;
+        %r8 = builtin.call @pure(%a) : extern("C") (i32) -> i32;
+        %r9 = scf.if %c then {
+            scf.yield %a : (i32);
+        } else {
+            %r10 = builtin.load_local 3 : i32;
+            scf.yield %r10 : (i32);
+        } : (i1) -> (i32);
+        scf.yield %r8 : (i32);
+    } else {
+        scf.yield %a : (i32);
+    } : (i1) -> (i32);
+    %r11 = arith.add %a, %b;
+    %r12 = builtin.load_local 11 : i32;
+    %r13 = arith.add %r12, %a;
+    %r14 = builtin.call @pure(%r12) : extern("C") (i32) -> i32;
+    builtin.store_local 6, %b;
+    builtin.store_local 5, %r13;
+    %r15 = builtin.load_local 11 : i32;
+    cf.cond_br %d ^b1, ^b2 : (i1);
+^b2:
+    builtin.store_local 5, %a;
+    %r16 = builtin.load_local 3 : i32;
+    %r17 = builtin.call @unknown(%b) : extern("C") (i32) -> i32;
+    %r18 = builtin.load_local 9 : i32;
+    builtin.store_local 7, %r18;
+    %r19 = arith.add %r17, %r17;
+    builtin.store_local 2, %r17;
+    %r20 = arith.add %b, %r17;
+    cf.cond_br %d ^b1, ^b3 : (i1);
+^b3:
+    builtin.store_local 5, %b;
+    %r21 = builtin.call @pure(%a) : extern("C") (i32) -> i32;
+    %r22 = arith.add %r21, %b;
+    builtin.store_local 4, %r22;
+    %r23 = builtin.load_local 7 : i32;
+    %r24 = builtin.call @pure(%r21) : extern("C") (i32) -> i32;
+    builtin.ret %a : (i32);
+};
+};
+"#;
 }
 
 #[cfg(test)]
