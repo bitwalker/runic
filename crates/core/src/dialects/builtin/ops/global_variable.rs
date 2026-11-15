@@ -13,8 +13,8 @@ use crate::{
     parse::ParserError,
     print::AsmPrinter,
     traits::{
-        AnyPointer, InferTypeOpInterface, IsolatedFromAbove, NoRegionArguments, SingleBlock,
-        SingleRegion,
+        AnyPointer, InferTypeOpInterface, IsolatedFromAbove, NoRegionArguments, NoTerminator,
+        SingleBlock, SingleRegion,
     },
 };
 
@@ -24,7 +24,9 @@ pub type GlobalVariableRef = UnsafeIntrusiveEntityRef<GlobalVariable>;
 ///
 /// Global variables may also specify an initializer, but if not provided, the underlying bytes
 /// will be zeroed, which may or may not be a valid instance of the type. It is up to frontends
-/// to ensure that an initializer is specified if necessary.
+/// to ensure that an initializer is specified if necessary. The initializer is a region of one
+/// block holding the data, a [Bytes](super::Bytes) for example, and no terminator: nothing
+/// transfers control out of it.
 ///
 /// Global variables, like functions, may also be assigned a visibility. This is only used when
 /// resolving symbol uses, and imposes no access restrictions on the code generated from them.
@@ -34,6 +36,7 @@ pub type GlobalVariableRef = UnsafeIntrusiveEntityRef<GlobalVariable>;
         SingleRegion,
         SingleBlock,
         NoRegionArguments,
+        NoTerminator,
         IsolatedFromAbove,
     ),
     implements(Symbol, OpPrinter)

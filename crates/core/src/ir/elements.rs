@@ -939,10 +939,10 @@ mod rewrite_tests {
 
     use super::*;
     use crate::{
-        Context, Op, StructType,
+        Context, Op, SourceSpan, StructType,
         dialects::{
             builtin::{
-                Module,
+                BuiltinOpBuilder, Module,
                 attributes::{TypeArrayAttr, TypeAttr},
             },
             test::Constant,
@@ -1159,7 +1159,8 @@ mod rewrite_tests {
             ));
             context.rec_group(&[body]).expect("a valid group")[0]
         };
-        let test = Test::new("f", |cx| ([cx.ptr_type(node_of(cx, cx.i64()))], []));
+        let mut test = Test::new("f", |cx| ([cx.ptr_type(node_of(cx, cx.i64()))], []));
+        test.function_builder().ret([], SourceSpan::UNKNOWN).expect("the return");
         let context = test.context_rc();
         let function = test.function();
         let old = context.ptr_type(node_of(&context, context.i64()));

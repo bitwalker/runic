@@ -17,6 +17,8 @@
 //! `the_walk_agrees_with_the_shared_query` (in `tests`) ties the two together.
 
 #[cfg(test)]
+mod model;
+#[cfg(test)]
 mod tests;
 
 use alloc::{format, string::String, vec::Vec};
@@ -24,13 +26,18 @@ use core::cell::OnceCell;
 
 use crate::{
     BlockRef, Operation, OperationRef, Region, RegionKindInterface, RegionRef, Report, Value,
-    diagnostics::Spanned, dominance::DomTreeBase, traits::IsolatedFromAbove,
+    diagnostics::Spanned,
+    dominance::DomTreeBase,
+    traits::{IsolatedFromAbove, NoTerminator, Terminator},
 };
 
 /// The structural rules of blocks and regions that hold at `op`, checked once `op` has verified:
 ///
 /// * an operation with successors is the last operation of its block;
 /// * every successor of an operation is a block of the region that holds the operation;
+/// * an operation with the [Terminator] trait is the last operation of its block;
+/// * unless `op` has the [NoTerminator] trait, every block of each of its regions is non-empty
+///   and ends with an operation that has the [Terminator] trait (a graph region included);
 /// * the entry block of each region of `op` has no predecessors;
 /// * a graph region of `op` (see [RegionKindInterface]) has at most one block.
 ///
@@ -75,6 +82,68 @@ pub(crate) fn verify_structure(op: &Operation) -> Result<(), Report> {
                         ),
                     ],
                 ));
+            }
+        }
+    }
+
+    if op.implements::<dyn Terminator>()
+        && let Some(block) = op.parent()
+        && let Some(next) = op.as_operation_ref().next()
+    {
+        debug_assert!(next.parent() == Some(block));
+        let next = next.borrow();
+        return Err(crate::diagnostics::report!(
+            message: (format!(
+                "'{}' is a terminator, but is not the last operation of its block",
+                op.name()
+            )),
+            labels: [
+                primary(op.span(), "a terminator must end its block"),
+                context(next.span(), format!("'{}' follows it here", next.name())),
+            ],
+        ));
+    }
+
+    if !op.implements::<dyn NoTerminator>() {
+        for (index, region) in op.regions().iter().enumerate() {
+            for (position, block) in region.body().iter().enumerate() {
+                let Some(last) = block.body().back().as_pointer() else {
+                    return Err(crate::diagnostics::report!(
+                        message: (format!(
+                            "block #{position} of region #{index} of '{}' is empty, and does not \
+                             end with a terminator",
+                            op.name()
+                        )),
+                        labels: [
+                            primary(
+                                op.span(),
+                                "every block of this operation's regions must end with a \
+                                 terminator"
+                            ),
+                        ],
+                    ));
+                };
+                let last = last.borrow();
+                if !last.implements::<dyn Terminator>() {
+                    return Err(crate::diagnostics::report!(
+                        message: (format!(
+                            "block #{position} of region #{index} of '{}' does not end with a \
+                             terminator",
+                            op.name()
+                        )),
+                        labels: [
+                            primary(
+                                last.span(),
+                                format!("the block ends with '{}', which is not a terminator", last.name())
+                            ),
+                            context(
+                                op.span(),
+                                "every block of this operation's regions must end with a \
+                                 terminator"
+                            ),
+                        ],
+                    ));
+                }
             }
         }
     }

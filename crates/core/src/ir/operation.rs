@@ -810,8 +810,9 @@ impl Operation {
     /// operation run, it is known that all of its children have successfully verified. Each
     /// operation is checked by [Self::verify], then by the structural rules of its block and
     /// regions: an operation with successors is the last of its block and branches only to blocks
-    /// of its own region; the entry block of a region has no predecessors; a graph region has at
-    /// most one block.
+    /// of its own region; a terminator is the last operation of its block; unless the operation
+    /// has `NoTerminator`, every block of its regions ends with a terminator; the entry block of a
+    /// region has no predecessors; a graph region has at most one block.
     ///
     /// Only if all of that holds does the second phase walk the regions of `self`, because a
     /// malformed block structure would make dominance meaningless: no operand of an operation

@@ -707,6 +707,131 @@ fn a_graph_region_with_two_blocks_is_rejected() {
     );
 }
 
+#[test]
+fn an_operation_after_a_terminator_is_rejected() {
+    let error = body_rejected(
+        "    builtin.ret;
+    test.sink %a : (i32);",
+    );
+    assert!(
+        error.starts_with(
+            "'builtin.ret' is a terminator, but is not the last operation of its block"
+        ),
+        "{error}"
+    );
+    assert!(error.contains("a terminator must end its block"), "{error}");
+    assert!(error.contains("'test.sink' follows it here"), "{error}");
+}
+
+#[test]
+fn a_body_that_falls_off_its_end_is_rejected() {
+    let error = body_rejected("    test.sink %a : (i32);");
+    assert!(
+        error.starts_with(
+            "block #0 of region #0 of 'builtin.function' does not end with a terminator"
+        ),
+        "{error}"
+    );
+    assert!(
+        error.contains("the block ends with 'test.sink', which is not a terminator"),
+        "{error}"
+    );
+    assert!(
+        error.contains("every block of this operation's regions must end with a terminator"),
+        "{error}"
+    );
+}
+
+#[test]
+fn an_empty_block_that_is_branched_to_is_rejected() {
+    let error = body_rejected(
+        "    test.dom_br ^empty;
+^empty:",
+    );
+    assert!(
+        error.starts_with(
+            "block #1 of region #0 of 'builtin.function' is empty, and does not end with a \
+             terminator"
+        ),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_block_that_falls_through_to_the_next_is_rejected() {
+    let error = body_rejected(
+        "    test.dom_br ^next;
+^next:
+    test.sink %a : (i32);
+^last:
+    builtin.ret;",
+    );
+    assert!(
+        error.starts_with(
+            "block #1 of region #0 of 'builtin.function' does not end with a terminator"
+        ),
+        "{error}"
+    );
+}
+
+/// The rule holds in a nested region too: the function's own body is checked at the function.
+#[test]
+fn a_nested_body_that_falls_off_its_end_is_rejected() {
+    let error = body_rejected(
+        "    test.dom_region {
+        test.sink %a : (i32);
+    };",
+    );
+    assert!(
+        error.starts_with(
+            "block #0 of region #0 of 'builtin.function' does not end with a terminator"
+        ),
+        "{error}"
+    );
+    assert!(error.contains("the block ends with 'test.dom_region'"), "{error}");
+}
+
+/// The blocks of an operation with `NoTerminator` may end with any operation, or be empty; a
+/// terminator in them is still last in its block.
+#[test]
+fn a_region_without_terminators_is_accepted_where_its_operation_says_so() {
+    body_accepted(
+        "    test.dom_region {
+        test.sink %a : (i32);
+    };
+    test.dom_graph {
+        test.sink %a : (i32);
+    };
+    test.dom_region {
+        test.dom_br ^next;
+    ^next:
+    };
+    builtin.ret;",
+    );
+    let error = body_rejected(
+        "    test.dom_region {
+        builtin.ret;
+        test.sink %a : (i32);
+    };
+    builtin.ret;",
+    );
+    assert!(
+        error.starts_with("'builtin.ret' is a terminator, but is not the last"),
+        "{error}"
+    );
+}
+
+/// The initializer of a global variable holds its data and no terminator.
+#[test]
+fn a_global_variable_initializer_needs_no_terminator() {
+    let (_context, module) = parse(
+        "builtin.global_variable public @g : array<i8; 2> {
+    %0 = builtin.bytes \"0102\" : array<i8; 2>;
+};",
+    );
+    accepted(module);
+}
+
 /// Dominance is checked only once everything else verified: a malformed block structure is
 /// reported, not the use it makes undominated.
 #[test]
