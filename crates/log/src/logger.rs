@@ -463,9 +463,10 @@ impl Builder {
 
     /// Parses a kv filter string in the form of the `RUNIC_TRACE_FILTER` environment variable;
     /// an error, described by the message, when a filter is not of the form `key:value` or its
-    /// value is not a valid pattern.
+    /// value is not a valid pattern. An empty entry (an empty value, a trailing comma) is
+    /// skipped.
     pub fn try_parse_kv_filters(&mut self, filters: &str) -> Result<&mut Self, String> {
-        for filter in filters.split(',').map(|f| f.trim()) {
+        for filter in filters.split(',').map(|f| f.trim()).filter(|f| !f.is_empty()) {
             let (spec, negated) =
                 filter.strip_prefix('-').map(|f| (f, true)).unwrap_or((filter, false));
             let (key, value) = spec.split_once(':').ok_or_else(|| {
@@ -1122,6 +1123,29 @@ mod tests {
             Builder::new().parse_kv_filters("op");
         });
         assert!(panicked.is_err());
+    }
+
+    /// An empty entry is skipped: an empty value filters nothing, and a trailing comma leaves the
+    /// filters before it as they are.
+    #[test]
+    fn an_empty_kv_filter_entry_is_skipped() {
+        fn keeps(builder: &mut Builder, op: &str) -> bool {
+            let kvs = [("op", op)];
+            let record = Record::builder().level(log::Level::Error).key_values(&kvs).build();
+            builder.build().matches(&record)
+        }
+        for filters in ["", " ", ",", "op:add,", "op:add, ,"] {
+            assert!(Builder::new().try_parse_kv_filters(filters).is_ok(), "{filters:?}");
+        }
+        let mut empty = Builder::new();
+        empty.try_parse_kv_filters("").unwrap();
+        assert!(keeps(&mut empty, "sub"));
+        let mut trailing = Builder::new();
+        trailing.try_parse_kv_filters("op:add,").unwrap();
+        assert!(keeps(&mut trailing, "add"));
+        let mut trailing = Builder::new();
+        trailing.try_parse_kv_filters("op:add,").unwrap();
+        assert!(!keeps(&mut trailing, "sub"));
     }
 
     /// The default environment, which `runic_logger` and the tests' logger of `runic-core` read,

@@ -141,6 +141,16 @@ fn runic_trace_filter_drops_the_records_whose_key_value_it_does_not_match() {
 }
 
 #[test]
+fn an_empty_runic_trace_filter_filters_nothing() {
+    let output = opt(&["-p", "cse"], REPEATED_ADD, &[("RUNIC_TRACE_FILTER", "")]);
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(text(&output.stderr), "");
+    assert!(!output.stdout.is_empty());
+    let unset = opt(&["-p", "cse"], REPEATED_ADD, &[]);
+    assert_eq!(text(&output.stdout), text(&unset.stdout));
+}
+
+#[test]
 fn a_malformed_runic_trace_filter_is_an_error() {
     // A filter that is not `key:value`, and one whose value is not a regular expression: an error
     // that names the variable, and nothing is run.
