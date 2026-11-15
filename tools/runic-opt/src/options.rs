@@ -78,8 +78,8 @@ pub struct Options {
     ///
     /// An expectation is a `//` comment holding `expected-KIND {{TEXT}}`, KIND being `error`,
     /// `warning`, `info` or `hint`: a diagnostic of that kind is expected on the comment's line
-    /// whose message, the text of one of its labels, or one of its context frames (such as
-    /// "pass 'cse' failed on ..") contains TEXT. `expected-KIND@+N` and `@-N` expect it N lines
+    /// whose message, the text of one of its labels, one of its helps (such as "expected a
+    /// type"), or one of its context frames (such as "pass 'cse' failed on ..") contains TEXT. `expected-KIND@+N` and `@-N` expect it N lines
     /// below or above, `@above` and `@below` on the nearest line above or below that does not
     /// hold only expectations, and `@unknown` without a location; whitespace may stand before
     /// the `@`. With `expected-KIND-re`, TEXT is a regular expression that must match. TEXT runs

@@ -191,8 +191,11 @@ way:
 Diagnostics are tested with `--verify-diagnostics` and comments that expect them. Every diagnostic
 must be expected and every expectation met; the tool's exit code is that check's. The kinds are
 `error`, `warning`, `info` and `hint` (there is no `note` or `remark`); `-re` makes the text a
-regular expression. An expectation is on the line of the diagnostic, or names it with `@+N`, `@-N`,
-`@above`, `@below`, or `@unknown` (a diagnostic with no location):
+regular expression. The text is looked for in the diagnostic's message, the text of its labels,
+its helps (`help: expected a type`) and its context frames; a parser error's message is often
+`invalid syntax` alone, so its expectation names the token and, where it tells two errors apart,
+the help's words. An expectation is on the line of the diagnostic, or names it with `@+N`,
+`@-N`, `@above`, `@below`, or `@unknown` (a diagnostic with no location):
 
 ```
 %x = arith.constant 10 : i32; // expected-hint {{range of result 0: u[10, 10] s[10, 10] width 32}}

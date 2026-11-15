@@ -22,7 +22,8 @@
 //! a digit, `-` or `_` is not an expectation, nor is text in a string literal.
 //!
 //! A diagnostic matches an expectation of its kind and line when its message, the text of one of
-//! its labels or one of its context frames contains the text (or matches the expression). Its
+//! its labels, one of its helps or one of its context frames contains the text (or matches the
+//! expression). Its
 //! line is that of its first primary label, when the label is in the case's own source: a
 //! diagnostic located in another source (written with `loc("other":..)`) matches neither a line
 //! nor `@unknown`. Each diagnostic matches at most one expectation and each expectation at most
@@ -359,7 +360,7 @@ fn resolve(location: &str, index: usize, lines: &Lines) -> Result<Option<u32>, S
 pub struct Found {
     kind: Severity,
     message: String,
-    /// The message, the text of each label and each context frame
+    /// The message, the text of each label, each help and each context frame
     texts: Vec<String>,
     /// Its first primary label, with the label's text
     primary: Option<(SourceSpan, Option<String>)>,
@@ -435,6 +436,13 @@ impl<'a> Collector<'a> {
 
         let mut texts = vec![message.clone()];
         texts.extend(visitor.labels.iter().filter_map(|(_, _, text)| text.clone()));
+        texts.extend(
+            visitor
+                .notes
+                .iter()
+                .filter(|(kind, _)| *kind == NoteKind::Help)
+                .map(|(_, text)| text.clone()),
+        );
         texts.extend(contexts.iter().map(|frame| String::from(frame.message())));
         let primary = visitor
             .labels
