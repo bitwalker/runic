@@ -146,3 +146,107 @@ fn every_case_reads_back_from_the_generic_form() {
     let missing = registered.difference(&used).collect::<Vec<_>>();
     assert!(missing.is_empty(), "operations no case uses: {missing:?}");
 }
+
+/// The lines of `text` that hold an operation in the generic form: a quoted name, alone or after
+/// a result list.
+fn generic_lines(text: &str) -> Vec<&str> {
+    text.lines()
+        .map(str::trim_start)
+        .filter(|line| {
+            line.starts_with('"')
+                || line.split_once(" = ").is_some_and(|(results, rest)| {
+                    results.starts_with('%') && rest.starts_with('"')
+                })
+        })
+        .collect()
+}
+
+/// `text` parsed, printed in its default form, and that text parsed and printed again: the same
+/// program. Returns the default print, after checking that the text also reads back from the
+/// generic form.
+fn default_print_reads_back(text: &str) -> String {
+    let (_context, first) = parse(text).unwrap_or_else(|err| panic!("{err}\n{text}"));
+    let printed = print(&first.borrow(), false);
+    let (_context, again) = parse(&printed).unwrap_or_else(|err| panic!("{err}\n{printed}"));
+    assert!(same_program(&print(&again.borrow(), false), &printed), "{printed}");
+    reads_back(text).unwrap_or_else(|err| panic!("{err}"));
+    printed
+}
+
+/// A block may be stored, and printed, after a block it dominates, so a use may name a value
+/// that the text defines later in another block. The operation whose custom form takes the
+/// operand's type from the operand prints in the generic form; every other operation keeps its
+/// custom form, those that write their operands' types (`test.sink`, a derived form, and
+/// `builtin.ret`, a hand-written one) included, and the default print reads back.
+#[test]
+fn a_use_before_its_definition_in_a_later_block_prints_in_the_generic_form() {
+    let text = "\
+builtin.function public extern(\"C\") @f(%a: i32) -> i32 {
+    cf.br ^c(%a : i32);
+^b:
+    %y = \"test.add\"(%x, %w) <{ overflow = #builtin.overflow<wrapping> }> : (i32, i32) -> i32;
+    test.sink %x, %w : (i32, i32);
+    builtin.ret %x : (i32);
+^c(%w: i32):
+    %x = test.add %w, %w;
+    cf.br ^b;
+};";
+    let printed = default_print_reads_back(text);
+    let generic = generic_lines(&printed);
+    assert_eq!(generic.len(), 1, "{printed}");
+    assert!(generic[0].contains("= \"test.add\"("), "{printed}");
+    assert!(printed.contains("    test.sink %"), "{printed}");
+    assert!(printed.contains("    builtin.ret %"), "{printed}");
+
+    // Written with the custom form, the forward use does not parse: the type of `%x` is not
+    // known where it is read.
+    let custom = text.replace(
+        "\"test.add\"(%x, %w) <{ overflow = #builtin.overflow<wrapping> }> : (i32, i32) -> i32",
+        "test.add %x, %w",
+    );
+    assert!(parse(&custom).is_err(), "{custom}");
+}
+
+/// The same, with the use nested in an operation of the earlier block: the use's place in the
+/// definition's region is that of the `scf.if` that holds it. The `scf.if` and the `scf.yield`
+/// write their operands' types and keep their custom forms.
+#[test]
+fn a_nested_use_before_its_definition_in_a_later_block_prints_in_the_generic_form() {
+    let text = "\
+builtin.function public extern(\"C\") @f(%a: i32, %c: i1) -> i32 {
+    cf.br ^c(%a : i32);
+^b:
+    %y = scf.if %c then {
+        %z = \"test.add\"(%x, %x) <{ overflow = #builtin.overflow<wrapping> }> : (i32, i32) -> i32;
+        scf.yield %z : (i32);
+    } else {
+        scf.yield %x : (i32);
+    } : (i1) -> (i32);
+    builtin.ret %y : (i32);
+^c(%w: i32):
+    %x = test.add %w, %w;
+    cf.br ^b;
+};";
+    let printed = default_print_reads_back(text);
+    let generic = generic_lines(&printed);
+    assert_eq!(generic.len(), 1, "{printed}");
+    assert!(generic[0].contains("= \"test.add\"("), "{printed}");
+    assert!(printed.contains("= scf.if %"), "{printed}");
+    assert_eq!(printed.matches("scf.yield %").count(), 2, "{printed}");
+}
+
+/// A use in a later block of a value defined in an earlier one is not forward: every operation
+/// keeps its custom form.
+#[test]
+fn a_use_after_its_definition_in_an_earlier_block_keeps_the_custom_form() {
+    let text = "\
+builtin.function public extern(\"C\") @f(%a: i32) -> i32 {
+    %x = test.add %a, %a;
+    cf.br ^b;
+^b:
+    %y = test.add %x, %x;
+    builtin.ret %y : (i32);
+};";
+    let printed = default_print_reads_back(text);
+    assert!(generic_lines(&printed).is_empty(), "{printed}");
+}

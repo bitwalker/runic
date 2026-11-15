@@ -1191,6 +1191,11 @@ fn parse_exit(state: &mut OperationState, parser: &mut dyn OpAsmParser<'_>) -> P
 }
 
 impl OpPrinter for Break {
+    /// The values are followed by their types.
+    fn states_operand_types(&self) -> bool {
+        true
+    }
+
     fn print(&self, printer: &mut AsmPrinter<'_>) {
         print_exit(self.as_operation(), *self.get_levels(), printer)
     }
@@ -1203,6 +1208,11 @@ impl OpParser for Break {
 }
 
 impl OpPrinter for Continue {
+    /// The values are followed by their types.
+    fn states_operand_types(&self) -> bool {
+        true
+    }
+
     fn print(&self, printer: &mut AsmPrinter<'_>) {
         print_exit(self.as_operation(), *self.get_levels(), printer)
     }

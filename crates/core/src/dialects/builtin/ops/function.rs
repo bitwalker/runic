@@ -691,6 +691,11 @@ pub struct Ret {
 }
 
 impl OpPrinter for Ret {
+    /// The values are followed by their types.
+    fn states_operand_types(&self) -> bool {
+        true
+    }
+
     fn print(&self, printer: &mut AsmPrinter<'_>) {
         let returning = self.values();
         if returning.is_empty() {

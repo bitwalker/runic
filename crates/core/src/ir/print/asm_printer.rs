@@ -3,8 +3,8 @@ use core::{cell::RefCell, ops::AddAssign};
 
 use super::*;
 use crate::{
-    AsValueRange, Attribute, Block, Context, EntityList, FunctionType, Int, Location,
-    NamedAttribute, SuccessorOperands, SymbolPath, Type, ValueRef,
+    AsValueRange, Attribute, Block, BlockRef, Context, EntityList, FunctionType, FxHashMap, Int,
+    Location, NamedAttribute, SuccessorOperands, SymbolPath, Type, ValueRef,
     attributes::Marker,
     formatter::{Document, concat_balanced},
     interner,
@@ -24,6 +24,9 @@ use crate::{
 /// that the text parses on its own. A printer made with [Self::nested] or [Self::fragment]
 /// never writes declarations.
 pub struct AsmPrinter<'a> {
+    /// The position of each block in its region's stored order, for the regions whose order this
+    /// print has needed (see [Self::block_position]); shared by every printer of one print.
+    block_positions: Rc<RefCell<FxHashMap<BlockRef, usize>>>,
     context: Rc<Context>,
     flags: &'a OpPrintingFlags,
     document: Pieces,
@@ -40,6 +43,7 @@ impl<'a> AsmPrinter<'a> {
     /// [Self::nested] instead, so that it shares this print's alias table.
     pub fn root(context: Rc<Context>, flags: &'a OpPrintingFlags) -> Self {
         Self {
+            block_positions: Rc::default(),
             context,
             flags,
             document: Pieces::default(),
@@ -62,6 +66,7 @@ impl<'a> AsmPrinter<'a> {
     /// same context and flags, shares this printer's alias table, and is not a root.
     pub fn nested(&self) -> AsmPrinter<'a> {
         Self {
+            block_positions: self.block_positions.clone(),
             context: self.context.clone(),
             flags: self.flags,
             document: Pieces::default(),
@@ -73,6 +78,25 @@ impl<'a> AsmPrinter<'a> {
     #[inline(always)]
     pub const fn flags(&self) -> &OpPrintingFlags {
         self.flags
+    }
+
+    /// The position of `block` in the stored order of the blocks of its region, which is the order
+    /// they are printed in; `0` for a block in no region.
+    ///
+    /// The positions of a region's blocks are computed together, the first time one of them is
+    /// asked for, and kept for the rest of the print: the IR must not change while it is printed.
+    pub(super) fn block_position(&self, block: BlockRef) -> usize {
+        if let Some(position) = self.block_positions.borrow().get(&block) {
+            return *position;
+        }
+        let Some(region) = block.borrow().parent() else {
+            return 0;
+        };
+        let mut positions = self.block_positions.borrow_mut();
+        for (position, block) in region.borrow().body().iter().enumerate() {
+            positions.insert(block.as_block_ref(), position);
+        }
+        positions.get(&block).copied().unwrap_or(0)
     }
 
     /// Get a reference to the [Context] this printer was instantiated with

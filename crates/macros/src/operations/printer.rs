@@ -278,10 +278,27 @@ impl quote::ToTokens for DeriveOpPrinter {
             }
         }
 
+        // Every operand's type is written when the signature lists the operands' types (the
+        // operation does not infer them), or when the only operands are those the successors
+        // forward, which `print_successor_arguments` writes with their types.
+        let states_operand_types = if !format.signature.can_infer
+            || matches!(&format.signature.params, ParamShape::None)
+        {
+            quote! {
+                fn states_operand_types(&self) -> bool {
+                    true
+                }
+            }
+        } else {
+            quote! {}
+        };
+
         let op_type = &self.ident;
         let (impl_generics, ty_generics, where_clause) = self.generics.split_for_impl();
         tokens.extend(quote! {
             impl #impl_generics ::runic_core::OpPrinter for #op_type #ty_generics #where_clause {
+                #states_operand_types
+
                 fn print(&self, printer: &mut ::runic_core::print::AsmPrinter<'_>) {
                     let op = <Self as ::runic_core::Op>::as_operation(self);
                     #operands

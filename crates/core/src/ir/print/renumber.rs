@@ -14,9 +14,11 @@ use crate::FxHashMap;
 /// text may print with other numbers than the text had; two texts that differ only so are the same
 /// program, and their renumbered texts are equal ([same_program]).
 ///
-/// Names are read as the parser reads them: after `%` or `^`, either a run of digits or a run of
+/// Names are read as the lexer reads them: after `%` or `^`, either a run of digits or a run of
 /// letters, digits and `_ $ . -`. Nothing in a string literal (`".."`, in which `\` escapes the
-/// character after it) or a comment (`//` to the end of the line) is renamed.
+/// character after it) or a comment (`//` to the end of the line) is renamed. Those are the only
+/// parts of the text skipped: a `%` or `^` followed by a name anywhere else, in the body of an
+/// attribute or type say, is renamed.
 pub fn renumbered(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut out = String::with_capacity(text.len());
@@ -103,6 +105,15 @@ mod tests {
     fn strings_and_comments_are_left_as_they_are() {
         let text = "%4 = op \"%4 ^b \\\" %9\" // %4 ^b\n%9 = op %4;";
         assert_eq!(renumbered(text), "%0 = op \"%4 ^b \\\" %9\" // %4 ^b\n%1 = op %0;");
+    }
+
+    #[test]
+    fn a_string_in_an_attribute_body_is_left_as_it_is() {
+        let text = "%3 = op <{ note = #test.note<\"%3 ^b // x\"> }> %3;\n^b:\n    use %3;";
+        assert_eq!(
+            renumbered(text),
+            "%0 = op <{ note = #test.note<\"%3 ^b // x\"> }> %0;\n^0:\n    use %0;"
+        );
     }
 
     #[test]

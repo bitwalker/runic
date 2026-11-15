@@ -167,6 +167,12 @@ impl Verify<dyn CallOpInterface> for CallOneOf {
 }
 
 impl OpPrinter for CallOneOf {
+    /// The index is an `i32`, and the arguments take the types of the parameters of the written
+    /// signature.
+    fn states_operand_types(&self) -> bool {
+        true
+    }
+
     fn print(&self, printer: &mut print::AsmPrinter<'_>) {
         use crate::formatter::const_text;
 

@@ -262,6 +262,11 @@ fn list_difference(role: &str, call: &[AbiParam], callee: &[AbiParam]) -> Option
 }
 
 impl OpPrinter for Call {
+    /// The arguments take the types of the parameters of the written signature.
+    fn states_operand_types(&self) -> bool {
+        true
+    }
+
     fn print(&self, printer: &mut AsmPrinter<'_>) {
         use crate::{AttrPrinter, formatter::const_text};
 
@@ -694,6 +699,12 @@ impl crate::Verify<dyn CallOpInterface> for CallIndirect {
 }
 
 impl OpPrinter for CallIndirect {
+    /// The callee takes the function type of the written signature, and the arguments the
+    /// types of its parameters.
+    fn states_operand_types(&self) -> bool {
+        true
+    }
+
     fn print(&self, printer: &mut AsmPrinter<'_>) {
         use crate::{AsValueRange, AttrPrinter, formatter::const_text};
 

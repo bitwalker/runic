@@ -47,12 +47,14 @@
 //!
 //! An operation prints in the generic form when it has no custom printer; every operation does
 //! when [OpPrintingFlags::generic] is set; and an operation with a custom printer does when one of
-//! its operands is defined after it in the text (by itself, by an operation that holds it, or by
-//! an operation later in its block or in the block of an operation that holds it), which only a
-//! graph region allows, unless its custom form writes every operand's type
-//! ([OpPrinter::states_operand_types], as `builtin.unrealized_conversion_cast` does): a custom
-//! form that takes an operand's type from the operand could not be read back, since the type is
-//! not known where the use is read.
+//! its operands is defined after it in the text, unless its custom form writes every operand's
+//! type ([OpPrinter::states_operand_types]): a custom form that takes an operand's type from the
+//! operand could not be read back, since the type is not known where the use is read. An operand
+//! is defined after the operation when its definition is the operation itself or one that holds
+//! it, or comes later in the region that holds the definition: later in the same block as the
+//! operation (or the operation that holds it), which a graph region allows; or in a block stored
+//! after that block, which a region with control flow also allows, since a block may be stored
+//! after a block it dominates (`^a: br ^c; ^b: %y = test.add %x, %x; ..; ^c: %x = ..; br ^b`).
 //!
 //! # Locations
 //!
@@ -383,10 +385,13 @@ pub trait OpPrinter {
 
     /// Whether this custom form writes the type of every operand it reads, so that the parser
     /// knows an operand's type where it reads the use even when the operand is defined later in
-    /// the text (a graph region allows that). An operation whose form does not, and which has
-    /// such an operand, is printed in the generic form instead (see the module docs).
+    /// the text. An operation whose form does not, and which has such an operand, is printed in
+    /// the generic form instead (see the module docs).
     ///
-    /// `false` unless an implementation says otherwise.
+    /// The derived printer answers `true` when its format writes a type for every operand: the
+    /// operation does not infer its types, so its signature lists its operands' types, or it has
+    /// no operands but those its successors forward, which are written with their types. A
+    /// hand-written printer answers `false` unless it says otherwise.
     fn states_operand_types(&self) -> bool {
         false
     }
@@ -399,7 +404,7 @@ impl OpPrinter for Operation {
 
         if !printer.flags().generic
             && let Some(custom_printer) = self.as_trait::<dyn OpPrinter>()
-            && (custom_printer.states_operand_types() || !has_forward_operand(self))
+            && (custom_printer.states_operand_types() || !has_forward_operand(self, printer))
         {
             printer.print_results(self.results().all());
             *printer += display(self.name());
@@ -418,40 +423,58 @@ impl OpPrinter for Operation {
 }
 
 /// Whether an operand of `op` is defined after `op` in the printed text: by `op` itself, by an
-/// operation that holds `op`, or by an operation later in the block of `op` or of an operation
-/// that holds it. Only a graph region allows such a use.
+/// operation that holds `op`, or at a later place in the region that holds the definition.
+///
+/// The place of the use in the definition's region is that of `op`, or of the operation that
+/// holds `op` and sits in a block of that region. In the definition's block, the use is forward
+/// when the definition is that operation or comes after it (a block argument never does). In
+/// another block of the region, it is forward when the definition's block is stored, and so
+/// printed, after the block of the use: a graph region allows that, and so does a region with
+/// control flow, in which a block may be stored after a block it dominates.
 ///
 /// A custom form that infers its operands' types cannot name such a value, since its type is
 /// not known where the parser reads the use, so `op` is printed in the generic form, which
 /// states every operand's type.
-fn has_forward_operand(op: &Operation) -> bool {
+fn has_forward_operand(op: &Operation, printer: &AsmPrinter<'_>) -> bool {
     let this = op.as_operation_ref();
     op.operands().iter().any(|operand| {
-        let Some(def) = operand.borrow().value().get_defining_op() else {
+        let value = operand.borrow().as_value_ref();
+        let (def, def_block) = {
+            let value = value.borrow();
+            (value.get_defining_op(), value.parent_block())
+        };
+        let Some(def_block) = def_block else {
             return false;
         };
-        let Some(block) = def.borrow().parent() else {
+        let Some(def_region) = def_block.borrow().parent() else {
             return false;
         };
-        // Find the operation in `block` that is `op` or holds it.
+        // Find the operation in a block of `def_region` that is `op` or holds it.
         let mut ancestor = this;
-        loop {
-            if ancestor == def {
+        let use_block = loop {
+            if def == Some(ancestor) {
                 return true;
             }
             let (parent_block, parent_op) = {
                 let ancestor = ancestor.borrow();
                 (ancestor.parent(), ancestor.parent_op())
             };
-            if parent_block == Some(block) {
-                break;
+            let Some(parent_block) = parent_block else {
+                return false;
+            };
+            if parent_block.borrow().parent() == Some(def_region) {
+                break parent_block;
             }
             match parent_op {
                 Some(parent) => ancestor = parent,
                 None => return false,
             }
+        };
+        if use_block == def_block {
+            def.is_some_and(|def| !def.borrow().is_before_in_block(&ancestor))
+        } else {
+            printer.block_position(def_block) > printer.block_position(use_block)
         }
-        !def.borrow().is_before_in_block(&ancestor)
     })
 }
 
