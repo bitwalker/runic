@@ -2,7 +2,8 @@
 
 Tests of `runic-opt` written as text: each `*.runic` file holds IR and `// RUN:` lines that run the
 tool on it, and checks of what it prints. The suite is run by `litcheck` (a lit runner and FileCheck
-in one binary, 0.4.6 or later), which provides `filecheck` and `not` itself.
+in one binary), which provides `filecheck` and `not` itself. The suite is written for `litcheck`
+0.5.0 or newer.
 
 ## Running it
 
@@ -21,15 +22,14 @@ litcheck lit run --path bin tests/lit/transforms
 litcheck lit run --path bin --filter 'runic::transforms/' tests/lit
 ```
 
-After the build, the lines run the suite, one file, one directory, and one area by name. A
-directory below this one selects nothing with `litcheck` 0.4.6 (it does with 0.5.0): there, use
-`--filter` or files. `--filter` is a regular expression over `suite::path`, where the suite is
-`runic` and the path is relative to this directory: `'^transforms/'` selects nothing. `-v`
+After the build, the lines run the suite, one file, one area (a directory), and the same area
+by name. `--filter` is a regular expression over `suite::path`, where the suite is `runic` and the
+path is relative to this directory: `'^transforms/'` selects nothing. `-v`
 (`--verbose`) prints the commands and output of every test that fails. `cargo make lit` builds the
 tool and passes its arguments to `litcheck lit`:
 
 ```sh
-cargo make lit run --path bin --filter 'runic::transforms/' tests/lit
+cargo make lit run --path bin tests/lit/transforms
 ```
 
 The tool is found through `--path bin`: the suite has no substitution and needs no environment
@@ -93,9 +93,12 @@ whole context; the names written in the input are not kept. A check therefore ca
 block name, `[[V:%[0-9]+]]` or `^[[B:block[0-9]+]]`, and uses it as `[[V]]`; it never spells a
 number. A value not used again is matched with `{{%[0-9]+}}`.
 
+A `CHECK-LABEL` holds no variable: the label is the function's name, `CHECK-LABEL: @name(`, and
+the rest of that line, with its captures, follows in a `CHECK-SAME` (or a `CHECK`).
+
 ```
 // CHECK-LABEL: @select_false_true(
-// CHECK: [[C:%[0-9]+]]: i1) -> i1 {
+// CHECK-SAME: [[C:%[0-9]+]]: i1) -> i1 {
 // CHECK-NEXT: [[N:%[0-9]+]] = arith.bnot [[C]];
 // CHECK-NEXT: builtin.ret [[N]] : (i1);
 ```
@@ -116,23 +119,6 @@ checks the whole output:
 // GONE-NOT: {{[(: ]i128[),; ]}}
 // GONE: {{^}}};
 ```
-
-### Two differences from LLVM's FileCheck
-
-`litcheck` 0.4.6, the oldest version the `litcheck` task accepts, differs from LLVM's FileCheck in
-two places (0.5.0 in neither); tests avoid both rather than work around them case by case. And a
-`CHECK-LABEL` holds no variable, in every version.
-
-- A `CHECK-SAME` directly after a `CHECK-LABEL` always fails. Put the function's name in the label
-  and match the rest of its line, captures included, with `CHECK` (above:
-  `CHECK-LABEL: @select_false_true(` then `CHECK: [[C:%[0-9]+]]: i1) -> i1 {`).
-- A `CHECK-NEXT` that uses a variable and then captures another does not match when its pattern
-  runs to the end of the line. End the pattern before the last character, or use `CHECK`:
-
-  ```
-  // CHECK-NEXT: cf.cond_br [[C]] ^[[A:block[0-9]+]]([[YL]], [[YH]] : i64, i64), ^[[B:block[0-9]+]] : (i1)
-  // CHECK-NEXT: ^[[A]]([[VL:%[0-9]+]]: i64, [[VH:%[0-9]+]]: i64)
-  ```
 
 ### Reading output back
 

@@ -9,7 +9,7 @@
 // (second); the third RUN line reads the output back.
 builtin.module public @local2reg_chained_locals {
     // CHECK-LABEL: @l2r_chain(
-    // CHECK: [[X:%[0-9]+]]: i32) -> i32 locals(i32, i32) {
+    // CHECK-SAME: [[X:%[0-9]+]]: i32) -> i32 locals(i32, i32) {
     // CHECK-NEXT: builtin.ret [[X]] : (i32);
     builtin.function public extern("C") @l2r_chain(%x: i32) -> i32 locals(i32, i32) {
         builtin.store_local 0, %x;

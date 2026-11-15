@@ -4,7 +4,7 @@
 // operation over `i128`, which has no pattern, is an error and the case prints nothing.
 
 // CHECK-LABEL: @id(
-// CHECK: [[LO:%[0-9]+]]: i64, [[HI:%[0-9]+]]: i64) -> (i64, i64) {
+// CHECK-SAME: [[LO:%[0-9]+]]: i64, [[HI:%[0-9]+]]: i64) -> (i64, i64) {
 // CHECK-NEXT: builtin.ret [[LO]], [[HI]] : (i64, i64);
 builtin.module public @converts {
     builtin.function public extern("C") @id(%x: i128) -> i128 {

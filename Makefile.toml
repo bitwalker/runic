@@ -486,8 +486,8 @@ dependencies = ["litcheck", "runic-opt"]
 [tasks.litcheck]
 category = "Test"
 description = "Set up the litcheck utility"
-# 0.4.5 is the first release that supports --dump-input
-install_crate = { crate_name = "litcheck", min_version = "0.4.6", test_arg = "--help" }
+# The version the lit suite (tests/lit) is written for.
+install_crate = { crate_name = "litcheck", min_version = "0.5.0", test_arg = "--help" }
 
 [tasks.docs]
 category = "Documentation"

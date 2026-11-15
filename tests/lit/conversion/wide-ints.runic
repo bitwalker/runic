@@ -13,26 +13,24 @@
 // GONE: {{^}}};
 builtin.module public @m {
     // CHECK-LABEL: @id(
-    // CHECK: [[LO:%[0-9]+]]: i64, [[HI:%[0-9]+]]: i64) -> (i64, i64) {
+    // CHECK-SAME: [[LO:%[0-9]+]]: i64, [[HI:%[0-9]+]]: i64) -> (i64, i64) {
     // CHECK-NEXT: builtin.ret [[LO]], [[HI]] : (i64, i64);
     builtin.function public extern("C") @id(%x: i128) -> i128 {
         builtin.ret %x : (i128);
     };
 
     // CHECK-LABEL: @twice(
-    // CHECK: [[LO:%[0-9]+]]: i64, [[HI:%[0-9]+]]: i64, [[C:%[0-9]+]]: i1) -> (i64, i64) locals(i64, i64) {
+    // CHECK-SAME: [[LO:%[0-9]+]]: i64, [[HI:%[0-9]+]]: i64, [[C:%[0-9]+]]: i1) -> (i64, i64) locals(i64, i64) {
     // CHECK-NEXT: builtin.store_local 0, [[LO]];
     // CHECK-NEXT: builtin.store_local 1, [[HI]];
     // CHECK-NEXT: [[YL:%[0-9]+]], [[YH:%[0-9]+]] = builtin.call @id([[LO]], [[HI]]) : extern("C") (i64, i64) -> (i64, i64);
-    // (A CHECK-NEXT that uses a variable and then captures one ends before the last character of
-    // the line: the final `;` here, and the final `:` of the block header below.)
-    // CHECK-NEXT: cf.cond_br [[C]] ^[[A:block[0-9]+]]([[YL]], [[YH]] : i64, i64), ^[[B:block[0-9]+]] : (i1)
+    // CHECK-NEXT: cf.cond_br [[C]] ^[[A:block[0-9]+]]([[YL]], [[YH]] : i64, i64), ^[[B:block[0-9]+]] : (i1);
     builtin.function public extern("C") @twice(%x: i128, %c: i1) -> i128 locals(i128) {
         builtin.store_local 0, %x;
         %y = builtin.call @id(%x) : extern("C") (i128) -> i128;
         cf.cond_br %c ^a(%y : i128), ^b : (i1);
     // The join: zero-extend both halves, shift the high one left by 64, or them.
-    // CHECK-NEXT: ^[[A]]([[VL:%[0-9]+]]: i64, [[VH:%[0-9]+]]: i64)
+    // CHECK-NEXT: ^[[A]]([[VL:%[0-9]+]]: i64, [[VH:%[0-9]+]]: i64):
     // CHECK-NEXT: [[ZL:%[0-9]+]] = arith.zext [[VL]] <{ ty = #builtin.type<i128> }>;
     // CHECK-NEXT: [[ZH:%[0-9]+]] = arith.zext [[VH]] <{ ty = #builtin.type<i128> }>;
     // CHECK-NEXT: [[K:%[0-9]+]] = arith.constant 64 : i64;

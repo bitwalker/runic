@@ -7,7 +7,7 @@
 // the printed text again and prints the same.
 
 // CHECK-LABEL: @no_operands(
-// CHECK: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+// CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
 // CHECK-NEXT: [[TEN:%[0-9]+]] = arith.constant 10 : i32;
 // CHECK-NEXT: [[R0:%[0-9]+]], [[R1:%[0-9]+]] = scf.while before {
 // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[A]], [[B]] <{ overflow = #builtin.overflow<unchecked unsigned> }>;
