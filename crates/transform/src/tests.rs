@@ -411,6 +411,7 @@ fn cases(default: usize) -> usize {
     }
 }
 
+mod block_merge;
 mod calls;
 mod conversion;
 mod corpora;
