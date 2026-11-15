@@ -1,0 +1,8 @@
+// RUN: runic-opt %s --dump-pass-pipeline 2>&1 >/dev/null | filecheck %s
+
+// `--dump-pass-pipeline` with no pipeline prints the empty pipeline of the input's operation.
+// (`tool/pipeline.runic` dumps only pipelines that are given.)
+
+// CHECK: builtin.module()
+builtin.module public @m {
+};

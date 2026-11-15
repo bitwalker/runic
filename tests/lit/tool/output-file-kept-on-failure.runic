@@ -1,0 +1,13 @@
+// RUN: printf 'kept\n' > %t
+// RUN: not runic-opt %s -o %t 2>&1 | filecheck %s --check-prefix=ERR
+// RUN: filecheck %s --input-file %t
+
+// `-o FILE` is written only when every case succeeded: when the input is rejected, the file is
+// left as it was. (`tool/input-output.runic` holds the success only.)
+
+// ERR: this returns (), but the function returns (i32)
+// CHECK: kept
+// CHECK-NOT: builtin.function
+builtin.function public extern("C") @f() -> i32 {
+    builtin.ret;
+};

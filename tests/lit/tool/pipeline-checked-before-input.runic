@@ -1,0 +1,17 @@
+// RUN: not runic-opt %s.missing -p no-such-pass 2>&1 | filecheck %s
+// RUN: not runic-opt %s --split-input-file -p no-such-pass 2>&1 | filecheck %s --check-prefix=ONCE
+
+// The pipeline is checked once, before the input is read: with a pipeline that names no pass and
+// an input that does not exist, the error is the pipeline's; with an input of two cases, the
+// error is printed once, not once for each case.
+
+// CHECK: error: unknown pass 'no-such-pass'
+// CHECK-NOT: could not read
+
+// ONCE: error: unknown pass 'no-such-pass'
+// ONCE-NOT: unknown pass
+builtin.module public @first {
+};
+// -----
+builtin.module public @second {
+};

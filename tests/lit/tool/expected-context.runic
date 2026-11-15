@@ -1,0 +1,11 @@
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(test-fail))' --verify-diagnostics
+
+// The text of an expectation is also looked for in a diagnostic's context frames: here the frame
+// that names the pass that failed and what it failed on, which the message (`test-fail`) does not
+// say.
+builtin.module public @m {
+    // expected-error@+1 {{pass 'test-fail' failed on 'builtin.function' @f}}
+    builtin.function public extern("C") @f() {
+        builtin.ret;
+    };
+};

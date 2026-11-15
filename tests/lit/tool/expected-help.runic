@@ -1,0 +1,12 @@
+// RUN: runic-opt %s -p local2reg --verify-diagnostics
+
+// The text of an expectation is also looked for in a diagnostic's helps: here in the help of the
+// warning for a pass that ran on no operation, whose message says none of it.
+builtin.module public @outer {
+    // expected-warning@unknown {{to reach deeper, write 'recursive(builtin.function(local2reg))'}}
+    builtin.module public @inner {
+        builtin.function public extern("C") @f() {
+            builtin.ret;
+        };
+    };
+};
