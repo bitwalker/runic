@@ -319,3 +319,34 @@ fn a_name_may_be_reused_in_a_sibling_region_after_its_region_and_in_another_func
                 arith.mul %a, %a;\n        builtin.ret %x : (i32);\n    };\n};\n";
     opt(&[], text).succeeded();
 }
+
+/// A name bound to several results (`%p:2`) is scoped like any other name: two branches of an
+/// `scf.if` may each define it, the `scf.if` may take it for its own results, and after the
+/// region that defined it a use of it is undeclared.
+#[test]
+fn a_multi_result_name_leaves_scope_with_its_region() {
+    let define = "%p:2 = \"builtin.unrealized_conversion_cast\"(%a) : (i16) -> (i16, i16);";
+    let body = format!(
+        "%r = scf.if %c then {{\n{define}\nscf.yield %p#0 : (i16);\n}} else \
+         {{\n{define}\nscf.yield %p#1 : (i16);\n}} : (i1) -> (i16);\nbuiltin.ret %r : (i16);"
+    );
+    opt(&[], &function("%a: i16, %c: i1", " -> i16", &body)).succeeded();
+
+    let body = format!(
+        "%p:2 = \"scf.if\"(%c) ({{\n{define}\nscf.yield %p#0, %p#1 : (i16, i16);\n}}, \
+         {{\nscf.yield %a, %a : (i16, i16);\n}}) : (i1) -> (i16, i16);\nbuiltin.ret %p#1 : (i16);"
+    );
+    opt(&[], &function("%a: i16, %c: i1", " -> i16", &body)).succeeded();
+
+    let body = format!(
+        "%r = scf.if %c then {{\n{define}\nscf.yield %p#0 : (i16);\n}} else {{\nscf.yield %a : \
+         (i16);\n}} : (i1) -> (i16);\nbuiltin.ret %p#1 : (i16);"
+    );
+    let output = opt(&[], &function("%a: i16, %c: i1", " -> i16", &body));
+    output.failed();
+    assert!(
+        output.stderr.starts_with("error: use of undeclared values\n"),
+        "{}",
+        output.stderr
+    );
+}

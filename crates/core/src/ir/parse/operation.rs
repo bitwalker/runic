@@ -384,10 +384,11 @@ where
         // reference.
         if let Some(mut existing) = entries[result_index] {
             if !self.forward_ref_placeholders.contains_key(existing.inner()) {
+                // Named as written: `%p`, not `%p#0`, for a name bound to several results.
                 return Err(ParserError::ValueRedefinition {
                     span: use_info.loc,
                     prev_span: existing.span(),
-                    name: use_info.name,
+                    name: use_info.name.without_result_index(),
                 });
             }
 
@@ -413,10 +414,12 @@ where
             }
         }
 
-        // Record this definition for the current scope.
+        // Record this definition for the current scope. The scope records the name without its
+        // result index, as `values` is keyed, so that popping the scope removes every result
+        // bound to the name.
         let entries = self.get_ssa_value_entry(use_info.name);
         entries[result_index] = Some(Span::new(use_info.loc, value));
-        self.record_definition(use_info.name);
+        self.record_definition(use_info.name.without_result_index());
 
         Ok(())
     }

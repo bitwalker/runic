@@ -10,7 +10,7 @@ use litcheck_filecheck::{filecheck, litcheck};
 use pretty_assertions::assert_eq;
 
 use crate::{
-    BuilderExt, CallConv, Context, FunctionType, Int, OpParser, OpRegistration, OperationRef,
+    BuilderExt, CallConv, Context, FunctionType, Int, Op, OpParser, OpRegistration, OperationRef,
     Symbol, SymbolTable, Type, UnsafeIntrusiveEntityRef, ValueRef, Visibility,
     attributes::IntegerLikeAttr,
     diagnostics::{Report, SourceProvider, SourceSpan},
@@ -6883,4 +6883,85 @@ fn text_after_the_top_level_operation_of_a_file_is_an_error() {
         .collect::<Vec<_>>();
     let start = source.rfind("builtin.module").unwrap();
     assert_eq!(labels, [(start, start + "builtin.module".len())]);
+}
+
+/// An operation with two regions that are not isolated from above, to check how names are scoped
+/// in them.
+#[crate::derive::operation(dialect = TestDialect)]
+pub struct TwoRegions {
+    #[operands]
+    inputs: crate::traits::AnyType,
+    #[results]
+    outputs: crate::traits::AnyType,
+    #[region]
+    first: crate::RegionRef,
+    #[region]
+    second: crate::RegionRef,
+}
+
+/// A function of `%a: i16` whose body is `body`, for the scoping tests of multi-result names.
+fn multi_result_function(body: &str) -> String {
+    format!(
+        "builtin.function public extern(\"C\") @f(%a: i16) -> i16 {{\n{body}\nbuiltin.ret %a : \
+         (i16);\n}};"
+    )
+}
+
+/// `%p:2 = ..`: one name bound to two results.
+const DEFINE_P: &str = "%p:2 = \"builtin.unrealized_conversion_cast\"(%a) : (i16) -> (i16, i16);";
+
+fn parse_multi_result(body: &str) -> TestResult<OperationRef> {
+    let test = ParserTest::default();
+    test.context().get_or_register_dialect::<TestDialect>();
+    test.parse_any_unverified("multi.runic", &multi_result_function(body))
+}
+
+/// A name bound to several results leaves scope with its region like any other name, so two
+/// sibling regions may each define it.
+#[test]
+fn a_multi_result_name_may_be_defined_in_sibling_regions() {
+    let body =
+        format!("\"test.two_regions\"() ({{\n{DEFINE_P}\n}}, {{\n{DEFINE_P}\n}}) : () -> ();");
+    parse_multi_result(&body).unwrap_or_else(|err| panic!("{}", err.display()));
+}
+
+/// The results of an operation are defined after its regions, so they may take a name its regions
+/// defined; a region may not redefine a name defined before its operation.
+#[test]
+fn a_multi_result_name_in_an_operation_and_in_a_region_nested_in_it() {
+    let body = format!(
+        "%p:2 = \"test.two_regions\"(%a) ({{\n{DEFINE_P}\n}}, {{\n}}) : (i16) -> (i16, i16);"
+    );
+    parse_multi_result(&body).unwrap_or_else(|err| panic!("{}", err.display()));
+
+    let body =
+        format!("{DEFINE_P}\n\"test.two_regions\"() ({{\n{DEFINE_P}\n}}, {{\n}}) : () -> ();");
+    let err = parse_multi_result(&body).expect_err("a nested region cannot redefine '%p'");
+    let rendered = format!("{}", err.display());
+    assert!(rendered.contains("redefinition of value '%p'"), "{rendered}");
+}
+
+/// A use of a multi-result name after the region that defined it does not bind to the value of
+/// that region: it is a use of an undeclared value.
+#[test]
+fn a_multi_result_name_is_undeclared_after_its_region() {
+    let body = format!(
+        "\"test.two_regions\"() ({{\n{DEFINE_P}\n}}, {{\n}}) : () -> \
+         ();\n\"test.two_regions\"(%p#1) ({{\n}}, {{\n}}) : (i16) -> ();"
+    );
+    let err = parse_multi_result(&body).expect_err("'%p#1' is out of scope");
+    let rendered = format!("{}", err.display());
+    assert!(rendered.contains("use of undeclared values"), "{rendered}");
+}
+
+/// A multi-result name defined twice in one scope is reported by the name as written.
+#[test]
+fn a_multi_result_name_defined_twice_in_one_scope_is_an_error() {
+    let body = format!("{DEFINE_P}\n{DEFINE_P}");
+    let err = parse_multi_result(&body).expect_err("'%p' is defined twice");
+    let rendered = format!("{}", err.display());
+    assert!(rendered.contains("redefinition of value '%p'"), "{rendered}");
+    assert!(!rendered.contains("%p#"), "{rendered}");
+    assert!(rendered.contains("'%p' is defined again here"), "{rendered}");
+    assert!(rendered.contains("'%p' is first defined here"), "{rendered}");
 }
