@@ -45,7 +45,6 @@ keywords = ["compiler"]
 license = "MIT"
 readme = "README.md"
 edition = "2024"
-publish = false
 
 [workspace.dependencies]
 bitflags = "2.11"

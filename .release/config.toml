@@ -70,10 +70,6 @@ name = "runic-dialect-ub"
 unit = "compiler"
 
 [[packages]]
-name = "runic-expect-test"
-unit = "compiler"
-
-[[packages]]
 name = "runic-log"
 unit = "compiler"
 
@@ -96,3 +92,10 @@ unit = "compiler"
 [[packages]]
 name = "runic-transform"
 unit = "compiler"
+
+# --- private ------------------------------------------------------------------
+
+# A test helper: members use it by path as a dev-dependency only.
+[[packages]]
+name = "runic-expect-test"
+unit = "private"
