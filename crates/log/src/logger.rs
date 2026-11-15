@@ -463,8 +463,8 @@ impl Builder {
 
     /// Parses a kv filter string in the form of the `RUNIC_TRACE_FILTER` environment variable;
     /// an error, described by the message, when a filter is not of the form `key:value` or its
-    /// value is not a valid pattern. An empty entry (an empty value, a trailing comma) is
-    /// skipped.
+    /// value is not a valid pattern. An empty entry (an empty string, a trailing or doubled
+    /// comma) is skipped.
     pub fn try_parse_kv_filters(&mut self, filters: &str) -> Result<&mut Self, String> {
         for filter in filters.split(',').map(|f| f.trim()).filter(|f| !f.is_empty()) {
             let (spec, negated) =
@@ -1125,7 +1125,7 @@ mod tests {
         assert!(panicked.is_err());
     }
 
-    /// An empty entry is skipped: an empty value filters nothing, and a trailing comma leaves the
+    /// An empty entry is skipped: an empty string filters nothing, and a trailing comma leaves the
     /// filters before it as they are.
     #[test]
     fn an_empty_kv_filter_entry_is_skipped() {

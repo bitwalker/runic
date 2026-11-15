@@ -115,13 +115,15 @@ in `tools/`:
 cargo test --workspace     # the Rust tests
 cargo make test            # the Rust tests under cargo-nextest, and the tests of the Python scripts in tools/
 cargo make test-lit        # builds runic-opt into bin/ and runs the lit suite in tests/lit
-cargo make test-all        # the two above, then removes old unused build output from target/
+cargo make test-all        # the two above, then removes old build output from target/
 ```
 
 `cargo make test` installs `cargo-nextest`, and `cargo make test-lit` installs `litcheck`, when
-they are missing (this needs the network). At its end, `cargo make test-all` deletes the build
-output in `target/` that the workspace's build no longer uses and that is older than a day
-(`tools/sweep-target.py`, `--age`); set `RUNIC_SKIP_SWEEP` to skip that. How the lit suite is
+they are missing (this needs the network). At its end, `cargo make test-all` deletes old
+build output from `target/` (`tools/sweep-target.py`): in `target/debug`, what the workspace's build
+and tests no longer use and is older than a day (`--age`); in the directories it cannot check (other
+profiles, such as `test-release`, and nested caches), whatever is older than 14 days
+(`--cache-age`), in use or not. Set `RUNIC_SKIP_SWEEP` to skip that. How the lit suite is
 written and run, and how to run one test or one directory, is in
 [`tests/lit/README.md`](tests/lit/README.md).
 

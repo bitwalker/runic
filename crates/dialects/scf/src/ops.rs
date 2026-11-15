@@ -978,7 +978,7 @@ impl ConditionallySpeculatable for Yield {
 /// verifier and the successor-region computations: two answers to "which op does this exit
 /// leave?" that disagreed would be worse than one that is wrong. It is also the implementation of
 /// [RegionExitTerminatorOpInterface::resolve_exit] for both exit ops, which is what lets the
-/// interface's verifier check rules 2-7 over the ANSWER without knowing that `levels` exists.
+/// interface's verifier check rules 2-6 over the ANSWER without knowing that `levels` exists.
 ///
 /// # RULE 1 (`levels >= 1`) IS DETECTED HERE AND NOWHERE ELSE
 ///
@@ -1485,8 +1485,10 @@ builtin.function public extern("C") @exit(%flag: i1) {
 
     /// An op with a region that has **not** declared [PropagateControlFlowBreak].
     ///
-    /// It exists only for rule 3's test, `v3_rejects_an_exit_crossing_an_op_that_has_not_opted_in`,
-    /// and it has to exist because the tree has no such op today: the region-bearing ops that can
+    /// It exists only for the tests of rule 3
+    /// (`v3_rejects_an_exit_crossing_an_op_that_has_not_opted_in` and
+    /// `v8_the_blanket_rejects_a_resolver_that_skipped_rule_3`), and it has to exist because the
+    /// tree has no such op today: the region-bearing ops that can
     /// nest inside a function body are exactly `scf.if`, `scf.index_switch` and `scf.while`, and
     /// all three opted in. Rule 3's whole job is to keep
     /// that true as the tree grows, so its witness has to bring its own non-member — otherwise

@@ -117,7 +117,7 @@ You should run any of these that are relevant before submitting a PR. `cargo mak
 
 - `cargo test --workspace`, or `cargo make test` (under `cargo-nextest`, with the tests of the Python scripts in `tools/`), runs the Rust tests
 - `cargo make test-lit` builds `runic-opt` and runs the lit suite in `tests/lit` (see [`tests/lit/README.md`](tests/lit/README.md))
-- `cargo make test-all` runs both, then removes unused build output from `target/` (set `RUNIC_SKIP_SWEEP` to skip that)
+- `cargo make test-all` runs both, then removes old build output from `target/` (the README says which; set `RUNIC_SKIP_SWEEP` to skip that)
 
 CI runs `cargo make test` and `cargo make test-lit`.
 
