@@ -49,8 +49,10 @@
 //! when [OpPrintingFlags::generic] is set; and an operation with a custom printer does when one of
 //! its operands is defined after it in the text (by itself, by an operation that holds it, or by
 //! an operation later in its block or in the block of an operation that holds it), which only a
-//! graph region allows: a custom form that takes an operand's type from the operand could not be
-//! read back, since the type is not known where the use is read.
+//! graph region allows, unless its custom form writes every operand's type
+//! ([OpPrinter::states_operand_types], as `builtin.unrealized_conversion_cast` does): a custom
+//! form that takes an operand's type from the operand could not be read back, since the type is
+//! not known where the use is read.
 //!
 //! # Locations
 //!
@@ -378,6 +380,16 @@ pub trait AttrPrinter {
 pub trait OpPrinter {
     /// Prints this operation with the given `flags`
     fn print(&self, printer: &mut AsmPrinter<'_>);
+
+    /// Whether this custom form writes the type of every operand it reads, so that the parser
+    /// knows an operand's type where it reads the use even when the operand is defined later in
+    /// the text (a graph region allows that). An operation whose form does not, and which has
+    /// such an operand, is printed in the generic form instead (see the module docs).
+    ///
+    /// `false` unless an implementation says otherwise.
+    fn states_operand_types(&self) -> bool {
+        false
+    }
 }
 
 impl OpPrinter for Operation {
@@ -387,7 +399,7 @@ impl OpPrinter for Operation {
 
         if !printer.flags().generic
             && let Some(custom_printer) = self.as_trait::<dyn OpPrinter>()
-            && !has_forward_operand(self)
+            && (custom_printer.states_operand_types() || !has_forward_operand(self))
         {
             printer.print_results(self.results().all());
             *printer += display(self.name());

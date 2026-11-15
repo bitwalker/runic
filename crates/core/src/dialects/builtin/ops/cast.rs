@@ -143,6 +143,11 @@ impl OpPrinter for UnrealizedConversionCast {
             );
         }
     }
+
+    /// The form writes the type of each input.
+    fn states_operand_types(&self) -> bool {
+        true
+    }
 }
 
 /// Reads `%a, .. : input-types to result-types`, then an optional `attributes {..}`. Each input

@@ -649,7 +649,7 @@ fn the_generic_form_separates_regions_with_commas() {
 /// An operation that reads a value defined later in its block, which only a graph region allows,
 /// is printed in the generic form, which states the operand's type: its custom form, which takes
 /// the type from the operand, could not be read back. The operations around it keep their custom
-/// forms.
+/// forms, and so does one whose custom form writes its operands' types.
 #[test]
 fn an_operation_with_a_forward_operand_prints_in_the_generic_form() {
     let text = "\
@@ -668,6 +668,21 @@ builtin.module public @m {
     %2 = test.constant 1 : i32;
     %3 = test.add %1, %2;
 };"
+    );
+    let (_context, again) = parse_with_test_dialect(&printed).unwrap_or_else(|err| panic!("{err}"));
+    assert!(crate::print::same_program(&again.borrow().to_string(), &printed));
+
+    // A cast writes the types of its inputs, so it keeps its custom form.
+    let cast = "\
+builtin.module public @m {
+    %0 = builtin.unrealized_conversion_cast %1 : i32 to i64;
+    %1 = test.constant 1 : i32;
+};";
+    let (_context, module) = parse_with_test_dialect(cast).unwrap_or_else(|err| panic!("{err}"));
+    let printed = module.borrow().to_string();
+    assert!(
+        printed.contains("%1 = builtin.unrealized_conversion_cast %2 : i32 to i64;"),
+        "{printed}"
     );
     let (_context, again) = parse_with_test_dialect(&printed).unwrap_or_else(|err| panic!("{err}"));
     assert!(crate::print::same_program(&again.borrow().to_string(), &printed));
