@@ -9,10 +9,17 @@ use std::{
 
 const BIN: &str = env!("CARGO_BIN_EXE_runic-opt");
 
-/// The variables the logger reads: removed from every run, so that a run sees only those its test
-/// sets.
-const TRACE_VARIABLES: [&str; 4] =
-    ["RUNIC_TRACE", "RUNIC_TRACE_FILTER", "RUNIC_TRACE_STYLE", "RUNIC_TRACE_TIMING"];
+/// The variables the logger reads, its own and those by which a terminal's colours are forced or
+/// disabled: removed from every run, so that a run sees only those its test sets.
+const TRACE_VARIABLES: [&str; 7] = [
+    "RUNIC_TRACE",
+    "RUNIC_TRACE_FILTER",
+    "RUNIC_TRACE_STYLE",
+    "RUNIC_TRACE_TIMING",
+    "CLICOLOR",
+    "CLICOLOR_FORCE",
+    "NO_COLOR",
+];
 
 /// How long a run may take before the test says it hangs.
 const LIMIT: Duration = Duration::from_secs(60);
@@ -158,18 +165,23 @@ fn a_malformed_runic_trace_filter_is_an_error() {
 
 #[test]
 fn runic_trace_style_selects_whether_records_are_styled() {
-    let styled = |style: Option<&str>| {
+    let styled = |style: Option<&str>, forced: bool| {
         let mut env = vec![DRIVER_TRACE];
         env.extend(style.map(|style| ("RUNIC_TRACE_STYLE", style)));
+        if forced {
+            env.push(("CLICOLOR_FORCE", "1"));
+        }
         let output = opt(&["-p", "canonicalizer"], REPEATED_ADD, &env);
         assert!(output.status.success(), "{}", text(&output.stderr));
         assert!(!output.stderr.is_empty());
         output.stderr.contains(&0x1b)
     };
-    // Standard error is a pipe: `auto`, the default, writes no styles to it.
-    assert!(!styled(None));
-    assert!(styled(Some("always")));
-    assert!(!styled(Some("never")));
+    // Standard error is a pipe: `auto`, the default, writes no styles to it, and `always` does.
+    assert!(!styled(None, false));
+    assert!(styled(Some("always"), false));
+    // With colours forced, `auto` writes styles to the pipe, and `never` does not.
+    assert!(styled(None, true));
+    assert!(!styled(Some("never"), true));
 }
 
 #[test]
