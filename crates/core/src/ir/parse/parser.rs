@@ -1273,23 +1273,9 @@ fn parse_attribute_value<'input, P: ?Sized + Parser<'input>>(
             span,
             token: other.to_string(),
             expected: Some(
-                format!(
-                    "one of: {}",
-                    DisplayValues::new(
-                        [
-                            Token::String(""),
-                            Token::Int(""),
-                            Token::Hex(""),
-                            Token::Binary(""),
-                            Token::Bang,
-                            Token::At,
-                            Token::Lbracket,
-                            Token::Lbrace,
-                        ]
-                        .into_iter()
-                    )
-                )
-                .into(),
+                "an attribute value: a string, an integer (with its type), `true` or `false`, a \
+                 type, a symbol reference, a list `[..]`, or `#dialect.name<..>`"
+                    .into(),
             ),
         }),
     }

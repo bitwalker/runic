@@ -3858,6 +3858,11 @@ fn list_attributes_round_trip_through_text() -> TestResult {
         // A bare integer has no type to be read with.
         ("[1]", "an integer literal has no type here"),
         ("[,]", r#"token: ",""#),
+        // The help says what an attribute value may be, in words.
+        (
+            "[unit]",
+            r#"token: "unit", expected: Some(Expected("an attribute value: a string"#,
+        ),
     ] {
         let Err(err) = parse_attribute_text(&context, text, unknown) else {
             panic!("{text} should not parse");
