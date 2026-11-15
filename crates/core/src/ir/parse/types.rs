@@ -365,20 +365,21 @@ fn parse_struct_field<'input, P: Parser<'input>>(parser: &mut P) -> ParseResult<
 ///
 /// A string or a bare identifier can only be a name. A keyword such as `ptr` can be either, so it
 /// is a name when the next character after it is a single `:`.
+///
+/// A token the lexer refused is not a name, and stays in the stream for whatever parses next to
+/// report (`is_next` looks without taking; `peek` would take the error out).
 fn is_next_field_name<'input, P: Parser<'input>>(parser: &mut P) -> bool {
-    let Ok(Some((_, token, _))) = parser.token_stream_mut().peek() else {
-        return false;
-    };
-    match token {
-        Token::String(_) | Token::BareIdent(_) => true,
-        token if token.is_keyword() => is_next_token_followed_by_a_colon(parser),
-        _ => false,
+    let stream = parser.token_stream_mut();
+    if stream.is_next(|token| matches!(token, Token::String(_) | Token::BareIdent(_))) {
+        return true;
     }
+    stream.is_next(|token| token.is_keyword()) && is_next_token_followed_by_a_colon(parser)
 }
 
 /// Returns true if the source just after the upcoming token starts with a single `:`.
 fn is_next_token_followed_by_a_colon<'input, P: Parser<'input>>(parser: &mut P) -> bool {
-    if !matches!(parser.token_stream_mut().peek(), Ok(Some(_))) {
+    // Looked at without being taken: a lexer error stays for the next parser to report.
+    if !parser.token_stream_mut().is_next(|_| true) {
         return false;
     }
     // The remaining source starts just after the upcoming token.

@@ -109,3 +109,11 @@ builtin.module public @m {
         builtin.ret %c : (i32);
     };
 };
+
+// -----
+
+// A list that holds a fixed number of operands, written with fewer.
+builtin.function public extern("C") @too_few_operands(%a: i32) -> i32 {
+    %x = arith.add %a; // expected-error {{expected 2 operands in this list, but found 1}}
+    builtin.ret %x : (i32);
+};

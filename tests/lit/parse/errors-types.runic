@@ -1,9 +1,9 @@
 // RUN: runic-opt %s --split-input-file --verify-diagnostics
 
 // The parser's diagnostics about types: integer widths, aliases and recursion groups, dialect
-// types, the parameters of builtin types, and nesting. A type nested in more than 64 types is an
-// error (the limit is not configurable). The parser stops at its first error, so each case holds
-// one.
+// types, the parameters of builtin types, nesting, and a token the lexer refuses inside a struct.
+// A type nested in more than 64 types is an error (the limit is not configurable). The parser
+// stops at its first error, so each case holds one.
 
 builtin.function public extern("C") @f(i0); // expected-error {{unexpected token 'i0', expected a type}}
 
@@ -99,3 +99,19 @@ builtin.function public extern("C") @f(i32);
 
 rec { rec { type !a = struct<ptr<!a>>; } } // expected-error {{`rec` blocks do not nest}}
 builtin.function public extern("C") @f(i32);
+
+// -----
+
+// A token the lexer refuses where a field's name or type may start is reported as the lexer's
+// error, not as the end of the input: an integer literal, a string that is not closed, and a
+// character no token starts with.
+type !s = struct<x: i32, 0x>; // expected-error {{'0x' must be followed by a hexadecimal digit}}
+
+// -----
+
+// expected-error@+1 {{missing closing quote for string starting here}}
+type !s = struct<x: i32, "y>;
+
+// -----
+
+type !s = struct<` >; // expected-error {{unexpected character '`'}}
