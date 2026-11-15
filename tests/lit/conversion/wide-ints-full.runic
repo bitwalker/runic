@@ -2,11 +2,13 @@
 // RUN: runic-opt %s -p 'test-convert-wide-ints{full}' --split-input-file --verify-diagnostics | filecheck %s --check-prefix=ONLY
 
 // The full conversion. A module the builtin patterns convert completely succeeds; an `arith`
-// operation over `i128`, which has no pattern, is an error and the case prints nothing. The second
-// RUN line checks the whole output: the module that converts, and nothing of the one that fails.
+// operation over `i128`, or a global variable of one, has no pattern, is an error, and the case
+// prints nothing. The second RUN line checks the whole output: the module that converts, and
+// nothing of the ones that fail.
 // ONLY-NOT: @fails
 // ONLY: builtin.module public @converts {
 // ONLY-NOT: @fails
+// ONLY-NOT: @g
 
 // CHECK-LABEL: @id(
 // CHECK-SAME: [[LO:%[0-9]+]]: i64, [[HI:%[0-9]+]]: i64) -> (i64, i64) {
@@ -14,6 +16,30 @@
 builtin.module public @converts {
     builtin.function public extern("C") @id(%x: i128) -> i128 {
         builtin.ret %x : (i128);
+    };
+
+    // Calls, branches and locals convert fully as well.
+    // CHECK-LABEL: @twice(
+    // CHECK-SAME: [[LO:%[0-9]+]]: i64, [[HI:%[0-9]+]]: i64, [[C:%[0-9]+]]: i1) -> (i64, i64) locals(i64, i64) {
+    // CHECK-NEXT: builtin.store_local 0, [[LO]];
+    // CHECK-NEXT: builtin.store_local 1, [[HI]];
+    // CHECK-NEXT: [[YL:%[0-9]+]], [[YH:%[0-9]+]] = builtin.call @id([[LO]], [[HI]]) : extern("C") (i64, i64) -> (i64, i64);
+    // CHECK-NEXT: cf.cond_br [[C]] ^[[A:block[0-9]+]]([[YL]], [[YH]] : i64, i64), ^[[B:block[0-9]+]] : (i1);
+    // CHECK-NEXT: ^[[A]]([[VL:%[0-9]+]]: i64, [[VH:%[0-9]+]]: i64):
+    // CHECK-NEXT: builtin.ret [[VL]], [[VH]] : (i64, i64);
+    // CHECK-NEXT: ^[[B]]:
+    // CHECK-NEXT: [[LL:%[0-9]+]] = builtin.load_local 0 : i64;
+    // CHECK-NEXT: [[LH:%[0-9]+]] = builtin.load_local 1 : i64;
+    // CHECK-NEXT: builtin.ret [[LL]], [[LH]] : (i64, i64);
+    builtin.function public extern("C") @twice(%x: i128, %c: i1) -> i128 locals(i128) {
+        builtin.store_local 0, %x;
+        %y = builtin.call @id(%x) : extern("C") (i128) -> i128;
+        cf.cond_br %c ^a(%y : i128), ^b : (i1);
+    ^a(%v: i128):
+        builtin.ret %v : (i128);
+    ^b:
+        %l = builtin.load_local 0 : i128;
+        builtin.ret %l : (i128);
     };
 };
 
@@ -26,4 +52,12 @@ builtin.module public @fails {
         %s = arith.add %x, %x;
         builtin.ret %s : (i128);
     };
+};
+
+// -----
+
+// A global variable of an `i128` has no pattern either: a full conversion fails on it.
+// expected-error@unknown {{failed to legalize operation 'builtin.global_variable'}}
+builtin.module public @fails_on_a_global {
+    builtin.global_variable private @g : i128;
 };

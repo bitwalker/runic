@@ -2,11 +2,12 @@
 // RUN: runic-opt %s -p test-convert-wide-ints | runic-opt - -p test-convert-wide-ints | filecheck %s
 // RUN: runic-opt %s -p test-convert-wide-ints | filecheck %s --check-prefix=GONE
 
-// The partial conversion of `i128` to `(i64, i64)`. Signatures, calls, branch operands, block
-// arguments and locals are split; an `arith` operation over `i128` stays and reads a join of the
-// halves; its result is split again where a converted operation reads it. The second RUN line
-// converts the converted module again: nothing changes. The third checks that no signature, call,
-// branch or local still names `i128`.
+// The partial conversion of `i128` to `(i64, i64)`. Signatures (and the declared effects that
+// name a parameter by position), calls direct and indirect, function references, branch operands,
+// block arguments, locals and immediate returns are split; an `arith` operation over `i128` stays
+// and reads a join of the halves; its result is split again where a converted operation reads it.
+// The second RUN line converts the converted module again: nothing changes. The third checks that
+// no signature, call, branch or local still names `i128`.
 
 // GONE: builtin.module public @m {
 // GONE-NOT: {{[(: ]i128[),; ]}}
@@ -54,5 +55,44 @@ builtin.module public @m {
     ^b:
         %l = builtin.load_local 0 : i128;
         builtin.ret %l : (i128);
+    };
+
+    // A declared effect that names a parameter after an `i128` names it at its new position.
+    // CHECK-LABEL: @reads(
+    // CHECK-SAME: [[LO:%[0-9]+]]: i64, [[HI:%[0-9]+]]: i64, {{%[0-9]+}}: ptr<i32>) -> (i64, i64) effects(read(arg 2)) {
+    // CHECK-NEXT: builtin.ret [[LO]], [[HI]] : (i64, i64);
+    builtin.function public extern("C") @reads(%x: i128, %p: ptr<i32>) -> i128 effects(read(arg 1)) {
+        builtin.ret %x : (i128);
+    };
+
+    // A function reference and an indirect call through it are converted with the signature.
+    // CHECK-LABEL: @through_ref(
+    // CHECK-SAME: [[LO:%[0-9]+]]: i64, [[HI:%[0-9]+]]: i64, [[P:%[0-9]+]]: ptr<i32>) -> (i64, i64) {
+    // CHECK-NEXT: [[F:%[0-9]+]] = builtin.function_ref @reads : (i64, i64, ptr<i32>) -> (i64, i64);
+    // CHECK-NEXT: [[YL:%[0-9]+]], [[YH:%[0-9]+]] = builtin.call_indirect [[F]]([[LO]], [[HI]], [[P]]) : extern("C") (i64, i64, ptr<i32>) -> (i64, i64);
+    // CHECK-NEXT: builtin.ret [[YL]], [[YH]] : (i64, i64);
+    builtin.function public extern("C") @through_ref(%x: i128, %p: ptr<i32>) -> i128 {
+        %f = builtin.function_ref @reads : (i128, ptr<i32>) -> i128;
+        %y = builtin.call_indirect %f(%x, %p) : extern("C") (i128, ptr<i32>) -> i128;
+        builtin.ret %y : (i128);
+    };
+
+    // A `cf.switch` forwards the halves, and a `builtin.ret_imm` of an `i128` returns its halves
+    // as constants (the pattern the test pass adds).
+    // CHECK-LABEL: @switch(
+    // CHECK-SAME: [[S:%[0-9]+]]: i32, [[LO:%[0-9]+]]: i64, [[HI:%[0-9]+]]: i64) -> (i64, i64) {
+    // CHECK-NEXT: cf.switch [[S]] [#builtin.i32<1> -> ^[[ONE:block[0-9]+]]([[LO]], [[HI]] : i64, i64)], ^[[OTHER:block[0-9]+]] : (i32);
+    // CHECK-NEXT: ^[[ONE]]([[VL:%[0-9]+]]: i64, [[VH:%[0-9]+]]: i64):
+    // CHECK-NEXT: builtin.ret [[VL]], [[VH]] : (i64, i64);
+    // CHECK-NEXT: ^[[OTHER]]:
+    // CHECK-NEXT: [[CL:%[0-9]+]] = arith.constant -1 : i64;
+    // CHECK-NEXT: [[CH:%[0-9]+]] = arith.constant -1 : i64;
+    // CHECK-NEXT: builtin.ret [[CL]], [[CH]] : (i64, i64);
+    builtin.function public extern("C") @switch(%s: i32, %x: i128) -> i128 {
+        cf.switch %s [#builtin.i32<1> -> ^one(%x : i128)], ^other : (i32);
+    ^one(%v: i128):
+        builtin.ret %v : (i128);
+    ^other:
+        builtin.ret_imm -1 : i128;
     };
 };
