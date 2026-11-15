@@ -1092,6 +1092,29 @@ builtin.world {
     );
 }
 
+/// The errors of a world about one of its components are located at the component.
+#[test]
+fn a_world_error_about_a_component_points_at_it() {
+    let test = ParserTest::default();
+    let shadowing = "\
+builtin.world {
+    builtin.module public @acme { builtin.module public @a { }; };
+    builtin.component private @acme::@a { };
+};";
+    let nesting = "\
+builtin.world {
+    builtin.component private @acme::@app { };
+    builtin.component private @acme::@app::@main { };
+};";
+    for (source, line) in [(shadowing, 3), (nesting, 2)] {
+        let err = test.parse_any("world.hir", source).expect_err(source);
+        let text = crate::testing::text::describe(&err);
+        assert!(text.contains("this component's name conflicts"), "{text}");
+        let rendered = format!("{}", err.display());
+        assert!(rendered.contains(&format!("world.hir:{line}:5")), "{rendered}");
+    }
+}
+
 /// A component prints its name as a symbol path, one raw segment per segment of the name (see
 /// `SymbolPath::to_symbol_name`), quoting a segment that is not a bare HIR identifier, and that
 /// text parses back to the same name: the canonical spelling of the segments.

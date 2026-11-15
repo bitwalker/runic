@@ -264,15 +264,26 @@ impl World {
 /// `WorldBuilder::declare_module_tree` or the module, function and global builders.
 /// Parsed input, and ops built or renamed otherwise, are not checked, so the rule is checked here
 /// as well.
+///
+/// Each error is located at the component it names.
 impl Verify<dyn SymbolTable> for World {
     fn verify(&self, _context: &Context) -> Result<(), Report> {
+        use alloc::string::ToString;
+
+        use crate::Spanned;
+
         let body = self.body();
         if body.is_empty() {
             return Ok(());
         }
         for op in body.entry().body() {
             if let Some(component) = op.downcast_ref::<Component>() {
-                self.reject_component_shadowing(Symbol::name(component))?;
+                self.reject_component_shadowing(Symbol::name(component)).map_err(|err| {
+                    crate::diagnostics::report!(
+                        message: (err.to_string()),
+                        labels: [primary(op.span(), "this component's name conflicts")],
+                    )
+                })?;
             }
         }
         Ok(())
