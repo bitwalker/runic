@@ -7,7 +7,6 @@ use super::ConversionPatternRewriter;
 use crate::{Context, FxHashMap, Operation, Report, SourceSpan, Type, ValueRef, WalkResult};
 
 type TypeConversionFn = Rc<dyn Fn(&Context, Type) -> Option<TypeConversion>>;
-type ValueConversionFn = Rc<dyn Fn(&Context, ValueRef) -> Option<TypeConversion>>;
 type SourceMaterializationFn = Rc<
     dyn Fn(
         &mut ConversionPatternRewriter,
@@ -25,7 +24,7 @@ type TargetMaterializationFn = Rc<
     ) -> Result<Option<SmallVec<[ValueRef; 2]>>, Report>,
 >;
 
-/// What a conversion callback answers for one type or value: the types it becomes.
+/// What a conversion callback answers for one type: the types a value of that type becomes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TypeConversion {
     /// The value becomes one value of this type.
@@ -68,14 +67,13 @@ impl TypeConversion {
 
 /// Says what types the values of a conversion become.
 ///
-/// A converter is flat: it is asked about the type of a value (an operand, a result, a block
-/// argument), never about a type held inside another type. A callback that wants a deep map
-/// builds a [TypeMapper](crate::types::TypeMapper) in the call.
+/// A converter answers for types only: a value (an operand, a result, a block argument) converts
+/// as its type does. A converter is flat: it is asked about the type of a value, never about a
+/// type held inside another type. A callback that wants a deep map builds a
+/// [TypeMapper](crate::types::TypeMapper) in the call.
 ///
-/// Type callbacks are tried most recently added first, and the first that answers wins; a type no
-/// callback answers for converts to itself. Value callbacks are tried before type callbacks, also
-/// most recently added first.
-/// Each callback is given the context of the IR being converted, in which it builds the types it
+/// Callbacks are tried most recently added first, and the first that answers wins; a type no
+/// callback answers for converts to itself. Each callback is given the context of the IR being converted, in which it builds the types it
 /// converts to.
 ///
 /// While a conversion runs, a value that became other values is related to them by a
@@ -100,9 +98,9 @@ impl TypeConversion {
 /// mean different things by it (one splits an `i128` into its low and high halves, the other into
 /// its high and low halves) miscompile silently.
 ///
-/// The converter remembers what the type callbacks answered for a type, so each type is asked
-/// about once. The memo is shared by the clones of a converter, and a clone that is given another
-/// callback starts a memo of its own. An answer of a value callback is not remembered.
+/// The converter remembers what the callbacks answered for a type, so each type is asked about
+/// once. The memo is shared by the clones of a converter, and a clone that is given another
+/// callback starts a memo of its own.
 ///
 /// A converter made with [Self::with_function_types] answers for a builtin function type itself,
 /// before any callback is asked: the function type of the converted parameters and results. This
@@ -111,7 +109,6 @@ impl TypeConversion {
 pub struct TypeConverter {
     function_types: bool,
     conversions: Vec<TypeConversionFn>,
-    value_conversions: Vec<ValueConversionFn>,
     source_materializations: Vec<SourceMaterializationFn>,
     target_materializations: Vec<TargetMaterializationFn>,
     memo: Rc<RefCell<FxHashMap<Type, SmallVec<[Type; 2]>>>>,
@@ -138,27 +135,6 @@ impl TypeConverter {
         self
     }
 
-    /// Add a value conversion callback.
-    ///
-    /// Value callbacks are tried before type callbacks, most recently added first, and are given
-    /// the value; what they answer is not remembered.
-    ///
-    /// A callback is asked about the value an operation reads now, and the driver keeps no map
-    /// from old values to new ones: after the producer of a value was replaced, what its users
-    /// read is the result of a cast, so a callback that answers from what defines the value stops
-    /// answering then (and the pattern of a user that keeps the old type may run until the rewrite
-    /// limit). [Self::is_legal_op] does not ask value callbacks. A value callback is safe only
-    /// when its answer depends on nothing but the value's type and on uses that the conversion
-    /// does not change; [Self::has_value_conversions] tells whether a converter has one.
-    pub fn add_value_conversion<F>(&mut self, callback: F) -> &mut Self
-    where
-        F: Fn(&Context, ValueRef) -> Option<TypeConversion> + 'static,
-    {
-        self.value_conversions.push(Rc::new(callback));
-        self.forget_answers();
-        self
-    }
-
     /// Makes this converter answer, for a builtin function type, the function type of its converted
     /// parameters and results (each flattened), before any registered conversion is asked. This
     /// is a case inside [Self::convert_type] (a callback is not given the converter); it starts a
@@ -179,12 +155,6 @@ impl TypeConverter {
     #[inline]
     pub fn converts_function_types(&self) -> bool {
         self.function_types
-    }
-
-    /// Whether the converter has a value conversion callback ([Self::add_value_conversion]).
-    #[inline]
-    pub fn has_value_conversions(&self) -> bool {
-        !self.value_conversions.is_empty()
     }
 
     /// Add a source materialization callback: many new values to one value of the old type.
@@ -275,13 +245,10 @@ impl TypeConverter {
         }
     }
 
-    /// The types `value` becomes: what the most recently added value callback that answers says,
-    /// otherwise what its type becomes ([Self::convert_type]).
+    /// The types `value` becomes: what its type becomes ([Self::convert_type]).
+    #[inline]
     pub fn convert_value(&self, context: &Context, value: ValueRef) -> SmallVec<[Type; 2]> {
-        match self.value_conversions.iter().rev().find_map(|convert| convert(context, value)) {
-            Some(conversion) => conversion.into_types(),
-            None => self.convert_type(context, value.borrow().ty()),
-        }
+        self.convert_type(context, value.borrow().ty())
     }
 
     /// Whether `ty` converts to exactly itself.
@@ -294,8 +261,8 @@ impl TypeConverter {
     /// types, the argument types of its regions' blocks, and each type held directly by one of its
     /// attributes at any depth of attribute (types held inside other types are not asked about).
     ///
-    /// Each type is asked about with [Self::is_legal_type], so through the type callbacks and what
-    /// the converter remembers of them; the value callbacks are not asked. The types visited are
+    /// Each type is asked about with [Self::is_legal_type], so through the callbacks and what the
+    /// converter remembers of them. The types visited are
     /// those of [Operation::walk_types] without descending into a type, plus the operand types. As
     /// that walk does, it leaves out the type an attribute's kind fixes (the `i1` of a `BoolAttr`,
     /// the `i32` of an `I32Attr`) and the types held by the key of a keyed successor; the operations
@@ -544,31 +511,35 @@ mod tests {
         assert_eq!(converter.convert_type(&context, i32).as_slice(), [i16]);
     }
 
-    /// A value callback is asked every time; a value it does not answer for falls back to its
-    /// type.
+    /// A value converts as its type does: [TypeConverter::convert_value] asks the callbacks about
+    /// the value's type, through the memo, so a type is asked about once whatever value has it.
     #[test]
-    fn a_value_callback_is_not_remembered() {
-        let test = Test::new("f", |cx| ([cx.i32(), cx.i32()], []));
+    fn a_value_converts_as_its_type_does() {
+        let test = Test::new("f", |cx| ([cx.i32(), cx.i32(), cx.i64()], []));
         let context = test.context_rc();
-        let (first, second) = {
+        let (i32, i64) = (context.i32(), context.i64());
+        let [first, second, third] = {
             let entry = test.entry_block();
             let entry = entry.borrow();
-            (entry.arguments()[0] as ValueRef, entry.arguments()[1] as ValueRef)
+            [0, 1, 2].map(|index| entry.arguments()[index] as ValueRef)
         };
         let calls = Rc::new(Cell::new(0));
         let mut converter = TypeConverter::new();
         {
             let calls = Rc::clone(&calls);
-            converter.add_value_conversion(move |_, value| {
+            converter.add_conversion(move |_, ty| {
                 calls.set(calls.get() + 1);
-                (value == first).then(TypeConversion::drop)
+                (ty == i32).then(TypeConversion::drop)
             });
         }
 
         assert!(converter.convert_value(&context, first).is_empty());
-        assert!(converter.convert_value(&context, first).is_empty());
-        assert_eq!(converter.convert_value(&context, second).as_slice(), [context.i32()]);
-        assert_eq!(calls.get(), 3);
+        assert!(converter.convert_value(&context, second).is_empty());
+        assert_eq!(converter.convert_value(&context, third).as_slice(), [i64]);
+        assert_eq!(calls.get(), 2, "two types, each asked about once");
+        assert_eq!(converter.convert_value_1_to_1(&context, third).unwrap(), i64);
+        assert!(converter.convert_value_1_to_1(&context, first).is_err());
+        assert_eq!(calls.get(), 2);
     }
 
     /// `i128` becomes `(i64, i64)`, the marker `array<i8; 0>` becomes nothing, `i16` becomes

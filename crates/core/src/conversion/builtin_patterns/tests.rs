@@ -151,8 +151,8 @@ fn convert_full(
     apply_full_conversion(module, target, patterns, ConversionConfig::default())
 }
 
-/// The populate function refuses a converter that does not convert function types, and one with
-/// a value callback, before adding anything.
+/// The populate function refuses a converter that does not convert function types before adding
+/// anything.
 #[test]
 fn the_patterns_refuse_a_converter_they_cannot_be_driven_by() {
     let context = Rc::new(Context::default());
@@ -161,12 +161,6 @@ fn the_patterns_refuse_a_converter_they_cannot_be_driven_by() {
     let flat = TypeConverter::new();
     let err = populate_builtin_conversion_patterns(&mut patterns, &flat).unwrap_err();
     assert!(err.to_string().contains("with_function_types"), "{err}");
-    assert!(patterns.patterns().is_empty());
-
-    let mut valued = wide_converter(&context);
-    valued.add_value_conversion(|_, _| None);
-    let err = populate_builtin_conversion_patterns(&mut patterns, &valued).unwrap_err();
-    assert!(err.to_string().contains("value callbacks"), "{err}");
     assert!(patterns.patterns().is_empty());
 
     populate_builtin_conversion_patterns(&mut patterns, &wide_converter(&context)).unwrap();
@@ -920,6 +914,97 @@ fn a_module_is_converted_in_one_run() {
     let again = convert_full(module, by_type_target(&context, &converter), &converter)
         .unwrap_or_else(|err| panic!("{}", describe(&err)));
     assert!(!again.changed(), "a second conversion changes nothing");
+}
+
+/// A converter answers for types only, so every path of the driver and of the builtin patterns
+/// (operands, results, block arguments, signatures of definitions, declarations and calls, function
+/// types, locals, forwarded branch operands) asks the type callbacks: a callback that counts the
+/// types it is asked about is asked about each type of a value of the module, and, the answers
+/// being remembered, once. A function type is answered by the converter from its parts
+/// ([TypeConverter::with_function_types]), whose types are asked about.
+#[test]
+fn every_path_of_a_conversion_asks_the_type_callbacks() {
+    use core::cell::RefCell;
+
+    use crate::{FxHashMap, Value as _};
+
+    let (context, module) = parse_module(
+        "    builtin.function public extern(\"C\") @f(%0: i128, %1: i32) -> i128 locals(i128) {
+        builtin.store_local 0, %0;
+        %2 = builtin.load_local 0 : i128;
+        test.pass_br ^bb1(%2 : i128);
+    ^bb1(%3: i128):
+        builtin.ret %3 : (i128);
+    };
+    builtin.function public extern(\"C\") @decl(i128) -> i128;
+    builtin.function public extern(\"C\") @caller(%0: i128, %1: i32) -> i128 {
+        %2 = builtin.call @f(%0, %1) : extern(\"C\") (i128, i32) -> i128;
+        %3 = builtin.function_ref @f : (i128, i32) -> i128;
+        %4 = builtin.call_indirect %3(%2, %1) : extern(\"C\") (i128, i32) -> i128;
+        %5 = builtin.call @decl(%4) : extern(\"C\") (i128) -> i128;
+        builtin.ret %5 : (i128);
+    };",
+    );
+    // The types of every value the module holds, before the conversion, a function type by its
+    // parameters and results.
+    let mut value_types = alloc::collections::BTreeSet::new();
+    let mut insert = |ty: Type| match ty.as_function() {
+        Some(function) => {
+            for part in function.params().iter().chain(function.results()) {
+                value_types.insert(part.to_string());
+            }
+        }
+        None => {
+            value_types.insert(ty.to_string());
+        }
+    };
+    module.borrow().prewalk_all(|op: &Operation| {
+        for operand in op.operands().iter() {
+            insert(operand.borrow().ty());
+        }
+        for result in op.results().iter() {
+            insert(result.borrow().ty());
+        }
+        for region in op.regions() {
+            for block in region.body() {
+                for argument in block.argument_values() {
+                    insert(argument.borrow().ty());
+                }
+            }
+        }
+    });
+    assert_eq!(value_types.len(), 2, "{value_types:?}");
+
+    let asked = Rc::new(RefCell::new(FxHashMap::<Type, usize>::default()));
+    let mut converter = wide_converter(&context);
+    {
+        let asked = Rc::clone(&asked);
+        // Tried first, and declines: the callbacks of `wide_converter` answer.
+        converter.add_conversion(move |_, ty| {
+            *asked.borrow_mut().entry(ty).or_default() += 1;
+            None
+        });
+    }
+    convert_full(module, by_type_target(&context, &converter), &converter)
+        .unwrap_or_else(|err| panic!("{}", describe(&err)));
+    converted_text(module);
+
+    let asked = asked.borrow();
+    assert!(
+        asked.values().all(|count| *count == 1),
+        "each type is asked about once: {asked:?}"
+    );
+    let asked_types = asked
+        .keys()
+        .map(|ty| ty.to_string())
+        .collect::<alloc::collections::BTreeSet<_>>();
+    assert!(
+        value_types.is_subset(&asked_types),
+        "every type of a value is asked about: {value_types:?} of {asked_types:?}"
+    );
+    for ty in [context.i128(), context.i32()] {
+        assert!(asked.contains_key(&ty), "{ty} is asked about");
+    }
 }
 
 /// The results of a call are grouped as the signature's results: of `(i32, i128, i32)`, the

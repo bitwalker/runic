@@ -7,7 +7,7 @@
 //! - `adversarial`: patterns and callbacks that break the contract at each point.
 //! - `cost`: termination and cost: chains of uses, the rewrite limit.
 //! - `casts`: the text of the cast, fuzzed; reconciliation over random DAGs and cyclic graphs.
-//! - `targeted`: recursively legal operations, two converters, value callbacks, the partial mode's
+//! - `targeted`: recursively legal operations, two converters, legality by type, the partial mode's
 //!   reading of the unknown operation policy, where a source cast is placed, and the replacements
 //!   and remaps that no placement can satisfy.
 //!

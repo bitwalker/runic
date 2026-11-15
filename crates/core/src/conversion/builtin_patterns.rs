@@ -5,9 +5,8 @@
 //! The converter must answer for builtin function types itself
 //! ([TypeConverter::with_function_types]): a function type converts to the function type of its
 //! converted parameters and results, which is the function type of the converted signature
-//! ([convert_signature]). It must have no value callbacks ([TypeConverter::has_value_conversions]):
-//! a signature is converted by type, and a callback that answered differently for a value would
-//! make a call and the entry block of its callee disagree. Each type it gives for a parameter, a
+//! ([convert_signature]). A signature is converted by type, as every value is, so a call and the
+//! entry block of its callee agree. Each type it gives for a parameter, a
 //! result or a local must itself be legal (convert to itself): the function pattern and the call
 //! patterns check the answers they use, and return an error that names the type and what it was
 //! the answer for.
@@ -159,10 +158,9 @@ const LOCALS: &str = "locals";
 const EXPRESSION: &str = "expression";
 
 /// Adds the builtin conversion patterns to `patterns`, all driven by `converter`. Fails when the
-/// converter does not convert function types.
+/// converter does not convert function types, before anything is added.
 ///
-/// It also fails for a converter with value callbacks. Either error is raised before anything is
-/// added. The patterns added are the function pattern, the patterns of `builtin.load_local` and
+/// The patterns added are the function pattern, the patterns of `builtin.load_local` and
 /// `builtin.store_local`, of `builtin.call`, `builtin.call_indirect`, `builtin.function_ref` and
 /// `builtin.ret`, and the branch pattern, for every operation that implements `BranchOpInterface`
 /// and is registered when the pattern set is frozen (see the module documentation).
@@ -179,12 +177,6 @@ pub fn populate_builtin_conversion_patterns(
         return Err(Report::msg(
             "the builtin conversion patterns need a type converter that converts function types \
              by their parts (TypeConverter::with_function_types)",
-        ));
-    }
-    if converter.has_value_conversions() {
-        return Err(Report::msg(
-            "the builtin conversion patterns convert signatures by type, and cannot be driven by \
-             a type converter with value callbacks",
         ));
     }
     let context = patterns.context();

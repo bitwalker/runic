@@ -151,7 +151,7 @@
 //! `builtin.function_ref` and `builtin.ret`; and the forwarded operands of every operation that
 //! implements `BranchOpInterface`. A signature is converted by [convert_signature], for a callable
 //! and every call of it alike. They need a converter made with
-//! [TypeConverter::with_function_types] and no value callbacks, and a target that judges their
+//! [TypeConverter::with_function_types], and a target that judges their
 //! operations by type ([add_builtin_legality_by_type]). The root of a conversion that uses them
 //! must hold every user of a function whose signature changes; the function pattern refuses a
 //! function with a user outside it.

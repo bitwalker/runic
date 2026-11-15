@@ -1,6 +1,6 @@
 //! Operations under a recursively legal operation, two converters that
-//! disagree, which converter realizes a cast, value callbacks, and the partial mode's reading of
-//! the unknown operation policy.
+//! disagree, which converter realizes a cast, the legality of an operation by type, and the
+//! partial mode's reading of the unknown operation policy.
 
 use std::println;
 
@@ -236,47 +236,10 @@ fn a_cast_is_realized_by_the_converter_that_caused_it() {
     assert!(!output.contains("unrealized_conversion_cast"), "{output}");
 }
 
-/// A value callback that answers from what defines the value: after the producer is replaced the
-/// user reads a cast, the callback no longer answers for it, and the conversion that would have
-/// folded away needs a materialization (here: fails, there is none).
+/// `is_legal_op` and `convert_value` give one answer, the type's: a sink of an `i128` that the
+/// converter splits is not legal, and its operand converts to the two halves.
 #[test]
-fn a_value_callback_that_looks_at_the_definition_stops_answering_after_a_replacement() {
-    let (context, function) = parse_function(
-        "()",
-        "    %0 = test.constant 5 : i128;
-    test.sink %0 : (i128);
-    builtin.ret;",
-    );
-    let (i64, i128) = (context.i64(), context.i128());
-    // Only the results of constants are split.
-    let mut converter = TypeConverter::new();
-    converter.add_value_conversion(move |_, value| {
-        let value = value.borrow();
-        let defined_by_constant =
-            value.get_defining_op().is_some_and(|op| op.borrow().is::<Constant>());
-        (value.ty() == i128 && defined_by_constant).then(|| TypeConversion::many([i64, i64]))
-    });
-    // The sink is given the cast's result as itself (the callback does not answer for it), so
-    // its pattern builds a sink of the same i128, which is illegal again: the pattern loops until
-    // the limit.
-    let mut set = ConversionPatternSet::new(context.clone());
-    set.push(split_constant(&context, &converter));
-    set.push(flatten_sink(&context, &converter, Rc::default()));
-    let err =
-        apply_full_conversion(function, wide_target(&context), set, ConversionConfig::default())
-            .unwrap_err();
-    assert_eq!(
-        format!("{err}"),
-        "dialect conversion exceeded the limit of 1024 pattern applications that follow from one \
-         operation, 'test.sink', while applying pattern 'flatten-sink' to 'test.sink'"
-    );
-}
-
-/// The same callback when the user is converted first (it is not here: program order converts the
-/// producer first). `is_legal_op` does not ask value callbacks: an operation it calls legal is
-/// given split operands.
-#[test]
-fn is_legal_op_does_not_ask_value_callbacks() {
+fn is_legal_op_and_convert_value_answer_by_type() {
     let (context, function) = parse_function(
         "()",
         "    %0 = test.constant 5 : i128;
@@ -285,11 +248,7 @@ fn is_legal_op_does_not_ask_value_callbacks() {
     );
     let (i64, i128) = (context.i64(), context.i128());
     let mut converter = TypeConverter::new();
-    assert!(!converter.has_value_conversions());
-    converter.add_value_conversion(move |_, value| {
-        (value.borrow().ty() == i128).then(|| TypeConversion::many([i64, i64]))
-    });
-    assert!(converter.has_value_conversions());
+    converter.add_conversion(move |_, ty| (ty == i128).then(|| TypeConversion::many([i64, i64])));
     let sink = function
         .borrow()
         .regions()
@@ -304,12 +263,12 @@ fn is_legal_op_does_not_ask_value_callbacks() {
         .as_operation_ref()
         .next()
         .unwrap();
-    assert!(converter.is_legal_op(&sink.borrow()), "is_legal_op asks only type callbacks");
+    assert!(!converter.is_legal_op(&sink.borrow()));
     assert_eq!(
         converter
             .convert_value(&context, sink.borrow().operands()[0].borrow().as_value_ref())
-            .len(),
-        2
+            .as_slice(),
+        [i64, i64]
     );
 }
 
