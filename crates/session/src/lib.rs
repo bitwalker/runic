@@ -229,7 +229,7 @@ impl Session {
 
     /// Get the [OutputFile] to write the final output to
     pub fn out_file(&self) -> OutputFile {
-        let out_file = self.output_files.output_file(OutputType::Hir, None);
+        let out_file = self.output_files.output_file(OutputType::Ir, None);
 
         if let OutputFile::Real(ref path) = out_file {
             self.check_file_is_writeable(path);
@@ -276,7 +276,9 @@ impl Session {
         self.options.output_types.contains_key(&ty)
     }
 
-    /// Returns true if IR should be printed to stdout, after executing a pass named `pass`
+    /// Returns true if IR should be printed to stdout after the pass whose command-line name is
+    /// `pass`: after every pass with `print_ir_after_all`, else after the passes named in
+    /// `print_ir_after_pass`
     pub fn should_print_ir(&self, pass: &str) -> bool {
         self.options.print_ir_after_all
             || self.options.print_ir_after_pass.iter().any(|p| p == pass)

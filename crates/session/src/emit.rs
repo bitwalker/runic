@@ -217,7 +217,7 @@ impl Emit for alloc::string::String {
     }
 
     fn output_type(&self, _mode: OutputMode) -> OutputType {
-        OutputType::Hir
+        OutputType::Ir
     }
 
     fn write_to<W: Writer>(
@@ -238,7 +238,7 @@ impl Emit for Module {
     }
 
     fn output_type(&self, _mode: OutputMode) -> OutputType {
-        OutputType::Hir
+        OutputType::Ir
     }
 
     fn write_to<W: Writer>(
@@ -263,7 +263,7 @@ impl Emit for Component {
     }
 
     fn output_type(&self, _mode: OutputMode) -> OutputType {
-        OutputType::Hir
+        OutputType::Ir
     }
 
     fn write_to<W: Writer>(

@@ -57,27 +57,27 @@ pub enum OutputMode {
 pub enum OutputType {
     /// The compiler will emit the IR in its textual form
     #[default]
-    Hir,
+    Ir,
 }
 impl OutputType {
     pub fn extension(&self) -> &'static str {
         match self {
-            Self::Hir => "hir",
+            Self::Ir => "runic",
         }
     }
 
     pub fn shorthand_display() -> String {
-        format!("`{}`", Self::Hir)
+        format!("`{}`", Self::Ir)
     }
 
     pub const fn all() -> &'static [OutputType] {
-        &[OutputType::Hir]
+        &[OutputType::Ir]
     }
 }
 impl fmt::Display for OutputType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Self::Hir => f.write_str("hir"),
+            Self::Ir => f.write_str("ir"),
         }
     }
 }
@@ -86,7 +86,7 @@ impl FromStr for OutputType {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "hir" => Ok(Self::Hir),
+            "ir" => Ok(Self::Ir),
             _ => Err(()),
         }
     }
@@ -501,7 +501,7 @@ impl clap::builder::TypedValueParser for OutputTypeParser {
         use clap::builder::PossibleValue;
         Some(Box::new(
             [
-                PossibleValue::new("hir").help("High-level Intermediate Representation (text)"),
+                PossibleValue::new("ir").help("Intermediate representation (text)"),
                 PossibleValue::new("all").help("All of the above"),
             ]
             .into_iter(),

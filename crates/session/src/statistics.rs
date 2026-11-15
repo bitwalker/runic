@@ -16,8 +16,8 @@ pub struct Statistics {
     ///
     /// Parsing here refers to one of two things:
     ///
-    /// 1. Loading of a Wasm module into memory and converting it to HIR
-    /// 2. Parsing of an HIR module into memory
+    /// 1. Loading of an input in another format into memory and converting it to the IR
+    /// 2. Parsing of a module in the textual IR into memory
     parse_time: AtomicU64,
     /// The elapsed time at which optimizations/rewrites started
     opt_time: AtomicU64,
@@ -74,7 +74,7 @@ impl Statistics {
         load_duration(&self.opt_time)
     }
 
-    /// Get the time spent generating Miden Assembly, if applicable
+    /// Get the time spent in code generation, if applicable
     pub fn codegen_time(&self) -> Option<HumanDuration> {
         load_duration(&self.codegen_time)
     }
@@ -89,7 +89,7 @@ impl Statistics {
         store_duration(&self.opt_time, self.elapsed())
     }
 
-    /// Record that codegen of Miden Assembly has completed
+    /// Record that code generation has completed
     pub fn codegen_completed(&self) {
         store_duration(&self.codegen_time, self.elapsed())
     }

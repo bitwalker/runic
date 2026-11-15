@@ -37,8 +37,8 @@ pub struct Options {
     pub output_file: Option<OutputFile>,
     /// Path prefixes to remap for any file paths encoded in debug info
     pub remap_path_prefixes: Vec<RemapPathPrefix>,
-    /// Print source location information in HIR output
-    pub print_hir_source_locations: bool,
+    /// Print source location information in textual IR output
+    pub print_source_locations: bool,
     /// Stop compilation after the named checkpoint, as `--stop-after` asked.
     ///
     /// An alias declared by the route being compiled — `parse`, `analyze`, `transform`,
@@ -104,7 +104,7 @@ impl Options {
             target_dir,
             output_dir,
             output_file: None,
-            print_hir_source_locations: false,
+            print_source_locations: false,
             stop_after: None,
             parse_only: false,
             analyze_only: false,
@@ -145,13 +145,13 @@ impl Options {
         output_file: Option<OutputFile>,
     ) -> Box<Self> {
         use crate::OutputType;
-        let has_final_output = output_types.keys().any(|ty| matches!(ty, OutputType::Hir));
+        let has_final_output = output_types.keys().any(|ty| matches!(ty, OutputType::Ir));
         if !has_final_output {
             // By default, we always produce a final artifact; `--emit` selects additional outputs.
-            output_types.insert(OutputType::Hir, output_file);
-        } else if output_file.is_some() && output_types.get(&OutputType::Hir).is_some() {
+            output_types.insert(OutputType::Ir, output_file);
+        } else if output_file.is_some() && output_types.get(&OutputType::Ir).is_some() {
             // The -o flag overrides --emit
-            output_types.insert(OutputType::Hir, output_file);
+            output_types.insert(OutputType::Ir, output_file);
         }
         self.output_types = output_types;
         self
@@ -195,7 +195,7 @@ impl Options {
     /// The IR printer flags these options select.
     pub fn op_printing_flags(&self) -> runic_core::print::OpPrintingFlags {
         runic_core::print::OpPrintingFlags {
-            print_source_locations: self.print_hir_source_locations,
+            print_source_locations: self.print_source_locations,
             ..Default::default()
         }
     }
@@ -394,7 +394,7 @@ mod tests {
 
         let all = Options {
             print_ir_after_all: true,
-            print_hir_source_locations: true,
+            print_source_locations: true,
             ..Options::default()
         };
         let config = all.ir_printing_config().unwrap();
@@ -421,7 +421,7 @@ mod tests {
     #[test]
     fn source_locations_flag_reaches_the_printer_flags() {
         let options = Options {
-            print_hir_source_locations: true,
+            print_source_locations: true,
             ..Options::default()
         };
         assert!(options.op_printing_flags().print_source_locations);

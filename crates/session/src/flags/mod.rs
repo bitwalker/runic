@@ -150,7 +150,8 @@ fn fake_compile_command() -> clap::Command {
     register_flags(cmd)
 }
 
-/// Register dynamic flags to be shown via `midenc help compile`
+/// Registers every [CompileFlag] on `cmd` as an argument, so that the help of the `compile` command
+/// shows them
 #[cfg(feature = "std")]
 pub fn register_flags(cmd: clap::Command) -> clap::Command {
     inventory::iter::<CompileFlag>.into_iter().fold(cmd, |cmd, flag| {
