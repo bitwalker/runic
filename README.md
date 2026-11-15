@@ -1,60 +1,133 @@
-# Runic Compiler Framework
+# Runic
 
-This project is an attempt at building a Rust-native, MLIR-inspired compiler framework and toolchain for custom compiler projects.
+Runic is a compiler framework in Rust, modelled on MLIR. It provides an intermediate representation
+(IR) whose operations are defined by _dialects_, a verifier, a pass manager, pattern rewriting,
+dialect conversion, data-flow analyses and transformation passes, and `runic-opt`, a command-line
+tool that runs passes on textual IR, like MLIR's `mlir-opt`.
 
-At its core, it provides a rich and flexible intermediate representation (IR), capable of representing both high-level and low-level operations via _dialects_. The IR itself is comprised of _regions_, which contain _blocks_, which contain _operations_, which in turn may have nested regions. Like MLIR, this IR is a form of _Regionalized Value State Dependence Graph_. The IR has both generic and pretty printed forms, with support for parsing both. The IR supports both SSA and graph-like (unscheduled) regions.
+The IR is made of _regions_, which hold _blocks_, which hold _operations_, which may hold regions
+of their own. A region is either an SSA region (a control-flow graph of blocks) or a graph region.
+The IR has a textual form, written in files with the extension `.runic`, in two forms, both parsed
+and printed: a custom form, defined per operation, and a generic form that every operation has.
 
-In addition to the core IR, Runic provides a dataflow analysis framework, a pass pipeline and manager, a canonicalizer based around a greedy pattern rewrite driver (which is also used for applying transformation passes), as well as a dialect conversion framework for lowering one or more dialects to a target.
+What exists today is the core IR, its dialects and passes, and the test tool. There is no frontend
+and no backend in this repository, by design: a compiler built on Runic brings its own. A harness
+that drives a whole compilation comes in a later stage.
 
-The `runic-opt` executable can be used to parse some IR, apply a pass pipeline, and print the resulting IR - primarily useful in testing and experimentation.
+## The crates
 
-The `runic` executable provides an experimental harness for batch compilation use cases (i.e. take some inputs, lower them to IR, then emit code for some target backend). It supports registering custom frontend languages (e.g. Rust) and backend targets (e.g. Wasm), and handles orchestrating the compilation pipeline so that a frontend need only lower to Runic's IR, and a backend need only understand the built-in Runic dialects to be able to emit valid programs. This part is still experimental because so much of what goes into a compilation session can be context-specific, that the utility of this is still being evaluated.
+The workspace has sixteen members:
 
-## Installing
+| crate | path | what it is for |
+|---|---|---|
+| `runic-core` | `crates/core` | the IR (operations, regions, blocks, values, types, attributes), its textual form (parser and printer), the verifier, the pass manager, pattern rewriting and dialect conversion; the `builtin` and `di` (debug information) dialects, and the `test` dialect the tests use |
+| `runic-dialect-arith` | `crates/dialects/arith` | constants, arithmetic, bitwise operations, comparisons and casts on signless integers |
+| `runic-dialect-cf` | `crates/dialects/cf` | unstructured control flow (`cf.br`, `cf.cond_br`, `cf.switch`), `cf.select` and `cf.assert` |
+| `runic-dialect-scf` | `crates/dialects/scf` | structured control flow (`scf.if`, `scf.index_switch`, `scf.while` and their terminators) |
+| `runic-dialect-mem` | `crates/dialects/mem` | byte-addressed memory, typed and opaque pointers |
+| `runic-dialect-ub` | `crates/dialects/ub` | undefined behaviour (`ub.poison`, `ub.unreachable`) |
+| `runic-analysis` | `crates/analysis` | the data-flow analysis framework and its analyses |
+| `runic-transform` | `crates/transform` | transformation passes and utilities |
+| `runic-session` | `crates/session` | the metadata and configuration of a compilation session (no tool uses it yet) |
+| `runic-diagnostics` | `crates/diagnostics` | structured diagnostics: describing, collecting and rendering them with their source |
+| `runic-diagnostics-macros` | `crates/diagnostics-macros` | derive macros for `runic-diagnostics` |
+| `runic-macros` | `crates/macros` | derive and attribute macros for defining dialects, operations, types, attributes and operation traits |
+| `runic-symbol` | `crates/symbol` | string interning |
+| `runic-log` | `crates/log` | the trace logger `runic-opt` installs (see Tracing) |
+| `runic-opt` | `tools/runic-opt` | the command-line tool (below) |
+| `runic-expect-test` | `tools/expect-test` | snapshot testing for the Rust tests |
 
-You may install from source, in which case you will need to have Rust installed on your system, and then run `cargo install --locked runic` from the repo root.
+The directories `runic/`, `crates/driver`, `crates/compile`, `crates/eval` and
+`crates/dialects/wasm` hold a compile harness and driver, an evaluator and a WebAssembly dialect
+from before Runic was split out of an earlier compiler, kept for a later stage. They are not
+workspace members: they are not built and not tested.
 
-Alternatively, you can download prebuilt binaries from the [latest GitHub release](https://github.com/bitwalker/runic/releases/latest), and install them somewhere in your shell's `PATH`.
+## Building
 
-> [!TIP]
-> Our prebuilt binaries have attached GitHub build attestations, which can be verified using the `gh` CLI, like so:
->
-> ```
-> gh attestation verify runic-aarch64-apple-darwin.tar.gz \
->    --repo bitwalker/runic \
->    --signer-workflow bitwalker/runic/.github/workflows/release.yml
-> ```
+The toolchain is pinned in `rust-toolchain.toml` (a nightly channel); `rustup` installs it on the
+first `cargo` command run in the repository (this needs the network). The tasks of the
+repository are run with [`cargo-make`](https://github.com/sagiegurari/cargo-make)
+(`cargo install cargo-make`, which needs the network).
 
-## Development
+```sh
+cargo build --workspace    # or: cargo make build (also: cargo make)
+```
 
-You'll need to have Rust installed. This repository pins the toolchain in `rust-toolchain.toml` at the repo root (currently a nightly channel); use `rustup` to install that exact channel after cloning so local builds match CI.
+builds every member. The tool alone:
 
-Additionally, you'll need to have [`cargo-make`](https://github.com/sagiegurari/cargo-make) installed:
+```sh
+cargo build -p runic-opt   # target/debug/runic-opt
+cargo make runic-opt       # the same, and copies it to bin/runic-opt
+```
 
-    $ cargo install cargo-make
+## `runic-opt`
 
-From there, build the compiler with:
+`runic-opt` reads one top-level operation in the textual form (from a file, or standard input),
+parses and verifies it, runs the pass pipeline given with `-p`, verifying after each pass, and
+prints the result. `runic-opt --help` describes every option; `--list-dialects`,
+`--list-passes` and `--list-operations` list what it has registered.
 
-    $ cargo make
+An example from the test suite, `tests/lit/transforms/cse/simple-constant.runic`. The file is a
+lit test: besides the IR it holds `// RUN:` lines, the commands the suite runs on it, and
+`// CHECK` lines, what their output must contain (see [`tests/lit/README.md`](tests/lit/README.md)).
+Its IR is this function:
 
-To build just the compiler:
+```
+builtin.function public extern("C") @simple_constant() -> (i32, i32) {
+    %a = arith.constant 1 : i32;
+    %b = arith.constant 1 : i32;
+    builtin.ret %a, %b : (i32, i32);
+};
+```
 
-    $ cargo make runic
+Common subexpression elimination replaces the second constant by the first:
+
+```console
+$ bin/runic-opt tests/lit/transforms/cse/simple-constant.runic -p cse
+builtin.function public extern("C") @simple_constant() -> (i32, i32) {
+    %0 = arith.constant 1 : i32;
+    builtin.ret %0, %0 : (i32, i32);
+};
+```
+
+With `--print-generic`, the same result is printed in the generic form.
+
+### Tracing
+
+`runic-opt` installs the logger of `runic-log`, configured by four environment variables
+(described in full in the crate's documentation, `crates/log/src/lib.rs`):
+
+- `RUNIC_TRACE`: which records are written, as a list of directives, such as `trace`,
+  `dataflow=debug` or `pattern-rewrite-driver=trace`; without it, only errors.
+- `RUNIC_TRACE_FILTER`: keeps, of the records that carry a key, those whose value matches, such as
+  `op:add` or `dialect:arith`.
+- `RUNIC_TRACE_STYLE`: whether records are styled: `auto` (the default), `always` or `never`.
+- `RUNIC_TRACE_TIMING`: gives each record a timestamp of the precision `s`, `ms`, `us` or `ns`.
+
+Records are written to standard error. A malformed `RUNIC_TRACE_FILTER` or `RUNIC_TRACE_TIMING`
+is an error, and the tool runs nothing.
 
 ## Testing
 
-To run the compiler test suite:
+There are two test suites, the Rust tests and the lit suite:
 
-    $ cargo make test
+```sh
+cargo test --workspace     # the Rust tests
+cargo make test            # the Rust tests under cargo-nextest, and the tests of the Python scripts in tools/
+cargo make test-lit        # builds runic-opt into bin/ and runs the lit suite in tests/lit
+cargo make test-all        # the two above, then removes unused build output from target/
+```
 
-This runs the Rust tests, including integration and template tests. To include the `lit`/FileCheck
-suite, run `cargo make test-all`.
+`cargo make test` installs `cargo-nextest`, and `cargo make test-lit` installs `litcheck`, when
+they are missing (this needs the network). At its end, `cargo make test-all` deletes the build
+output in `target/` that the workspace's build no longer uses (`tools/sweep-target.py`); set
+`RUNIC_SKIP_SWEEP` to skip that. How
+the lit suite is written and run, and how to run one test or one directory, is in
+[`tests/lit/README.md`](tests/lit/README.md).
 
-### Emitting internal sources/artifacts
-
-- `RUNIC_EMIT`: Environment-variable equivalent of `--emit`. Accepts the same `KIND[=PATH]` syntax
-  (comma-delimited), where `PATH` is treated either as folder e.g. `RUNIC_EMIT=ir=target/emit` or file `RUNIC_EMIT=hir=my_name.hir`.
+How to contribute, and the lint and format commands, are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## License
 
-This project is dual-licensed under MIT and Apache 2.0, see [LICENSE](LICENSE.md) for details.
+Runic is licensed under the MIT license: see [`LICENSE.md`](LICENSE.md). The `runic-log` crate
+states `MIT OR Apache-2.0` in its manifest (`crates/log/Cargo.toml`).

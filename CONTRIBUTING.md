@@ -5,15 +5,11 @@
 We want to make contributing to this project as easy and transparent as possible, whether it's:
 
 - Reporting a [bug](https://github.com/bitwalker/runic/issues/new)
-- Taking part in [discussions](https://github.com/bitwalker/runicr/discussions)
+- Taking part in [discussions](https://github.com/bitwalker/runic/discussions)
 - Submitting a [fix](https://github.com/bitwalker/runic/pulls)
 - Proposing new [features](https://github.com/bitwalker/runic/issues/new)
 
 &nbsp;
-
-## AI Tool Policy
-
-If you use, or are planning on using AI tools to assist you in contributing to this project, then please read our [AI Tool Policy](docs/ai-tool-policy.md) before getting started.
 
 ## Contribution Quality
 
@@ -35,18 +31,18 @@ We are using [Github Flow](https://docs.github.com/en/get-started/quickstart/git
 
 ### Branching
 
-- The current active branch is `next`. Every branch with a fix/feature must be forked from `next`.
+- The default branch is `main`. Every branch with a fix/feature must be forked from `main`.
 
 - The branch name should contain a short issue/feature description separated with hyphens [(kebab-case)](https://en.wikipedia.org/wiki/Letter_case#Kebab_case).
 
     For example, if the issue title is `Fix functionality X in component Y` then the branch name will be something like: `fix-x-in-y`.
 
-- New branch should be rebased on `next` before submitting a PR in case there have been changes, so as to keep the history as clean as possible.
+- New branch should be rebased on `main` before submitting a PR in case there have been changes, so as to keep the history as clean as possible.
 i.e. this branches state:
   ```
           A---B---C fix-x-in-y
          /
-    D---E---F---G next
+    D---E---F---G main
             |   |
          (F, G) changes happened after `fix-x-in-y` forked
   ```
@@ -57,7 +53,7 @@ i.e. this branches state:
   ```
                   A'--B'--C' fix-x-in-y
                  /
-    D---E---F---G next
+    D---E---F---G main
   ```
 
 
@@ -82,22 +78,17 @@ Commit messages should be written in a short, descriptive manner and adhere to t
 
 Where:
 
-- `<scope>` indicates the scope or component of the compiler affected by the change. This is sometimes a specific crate, e.g. `runic`, but more often than not a change may modify multiple crates, in which case the scope should indicate what the cross-cutting concern is. For example, `analysis` would be a good scope for a change that implements a new dataflow analysis pass; `arith` would be a good scope for a change that is focused on the `arith` dialect; `build` or `ci` are commonly used for changes that modify build tooling or CI workflows. Don't overthink it - just try to convey to the reader what the scope of the change is, if they were to read the commit without any additional context. Look at existing commits for reference if you are unsure.
+- `<scope>` indicates the scope or component of the compiler affected by the change. This is sometimes a specific crate, e.g. `core` or `runic-opt`, but more often than not a change may modify multiple crates, in which case the scope should indicate what the cross-cutting concern is. For example, `analysis` would be a good scope for a change that implements a new dataflow analysis pass; `arith` would be a good scope for a change that is focused on the `arith` dialect; `build` or `ci` are commonly used for changes that modify build tooling or CI workflows. Don't overthink it - just try to convey to the reader what the scope of the change is, if they were to read the commit without any additional context. Look at existing commits for reference if you are unsure.
 - `<summary>` should be a terse description of the change, no more than 80 characters if possible. You may omit the `<scope>: ` prefix if `<summary>` would exceed 80 characters otherwise, and already adequately conveys the scoping of the commit.
 - `<description>` should be a more detailed description of what changed, primarily focusing on the _why_. The reader can look at the diff to see the _what_, so your goal is only to summarize that aspect briefly. What the reader can't tell from the diff is the context on _why_ the change was made - focus on that.
 - `<optional trailers>` should contain trailers like issue references, `Assisted-by:`, etc. It is not required to specify these, and external contributors should avoid using `Closes:` or `Fixes:` trailers, as issue management is the concern of maintainers alone.
 
-An example of a good commit message is the following:
+Examples of summaries from the history of this repository:
 
 ```
-ci: benchmark each revision with its own SDK and examples
-
-The baseline compiler was driven over candidate sources, so SDK changes such as 
-allocator fixes were included on both sides and their size differences 
-disappeared. Use the baseline checkout for its examples, SDK, and inputs while 
-retaining a common benchmark runner and VM executor. Read result revisions from 
-their source checkouts and fail on either side’s build errors instead of 
-publishing a partial baseline.
+parse: the lexer skips the sigil of a symbol name by its own length
+lit: the location of an operation written in the generic form
+log: the trace variables are RUNIC_*
 ```
 
 Contributors should ensure their PRs are comprised of no more than a single commit, but if necessary, multiple commits are permitted so long as they adhere to the following rules:
@@ -114,19 +105,27 @@ TIP: If you want your PR merged quickly, then keeping up good commit hygiene mak
 
 We provide `cargo make` tasks for all of our primary checks:
 
-- `cargo make format` to ensure code is formatted
+- `cargo make format` to format the code (`cargo fmt`), and `cargo make check-format` to check that it is formatted (`cargo fmt -- --check`)
 - `cargo make clippy` to ensure code passes the set of lints we have enabled, pass `--fix` to automatically fix issues when possible
-- `cargo make unused` to identify any unused dependencies/items that should be removed 
-- `cargo make rustdocs` to ensure Rust-based documentation comments build
-- `cargo make docs` to ensure our Docusaurus-based documentation pages build
+- `cargo make unused` to identify any unused dependencies that should be removed (`cargo shear`)
+- `cargo make docs` to ensure the Rust documentation comments build (`cargo doc`)
 
-You should run any of these that are relevant before submitting a PR.
+You should run any of these that are relevant before submitting a PR. `cargo make unused` needs
+`cargo-shear` installed. CI runs `cargo make check-format`, `cargo make clippy` and `cargo make unused`.
+
+### Tests
+
+- `cargo test --workspace`, or `cargo make test` (under `cargo-nextest`, with the tests of the Python scripts in `tools/`), runs the Rust tests
+- `cargo make test-lit` builds `runic-opt` and runs the lit suite in `tests/lit` (see [`tests/lit/README.md`](tests/lit/README.md))
+- `cargo make test-all` runs both, then removes unused build output from `target/` (set `RUNIC_SKIP_SWEEP` to skip that)
+
+CI runs `cargo make test` and `cargo make test-lit`.
 
 For documentation in the code itself, we follow the [rustdoc](https://doc.rust-lang.org/rust-by-example/meta/doc.html) convention with line breaks required if a line exceeds 100 characters. You should ensure that any documentation relevant to a change you are making is updated as part of that change. If a new feature is being added, you should ensure that it is documented appropriately.
 
 ### Changelog
 
-Do not manually write entries in any of the `CHANGELOG.md` files in this repo - the maintainers will handle this.
+Do not manually write entries in [`CHANGELOG.md`](CHANGELOG.md) - the maintainers will handle this.
 
 ### Versioning
 
@@ -138,13 +137,13 @@ We use [Semantic Versioning](https://semver.org/) in this project, however contr
 
 Before submitting a PR, run through the following checklist:
 
-1. Repo forked and branch created from `next` according to the naming convention.
+1. Repo forked and branch created from `main` according to the naming convention.
 2. Every commit is [signed](https://docs.github.com/en/authentication/managing-commit-signature-verification/about-commit-signature-verification#ssh-commit-signature-verification).
 3. Commit messages and code style follow conventions.
 4. Tests added for new functionality.
 5. Documentation/comments updated for all changes according to our documentation convention.
-6. `cargo make format`, `cargo make clippy`, and `cargo make unused` lints produce no errors.
-7. Branch is rebased on the latest changes in `next`.
+6. `cargo make check-format`, `cargo make clippy`, and `cargo make unused` produce no errors, and the tests pass.
+7. Branch is rebased on the latest changes in `main`.
 
 &nbsp;
 
@@ -162,4 +161,4 @@ Before submitting a PR, run through the following checklist:
 
 ## Contributions are licensed under the project LICENSE
 
-When you submit code changes in a pull request, you are agreeing to license that contribution under the _project's_ dual license ([MIT](./LICENSE-MIT) and [Apache 2.0](./LICENSE-APACHE)). If you do not agree to this, then you must not submit pull requests to this project.
+When you submit code changes in a pull request, you are agreeing to license that contribution under the _project's_ license ([MIT](LICENSE.md)). If you do not agree to this, then you must not submit pull requests to this project.

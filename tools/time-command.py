@@ -4,7 +4,7 @@
 For example:
 
 python3 tools/time-command.py --label warm-unchanged-1 \
-  --output /tmp/compiler-timings.jsonl -- cargo nextest run --profile ci -p runic-integration-tests
+  --output target/timings.jsonl -- cargo nextest run --profile ci -p runic-core
 """
 
 import argparse
