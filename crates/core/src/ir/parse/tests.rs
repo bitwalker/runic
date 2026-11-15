@@ -545,6 +545,26 @@ fn a_component_keeps_its_attribute_dictionary() -> TestResult {
     Ok(())
 }
 
+/// A function's visibility and `extern` keyword are each optional: without a visibility the
+/// function is private, whether `extern` follows or not.
+#[test]
+fn a_function_may_leave_out_its_visibility_or_extern() -> TestResult {
+    let test = ParserTest::default();
+    let source = "builtin.module public @m {\n    builtin.function extern(\"C\") @a(i32);\n    \
+                  builtin.function (\"C\") @b(i32);\n    builtin.function public (\"C\") \
+                  @c(i32);\n};";
+    let parsed = test.parse_any("optional_visibility.hir", source)?;
+    let printed = format!("{}", parsed.borrow());
+    for line in [
+        "builtin.function private extern(\"C\") @a(i32);",
+        "builtin.function private extern(\"C\") @b(i32);",
+        "builtin.function public extern(\"C\") @c(i32);",
+    ] {
+        assert!(printed.contains(line), "{line} in {printed}");
+    }
+    Ok(())
+}
+
 /// A global variable declaration keeps its attribute dictionary through print and parse.
 #[test]
 fn a_global_declaration_keeps_its_attribute_dictionary() -> TestResult {

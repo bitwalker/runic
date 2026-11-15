@@ -105,23 +105,33 @@ impl OpParser for Function {
             parse::{ParserError, Token},
         };
 
-        let visibility = match parser.parse_optional_keyword()? {
-            Some(tok) => match tok.inner() {
-                Token::BareIdent("public") => Visibility::Public,
-                Token::BareIdent("private") => Visibility::Private,
-                Token::BareIdent("internal") => Visibility::Internal,
-                invalid => {
-                    return Err(ParserError::UnexpectedToken {
-                        span: tok.span(),
-                        token: invalid.to_string(),
-                        expected: Some("visibility keyword".to_string()),
-                    });
-                }
-            },
+        // `visibility? extern?`: a first keyword that is `extern` leaves the visibility out.
+        let mut first_keyword = parser.parse_optional_keyword()?;
+        let visibility = match first_keyword.as_ref().map(|tok| tok.inner()) {
+            Some(Token::BareIdent("extern")) => Visibility::Private,
+            Some(tok) => {
+                let visibility = match tok {
+                    Token::BareIdent("public") => Visibility::Public,
+                    Token::BareIdent("private") => Visibility::Private,
+                    Token::BareIdent("internal") => Visibility::Internal,
+                    invalid => {
+                        return Err(ParserError::UnexpectedToken {
+                            span: first_keyword.unwrap().span(),
+                            token: invalid.to_string(),
+                            expected: Some("visibility keyword".to_string()),
+                        });
+                    }
+                };
+                first_keyword = None;
+                visibility
+            }
             None => Visibility::Private,
         };
 
-        let extern_keyword = parser.parse_optional_keyword()?;
+        let extern_keyword = match first_keyword {
+            Some(tok) => Some(tok),
+            None => parser.parse_optional_keyword()?,
+        };
         match extern_keyword.map(|tok| tok.into_parts()) {
             None => (),
             Some((_, Token::BareIdent("extern"))) => (),
