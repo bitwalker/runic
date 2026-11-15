@@ -5,7 +5,7 @@
 // operation, under which it states a successor; the operands it gives a successor agree with the
 // successor's inputs (the results of the operation, or a region's entry block arguments) in
 // number and type; a region the operation branches to has an entry block. The operands the loop
-// gives its first region on entry are in `scf-while-invalid.runic`; early exits are in
+// gives its first region on entry are in `scf-while.runic`; early exits are in
 // `scf-exits.runic`.
 
 builtin.function public extern("C") @valid(%c: i1, %a: i32) -> i32 {

@@ -1,16 +1,30 @@
 // RUN: runic-opt %s --split-input-file --verify-diagnostics
 
-// The rules of `scf.while` that `scf-while-invalid.runic` does not have: each region's block ends
-// with a terminator, which the loop checks before the structural rule does, and the first region
-// has a block.
+// The rules of `scf.while`, one case each: the iteration operands, the block arguments of both
+// regions, the operands `scf.condition` forwards and the loop's results agree in number and type;
+// the before block ends in `scf.condition` and the after block in `scf.yield` (or an exit); each
+// region's block ends with a terminator, which the loop checks before the structural rule does;
+// and the first region has a block.
 
-builtin.function public extern("C") @valid(%c: i1) {
+// Well-formed loops: one with matching iteration and result sides, and one with no init operands,
+// no forwarded operands and no results.
+builtin.function public extern("C") @valid(%n: i32, %c: i1) -> i32 {
+    %r = scf.while %n before {
+    ^head(%i: i32):
+        %lt = arith.cmpi ult %i, %n;
+        scf.condition %lt, %i : (i1, i32);
+    } after {
+    ^body(%j: i32):
+        %one = arith.constant 1 : i32;
+        %next = arith.add %j, %one;
+        scf.yield %next : (i32);
+    } : (i32) -> (i32);
     scf.while before {
         scf.condition %c : (i1);
     } after {
         scf.yield : ();
     } : () -> ();
-    builtin.ret;
+    builtin.ret %r : (i32);
 };
 
 // -----
@@ -55,4 +69,127 @@ builtin.function public extern("C") @continue_no_before_block(%c: i1) {
         scf.continue 1 : ();
     } : () -> ();
     builtin.ret;
+};
+
+// -----
+
+// The number of `scf.yield` operands must equal the number of init operands of `scf.while`.
+builtin.function public extern("C") @yield_count(%n: i32, %b: i1) -> i32 {
+    scf.while %n before {
+    ^head(%i: i32):
+        scf.condition %b : (i1);
+    } after {
+    ^body:
+        // expected-error@+1 {{takes 1 block argument(s), but scf.yield gives it 2 operand(s)}}
+        scf.yield %n, %n : (i32, i32);
+    } : (i32) -> ();
+    builtin.ret %n : (i32);
+};
+
+// -----
+
+// The number of init operands must equal the number of before-block arguments.
+builtin.function public extern("C") @init_count(%n: i32, %b: i1) -> i32 {
+    // expected-error@+1 {{scf.while gives it 2 operand(s)}}
+    scf.while %n, %n before {
+    ^head(%i: i32):
+        scf.condition %b : (i1);
+    } after {
+    ^body:
+        scf.yield %n : (i32);
+    } : (i32, i32) -> ();
+    builtin.ret %n : (i32);
+};
+
+// -----
+
+// The type of a before-block argument must equal the type of the init operand at its position.
+builtin.function public extern("C") @iteration_type(%n: i32, %b: i1) -> i32 {
+    scf.while %n before {
+    ^head(%i: i64):
+        scf.condition %b : (i1);
+    } after {
+    ^body:
+        // The verifier stops at its first error, which is the back edge, not the init operand.
+        // expected-error@+1 {{has type 'i32', but the block argument it binds has type 'i64'}}
+        scf.yield %n : (i32);
+    } : (i32) -> ();
+    builtin.ret %n : (i32);
+};
+
+// -----
+
+// The after block of `scf.while` must end in `scf.yield`.
+builtin.function public extern("C") @after_not_yield(%n: i32) -> i32 {
+    // expected-error@+1 {{the after block must end in scf.yield or in an exit, but it ends in ub.unreachable}}
+    scf.while %n before {
+    ^head(%i: i32):
+        %c = arith.cmpi ult %i, %n;
+        scf.condition %c : (i1);
+    } after {
+    ^body:
+        ub.unreachable;
+    } : (i32) -> ();
+    builtin.ret %n : (i32);
+};
+
+// -----
+
+// The before block of `scf.while` must end in `scf.condition`.
+builtin.function public extern("C") @before_not_condition(%n: i32) -> i32 {
+    // expected-error@+1 {{the before block must end in scf.condition or in an exit, but it ends in ub.unreachable}}
+    scf.while %n before {
+    ^head(%i: i32):
+        ub.unreachable;
+    } after {
+    ^body:
+        scf.yield %n : (i32);
+    } : (i32) -> ();
+    builtin.ret %n : (i32);
+};
+
+// -----
+
+// The number of operands `scf.condition` forwards must equal the number of after-block arguments.
+builtin.function public extern("C") @forwarded_count(%n: i32, %b: i1) -> i32 {
+    scf.while %n before {
+    ^head(%i: i32):
+        // expected-error@+1 {{successor 0 (region 1 of scf.while) takes 1 block argument(s), but scf.condition gives it 2 operand(s)}}
+        scf.condition %b, %i, %i : (i1, i32, i32);
+    } after {
+    ^body(%j: i32):
+        scf.yield %j : (i32);
+    } : (i32) -> ();
+    builtin.ret %n : (i32);
+};
+
+// -----
+
+// The number of results of `scf.while` must equal the number of operands `scf.condition` forwards.
+builtin.function public extern("C") @result_count(%n: i32, %b: i1) -> i32 {
+    %r0, %r1 = scf.while %n before {
+    ^head(%i: i32):
+        // expected-error@+1 {{successor 1 (the results of scf.while) takes 2 result(s), but scf.condition gives it 1 operand(s)}}
+        scf.condition %b, %i : (i1, i32);
+    } after {
+    ^body(%j: i32):
+        scf.yield %j : (i32);
+    } : (i32) -> (i32, i32);
+    builtin.ret %n : (i32);
+};
+
+// -----
+
+// The type of an after-block argument must equal the type of the operand `scf.condition` forwards
+// at its position.
+builtin.function public extern("C") @result_type(%n: i32, %b: i1) -> i32 {
+    scf.while %n before {
+    ^head(%i: i32):
+        // expected-error@+1 {{operand 0 for successor 0 (region 1 of scf.while) has type 'i32', but the block argument it binds has type 'i64'}}
+        scf.condition %b, %i : (i1, i32);
+    } after {
+    ^body(%j: i64):
+        scf.yield %n : (i32);
+    } : (i32) -> ();
+    builtin.ret %n : (i32);
 };
