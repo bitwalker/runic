@@ -109,7 +109,7 @@ mod tests {
         control: &str,
         make: fn(Rc<Context>) -> Box<dyn RewritePattern>,
     ) {
-        let (changed, verified) = run_one(&format!("{name}_with_exit.hir"), with_exit, make);
+        let (changed, verified) = run_one(&format!("{name}_with_exit.runic"), with_exit, make);
         if let Err(err) = verified {
             panic!(
                 "'{name}' reshaped a loop addressed by a nested early exit, and its own output no \
@@ -121,7 +121,7 @@ mod tests {
             "'{name}' must bail on a loop addressed by a nested early exit, not reshape it"
         );
 
-        let (changed, verified) = run_one(&format!("{name}_control.hir"), control, make);
+        let (changed, verified) = run_one(&format!("{name}_control.runic"), control, make);
         verified.unwrap_or_else(|err| panic!("'{name}' control output does not verify:\n{err}"));
         assert!(
             changed,

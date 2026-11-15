@@ -227,7 +227,7 @@ builtin.module public @test {{
 "#
         );
         let module =
-            parse::<Module>(ParserConfig::new(test.context_rc()), "uses.hir", &source).unwrap();
+            parse::<Module>(ParserConfig::new(test.context_rc()), "uses.runic", &source).unwrap();
         (test, module)
     }
 
@@ -354,7 +354,7 @@ builtin.module public @test {{
         let test = Test::default();
         let module = parse::<Module>(
             ParserConfig::new(test.context_rc()),
-            "call_one_of_uses.hir",
+            "call_one_of_uses.runic",
             r#"
 builtin.module public @test {
     builtin.function private extern("C") @body() { builtin.ret; };
@@ -383,7 +383,7 @@ builtin.module public @test {
         let test = Test::default();
         let module = parse::<Module>(
             ParserConfig::new(test.context_rc()),
-            "call_one_of_two_targets.hir",
+            "call_one_of_two_targets.runic",
             r#"
 builtin.module public @test {
     builtin.function private extern("C") @left() { builtin.ret; };
@@ -425,7 +425,7 @@ builtin.module public @test {
         let test = Test::default();
         let world = parse_any(
             ParserConfig::new(test.context_rc()),
-            "internal_alias.hir",
+            "internal_alias.runic",
             r#"
 builtin.world {
     builtin.module public @test {
@@ -465,7 +465,7 @@ builtin.world {
         let test = Test::default();
         let module = parse::<Module>(
             ParserConfig::new(test.context_rc()),
-            "outside_scope.hir",
+            "outside_scope.runic",
             r#"
 builtin.module public @test {
     builtin.function internal extern("C") @body() { builtin.ret; };
@@ -500,7 +500,7 @@ builtin.module public @test {
         let test = Test::default();
         let module = parse::<Module>(
             ParserConfig::new(test.context_rc()),
-            "function_ref.hir",
+            "function_ref.runic",
             r#"
 builtin.module public @test {
     builtin.function private extern("C") @body(i32) -> i32;

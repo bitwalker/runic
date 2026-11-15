@@ -174,7 +174,7 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
 };";
 
         let context = Rc::new(Context::default());
-        let (function, _) = parse_function_fixpoint(&context, "loop_shape.hir", PROGRAM)
+        let (function, _) = parse_function_fixpoint(&context, "loop_shape.runic", PROGRAM)
             .unwrap_or_else(|err| {
                 panic!("the `loop` shape must parse AND verify before the pattern runs: {err}")
             });

@@ -99,8 +99,8 @@ impl Program {
 /// Without the break, the constant-true loop has no reachable exit.
 #[test]
 fn n1_dce_records_the_break_as_a_predecessor_after_the_loop() -> Result<(), Report> {
-    let broken = Program::parse("n1_with_break.hir", &with_break())?;
-    let control = Program::parse("n1_without_break.hir", &without_break())?;
+    let broken = Program::parse("n1_with_break.runic", &with_break())?;
+    let control = Program::parse("n1_without_break.runic", &without_break())?;
 
     let predecessors_after_loop = |program: &Program| -> alloc::vec::Vec<String> {
         let liveness = program.liveness().expect("liveness should run");
@@ -138,7 +138,7 @@ fn n1_dce_records_the_break_as_a_predecessor_after_the_loop() -> Result<(), Repo
 /// A value defined before the loop and used after it remains live across a nested break.
 #[test]
 fn n2_liveness_carries_a_use_after_the_loop_back_across_the_break_edge() -> Result<(), Report> {
-    let broken = Program::parse("n2_with_break.hir", &with_break())?;
+    let broken = Program::parse("n2_with_break.runic", &with_break())?;
 
     let seed = broken.seed();
     let break_op = broken.find(|op| op.name().name() == "break").expect("expected an scf.break");
@@ -176,8 +176,8 @@ fn n2_liveness_carries_a_use_after_the_loop_back_across_the_break_edge() -> Resu
 /// A body containing a break to its loop has a returning edge in addition to the back edge.
 #[test]
 fn n6_the_loop_body_reports_an_exit_when_a_nested_break_targets_it() -> Result<(), Report> {
-    let broken = Program::parse("n6_with_break.hir", &with_break())?;
-    let control = Program::parse("n6_without_break.hir", &without_break())?;
+    let broken = Program::parse("n6_with_break.runic", &with_break())?;
+    let control = Program::parse("n6_without_break.runic", &without_break())?;
 
     let body_exits = |program: &Program| -> usize {
         let loop_op = program.loop_op();
@@ -242,7 +242,7 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
 #[test]
 fn the_backward_walk_anchors_a_breaks_edge_after_the_loop_not_after_the_if() -> Result<(), Report> {
     let broken = Program::parse(
-        "backward_edge_with_break.hir",
+        "backward_edge_with_break.runic",
         &BODY_LOCAL_SKELETON.replace("EXIT", "scf.break 1 %j : (i32);"),
     )?;
 

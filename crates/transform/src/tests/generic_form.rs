@@ -107,8 +107,8 @@ fn every_case_reads_back_from_the_generic_form() {
     // These golden files hold `test.debug_value`, an operation that only core's own tests
     // register; core's tests of them read their generic text back.
     const UNPARSABLE: [&str; 2] = [
-        "golden: transparent_ops_do_not_interfere_with_dce_after.hir",
-        "golden: transparent_ops_do_not_interfere_with_dce_before.hir",
+        "golden: transparent_ops_do_not_interfere_with_dce_after.runic",
+        "golden: transparent_ops_do_not_interfere_with_dce_before.runic",
     ];
 
     let mut used = BTreeSet::new();

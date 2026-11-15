@@ -162,7 +162,7 @@ fn generic_operand_cardinality_is_checked_before_type_inference() {
     builtin.ret %result : (i32);
 };"#;
     let error = test
-        .parse_any_unverified("missing_inference_operand.hir", source)
+        .parse_any_unverified("missing_inference_operand.runic", source)
         .expect_err("missing operands must not reach type inference");
     assert!(error.to_string().contains("invalid operand count"), "{error}");
 }
@@ -287,7 +287,7 @@ builtin.function public extern(\"C\") @entrypoint(%a: i32) -> i32 {
     ret %a : (i32);
 };";
 
-    let entrypoint = test.parse::<Function>("parse_simple_function.hir", source)?;
+    let entrypoint = test.parse::<Function>("parse_simple_function.runic", source)?;
     let entrypoint = entrypoint.borrow();
 
     assert_eq!(entrypoint.name().as_str(), "entrypoint");
@@ -316,7 +316,7 @@ fn parse_simple_function_generic() -> TestResult {
     "builtin.ret"(%a) : (i32) -> ();
 }) : () -> ();"#;
 
-    let entrypoint = test.parse_any("parse_simple_function_generic.hir", source)?;
+    let entrypoint = test.parse_any("parse_simple_function_generic.runic", source)?;
     let entrypoint = entrypoint.borrow();
     let entrypoint = entrypoint.downcast_ref::<Function>().expect("expected to parse a function");
 
@@ -345,7 +345,7 @@ fn parse_module_with_intra_function_symbol_references() -> TestResult {
         };
     };";
 
-    let parsed = test.parse_any("parse_module_with_intra_function_symbol_refs.hir", source)?;
+    let parsed = test.parse_any("parse_module_with_intra_function_symbol_refs.runic", source)?;
     let parsed = parsed.borrow();
     let module = parsed.downcast_ref::<Module>().unwrap();
 
@@ -438,7 +438,7 @@ builtin.world {
     builtin.module public @target {};
 };";
 
-    let parsed = test.parse_any("module_symbol_attribute.hir", source)?;
+    let parsed = test.parse_any("module_symbol_attribute.runic", source)?;
     let (reader, target) = {
         let world = parsed.borrow();
         let symbols = world.as_symbol_table().unwrap().symbol_manager();
@@ -484,9 +484,9 @@ builtin.module public @outer {
     for mode in ["module", "world"] {
         let test = ParserTest::default();
         let parsed = match mode {
-            "module" => test.parse_any("forward_uses.hir", source)?,
+            "module" => test.parse_any("forward_uses.runic", source)?,
             "world" => {
-                test.parse_any("forward_uses.hir", &format!("builtin.world {{ {source} }};"))?
+                test.parse_any("forward_uses.runic", &format!("builtin.world {{ {source} }};"))?
             }
             _ => unreachable!(),
         };
@@ -533,11 +533,11 @@ builtin.module public @outer {
 fn a_component_keeps_its_attribute_dictionary() -> TestResult {
     let test = ParserTest::default();
     let source = "builtin.component private @a attributes { note = #builtin.i32<7> } {\n};";
-    let parsed = test.parse_any("component_attributes.hir", source)?;
+    let parsed = test.parse_any("component_attributes.runic", source)?;
     let printed = format!("{}", parsed.borrow());
     assert!(printed.contains("attributes { note = #builtin.i32<7> }"), "{printed}");
 
-    let reparsed = test.parse_any("component_attributes2.hir", &printed)?;
+    let reparsed = test.parse_any("component_attributes2.runic", &printed)?;
     assert_eq!(format!("{}", reparsed.borrow()), printed);
     let reparsed = reparsed.borrow();
     let note = reparsed.get_attribute("note").expect("the attribute survives");
@@ -553,7 +553,7 @@ fn a_function_may_leave_out_its_visibility_or_extern() -> TestResult {
     let source = "builtin.module public @m {\n    builtin.function extern(\"C\") @a(i32);\n    \
                   builtin.function (\"C\") @b(i32);\n    builtin.function public (\"C\") \
                   @c(i32);\n};";
-    let parsed = test.parse_any("optional_visibility.hir", source)?;
+    let parsed = test.parse_any("optional_visibility.runic", source)?;
     let printed = format!("{}", parsed.borrow());
     for line in [
         "builtin.function private extern(\"C\") @a(i32);",
@@ -619,13 +619,13 @@ fn diagnostics_name_and_point_at_what_was_written() {
             ),
         ];
     for (source, expected) in cases {
-        let err = test.parse_any("diagnostic.hir", source).expect_err(source);
+        let err = test.parse_any("diagnostic.runic", source).expect_err(source);
         let text = crate::testing::text::describe(&err);
         for part in expected {
             assert!(text.contains(part), "{part} in {text}\n{source}");
         }
         let rendered = format!("{}", err.display());
-        assert!(rendered.contains("diagnostic.hir:"), "a location: {rendered}");
+        assert!(rendered.contains("diagnostic.runic:"), "a location: {rendered}");
     }
 }
 
@@ -635,11 +635,11 @@ fn a_global_declaration_keeps_its_attribute_dictionary() -> TestResult {
     let test = ParserTest::default();
     let source = "builtin.module public @m {\n    builtin.global_variable public @g : i32 \
                   attributes { note = #builtin.i32<7> };\n};";
-    let parsed = test.parse_any("global_attributes.hir", source)?;
+    let parsed = test.parse_any("global_attributes.runic", source)?;
     let printed = format!("{}", parsed.borrow());
     assert!(printed.contains("@g : i32 attributes { note = #builtin.i32<7> }"), "{printed}");
 
-    let reparsed = test.parse_any("global_attributes2.hir", &printed)?;
+    let reparsed = test.parse_any("global_attributes2.runic", &printed)?;
     assert_eq!(format!("{}", reparsed.borrow()), printed);
     Ok(())
 }
@@ -658,7 +658,7 @@ fn module_attribute_roundtrip() -> TestResult {
         };
     };";
 
-    let parsed = test.parse_any("module_attribute_roundtrip.hir", source)?;
+    let parsed = test.parse_any("module_attribute_roundtrip.runic", source)?;
 
     // Attach a plain attribute, then round-trip through print/parse and verify nothing is lost
     {
@@ -674,7 +674,7 @@ fn module_attribute_roundtrip() -> TestResult {
     let printed = printer.finish().to_string();
     std::println!("{printed}");
 
-    let reparsed = test.parse_any("module_attribute_roundtrip2.hir", &printed)?;
+    let reparsed = test.parse_any("module_attribute_roundtrip2.runic", &printed)?;
     let reparsed = reparsed.borrow();
     let module = reparsed.downcast_ref::<Module>().unwrap();
 
@@ -707,7 +707,7 @@ fn derive_roundtrip_test() -> TestResult {
     printer.print_operation(test.function().borrow());
     let source = printer.render().to_string();
 
-    let parsed = test.parse::<Function>("derive_roundtrip.hir", &source)?;
+    let parsed = test.parse::<Function>("derive_roundtrip.runic", &source)?;
     let parsed = parsed.borrow();
 
     printer.print_operation(&parsed);
@@ -738,7 +738,7 @@ builtin.function public extern(\"C\") @retconst() -> i32 {
     builtin.ret_imm 42 : i32;
 };";
 
-    let function = test.parse::<Function>("parse_ret_imm.hir", source)?;
+    let function = test.parse::<Function>("parse_ret_imm.runic", source)?;
     let printed = format!("{}", function.as_operation_ref().borrow());
     assert!(
         printed.contains("builtin.ret_imm 42 : i32"),
@@ -758,7 +758,7 @@ builtin.function public extern(\"C\") @retconst() -> i32 {
 
     // A literal that cannot be represented in the declared type must be rejected.
     let result = test.parse::<Function>(
-        "parse_ret_imm_invalid.hir",
+        "parse_ret_imm_invalid.runic",
         "\
 builtin.function public extern(\"C\") @retconst() -> i8 {
     builtin.ret_imm 300 : i8;
@@ -792,7 +792,7 @@ builtin.module public @lib {
 fn parsing_a_world_yields_that_world_rather_than_nesting_it() -> TestResult {
     let test = ParserTest::default();
 
-    let parsed = test.parse_any("parse_world.hir", WORLD_SOURCE)?;
+    let parsed = test.parse_any("parse_world.runic", WORLD_SOURCE)?;
     let world = parsed
         .try_downcast_op::<World>()
         .expect("expected the parsed operation to be a 'builtin.world'");
@@ -836,7 +836,7 @@ fn parsing_a_world_yields_that_world_rather_than_nesting_it() -> TestResult {
 fn parsing_a_module_still_wraps_it_in_a_world() -> TestResult {
     let test = ParserTest::default();
 
-    let parsed = test.parse_any("parse_module_wrapped.hir", MODULE_SOURCE)?;
+    let parsed = test.parse_any("parse_module_wrapped.runic", MODULE_SOURCE)?;
     let module = parsed
         .try_downcast_op::<Module>()
         .expect("expected the parsed operation to be a 'builtin.module'");
@@ -880,7 +880,7 @@ fn parsing_verifies_what_it_parsed() {
     // tests that exercise invalid IR reach the verifier by calling `recursively_verify`
     // themselves, and the one fixture that is deliberately malformed is parsed with verification
     // turned off.
-    let result = test.parse_any("parse_unverifiable.hir", UNVERIFIABLE_SOURCE);
+    let result = test.parse_any("parse_unverifiable.runic", UNVERIFIABLE_SOURCE);
 
     let err = result.err().map(|err| err.to_string()).unwrap_or_else(|| {
         panic!(
@@ -891,7 +891,7 @@ fn parsing_verifies_what_it_parsed() {
 
     // And the failure has to be the *verifier's*: the same source parses when verification is
     // turned off, so nothing about the text itself is what rejected it.
-    test.parse_any_unverified("parse_unverifiable_unverified.hir", UNVERIFIABLE_SOURCE)
+    test.parse_any_unverified("parse_unverifiable_unverified.runic", UNVERIFIABLE_SOURCE)
         .expect("the source is well-formed as text — only verification rejects it");
 
     assert!(
@@ -911,7 +911,7 @@ fn parse_preserves_full_width_frame_base_local_indices() -> TestResult {
     builtin.ret %0 : (i32);
 };"#;
 
-    let function = test.parse::<Function>("frame_base_full_width_index.hir", source)?;
+    let function = test.parse::<Function>("frame_base_full_width_index.runic", source)?;
     let printed = format!("{}", function.as_operation_ref().borrow());
     assert!(
         printed.contains("DI_OP_frame_base(local_slot, 2147483648+0)"),
@@ -967,7 +967,7 @@ impl ParserTest {
 fn an_unregistered_dialect_is_named_in_the_diagnostic() {
     let test = ParserTest::default();
     let Err(err) =
-        test.parse_any("unknown_dialect.hir", "builtin.module public @t { nosuchdialect.op; };")
+        test.parse_any("unknown_dialect.runic", "builtin.module public @t { nosuchdialect.op; };")
     else {
         panic!("an unregistered dialect must not parse");
     };
@@ -983,7 +983,8 @@ fn an_unregistered_dialect_is_named_in_the_diagnostic() {
 #[test]
 fn an_unknown_operation_in_a_known_dialect_still_reports_separately() {
     let test = ParserTest::default();
-    let Err(err) = test.parse_any("unknown_op.hir", "builtin.module public @t { builtin.nope; };")
+    let Err(err) =
+        test.parse_any("unknown_op.runic", "builtin.module public @t { builtin.nope; };")
     else {
         panic!("an unregistered operation must not parse");
     };
@@ -999,7 +1000,7 @@ fn an_unknown_operation_in_a_known_dialect_still_reports_separately() {
 #[test]
 fn an_empty_module_body_parses() {
     let test = ParserTest::default();
-    test.parse_any("empty.hir", "builtin.module public @t {};")
+    test.parse_any("empty.runic", "builtin.module public @t {};")
         .expect("an empty module body should parse");
 }
 
@@ -1017,7 +1018,10 @@ builtin.module public @t {
         builtin.ret %b : (i32);
     };
 };";
-    assert!(test.parse_any("dup.hir", source).is_err(), "a duplicate symbol must not parse");
+    assert!(
+        test.parse_any("dup.runic", source).is_err(),
+        "a duplicate symbol must not parse"
+    );
 }
 
 /// A parsed world is held to the rule `WorldBuilder` enforces: a component name must not shadow
@@ -1035,7 +1039,7 @@ builtin.world {
     };
 };";
     let err = test
-        .parse_any("shadowing.hir", source)
+        .parse_any("shadowing.runic", source)
         .expect_err("a component shadowing a module tree must not parse")
         .to_string();
     assert!(
@@ -1057,7 +1061,7 @@ builtin.world {
     };
 };";
     let err = test
-        .parse_any("module_path.hir", source)
+        .parse_any("module_path.runic", source)
         .expect_err("a module named by a path must not parse")
         .to_string();
     assert!(
@@ -1080,7 +1084,7 @@ builtin.world {
     };
 };";
     let err = test
-        .parse_any("nesting.hir", source)
+        .parse_any("nesting.runic", source)
         .expect_err("components with nesting names must not parse")
         .to_string();
     assert!(
@@ -1107,11 +1111,11 @@ builtin.world {
     builtin.component private @acme::@app::@main { };
 };";
     for (source, line) in [(shadowing, 3), (nesting, 2)] {
-        let err = test.parse_any("world.hir", source).expect_err(source);
+        let err = test.parse_any("world.runic", source).expect_err(source);
         let text = crate::testing::text::describe(&err);
         assert!(text.contains("this component's name conflicts"), "{text}");
         let rendered = format!("{}", err.display());
-        assert!(rendered.contains(&format!("world.hir:{line}:5")), "{rendered}");
+        assert!(rendered.contains(&format!("world.runic:{line}:5")), "{rendered}");
     }
 }
 
@@ -1123,14 +1127,14 @@ fn a_world_is_a_top_level_operation() -> TestResult {
         ("builtin.module public @m {\n    builtin.world { };\n};", "builtin.module"),
         ("builtin.world {\n    builtin.world { };\n};", "builtin.world"),
     ] {
-        let err = test.parse_any("nested_world.hir", source).expect_err(source);
+        let err = test.parse_any("nested_world.runic", source).expect_err(source);
         let text = crate::testing::text::describe(&err);
         assert!(text.contains("a world is a top-level operation"), "{text}");
         assert!(text.contains(&format!("this world is in '{parent}'")), "{text}");
         let rendered = format!("{}", err.display());
-        assert!(rendered.contains("nested_world.hir:2:5"), "{rendered}");
+        assert!(rendered.contains("nested_world.runic:2:5"), "{rendered}");
     }
-    test.parse_any("top_level_world.hir", "builtin.world { };")?;
+    test.parse_any("top_level_world.runic", "builtin.world { };")?;
     Ok(())
 }
 
@@ -1150,11 +1154,11 @@ fn a_module_or_component_name_error_points_at_the_operation() {
     for (op, name) in [("module", "a::b"), ("module", ""), ("component", "a::"), ("component", "")]
     {
         let source = case(op, name);
-        let err = test.parse_any("names.hir", &source).expect_err(&source);
+        let err = test.parse_any("names.runic", &source).expect_err(&source);
         let text = crate::testing::text::describe(&err);
         assert!(text.contains(&format!("this {op}'s name is not valid")), "{text}");
         let rendered = format!("{}", err.display());
-        assert!(rendered.contains("names.hir:2:5"), "{rendered}");
+        assert!(rendered.contains("names.runic:2:5"), "{rendered}");
     }
 }
 
@@ -1190,7 +1194,7 @@ fn component_name_roundtrips_through_the_printer() -> TestResult {
         let printed = printer.finish().to_string();
         assert!(printed.starts_with(header), "unexpected printed form:\n{printed}");
 
-        let reparsed = test.parse::<Component>("component_roundtrip.hir", &printed)?;
+        let reparsed = test.parse::<Component>("component_roundtrip.runic", &printed)?;
         assert_eq!(Symbol::name(&*reparsed.borrow()).as_str(), name);
     }
 
@@ -1220,7 +1224,7 @@ fn component_name_with_a_quoted_segment_roundtrips_through_the_printer() -> Test
         "unexpected printed form:\n{printed}"
     );
 
-    let reparsed = test.parse::<Component>("component_roundtrip.hir", &printed)?;
+    let reparsed = test.parse::<Component>("component_roundtrip.runic", &printed)?;
     assert_eq!(Symbol::name(&*reparsed.borrow()).as_str(), r#""acme::pkg"::app"#);
     let namespace = reparsed.borrow().namespace_path();
     assert_eq!(namespace, path);
@@ -1243,7 +1247,7 @@ fn an_unspellable_symbol_table_name_is_reported() {
         ("builtin.module public @\"a#b\" {};", "module", "a#b"),
     ] {
         let err = test
-            .parse_any("unspellable.hir", source)
+            .parse_any("unspellable.runic", source)
             .expect_err("an unspellable name must not parse")
             .to_string();
         assert_eq!(
@@ -1263,7 +1267,7 @@ fn a_symbol_path_diagnostic_spans_the_whole_path() {
     for (path, first) in [("@app::@\"a b\"", "@app"), ("::@app::@\"a b\"", "::")] {
         let source = format!("builtin.component private {path} {{}};");
         let err = test
-            .parse_any("span.hir", &source)
+            .parse_any("span.runic", &source)
             .expect_err("an unspellable name must not parse");
         let labels = crate::testing::label_ranges(err.as_diagnostic())
             .into_iter()
@@ -1300,7 +1304,7 @@ builtin.world {
     builtin.module public @\"my-mod\" {
     };
 };";
-    let world = test.parse_any("leaf_module.hir", source)?;
+    let world = test.parse_any("leaf_module.runic", source)?;
     let world = world.try_downcast_op::<World>().expect("expected a world");
     let module = world.borrow().resolve(&leaf(&["my-mod"])).expect("`::\"my-mod\"` resolves");
     assert!(module.borrow().as_symbol_operation().is::<Module>());
@@ -1324,7 +1328,7 @@ builtin.world {
 
     // A standalone component, the root itself, named by its raw segment only
     let source = "builtin.component private @\"hir_ns:test@1.0.0\" {\n};";
-    let component = test.parse::<Component>("leaf_root.hir", source)?;
+    let component = test.parse::<Component>("leaf_root.runic", source)?;
     let root = component.as_operation_ref();
     let resolve = |path: &SymbolPath| {
         component
@@ -1360,7 +1364,7 @@ builtin.world {{
     };
     let test = ParserTest::default();
     let err = test
-        .parse_any("shadow.hir", &source("@acme::@a::@f"))
+        .parse_any("shadow.runic", &source("@acme::@a::@f"))
         .expect_err("the component shadows the function `f`")
         .to_string();
     assert_eq!(
@@ -1368,7 +1372,7 @@ builtin.world {{
         "component `acme::a::f` and `builtin.function` `::acme::a::f` have the same path; a \
          component must not share its path with another symbol"
     );
-    test.parse_any("shadow_ctrl.hir", &source("@other"))?;
+    test.parse_any("shadow_ctrl.runic", &source("@other"))?;
     Ok(())
 }
 
@@ -1397,7 +1401,7 @@ fn a_module_and_a_function_with_one_raw_name_are_reported() {
              }};\n}};"
         );
         let err = test
-            .parse_any("crosskind.hir", &source)
+            .parse_any("crosskind.runic", &source)
             .expect_err("the module and the function share the path `::app::my-mod`")
             .to_string();
         let (new, existing) = expected;
@@ -1424,7 +1428,7 @@ builtin.world {
     };
 };";
     let test = ParserTest::default();
-    let world = test.parse_any("modq.hir", source)?;
+    let world = test.parse_any("modq.runic", source)?;
     let world = world.try_downcast_op::<World>().expect("expected a world");
     let resolves = |module: &str| {
         let path = SymbolPath::from_iter([
@@ -1460,7 +1464,7 @@ builtin.function public extern(\"C\") @entrypoint(%a: i32) -> i32 {{
     );
 
     let error = test
-        .parse::<Function>("parse_generic_too_many_successors.hir", &source)
+        .parse::<Function>("parse_generic_too_many_successors.runic", &source)
         .err()
         .expect("expected the operation to be rejected");
     let message = format!("{error}");
@@ -1484,12 +1488,12 @@ fn array_types_parse_print_and_report_invalid_lengths() {
             "builtin.function private extern(\"C\") @array(%x: {source}) {{ builtin.ret; }};"
         );
         let parsed =
-            parse::parse_any(ParserConfig::new(context.clone()), "array.hir", &text).unwrap();
+            parse::parse_any(ParserConfig::new(context.clone()), "array.runic", &text).unwrap();
         let function = parsed.try_downcast_op::<Function>().unwrap();
         assert_eq!(function.borrow().signature().params()[0].ty, expected);
         let printed = format!("{}", crate::Op::as_operation(&*function.borrow()));
         let fresh = Rc::new(Context::default());
-        parse::parse_any(ParserConfig::new(fresh.clone()), "array-roundtrip.hir", &printed)
+        parse::parse_any(ParserConfig::new(fresh.clone()), "array-roundtrip.runic", &printed)
             .unwrap();
     }
     for source in [
@@ -1503,7 +1507,7 @@ fn array_types_parse_print_and_report_invalid_lengths() {
             "builtin.function private extern(\"C\") @array(%x: {source}) {{ builtin.ret; }};"
         );
         assert!(
-            parse::parse_any(ParserConfig::new(context.clone()), "invalid-array.hir", &text)
+            parse::parse_any(ParserConfig::new(context.clone()), "invalid-array.runic", &text)
                 .is_err()
         );
     }
@@ -2204,7 +2208,7 @@ builtin.module public @types {
     let print = |text: &str| -> TestResult<String> {
         let test = ParserTest::default();
         test.context().get_or_register_dialect::<TestDialect>();
-        let op = test.parse_any("types.hir", text)?;
+        let op = test.parse_any("types.runic", text)?;
         Ok(format!("{}", op.borrow()))
     };
     let printed = print(source)?;
@@ -2295,13 +2299,13 @@ fn integer_literals_of_every_width_round_trip() -> TestResult {
             let test = ParserTest::default();
             test.context().get_or_register_dialect::<TestDialect>();
             let source = function_with_integer_literal(width, &literal);
-            let parsed = test.parse::<Function>("literal.hir", &source)?;
+            let parsed = test.parse::<Function>("literal.runic", &source)?;
             assert_eq!(integer_literal_values(&parsed), [expected; 2], "{literal} : i{width}");
 
             let printed = format!("{}", parsed.as_operation_ref().borrow());
             let fresh = ParserTest::default();
             fresh.context().get_or_register_dialect::<TestDialect>();
-            let reparsed = fresh.parse::<Function>("literal-printed.hir", &printed)?;
+            let reparsed = fresh.parse::<Function>("literal-printed.runic", &printed)?;
             assert_eq!(integer_literal_values(&reparsed), [expected; 2], "{printed}");
             assert_eq!(format!("{}", reparsed.as_operation_ref().borrow()), printed);
         }
@@ -2320,7 +2324,7 @@ fn integer_literals_of_every_width_round_trip() -> TestResult {
                 ),
             ] {
                 assert!(
-                    test.parse::<Function>("out-of-range.hir", &source).is_err(),
+                    test.parse::<Function>("out-of-range.runic", &source).is_err(),
                     "`{literal} : i{width}` should be rejected"
                 );
             }
@@ -2333,8 +2337,8 @@ fn integer_literals_of_every_width_round_trip() -> TestResult {
 fn an_upper_half_literal_and_its_negative_spelling_are_the_same_constant() -> TestResult {
     let test = ParserTest::default();
     test.context().get_or_register_dialect::<TestDialect>();
-    let unsigned = test.parse::<Function>("255.hir", &function_with_integer_literal(8, "255"))?;
-    let signed = test.parse::<Function>("-1.hir", &function_with_integer_literal(8, "-1"))?;
+    let unsigned = test.parse::<Function>("255.runic", &function_with_integer_literal(8, "255"))?;
+    let signed = test.parse::<Function>("-1.runic", &function_with_integer_literal(8, "-1"))?;
     assert_eq!(integer_literal_values(&unsigned), integer_literal_values(&signed));
     let printed = format!("{}", unsigned.as_operation_ref().borrow());
     assert!(printed.contains("builtin.ret_imm -1 : i8"), "{printed}");
@@ -2347,18 +2351,18 @@ fn a_boolean_literal_is_minus_one_zero_or_one() -> TestResult {
     test.context().get_or_register_dialect::<TestDialect>();
     for (literal, bit) in [("0", false), ("1", true), ("-1", true)] {
         let parsed =
-            test.parse::<Function>("i1.hir", &function_with_integer_literal(1, literal))?;
+            test.parse::<Function>("i1.runic", &function_with_integer_literal(1, literal))?;
         assert_eq!(integer_literal_values(&parsed), [Int::from(bit); 2], "{literal} : i1");
         let printed = format!("{}", parsed.as_operation_ref().borrow());
         // A set bit prints as `1`, however it was written.
         let expected = format!("builtin.ret_imm {} : i1", u8::from(bit));
         assert!(printed.contains(&expected), "{printed}");
-        let reparsed = test.parse::<Function>("i1-printed.hir", &printed)?;
+        let reparsed = test.parse::<Function>("i1-printed.runic", &printed)?;
         assert_eq!(integer_literal_values(&reparsed), [Int::from(bit); 2], "{printed}");
     }
     for literal in ["2", "-2"] {
         let source = function_with_integer_literal(1, literal);
-        assert!(test.parse::<Function>("i1-invalid.hir", &source).is_err(), "{literal} : i1");
+        assert!(test.parse::<Function>("i1-invalid.runic", &source).is_err(), "{literal} : i1");
     }
     Ok(())
 }
@@ -2373,7 +2377,7 @@ fn a_negated_hex_or_binary_literal_is_a_spanned_error() {
             &format!("builtin.ret_imm {literal}"),
             1,
         );
-        let err = test.parse::<Function>("negated.hir", &source).err().expect(literal);
+        let err = test.parse::<Function>("negated.runic", &source).err().expect(literal);
         let message = format!("{}", err.display());
         assert!(message.contains("only a decimal literal can be negative"), "{message}");
     }
@@ -2474,7 +2478,7 @@ fn builtin_integer_attributes_accept_a_sign_and_round_trip() -> TestResult {
     // An operation carrying such an attribute round-trips through print and parse
     let test = ParserTest::default();
     let module = test.parse_any(
-        "signed_attr.hir",
+        "signed_attr.runic",
         "builtin.module public @m attributes { a = #builtin.i8<255>, b = #builtin.i128<-1> } {};",
     )?;
     let printed = format!("{}", module.borrow());
@@ -2482,7 +2486,7 @@ fn builtin_integer_attributes_accept_a_sign_and_round_trip() -> TestResult {
         printed.contains("#builtin.i8<-1>") && printed.contains("#builtin.i128<-1>"),
         "{printed}"
     );
-    let reparsed = test.parse_any("signed_attr2.hir", &printed)?;
+    let reparsed = test.parse_any("signed_attr2.runic", &printed)?;
     assert_eq!(format!("{}", reparsed.borrow()), printed);
     Ok(())
 }
@@ -2506,7 +2510,7 @@ fn a_built_constant_equals_the_same_constant_parsed_from_text() -> TestResult {
         let mut test = ParserTest::default();
         test.context().get_or_register_dialect::<TestDialect>();
         let parsed =
-            test.parse::<Function>("constant.hir", &function_with_integer_literal(32, text))?;
+            test.parse::<Function>("constant.runic", &function_with_integer_literal(32, text))?;
         let parsed = {
             let function = parsed.borrow();
             let body = function.body();
@@ -2664,7 +2668,7 @@ fn a_type_nested_to_the_limit_parses_in_a_function_signature() {
             let source = format!(
                 "builtin.function public extern(\"C\") @deep(%a: {deepest}) {{\n    ret;\n}};"
             );
-            if let Err(err) = test.parse::<Function>("deep.hir", &source) {
+            if let Err(err) = test.parse::<Function>("deep.runic", &source) {
                 panic!("{open}: 64 levels in a signature should parse: {err:?}");
             }
         }
@@ -2849,14 +2853,14 @@ fn interning_many_types_finds_each_again() {
 fn parse_error_text(source: &str) -> String {
     let test = ParserTest::default();
     test.context().get_or_register_dialect::<TestDialect>();
-    let err = test.parse_any("declarations.hir", source).expect_err(source);
+    let err = test.parse_any("declarations.runic", source).expect_err(source);
     format!("{}", err.display()).split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// The types of the arguments of the function `f` that `source` defines.
 fn argument_types(test: &ParserTest, source: &str) -> Vec<Type> {
     let function = test
-        .parse::<Function>("declarations.hir", source)
+        .parse::<Function>("declarations.runic", source)
         .unwrap_or_else(|err| panic!("{source}\n{err:?}"));
     let function = function.borrow();
     let entry = function.entry_block();
@@ -2907,7 +2911,7 @@ builtin.function public extern(\"C\") @f(%0: i32) {
                   };
     builtin.ret;
 };";
-    let function = test.parse::<Function>("names.hir", source).unwrap();
+    let function = test.parse::<Function>("names.runic", source).unwrap();
     let printed = format!("{}", crate::Op::as_operation(&*function.borrow()));
     assert!(
         printed.contains("attributes { rec = #builtin.bool<false>, type = #builtin.bool<true> }"),
@@ -3130,7 +3134,7 @@ fn an_alias_mentioned_twice_before_its_declaration() {
 /// The message of the error that parsing `source` gives, on one line, and the ranges of its labels.
 fn parse_error_labels(source: &str) -> (String, Vec<(usize, usize)>) {
     let test = ParserTest::default();
-    let err = test.parse_any("declarations.hir", source).expect_err(source);
+    let err = test.parse_any("declarations.runic", source).expect_err(source);
     let labels = crate::testing::label_ranges(err.as_diagnostic())
         .into_iter()
         .map(|range| (range.start, range.end))
@@ -3377,12 +3381,12 @@ fn assert_round_trips(test: &Test) -> String {
     let fresh = ParserTest::default();
     fresh.context().get_or_register_dialect::<TestDialect>();
     let reparsed = fresh
-        .parse::<Function>("round_trip.hir", &printed)
+        .parse::<Function>("round_trip.runic", &printed)
         .unwrap_or_else(|err| panic!("{printed}\n{err:?}"));
     assert_eq!(print_root(reparsed), printed);
 
     let config = ParserConfig::new(test.context_rc());
-    let parsed = parse::parse::<Function>(config, "round_trip.hir", printed.as_str())
+    let parsed = parse::parse::<Function>(config, "round_trip.runic", printed.as_str())
         .into_result()
         .unwrap_or_else(|err| panic!("{printed}\n{err:?}"));
     assert_eq!(types_of(parsed), types_of(test.function()));
@@ -3654,11 +3658,11 @@ fn a_group_of_2000_members_round_trips() {
         assert!(printed.contains("type !t1999 = struct<ptr<!t0>>;"));
 
         let fresh = ParserTest::default();
-        let reparsed = fresh.parse::<Function>("large.hir", &printed).unwrap();
+        let reparsed = fresh.parse::<Function>("large.runic", &printed).unwrap();
         assert_eq!(print_root(reparsed), printed);
 
         let config = ParserConfig::new(test.context_rc());
-        let parsed = parse::parse::<Function>(config, "large.hir", printed.as_str())
+        let parsed = parse::parse::<Function>(config, "large.runic", printed.as_str())
             .into_result()
             .unwrap();
         assert_eq!(types_of(parsed), types_of(test.function()));
@@ -3681,7 +3685,7 @@ rec {
 builtin.function public extern(\"C\") @f(%0: !l, %1: !anon) {
     builtin.ret;
 };";
-    let function = test.parse::<Function>("hand_written.hir", source).unwrap();
+    let function = test.parse::<Function>("hand_written.runic", source).unwrap();
     let printed = print_root(function);
     let (declarations, operation) = printed.split_once("\n\n").unwrap();
     assert_eq!(
@@ -3698,10 +3702,10 @@ rec {
     assert!(operation.contains(": !list, %") && operation.contains(": !t0)"), "{operation}");
 
     let test = ParserTest::default();
-    let reparsed = test.parse::<Function>("fixed_point.hir", &printed).unwrap();
+    let reparsed = test.parse::<Function>("fixed_point.runic", &printed).unwrap();
     let reprinted = print_root(reparsed);
     let test = ParserTest::default();
-    let reparsed = test.parse::<Function>("fixed_point.hir", &reprinted).unwrap();
+    let reparsed = test.parse::<Function>("fixed_point.runic", &reprinted).unwrap();
     assert_eq!(print_root(reparsed), reprinted);
     assert_eq!(reprinted.split_once("\n\n").unwrap().0, declarations);
 }
@@ -3986,7 +3990,7 @@ fn list_nesting_is_limited_to_16_levels_by_default() {
                 "builtin.world {{\n    builtin.module public @m attributes {{ l = {text} }} \
                  {{}};\n}};"
             );
-            if let Err(err) = test.parse_any("deep_list.hir", &source) {
+            if let Err(err) = test.parse_any("deep_list.runic", &source) {
                 panic!("16 levels should parse in a dictionary: {err:?}");
             }
         }
@@ -4059,7 +4063,7 @@ builtin.world {
     builtin.module public @reader attributes { one = @target, more = [@target] } {};
     builtin.module public @target {};
 };";
-    let parsed = test.parse_any("bare_symbol_ref.hir", source)?;
+    let parsed = test.parse_any("bare_symbol_ref.runic", source)?;
     let printed = format!("{}", parsed.borrow());
     assert!(
         printed.contains(
@@ -4083,7 +4087,7 @@ builtin.world {
     builtin.module public @reader attributes { one = @zzz @target } {};
     builtin.module public @target {};
 };";
-    assert!(test.parse_any("bare_symbol_refs.hir", source).is_err());
+    assert!(test.parse_any("bare_symbol_refs.runic", source).is_err());
     Ok(())
 }
 
@@ -4132,7 +4136,7 @@ builtin.world {
                   [#builtin.symbol<@target>], []] } {};
     builtin.module public @target {};
 };";
-    let parsed = test.parse_any("list_symbol_refs.hir", source)?;
+    let parsed = test.parse_any("list_symbol_refs.runic", source)?;
     let printed = format!("{}", parsed.borrow());
     assert!(
         printed.contains(
@@ -4475,13 +4479,13 @@ fn test_constants_of_any_integer_type_round_trip() -> TestResult {
             assert_eq!(int_and_type_of(&attr), (value, ty), "{literal} : {ty}");
             assert_eq!(crate::Value::ty(&*op.results()[0].borrow()), ty, "{literal} : {ty}");
         };
-        let parsed = test.parse::<Function>("constant.hir", &source)?;
+        let parsed = test.parse::<Function>("constant.runic", &source)?;
         check(&parsed);
         let text = format!("{}", parsed.as_operation_ref().borrow());
         assert!(text.contains(&format!("test.constant {printed} : {ty}")), "{text}");
         let fresh = ParserTest::default();
         fresh.context().get_or_register_dialect::<TestDialect>();
-        let reparsed = fresh.parse::<Function>("constant-printed.hir", &text)?;
+        let reparsed = fresh.parse::<Function>("constant-printed.runic", &text)?;
         let fresh_ty = parse_type_text(&fresh.context_rc(), ty_text)?;
         {
             let function = reparsed.borrow();
@@ -4505,7 +4509,7 @@ fn test_constants_keep_their_other_attributes_in_text() -> TestResult {
                   i32;\n    builtin.ret %0 : (i32);\n};";
     let test = ParserTest::default();
     test.context().get_or_register_dialect::<TestDialect>();
-    let parsed = test.parse::<Function>("constant.hir", source)?;
+    let parsed = test.parse::<Function>("constant.runic", source)?;
     assert_eq!(format!("{}", parsed.as_operation_ref().borrow()), source);
 
     let context = test.context_rc();
@@ -4517,7 +4521,7 @@ fn test_constants_keep_their_other_attributes_in_text() -> TestResult {
 
     let fresh = ParserTest::default();
     fresh.context().get_or_register_dialect::<TestDialect>();
-    let reparsed = fresh.parse::<Function>("constant-printed.hir", &text)?;
+    let reparsed = fresh.parse::<Function>("constant-printed.runic", &text)?;
     assert_eq!(format!("{}", reparsed.as_operation_ref().borrow()), text);
     let function = reparsed.borrow();
     let op = function.body().entry().front().unwrap();
@@ -4538,7 +4542,7 @@ fn a_segment_offset_beyond_32_bits_round_trips() -> TestResult {
     use crate::dialects::builtin::ModuleBuilder;
 
     let test = ParserTest::default();
-    let module = test.parse_any("segment.hir", "builtin.module public @m {};")?;
+    let module = test.parse_any("segment.runic", "builtin.module public @m {};")?;
     let module = module.try_downcast_op::<Module>().unwrap();
     let mut builder = ModuleBuilder::new(module);
     let segment = builder.define_data_segment(
@@ -4552,7 +4556,7 @@ fn a_segment_offset_beyond_32_bits_round_trips() -> TestResult {
     let printed = format!("{}", module.as_operation_ref().borrow());
     assert!(printed.contains("offset = #builtin.i64<4294967296>"), "{printed}");
 
-    let reparsed = test.parse_any("segment2.hir", &printed)?;
+    let reparsed = test.parse_any("segment2.runic", &printed)?;
     assert_eq!(format!("{}", reparsed.borrow()), printed);
     let reparsed = reparsed.try_downcast_op::<Module>().unwrap();
     let body = reparsed.borrow().body().as_region_ref();
@@ -4576,7 +4580,7 @@ fn a_segment_offset_is_unsigned() -> TestResult {
     use crate::dialects::builtin::ModuleBuilder;
 
     let test = ParserTest::default();
-    let module = test.parse_any("segment.hir", "builtin.module public @m {};")?;
+    let module = test.parse_any("segment.runic", "builtin.module public @m {};")?;
     let module = module.try_downcast_op::<Module>().unwrap();
     let mut builder = ModuleBuilder::new(module);
     let mut segment =
@@ -4603,7 +4607,7 @@ fn a_property_given_an_attribute_of_another_kind_is_a_diagnostic() {
     for (source, property) in [(generic, "value"), (custom, "known")] {
         let test = ParserTest::default();
         test.context().get_or_register_dialect::<TestDialect>();
-        let err = test.parse::<Function>("g.hir", source).map(|_| ()).unwrap_err().to_string();
+        let err = test.parse::<Function>("g.runic", source).map(|_| ()).unwrap_err().to_string();
         assert!(
             err.contains("could not convert attribute of type 'builtin.i32' to '")
                 && err.contains(&format!("for property '{property}'")),
@@ -4740,7 +4744,7 @@ fn constant_and_ret_imm_ops_round_trip_every_pattern() -> TestResult {
             );
             let test = ParserTest::default();
             test.context().get_or_register_dialect::<TestDialect>();
-            let parsed = test.parse::<Function>("c.hir", &source)?;
+            let parsed = test.parse::<Function>("c.runic", &source)?;
             let values = |f: &UnsafeIntrusiveEntityRef<Function>| {
                 let f = f.borrow();
                 let body = f.body();
@@ -4755,7 +4759,7 @@ fn constant_and_ret_imm_ops_round_trip_every_pattern() -> TestResult {
             let text = format!("{}", parsed.as_operation_ref().borrow());
             let fresh = ParserTest::default();
             fresh.context().get_or_register_dialect::<TestDialect>();
-            let reparsed = fresh.parse::<Function>("c2.hir", &text)?;
+            let reparsed = fresh.parse::<Function>("c2.runic", &text)?;
             assert_eq!(values(&reparsed), (x, x), "{text}");
             assert_eq!(format!("{}", reparsed.as_operation_ref().borrow()), text);
         }
@@ -4854,7 +4858,7 @@ fn a_well_formed_isize_constant_verifies() -> TestResult {
     test.context().get_or_register_dialect::<TestDialect>();
     let source = "builtin.function public extern(\"C\") @f() -> isize {\n    %0 = test.constant \
                   -1 : isize;\n    builtin.ret %0 : (isize);\n};";
-    let function = test.parse::<Function>("isize.hir", source)?;
+    let function = test.parse::<Function>("isize.runic", source)?;
     let function = function.borrow();
     let body = function.body();
     let op = body.entry().front().unwrap();
@@ -4935,12 +4939,12 @@ fn a_calling_convention_name_round_trips() -> TestResult {
         source.push_str(&format!("\"{}\"", name.escape_default()));
         source.push_str(") @f(%a: i32) -> i32 {\n    ret %a : (i32);\n};");
 
-        let first = test.parse::<Function>("cc_first.hir", &source)?;
+        let first = test.parse::<Function>("cc_first.runic", &source)?;
         assert_eq!(first.borrow().get_signature().calling_convention().as_str(), name, "{name:?}");
         assert_eq!(&*first.borrow().get_signature(), &signature, "{name:?}");
         let printed = format!("{}", first.as_operation_ref().borrow());
 
-        let second = test.parse::<Function>("cc_second.hir", &printed)?;
+        let second = test.parse::<Function>("cc_second.runic", &printed)?;
         assert_eq!(&*second.borrow().get_signature(), &signature, "{name:?}");
         // value ids count up across a context, so compare the text without them
         let without_ids = |text: &str| {
@@ -4956,7 +4960,7 @@ fn a_calling_convention_name_round_trips() -> TestResult {
         };
         let printed_again = format!("{}", second.as_operation_ref().borrow());
         assert_eq!(without_ids(&printed_again), without_ids(&printed), "{name:?}");
-        let third = test.parse::<Function>("cc_third.hir", &printed_again)?;
+        let third = test.parse::<Function>("cc_third.runic", &printed_again)?;
         assert_eq!(&*third.borrow().get_signature(), &signature, "{name:?}");
     }
     Ok(())
@@ -5243,13 +5247,13 @@ fn assert_function_round_trips(
     expected: &str,
 ) -> UnsafeIntrusiveEntityRef<Function> {
     let first = test
-        .parse::<Function>("signature_first.hir", source)
+        .parse::<Function>("signature_first.runic", source)
         .unwrap_or_else(|err| panic!("{source}\n{err:?}"));
     let printed = print_root(first);
     assert_eq!(without_value_ids(&printed), without_value_ids(expected));
 
     let second = test
-        .parse::<Function>("signature_second.hir", &printed)
+        .parse::<Function>("signature_second.runic", &printed)
         .unwrap_or_else(|err| panic!("{printed}\n{err:?}"));
     assert_eq!(*second.borrow().get_signature(), *first.borrow().get_signature(), "{printed}");
     assert_eq!(without_value_ids(&print_root(second)), without_value_ids(&printed));
@@ -5362,7 +5366,10 @@ fn declarations_without_parameters_or_of_function_types_round_trip() {
         assert!(function.borrow().is_declaration(), "{source}");
     }
     let function = test
-        .parse::<Function>("fn_type.hir", "builtin.function public extern(\"C\") @f((i32) -> i32);")
+        .parse::<Function>(
+            "fn_type.runic",
+            "builtin.function public extern(\"C\") @f((i32) -> i32);",
+        )
         .unwrap();
     let function = function.borrow();
     let signature = function.get_signature();
@@ -5470,7 +5477,7 @@ fn declared_effects_and_locals_round_trip_on_declarations_and_definitions() {
 
     let function = test
         .parse::<Function>(
-            "locals.hir",
+            "locals.runic",
             "builtin.function public extern(\"C\") @f(%0: i32) -> i32 locals(i32, i64) {\n    \
              builtin.ret %0 : (i32);\n};",
         )
@@ -5512,7 +5519,7 @@ fn a_declaration_with_locals_does_not_verify() {
     let source = "builtin.function public extern(\"C\") @f(i32) -> i32 locals(i32, i64);";
     let test = ParserTest::default();
     let config = ParserConfig::new(test.context_rc()).verify_after_parse(false);
-    let function = parse::parse::<Function>(config, "locals.hir", source)
+    let function = parse::parse::<Function>(config, "locals.runic", source)
         .into_result()
         .unwrap_or_else(|err| panic!("{source}\n{err:?}"));
     assert_eq!(function.borrow().num_locals(), 2);
@@ -5549,7 +5556,7 @@ fn a_declared_effect_on_a_missing_argument_or_result_does_not_verify() {
     ] {
         let test = ParserTest::default();
         let config = ParserConfig::new(test.context_rc()).verify_after_parse(false);
-        let function = parse::parse::<Function>(config, "effects.hir", &source)
+        let function = parse::parse::<Function>(config, "effects.runic", &source)
             .into_result()
             .unwrap_or_else(|err| panic!("{source}\n{err:?}"));
         let text = verify_error_text(function);
@@ -5616,14 +5623,14 @@ fn the_generic_form_of_a_function_reads_its_effects_and_locals() -> TestResult {
 
     let test = ParserTest::default();
     let source = "builtin.function public extern(\"C\") @f(i32) -> i32 effects(read(arg 0));";
-    let function = test.parse::<Function>("generic_first.hir", source)?;
+    let function = test.parse::<Function>("generic_first.runic", source)?;
     let generic = print_generic(function.borrow().as_operation());
     assert!(
         generic.contains("memory_effects = #builtin.declared_effects<read(arg 0)>"),
         "{generic}"
     );
 
-    let parsed = test.parse_any("generic_second.hir", &generic)?;
+    let parsed = test.parse_any("generic_second.runic", &generic)?;
     let parsed = parsed.borrow();
     let parsed = parsed.downcast_ref::<Function>().expect("a function");
     assert_eq!(parsed.declared_effects(), function.borrow().declared_effects());
@@ -5631,10 +5638,10 @@ fn the_generic_form_of_a_function_reads_its_effects_and_locals() -> TestResult {
 
     let source = "builtin.function public extern(\"C\") @g() locals(i64) {\n    builtin.ret;\n};";
     let test = ParserTest::default();
-    let function = test.parse::<Function>("generic_third.hir", source)?;
+    let function = test.parse::<Function>("generic_third.runic", source)?;
     let generic = print_generic(function.borrow().as_operation());
     assert!(generic.contains("locals = #builtin.type_array<i64>"), "{generic}");
-    let parsed = test.parse_any("generic_fourth.hir", &generic)?;
+    let parsed = test.parse_any("generic_fourth.runic", &generic)?;
     let parsed = parsed.borrow();
     let parsed = parsed.downcast_ref::<Function>().expect("a function");
     assert_eq!(parsed.num_locals(), 1);
@@ -5935,12 +5942,12 @@ fn hostile_but_well_formed_function_text_round_trips() {
     ] {
         let test = ParserTest::default();
         let first = test
-            .parse::<Function>("hostile.hir", &source)
+            .parse::<Function>("hostile.runic", &source)
             .unwrap_or_else(|err| panic!("{source}\n{}", one_line(&err)));
         let text = print_root(first);
         assert_eq!(without_value_ids(&text), without_value_ids(&printed), "{source}");
         let second = test
-            .parse::<Function>("hostile2.hir", &text)
+            .parse::<Function>("hostile2.runic", &text)
             .unwrap_or_else(|err| panic!("{text}\n{}", one_line(&err)));
         assert_eq!(signature_of(second), signature_of(first), "{text}");
     }
@@ -5974,7 +5981,7 @@ fn hostile_function_text_that_is_an_error() {
         ),
     ] {
         let test = ParserTest::default();
-        let err = test.parse::<Function>("hostile.hir", &source).map(|_| ()).expect_err(&source);
+        let err = test.parse::<Function>("hostile.runic", &source).map(|_| ()).expect_err(&source);
         let message = one_line(&err);
         assert!(message.contains(reason), "{source}\n{message}");
     }
@@ -6049,7 +6056,7 @@ fn marking_a_parameter_sret_twice_keeps_one_entry() {
     let signature = Signature::from_parts(CallConv::default(), alloc::vec![param], alloc::vec![]);
     let printed = print_root(declared_function(&context, signature.clone()));
     let parsed = test
-        .parse::<Function>("sret.hir", &printed)
+        .parse::<Function>("sret.runic", &printed)
         .unwrap_or_else(|err| panic!("{printed}\n{}", one_line(&err)));
     assert_eq!(signature_of(parsed), signature);
 }
@@ -6081,7 +6088,7 @@ fn a_parameter_built_with_a_repeated_key_keeps_the_last() {
 fn asking_for_a_signature_twice_shares_its_attributes() {
     let test = ParserTest::default();
     let source = "builtin.function public extern(\"C\") @f(i8 { extend = #builtin.zext });";
-    let function = test.parse::<Function>("c.hir", source).unwrap();
+    let function = test.parse::<Function>("c.runic", source).unwrap();
     let function = function.borrow();
     let first = crate::CallableOpInterface::signature(&*function);
     let second = crate::CallableOpInterface::signature(&*function);
@@ -6128,7 +6135,7 @@ fn assert_verification_error(source: &str, labelled: &str, reason: &str) {
 fn assert_verification_error_headed(source: &str, heading: &str, labelled: &str, reason: &str) {
     let test = ParserTest::default();
     test.context().get_or_register_dialect::<TestDialect>();
-    test.parse_any_unverified("verify.hir", source)
+    test.parse_any_unverified("verify.runic", source)
         .unwrap_or_else(|err| panic!("{source} is well-formed as text: {err:?}"));
     let (message, labels) = parse_error_labels(source);
     assert!(message.contains(heading), "{message}");
@@ -6450,7 +6457,7 @@ fn functions_that_agree_with_their_signatures_verify() {
         format!("{function}(%0: i32) -> never {{\n    test.ret : ();\n}};"),
     ] {
         let parsed = test
-            .parse::<Function>("valid.hir", &source)
+            .parse::<Function>("valid.runic", &source)
             .unwrap_or_else(|err| panic!("{source}\n{err:?}"));
         parsed
             .borrow()
@@ -6517,7 +6524,7 @@ fn parse_function_text(
     source: &str,
 ) -> TestResult<(UnsafeIntrusiveEntityRef<Function>, String)> {
     context.get_or_register_dialect::<TestDialect>();
-    crate::testing::parse_function_fixpoint(context, "defaults.hir", source)
+    crate::testing::parse_function_fixpoint(context, "defaults.runic", source)
 }
 
 /// The first operation of `function`'s entry block, as a `T`.
@@ -6583,7 +6590,7 @@ fn a_property_away_from_its_default_is_printed() -> TestResult {
 fn parse_error(source: &str) -> String {
     let test = ParserTest::default();
     test.context().get_or_register_dialect::<TestDialect>();
-    match test.parse_any("missing.hir", source) {
+    match test.parse_any("missing.runic", source) {
         Ok(_) => panic!("expected an error parsing:\n{source}"),
         Err(err) => format!("{}", err.display()),
     }
@@ -6620,7 +6627,7 @@ fn a_segment_prints_readonly_only_when_it_is_set() -> TestResult {
              = #builtin.bytes<\"0201\">{written} }}>;\n}};"
         );
         let test = ParserTest::default();
-        let module = test.parse::<Module>("segment.hir", &source)?;
+        let module = test.parse::<Module>("segment.runic", &source)?;
         let printed = format!("{}", module.as_operation_ref().borrow());
         assert_eq!(printed, source);
 
@@ -6635,7 +6642,7 @@ fn a_segment_prints_readonly_only_when_it_is_set() -> TestResult {
         // The explicit default parses, and is left out when printed
         if !readonly {
             let explicit = source.replace(" }>", ", readonly = #builtin.bool<false> }>");
-            let module = test.parse::<Module>("segment_explicit.hir", &explicit)?;
+            let module = test.parse::<Module>("segment_explicit.runic", &explicit)?;
             assert_eq!(format!("{}", module.as_operation_ref().borrow()), source);
         }
     }
@@ -6821,7 +6828,7 @@ fn the_verifier_checks_result_type_constraints() -> TestResult {
     };
     let test = ParserTest::default();
     test.context().get_or_register_dialect::<TestDialect>();
-    test.parse_any("flag_ok.hir", &wrap("i1"))?;
+    test.parse_any("flag_ok.runic", &wrap("i1"))?;
     let rendered = parse_error(&wrap("i32"));
     assert!(
         rendered.contains(
@@ -7426,7 +7433,7 @@ builtin.function public extern(\"C\") @f(%0: i32) -> i64 {{
     \"{branch}\"()[^earlier] : () -> ();
 }};"
     );
-    let function = test.parse::<Function>("forward.hir", &source)?;
+    let function = test.parse::<Function>("forward.runic", &source)?;
     let function = function.as_operation_ref();
     assert_eq!(cast_shapes(function), [(0, 1), (1, 1)]);
     let printed = function.borrow().to_string();
@@ -7444,7 +7451,7 @@ fn an_undefined_value_is_the_parsers_diagnostic() {
         let source =
             format!("builtin.function public extern(\"C\") @f(%0: i32) -> i64 {{\n    {body}\n}};");
         let test = ParserTest::default();
-        let err = test.parse::<Function>("undefined.hir", &source).map(|_| ()).unwrap_err();
+        let err = test.parse::<Function>("undefined.runic", &source).map(|_| ()).unwrap_err();
         assert!(format!("{err}").contains("use of undeclared values"), "{err}");
     }
 }

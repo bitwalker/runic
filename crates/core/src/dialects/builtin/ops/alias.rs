@@ -314,7 +314,7 @@ builtin.module public @test {
 };
 "#;
         let module =
-            parse::<Module>(ParserConfig::new(test.context_rc()), "alias.hir", source).unwrap();
+            parse::<Module>(ParserConfig::new(test.context_rc()), "alias.runic", source).unwrap();
         let mb = ModuleBuilder::new(module);
         assert!(mb.resolve_function("bar").unwrap() == mb.get_function("foo").unwrap());
 
@@ -327,7 +327,7 @@ builtin.module public @test {
         let reparse_test = Test::default();
         let reparsed = parse::<Module>(
             ParserConfig::new(reparse_test.context_rc()),
-            "alias.reparsed.hir",
+            "alias.reparsed.runic",
             &printed,
         )
         .unwrap();
@@ -450,7 +450,7 @@ builtin.module public @test {
     /// Parses and verifies a HIR module from source.
     fn verify_alias_source(source: &str) -> Result<(), crate::Report> {
         let test = Test::default();
-        parse::<Module>(ParserConfig::new(test.context_rc()), "alias.hir", source)
+        parse::<Module>(ParserConfig::new(test.context_rc()), "alias.runic", source)
             .into_result()
             .map(|_| ())
     }
@@ -611,7 +611,7 @@ builtin.module public @test {{
             let test = Test::default();
             let source = format!("builtin.module public @test {{ {aliases} }};");
             let err =
-                parse::<Module>(ParserConfig::new(test.context_rc()), "alias_cycle.hir", &source)
+                parse::<Module>(ParserConfig::new(test.context_rc()), "alias_cycle.runic", &source)
                     .into_result()
                     .err()
                     .expect("alias cycles must fail verification");

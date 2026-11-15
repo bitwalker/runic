@@ -28,7 +28,7 @@ const TREE: &str = r#"builtin.world {
 
 fn tree() -> (Rc<Context>, OperationRef) {
     let context = Rc::new(Context::default());
-    let world = parse_any(ParserConfig::new(context.clone()), "scheduling.hir", TREE)
+    let world = parse_any(ParserConfig::new(context.clone()), "scheduling.runic", TREE)
         .expect("valid namespace tree");
     (context, world)
 }

@@ -279,7 +279,7 @@ builtin.module public @m {
     fn a_call_one_of_calls_either_symbols_target_through_its_index() {
         let test = Test::default();
         let module =
-            parse::<Module>(ParserConfig::new(test.context_rc()), "call_one_of.hir", SOURCE)
+            parse::<Module>(ParserConfig::new(test.context_rc()), "call_one_of.runic", SOURCE)
                 .unwrap();
         let text = format!("{}", module.borrow().as_operation());
         assert!(
@@ -289,7 +289,8 @@ builtin.module public @m {
         // A fresh context numbers the values from zero again
         let other = Test::default();
         let reparsed =
-            parse::<Module>(ParserConfig::new(other.context_rc()), "reparsed.hir", &text).unwrap();
+            parse::<Module>(ParserConfig::new(other.context_rc()), "reparsed.runic", &text)
+                .unwrap();
         assert_eq!(format!("{}", reparsed.borrow().as_operation()), text);
 
         let mb = ModuleBuilder::new(module);

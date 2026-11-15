@@ -809,8 +809,8 @@ fn every_case_prints_in_the_generic_form() {
     // The cases known not to parse here: these golden files hold `test.debug_value`, an operation
     // of the test dialect, which only core's own tests register.
     const UNPARSABLE: [&str; 2] = [
-        "golden: transparent_ops_do_not_interfere_with_dce_after.hir",
-        "golden: transparent_ops_do_not_interfere_with_dce_before.hir",
+        "golden: transparent_ops_do_not_interfere_with_dce_after.runic",
+        "golden: transparent_ops_do_not_interfere_with_dce_before.runic",
     ];
     let mut printed = 0;
     let mut unparsed = Vec::new();

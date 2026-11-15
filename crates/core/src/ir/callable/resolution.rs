@@ -209,7 +209,7 @@ mod tests {
     fn module(source: &str) -> (Test, ModuleRef) {
         let test = Test::default();
         let module =
-            parse::<Module>(ParserConfig::new(test.context_rc()), "resolution.hir", source)
+            parse::<Module>(ParserConfig::new(test.context_rc()), "resolution.runic", source)
                 .unwrap();
         (test, module)
     }
@@ -261,7 +261,7 @@ builtin.module public @test {
         // parse unverified and let tests verify explicitly.
         let module = parse::<Module>(
             ParserConfig::new(test.context_rc()).verify_after_parse(false),
-            "resolution.hir",
+            "resolution.runic",
             &source,
         )
         .unwrap();

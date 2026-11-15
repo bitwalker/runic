@@ -348,7 +348,7 @@ mod tests {
         let context = Rc::new(Context::default());
         let function = parse::parse::<Function>(
             ParserConfig::new(context.clone()),
-            "asserts.hir",
+            "asserts.runic",
             r#"builtin.function public extern("C") @asserts(%c: i1) {
                 %true = arith.constant 1 : i1;
                 %false = arith.constant 0 : i1;

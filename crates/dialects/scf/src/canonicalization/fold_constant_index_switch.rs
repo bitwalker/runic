@@ -340,11 +340,11 @@ builtin.function public extern(\"C\") @f(%a: i32, %b: i32) -> i32 {
     #[test]
     fn a_constant_selector_is_compared_as_a_32_bit_pattern() {
         for selector in ["0xffffffff", "-1", "4294967295"] {
-            let folded = fold("selector_pattern.hir", &PROGRAM.replace("SELECTOR", selector));
+            let folded = fold("selector_pattern.runic", &PROGRAM.replace("SELECTOR", selector));
             assert!(!folded.contains("scf.index_switch"), "{folded}");
             assert!(folded.contains("builtin.ret %0 : (i32);"), "selector {selector}:\n{folded}");
         }
-        let folded = fold("selector_default.hir", &PROGRAM.replace("SELECTOR", "7"));
+        let folded = fold("selector_default.runic", &PROGRAM.replace("SELECTOR", "7"));
         assert!(!folded.contains("scf.index_switch"), "{folded}");
         assert!(folded.contains("builtin.ret %1 : (i32);"), "{folded}");
     }

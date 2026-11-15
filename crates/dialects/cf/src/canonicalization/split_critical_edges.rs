@@ -177,7 +177,8 @@ builtin.function public extern(\"C\") @split(%c: i1, %a: i32) -> i32 {
 ^other:
     cf.br ^join(%a : i32);
 };";
-        let (function, _) = parse_function_fixpoint(&context, "split_critical_edges.hir", source)?;
+        let (function, _) =
+            parse_function_fixpoint(&context, "split_critical_edges.runic", source)?;
 
         let pattern: Box<dyn RewritePattern> = Box::new(SplitCriticalEdges::new(context.clone()));
         let changed = apply_with_borrowing_listener(&context, function, pattern)?;

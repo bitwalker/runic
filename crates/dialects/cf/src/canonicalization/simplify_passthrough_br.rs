@@ -228,7 +228,7 @@ mod tests {
     }
 
     fn parse(context: &Rc<Context>, source: &str) -> Result<FunctionRef, Report> {
-        parse::parse::<Function>(ParserConfig::new(context.clone()), "passthrough.hir", source)
+        parse::parse::<Function>(ParserConfig::new(context.clone()), "passthrough.runic", source)
             .into_result()
     }
 

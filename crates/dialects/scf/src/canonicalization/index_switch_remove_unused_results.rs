@@ -201,7 +201,7 @@ mod tests {
         builder.ret(Some(live_switch_result), span)?;
 
         let input = normalize_hir(&format!("{}", test.function().as_operation_ref().borrow()));
-        expect_file!["expected/index_switch_remove_unused_results_before.hir"].assert_eq(&input);
+        expect_file!["expected/index_switch_remove_unused_results_before.runic"].assert_eq(&input);
 
         let context = test.context_rc();
         let pattern: Box<dyn RewritePattern> =
@@ -219,7 +219,7 @@ mod tests {
         test.function().as_operation_ref().borrow().recursively_verify()?;
 
         let output = normalize_hir(&format!("{}", test.function().as_operation_ref().borrow()));
-        expect_file!["expected/index_switch_remove_unused_results_after.hir"].assert_eq(&output);
+        expect_file!["expected/index_switch_remove_unused_results_after.runic"].assert_eq(&output);
 
         Ok(())
     }

@@ -443,7 +443,7 @@ mod tests {
             target_dir: temp.path().join("target"),
             ..Options::default()
         };
-        let input = InputFile::new(InputType::Real("some/foo.hir".into()));
+        let input = InputFile::new(InputType::Real("some/foo.runic".into()));
         let session = Session::new(input, Box::new(options)).unwrap();
 
         assert_eq!(session.name(), "foo");
@@ -459,7 +459,7 @@ mod tests {
             target_dir: temp.path().join("target"),
             ..Options::default()
         };
-        let input = InputFile::new(InputType::Real("foo.hir".into()));
+        let input = InputFile::new(InputType::Real("foo.runic".into()));
         let session = Session::new(input, Box::new(options)).unwrap();
 
         assert_eq!(session.name(), "explicit");

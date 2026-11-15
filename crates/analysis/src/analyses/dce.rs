@@ -1009,7 +1009,7 @@ mod tests {
         let test = Test::default();
         test.context().get_or_register_dialect::<runic_dialect_arith::ArithDialect>();
         let module =
-            parse::parse_any(ParserConfig::new(test.context_rc()), "function_alias.hir", source)
+            parse::parse_any(ParserConfig::new(test.context_rc()), "function_alias.runic", source)
                 .expect("fixture must parse and verify");
         let mut config = DataFlowConfig::default();
         config.set_interprocedural(true);

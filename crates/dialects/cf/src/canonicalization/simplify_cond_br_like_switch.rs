@@ -103,7 +103,7 @@ builtin.function public extern(\"C\") @f(%s: i32, %a: i32, %b: i32) -> i32 {
     builtin.ret %b : (i32);
 };";
         let (function, _) =
-            parse_function_fixpoint(&context, "simplify_cond_br_like_switch.hir", source)?;
+            parse_function_fixpoint(&context, "simplify_cond_br_like_switch.runic", source)?;
         let pattern: Box<dyn RewritePattern> =
             Box::new(SimplifyCondBrLikeSwitch::new(context.clone()));
         assert!(apply_with_borrowing_listener(&context, function, pattern)?);

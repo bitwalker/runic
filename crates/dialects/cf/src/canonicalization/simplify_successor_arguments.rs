@@ -130,7 +130,7 @@ builtin.function public extern(\"C\") @args(%c: i1, %a: i32, %b: i32) -> i32 {
     builtin.ret %y : (i32);
 };";
         let (function, _) =
-            parse_function_fixpoint(&context, "simplify_successor_arguments.hir", source)?;
+            parse_function_fixpoint(&context, "simplify_successor_arguments.runic", source)?;
 
         let pattern: Box<dyn RewritePattern> =
             Box::new(RemoveUnusedSinglePredBlockArgs::new(context.clone()));

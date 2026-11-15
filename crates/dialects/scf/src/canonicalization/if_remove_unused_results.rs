@@ -197,7 +197,7 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
     #[test]
     fn if_remove_unused_results_prunes_results_around_a_branch_that_leaves_the_if() {
         let (changed, verified) = run_one(
-            "if_remove_unused_results_early_exit.hir",
+            "if_remove_unused_results_early_exit.runic",
             &PROGRAM.replace("THEN", "builtin.ret %n : (i32);"),
         );
         verified.unwrap_or_else(|err| panic!("output does not verify:\n{err}"));
@@ -238,7 +238,7 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
 };";
         let context = Rc::new(Context::default());
         let (function, _) =
-            parse_function_fixpoint(&context, "if_remove_unused_results_nested_exit.hir", source)
+            parse_function_fixpoint(&context, "if_remove_unused_results_nested_exit.runic", source)
                 .expect("the probe must parse before the pattern runs");
         let count_breaks = || {
             let mut breaks = 0usize;
@@ -275,7 +275,7 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
     #[test]
     fn if_remove_unused_results_still_fires_when_both_branches_yield() {
         let (changed, verified) = run_one(
-            "if_remove_unused_results_control.hir",
+            "if_remove_unused_results_control.runic",
             &PROGRAM.replace("THEN", "scf.yield %n, %n : (i32, i32);"),
         );
         verified.unwrap_or_else(|err| panic!("output does not verify:\n{err}"));
@@ -343,7 +343,7 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
         builder.ret(Some(live_if_result), span)?;
 
         let input = normalize_hir(&format!("{}", test.function().as_operation_ref().borrow()));
-        expect_file!["expected/if_remove_unused_results_before.hir"].assert_eq(&input);
+        expect_file!["expected/if_remove_unused_results_before.runic"].assert_eq(&input);
 
         let context = test.context_rc();
         let pattern: Box<dyn RewritePattern> =
@@ -361,7 +361,7 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
         test.function().as_operation_ref().borrow().recursively_verify()?;
 
         let output = normalize_hir(&format!("{}", test.function().as_operation_ref().borrow()));
-        expect_file!["expected/if_remove_unused_results_after.hir"].assert_eq(&output);
+        expect_file!["expected/if_remove_unused_results_after.runic"].assert_eq(&output);
 
         Ok(())
     }

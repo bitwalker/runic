@@ -11,7 +11,7 @@ use runic_dialect_scf::If;
 use super::CommonSubexpressionElimination;
 
 fn parse_function(context: &Rc<Context>, source: &str) -> Result<FunctionRef, Report> {
-    parse::parse::<Function>(ParserConfig::new(context.clone()), "regions.hir", source)
+    parse::parse::<Function>(ParserConfig::new(context.clone()), "regions.runic", source)
         .into_result()
 }
 

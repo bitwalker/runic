@@ -423,7 +423,7 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
     #[test]
     fn convert_trivial_if_to_select_declines_a_branch_that_leaves_the_if() {
         let (changed, verified) = run_one(
-            "convert_trivial_if_to_select_early_exit.hir",
+            "convert_trivial_if_to_select_early_exit.runic",
             &PROGRAM.replace("THEN", "builtin.ret %n : (i32);"),
         );
         verified.unwrap_or_else(|err| panic!("output does not verify:\n{err}"));
@@ -466,7 +466,7 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
         let context = Rc::new(Context::default());
         let (function, _) = parse_function_fixpoint(
             &context,
-            "convert_trivial_if_to_select_nested_exit.hir",
+            "convert_trivial_if_to_select_nested_exit.runic",
             source,
         )
         .expect("the probe must parse before the pattern runs");
@@ -507,7 +507,7 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
     #[test]
     fn convert_trivial_if_to_select_still_fires_when_both_branches_yield() {
         let (changed, verified) = run_one(
-            "convert_trivial_if_to_select_control.hir",
+            "convert_trivial_if_to_select_control.runic",
             &PROGRAM.replace("THEN", "scf.yield %n : (i32);"),
         );
         verified.unwrap_or_else(|err| panic!("output does not verify:\n{err}"));
@@ -531,7 +531,7 @@ builtin.function public extern(\"C\") @f(%p: ptr<i32>, %q: ptr<i32>, %c: i1) -> 
     builtin.ret %r : (ptr<i32>);
 };";
         let (changed, verified, before, after) =
-            rewrite("convert_trivial_if_to_select_pointers.hir", POINTERS);
+            rewrite("convert_trivial_if_to_select_pointers.runic", POINTERS);
         verified.unwrap_or_else(|err| panic!("output does not verify:\n{err}"));
         assert!(!changed, "must decline an scf.if whose only yielded pair is two pointers");
         assert_eq!(after, before, "a declined scf.if is left as it was");
@@ -547,7 +547,7 @@ builtin.function public extern(\"C\") @f(%p: ptr<i32>, %q: ptr<i32>, %n: i32, %m
     builtin.ret %k : (i32);
 };";
         let (changed, verified, _, after) =
-            rewrite("convert_trivial_if_to_select_mixed.hir", MIXED);
+            rewrite("convert_trivial_if_to_select_mixed.runic", MIXED);
         verified.unwrap_or_else(|err| panic!("output does not verify:\n{err}"));
         assert!(changed, "the integer pair beside the pointer pair must still hoist");
         assert_eq!(after.matches("cf.select").count(), 1, "one select, of the integers:\n{after}");

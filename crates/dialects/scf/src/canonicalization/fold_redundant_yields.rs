@@ -277,7 +277,7 @@ mod tests {
         // Confirm the CF->SCF transformed IR is correct.
         let function = test.function().as_operation_ref();
         let input = format!("{}", function.borrow());
-        let before_file_path = format!("expected/{}_before.hir", test.name());
+        let before_file_path = format!("expected/{}_before.runic", test.name());
         expect_file![before_file_path.as_str()].assert_eq(&input);
 
         let context = test.context_rc();
@@ -289,7 +289,7 @@ mod tests {
 
         // Confirm the canonicalised IR is correct.
         let output = format!("{}", test.function().as_operation_ref().borrow());
-        let after_file_path = format!("expected/{}_after.hir", test.name());
+        let after_file_path = format!("expected/{}_after.runic", test.name());
         expect_file![after_file_path.as_str()].assert_eq(&output);
 
         Ok(())
@@ -827,7 +827,7 @@ mod tests {
     #[test]
     fn fold_redundant_yields_keeps_an_if_carrying_a_nested_early_exit() {
         let (_, before, after) = run_one(
-            "fold_redundant_yields_nested_early_exit.hir",
+            "fold_redundant_yields_nested_early_exit.runic",
             "\
 builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
     %z = arith.constant 0 : i32;
@@ -867,7 +867,7 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
     #[test]
     fn fold_redundant_yields_still_deletes_an_if_with_no_nested_terminator() {
         let (changed, before, after) = run_one(
-            "fold_redundant_yields_nested_early_exit_control.hir",
+            "fold_redundant_yields_nested_early_exit_control.runic",
             "\
 builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
     %z = arith.constant 0 : i32;

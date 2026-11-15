@@ -319,7 +319,7 @@ mod tests {
             target_dir: temp.path().join("target"),
             ..Options::default()
         };
-        let input = InputFile::new(InputType::Real("m.hir".into()));
+        let input = InputFile::new(InputType::Real("m.runic".into()));
         let session = Session::new(input, Box::new(options)).unwrap();
 
         let mut out = Vec::new();

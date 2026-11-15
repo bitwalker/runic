@@ -630,7 +630,7 @@ builtin.function public extern(\"C\") @wide(%s: i32) -> i32 {{
         const NUM_CASES: usize = u16::MAX as usize - 1;
 
         let (_context, function) =
-            parse_wide_switch("parse_switch_widest.hir", &wide_switch_source(NUM_CASES))?;
+            parse_wide_switch("parse_switch_widest.runic", &wide_switch_source(NUM_CASES))?;
         let function = function.borrow();
         let switch_op = function
             .body()
@@ -657,9 +657,10 @@ builtin.function public extern(\"C\") @wide(%s: i32) -> i32 {{
     fn parse_switch_with_too_many_cases_is_rejected() {
         const NUM_CASES: usize = u16::MAX as usize;
 
-        let error = parse_wide_switch("parse_switch_too_wide.hir", &wide_switch_source(NUM_CASES))
-            .err()
-            .expect("expected the switch to be rejected");
+        let error =
+            parse_wide_switch("parse_switch_too_wide.runic", &wide_switch_source(NUM_CASES))
+                .err()
+                .expect("expected the switch to be rejected");
         let message = format!("{error}");
         assert!(message.contains("too many operand groups"), "{message}");
     }
@@ -686,7 +687,7 @@ builtin.function public extern("C") @branch(%a: i32) -> i32 {
 ^dest:
     builtin.ret %a : (i32);
 };"#;
-        let (function, _) = parse_function_fixpoint(&context, "parse_generic_br.hir", source)?;
+        let (function, _) = parse_function_fixpoint(&context, "parse_generic_br.runic", source)?;
         let function = function.borrow();
         let body = function.body();
         let entry = body.entry();
@@ -716,7 +717,8 @@ builtin.function public extern("C") @branch(%c: i1, %a: i32, %b: i32) -> i32 {
 ^no:
     builtin.ret %b : (i32);
 };"#;
-        let (function, _) = parse_function_fixpoint(&context, "parse_generic_cond_br.hir", source)?;
+        let (function, _) =
+            parse_function_fixpoint(&context, "parse_generic_cond_br.runic", source)?;
         let function = function.borrow();
         let body = function.body();
         let entry = body.entry();
@@ -764,7 +766,7 @@ builtin.function public extern("C") @branch(%c: i1, %a: i32, %b: i32) -> i32 {
             );
             let error = parse::<Function>(
                 ParserConfig::new(context.clone()),
-                "parse_generic_successor_count.hir",
+                "parse_generic_successor_count.runic",
                 &source,
             )
             .into_result()
@@ -796,7 +798,7 @@ builtin.function public extern("C") @branch(%c: i1, %a: i32, %b: i32) -> i32 {
             );
             let error = parse::<Function>(
                 ParserConfig::new(context.clone()),
-                "parse_generic_operand_count.hir",
+                "parse_generic_operand_count.runic",
                 &source,
             )
             .into_result()
@@ -831,7 +833,7 @@ builtin.function public extern("C") @branch(%c: i1, %a: i32, %b: i32) -> i32 {
             );
             let error = parse::<Function>(
                 ParserConfig::new(context.clone()),
-                "parse_non_boolean_condition.hir",
+                "parse_non_boolean_condition.runic",
                 &source,
             )
             .into_result()
@@ -874,7 +876,7 @@ builtin.function public extern("C") @branch(%c: i1, %a: i32, %b: i32) -> i32 {
             );
             let Err(error) = parse::<Function>(
                 ParserConfig::new(context.clone()),
-                "parse_generic_switch.hir",
+                "parse_generic_switch.runic",
                 source,
             )
             .into_result() else {
@@ -908,8 +910,9 @@ builtin.function public extern(\"C\") @branch(%s: i32, %a: i32) -> i32 {
 ^fallback(%y: i32):
     builtin.ret %y : (i32);
 };";
-        let function = parse::<Function>(ParserConfig::new(context.clone()), "switch.hir", source)
-            .into_result()?;
+        let function =
+            parse::<Function>(ParserConfig::new(context.clone()), "switch.runic", source)
+                .into_result()?;
         let custom = format!("{}", function.borrow().as_operation());
         let generic = print_generic(function.borrow().as_operation());
         assert!(
@@ -920,7 +923,7 @@ builtin.function public extern(\"C\") @branch(%s: i32, %a: i32) -> i32 {
             "{generic}"
         );
         let again =
-            parse::<Function>(ParserConfig::new(context.clone()), "generic.hir", generic.clone())
+            parse::<Function>(ParserConfig::new(context.clone()), "generic.runic", generic.clone())
                 .into_result()?;
         assert!(same_program(&format!("{}", again.borrow().as_operation()), &custom));
         assert!(same_program(&print_generic(again.borrow().as_operation()), &generic));
@@ -947,8 +950,9 @@ builtin.function public extern(\"C\") @branch(%c: i1, %a: i32, %b: i64) -> i32 {
 ^no:
     builtin.ret %a : (i32);
 };";
-        let function = parse::<Function>(ParserConfig::new(context.clone()), "branch.hir", source)
-            .into_result()?;
+        let function =
+            parse::<Function>(ParserConfig::new(context.clone()), "branch.runic", source)
+                .into_result()?;
         let generic = print_all_generic(function.borrow().as_operation());
         assert!(
             generic
@@ -956,7 +960,7 @@ builtin.function public extern(\"C\") @branch(%c: i1, %a: i32, %b: i64) -> i32 {
             "{generic}"
         );
         let again =
-            parse::<Function>(ParserConfig::new(context.clone()), "generic.hir", generic.clone())
+            parse::<Function>(ParserConfig::new(context.clone()), "generic.runic", generic.clone())
                 .into_result()?;
         assert!(same_program(&print_all_generic(again.borrow().as_operation()), &generic));
         assert!(same_program(
@@ -980,7 +984,7 @@ builtin.function public extern(\"C\") @branch(%c: i1, %a: i32, %b: i32) -> i32 {
 ^no:
     builtin.ret %b : (i32);
 };";
-        let (function, printed) = parse_function_fixpoint(&context, "parse_cond_br.hir", source)?;
+        let (function, printed) = parse_function_fixpoint(&context, "parse_cond_br.runic", source)?;
         expect![[r#"
             builtin.function public extern("C") @branch(%0: i1, %1: i32, %2: i32) -> i32 {
                 cf.cond_br %0 ^block2, ^block3 : (i1);
@@ -1029,7 +1033,7 @@ builtin.function public extern(\"C\") @branch_args(%c: i1, %a: i32, %b: i32) -> 
     builtin.ret %z : (i32);
 };";
         let (function, printed) =
-            parse_function_fixpoint(&context, "parse_cond_br_args.hir", source)?;
+            parse_function_fixpoint(&context, "parse_cond_br_args.runic", source)?;
         expect![[r#"
             builtin.function public extern("C") @branch_args(%0: i1, %1: i32, %2: i32) -> i32 {
                 cf.cond_br %0 ^block2(%1 : i32), ^block3(%1, %2 : i32, i32) : (i1);
@@ -1094,7 +1098,7 @@ builtin.function public extern(\"C\") @looped(%start: i1) -> i1 {
     builtin.ret %v : (i1);
 };";
         let (function, printed) =
-            parse_function_fixpoint(&context, "parse_backward_refs.hir", source)?;
+            parse_function_fixpoint(&context, "parse_backward_refs.runic", source)?;
         expect![[r#"
             builtin.function public extern("C") @looped(%0: i1) -> i1 {
                 cf.br ^block2(%0 : i1);
@@ -1154,7 +1158,7 @@ builtin.function public extern(\"C\") @select(%sel: i32, %a: i32, %b: i32) -> i3
 ^fallback:
     builtin.ret %b : (i32);
 };";
-        let (function, printed) = parse_function_fixpoint(&context, "parse_switch.hir", source)?;
+        let (function, printed) = parse_function_fixpoint(&context, "parse_switch.runic", source)?;
         expect![[r#"
             builtin.function public extern("C") @select(%0: i32, %1: i32, %2: i32) -> i32 {
                 cf.switch %0 [#builtin.i32<1> -> ^block2(%1 : i32)], ^block3 : (i32);
@@ -1241,7 +1245,7 @@ builtin.function public extern(\"C\") @select(%sel: i32, %a: i32, %b: i32) -> i3
 
         let context = Rc::new(Context::default());
         // A parsed function numbers its blocks from `^block2`, a built one from `^block1`.
-        let (parsed, printed) = parse_function_fixpoint(&context, "switch_keys.hir", &text)?;
+        let (parsed, printed) = parse_function_fixpoint(&context, "switch_keys.runic", &text)?;
         assert!(printed.contains("#builtin.i32<-1> -> ^block2"), "{printed}");
         let parsed = parsed.borrow();
         let switch_op =
@@ -1380,7 +1384,7 @@ builtin.function public extern(\"C\") @select(%sel: i32, %a: i32, %b: i32) -> i3
         .assert_eq(&text);
 
         let context = Rc::new(Context::default());
-        let (parsed, _) = parse_function_fixpoint(&context, "assert.hir", &text)?;
+        let (parsed, _) = parse_function_fixpoint(&context, "assert.runic", &text)?;
         assert_eq!(assert_message(parsed), message);
         Ok(())
     }
@@ -1394,7 +1398,7 @@ builtin.function public extern(\"C\") @check(%c: i1) {
     cf.assert %c, \"m\" attributes { note = #builtin.i32<7> };
     builtin.ret;
 };";
-        let (function, printed) = parse_function_fixpoint(&context, "assert_attrs.hir", source)?;
+        let (function, printed) = parse_function_fixpoint(&context, "assert_attrs.runic", source)?;
         expect![[r#"
             builtin.function public extern("C") @check(%0: i1) {
                 cf.assert %0, "m" attributes { note = #builtin.i32<7> };
@@ -1418,7 +1422,7 @@ builtin.function public extern(\"C\") @check(%c: i32) {
     cf.assert %c, \"m\";
     builtin.ret;
 };";
-        let error = parse_function_fixpoint(&context, "assert_i32.hir", source)
+        let error = parse_function_fixpoint(&context, "assert_i32.runic", source)
             .err()
             .expect("an i32 condition must be rejected");
         let message = format!("{error}");
@@ -1478,7 +1482,7 @@ builtin.function public extern(\"C\") @check(%c: i1) {
     cf.assert %c, \"unknown\";
     builtin.ret;
 };";
-        let (function, _) = parse_function_fixpoint(&context, "erase_true_assert.hir", source)?;
+        let (function, _) = parse_function_fixpoint(&context, "erase_true_assert.runic", source)?;
         let pattern: Box<dyn RewritePattern> = Box::new(EraseTrueAssert::new(context.clone()));
         assert!(apply_with_borrowing_listener(&context, function, pattern)?);
         let printed = format!("{}", function.as_operation_ref().borrow());
@@ -1510,7 +1514,7 @@ builtin.function public extern(\"C\") @check(%c: i1, %sel: i32, %a: i32, %b: i32
 ^no:
     builtin.ret %s : (i32);
 };";
-        let (function, _) = parse_function_fixpoint(&context, "assert_requirement.hir", source)?;
+        let (function, _) = parse_function_fixpoint(&context, "assert_requirement.runic", source)?;
         let function = function.borrow();
         let mut checked = Vec::new();
         for block in function.body().body() {
@@ -1761,7 +1765,7 @@ builtin.function public extern(\"C\") @check(%c: i1, %sel: i32, %a: i32, %b: i32
     #[test]
     fn br_with_too_few_operands_for_its_successor_is_rejected() {
         let err = successor_rejection(
-            "br_too_few.hir",
+            "br_too_few.runic",
             "    cf.br ^next;\n^next(%y: i32):\n    builtin.ret;",
         );
         assert!(
@@ -1776,7 +1780,7 @@ builtin.function public extern(\"C\") @check(%c: i1, %sel: i32, %a: i32, %b: i32
     #[test]
     fn br_with_too_many_operands_for_its_successor_is_rejected() {
         let err = successor_rejection(
-            "br_too_many.hir",
+            "br_too_many.runic",
             "    cf.br ^next(%x, %w : i32, i64);\n^next(%y: i32):\n    builtin.ret;",
         );
         assert!(
@@ -1791,7 +1795,7 @@ builtin.function public extern(\"C\") @check(%c: i1, %sel: i32, %a: i32, %b: i32
     #[test]
     fn br_with_an_operand_of_the_wrong_type_for_its_successor_is_rejected() {
         let err = successor_rejection(
-            "br_wrong_type.hir",
+            "br_wrong_type.runic",
             "    cf.br ^next(%x, %x : i32, i32);\n^next(%y: i32, %z: i64):\n    builtin.ret;",
         );
         assert!(
@@ -1806,7 +1810,7 @@ builtin.function public extern(\"C\") @check(%c: i1, %sel: i32, %a: i32, %b: i32
     #[test]
     fn cond_br_with_a_fault_in_one_successor_is_rejected_naming_that_successor() {
         let err = successor_rejection(
-            "cond_br_else_wrong.hir",
+            "cond_br_else_wrong.runic",
             "    cf.cond_br %c ^then(%x : i32), ^else(%x : i32) : (i1);\n^then(%y: i32):\n    \
              builtin.ret;\n^else(%z: i64):\n    builtin.ret;",
         );
@@ -1819,7 +1823,7 @@ builtin.function public extern(\"C\") @check(%c: i1, %sel: i32, %a: i32, %b: i32
         );
 
         let err = successor_rejection(
-            "cond_br_then_short.hir",
+            "cond_br_then_short.runic",
             "    cf.cond_br %c ^then, ^else(%w : i64) : (i1);\n^then(%y: i32):\n    \
              builtin.ret;\n^else(%z: i64):\n    builtin.ret;",
         );
@@ -1835,7 +1839,7 @@ builtin.function public extern(\"C\") @check(%c: i1, %sel: i32, %a: i32, %b: i32
     #[test]
     fn switch_with_a_fault_in_one_successor_is_rejected_naming_that_successor() {
         let err = successor_rejection(
-            "switch_case_wrong.hir",
+            "switch_case_wrong.runic",
             "    cf.switch %s [#builtin.i32<0> -> ^zero(%x : i32), #builtin.i32<1> -> ^one(%x : \
              i32)], ^other(%w : i64) : (i32);\n^zero(%a: i32):\n    builtin.ret;\n^one(%b: \
              i64):\n    builtin.ret;\n^other(%d: i64):\n    builtin.ret;",
@@ -1849,7 +1853,7 @@ builtin.function public extern(\"C\") @check(%c: i1, %sel: i32, %a: i32, %b: i32
         );
 
         let err = successor_rejection(
-            "switch_fallback_long.hir",
+            "switch_fallback_long.runic",
             "    cf.switch %s [#builtin.i32<0> -> ^zero(%x : i32)], ^other(%w, %x : i64, i32) : \
              (i32);\n^zero(%a: i32):\n    builtin.ret;\n^other(%d: i64):\n    builtin.ret;",
         );

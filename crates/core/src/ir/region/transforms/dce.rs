@@ -543,7 +543,7 @@ mod tests {
         }
 
         let before = format!("{}", op.borrow().as_operation());
-        expect_file!["expected/transparent_ops_do_not_interfere_with_dce_before.hir"]
+        expect_file!["expected/transparent_ops_do_not_interfere_with_dce_before.runic"]
             .assert_eq(&before);
 
         let region = op.borrow().body().as_region_ref();
@@ -555,7 +555,7 @@ mod tests {
         }
 
         let after = format!("{}", op.borrow().as_operation());
-        expect_file!["expected/transparent_ops_do_not_interfere_with_dce_after.hir"]
+        expect_file!["expected/transparent_ops_do_not_interfere_with_dce_after.runic"]
             .assert_eq(&after);
 
         assert_ne!(&before, &after);
@@ -567,7 +567,7 @@ mod tests {
         // Both texts read back, `test.debug_value` in the generic form included.
         for text in [before, after] {
             let config = crate::parse::ParserConfig::new(test.context_rc());
-            let parsed = crate::parse::parse_any(config, "golden.hir", text.clone())
+            let parsed = crate::parse::parse_any(config, "golden.runic", text.clone())
                 .into_result()
                 .unwrap_or_else(|err| panic!("{err}\n{text}"));
             let printed = format!("{}", parsed.borrow());

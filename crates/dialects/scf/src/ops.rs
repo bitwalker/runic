@@ -1408,7 +1408,7 @@ builtin.function public extern("C") @exit(%flag: i1, %value: i32) -> i32 {
     } : (i32) -> i32;
     builtin.ret %result : (i32);
 };"#;
-        parse_function_fixpoint(&context, "nested_break.hir", source)?;
+        parse_function_fixpoint(&context, "nested_break.runic", source)?;
         Ok(())
     }
 
@@ -1446,7 +1446,7 @@ builtin.function public extern("C") @exit(%flag: i1, %v: i32) {{
     builtin.ret;
 }};"#
             );
-            let Err(err) = parse_function_fixpoint(&context, "exit_mismatch.hir", &source) else {
+            let Err(err) = parse_function_fixpoint(&context, "exit_mismatch.runic", &source) else {
                 panic!("{exit} must not parse");
             };
             let text = runic_core::testing::text::describe(&err);
@@ -1478,7 +1478,7 @@ builtin.function public extern("C") @exit(%flag: i1) {
     builtin.ret;
 };"#;
         let (_function, printed) =
-            parse_function_fixpoint(&context, "exit_without_values.hir", source)?;
+            parse_function_fixpoint(&context, "exit_without_values.runic", source)?;
         assert!(printed.contains("scf.break 1 : ();"), "{printed}");
         assert!(printed.contains("scf.continue 1 attributes"), "{printed}");
         Ok(())
@@ -1744,7 +1744,7 @@ builtin.function public extern("C") @exit(%flag: i1) {
     #[test]
     fn exit_verifier_requires_registered_branch_terminator_interface() {
         let error = rejection(
-            "unregistered_branch_exit.hir",
+            "unregistered_branch_exit.runic",
             &RESOLVER_CHECK_PROGRAM.replace("BODY", "test.unregistered_branch_exit %j : (i32);"),
         );
         assert!(error.contains("RegionBranchTerminatorOpInterface"), "{error}");
@@ -1753,7 +1753,7 @@ builtin.function public extern("C") @exit(%flag: i1) {
     #[test]
     fn exit_verifier_rejects_a_callable_receiver_as_target() {
         let error = rejection(
-            "callable_receiver_exit.hir",
+            "callable_receiver_exit.runic",
             r#"
 builtin.function public extern("C") @f() {
     test.callable_receiver {
@@ -1789,7 +1789,7 @@ builtin.function public extern("C") @f() {
     #[test]
     fn exit_verifier_checks_the_resolvers_originating_region() {
         let error = rejection(
-            "wrong_exit_origin.hir",
+            "wrong_exit_origin.runic",
             &RESOLVER_CHECK_PROGRAM.replace("BODY", "test.wrong_origin_exit %j : (i32);"),
         );
         assert!(error.contains("originating region"), "{error}");
@@ -1961,7 +1961,8 @@ builtin.function public extern(\"C\") @count_to(%n: i32) -> i32 {
     } : (i32) -> i32;
     builtin.ret %count : (i32);
 };";
-        let (function, printed) = parse_function_fixpoint(&context, "parse_scf_while.hir", source)?;
+        let (function, printed) =
+            parse_function_fixpoint(&context, "parse_scf_while.runic", source)?;
         expect![[r#"
             builtin.function public extern("C") @count_to(%0: i32) -> i32 {
                 %1 = arith.constant 0 : i32;
@@ -2011,7 +2012,7 @@ builtin.function public extern(\"C\") @spin(%n: i32) -> i32 {
     builtin.ret %n : (i32);
 };";
         let (function, printed) =
-            parse_function_fixpoint(&context, "parse_scf_condition_bare.hir", source)?;
+            parse_function_fixpoint(&context, "parse_scf_condition_bare.runic", source)?;
         expect![[r#"
             builtin.function public extern("C") @spin(%0: i32) -> i32 {
                 %1 = arith.constant 0 : i32;
@@ -2054,7 +2055,7 @@ builtin.function public extern(\"C\") @pick(%c: i1, %a: i32, %b: i32) -> i32 {
     builtin.ret %sum : (i32);
 };";
         let (function, printed) =
-            parse_function_fixpoint(&context, "parse_multi_result.hir", source)?;
+            parse_function_fixpoint(&context, "parse_multi_result.runic", source)?;
         expect![[r#"
             builtin.function public extern("C") @pick(%0: i1, %1: i32, %2: i32) -> i32 {
                 %3, %4 = scf.if %0 then {
@@ -2101,7 +2102,7 @@ builtin.function public extern(\"C\") @wide(%c: i1, %a: i32) -> i32 {{
             last = NUM_RESULTS - 1
         );
         let (function, _printed) =
-            parse_function_fixpoint(&context, "parse_wide_result_list.hir", &source)?;
+            parse_function_fixpoint(&context, "parse_wide_result_list.runic", &source)?;
 
         let function = function.borrow();
         let if_op = find_op::<If>(&function);
@@ -2141,7 +2142,7 @@ builtin.function public extern(\"C\") @dispatch(%sel: i32, %c: i1, %a: i32, %b: 
     } : (i1) -> (i32);
     builtin.ret %s : (i32);
 };";
-        let function = parse::<Function>(ParserConfig::new(context.clone()), "order.hir", source)
+        let function = parse::<Function>(ParserConfig::new(context.clone()), "order.runic", source)
             .into_result()?;
         let generic = print_all_generic(function.borrow().as_operation());
         let default = generic.find("\"arith.add\"(%3, %3)").expect(&generic);
@@ -2149,7 +2150,7 @@ builtin.function public extern(\"C\") @dispatch(%sel: i32, %c: i1, %a: i32, %b: 
         assert!(default < case, "the default region is stored first:\n{generic}");
         assert!(generic.contains("}, {"), "{generic}");
         let again =
-            parse::<Function>(ParserConfig::new(context.clone()), "generic.hir", generic.clone())
+            parse::<Function>(ParserConfig::new(context.clone()), "generic.runic", generic.clone())
                 .into_result()?;
         assert!(same_program(&print_all_generic(again.borrow().as_operation()), &generic));
         assert!(same_program(
@@ -2176,7 +2177,7 @@ builtin.function public extern(\"C\") @dispatch(%sel: i32, %a: i32, %b: i32) -> 
     builtin.ret %r : (i32);
 };";
         let (function, printed) =
-            parse_function_fixpoint(&context, "parse_index_switch.hir", source)?;
+            parse_function_fixpoint(&context, "parse_index_switch.runic", source)?;
         expect![[r#"
             builtin.function public extern("C") @dispatch(%0: i32, %1: i32, %2: i32) -> i32 {
                 %3 = scf.index_switch %0 
@@ -2243,7 +2244,7 @@ builtin.function public extern(\"C\") @first_over(%n: i32) -> i32 {
     } : (i32) -> i32;
     builtin.ret %found : (i32);
 };";
-        let (function, printed) = parse_function_fixpoint(&context, "scf_break.hir", source)?;
+        let (function, printed) = parse_function_fixpoint(&context, "scf_break.runic", source)?;
         expect![[r#"
             builtin.function public extern("C") @first_over(%0: i32) -> i32 {
                 %1 = arith.constant 0 : i32;
@@ -2325,7 +2326,7 @@ builtin.function public extern(\"C\") @skip_odds(%n: i32) -> i32 {
     } : (i32) -> i32;
     builtin.ret %total : (i32);
 };";
-        let (function, printed) = parse_function_fixpoint(&context, "scf_continue.hir", source)?;
+        let (function, printed) = parse_function_fixpoint(&context, "scf_continue.runic", source)?;
         expect![[r#"
             builtin.function public extern("C") @skip_odds(%0: i32) -> i32 {
                 %1 = arith.constant 0 : i32;
@@ -2401,7 +2402,7 @@ builtin.function public extern(\"C\") @skip_odds(%n: i32) -> i32 {
     #[test]
     fn v1_rejects_levels_zero() {
         let err = rejection(
-            "v1.hir",
+            "v1.runic",
             "\
 builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
     %zero = arith.constant 0 : i32;
@@ -2424,7 +2425,7 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
     #[test]
     fn v2_rejects_more_levels_than_enclosing_loops() {
         let err = rejection(
-            "v2.hir",
+            "v2.runic",
             "\
 builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
     %zero = arith.constant 0 : i32;
@@ -2480,7 +2481,7 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
     builtin.ret %r : (i32);
 };";
 
-        let err = rejection("v3.hir", &PROGRAM.replace("INTERMEDIATE", "test.opaque_region"));
+        let err = rejection("v3.runic", &PROGRAM.replace("INTERMEDIATE", "test.opaque_region"));
         assert!(
             err.contains("would have to cross 'test.opaque_region'"),
             "unexpected diagnostic: {err}"
@@ -2495,7 +2496,7 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
         let context = Rc::new(Context::default());
         parse_function_fixpoint(
             &context,
-            "v3_accept.hir",
+            "v3_accept.runic",
             &PROGRAM.replace("INTERMEDIATE", "test.transparent_region"),
         )
         .expect("an exit crossing an op that declares PropagateControlFlowBreak must be accepted");
@@ -2505,7 +2506,7 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
     #[test]
     fn v4_rejects_break_operands_that_do_not_match_the_targets_results() {
         let err = rejection(
-            "v4.hir",
+            "v4.runic",
             "\
 builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
     %zero = arith.constant 0 : i32;
@@ -2531,7 +2532,7 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
     #[test]
     fn v5_rejects_continue_operands_that_do_not_match_the_targets_iter_args() {
         let err = rejection(
-            "v5.hir",
+            "v5.runic",
             "\
 builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
     %zero = arith.constant 0 : i32;
@@ -2560,7 +2561,7 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
     #[test]
     fn v6_rejects_continue_in_the_targets_header() {
         let err = rejection(
-            "v6.hir",
+            "v6.runic",
             "\
 builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
     %zero = arith.constant 0 : i32;
@@ -2583,7 +2584,7 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
         let context = Rc::new(Context::default());
         parse_function_fixpoint(
             &context,
-            "v6_accept.hir",
+            "v6_accept.runic",
             "\
 builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
     %zero = arith.constant 0 : i32;
@@ -2604,7 +2605,7 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
     #[test]
     fn v7_rejects_a_break_with_no_enclosing_loop() {
         let err = rejection(
-            "v7.hir",
+            "v7.runic",
             "\
 builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
     scf.break 1 %n : (i32);
@@ -2655,7 +2656,7 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
     #[test]
     fn v8_the_blanket_rejects_a_resolver_that_skipped_rule_3() {
         let err = rejection(
-            "v8.hir",
+            "v8.runic",
             &RESOLVER_CHECK_PROGRAM
                 .replace("BODY", &nested_body("test.opaque_region", "test.blind_exit")),
         );
@@ -2672,7 +2673,7 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
         let context = Rc::new(Context::default());
         parse_function_fixpoint(
             &context,
-            "v8_accept.hir",
+            "v8_accept.runic",
             &RESOLVER_CHECK_PROGRAM.replace("BODY", "test.blind_exit %j : (i32);"),
         )
         .expect("an exit whose resolver returns the right answer must be accepted");
@@ -2687,7 +2688,7 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
     #[test]
     fn v9_the_blanket_rejects_a_resolver_that_named_a_non_receiver() {
         let err = rejection(
-            "v9.hir",
+            "v9.runic",
             &RESOLVER_CHECK_PROGRAM
                 .replace("BODY", &nested_body("test.transparent_region", "test.stray_exit")),
         );
@@ -2703,7 +2704,7 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
         let context = Rc::new(Context::default());
         parse_function_fixpoint(
             &context,
-            "v9_accept.hir",
+            "v9_accept.runic",
             &RESOLVER_CHECK_PROGRAM.replace("BODY", "test.stray_exit %j : (i32);"),
         )
         .expect("an exit whose resolver returns the right answer must be accepted");
@@ -2719,7 +2720,7 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
     #[test]
     fn v10_the_blanket_rejects_a_resolver_that_claimed_the_wrong_callable() {
         let err = rejection(
-            "v10.hir",
+            "v10.runic",
             &RESOLVER_CHECK_PROGRAM.replace("BODY", "test.disowned_exit %j : (i32);"),
         );
         assert!(
@@ -2735,7 +2736,7 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
         let context = Rc::new(Context::default());
         parse_function_fixpoint(
             &context,
-            "v10_control.hir",
+            "v10_control.runic",
             &RESOLVER_CHECK_PROGRAM.replace("BODY", "test.blind_exit %j : (i32);"),
         )
         .expect("an exit that leaves `callable` unreported must be accepted");
@@ -2761,7 +2762,7 @@ builtin.function public extern(\"C\") @dispatch(%sel: i32, %a: i32, %b: i32) -> 
     builtin.ret %r : (i32);
 };";
         let (function, printed) =
-            parse_function_fixpoint(&context, "parse_index_switch_negative.hir", source)?;
+            parse_function_fixpoint(&context, "parse_index_switch_negative.runic", source)?;
         expect![[r#"
             builtin.function public extern("C") @dispatch(%0: i32, %1: i32, %2: i32) -> i32 {
                 %3 = scf.index_switch %0 
@@ -2807,7 +2808,7 @@ builtin.function public extern(\"C\") @dispatch(%sel: i32, %a: i32, %b: i32) -> 
     builtin.ret %r : (i32);
 };";
         let (function, _) =
-            parse_function_fixpoint(&context, "index_switch_selector_pattern.hir", source)?;
+            parse_function_fixpoint(&context, "index_switch_selector_pattern.runic", source)?;
         let function = function.borrow();
         let switch_op = find_op::<IndexSwitch>(&function);
         let switch_op = switch_op.borrow();
@@ -2845,7 +2846,7 @@ builtin.function public extern(\"C\") @dispatch(%sel: i32, %a: i32, %b: i32) -> 
     #[test]
     fn index_switch_rejects_a_duplicate_case() {
         let err = rejection(
-            "index_switch_duplicate_case.hir",
+            "index_switch_duplicate_case.runic",
             "\
 builtin.function public extern(\"C\") @dispatch(%sel: i32, %a: i32) -> i32 {
     %r = scf.index_switch %sel
@@ -2871,7 +2872,7 @@ builtin.function public extern(\"C\") @dispatch(%sel: i32, %a: i32) -> i32 {
     #[test]
     fn v1_rejects_a_negative_level() {
         let err = rejection(
-            "v1_negative.hir",
+            "v1_negative.runic",
             "\
 builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
     %zero = arith.constant 0 : i32;
@@ -2921,7 +2922,7 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
     } : (i32) -> (i32);
     builtin.ret %r : (i32);
 };";
-        let (function, printed) = parse_function_fixpoint(&context, "exit_levels.hir", source)?;
+        let (function, printed) = parse_function_fixpoint(&context, "exit_levels.runic", source)?;
         assert!(printed.contains("scf.break 2 %"), "{printed}");
         assert!(printed.contains("scf.continue 1 %"), "{printed}");
 
@@ -3220,7 +3221,7 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
     #[test]
     fn if_whose_yield_gives_the_wrong_number_of_values_is_rejected() {
         let err = rejection(
-            "if_yield_count.hir",
+            "if_yield_count.runic",
             r#"
 builtin.function public extern("C") @f(%c: i1, %x: i32) -> i32 {
     %r = scf.if %c then {
@@ -3243,7 +3244,7 @@ builtin.function public extern("C") @f(%c: i1, %x: i32) -> i32 {
     #[test]
     fn if_whose_yield_gives_a_value_of_the_wrong_type_is_rejected() {
         let err = rejection(
-            "if_yield_type.hir",
+            "if_yield_type.runic",
             r#"
 builtin.function public extern("C") @f(%c: i1, %x: i32, %w: i64) -> i32 {
     %r = scf.if %c then {
@@ -3266,7 +3267,7 @@ builtin.function public extern("C") @f(%c: i1, %x: i32, %w: i64) -> i32 {
     #[test]
     fn index_switch_whose_case_yields_the_wrong_values_is_rejected() {
         let err = rejection(
-            "index_switch_yield.hir",
+            "index_switch_yield.runic",
             r#"
 builtin.function public extern("C") @f(%s: i32, %x: i32) -> i32 {
     %r = scf.index_switch %s
@@ -3311,7 +3312,8 @@ builtin.function public extern("C") @f(%n: i32, %w: i64) -> i32 {
     fn verify_while_terminator_with_an_i64_operand<T: OpRegistration>(operand: usize) -> String {
         let context = Rc::new(Context::default());
         let (function, _) =
-            parse_function_fixpoint(&context, "while_terminators.hir", WHILE_TERMINATORS).unwrap();
+            parse_function_fixpoint(&context, "while_terminators.runic", WHILE_TERMINATORS)
+                .unwrap();
         let function = function.borrow();
         let wide = function.body().entry().arguments()[1] as ValueRef;
         let while_op = find_op::<While>(&function);
@@ -3357,7 +3359,7 @@ builtin.function public extern("C") @f(%n: i32, %w: i64) -> i32 {
     #[test]
     fn a_condition_in_an_if_is_reported() {
         let error = rejection(
-            "condition_in_if.hir",
+            "condition_in_if.runic",
             r#"
 builtin.function public extern("C") @f(%c: i1, %x: i32) -> i32 {
     %r = scf.if %c then {
@@ -3374,7 +3376,7 @@ builtin.function public extern("C") @f(%c: i1, %x: i32) -> i32 {
     #[test]
     fn a_condition_in_an_index_switch_is_reported() {
         let error = rejection(
-            "condition_in_index_switch.hir",
+            "condition_in_index_switch.runic",
             r#"
 builtin.function public extern("C") @f(%c: i1, %s: i32, %x: i32) -> i32 {
     %r = scf.index_switch %s
@@ -3397,7 +3399,7 @@ builtin.function public extern("C") @f(%c: i1, %s: i32, %x: i32) -> i32 {
     #[test]
     fn a_yield_under_a_region_branch_op_of_another_dialect_is_reported() {
         let error = rejection(
-            "yield_in_callable_receiver.hir",
+            "yield_in_callable_receiver.runic",
             r#"
 builtin.function public extern("C") @f() {
     test.callable_receiver {

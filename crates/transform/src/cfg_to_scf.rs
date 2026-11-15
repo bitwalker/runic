@@ -705,9 +705,12 @@ mod entry_cycle_tests {
     fn rejected(source: &str) -> String {
         let context = Rc::new(Context::default());
         // The context outlives what the parser returns.
-        let parsed =
-            parse::parse::<Function>(ParserConfig::new(context.clone()), "entry-cycle.hir", source)
-                .into_result();
+        let parsed = parse::parse::<Function>(
+            ParserConfig::new(context.clone()),
+            "entry-cycle.runic",
+            source,
+        )
+        .into_result();
         match parsed {
             Ok(_) => panic!("the verifier accepted the function"),
             Err(error) => format!("{error}"),
@@ -716,9 +719,12 @@ mod entry_cycle_tests {
 
     fn lift(source: &str, entry_placeholder: bool) -> Result<(), Report> {
         let context = Rc::new(Context::default());
-        let function =
-            parse::parse::<Function>(ParserConfig::new(context.clone()), "entry-cycle.hir", source)
-                .into_result()?;
+        let function = parse::parse::<Function>(
+            ParserConfig::new(context.clone()),
+            "entry-cycle.runic",
+            source,
+        )
+        .into_result()?;
         if entry_placeholder {
             // Named function parameters require an unlabeled entry in textual HIR. Retarget
             // the typed placeholder edges to construct the corresponding in-memory CFG.
@@ -864,7 +870,7 @@ mod canonical_entry_tests {
         };"#
         };
         let function =
-            parse::parse::<Function>(ParserConfig::new(context.clone()), "redundant.hir", source)
+            parse::parse::<Function>(ParserConfig::new(context.clone()), "redundant.runic", source)
                 .into_result()?;
         let entry = function.borrow().body().entry_block_ref().unwrap();
         let join = function.borrow().body().body().back().as_pointer().unwrap();
@@ -963,7 +969,7 @@ mod canonical_entry_tests {
             source.into()
         };
         let function =
-            parse::parse::<Function>(ParserConfig::new(context.clone()), "entry.hir", &source)
+            parse::parse::<Function>(ParserConfig::new(context.clone()), "entry.runic", &source)
                 .into_result()?;
         let entry = function.borrow().body().entry_block_ref().unwrap();
         let args = entry.borrow().arguments().to_vec();
@@ -1094,7 +1100,7 @@ mod canonical_entry_tests {
         let context = Rc::new(Context::default());
         let module = parse::parse::<runic_core::dialects::builtin::Module>(
             ParserConfig::new(context.clone()),
-            "nested.hir",
+            "nested.runic",
             r#"builtin.module public @outer {
             builtin.function public extern("C") @nested(%c: i1, %x: i32, %y: i32) -> i32 {
                 cf.cond_br %c ^join(%x : i32), ^join(%x : i32) : (i1);

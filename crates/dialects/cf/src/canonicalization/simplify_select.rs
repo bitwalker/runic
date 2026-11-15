@@ -111,7 +111,7 @@ builtin.function public extern(\"C\") @f(%c: i1) -> (i1, i1) {
     %not = cf.select %c, %f, %t;
     builtin.ret %same, %not : (i1, i1);
 };";
-        let (function, _) = parse_function_fixpoint(&context, "simplify_select.hir", source)?;
+        let (function, _) = parse_function_fixpoint(&context, "simplify_select.runic", source)?;
         let pattern: Box<dyn RewritePattern> =
             Box::new(SimplifySelectOfBools::new(context.clone()));
         assert!(apply_with_borrowing_listener(&context, function, pattern)?);

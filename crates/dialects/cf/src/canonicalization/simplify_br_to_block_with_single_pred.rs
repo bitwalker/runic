@@ -89,7 +89,7 @@ mod tests {
         let context = Rc::new(Context::default());
         let function = parse::parse::<Function>(
             ParserConfig::new(context.clone()),
-            "entry.hir",
+            "entry.runic",
             r#"builtin.function public extern("C") @cycle(%a: i32, %b: i64) {
             cf.br ^again;
         ^again: cf.br ^placeholder(%a, %b : i32, i64);
@@ -127,7 +127,7 @@ mod tests {
         let context = Rc::new(Context::default());
         let function = parse::parse::<Function>(
             ParserConfig::new(context.clone()),
-            "entry.hir",
+            "entry.runic",
             r#"builtin.function public extern("C") @cycle(%c: i1, %a: i32, %b: i64) {
             cf.br ^again;
         ^again: cf.cond_br %c ^placeholder(%c, %a, %b : i1, i32, i64), ^exit : (i1);
@@ -165,7 +165,7 @@ mod tests {
         let context = Rc::new(Context::default());
         let function = parse::parse::<Function>(
             ParserConfig::new(context.clone()),
-            "entry.hir",
+            "entry.runic",
             r#"builtin.function public extern("C") @cycle(%a: i32, %b: i64) -> (i32, i64) {
             builtin.ret %a, %b : (i32, i64);
         ^again:
@@ -223,7 +223,7 @@ mod tests {
         let context = Rc::new(Context::default());
         let function = parse::parse::<Function>(
             ParserConfig::new(context.clone()),
-            "critical-entry.hir",
+            "critical-entry.runic",
             r#"builtin.function public extern("C") @cycle(%c: i1, %a: i32, %b: i64) -> (i32, i64) {
             cf.cond_br %c ^left, ^right : (i1);
         ^left: cf.cond_br %c ^placeholder(%c, %a, %b : i1, i32, i64), ^exit : (i1);
@@ -318,7 +318,7 @@ mod tests {
             let context = Rc::new(Context::default());
             let function = parse::parse::<Function>(
                 ParserConfig::new(context.clone()),
-                "nonentry.hir",
+                "nonentry.runic",
                 r#"builtin.function public extern("C") @forward(%a: i32, %b: i64) -> (i32, i64) {
                 cf.br ^exit(%a, %b : i32, i64);
             ^exit(%x: i32, %y: i64): builtin.ret %x, %y : (i32, i64);
