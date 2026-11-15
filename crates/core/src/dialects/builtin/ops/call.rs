@@ -231,12 +231,8 @@ fn signature_difference(call: &Signature, callee: &Signature) -> Option<String> 
     if let Some(difference) = list_difference("parameter", call.params(), callee.params()) {
         return Some(difference);
     }
-    if let Some(difference) =
-        list_difference("result", call.declared_results(), callee.declared_results())
-    {
-        return Some(difference);
-    }
-    Some(String::from("the signatures differ"))
+    // A signature is its calling convention, its parameters and its results.
+    list_difference("result", call.declared_results(), callee.declared_results())
 }
 
 /// The first difference between the parameters (or results, as `role` says) `call` and `callee`.
