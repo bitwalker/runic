@@ -2,7 +2,7 @@ name: GitHub Actions Security Analysis with zizmor
 
 on:
   push:
-    branches: [main, next]
+    branches: [main]
     paths:
       - ".github/workflows/**"
       - ".github/actions/**"
@@ -42,10 +42,5 @@ jobs:
           advanced-security: false
           config: zizmor.yml
           version: 1.29.0
-          # Audit this repository's own automation, not the workflows it ships.
-          # `extra/templates` contains CI for generated projects: those run in a
-          # user's repository with a user's token, and zizmor's remedies would
-          # make the scaffold worse rather than safer -- a new project should
-          # start with a readable `actions/checkout@v4`, not a hash its author
-          # cannot evaluate and will never update.
+          # Audit this repository's own automation: the workflows and actions under `.github`.
           inputs: .github

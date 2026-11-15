@@ -13,6 +13,6 @@ comment:
 summary:
   if: true
 report:
-  if: github.event_name == 'push' && env.GITHUB_REF == 'refs/heads/next' && env.COVERAGE_COMPLETE == 'success'
+  if: github.event_name == 'push' && env.GITHUB_REF == 'refs/heads/main' && env.COVERAGE_COMPLETE == 'success'
   datastores:
     - artifact://${GITHUB_REPOSITORY}

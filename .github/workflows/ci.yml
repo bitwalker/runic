@@ -19,7 +19,7 @@ on:
       - "docs/**"
 
 # A new push to a PR supersedes the still-running CI of its previous commit. Runs outside
-# PRs (pushes to `next`/`main`, manual dispatches) each get their own group, so they are
+# PRs (pushes to `main`, manual dispatches) each get their own group, so they are
 # never cancelled or queued behind each other.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
@@ -71,7 +71,7 @@ jobs:
           # Cache for the clippy check; the test jobs use their own caches below
           shared-key: ${{ github.workflow }}-shared
           prefix-key: ${{ env.RUST_CACHE_KEY }}
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/next' }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - name: Install cargo-make
         # No prebuilt aarch64 Linux binary exists, so compile the pinned version unless the
         # restored cache (`~/.cargo/bin` is part of it) already has exactly that version
@@ -127,7 +127,7 @@ jobs:
           # also share the cache for the tests for efficiency
           shared-key: ${{ github.workflow }}-shared-tests
           prefix-key: ${{ env.RUST_CACHE_KEY }}
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/next' }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - *install-cargo-make
       - name: Check
         # We run `cargo check` to verify that the workspace compiles correctly before attempting
@@ -136,8 +136,6 @@ jobs:
         run: |
           cargo make check --tests
       - name: Test
-        # The p2id end-to-end tests drive full nested Cargo builds, so the
-        # release-profile job runs them.
         run: |
           cargo make test
       - name: Upload test timings and failures
@@ -190,7 +188,7 @@ jobs:
           # NOTE: We use a different cache for the these release checks
           shared-key: ${{ github.workflow }}-shared-release-checks
           prefix-key: ${{ env.RUST_CACHE_KEY }}
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/next' }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - *install-cargo-make
       - name: Check(release)
         # We run `check` with `--release` to check the release build (without
