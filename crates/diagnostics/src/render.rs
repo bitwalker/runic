@@ -253,6 +253,7 @@ impl AnnotateRenderer {
         })
         .term_width(self.config.width)
         .short_message(self.config.short)
+        .hyperlink(self.config.hyperlinks)
         .anonymized_snippet_line_numbers(self.config.anonymize_line_numbers);
 
         let output = renderer.render(&groups);
