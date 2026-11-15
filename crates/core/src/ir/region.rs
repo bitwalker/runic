@@ -1,6 +1,7 @@
 mod branch_point;
 mod interfaces;
 mod invocation_bounds;
+mod isolate;
 mod kind;
 mod successor;
 #[cfg(test)]
@@ -533,62 +534,139 @@ impl Region {
         true
     }
 
-    /// Replace all uses of `value` with `replacement`, within this region.
-    pub fn replace_all_uses_in_region_with(&mut self, _value: ValueRef, _replacement: ValueRef) {
-        todo!("RegionUtils.h")
+    /// Replace every use of `value` by an operation in this region, or in a region nested in it,
+    /// with `replacement`. Uses elsewhere are left alone.
+    ///
+    /// Corresponds to upstream `replaceAllUsesInRegionWith`.
+    pub fn replace_all_uses_in_region_with(&self, mut value: ValueRef, replacement: ValueRef) {
+        if value == replacement {
+            return;
+        }
+        let this = self.as_region_ref();
+        value
+            .borrow_mut()
+            .replace_uses_with_if(replacement, |operand| Self::contains_user(&this, operand));
     }
 
-    /// Visit each use of a value in this region (and its descendants), where that value was defined
-    /// in an ancestor of `limit`.
-    pub fn visit_used_values_defined_above<F>(&self, _limit: &RegionRef, _callback: F)
+    /// True if the operation owning `operand` is in `region`, or in a region nested in it.
+    pub(crate) fn contains_user(region: &RegionRef, operand: &OpOperandImpl) -> bool {
+        operand
+            .owner
+            .borrow()
+            .parent_region()
+            .is_some_and(|parent| &parent == region || Self::is_proper_ancestor_of(region, &parent))
+    }
+
+    /// Call `callback` with each operand of an operation in this region (or in a region nested in
+    /// it) whose value is defined in a proper ancestor of `limit`, i.e. above it.
+    ///
+    /// The operands are visited in the order of a post-order walk of the operations, each operation
+    /// in operand order. They are collected before the first call, so `callback` may change the
+    /// IR, the operands it is given included.
+    ///
+    /// Panics if `limit` is neither this region nor one of its ancestors.
+    ///
+    /// Corresponds to upstream `visitUsedValuesDefinedAbove(region, limit, callback)`.
+    pub fn visit_used_values_defined_above<F>(&self, limit: &RegionRef, mut callback: F)
     where
         F: FnMut(OpOperand),
     {
-        todo!("RegionUtils.h")
+        for operand in self.operands_using_values_defined_above(limit) {
+            callback(operand);
+        }
     }
 
-    /// Visit each use of a value in any of the provided regions (or their descendants), where that
-    /// value was defined in an ancestor of that region.
-    pub fn visit_used_values_defined_above_any<F>(_regions: &[RegionRef], _callback: F)
+    /// The operands [Self::visit_used_values_defined_above] visits, in the order it visits them.
+    fn operands_using_values_defined_above(&self, limit: &RegionRef) -> SmallVec<[OpOperand; 8]> {
+        let this = self.as_region_ref();
+        assert!(
+            &this == limit || Self::is_proper_ancestor_of(limit, &this),
+            "expected the isolation limit to be an ancestor of the region"
+        );
+
+        // The proper ancestors of `limit`, collected once rather than walked for every value.
+        let mut proper_ancestors = SmallVec::<[RegionRef; 4]>::default();
+        let mut ancestor = limit.borrow().parent_region();
+        while let Some(region) = ancestor {
+            proper_ancestors.push(region);
+            ancestor = region.borrow().parent_region();
+        }
+
+        let mut operands = SmallVec::<[OpOperand; 8]>::default();
+        self.postwalk_all(|op| {
+            for operand in op.operands().iter() {
+                let defined_in = operand.borrow().value().parent_region();
+                if defined_in.is_some_and(|region| proper_ancestors.contains(&region)) {
+                    operands.push(*operand);
+                }
+            }
+        });
+        operands
+    }
+
+    /// Call `callback` with each operand of an operation in any of `regions` (or in a region nested
+    /// in one) whose value is defined above the region it is used in, as
+    /// [Self::visit_used_values_defined_above] does with each region as its own limit.
+    ///
+    /// The operands of all the regions are collected before the first call, and no region is
+    /// borrowed during the calls, so `callback` may change the IR, the regions included.
+    ///
+    /// Corresponds to upstream `visitUsedValuesDefinedAbove(regions, callback)`.
+    pub fn visit_used_values_defined_above_any<F>(regions: &[RegionRef], mut callback: F)
     where
         F: FnMut(OpOperand),
     {
-        todo!("RegionUtils.h")
+        let mut operands = SmallVec::<[OpOperand; 8]>::default();
+        for region in regions {
+            operands.extend(region.borrow().operands_using_values_defined_above(region));
+        }
+        for operand in operands {
+            callback(operand);
+        }
     }
 
-    /// Return a vector of values used in this region (and its descendants), and defined in an
-    /// ancestor of the `limit` region.
-    pub fn get_used_values_defined_above(&self, _limit: &RegionRef) -> SmallVec<[ValueRef; 1]> {
-        todo!("RegionUtils.h")
-    }
-
-    /// Return a vector of values used in any of the provided regions, but defined in an ancestor.
-    pub fn get_used_values_defined_above_any(_regions: &[RegionRef]) -> SmallVec<[ValueRef; 1]> {
-        todo!("RegionUtils.h")
-    }
-
-    /// Make this region isolated from above.
+    /// The values used in this region (or in a region nested in it) and defined in a proper
+    /// ancestor of `limit`, each once, in the order [Self::visit_used_values_defined_above] first
+    /// visits a use of it.
     ///
-    /// * Capture the values that are defined above the region and used within it.
-    /// * Append block arguments to the entry block that represent each captured value.
-    /// * Replace all uses of the captured values within the region, with the new block arguments
-    /// * `clone_into_region` is called with the defining op of a captured value. If it returns
-    ///   true, it indicates that the op needs to be cloned into the region. As a result, the
-    ///   operands of that operation become part of the captured value set (unless the operations
-    ///   that define the operand values themselves are to be cloned). The cloned operations are
-    ///   added to the entry block of the region.
+    /// Panics if `limit` is neither this region nor one of its ancestors.
     ///
-    /// Returns the set of captured values.
-    pub fn make_isolated_from_above<R, F>(
-        &mut self,
-        _rewriter: &mut R,
-        _clone_into_region: F,
-    ) -> SmallVec<[ValueRef; 1]>
-    where
-        R: crate::Rewriter,
-        F: Fn(&Operation) -> bool,
-    {
-        todo!("RegionUtils.h")
+    /// Corresponds to upstream `getUsedValuesDefinedAbove(region, limit, values)`.
+    pub fn get_used_values_defined_above(&self, limit: &RegionRef) -> SmallVec<[ValueRef; 1]> {
+        let mut values = UsedValues::default();
+        self.visit_used_values_defined_above(limit, |operand| values.insert(operand));
+        values.into_values()
+    }
+
+    /// The values used in any of `regions` (or in a region nested in one) and defined above the
+    /// region they are used in, each once, in the order of their first use: the regions in order,
+    /// each as [Self::get_used_values_defined_above] with itself as the limit.
+    ///
+    /// Corresponds to upstream `getUsedValuesDefinedAbove(regions, values)`.
+    pub fn get_used_values_defined_above_any(regions: &[RegionRef]) -> SmallVec<[ValueRef; 1]> {
+        let mut values = UsedValues::default();
+        Self::visit_used_values_defined_above_any(regions, |operand| values.insert(operand));
+        values.into_values()
+    }
+}
+
+/// The values of a sequence of operands, each once, in the order of its first operand.
+#[derive(Default)]
+struct UsedValues {
+    seen: crate::FxHashSet<ValueRef>,
+    values: SmallVec<[ValueRef; 1]>,
+}
+
+impl UsedValues {
+    fn insert(&mut self, operand: OpOperand) {
+        let value = operand.borrow().as_value_ref();
+        if self.seen.insert(value) {
+            self.values.push(value);
+        }
+    }
+
+    fn into_values(self) -> SmallVec<[ValueRef; 1]> {
+        self.values
     }
 }
 
