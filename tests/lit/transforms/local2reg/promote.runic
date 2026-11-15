@@ -1,0 +1,31 @@
+// RUN: runic-opt %s -p local2reg | filecheck %s
+// RUN: runic-opt %s -p local2reg | runic-opt - --verify-roundtrip | filecheck %s
+
+// What local2reg promotes. A local stored once and loaded once, in one block, the store before the
+// load and no control flow between them, is replaced by the stored value: its store and its load
+// are erased. A local that is stored and never loaded has its stores erased. The second RUN line
+// reads the output back.
+builtin.module public @local2reg_promote {
+    // Two locals, each stored once and then loaded once.
+    // CHECK-LABEL: @promotes_redundant(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 locals(i32, i32) {
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[A]], [[B]];
+    // CHECK-NEXT: builtin.ret [[S]] : (i32);
+    builtin.function public extern("C") @promotes_redundant(%a: i32, %b: i32) -> i32 locals(i32, i32) {
+        builtin.store_local 0, %a;
+        builtin.store_local 1, %b;
+        %la = builtin.load_local 0 : i32;
+        %lb = builtin.load_local 1 : i32;
+        %s = arith.add %la, %lb;
+        builtin.ret %s : (i32);
+    };
+
+    // A local that is never loaded: its store is dead.
+    // CHECK-LABEL: @erases_dead_stores(
+    // CHECK-SAME: [[X:%[0-9]+]]: i32) -> i32 locals(i32) {
+    // CHECK-NEXT: builtin.ret [[X]] : (i32);
+    builtin.function public extern("C") @erases_dead_stores(%x: i32) -> i32 locals(i32) {
+        builtin.store_local 0, %x;
+        builtin.ret %x : (i32);
+    };
+};

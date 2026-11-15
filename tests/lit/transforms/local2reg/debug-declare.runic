@@ -61,4 +61,37 @@ builtin.module public @local2reg_debug_declare {
         di.debug_declare <{ variable = #di.variable<{ name = "x", file = "test.rs", line = 30, ty = i32 }>, expression = #di.expression<[DI_OP_local_slot(0), DW_OP_deref]> }>;
         builtin.ret %x : (i32);
     };
+
+    // A declaration of slot 1, which stores the load of slot 0: promoting slot 0 replaces that
+    // load, and promoting slot 1 makes the declaration a debug value of what slot 0 stored.
+    // CHECK-LABEL: @l2r_declares_chain_loaded(
+    // CHECK-SAME: [[X:%[0-9]+]]: i32) -> i32 locals(i32, i32) {
+    // CHECK-NEXT: di.debug_value [[X]] <{ variable = #di.variable<{ name = "y", file = "test.rs", line = 2 }>, expression = #di.expression<[]> }> : (i32);
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[X]], [[X]];
+    // CHECK-NEXT: builtin.ret [[S]] : (i32);
+    builtin.function public extern("C") @l2r_declares_chain_loaded(%x: i32) -> i32 locals(i32, i32) {
+        builtin.store_local 0, %x;
+        %a = builtin.load_local 0 : i32;
+        builtin.store_local 1, %a;
+        di.debug_declare <{ variable = #di.variable<{ name = "y", file = "test.rs", line = 2 }>, expression = #di.expression<[DI_OP_local_slot(1)]> }>;
+        %b = builtin.load_local 1 : i32;
+        %s = arith.add %b, %x;
+        builtin.ret %s : (i32);
+    };
+
+    // The same with slot 1 never loaded: its store is dead, and the declaration follows the value
+    // slot 0 stored all the same.
+    // CHECK-LABEL: @l2r_declares_chain_unloaded(
+    // CHECK-SAME: [[X:%[0-9]+]]: i32) -> i32 locals(i32, i32) {
+    // CHECK-NEXT: di.debug_value [[X]] <{ variable = #di.variable<{ name = "y", file = "test.rs", line = 2 }>, expression = #di.expression<[]> }> : (i32);
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[X]], [[X]];
+    // CHECK-NEXT: builtin.ret [[S]] : (i32);
+    builtin.function public extern("C") @l2r_declares_chain_unloaded(%x: i32) -> i32 locals(i32, i32) {
+        builtin.store_local 0, %x;
+        %a = builtin.load_local 0 : i32;
+        builtin.store_local 1, %a;
+        di.debug_declare <{ variable = #di.variable<{ name = "y", file = "test.rs", line = 2 }>, expression = #di.expression<[DI_OP_local_slot(1)]> }>;
+        %s = arith.add %x, %x;
+        builtin.ret %s : (i32);
+    };
 };

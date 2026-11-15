@@ -2,10 +2,12 @@
 // RUN: runic-opt %s -p local2reg | filecheck %s
 // RUN: runic-opt %s -p local2reg | runic-opt - --verify-roundtrip | filecheck %s
 
-// Slot 1 stores the value loaded from slot 0. Locals are promoted in index order, so promoting
-// slot 0 replaces that load with the entry argument before slot 1 is visited, and promoting slot 1
-// forwards what its store holds by then: the entry argument, which the function then returns
-// directly. The pass runs anchored on each function (first RUN line) and nested implicitly
+// Chains of locals, each storing the load of the one before. Locals are promoted in index order:
+// in @l2r_chain slot 1 stores the value loaded from slot 0, so promoting slot 0 replaces that load
+// with the entry argument before slot 1 is visited, and promoting slot 1 forwards what its store
+// holds by then: the entry argument, which the function then returns directly. A chain in any
+// other order of slots collapses to the first stored value as well, and so does one load stored
+// to two slots. The pass runs anchored on each function (first RUN line) and nested implicitly
 // (second); the third RUN line reads the output back.
 builtin.module public @local2reg_chained_locals {
     // CHECK-LABEL: @l2r_chain(
@@ -17,5 +19,48 @@ builtin.module public @local2reg_chained_locals {
         builtin.store_local 1, %a;
         %b = builtin.load_local 1 : i32;
         builtin.ret %b : (i32);
+    };
+
+    // Slot 0 stores the load of slot 1: slot 0 is promoted first, and forwards the load of slot 1,
+    // which promoting slot 1 then replaces by the entry argument.
+    // CHECK-LABEL: @l2r_chain_descending(
+    // CHECK-SAME: [[X:%[0-9]+]]: i32) -> i32 locals(i32, i32) {
+    // CHECK-NEXT: builtin.ret [[X]] : (i32);
+    builtin.function public extern("C") @l2r_chain_descending(%x: i32) -> i32 locals(i32, i32) {
+        builtin.store_local 1, %x;
+        %a = builtin.load_local 1 : i32;
+        builtin.store_local 0, %a;
+        %b = builtin.load_local 0 : i32;
+        builtin.ret %b : (i32);
+    };
+
+    // Three slots, the last of the chain between the other two in index order.
+    // CHECK-LABEL: @l2r_chain_of_three(
+    // CHECK-SAME: [[X:%[0-9]+]]: i32) -> i32 locals(i32, i32, i32) {
+    // CHECK-NEXT: builtin.ret [[X]] : (i32);
+    builtin.function public extern("C") @l2r_chain_of_three(%x: i32) -> i32 locals(i32, i32, i32) {
+        builtin.store_local 0, %x;
+        %a = builtin.load_local 0 : i32;
+        builtin.store_local 2, %a;
+        %b = builtin.load_local 2 : i32;
+        builtin.store_local 1, %b;
+        %c = builtin.load_local 1 : i32;
+        builtin.ret %c : (i32);
+    };
+
+    // One load stored to two slots, each loaded once: both loads become the entry argument.
+    // CHECK-LABEL: @l2r_fan_out(
+    // CHECK-SAME: [[X:%[0-9]+]]: i32) -> i32 locals(i32, i32, i32) {
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[X]], [[X]];
+    // CHECK-NEXT: builtin.ret [[S]] : (i32);
+    builtin.function public extern("C") @l2r_fan_out(%x: i32) -> i32 locals(i32, i32, i32) {
+        builtin.store_local 0, %x;
+        %a = builtin.load_local 0 : i32;
+        builtin.store_local 1, %a;
+        builtin.store_local 2, %a;
+        %b = builtin.load_local 1 : i32;
+        %c = builtin.load_local 2 : i32;
+        %s = arith.add %b, %c;
+        builtin.ret %s : (i32);
     };
 };

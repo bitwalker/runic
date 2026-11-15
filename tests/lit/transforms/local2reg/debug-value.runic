@@ -1,0 +1,29 @@
+// RUN: runic-opt %s -p local2reg | filecheck %s
+// RUN: runic-opt %s -p local2reg | runic-opt - --verify-roundtrip | filecheck %s
+
+// A `di.debug_value` whose expression names a local's slot, when local2reg erases the slot's
+// store. An expression that only names the slot is dropped: the value record keeps its operand.
+// An expression that does more with the slot (a dereference) cannot be dropped, so the slot and
+// its store are kept. The second RUN line reads the output back.
+builtin.module public @local2reg_debug_value {
+    // CHECK-LABEL: @promotes_with_debug_value(
+    // CHECK-SAME: [[X:%[0-9]+]]: i32) -> i32 locals(i32) {
+    // CHECK-NEXT: di.debug_value [[X]] <{ variable = #di.variable<{ name = "x", file = "test.rs", line = 1 }>, expression = #di.expression<[]> }> : (i32);
+    // CHECK-NEXT: builtin.ret [[X]] : (i32);
+    builtin.function public extern("C") @promotes_with_debug_value(%x: i32) -> i32 locals(i32) {
+        builtin.store_local 0, %x;
+        di.debug_value %x <{ variable = #di.variable<{ name = "x", file = "test.rs", line = 1 }>, expression = #di.expression<[DI_OP_local_slot(0)]> }> : (i32);
+        builtin.ret %x : (i32);
+    };
+
+    // CHECK-LABEL: @preserves_transformed_debug_value(
+    // CHECK-SAME: [[X:%[0-9]+]]: i32) -> i32 locals(i32) {
+    // CHECK-NEXT: builtin.store_local 0, [[X]];
+    // CHECK-NEXT: di.debug_value [[X]] <{ variable = #di.variable<{ name = "x", file = "test.rs", line = 1 }>, expression = #di.expression<[DI_OP_local_slot(0), DW_OP_deref]> }> : (i32);
+    // CHECK-NEXT: builtin.ret [[X]] : (i32);
+    builtin.function public extern("C") @preserves_transformed_debug_value(%x: i32) -> i32 locals(i32) {
+        builtin.store_local 0, %x;
+        di.debug_value %x <{ variable = #di.variable<{ name = "x", file = "test.rs", line = 1 }>, expression = #di.expression<[DI_OP_local_slot(0), DW_OP_deref]> }> : (i32);
+        builtin.ret %x : (i32);
+    };
+};

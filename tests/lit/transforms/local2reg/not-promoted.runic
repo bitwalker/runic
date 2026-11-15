@@ -1,0 +1,155 @@
+// RUN: runic-opt %s -p local2reg | filecheck %s
+// RUN: runic-opt %s -p local2reg | runic-opt - --verify-roundtrip | filecheck %s
+
+// What local2reg leaves alone: a local loaded more than once, stored more than once, loaded and
+// never stored, loaded before its store, stored with the value of its own load, or whose store and
+// load are in different blocks or have region control flow between them. Each function that has a
+// second local stored and loaded once shows that the pass ran: that local is promoted. The second
+// RUN line reads the output back.
+builtin.module public @local2reg_not_promoted {
+    // Local 1 is loaded twice and stays; local 0 is promoted.
+    // CHECK-LABEL: @ignores_multiple_loads(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 locals(i32, i32) {
+    // CHECK-NEXT: builtin.store_local 1, [[B]];
+    // CHECK-NEXT: [[L1:%[0-9]+]] = builtin.load_local 1 : i32;
+    // CHECK-NEXT: [[L2:%[0-9]+]] = builtin.load_local 1 : i32;
+    // CHECK-NEXT: [[S1:%[0-9]+]] = arith.add [[A]], [[L1]];
+    // CHECK-NEXT: [[S2:%[0-9]+]] = arith.add [[S1]], [[L2]];
+    // CHECK-NEXT: builtin.ret [[S2]] : (i32);
+    builtin.function public extern("C") @ignores_multiple_loads(%a: i32, %b: i32) -> i32 locals(i32, i32) {
+        builtin.store_local 0, %a;
+        builtin.store_local 1, %b;
+        %la = builtin.load_local 0 : i32;
+        %lb = builtin.load_local 1 : i32;
+        %lb_again = builtin.load_local 1 : i32;
+        %s1 = arith.add %la, %lb;
+        %s2 = arith.add %s1, %lb_again;
+        builtin.ret %s2 : (i32);
+    };
+
+    // Local 1 is stored twice and stays; local 0 is promoted.
+    // CHECK-LABEL: @ignores_multiple_stores(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 locals(i32, i32) {
+    // CHECK-NEXT: builtin.store_local 1, [[B]];
+    // CHECK-NEXT: [[L1:%[0-9]+]] = builtin.load_local 1 : i32;
+    // CHECK-NEXT: builtin.store_local 1, [[B]];
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[A]], [[L1]];
+    // CHECK-NEXT: builtin.ret [[S]] : (i32);
+    builtin.function public extern("C") @ignores_multiple_stores(%a: i32, %b: i32) -> i32 locals(i32, i32) {
+        builtin.store_local 0, %a;
+        builtin.store_local 1, %b;
+        %la = builtin.load_local 0 : i32;
+        %lb = builtin.load_local 1 : i32;
+        builtin.store_local 1, %b;
+        %s = arith.add %la, %lb;
+        builtin.ret %s : (i32);
+    };
+
+    // A load of a local that is never stored reads an uninitialized local, and stays.
+    // CHECK-LABEL: @ignores_poison_loads(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, {{%[0-9]+}}: i32) -> i32 locals(i32) {
+    // CHECK-NEXT: [[L:%[0-9]+]] = builtin.load_local 0 : i32;
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[A]], [[L]];
+    // CHECK-NEXT: builtin.ret [[S]] : (i32);
+    builtin.function public extern("C") @ignores_poison_loads(%a: i32, %b: i32) -> i32 locals(i32) {
+        %l = builtin.load_local 0 : i32;
+        %s = arith.add %a, %l;
+        builtin.ret %s : (i32);
+    };
+
+    // The load reads the slot before the store writes it, and its use follows the store.
+    // CHECK-LABEL: @ignores_load_before_store(
+    // CHECK-SAME: [[X:%[0-9]+]]: i32) -> i32 locals(i32) {
+    // CHECK-NEXT: [[L:%[0-9]+]] = builtin.load_local 0 : i32;
+    // CHECK-NEXT: [[D:%[0-9]+]] = arith.add [[X]], [[X]];
+    // CHECK-NEXT: builtin.store_local 0, [[D]];
+    // CHECK-NEXT: [[M:%[0-9]+]] = arith.mul [[L]], [[X]];
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[M]], [[D]];
+    // CHECK-NEXT: builtin.ret [[S]] : (i32);
+    builtin.function public extern("C") @ignores_load_before_store(%x: i32) -> i32 locals(i32) {
+        %l = builtin.load_local 0 : i32;
+        %d = arith.add %x, %x;
+        builtin.store_local 0, %d;
+        %m = arith.mul %l, %x;
+        %s = arith.add %m, %d;
+        builtin.ret %s : (i32);
+    };
+
+    // The load and its use both precede the store.
+    // CHECK-LABEL: @ignores_use_before_store(
+    // CHECK-SAME: [[X:%[0-9]+]]: i32) -> i32 locals(i32) {
+    // CHECK-NEXT: [[L:%[0-9]+]] = builtin.load_local 0 : i32;
+    // CHECK-NEXT: [[M:%[0-9]+]] = arith.mul [[L]], [[X]];
+    // CHECK-NEXT: [[D:%[0-9]+]] = arith.add [[X]], [[X]];
+    // CHECK-NEXT: builtin.store_local 0, [[D]];
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[M]], [[D]];
+    // CHECK-NEXT: builtin.ret [[S]] : (i32);
+    builtin.function public extern("C") @ignores_use_before_store(%x: i32) -> i32 locals(i32) {
+        %l = builtin.load_local 0 : i32;
+        %m = arith.mul %l, %x;
+        %d = arith.add %x, %x;
+        builtin.store_local 0, %d;
+        %s = arith.add %m, %d;
+        builtin.ret %s : (i32);
+    };
+
+    // The only store writes back the value the only load read.
+    // CHECK-LABEL: @ignores_self_store(
+    // CHECK-SAME: [[X:%[0-9]+]]: i32) -> i32 locals(i32) {
+    // CHECK-NEXT: [[L:%[0-9]+]] = builtin.load_local 0 : i32;
+    // CHECK-NEXT: builtin.store_local 0, [[L]];
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[L]], [[X]];
+    // CHECK-NEXT: builtin.ret [[S]] : (i32);
+    builtin.function public extern("C") @ignores_self_store(%x: i32) -> i32 locals(i32) {
+        %l = builtin.load_local 0 : i32;
+        builtin.store_local 0, %l;
+        %s = arith.add %l, %x;
+        builtin.ret %s : (i32);
+    };
+
+    // The store and the load are in different blocks.
+    // CHECK-LABEL: @ignores_inter_block_candidates(
+    // CHECK-SAME: [[X:%[0-9]+]]: i32) -> i32 locals(i32) {
+    // CHECK-NEXT: builtin.store_local 0, [[X]];
+    // CHECK-NEXT: cf.br ^[[NEXT:block[0-9]+]];
+    // CHECK-NEXT: ^[[NEXT]]:
+    // CHECK-NEXT: [[L:%[0-9]+]] = builtin.load_local 0 : i32;
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[X]], [[L]];
+    // CHECK-NEXT: builtin.ret [[S]] : (i32);
+    builtin.function public extern("C") @ignores_inter_block_candidates(%x: i32) -> i32 locals(i32) {
+        builtin.store_local 0, %x;
+        cf.br ^next;
+    ^next:
+        %l = builtin.load_local 0 : i32;
+        %s = arith.add %x, %l;
+        builtin.ret %s : (i32);
+    };
+
+    // An `scf.if` stands between the store and the load.
+    // CHECK-LABEL: @ignores_intervening_scf(
+    // CHECK-SAME: [[X:%[0-9]+]]: i32, [[C:%[0-9]+]]: i1) -> i32 locals(i32) {
+    // CHECK-NEXT: builtin.store_local 0, [[X]];
+    // CHECK-NEXT: [[IF:%[0-9]+]] = scf.if [[C]] then {
+    // CHECK-NEXT: [[ONE:%[0-9]+]] = arith.constant 1 : i32;
+    // CHECK-NEXT: scf.yield [[ONE]] : (i32);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: [[TWO:%[0-9]+]] = arith.constant 2 : i32;
+    // CHECK-NEXT: scf.yield [[TWO]] : (i32);
+    // CHECK-NEXT: } : (i1) -> (i32);
+    // CHECK-NEXT: [[L:%[0-9]+]] = builtin.load_local 0 : i32;
+    // CHECK-NEXT: [[S:%[0-9]+]] = arith.add [[L]], [[IF]];
+    // CHECK-NEXT: builtin.ret [[S]] : (i32);
+    builtin.function public extern("C") @ignores_intervening_scf(%x: i32, %c: i1) -> i32 locals(i32) {
+        builtin.store_local 0, %x;
+        %if = scf.if %c then {
+            %one = arith.constant 1 : i32;
+            scf.yield %one : (i32);
+        } else {
+            %two = arith.constant 2 : i32;
+            scf.yield %two : (i32);
+        } : (i1) -> (i32);
+        %l = builtin.load_local 0 : i32;
+        %s = arith.add %l, %if;
+        builtin.ret %s : (i32);
+    };
+};

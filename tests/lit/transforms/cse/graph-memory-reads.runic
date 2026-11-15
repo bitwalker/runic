@@ -1,0 +1,33 @@
+// RUN: runic-opt %s -p 'builtin.module(cse)' | filecheck %s
+// RUN: runic-opt %s -p 'builtin.module(cse)' | runic-opt - --verify-roundtrip | filecheck %s
+
+// A graph region has no order in which one read could be said to come before another: CSE merges
+// no two reads of memory there. The two equal loads in the module's body both stay. The function
+// after the graph shows the pass live: the same two loads in its body, a region with dominance,
+// are merged. The second RUN line reads the output back.
+//
+// CHECK-LABEL: builtin.module private @graph_memory_reads {
+// CHECK-NEXT: [[ADDR:%[0-9]+]] = arith.constant 0 : i32;
+// CHECK-NEXT: [[PTR:%[0-9]+]] = builtin.unrealized_conversion_cast [[ADDR]] : i32 to ptr<i8>;
+// CHECK-NEXT: [[FIRST:%[0-9]+]] = test.load [[PTR]];
+// CHECK-NEXT: [[SECOND:%[0-9]+]] = test.load [[PTR]];
+// CHECK-NEXT: [[SAME:%[0-9]+]] = arith.cmpi eq [[FIRST]], [[SECOND]];
+// CHECK-NEXT: cf.assert [[SAME]], "loads differ";
+builtin.module private @graph_memory_reads {
+    %addr = arith.constant 0 : i32;
+    %ptr = builtin.unrealized_conversion_cast %addr : i32 to ptr<i8>;
+    %first = test.load %ptr;
+    %second = test.load %ptr;
+    %same = arith.cmpi eq %first, %second;
+    cf.assert %same, "loads differ";
+
+    // CHECK-LABEL: @live(
+    // CHECK-SAME: [[P:%[0-9]+]]: ptr<i8>) -> (i8, i8) {
+    // CHECK-NEXT: [[LOAD:%[0-9]+]] = test.load [[P]];
+    // CHECK-NEXT: builtin.ret [[LOAD]], [[LOAD]] : (i8, i8);
+    builtin.function public extern("C") @live(%p: ptr<i8>) -> (i8, i8) {
+        %a = test.load %p;
+        %b = test.load %p;
+        builtin.ret %a, %b : (i8, i8);
+    };
+};

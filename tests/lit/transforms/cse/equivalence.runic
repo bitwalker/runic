@@ -1,0 +1,99 @@
+// RUN: runic-opt %s -p cse | filecheck %s
+// RUN: runic-opt %s -p cse | runic-opt - --verify-roundtrip | filecheck %s
+
+// Which operations CSE takes for equal. Two operations are equal when they have the same name,
+// operands, attributes and result types; the operands of a commutative operation are compared in
+// either order. An operation equal to one before it is replaced by that one, and the replacement
+// makes equal what it feeds. Operations that differ in an operand, a result type or an attribute
+// are kept. The second RUN line reads the output back.
+builtin.module public @cse_equivalence {
+    // Two equal constants become one, and so do the two products that read them.
+    // CHECK-LABEL: @basic(
+    // CHECK-SAME: ) -> (i32, i32) {
+    // CHECK-NEXT: [[ZERO:%[0-9]+]] = arith.constant 0 : i32;
+    // CHECK-NEXT: [[ONE:%[0-9]+]] = arith.constant 1 : i32;
+    // CHECK-NEXT: [[MUL:%[0-9]+]] = arith.mul [[ZERO]], [[ONE]];
+    // CHECK-NEXT: builtin.ret [[MUL]], [[MUL]] : (i32, i32);
+    builtin.function public extern("C") @basic() -> (i32, i32) {
+        %zero = arith.constant 0 : i32;
+        %zero_again = arith.constant 0 : i32;
+        %one = arith.constant 1 : i32;
+        %mul = arith.mul %zero, %one;
+        %mul_again = arith.mul %zero_again, %one;
+        builtin.ret %mul, %mul_again : (i32, i32);
+    };
+
+    // Four equal sums become one, and each level of the tree above them collapses in turn.
+    // CHECK-LABEL: @many(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[S0:%[0-9]+]] = arith.add [[A]], [[B]];
+    // CHECK-NEXT: [[S1:%[0-9]+]] = arith.add [[S0]], [[S0]];
+    // CHECK-NEXT: [[S2:%[0-9]+]] = arith.add [[S1]], [[S1]];
+    // CHECK-NEXT: [[S3:%[0-9]+]] = arith.add [[S2]], [[S2]];
+    // CHECK-NEXT: builtin.ret [[S3]] : (i32);
+    builtin.function public extern("C") @many(%a: i32, %b: i32) -> i32 {
+        %s2 = arith.add %a, %b;
+        %s3 = arith.add %a, %b;
+        %s4 = arith.add %a, %b;
+        %s5 = arith.add %a, %b;
+        %s6 = arith.add %s2, %s3;
+        %s7 = arith.add %s4, %s5;
+        %s8 = arith.add %s2, %s4;
+        %s9 = arith.add %s6, %s7;
+        %s10 = arith.add %s7, %s8;
+        %s11 = arith.add %s9, %s10;
+        builtin.ret %s11 : (i32);
+    };
+
+    // `arith.add` is commutative: both the duplicate with its operands swapped and the identical
+    // one are replaced by the first.
+    // CHECK-LABEL: @commutative(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> (i32, i32, i32) {
+    // CHECK-NEXT: [[SUM:%[0-9]+]] = arith.add [[A]], [[B]];
+    // CHECK-NEXT: builtin.ret [[SUM]], [[SUM]], [[SUM]] : (i32, i32, i32);
+    builtin.function public extern("C") @commutative(%a: i32, %b: i32) -> (i32, i32, i32) {
+        %ab = arith.add %a, %b;
+        %ba = arith.add %b, %a;
+        %ab_again = arith.add %a, %b;
+        builtin.ret %ab, %ba, %ab_again : (i32, i32, i32);
+    };
+
+    // Constants of different values are different operations.
+    // CHECK-LABEL: @different_operands(
+    // CHECK-SAME: ) -> (i32, i32) {
+    // CHECK-NEXT: [[ZERO:%[0-9]+]] = arith.constant 0 : i32;
+    // CHECK-NEXT: [[ONE:%[0-9]+]] = arith.constant 1 : i32;
+    // CHECK-NEXT: builtin.ret [[ZERO]], [[ONE]] : (i32, i32);
+    builtin.function public extern("C") @different_operands() -> (i32, i32) {
+        %zero = arith.constant 0 : i32;
+        %one = arith.constant 1 : i32;
+        builtin.ret %zero, %one : (i32, i32);
+    };
+
+    // Two extensions of one value to different types are different operations.
+    // CHECK-LABEL: @different_results(
+    // CHECK-SAME: [[X:%[0-9]+]]: i32) -> (i64, i128) {
+    // CHECK-NEXT: [[WIDE:%[0-9]+]] = arith.sext [[X]] <{ ty = #builtin.type<i64> }>;
+    // CHECK-NEXT: [[WIDER:%[0-9]+]] = arith.sext [[X]] <{ ty = #builtin.type<i128> }>;
+    // CHECK-NEXT: builtin.ret [[WIDE]], [[WIDER]] : (i64, i128);
+    builtin.function public extern("C") @different_results(%x: i32) -> (i64, i128) {
+        %wide = arith.sext %x <{ ty = #builtin.type<i64> }>;
+        %wider = arith.sext %x <{ ty = #builtin.type<i128> }>;
+        builtin.ret %wide, %wider : (i64, i128);
+    };
+
+    // Two sums of the same operands that differ in their overflow attribute are different
+    // operations.
+    // CHECK-LABEL: @different_attributes(
+    // CHECK-SAME: [[X:%[0-9]+]]: i32) -> (i32, i32) {
+    // CHECK-NEXT: [[ONE:%[0-9]+]] = arith.constant 1 : i32;
+    // CHECK-NEXT: [[CHECKED:%[0-9]+]] = arith.add [[X]], [[ONE]] <{ overflow = #builtin.overflow<checked unsigned> }>;
+    // CHECK-NEXT: [[UNCHECKED:%[0-9]+]] = arith.add [[X]], [[ONE]] <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+    // CHECK-NEXT: builtin.ret [[CHECKED]], [[UNCHECKED]] : (i32, i32);
+    builtin.function public extern("C") @different_attributes(%x: i32) -> (i32, i32) {
+        %one = arith.constant 1 : i32;
+        %checked = arith.add %x, %one <{ overflow = #builtin.overflow<checked unsigned> }>;
+        %unchecked = arith.add %x, %one <{ overflow = #builtin.overflow<unchecked unsigned> }>;
+        builtin.ret %checked, %unchecked : (i32, i32);
+    };
+};

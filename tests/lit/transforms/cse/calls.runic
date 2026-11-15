@@ -1,0 +1,34 @@
+// RUN: runic-opt %s -p cse | filecheck %s
+// RUN: runic-opt %s -p cse | runic-opt - --verify-roundtrip | filecheck %s
+
+// CSE and calls. A call's effects are those its callee declares: two equal calls of a callee that
+// only reads are merged. An indirect call has unknown effects and is never merged, even when the
+// two references it calls through are equal (and are merged themselves). The second RUN line
+// reads the output back.
+builtin.module public @cse_calls {
+    builtin.function public extern("C") @reads(ptr<i32>) -> i32 effects(read(arg 0));
+
+    // CHECK-LABEL: @equal_calls_that_only_read(
+    // CHECK-SAME: [[P:%[0-9]+]]: ptr<i32>, {{%[0-9]+}}: i32) -> (i32, i32) {
+    // CHECK-NEXT: [[R:%[0-9]+]] = builtin.call @reads([[P]]) : extern("C") (ptr<i32>) -> i32;
+    // CHECK-NEXT: builtin.ret [[R]], [[R]] : (i32, i32);
+    builtin.function public extern("C") @equal_calls_that_only_read(%p: ptr<i32>, %v: i32) -> (i32, i32) {
+        %first = builtin.call @reads(%p) : extern("C") (ptr<i32>) -> i32;
+        %second = builtin.call @reads(%p) : extern("C") (ptr<i32>) -> i32;
+        builtin.ret %first, %second : (i32, i32);
+    };
+
+    // CHECK-LABEL: @indirect_calls(
+    // CHECK-SAME: [[P:%[0-9]+]]: ptr<i32>, {{%[0-9]+}}: i32) -> (i32, i32) {
+    // CHECK-NEXT: [[F:%[0-9]+]] = builtin.function_ref @reads : (ptr<i32>) -> i32;
+    // CHECK-NEXT: [[R1:%[0-9]+]] = builtin.call_indirect [[F]]([[P]]) : extern("C") (ptr<i32>) -> i32;
+    // CHECK-NEXT: [[R2:%[0-9]+]] = builtin.call_indirect [[F]]([[P]]) : extern("C") (ptr<i32>) -> i32;
+    // CHECK-NEXT: builtin.ret [[R1]], [[R2]] : (i32, i32);
+    builtin.function public extern("C") @indirect_calls(%p: ptr<i32>, %v: i32) -> (i32, i32) {
+        %f = builtin.function_ref @reads : (ptr<i32>) -> i32;
+        %g = builtin.function_ref @reads : (ptr<i32>) -> i32;
+        %first = builtin.call_indirect %f(%p) : extern("C") (ptr<i32>) -> i32;
+        %second = builtin.call_indirect %g(%p) : extern("C") (ptr<i32>) -> i32;
+        builtin.ret %first, %second : (i32, i32);
+    };
+};

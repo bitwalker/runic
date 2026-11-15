@@ -1,0 +1,89 @@
+// RUN: runic-opt %s -p cse | filecheck %s
+// RUN: runic-opt %s -p cse | runic-opt - --verify-roundtrip | filecheck %s
+
+// CSE and memory effects in a region that has dominance. Two equal reads of a resource are merged
+// when nothing between them writes it; a write between them keeps both. An operation that writes is
+// never merged, nor is an assertion. Locals are a resource apart from memory: a store to memory does
+// not keep two loads of a local apart, and a store to a local does not keep two loads of memory
+// apart. The second RUN line reads the output back.
+builtin.module public @cse_memory_effects {
+    // Two loads of one address with nothing between them: the second is replaced by the first.
+    // CHECK-LABEL: @ssa_memory_reads(
+    // CHECK-SAME: [[P:%[0-9]+]]: ptr<i8>) -> (i8, i8) {
+    // CHECK-NEXT: [[LOAD:%[0-9]+]] = test.load [[P]];
+    // CHECK-NEXT: builtin.ret [[LOAD]], [[LOAD]] : (i8, i8);
+    builtin.function public extern("C") @ssa_memory_reads(%p: ptr<i8>) -> (i8, i8) {
+        %first = test.load %p;
+        %second = test.load %p;
+        builtin.ret %first, %second : (i8, i8);
+    };
+
+    // Each load follows a store to its address: the two equal stores and the two loads all stay.
+    // CHECK-LABEL: @side_effect(
+    // CHECK-SAME: [[P:%[0-9]+]]: ptr<i8>) -> (i8, i8) {
+    // CHECK-NEXT: [[ONE:%[0-9]+]] = arith.constant 1 : i8;
+    // CHECK-NEXT: test.store [[P]], [[ONE]] : (ptr<i8>, i8);
+    // CHECK-NEXT: [[FIRST:%[0-9]+]] = test.load [[P]];
+    // CHECK-NEXT: test.store [[P]], [[ONE]] : (ptr<i8>, i8);
+    // CHECK-NEXT: [[SECOND:%[0-9]+]] = test.load [[P]];
+    // CHECK-NEXT: builtin.ret [[FIRST]], [[SECOND]] : (i8, i8);
+    builtin.function public extern("C") @side_effect(%p: ptr<i8>) -> (i8, i8) {
+        %one = arith.constant 1 : i8;
+        test.store %p, %one : (ptr<i8>, i8);
+        %first = test.load %p;
+        test.store %p, %one : (ptr<i8>, i8);
+        %second = test.load %p;
+        builtin.ret %first, %second : (i8, i8);
+    };
+
+    // Two identical assertions in one block are both kept.
+    // CHECK-LABEL: @identical_asserts(
+    // CHECK-SAME: [[C:%[0-9]+]]: i1) {
+    // CHECK-NEXT: cf.assert [[C]], "m";
+    // CHECK-NEXT: cf.assert [[C]], "m";
+    // CHECK-NEXT: builtin.ret;
+    builtin.function public extern("C") @identical_asserts(%c: i1) {
+        cf.assert %c, "m";
+        cf.assert %c, "m";
+        builtin.ret;
+    };
+
+    // Two loads of a local, with a store to memory between them, are merged.
+    // CHECK-LABEL: @local_loads_across_a_memory_store(
+    // CHECK-SAME: [[P:%[0-9]+]]: ptr<i32>, [[V:%[0-9]+]]: i32) -> (i32, i32) locals(i32) {
+    // CHECK-NEXT: [[LOAD:%[0-9]+]] = builtin.load_local 0 : i32;
+    // CHECK-NEXT: mem.store [[V]], [[P]];
+    // CHECK-NEXT: builtin.ret [[LOAD]], [[LOAD]] : (i32, i32);
+    builtin.function public extern("C") @local_loads_across_a_memory_store(%p: ptr<i32>, %v: i32) -> (i32, i32) locals(i32) {
+        %first = builtin.load_local 0 : i32;
+        mem.store %v, %p;
+        %second = builtin.load_local 0 : i32;
+        builtin.ret %first, %second : (i32, i32);
+    };
+
+    // Two `test.load`s of memory, with a store to a local between them, are merged.
+    // CHECK-LABEL: @test_loads_across_a_local_store(
+    // CHECK-SAME: [[P:%[0-9]+]]: ptr<i32>, [[V:%[0-9]+]]: i32) -> (i32, i32) locals(i32) {
+    // CHECK-NEXT: [[LOAD:%[0-9]+]] = test.load [[P]];
+    // CHECK-NEXT: builtin.store_local 0, [[V]];
+    // CHECK-NEXT: builtin.ret [[LOAD]], [[LOAD]] : (i32, i32);
+    builtin.function public extern("C") @test_loads_across_a_local_store(%p: ptr<i32>, %v: i32) -> (i32, i32) locals(i32) {
+        %first = test.load %p;
+        builtin.store_local 0, %v;
+        %second = test.load %p;
+        builtin.ret %first, %second : (i32, i32);
+    };
+
+    // Two `mem.load`s of memory, with a store to a local between them, are merged.
+    // CHECK-LABEL: @mem_loads_across_a_local_store(
+    // CHECK-SAME: [[P:%[0-9]+]]: ptr<i32>, [[V:%[0-9]+]]: i32) -> (i32, i32) locals(i32) {
+    // CHECK-NEXT: [[LOAD:%[0-9]+]] = mem.load [[P]];
+    // CHECK-NEXT: builtin.store_local 0, [[V]];
+    // CHECK-NEXT: builtin.ret [[LOAD]], [[LOAD]] : (i32, i32);
+    builtin.function public extern("C") @mem_loads_across_a_local_store(%p: ptr<i32>, %v: i32) -> (i32, i32) locals(i32) {
+        %first = mem.load %p;
+        builtin.store_local 0, %v;
+        %second = mem.load %p;
+        builtin.ret %first, %second : (i32, i32);
+    };
+};
