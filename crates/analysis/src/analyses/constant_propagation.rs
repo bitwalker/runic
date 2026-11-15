@@ -182,7 +182,7 @@ impl SparseForwardDataFlowAnalysis for SparseConstantPropagation {
         // Simulate the result of folding this operation to a constant. If folding fails or would be
         // an in-place fold, mark the results as overdefined.
         let mut fold_results = SmallVec::with_capacity(op.num_results());
-        let fold_result = op.fold(&mut fold_results);
+        let fold_result = op.fold_with(&constant_operands, &mut fold_results);
         if matches!(fold_result, FoldResult::Failed | FoldResult::InPlace) {
             sparse::set_all_to_entry_states(self, results);
             return Ok(());

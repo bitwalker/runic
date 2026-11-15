@@ -134,3 +134,35 @@ fn fuzz_no_analysis_panics_on_a_dangling_symbol() {
     );
     std::eprintln!("{cases} cases; analysis errors: {errors:#?}");
 }
+
+/// Constant propagation folds an operation with the constants its operands are known to hold, not
+/// only with the constants its operands are defined by: the product of a sum of two constants is a
+/// constant too.
+#[test]
+fn constants_propagate_through_operations_whose_operands_are_not_constants() {
+    use runic_core::ValueRef;
+
+    use crate::{Lattice, analyses::constant_propagation::ConstantValue};
+
+    let source = "builtin.function public extern(\"C\") @f() -> i32 {
+    %two = arith.constant 2 : i32;
+    %five = arith.constant 5 : i32;
+    %sum = arith.add %two, %five;
+    %product = arith.mul %sum, %two;
+    builtin.ret %product : (i32);
+};";
+    let (_context, function) = parse_any(source, true).unwrap();
+    let mut solver = DataFlowSolver::default();
+    solver.load::<DeadCodeAnalysis>();
+    solver.load::<SparseConstantPropagation>();
+    solver
+        .initialize_and_run(&function.borrow(), AnalysisManager::new(function, None))
+        .unwrap();
+    let function = function.borrow();
+    let block = function.regions().front().get().unwrap().entry().as_block_ref();
+    let ret = block.borrow().terminator().unwrap();
+    let product: ValueRef = ret.borrow().operands()[0].borrow().as_value_ref();
+    let lattice = solver.get::<Lattice<ConstantValue>, _>(&product).expect("a lattice");
+    let value = lattice.value().constant_value().expect("a constant");
+    assert_eq!(value.borrow().as_int().map(|int| int.unsigned()), Some(14));
+}
