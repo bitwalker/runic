@@ -1,0 +1,210 @@
+// RUN: runic-opt %s -p cse | filecheck %s
+// RUN: runic-opt %s -p cse | runic-opt - --verify-roundtrip | filecheck %s
+
+// What CSE must not merge. Two equal reads are kept apart by anything between them that may write
+// what they read: a store, an operation with unknown effects, a call whose callee writes, frees or
+// states no effects. A call with unknown effects is never merged, nor are calls of different
+// callees. The one resource that holds every local keeps two loads of a local apart across a store
+// of any local. A read of the default resource is kept apart by an assertion, whose resource is a
+// child of the default one; a read of memory through an address is not. An operation that holds a
+// store is not a read, though its own effect is one. CSE does not move an operation up the
+// dominance tree: an operation in a region is not merged with an equal one after the region. The
+// first function shows the pass live. The second RUN line reads the output back.
+builtin.module public @cse_not_merged {
+    builtin.function public extern("C") @reads(ptr<i32>) -> i32 effects(read(arg 0));
+    builtin.function public extern("C") @reads_too(ptr<i32>) -> i32 effects(read(arg 0));
+    builtin.function public extern("C") @reads_any(i32) -> i32 effects(read);
+    builtin.function public extern("C") @writes_any(i32) -> i32 effects(write);
+    builtin.function public extern("C") @frees(ptr<i32>) effects(free(arg 0));
+    builtin.function public extern("C") @unknown(ptr<i32>) -> i32;
+
+    // An assertion writes a resource of its own, which is not memory: the two loads merge, and
+    // the assertion stays.
+    // CHECK-LABEL: @loads_across_an_assert(
+    // CHECK-SAME: [[P:%[0-9]+]]: ptr<i32>, [[V:%[0-9]+]]: i32) -> (i32, i32) {
+    // CHECK-NEXT: [[L:%[0-9]+]] = test.load [[P]];
+    // CHECK-NEXT: [[C:%[0-9]+]] = arith.cmpi eq [[V]], [[V]];
+    // CHECK-NEXT: cf.assert [[C]], "between";
+    // CHECK-NEXT: builtin.ret [[L]], [[L]] : (i32, i32);
+    builtin.function public extern("C") @loads_across_an_assert(%p: ptr<i32>, %v: i32) -> (i32, i32) {
+        %first = test.load %p;
+        %c = arith.cmpi eq %v, %v;
+        cf.assert %c, "between";
+        %second = test.load %p;
+        builtin.ret %first, %second : (i32, i32);
+    };
+
+    // CHECK-LABEL: @loads_across_a_store(
+    // CHECK-NEXT: test.load
+    // CHECK-NEXT: test.store
+    // CHECK-NEXT: test.load
+    builtin.function public extern("C") @loads_across_a_store(%p: ptr<i32>, %v: i32) -> (i32, i32) {
+        %first = test.load %p;
+        test.store %p, %v : (ptr<i32>, i32);
+        %second = test.load %p;
+        builtin.ret %first, %second : (i32, i32);
+    };
+
+    // CHECK-LABEL: @loads_across_unknown_effects(
+    // CHECK-NEXT: test.load
+    // CHECK-NEXT: test.effects
+    // CHECK-NEXT: test.load
+    builtin.function public extern("C") @loads_across_unknown_effects(%p: ptr<i32>, %v: i32) -> (i32, i32) {
+        %first = test.load %p;
+        %e = test.effects <{ known = #builtin.bool<false> }>;
+        %second = test.load %p;
+        builtin.ret %first, %second : (i32, i32);
+    };
+
+    // CHECK-LABEL: @loads_across_a_writing_call(
+    // CHECK-NEXT: test.load
+    // CHECK-NEXT: builtin.call @writes_any
+    // CHECK-NEXT: test.load
+    builtin.function public extern("C") @loads_across_a_writing_call(%p: ptr<i32>, %v: i32) -> (i32, i32) {
+        %first = test.load %p;
+        %w = builtin.call @writes_any(%v) : extern("C") (i32) -> i32;
+        %second = test.load %p;
+        builtin.ret %first, %second : (i32, i32);
+    };
+
+    // CHECK-LABEL: @loads_across_a_free(
+    // CHECK-NEXT: test.load
+    // CHECK-NEXT: builtin.call @frees
+    // CHECK-NEXT: test.load
+    builtin.function public extern("C") @loads_across_a_free(%p: ptr<i32>, %v: i32) -> (i32, i32) {
+        %first = test.load %p;
+        builtin.call @frees(%p) : extern("C") (ptr<i32>);
+        %second = test.load %p;
+        builtin.ret %first, %second : (i32, i32);
+    };
+
+    // CHECK-LABEL: @reading_calls_across_a_store(
+    // CHECK-NEXT: [[R1:%[0-9]+]] = builtin.call @reads(
+    // CHECK-NEXT: test.store
+    // CHECK-NEXT: [[R2:%[0-9]+]] = builtin.call @reads(
+    // CHECK-NEXT: builtin.ret [[R1]], [[R2]] : (i32, i32);
+    builtin.function public extern("C") @reading_calls_across_a_store(%p: ptr<i32>, %v: i32) -> (i32, i32) {
+        %first = builtin.call @reads(%p) : extern("C") (ptr<i32>) -> i32;
+        test.store %p, %v : (ptr<i32>, i32);
+        %second = builtin.call @reads(%p) : extern("C") (ptr<i32>) -> i32;
+        builtin.ret %first, %second : (i32, i32);
+    };
+
+    // CHECK-LABEL: @reading_calls_across_an_unknown_call(
+    // CHECK-NEXT: [[R1:%[0-9]+]] = builtin.call @reads(
+    // CHECK-NEXT: builtin.call @unknown(
+    // CHECK-NEXT: [[R2:%[0-9]+]] = builtin.call @reads(
+    // CHECK-NEXT: builtin.ret [[R1]], [[R2]] : (i32, i32);
+    builtin.function public extern("C") @reading_calls_across_an_unknown_call(%p: ptr<i32>, %v: i32) -> (i32, i32) {
+        %first = builtin.call @reads(%p) : extern("C") (ptr<i32>) -> i32;
+        %u = builtin.call @unknown(%p) : extern("C") (ptr<i32>) -> i32;
+        %second = builtin.call @reads(%p) : extern("C") (ptr<i32>) -> i32;
+        builtin.ret %first, %second : (i32, i32);
+    };
+
+    // CHECK-LABEL: @unknown_calls(
+    // CHECK-NEXT: [[R1:%[0-9]+]] = builtin.call @unknown(
+    // CHECK-NEXT: [[R2:%[0-9]+]] = builtin.call @unknown(
+    // CHECK-NEXT: builtin.ret [[R1]], [[R2]] : (i32, i32);
+    builtin.function public extern("C") @unknown_calls(%p: ptr<i32>, %v: i32) -> (i32, i32) {
+        %first = builtin.call @unknown(%p) : extern("C") (ptr<i32>) -> i32;
+        %second = builtin.call @unknown(%p) : extern("C") (ptr<i32>) -> i32;
+        builtin.ret %first, %second : (i32, i32);
+    };
+
+    // CHECK-LABEL: @calls_of_different_callees(
+    // CHECK-NEXT: [[R1:%[0-9]+]] = builtin.call @reads(
+    // CHECK-NEXT: [[R2:%[0-9]+]] = builtin.call @reads_too(
+    // CHECK-NEXT: builtin.ret [[R1]], [[R2]] : (i32, i32);
+    builtin.function public extern("C") @calls_of_different_callees(%p: ptr<i32>, %v: i32) -> (i32, i32) {
+        %first = builtin.call @reads(%p) : extern("C") (ptr<i32>) -> i32;
+        %second = builtin.call @reads_too(%p) : extern("C") (ptr<i32>) -> i32;
+        builtin.ret %first, %second : (i32, i32);
+    };
+
+    // CHECK-LABEL: @default_resource_reads_across_an_assert(
+    // CHECK-NEXT: [[R1:%[0-9]+]] = builtin.call @reads_any(
+    // CHECK-NEXT: arith.cmpi
+    // CHECK-NEXT: cf.assert
+    // CHECK-NEXT: [[R2:%[0-9]+]] = builtin.call @reads_any(
+    // CHECK-NEXT: builtin.ret [[R1]], [[R2]] : (i32, i32);
+    builtin.function public extern("C") @default_resource_reads_across_an_assert(%p: ptr<i32>, %v: i32) -> (i32, i32) {
+        %first = builtin.call @reads_any(%v) : extern("C") (i32) -> i32;
+        %c = arith.cmpi eq %v, %v;
+        cf.assert %c, "between";
+        %second = builtin.call @reads_any(%v) : extern("C") (i32) -> i32;
+        builtin.ret %first, %second : (i32, i32);
+    };
+
+    // A store to local 1 keeps two loads of local 0 apart, as a store to local 0 does.
+    // CHECK-LABEL: @local_loads_across_a_store_of_another_local(
+    // CHECK-NEXT: [[L1:%[0-9]+]] = builtin.load_local 0 : i32;
+    // CHECK-NEXT: builtin.store_local 1,
+    // CHECK-NEXT: [[L2:%[0-9]+]] = builtin.load_local 0 : i32;
+    // CHECK-NEXT: builtin.ret [[L1]], [[L2]] : (i32, i32);
+    builtin.function public extern("C") @local_loads_across_a_store_of_another_local(%p: ptr<i32>, %v: i32) -> (i32, i32) locals(i32, i32) {
+        %first = builtin.load_local 0 : i32;
+        builtin.store_local 1, %v;
+        %second = builtin.load_local 0 : i32;
+        builtin.ret %first, %second : (i32, i32);
+    };
+
+    // CHECK-LABEL: @local_loads_across_a_store_of_the_local(
+    // CHECK-NEXT: [[L1:%[0-9]+]] = builtin.load_local 0 : i32;
+    // CHECK-NEXT: builtin.store_local 0,
+    // CHECK-NEXT: [[L2:%[0-9]+]] = builtin.load_local 0 : i32;
+    // CHECK-NEXT: builtin.ret [[L1]], [[L2]] : (i32, i32);
+    builtin.function public extern("C") @local_loads_across_a_store_of_the_local(%p: ptr<i32>, %v: i32) -> (i32, i32) locals(i32, i32) {
+        %first = builtin.load_local 0 : i32;
+        builtin.store_local 0, %v;
+        %second = builtin.load_local 0 : i32;
+        builtin.ret %first, %second : (i32, i32);
+    };
+
+    // `test.reads_locals_and_holds` reads, and holds a store: two equal ones are both kept (the
+    // region ends with `test.ret`, the test dialect's terminator).
+    // CHECK-LABEL: @region_operations_that_hold_a_store(
+    // CHECK-NEXT: "test.reads_locals_and_holds"() ({
+    // CHECK-NEXT: test.store
+    // CHECK-NEXT: test.ret
+    // CHECK-NEXT: }) : () -> ();
+    // CHECK-NEXT: "test.reads_locals_and_holds"() ({
+    // CHECK-NEXT: test.store
+    // CHECK-NEXT: test.ret
+    // CHECK-NEXT: }) : () -> ();
+    builtin.function public extern("C") @region_operations_that_hold_a_store(%p: ptr<i32>, %v: i32) {
+        "test.reads_locals_and_holds"() ({
+            test.store %p, %v : (ptr<i32>, i32);
+            test.ret : ();
+        }) : () -> ();
+        "test.reads_locals_and_holds"() ({
+            test.store %p, %v : (ptr<i32>, i32);
+            test.ret : ();
+        }) : () -> ();
+        builtin.ret;
+    };
+
+    // The constant in the then-region does not dominate the one after the `scf.if`, so neither
+    // replaces the other.
+    // CHECK-LABEL: @up_propagate(
+    // CHECK-SAME: [[C:%[0-9]+]]: i1) -> i32 {
+    // CHECK-NEXT: scf.if [[C]] then {
+    // CHECK-NEXT: [[INNER:%[0-9]+]] = arith.constant 1 : i32;
+    // CHECK: test.store {{%[0-9]+}}, [[INNER]] : (ptr<i32>, i32);
+    // CHECK: } : (i1) -> ();
+    // CHECK-NEXT: [[OUTER:%[0-9]+]] = arith.constant 1 : i32;
+    // CHECK-NEXT: builtin.ret [[OUTER]] : (i32);
+    builtin.function public extern("C") @up_propagate(%c: i1) -> i32 {
+        scf.if %c then {
+            %inner = arith.constant 1 : i32;
+            %addr = arith.constant 0 : isize;
+            %ptr = mem.inttoptr %addr : ptr<i32>;
+            test.store %ptr, %inner : (ptr<i32>, i32);
+            scf.yield : ();
+        } else {
+            scf.yield : ();
+        } : (i1) -> ();
+        %outer = arith.constant 1 : i32;
+        builtin.ret %outer : (i32);
+    };
+};

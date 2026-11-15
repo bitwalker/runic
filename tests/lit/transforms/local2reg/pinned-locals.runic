@@ -2,8 +2,9 @@
 // RUN: runic-opt %s -p local2reg | runic-opt - --verify-roundtrip | filecheck %s
 
 // A local that an operation other than its loads and stores names is pinned: it is not promoted,
-// and its stores are kept. An operation names a local in a property or an attribute; one whose
-// effects are unknown is not taken to use a local it does not name. The second RUN line reads the
+// and its stores are kept. An operation names a local in a property or an attribute, at any depth
+// (an entry of a list) and wherever the operation is (in a nested region); one whose effects are
+// unknown is not taken to use a local it does not name. The second RUN line reads the
 // output back.
 builtin.module public @local2reg_pinned_locals {
     // `test.effects` has unknown effects and names local 0 in an attribute: nothing changes.
@@ -46,5 +47,52 @@ builtin.module public @local2reg_pinned_locals {
         %l0 = builtin.load_local 0 : i32;
         %l1 = builtin.load_local 1 : i32;
         builtin.ret %l0, %l1 : (i32, i32);
+    };
+
+    // A local named inside an attribute of another operation, an entry of a list on the return,
+    // is pinned as if the operation named it directly.
+    // CHECK-LABEL: @named_in_a_list(
+    // CHECK-SAME: [[X:%[0-9]+]]: i32) -> i32 locals(i32) {
+    // CHECK-NEXT: builtin.store_local 0, [[X]];
+    // CHECK-NEXT: [[L:%[0-9]+]] = builtin.load_local 0 : i32;
+    // CHECK-NEXT: builtin.ret [[L]] attributes { locals = [#builtin.local_variable<0, i32>] } : (i32);
+    builtin.function public extern("C") @named_in_a_list(%x: i32) -> i32 locals(i32) {
+        builtin.store_local 0, %x;
+        %l = builtin.load_local 0 : i32;
+        builtin.ret %l attributes { locals = [#builtin.local_variable<0, i32>] } : (i32);
+    };
+
+    // A pinned local that is only stored keeps its store: pinning stops the erasure of dead
+    // stores as well as promotion.
+    // CHECK-LABEL: @pinned_and_only_stored(
+    // CHECK-SAME: [[X:%[0-9]+]]: i32) -> i32 locals(i32) {
+    // CHECK-NEXT: builtin.store_local 0, [[X]];
+    // CHECK-NEXT: test.touch_local <{ local = #builtin.local_variable<0, i32> }>;
+    // CHECK-NEXT: builtin.ret [[X]] : (i32);
+    builtin.function public extern("C") @pinned_and_only_stored(%x: i32) -> i32 locals(i32) {
+        builtin.store_local 0, %x;
+        test.touch_local <{ local = #builtin.local_variable<0, i32> }>;
+        builtin.ret %x : (i32);
+    };
+
+    // An operation nested in a region pins the local it names, wherever it is: here inside an
+    // `scf.if` before the store.
+    // CHECK-LABEL: @pinned_from_a_region(
+    // CHECK-SAME: [[X:%[0-9]+]]: i32, [[C:%[0-9]+]]: i1) -> i32 locals(i32) {
+    // CHECK: test.touch_local <{ local = #builtin.local_variable<0, i32> }>;
+    // CHECK: } : (i1) -> ();
+    // CHECK-NEXT: builtin.store_local 0, [[X]];
+    // CHECK-NEXT: [[L:%[0-9]+]] = builtin.load_local 0 : i32;
+    // CHECK-NEXT: builtin.ret [[L]] : (i32);
+    builtin.function public extern("C") @pinned_from_a_region(%x: i32, %c: i1) -> i32 locals(i32) {
+        scf.if %c then {
+            test.touch_local <{ local = #builtin.local_variable<0, i32> }>;
+            scf.yield : ();
+        } else {
+            scf.yield : ();
+        } : (i1) -> ();
+        builtin.store_local 0, %x;
+        %l = builtin.load_local 0 : i32;
+        builtin.ret %l : (i32);
     };
 };
