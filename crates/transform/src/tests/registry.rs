@@ -12,7 +12,7 @@ use core::fmt;
 use runic_core::{
     Context,
     pass::{
-        Nesting, OpPassManager, OperationPass,
+        Nesting, OpPassManager, OperationPass, PassOptions,
         registry::{PassInfo, PassPipelineInfo, RegistryEntry, register_pass_pipeline},
     },
 };
@@ -115,12 +115,13 @@ impl fmt::Display for Pipeline<'_> {
 fn invalid_options_leave_the_pass_manager_unchanged() {
     let mut pm = OpPassManager::any(Nesting::Implicit, Rc::new(Context::default()));
     let canonicalizer = PassInfo::lookup("canonicalizer").unwrap();
-    canonicalizer.add_to_pipeline(&mut pm, "").unwrap();
+    canonicalizer.add_to_pipeline(&mut pm, &PassOptions::new()).unwrap();
     let before = Pipeline(&pm).to_string();
 
     // A key without a value, and an unknown key.
     for options in ["enable-patterns", "no-such-option=1"] {
-        let error = canonicalizer.add_to_pipeline(&mut pm, options).unwrap_err().to_string();
+        let parsed = PassOptions::parse(options).unwrap();
+        let error = canonicalizer.add_to_pipeline(&mut pm, &parsed).unwrap_err().to_string();
         assert!(error.contains(options.split('=').next().unwrap()), "{error}");
         assert_eq!(Pipeline(&pm).to_string(), before, "after the options '{options}'");
     }
@@ -167,6 +168,10 @@ fn loaded_pipelines_print_their_canonical_text() {
         (
             r#"any(canonicalizer{disable-patterns="say \"hi\";back\\slash"})"#,
             r#"any(canonicalizer{disable-patterns="say \"hi\";back\\slash"})"#,
+        ),
+        (
+            r#"any(canonicalizer{enable-patterns="a, b;c"})"#,
+            r#"any(canonicalizer{enable-patterns="a, b;c"})"#,
         ),
         (
             r#"builtin.module( canonicalizer { enable-patterns = x } , cse )"#,

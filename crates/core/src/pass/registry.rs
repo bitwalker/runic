@@ -129,7 +129,7 @@ inventory::collect!(PassInfo);
 inventory::collect!(PassPipelineInfo);
 
 /// A type alias for the closure type for registering a pass with a pass manager
-pub type PassRegistryFunction = fn(&mut OpPassManager, &str) -> Result<(), Report>;
+pub type PassRegistryFunction = fn(&mut OpPassManager, &PassOptions) -> Result<(), Report>;
 
 /// A type alias for the closure type used for type-erased pass constructors
 pub type PassAllocatorFunction = fn() -> Box<dyn OperationPass>;
@@ -145,10 +145,10 @@ pub trait RegistryEntry {
     fn description(&self) -> &'static str;
     /// Adds this entry to the given pass manager.
     ///
-    /// Note: `options` is an opaque string that will be parsed by the builder.
+    /// `options` are given to the pass as they are (see [`super::Pass::initialize_options`]).
     ///
     /// Returns `Err` if an error occurred parsing the given options.
-    fn add_to_pipeline(&self, pm: &mut OpPassManager, options: &str) -> Result<(), Report>;
+    fn add_to_pipeline(&self, pm: &mut OpPassManager, options: &PassOptions) -> Result<(), Report>;
 }
 
 /// Information about a pass or pass pipeline in the pass registry
@@ -196,7 +196,7 @@ impl PassRegistryEntry {
 
 impl RegistryEntry for PassRegistryEntry {
     #[inline]
-    fn add_to_pipeline(&self, pm: &mut OpPassManager, options: &str) -> Result<(), Report> {
+    fn add_to_pipeline(&self, pm: &mut OpPassManager, options: &PassOptions) -> Result<(), Report> {
         default_registration_factory(self.builder)(pm, options)
     }
 
@@ -248,7 +248,7 @@ impl RegistryEntry for PassPipelineInfo {
         self.0.description()
     }
 
-    fn add_to_pipeline(&self, pm: &mut OpPassManager, options: &str) -> Result<(), Report> {
+    fn add_to_pipeline(&self, pm: &mut OpPassManager, options: &PassOptions) -> Result<(), Report> {
         self.0.add_to_pipeline(pm, options)
     }
 }
@@ -333,7 +333,7 @@ impl RegistryEntry for PassInfo {
         self.0.description()
     }
 
-    fn add_to_pipeline(&self, pm: &mut OpPassManager, options: &str) -> Result<(), Report> {
+    fn add_to_pipeline(&self, pm: &mut OpPassManager, options: &PassOptions) -> Result<(), Report> {
         self.0.add_to_pipeline(pm, options)
     }
 }
@@ -433,7 +433,7 @@ fn edit_distance(a: &str, b: &str) -> usize {
 /// another operation than the anchor of `pm`).
 pub fn default_registration<P: Pass + Default>(
     pm: &mut OpPassManager,
-    options: &str,
+    options: &PassOptions,
 ) -> Result<(), Report> {
     add_with_options(default_instance::<P>(), pm, options)
 }
@@ -443,8 +443,8 @@ pub fn default_registration<P: Pass + Default>(
 /// _factory_, rather than a registration function itself.
 pub fn default_registration_factory(
     builder: PassAllocatorFunction,
-) -> impl Fn(&mut OpPassManager, &str) -> Result<(), Report> + Send + Sync + 'static {
-    move |pm: &mut OpPassManager, options: &str| -> Result<(), Report> {
+) -> impl Fn(&mut OpPassManager, &PassOptions) -> Result<(), Report> + Send + Sync + 'static {
+    move |pm: &mut OpPassManager, options: &PassOptions| -> Result<(), Report> {
         add_with_options(builder(), pm, options)
     }
 }
@@ -454,7 +454,7 @@ pub fn default_registration_factory(
 fn add_with_options(
     mut pass: Box<dyn OperationPass>,
     pm: &mut OpPassManager,
-    options: &str,
+    options: &PassOptions,
 ) -> Result<(), Report> {
     pass.initialize_options(options)?;
     pm.add_pass(pass)

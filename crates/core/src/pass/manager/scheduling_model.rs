@@ -190,8 +190,11 @@ macro_rules! recording_pass {
                 "a pass of the scheduling model"
             }
 
-            fn initialize_options(&mut self, options: &str) -> Result<(), Report> {
-                let Some(id) = options.strip_prefix("id=") else {
+            fn initialize_options(
+                &mut self,
+                options: &crate::pass::PassOptions,
+            ) -> Result<(), Report> {
+                let (Some(Some(id)), 1) = (options.get("id"), options.len()) else {
                     return Err(Report::msg(format!("expected id=<n>, got '{options}'")));
                 };
                 self.id = id.parse().map_err(|_| Report::msg("id is not a number"))?;

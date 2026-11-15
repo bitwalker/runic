@@ -587,9 +587,12 @@ fn a_registered_pass_is_added_through_add_pass() {
 
     let context = Rc::new(Context::default());
     let mut explicit = OpPassManager::on::<Module>(Nesting::Explicit, context.clone());
-    let message = crate::pass::registry::default_registration::<OnFunctions>(&mut explicit, "")
-        .unwrap_err()
-        .to_string();
+    let message = crate::pass::registry::default_registration::<OnFunctions>(
+        &mut explicit,
+        &crate::pass::PassOptions::new(),
+    )
+    .unwrap_err()
+    .to_string();
     assert!(
         message.starts_with("cannot add pass 'on-functions', which runs on"),
         "{message}"
@@ -598,10 +601,12 @@ fn a_registered_pass_is_added_through_add_pass() {
 
     let factory = crate::pass::registry::default_registration_factory(|| Box::new(OnFunctions));
     let mut implicit = OpPassManager::on::<Module>(Nesting::Implicit, context);
-    let message = factory(&mut implicit, "x=1").unwrap_err().to_string();
+    let message = factory(&mut implicit, &crate::pass::PassOptions::parse("x=1").unwrap())
+        .unwrap_err()
+        .to_string();
     assert_eq!(message, "pass 'on-functions' takes no options");
     assert!(implicit.is_empty());
-    factory(&mut implicit, "").unwrap();
+    factory(&mut implicit, &crate::pass::PassOptions::new()).unwrap();
     assert_eq!(implicit.len(), 1);
 }
 

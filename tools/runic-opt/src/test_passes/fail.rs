@@ -5,7 +5,7 @@ use core::fmt;
 use runic_core::{
     EntityMut, Operation, OperationName, Report,
     diagnostics::report,
-    pass::{Pass, PassExecutionState, PassInfo, PostPassStatus, write_pass_option},
+    pass::{Pass, PassExecutionState, PassInfo, PassOptions, PostPassStatus, write_pass_option},
 };
 
 /// Fails at the operation it runs on, with the message of its option `message` ("test-fail" when
@@ -52,15 +52,19 @@ impl Pass for Fail {
         true
     }
 
-    fn initialize_options(&mut self, options: &str) -> Result<(), Report> {
-        for (key, value) in super::options(options) {
-            match (key, value) {
-                ("message", Some(value)) => self.message = String::from(value),
-                ("after-change", value) => {
-                    self.after_change = super::switch(NAME, key, value)?;
-                }
-                _ => return Err(super::unknown(NAME, key, "'message=..' and 'after-change'")),
+    fn initialize_options(&mut self, options: &PassOptions) -> Result<(), Report> {
+        options.check_keys(NAME, &["message", "after-change"])?;
+        match options.get("message") {
+            Some(Some(message)) => self.message = String::from(message),
+            Some(None) => {
+                return Err(Report::msg(format!(
+                    "option 'message' of pass '{NAME}' requires a value: 'message=\"..\"'"
+                )));
             }
+            None => {}
+        }
+        if let Some(value) = options.get("after-change") {
+            self.after_change = super::switch(NAME, "after-change", value)?;
         }
         Ok(())
     }

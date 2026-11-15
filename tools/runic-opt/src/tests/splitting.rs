@@ -257,6 +257,13 @@ fn an_input_without_an_operation_is_an_error() {
         assert_eq!(output.stdout, "");
         assert_eq!(output.stderr, "error: no operation found in <stdin>\n", "{text:?}");
     }
+    // Without the option too.
+    for text in ["", "\n  \n", "// only a comment\n"] {
+        let output = opt(&[], text);
+        output.failed();
+        assert_eq!(output.stdout, "");
+        assert_eq!(output.stderr, "error: no operation found in <stdin>\n", "{text:?}");
+    }
 }
 
 #[test]

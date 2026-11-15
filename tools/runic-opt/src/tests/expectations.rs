@@ -430,3 +430,166 @@ fn without_the_flag_expectations_are_comments() {
     output.failed();
     assert!(output.stderr.starts_with("error: invalid syntax"), "{}", output.stderr);
 }
+
+/// A diagnostic located in another source (`loc(..)` naming another file) matches no line of the
+/// case, nor `@unknown`: it is unexpected, at its own location.
+#[test]
+fn a_diagnostic_in_another_source_does_not_match_by_line_number() {
+    let dir = tempfile::tempdir().unwrap();
+    let other = dir.path().join("other.txt");
+    std::fs::write(&other, "first line\nthis returns\nthird line\n").unwrap();
+    let invalid = |comment: &str| {
+        format!(
+            "builtin.module public @m {{\n{comment}\n    builtin.function public extern(\"C\") \
+             @f() -> i32 {{\n        builtin.ret loc(\"{}\":2:1 to 2:5);\n    }};\n}};\n",
+            other.display()
+        )
+    };
+    // The verifier's error is labelled on line 2 of the other file; line 2 of the case is the
+    // comment, which would match by its number alone.
+    for comment in [
+        "// expected-error {{returns}}",
+        "// expected-error@unknown {{returns}}",
+        "// expected-error@+2 {{returns}}",
+    ] {
+        let output = opt(&[CHECK], &invalid(comment));
+        output.failed();
+        assert!(output.stderr.contains("unexpected error: "), "{comment}: {}", output.stderr);
+        assert!(output.stderr.contains("other.txt:2:1"), "{comment}: {}", output.stderr);
+        assert!(output.stderr.contains("was not produced"), "{comment}: {}", output.stderr);
+    }
+}
+
+/// An unexpected diagnostic keeps what says where it came from: its notes and context frames.
+#[test]
+fn an_unexpected_diagnostic_is_rendered_with_its_notes_and_context() {
+    register();
+    let output = opt(&[CHECK, "-p", verification::FAIL], LOCALS);
+    output.failed();
+    assert!(
+        output.stderr.starts_with("error: unexpected error: this pass always fails\n"),
+        "{}",
+        output.stderr
+    );
+    assert!(
+        output
+            .stderr
+            .contains("context: pass 'test-fail' failed on 'builtin.function' @f"),
+        "{}",
+        output.stderr
+    );
+    let world = "builtin.world {\n    builtin.module public @m {\n    };\n};\n";
+    let output = opt(&[CHECK, "-p", "local2reg"], world);
+    output.failed();
+    assert!(
+        output.stderr.contains("unexpected warning: pass 'local2reg'"),
+        "{}",
+        output.stderr
+    );
+    assert!(
+        output.stderr.contains("help: implicit nesting runs a pass"),
+        "{}",
+        output.stderr
+    );
+}
+
+/// `expected-error @+1`, with a space before the location, as other tools write it.
+#[test]
+fn whitespace_may_stand_before_the_location() {
+    for comment in [
+        "// expected-error @below {{invalid syntax}}",
+        "// expected-error  @+1 {{invalid syntax}}",
+        "// expected-error-re @+1 {{invalid syn[a-z]+}}",
+    ] {
+        let text = with_line(MISSING_SEMICOLON, 4, comment);
+        let output = opt(&[CHECK], &text);
+        output.succeeded();
+        assert_eq!(output.stderr, "", "{comment}");
+    }
+}
+
+/// `@+N` counts blank lines; `@above`, `@below` and `@±N` stay within the case.
+#[test]
+fn locations_are_resolved_within_the_case() {
+    // A blank line between the comment and the target.
+    let text = with_line(&with_line(MISSING_SEMICOLON, 4, ""), 4, "// expected-error@+2 {{}");
+    let text = text.replace("{{}", "{{invalid syntax}}");
+    opt(&[CHECK], &text).succeeded();
+
+    let designates = "designates no line of the case it is written in";
+    let marker = "// -----\n";
+    // On the first line of a case that is not the first, and on its last line.
+    for (second, comment) in [
+        (format!("// expected-error@above {{{{x}}}}\n{LOCALS}"), "@above"),
+        (format!("// expected-error@-1 {{{{x}}}}\n{LOCALS}"), "@-1"),
+        (format!("{LOCALS}// expected-error@below {{{{x}}}}\n"), "@below"),
+        (format!("{LOCALS}// expected-error@+1 {{{{x}}}}\n"), "@+1"),
+    ] {
+        let text = format!("{LOCALS}{marker}{second}{marker}{LOCALS}");
+        let output = opt(&[CHECK, "--split-input-file"], &text);
+        output.failed();
+        assert!(output.stderr.contains(designates), "{comment}: {}", output.stderr);
+        assert_eq!(output.stderr.matches("error: ").count(), 1, "{comment}: {}", output.stderr);
+        // The other two cases are processed and printed.
+        let printed = opt(&[], LOCALS).stdout;
+        assert_eq!(output.stdout, format!("{printed}{marker}{printed}"), "{comment}");
+    }
+}
+
+/// An expectation in one case pointing into another case's lines is not met by the other case's
+/// diagnostic, which would match by its line number in the file.
+#[test]
+fn an_expectation_is_not_met_by_a_diagnostic_of_another_case() {
+    // The parse error of the second case is on line 4 of that case.
+    let lines = LOCALS.lines().count();
+    let offset = lines + 1 + 4 - 1;
+    let text = format!(
+        "// expected-error@+{offset} {{{{invalid syntax}}}}\n{LOCALS}// -----\n{MISSING_SEMICOLON}"
+    );
+    let output = opt(&[CHECK, "--split-input-file"], &text);
+    output.failed();
+    assert!(output.stderr.contains("designates no line"), "{}", output.stderr);
+    assert!(output.stderr.contains("unexpected error: invalid syntax"), "{}", output.stderr);
+}
+
+/// A malformed expectation stops its own case only.
+#[test]
+fn a_malformed_expectation_does_not_stop_the_other_cases() {
+    let expected_error =
+        with_line(MISSING_SEMICOLON, 4, "// expected-error@below {{invalid syntax}}");
+    let text = format!(
+        "{}// -----\n{expected_error}// -----\n{LOCALS}",
+        locals_with("// expected-error@sideways {{x}}")
+    );
+    let output = opt(&[CHECK, "--split-input-file"], &text);
+    output.failed();
+    assert_eq!(output.stderr.matches("error: ").count(), 1, "{}", output.stderr);
+    assert!(output.stderr.contains("'@sideways'"), "{}", output.stderr);
+    // The third case is printed; the second matched its expectation.
+    assert_eq!(output.stdout, opt(&[], LOCALS).stdout);
+}
+
+/// A case with no operation is skipped, and an expectation in it, which nothing could meet, is
+/// an error.
+#[test]
+fn expectations_in_a_case_with_no_operation_are_an_error() {
+    for text in [
+        format!("// expected-error {{{{never produced}}}}\n// -----\n{LOCALS}"),
+        format!("{LOCALS}// -----\n// expected-error {{{{never produced}}}}\n"),
+    ] {
+        let output = opt(&[CHECK, "--split-input-file"], &text);
+        output.failed();
+        assert!(
+            output.stderr.starts_with("error: an expectation in a case with no operation"),
+            "{}",
+            output.stderr
+        );
+        assert!(output.stderr.contains("expected-error {{never produced}}"), "{}", output.stderr);
+        assert_eq!(output.stdout, opt(&[], LOCALS).stdout);
+    }
+    // A case of comments without expectations is skipped silently.
+    let text = format!("// only a comment\n// -----\n{LOCALS}");
+    let output = opt(&[CHECK, "--split-input-file"], &text);
+    output.succeeded();
+    assert_eq!(output.stderr, "");
+}

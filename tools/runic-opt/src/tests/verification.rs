@@ -57,55 +57,24 @@ impl Pass for BreakReturns {
     }
 }
 
-/// A pass that panics.
-#[derive(Default)]
-struct Panic;
-
-impl Pass for Panic {
-    type Target = Function;
-
-    fn name(&self) -> &'static str {
-        "panic"
-    }
-
-    fn argument(&self) -> &'static str {
-        "test-panic"
-    }
-
-    fn description(&self) -> &'static str {
-        "Panics"
-    }
-
-    fn can_schedule_on(&self, name: &OperationName) -> bool {
-        name.is::<Function>()
-    }
-
-    fn run_on_operation(
-        &mut self,
-        _op: EntityMut<'_, Function>,
-        _state: &mut PassExecutionState,
-    ) -> Result<(), Report> {
-        panic!("the test pass panicked")
-    }
-}
-
 /// Registers the passes of this module (again, which does nothing, when a test before did).
 pub(super) fn register() {
     register_pass(|| Box::new(BreakReturns)).unwrap();
-    register_pass(|| Box::new(Panic)).unwrap();
 }
 
 #[test]
 fn a_panic_in_a_pass_keeps_what_the_chunk_wrote_before_it() {
-    register();
     let output = opt(&["-p", "test-panic", "--print-ir-before", "all"], LOCALS);
     output.failed();
     assert_eq!(output.stdout, "");
-    let header = "// ----- IR before test-panic on builtin.function -----\n";
+    let header = "// ----- IR before test-panic on builtin.module -----\n";
     assert!(output.stderr.starts_with(header), "{}", output.stderr);
     assert!(output.stderr.contains("builtin.load_local 0"), "{}", output.stderr);
-    let error = "error: internal error: the test pass panicked\n";
-    assert!(output.stderr.ends_with(error), "{}", output.stderr);
+    let error = "error: internal error: the test-panic pass panicked\n";
+    assert!(output.stderr.contains(error), "{}", output.stderr);
+    // The report says where the panic happened.
+    let location = "the panic happened at tools/runic-opt/src/test_passes/panic.rs:";
+    assert!(output.stderr.contains(location), "{}", output.stderr);
     // The print comes before the error.
     assert!(output.stderr.find("load_local") < output.stderr.find(error));
 }

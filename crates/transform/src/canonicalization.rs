@@ -3,7 +3,9 @@ use core::fmt;
 
 use runic_core::{
     Context, EntityMut, Operation, OperationName, Report, Spanned,
-    pass::{OperationPass, Pass, PassExecutionState, PostPassStatus, write_pass_option},
+    pass::{
+        OperationPass, Pass, PassExecutionState, PassOptions, PostPassStatus, write_pass_option,
+    },
     patterns::{self, FrozenRewritePatternSet, GreedyRewriteConfig, RewritePatternSet},
 };
 
@@ -113,13 +115,14 @@ impl Pass for Canonicalizer {
         true
     }
 
-    /// Parses `enable-patterns` and `disable-patterns` (see the [Canonicalizer] docs) from the
-    /// `key=value, key=value` string of the pass pipeline.
-    fn initialize_options(&mut self, options: &str) -> Result<(), Report> {
-        for option in options.split(',').map(str::trim).filter(|opt| !opt.is_empty()) {
-            let Some((key, value)) = option.split_once('=').map(|(k, v)| (k.trim(), v)) else {
+    /// Reads `enable-patterns` and `disable-patterns` (see the [Canonicalizer] docs) from the
+    /// options of the pass pipeline.
+    fn initialize_options(&mut self, options: &PassOptions) -> Result<(), Report> {
+        options.check_keys(Self::NAME, &["enable-patterns", "disable-patterns"])?;
+        for (key, value) in options.iter() {
+            let Some(value) = value else {
                 return Err(Report::msg(format!(
-                    "invalid option '{option}' for pass '{}': expected 'key=value'",
+                    "invalid option '{key}' for pass '{}': expected '{key}=<names>'",
                     Self::NAME
                 )));
             };
@@ -131,13 +134,7 @@ impl Pass for Canonicalizer {
                 .collect::<Vec<_>>();
             let list = match key {
                 "enable-patterns" => &mut self.enabled_patterns,
-                "disable-patterns" => &mut self.disabled_patterns,
-                _ => {
-                    return Err(Report::msg(format!(
-                        "invalid option '{key}' for pass '{}'",
-                        Self::NAME
-                    )));
-                }
+                _ => &mut self.disabled_patterns,
             };
             // An empty list would silently mean "no filter", the opposite of what was asked.
             if names.is_empty() {
@@ -299,13 +296,14 @@ mod tests {
         }
     }
 
-    /// The pattern lists parse from the `key=value, key=value` form and print back quoted.
+    /// The pattern lists are read from the options and print back quoted.
     #[test]
     fn options_print_as_textual_pipeline() {
         let mut pass = Canonicalizer::default();
         assert_eq!(Textual(&pass).to_string(), "canonicalizer");
 
-        Pass::initialize_options(&mut pass, "enable-patterns=a;b, disable-patterns=c").unwrap();
+        let options = PassOptions::parse("enable-patterns=a;b disable-patterns=c").unwrap();
+        Pass::initialize_options(&mut pass, &options).unwrap();
         assert_eq!(
             Textual(&pass).to_string(),
             "canonicalizer{enable-patterns=\"a;b\" disable-patterns=\"c\"}"
@@ -317,17 +315,19 @@ mod tests {
     /// Unknown keys, missing or empty lists, a name in both lists and a repeated key are errors.
     #[test]
     fn invalid_options_are_rejected() {
+        let options =
+            |pairs: &[(&str, Option<&str>)]| pairs.iter().copied().collect::<PassOptions>();
         for options in [
-            "bogus=1",
-            "enable-patterns",
-            "enable-patterns=",
-            "enable-patterns=;",
-            "enable-patterns=a, disable-patterns=a",
-            "enable-patterns=a, enable-patterns=b",
+            options(&[("bogus", Some("1"))]),
+            options(&[("enable-patterns", None)]),
+            options(&[("enable-patterns", Some(""))]),
+            options(&[("enable-patterns", Some(";"))]),
+            options(&[("enable-patterns", Some("a")), ("disable-patterns", Some("a"))]),
+            options(&[("enable-patterns", Some("a")), ("enable-patterns", Some("b"))]),
         ] {
             let mut pass = Canonicalizer::default();
             assert!(
-                Pass::initialize_options(&mut pass, options).is_err(),
+                Pass::initialize_options(&mut pass, &options).is_err(),
                 "expected '{options}' to be rejected"
             );
         }

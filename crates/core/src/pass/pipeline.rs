@@ -17,11 +17,11 @@
 //!   or the closing `}`). A key is a bare word given at most once.
 //! * A value is either a bare word (a run of characters that are not whitespace, `(){},=` or
 //!   `"`, such as `foo-bar`, `3`, `-1` or `a;b`) or a string in double quotes, which may contain
-//!   any character but `,`, with the escapes `\"` and `\\`. The value reaches the pass as it was
+//!   any character, with the escapes `\"` and `\\`. The value reaches the pass as it was
 //!   written, with the quotes and escapes removed: it is text, and nothing converts it (a number
 //!   is not read, so `0x10` arrives as `0x10`). The pairs are handed to
-//!   [`super::Pass::initialize_options`] joined by `, ` (`key=value` or `key`), so a value must not
-//!   contain `,`; a pass prints its options back with [`write_pass_option`].
+//!   [`super::Pass::initialize_options`] as a [`PassOptions`], in the order written; a pass prints
+//!   its options back with [`write_pass_option`].
 //! * Whitespace may appear between any two tokens. A pipeline may be empty at any depth
 //!   (`builtin.module()`, `builtin.module(builtin.function())`), as a pass manager with no passes
 //!   prints itself.
@@ -76,7 +76,102 @@ pub enum PipelineElement {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectedPass {
     name: String,
-    options: Vec<(String, Option<String>)>,
+    options: PassOptions,
+}
+
+/// The options of a pass as a pipeline gives them to [`super::Pass::initialize_options`]: the
+/// pairs `key=value` and `key` in the order written, each value as it was written (with the
+/// quotes and escapes of the text removed). A key appears at most once in a pipeline's text; a
+/// caller that builds options itself may repeat one, and a pass decides what that means.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct PassOptions {
+    pairs: Vec<(String, Option<String>)>,
+}
+
+impl PassOptions {
+    /// No options.
+    pub const fn new() -> Self {
+        Self { pairs: Vec::new() }
+    }
+
+    /// Reads `text` as the options of a pass are written between `{` and `}` in a pipeline:
+    /// `key="value" key=value key`, separated by whitespace.
+    pub fn parse(text: &str) -> Result<Self, Report> {
+        let mut parser = Parser::new(text);
+        let mut options = Self::new();
+        parser.options("the pass", &mut options, Closing::End)?;
+        Ok(options)
+    }
+
+    /// Adds `key`, with `value` or without one.
+    pub fn push(&mut self, key: impl Into<String>, value: Option<impl Into<String>>) {
+        self.pairs.push((key.into(), value.map(Into::into)));
+    }
+
+    /// Whether no option was given.
+    pub fn is_empty(&self) -> bool {
+        self.pairs.is_empty()
+    }
+
+    /// How many options were given.
+    pub fn len(&self) -> usize {
+        self.pairs.len()
+    }
+
+    /// The options in the order given: each key and its value, `None` for a key given alone.
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = (&str, Option<&str>)> + '_ {
+        self.pairs.iter().map(|(key, value)| (key.as_str(), value.as_deref()))
+    }
+
+    /// The first option named `key`: `None` when it was not given, `Some(None)` when it was given
+    /// without a value.
+    pub fn get(&self, key: &str) -> Option<Option<&str>> {
+        self.iter().find(|(k, _)| *k == key).map(|(_, value)| value)
+    }
+
+    /// Whether `key` was given.
+    pub fn contains(&self, key: &str) -> bool {
+        self.get(key).is_some()
+    }
+
+    /// An error for the first option whose key is not one of `known`, which `pass` (its
+    /// command-line name) takes: "pass 'x' has no option 'k'", followed by the options it
+    /// takes, or "pass 'x' takes no options" when `known` is empty and an option was given.
+    pub fn check_keys(&self, pass: &str, known: &[&str]) -> Result<(), Report> {
+        let Some((key, _)) = self.iter().find(|(key, _)| !known.contains(key)) else {
+            return Ok(());
+        };
+        if known.is_empty() {
+            return Err(Report::msg(format!("pass '{pass}' takes no options")));
+        }
+        let takes = known.iter().map(|key| format!("'{key}'")).collect::<Vec<_>>().join(", ");
+        Err(Report::msg(format!("pass '{pass}' has no option '{key}'; it takes {takes}")))
+    }
+}
+
+impl<K: Into<String>, V: Into<String>> FromIterator<(K, Option<V>)> for PassOptions {
+    fn from_iter<I: IntoIterator<Item = (K, Option<V>)>>(iter: I) -> Self {
+        Self {
+            pairs: iter
+                .into_iter()
+                .map(|(key, value)| (key.into(), value.map(Into::into)))
+                .collect(),
+        }
+    }
+}
+
+impl fmt::Display for PassOptions {
+    /// The options as pipeline text writes them between `{` and `}`, every value quoted; the
+    /// text reads back with [`PassOptions::parse`] to equal options.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (i, (key, value)) in self.iter().enumerate() {
+            if i > 0 {
+                f.write_str(" ")?;
+            }
+            write_pass_option(f, key, value)?;
+        }
+        Ok(())
+    }
 }
 
 /// The operations a [`PassPipeline`] runs on.
@@ -200,26 +295,10 @@ impl SelectedPass {
         &self.name
     }
 
-    /// The options given for the pass, in the order written; keys are unique.
-    pub fn options(&self) -> &[(String, Option<String>)] {
+    /// The options given for the pass, in the order written (keys are unique), as
+    /// [`super::Pass::initialize_options`] receives them.
+    pub fn options(&self) -> &PassOptions {
         &self.options
-    }
-
-    /// The options as [`super::Pass::initialize_options`] receives them: `key=value` or `key`,
-    /// joined by `, `.
-    pub fn options_string(&self) -> String {
-        let mut options = String::new();
-        for (i, (key, value)) in self.options.iter().enumerate() {
-            if i > 0 {
-                options.push_str(", ");
-            }
-            options.push_str(key);
-            if let Some(value) = value {
-                options.push('=');
-                options.push_str(value);
-            }
-        }
-        options
     }
 
     fn add_to(&self, pm: &mut OpPassManager) -> Result<(), Report> {
@@ -235,7 +314,7 @@ impl SelectedPass {
             };
             return Err(Report::msg(format!("unknown pass '{}'{hint}", self.name)));
         };
-        info.add_to_pipeline(pm, &self.options_string())
+        info.add_to_pipeline(pm, &self.options)
     }
 }
 
@@ -245,14 +324,7 @@ impl fmt::Display for SelectedPass {
         if self.options.is_empty() {
             return Ok(());
         }
-        f.write_str("{")?;
-        for (i, (key, value)) in self.options.iter().enumerate() {
-            if i > 0 {
-                f.write_str(" ")?;
-            }
-            write_pass_option(f, key, value.as_deref())?;
-        }
-        f.write_str("}")
+        write!(f, "{{{}}}", self.options)
     }
 }
 
@@ -329,6 +401,14 @@ enum Kind {
     Word(String),
     /// A string in double quotes, unescaped.
     Quoted(String),
+    End,
+}
+
+/// What ends a list of options: the `}` of a pass in a pipeline, or the end of the text read by
+/// [`PassOptions::parse`].
+#[derive(Copy, Clone)]
+enum Closing {
+    Brace,
     End,
 }
 
@@ -521,28 +601,41 @@ impl<'a> Parser<'a> {
         }
         let mut pass = SelectedPass {
             name: word,
-            options: Vec::new(),
+            options: PassOptions::new(),
         };
         if matches!(self.peek()?.kind, Kind::LBrace) {
             self.next()?;
-            self.options(&mut pass)?;
+            self.options(&format!("pass '{}'", pass.name), &mut pass.options, Closing::Brace)?;
         }
         Ok(PipelineElement::Pass(pass))
     }
 
-    /// The options of `pass` after its `{`, through its `}`.
-    fn options(&mut self, pass: &mut SelectedPass) -> Result<(), Report> {
+    /// The options of `pass` (`pass 'name'`) after its `{`, through what closes them.
+    fn options(
+        &mut self,
+        pass: &str,
+        options: &mut PassOptions,
+        closing: Closing,
+    ) -> Result<(), Report> {
+        let closes = |kind: &Kind| match closing {
+            Closing::Brace => matches!(kind, Kind::RBrace),
+            Closing::End => matches!(kind, Kind::End),
+        };
+        let expected_key = match closing {
+            Closing::Brace => "an option key or '}'",
+            Closing::End => "an option key or the end of the options",
+        };
         loop {
             let token = self.next()?;
             let key = match token.kind {
-                Kind::RBrace => return Ok(()),
+                ref kind if closes(kind) => return Ok(()),
                 Kind::Word(ref key) if is_name(key) => key.clone(),
-                _ => return Err(self.unexpected(&token, "an option key or '}'")),
+                _ => return Err(self.unexpected(&token, expected_key)),
             };
-            if pass.options.iter().any(|(k, _)| *k == key) {
+            if options.contains(&key) {
                 return Err(self.error(
                     token.offset,
-                    &format!("each option of pass '{}' at most once", pass.name),
+                    &format!("each option of {pass} at most once"),
                     &format!("'{key}' again"),
                 ));
             }
@@ -552,20 +645,9 @@ impl<'a> Parser<'a> {
                 self.next()?;
                 let token = self.next()?;
                 match token.kind {
-                    Kind::Word(word) => {
+                    Kind::Word(word) | Kind::Quoted(word) => {
                         end = self.position;
                         value = Some(word);
-                    }
-                    Kind::Quoted(quoted) if quoted.contains(',') => {
-                        return Err(self.error(
-                            token.offset,
-                            &format!("a value for option '{key}' without ','"),
-                            "a value that contains ','",
-                        ));
-                    }
-                    Kind::Quoted(quoted) => {
-                        end = self.position;
-                        value = Some(quoted);
                     }
                     _ => {
                         return Err(self.unexpected(
@@ -579,12 +661,15 @@ impl<'a> Parser<'a> {
             }
             // Pairs are separated by whitespace: `{a="x"b="y"}` is not two options.
             let following = self.next()?;
-            if following.offset == end && !matches!(following.kind, Kind::RBrace) {
-                return Err(self
-                    .unexpected(&following, &format!("whitespace or '}}' after option '{key}'")));
+            if following.offset == end && !closes(&following.kind) {
+                let expected = match closing {
+                    Closing::Brace => format!("whitespace or '}}' after option '{key}'"),
+                    Closing::End => format!("whitespace or the end after option '{key}'"),
+                };
+                return Err(self.unexpected(&following, &expected));
             }
             self.peeked = Some(following);
-            pass.options.push((key, value));
+            options.pairs.push((key, value));
         }
     }
 

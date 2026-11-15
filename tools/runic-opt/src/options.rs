@@ -12,8 +12,9 @@ use runic_core::{
 ///
 /// The input holds one top-level operation. It is parsed and verified; the pipeline, if one is
 /// given, runs on it with the verifier after each pass; the result is printed to standard output.
-/// Diagnostics and IR printed between passes go to standard error. The exit code is 0 when all of
-/// this succeeded, 1 otherwise.
+/// Diagnostics and IR printed between passes go to standard error. The pipeline is checked
+/// before the input is read. The exit code is 0 when no case produced an error (an error a pass
+/// emits counts, as one it fails with does), 1 otherwise.
 #[derive(Debug, Parser)]
 #[command(name = "runic-opt", version)]
 pub struct Options {
@@ -80,16 +81,20 @@ pub struct Options {
     /// whose message, the text of one of its labels, or one of its context frames (such as
     /// "pass 'cse' failed on ..") contains TEXT. `expected-KIND@+N` and `@-N` expect it N lines
     /// below or above, `@above` and `@below` on the nearest line above or below that does not
-    /// hold only expectations, and `@unknown` without a location. With `expected-KIND-re`, TEXT
-    /// is a regular expression that must match. TEXT runs to the last `}}` before the next
-    /// expectation on the line, less the whitespace around it; a line may hold several.
+    /// hold only expectations, and `@unknown` without a location; whitespace may stand before
+    /// the `@`. With `expected-KIND-re`, TEXT is a regular expression that must match. TEXT runs
+    /// to the last `}}` before the next expectation on the line, less the whitespace around it;
+    /// a line may hold several. A diagnostic's line is that of its first label in the input; one
+    /// located in another file matches no line and not `@unknown`.
     ///
     /// Each diagnostic matches one expectation at most, and each expectation one diagnostic.
     /// Diagnostics that match none, and expectations that match none, are reported as errors;
     /// the exit code is 1 exactly when there is one, or an expectation cannot be read (its case
     /// is then not processed). A case is printed only when it succeeded. With
-    /// `--split-input-file` each case has its own expectations. The warning for a pass that ran
-    /// on no operation is a diagnostic like the others (expect it with `@unknown`).
+    /// `--split-input-file` each case has its own expectations, and a location must designate a
+    /// line of the case; an expectation in a case that holds no operation is an error. The
+    /// warning for a pass that ran on no operation is a diagnostic like the others (expect it
+    /// with `@unknown`).
     #[arg(long)]
     pub verify_diagnostics: bool,
 

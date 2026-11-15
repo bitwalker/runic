@@ -12,21 +12,29 @@
 //! // expected-error-re {{regex}}         whose text matches a regular expression
 //! ```
 //!
+//! Whitespace may stand between the kind and the `@` (`expected-error @+1 {{text}}`). A location
+//! designates a line of the case the comment is in: with `--split-input-file`, a line of another
+//! case, or past the first or last line of the case, is an error.
+//!
 //! with the kinds `error`, `warning`, `info` and `hint`. The text is what lies between `{{` and
 //! the last `}}` before the next expectation on the line (or the end of the line), without the
 //! whitespace around it; a line may hold several expectations. `expected-` preceded by a letter,
 //! a digit, `-` or `_` is not an expectation, nor is text in a string literal.
 //!
 //! A diagnostic matches an expectation of its kind and line when its message, the text of one of
-//! its labels or one of its context frames contains the text (or matches the expression). Each
-//! diagnostic matches at most one expectation and each expectation at most one diagnostic.
+//! its labels or one of its context frames contains the text (or matches the expression). Its
+//! line is that of its first primary label, when the label is in the case's own source: a
+//! diagnostic located in another source (written with `loc("other":..)`) matches neither a line
+//! nor `@unknown`. Each diagnostic matches at most one expectation and each expectation at most
+//! one diagnostic. What does not match is reported by [`mismatches`].
 
 use std::{fmt::Write as _, ops::Range};
 
 use regex::Regex;
 use runic_core::diagnostics::{
-    ContextFrame, Diagnostic, DiagnosticSet, Label, LabelStyle, OwnedDiagnostic, Report, Severity,
-    SourceMap, SourceProvider, SourceSpan, VisitDiagnostic,
+    ContextFrame, Diagnostic, DiagnosticSet, Label, LabelStyle, Note, NoteKind, OwnedDiagnostic,
+    Report, Severity, SourceId, SourceMap, SourceProvider, SourceSpan, TextRange, VisitDiagnostic,
+    diagnostic,
 };
 
 /// The name of a kind, as an expectation spells it.
@@ -61,8 +69,13 @@ pub struct Expectation {
 
 impl Expectation {
     fn matches(&self, found: &Found) -> bool {
+        let at = match (self.line, found.location) {
+            (Some(line), Location::Line(at)) => line == at,
+            (None, Location::Unknown) => true,
+            _ => false,
+        };
         self.kind == found.kind
-            && self.line == found.line
+            && at
             && found.texts.iter().any(|text| match &self.regex {
                 Some(regex) => regex.is_match(text),
                 None => text.contains(self.text.as_str()),
@@ -77,15 +90,19 @@ pub struct Malformed {
     pub message: String,
 }
 
-/// The expectations written in `text`, or what is wrong with those that cannot be read.
-pub fn scan(text: &str) -> Result<Vec<Expectation>, Vec<Malformed>> {
-    let lines = Lines::new(text);
+/// The expectations written in `text`, a case whose lines before `first_line` (counted from 0)
+/// are padding, or what is wrong with those that cannot be read.
+pub fn scan(text: &str, first_line: usize) -> Result<Vec<Expectation>, Vec<Malformed>> {
+    let lines = Lines::new(text, first_line);
     let mut expectations = Vec::new();
     let mut malformed = Vec::new();
     for (index, line) in lines.lines.iter().enumerate() {
         let Some(comment) = line.comment else {
             continue;
         };
+        if index < first_line {
+            continue;
+        }
         let content = &text[line.range.clone()];
         let mut from = comment;
         while let Some(token) = next_token(content, from) {
@@ -118,6 +135,8 @@ pub fn scan(text: &str) -> Result<Vec<Expectation>, Vec<Malformed>> {
 /// The lines of a case's text.
 struct Lines {
     lines: Vec<Line>,
+    /// The first line of the case: the lines before it are padding
+    first: usize,
 }
 
 struct Line {
@@ -130,7 +149,7 @@ struct Line {
 }
 
 impl Lines {
-    fn new(text: &str) -> Self {
+    fn new(text: &str, first: usize) -> Self {
         let mut lines = Vec::new();
         let mut offset = 0;
         for content in text.split_inclusive('\n') {
@@ -146,7 +165,7 @@ impl Lines {
             });
             offset += content.len();
         }
-        Self { lines }
+        Self { lines, first }
     }
 }
 
@@ -230,6 +249,11 @@ fn read_expectation(
     }
 
     let mut target = Some(index as u32 + 1);
+    // `expected-error @+1`: whitespace may stand before the location.
+    let spaced = line[at..].trim_start();
+    if spaced.starts_with('@') {
+        at = line.len() - spaced.len();
+    }
     if line[at..].starts_with('@') {
         let len = line[at + 1..]
             .find(|c: char| !c.is_ascii_alphanumeric() && c != '+' && c != '-')
@@ -299,9 +323,10 @@ fn read_expectation(
 /// for `@unknown`.
 fn resolve(location: &str, index: usize, lines: &Lines) -> Result<Option<u32>, String> {
     let count = lines.lines.len();
+    let first = lines.first;
     let target = match location {
         "unknown" => return Ok(None),
-        "above" => (0..index).rev().find(|line| !lines.lines[*line].only_expectations),
+        "above" => (first..index).rev().find(|line| !lines.lines[*line].only_expectations),
         "below" => (index + 1..count).find(|line| !lines.lines[*line].only_expectations),
         _ => {
             let offset = location
@@ -319,39 +344,57 @@ fn resolve(location: &str, index: usize, lines: &Lines) -> Result<Option<u32>, S
             if down {
                 index.checked_add(n).filter(|line| *line < count)
             } else {
-                index.checked_sub(n)
+                index.checked_sub(n).filter(|line| *line >= first)
             }
         }
     };
     match target {
         Some(line) => Ok(Some(line as u32 + 1)),
-        None => Err(format!("'@{location}' designates no line of the input")),
+        None => Err(format!("'@{location}' designates no line of the case it is written in")),
     }
 }
 
 /// A diagnostic that was produced, as it is matched.
 #[derive(Debug)]
 pub struct Found {
-    pub kind: Severity,
-    pub message: String,
+    kind: Severity,
+    message: String,
     /// The message, the text of each label and each context frame
     texts: Vec<String>,
     /// Its first primary label, with the label's text
-    pub primary: Option<(SourceSpan, Option<String>)>,
-    /// The line of the first primary label, counted from 1
-    line: Option<u32>,
+    primary: Option<(SourceSpan, Option<String>)>,
+    /// Where the first primary label is
+    location: Location,
+    /// Its notes
+    notes: Vec<(NoteKind, String)>,
+    /// The messages of its context frames, innermost first
+    contexts: Vec<String>,
+}
+
+/// Where a diagnostic is, as expectations see it.
+#[derive(Debug, Copy, Clone)]
+enum Location {
+    /// On this line of the case's source, counted from 1
+    Line(u32),
+    /// Nowhere: it has no primary label with a known span
+    Unknown,
+    /// In another source than the case's
+    Elsewhere,
 }
 
 /// Collects, from diagnostics, what is matched against expectations.
 pub struct Collector<'a> {
     sources: &'a SourceMap,
+    /// The source of the case, whose lines expectations designate
+    own: Option<SourceId>,
     found: Vec<Found>,
 }
 
 impl<'a> Collector<'a> {
-    pub fn new(sources: &'a SourceMap) -> Self {
+    pub fn new(sources: &'a SourceMap, own: Option<SourceId>) -> Self {
         Self {
             sources,
+            own,
             found: Vec::new(),
         }
     }
@@ -385,7 +428,8 @@ impl<'a> Collector<'a> {
         let _ = diagnostic.message(&mut message);
         let mut visitor = Visitor {
             labels: Vec::new(),
-            related: Collector::new(self.sources),
+            notes: Vec::new(),
+            related: Collector::new(self.sources, self.own),
         };
         diagnostic.visit(&mut visitor);
 
@@ -397,17 +441,22 @@ impl<'a> Collector<'a> {
             .iter()
             .find(|(span, style, _)| *style == LabelStyle::Primary && !span.is_unknown())
             .map(|(span, _, text)| (*span, text.clone()));
-        let line = primary.as_ref().and_then(|(span, _)| {
-            self.sources
+        let location = match &primary {
+            None => Location::Unknown,
+            Some((span, _)) if Some(span.source().id()) == self.own => self
+                .sources
                 .line_column(span.source().id(), span.range().start())
-                .map(|location| location.line().to_u32())
-        });
+                .map_or(Location::Elsewhere, |location| Location::Line(location.line().to_u32())),
+            Some(_) => Location::Elsewhere,
+        };
         self.found.push(Found {
             kind,
             message,
             texts,
             primary,
-            line,
+            location,
+            notes: visitor.notes,
+            contexts: contexts.iter().map(|frame| String::from(frame.message())).collect(),
         });
         self.found.extend(visitor.related.finish());
     }
@@ -415,6 +464,7 @@ impl<'a> Collector<'a> {
 
 struct Visitor<'a> {
     labels: Vec<(SourceSpan, LabelStyle, Option<String>)>,
+    notes: Vec<(NoteKind, String)>,
     related: Collector<'a>,
 }
 
@@ -428,14 +478,74 @@ impl VisitDiagnostic for Visitor<'_> {
         self.labels.push((label.span, label.style, text));
     }
 
+    fn note(&mut self, note: Note<'_>) {
+        let mut text = String::new();
+        let _ = text.write_fmt(note.message);
+        self.notes.push((note.kind, text));
+    }
+
     fn related(&mut self, diagnostic: &dyn Diagnostic) {
         self.related.diagnostic(diagnostic, diagnostic.severity(), &[]);
     }
 }
 
+/// The errors that say what did not match, in the case whose source is `source`: each diagnostic
+/// that matched no expectation, rendered as it was (its labels, notes and context frames) under
+/// `unexpected <kind>: <message>`, and each expectation that matched no diagnostic, at the
+/// comment.
+pub fn mismatches(
+    expectations: &[Expectation],
+    found: &[Found],
+    source: Option<SourceId>,
+) -> Vec<OwnedDiagnostic> {
+    let (unexpected, missing) = unmatched(expectations, found);
+    let mut mismatches = Vec::new();
+    for found in unexpected {
+        let message = format!("unexpected {}: {}", kind_name(found.kind), found.message);
+        let mut error = match &found.primary {
+            Some((span, Some(label))) => diagnostic!(
+                severity: Error,
+                message: (message),
+                labels: [primary(*span, (label.as_str()))],
+            ),
+            Some((span, None)) => {
+                diagnostic!(severity: Error, message: (message), labels: [primary(*span)],)
+            }
+            None => diagnostic!(severity: Error, message: (message)),
+        };
+        for (kind, note) in &found.notes {
+            error.push_note(*kind, format_args!("{note}"));
+        }
+        let mut error = OwnedDiagnostic::new(error);
+        for context in &found.contexts {
+            error.push_context(context.as_str());
+        }
+        mismatches.push(error);
+    }
+    for expectation in missing {
+        let message = format!(
+            "expected {} \"{}\" was not produced",
+            kind_name(expectation.kind),
+            expectation.text
+        );
+        let span = source.and_then(|id| {
+            TextRange::try_from_usize(expectation.range.start, expectation.range.end)
+                .ok()
+                .map(|range| SourceSpan::session(id, range))
+        });
+        mismatches.push(OwnedDiagnostic::new(match span {
+            Some(span) => {
+                diagnostic!(severity: Error, message: (message), labels: [primary(span)],)
+            }
+            None => diagnostic!(severity: Error, message: (message)),
+        }));
+    }
+    mismatches
+}
+
 /// The diagnostics and the expectations that matched nothing, in the order they were produced
 /// and written.
-pub fn unmatched<'a>(
+fn unmatched<'a>(
     expectations: &'a [Expectation],
     found: &'a [Found],
 ) -> (Vec<&'a Found>, Vec<&'a Expectation>) {

@@ -35,7 +35,7 @@ struct OnFunctions;
 /// take a value and `flag` takes none. It keeps them in the order given and prints them back.
 #[derive(Default)]
 struct WithOptions {
-    options: Vec<(String, Option<String>)>,
+    options: PassOptions,
 }
 
 const KEYS: [&str; 4] = ["alpha", "beta", "gamma", "flag"];
@@ -93,26 +93,19 @@ impl Pass for WithOptions {
         true
     }
 
-    /// The options come joined by `, `; a value never contains `,`, and is kept as it is.
-    fn initialize_options(&mut self, options: &str) -> Result<(), Report> {
-        if options.is_empty() {
-            return Ok(());
-        }
-        for option in options.split(", ") {
-            let (key, value) = match option.split_once('=') {
-                Some((key, value)) => (key, Some(value.to_string())),
-                None => (option, None),
-            };
+    /// The options come as written; each value is kept as it is.
+    fn initialize_options(&mut self, options: &PassOptions) -> Result<(), Report> {
+        for (key, value) in options.iter() {
             if !KEYS.contains(&key) {
                 return Err(Report::msg(format!("unknown option '{key}'")));
             }
             if (key == "flag") != value.is_none() {
                 return Err(Report::msg(format!("option '{key}' given the wrong way")));
             }
-            if self.options.iter().any(|(k, _)| k == key) {
+            if self.options.contains(key) {
                 return Err(Report::msg(format!("option '{key}' given twice")));
             }
-            self.options.push((key.to_string(), value));
+            self.options.push(key, value);
         }
         Ok(())
     }
@@ -207,8 +200,13 @@ fn pass_options_roundtrip() {
         panic!("expected a pass");
     };
     assert_eq!(
-        pass.options_string(),
-        "enable-patterns=a;b, disable-patterns=foo-bar, depth=3, verbose"
+        pass.options().iter().collect::<Vec<_>>(),
+        [
+            ("enable-patterns", Some("a;b")),
+            ("disable-patterns", Some("foo-bar")),
+            ("depth", Some("3")),
+            ("verbose", None),
+        ]
     );
 
     for (invalid, expected) in [
@@ -216,11 +214,6 @@ fn pass_options_roundtrip() {
             "builtin.module(canonicalizer{disable-patterns=a disable-patterns=b})",
             "expected each option of pass 'canonicalizer' at most once, found 'disable-patterns' \
              again at offset 48",
-        ),
-        (
-            "builtin.module(canonicalizer{enable-patterns=\"a,b\"})",
-            "expected a value for option 'enable-patterns' without ',', found a value that \
-             contains ',' at offset 45",
         ),
         (
             "builtin.module(canonicalizer{\"a b\"=c})",
@@ -252,7 +245,10 @@ fn quoted_values_escape_quotes_and_backslashes() {
     let PipelineElement::Pass(pass) = &pipeline.elements()[0] else {
         panic!("expected a pass");
     };
-    assert_eq!(pass.options(), [("a".to_string(), Some(r#"say "hi" \ {x=(y)}"#.to_string()))]);
+    assert_eq!(
+        pass.options().iter().collect::<Vec<_>>(),
+        [("a", Some(r#"say "hi" \ {x=(y)}"#))]
+    );
     assert_eq!(pipeline.to_string(), text);
 }
 
@@ -546,6 +542,64 @@ fn options_reach_the_pass() {
     assert_eq!(error, "pass 'pipeline-test-generic' takes no options");
 }
 
+/// A value reaches the pass as written, whatever it holds: a comma, `=`, braces, quotes.
+#[test]
+fn a_value_may_hold_any_character() {
+    register();
+    let values = ["expected i32, found i64", "a=b", "{x}", "say \"hi\"", ",", "a, b=c"];
+    for value in values {
+        let mut text = String::from("any(pipeline-test-options{alpha=");
+        let mut quoted = String::new();
+        write_pass_option(&mut quoted, "v", Some(value)).unwrap();
+        text.push_str(&quoted[2..]);
+        text.push_str(" flag})");
+        let pipeline = parse(&text);
+        let PipelineElement::Pass(pass) = &pipeline.elements()[0] else {
+            panic!("expected a pass");
+        };
+        assert_eq!(pass.options().get("alpha"), Some(Some(value)), "{text}");
+        assert_eq!(pass.options().get("flag"), Some(None), "{text}");
+        let pm = pipeline.load(Rc::new(Context::default()), Nesting::Explicit).unwrap();
+        // What the loaded pass prints parses back to the same pipeline.
+        assert_eq!(printed(&pm), text);
+        assert_eq!(parse(&printed(&pm)), pipeline);
+    }
+}
+
+#[test]
+fn pass_options_parse_and_print() {
+    let options = PassOptions::parse(r#"a="x, y" b=word c"#).unwrap();
+    assert_eq!(
+        options.iter().collect::<Vec<_>>(),
+        [("a", Some("x, y")), ("b", Some("word")), ("c", None)]
+    );
+    assert_eq!(options.len(), 3);
+    assert!(options.contains("c"));
+    assert_eq!(options.get("d"), None);
+    assert_eq!(options.to_string(), r#"a="x, y" b="word" c"#);
+    assert_eq!(PassOptions::parse(&options.to_string()).unwrap(), options);
+    assert!(PassOptions::parse("").unwrap().is_empty());
+    for (invalid, expected) in [
+        ("a=1 a=2", "expected each option of the pass at most once"),
+        ("a=", "expected a value for option 'a'"),
+        ("a=1 }", "expected an option key or the end of the options, found '}'"),
+    ] {
+        let error = PassOptions::parse(invalid).unwrap_err().to_string();
+        assert!(error.contains(expected), "{invalid}: {error}");
+    }
+
+    assert!(options.check_keys("p", &["a", "b", "c"]).is_ok());
+    assert_eq!(
+        options.check_keys("p", &["a", "c"]).unwrap_err().to_string(),
+        "pass 'p' has no option 'b'; it takes 'a', 'c'"
+    );
+    assert_eq!(
+        options.check_keys("p", &[]).unwrap_err().to_string(),
+        "pass 'p' takes no options"
+    );
+    assert!(PassOptions::new().check_keys("p", &[]).is_ok());
+}
+
 /// A typed pass written under an anchor of another type is an error with explicit nesting, and is
 /// nested under its type with implicit nesting.
 #[test]
@@ -625,12 +679,12 @@ fn random_pipeline(rng: &mut Rng, anchor: &str, depth: usize) -> PassPipeline {
             0 if matches!(anchor, "any" | "builtin.function") => {
                 PipelineElement::Pass(SelectedPass {
                     name: "pipeline-test-function".to_string(),
-                    options: Vec::new(),
+                    options: PassOptions::new(),
                 })
             }
             0 | 1 => PipelineElement::Pass(SelectedPass {
                 name: rng.pick(&["pipeline-test-generic", "pipeline-test-other"]).to_string(),
-                options: Vec::new(),
+                options: PassOptions::new(),
             }),
             2 | 3 => PipelineElement::Pass(random_options_pass(rng)),
             4 => {
@@ -651,12 +705,12 @@ fn random_pipeline(rng: &mut Rng, anchor: &str, depth: usize) -> PassPipeline {
 }
 
 fn random_options_pass(rng: &mut Rng) -> SelectedPass {
-    // Every character a quoted value may hold that is special elsewhere, except ','.
+    // Every character a quoted value may hold that is special elsewhere.
     const ALPHABET: &[char] = &[
-        'a', 'z', '0', '9', ';', '-', '_', ' ', '"', '\\', '{', '}', '(', ')', '=', '.', 'é',
+        'a', 'z', '0', '9', ';', '-', '_', ' ', '"', '\\', '{', '}', '(', ')', '=', '.', 'é', ',',
     ];
     let mut keys = KEYS.to_vec();
-    let mut options = Vec::new();
+    let mut options = PassOptions::new();
     for _ in 0..rng.below(KEYS.len() + 1) {
         let key = keys.remove(rng.below(keys.len()));
         let value = (key != "flag").then(|| {
@@ -664,7 +718,7 @@ fn random_options_pass(rng: &mut Rng) -> SelectedPass {
                 .map(|_| ALPHABET[rng.below(ALPHABET.len())])
                 .collect::<String>()
         });
-        options.push((key.to_string(), value));
+        options.push(key, value);
     }
     SelectedPass {
         name: "pipeline-test-options".to_string(),

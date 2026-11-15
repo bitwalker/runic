@@ -19,8 +19,10 @@ fn main() -> ExitCode {
     // A panic is a defect of the tool. `run` reports one on the thread of an input itself, on the
     // standard error it is given; the diagnostics crate's panic hook is not installed, since it
     // would print that panic too and hide the report the panic carries.
-    let mut stdin = io::stdin().lock();
-    let mut stdout = io::BufWriter::new(io::stdout().lock());
-    let mut stderr = io::stderr().lock();
+    // The streams are not locked for the run: the logger writes to standard error from the thread
+    // of an input, and would wait for ever on a lock this thread held while it waits for that one.
+    let mut stdin = io::stdin();
+    let mut stdout = io::BufWriter::new(io::stdout());
+    let mut stderr = io::stderr();
     runic_opt::run(std::env::args_os().skip(1), &mut stdin, &mut stdout, &mut stderr)
 }

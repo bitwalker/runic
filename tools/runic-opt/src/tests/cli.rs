@@ -260,3 +260,31 @@ fn an_output_file_is_written_only_when_every_case_succeeded() {
     one.failed();
     assert!(!path.exists());
 }
+
+/// `-o` writes through a temporary file beside the output, renamed into place: none is left
+/// behind, on success or when the write fails.
+#[test]
+fn an_output_file_is_written_whole_or_not_at_all() {
+    let dir = scratch();
+    let path = dir.path().join("output.runic");
+    opt(&["-o", path.to_str().unwrap()], REPEATED_ADD).succeeded();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), opt(&[], REPEATED_ADD).stdout);
+    let names = || {
+        let mut names = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    assert_eq!(names(), ["output.runic"]);
+    // A directory in the way of the rename: the write fails, and nothing is left behind.
+    let blocked = dir.path().join("blocked");
+    std::fs::create_dir(&blocked).unwrap();
+    std::fs::write(blocked.join("inside"), "kept").unwrap();
+    let output = opt(&["-o", blocked.to_str().unwrap()], REPEATED_ADD);
+    output.failed();
+    assert!(output.stderr.starts_with("error: could not write '"), "{}", output.stderr);
+    assert_eq!(names(), ["blocked", "output.runic"]);
+    assert_eq!(std::fs::read_to_string(blocked.join("inside")).unwrap(), "kept");
+}

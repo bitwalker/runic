@@ -267,6 +267,41 @@ fn the_test_passes_print_their_options_back_as_text_that_loads_the_same_pipeline
     );
 }
 
+/// A message reaches `test-fail` as written, whatever it holds, and prints back as text that loads
+/// the same pipeline.
+#[test]
+fn a_message_may_hold_commas_equals_braces_and_quotes() {
+    for message in [
+        "expected i32, found i64",
+        "a=b",
+        "{x}, (y)",
+        r#"say "hi", then \ go"#,
+        "message=other, after-change",
+    ] {
+        let mut quoted = String::new();
+        runic_core::pass::write_pass_option(&mut quoted, "message", Some(message)).unwrap();
+        let pipeline = format!("builtin.module(test-fail{{{quoted}}})");
+        let output = opt(&["-p", &pipeline, "--dump-pass-pipeline"], super::LOCALS);
+        output.failed();
+        let mut lines = output.stderr.lines();
+        let dumped = lines.next().unwrap();
+        assert_eq!(dumped, pipeline);
+        assert_eq!(lines.next(), Some(format!("error: {message}").as_str()), "{}", output.stderr);
+        let again = opt(&["-p", dumped, "--dump-pass-pipeline"], super::LOCALS);
+        assert_eq!(again.stderr.lines().next().unwrap(), dumped);
+    }
+}
+
+#[test]
+fn a_bare_message_says_a_value_is_required() {
+    let output = opt(&["-p", "test-fail{message}"], super::LOCALS);
+    output.failed();
+    assert_eq!(
+        output.stderr,
+        "error: option 'message' of pass 'test-fail' requires a value: 'message=\"..\"'\n"
+    );
+}
+
 #[test]
 fn the_test_passes_are_listed() {
     let output = opt(&["--list-passes"], "");
@@ -328,5 +363,38 @@ fn test_print_int_ranges_gives_the_ranges_the_analysis_tests_expect() {
             .contains("hint: range of result 0: u[3, 3] s[3, 3] width 32\n --> <stdin>:5:16"),
         "{}",
         changed.stderr
+    );
+}
+
+/// A `builtin.ret_imm` of an `i128` becomes its halves as constants and a return of them, in
+/// both modes; a global variable of `i128` is legal in partial mode and an error in full mode.
+#[test]
+fn a_return_of_an_i128_immediate_converts_and_a_global_follows_the_mode() {
+    let text = |global: &str| {
+        format!(
+            "builtin.module public @m {{\n    builtin.global_variable public @g : {global};\n    \
+             builtin.function public extern(\"C\") @f() -> i128 {{\n        builtin.ret_imm \
+             18446744073709551617 : i128;\n    }};\n}};\n"
+        )
+    };
+    let converted = "    builtin.function public extern(\"C\") @f() -> (i64, i64) {\n        %0 = \
+                     arith.constant 1 : i64;\n        %1 = arith.constant 1 : i64;\n        \
+                     builtin.ret %0, %1 : (i64, i64);\n    };\n";
+    for pipeline in ["test-convert-wide-ints", "test-convert-wide-ints{full}"] {
+        let output = opt(&["-p", pipeline], &text("i32"));
+        output.succeeded();
+        assert!(output.stdout.contains(converted), "{pipeline}: {}", output.stdout);
+    }
+    let output = opt(&["-p", "test-convert-wide-ints"], &text("i128"));
+    output.succeeded();
+    assert!(output.stdout.contains("@g : i128;"), "{}", output.stdout);
+    let output = opt(&["-p", "test-convert-wide-ints{full}"], &text("i128"));
+    output.failed();
+    assert!(
+        output
+            .stderr
+            .starts_with("error: failed to legalize operation 'builtin.global_variable'"),
+        "{}",
+        output.stderr
     );
 }

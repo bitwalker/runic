@@ -28,7 +28,7 @@ pub trait OperationPass {
     }
     /// The name of the operation that this pass operates on, or `None` if this is a generic pass.
     fn target_name(&self, context: &Context) -> Option<OperationName>;
-    fn initialize_options(&mut self, options: &str) -> Result<(), Report>;
+    fn initialize_options(&mut self, options: &PassOptions) -> Result<(), Report>;
     fn print_as_textual_pipeline(&self, f: &mut fmt::Formatter) -> fmt::Result;
     fn has_statistics(&self) -> bool {
         !self.statistics().is_empty()
@@ -88,7 +88,7 @@ where
         <P as Pass>::target_name(self, context)
     }
 
-    fn initialize_options(&mut self, options: &str) -> Result<(), Report> {
+    fn initialize_options(&mut self, options: &PassOptions) -> Result<(), Report> {
         <P as Pass>::initialize_options(self, options)
     }
 
@@ -221,29 +221,26 @@ pub trait Pass: Sized + Any {
     fn target_name(&self, context: &Context) -> Option<OperationName> {
         <<Self as Pass>::Target as PassTarget>::target_name(context)
     }
-    /// If command-line options are provided for this pass, implementations must parse the raw
-    /// options here, returning `Err` if parsing fails for some reason.
+    /// If options are given for this pass, implementations must read them here, returning `Err`
+    /// if they are invalid.
     ///
     /// A pipeline loaded from text ([`super::PassPipeline`]) hands over the options of a pass as
-    /// a comma-separated list of `key=value` pairs (or `key`, for a key given without a value),
-    /// e.g. `key1=value1, key2`, so a value never contains a comma and each key appears at most
-    /// once.
+    /// they were written: the pairs `key=value` and `key` (a key given without a value) in order,
+    /// each key at most once, each value as written with the quotes and escapes of the text
+    /// removed, so a value may hold any character. [`PassOptions::check_keys`] reports a key the
+    /// pass does not take.
     ///
     /// A pass with options prints them back in [`Self::print_as_textual_pipeline`] in the form
     /// of the pipeline text: `argument{key1="value1" key2}`.
     ///
     /// By default, a pass takes no options, so any option given is an error.
-    fn initialize_options(&mut self, options: &str) -> Result<(), Report> {
-        if options.trim().is_empty() {
-            Ok(())
-        } else {
-            // Name the pass the way it was written in the pipeline, when it has such a name
-            let name = match self.argument() {
-                "" => self.name(),
-                argument => argument,
-            };
-            Err(Report::msg(format!("pass '{name}' takes no options")))
-        }
+    fn initialize_options(&mut self, options: &PassOptions) -> Result<(), Report> {
+        // Name the pass the way it was written in the pipeline, when it has such a name
+        let name = match self.argument() {
+            "" => self.name(),
+            argument => argument,
+        };
+        options.check_keys(name, &[])
     }
     /// Prints out the pass in the textual representation of pipelines.
     ///
@@ -348,7 +345,7 @@ where
     }
 
     #[inline]
-    fn initialize_options(&mut self, options: &str) -> Result<(), Report> {
+    fn initialize_options(&mut self, options: &PassOptions) -> Result<(), Report> {
         (**self).initialize_options(options)
     }
 
