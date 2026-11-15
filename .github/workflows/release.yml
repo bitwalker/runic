@@ -58,7 +58,7 @@ jobs:
 
       - &install-release-tool
         name: Install release-tool
-        run: cargo install --locked --force miden-release-tool --version 0.1.0 --bin release-tool
+        run: cargo install --locked --force miden-release-tool --version 0.2.0 --bin release-tool
 
       # The subject is GITHUB_SHA -- the commit this run checked out -- and it
       # must be main's tip. Attestations are built from the run's own claims, so
