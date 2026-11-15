@@ -1378,7 +1378,9 @@ where
         let Some(parse_assembly_fn) = name.parse_assembly_fn() else {
             return Err(ParserError::InvalidCustomOperation {
                 span: name_span,
-                reason: format!("operation '{name}' does not implement OpParser"),
+                reason: format!(
+                    "'{name}' has no custom form: write it in the generic form, \"{name}\"(..)"
+                ),
             });
         };
         let isolated_from_above = name.implements::<dyn IsolatedFromAbove>();

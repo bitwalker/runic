@@ -572,7 +572,7 @@ fn a_function_may_leave_out_its_visibility_or_extern() -> TestResult {
 #[test]
 fn diagnostics_name_and_point_at_what_was_written() {
     let test = ParserTest::default();
-    let cases: [(&str, &[&str]); 7] =
+    let cases: [(&str, &[&str]); 8] =
         [
             (
                 "builtin.function public extern(\"C\") @f(%a: i32) -> i32 {\n    builtin.ret %a : \
@@ -611,6 +611,11 @@ fn diagnostics_name_and_point_at_what_was_written() {
                 "builtin.function public extern(\"C\") @f(%a: i32) {\n^entry(%b: i32):\n    \
                  builtin.ret;\n};",
                 &["invalid block name", "it takes no label"],
+            ),
+            (
+                "builtin.function public extern(\"C\") @f() {\n    test.reads_locals_and_holds;\n    \
+                 builtin.ret;\n};",
+                &["'test.reads_locals_and_holds' has no custom form: write it in the generic form"],
             ),
         ];
     for (source, expected) in cases {
