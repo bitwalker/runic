@@ -1115,6 +1115,25 @@ builtin.world {
     }
 }
 
+/// A world is a top-level operation: one in a module, or in another world, is an error at it.
+#[test]
+fn a_world_is_a_top_level_operation() -> TestResult {
+    let test = ParserTest::default();
+    for (source, parent) in [
+        ("builtin.module public @m {\n    builtin.world { };\n};", "builtin.module"),
+        ("builtin.world {\n    builtin.world { };\n};", "builtin.world"),
+    ] {
+        let err = test.parse_any("nested_world.hir", source).expect_err(source);
+        let text = crate::testing::text::describe(&err);
+        assert!(text.contains("a world is a top-level operation"), "{text}");
+        assert!(text.contains(&format!("this world is in '{parent}'")), "{text}");
+        let rendered = format!("{}", err.display());
+        assert!(rendered.contains("nested_world.hir:2:5"), "{rendered}");
+    }
+    test.parse_any("top_level_world.hir", "builtin.world { };")?;
+    Ok(())
+}
+
 /// A component prints its name as a symbol path, one raw segment per segment of the name (see
 /// `SymbolPath::to_symbol_name`), quoting a segment that is not a bare HIR identifier, and that
 /// text parses back to the same name: the canonical spelling of the segments.

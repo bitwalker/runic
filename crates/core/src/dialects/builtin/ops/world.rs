@@ -265,12 +265,23 @@ impl World {
 /// Parsed input, and ops built or renamed otherwise, are not checked, so the rule is checked here
 /// as well.
 ///
-/// Each error is located at the component it names.
+/// Each error is located at the component it names. A world is also in no other operation: the
+/// paths of the symbols in it end at it.
 impl Verify<dyn SymbolTable> for World {
     fn verify(&self, _context: &Context) -> Result<(), Report> {
         use alloc::string::ToString;
 
         use crate::Spanned;
+
+        if let Some(parent) = self.op.parent_op() {
+            return Err(crate::diagnostics::report!(
+                message: "a world is a top-level operation: it is in no other operation",
+                labels: [primary(
+                    self.op.span(),
+                    format!("this world is in '{}'", parent.borrow().name())
+                )],
+            ));
+        }
 
         let body = self.body();
         if body.is_empty() {

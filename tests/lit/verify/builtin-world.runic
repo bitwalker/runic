@@ -1,0 +1,36 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// The rules of `builtin.world`: it is in no other operation; no component shares its path with
+// another symbol, and no two components' names nest. Each error about a component is located at
+// the component. That a module or component name is spelled as the rules say is checked by the
+// parser when it reads the name.
+
+builtin.world {
+    builtin.component public @acme::@a { };
+    builtin.component public @acme::@b { };
+    builtin.module public @acme {
+        builtin.module public @c { };
+    };
+};
+
+// -----
+
+builtin.world {
+    builtin.component public @acme::@a { }; // expected-error {{component `acme::a` and `builtin.module` `::acme::a` have the same path; a component must not share its path with another symbol}}
+    builtin.module public @acme {
+        builtin.module public @a { };
+    };
+};
+
+// -----
+
+builtin.world {
+    builtin.component private @acme::@app { }; // expected-error {{component `acme::app` and component `acme::app::main` nest}}
+    builtin.component private @acme::@app::@main { };
+};
+
+// -----
+
+builtin.module public @holds_a_world {
+    builtin.world { }; // expected-error {{a world is a top-level operation: it is in no other operation}}
+};
