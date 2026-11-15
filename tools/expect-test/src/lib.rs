@@ -1,5 +1,9 @@
 //! Minimalistic snapshot testing for Rust.
 //!
+//! This crate is derived from [`expect-test`](https://github.com/rust-analyzer/expect-test) by
+//! the rust-analyzer developers, which is licensed under MIT or Apache-2.0. It is used here under
+//! the MIT license: the text that came with it is in `LICENSE-MIT` beside this crate's manifest.
+//!
 //! # Introduction
 //!
 //! `runic_expect_test` is a small addition over plain `assert_eq!` testing approach,

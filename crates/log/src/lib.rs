@@ -2,12 +2,14 @@
 //!
 //! Designed for use with the [`log` crate][log-crate-url].
 //!
-//! This crate is inspired by [`env_logger`](https://crates.io/crates/env_logger), but provides
-//! additional features for compilers built with Runic that make it more useful when diagnosing
-//! issues in a pipeline that has an enormous quantity of verbose trace logs that are emitted for
-//! a large number of different entities in the compilation graph. Typically, we're interested in
-//! output related to a specific function, possibly refined to specific components of the compiler,
-//! or even specific areas of those components.
+//! This crate is derived from [`env_logger`](https://github.com/rust-cli/env_logger), which is
+//! licensed under MIT or Apache-2.0, as this crate is (the texts are in `LICENSE-MIT` and
+//! `LICENSE-APACHE` beside its manifest). It provides additional features for compilers built
+//! with Runic that make it more useful when diagnosing issues in a pipeline that has an enormous
+//! quantity of verbose trace logs that are emitted for a large number of different entities in
+//! the compilation graph. Typically, we're interested in output related to a specific function,
+//! possibly refined to specific components of the compiler, or even specific areas of those
+//! components.
 //!
 //! The logger a Runic tool installs ([`runic_logger`]; `runic-opt` installs it) reads four
 //! environment variables:
