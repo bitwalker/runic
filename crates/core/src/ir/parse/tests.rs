@@ -1461,6 +1461,114 @@ fn printed_locations_parse_back() {
     }
 }
 
+/// The locations of every operation under `root`, in the order of a walk, and of every block
+/// argument, block by block: the locations a print with
+/// [OpPrintingFlags::print_source_locations](crate::print::OpPrintingFlags) writes.
+fn locations_of(root: OperationRef) -> Vec<String> {
+    use crate::{Spanned, dialects::builtin::attributes::Location};
+
+    let context = root.borrow().context_rc();
+    let mut locations = Vec::new();
+    root.borrow().prewalk_all(|op: &crate::Operation| {
+        locations.push(alloc::format!("{} {}", op.name(), Location::from_span(op.span, &context)));
+        for region in op.regions().iter() {
+            for block in region.body().iter() {
+                for argument in block.argument_values() {
+                    let loc = Location::from_span(argument.borrow().span(), &context);
+                    locations.push(alloc::format!("argument {loc}"));
+                }
+            }
+        }
+    });
+    locations
+}
+
+/// With [OpPrintingFlags::print_source_locations], every operation and every block argument
+/// keeps its location through a print and a parse, in the custom and in the generic form: an
+/// operation in a block, a nested operation, a function and the function's parameters, which
+/// the custom form writes in the parameter list and the generic form on the label of the entry
+/// block.
+///
+/// [OpPrintingFlags::print_source_locations]: crate::print::OpPrintingFlags::print_source_locations
+#[test]
+fn locations_survive_both_forms() {
+    use crate::{dialects::test::TestDialect, print::OpPrintingFlags};
+
+    let context = Rc::new(Context::default());
+    context.get_or_register_dialect::<TestDialect>();
+    let source = "\
+builtin.module public @m {
+    builtin.function public extern(\"C\") @f(%a: i32, %b: i32) -> i32 {
+        %0 = test.add %a, %b;
+        builtin.ret %0 : (i32);
+    };
+};";
+    let original = parse::parse_any(ParserConfig::new(context.clone()), "in.runic", source)
+        .into_result()
+        .expect("the original source parses");
+    let expected = locations_of(original);
+    // The function's parameters have locations in the source: the spans of their names.
+    assert!(expected.iter().any(|loc| loc.starts_with("argument \"in.runic\":2:")));
+    assert_eq!(
+        expected.iter().filter(|loc| loc.contains("in.runic")).count(),
+        6,
+        "{expected:?}"
+    );
+
+    for generic in [false, true] {
+        let flags = OpPrintingFlags {
+            print_source_locations: true,
+            generic,
+            ..Default::default()
+        };
+        let print = |op: OperationRef| {
+            let mut printer = AsmPrinter::root(context.clone(), &flags);
+            printer.print_operation(op.borrow());
+            printer.finish().to_string()
+        };
+        let printed = print(original);
+        // Four operations and two parameters.
+        assert_eq!(printed.matches("loc(\"in.runic\"").count(), 6, "{printed}");
+        let reparsed =
+            parse::parse_any(ParserConfig::new(context.clone()), "printed.runic", printed.clone())
+                .into_result()
+                .unwrap_or_else(|err| panic!("{err}\n{printed}"));
+        assert_eq!(locations_of(reparsed), expected, "generic: {generic}\n{printed}");
+        assert!(crate::print::same_program(&print(reparsed), &printed), "{printed}");
+    }
+}
+
+/// An operation or block argument whose location is unknown prints `loc(unknown)`, which reads
+/// back as an unknown location; a location alias, which nothing can define, is a diagnostic.
+#[test]
+fn an_unknown_location_reads_back_and_an_alias_is_a_diagnostic() {
+    use crate::Spanned;
+
+    let context = Rc::new(Context::default());
+    let source = "builtin.function public extern(\"C\") @f(%a: i32 loc(unknown)) {\n    \
+                  builtin.ret loc(unknown);\n} loc(unknown);";
+    let function = parse::parse_any(ParserConfig::new(context.clone()), "unknown.runic", source)
+        .into_result()
+        .unwrap_or_else(|err| panic!("{err}"));
+    let function = function.borrow();
+    assert!(function.span().is_unknown());
+    let body = function.regions().front().get().unwrap();
+    let entry = body.entry();
+    assert!(entry.arguments()[0].borrow().span().is_unknown());
+    assert!(entry.front().unwrap().borrow().span().is_unknown());
+
+    for source in [
+        "builtin.module public @m {} loc(#here);",
+        "builtin.function public extern(\"C\") @f(%a: i32 loc(#here)) {\n    builtin.ret;\n};",
+    ] {
+        let err = parse::parse_any(ParserConfig::new(context.clone()), "alias.runic", source)
+            .into_result()
+            .expect_err("a location alias does not parse");
+        let rendered = alloc::format!("{}", err.display());
+        assert!(rendered.contains("location aliases are not supported"), "{source}: {rendered}");
+    }
+}
+
 fn diagnostic_messages(diagnostics: &crate::diagnostics::DiagnosticSet) -> Vec<String> {
     diagnostics.iter().map(|entry| entry.diagnostic.to_string()).collect()
 }

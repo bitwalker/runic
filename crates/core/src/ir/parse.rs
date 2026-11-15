@@ -482,9 +482,8 @@ pub fn parse_file_anchored(
 /// that is valid once detached.
 ///
 /// After establishing the root, this function passes it to
-/// [`operation::OperationParser::finalize_without_verifying`]. Finalization then resolves deferred
-/// locations and links symbol uses using that root, so its location walk still reaches the parsed
-/// IR after detachment. This function then verifies the root if the parser configuration requests
+/// [`operation::OperationParser::finalize_without_verifying`], which finishes the parse with that
+/// root. This function then verifies the root if the parser configuration requests
 /// it. Verification failures are reported as [`ParserError::Report`], exactly as when `finalize`
 /// verified.
 fn parse_anchored_source(
@@ -615,9 +614,7 @@ fn skip_whitespace_and_comments(text: &str, mut at: usize) -> usize {
 pub trait OpAsmParser<'input>: Parser<'input> {
     /// Parse a `loc(...)` specifier if present.
     ///
-    /// Location for BlockArgument and Operation may be deferred with an alias, in
-    /// which case an OpaqueLoc is set and will be resolved when parsing
-    /// completes.
+    /// A location alias (`loc(#loc42)`) is an error, since nothing defines one.
     fn parse_optional_location_specifier(&mut self) -> ParseResult<Option<Location>>;
 
     /// Return the name of the specified result in the specified syntax, as well
@@ -939,7 +936,8 @@ pub struct Argument {
     pub name: UnresolvedOperand,
     pub ty: Type,
     pub attrs: ParsedAttrs,
-    pub loc: Location,
+    /// The location the text gives the argument (`%a: i32 loc(..)`), if it gives one
+    pub loc: Option<Location>,
 }
 
 impl Argument {

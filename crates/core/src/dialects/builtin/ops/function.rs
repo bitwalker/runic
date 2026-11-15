@@ -292,6 +292,7 @@ impl OpPrinter for Function {
                     printer.print_space();
                     printer.write_attributes(param.attributes());
                 }
+                printer.print_argument_location(&*arg);
             }
             printer.print_rparen();
             print_optional_results(printer, sig.declared_results());

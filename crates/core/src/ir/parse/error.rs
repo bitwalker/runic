@@ -95,16 +95,11 @@ pub enum ParserError {
         #[labels]
         labels: Vec<OwnedLabel>,
     },
-    #[error("operation location alias was never defined")]
-    UnresolvedLocationAlias {
-        #[label(primary, "occurs here")]
+    #[error("location aliases are not supported")]
+    #[diagnostic(help = "write the location itself, as in `loc(\"file.runic\":1:1)`")]
+    LocationAlias {
+        #[label(primary, "a location alias")]
         span: SourceSpan,
-    },
-    #[error("invalid location alias value")]
-    InvalidLocationAlias {
-        #[label(primary, "{reason}")]
-        span: SourceSpan,
-        reason: String,
     },
     #[error("use of undefined blocks")]
     UndefinedBlocks {

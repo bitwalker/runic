@@ -666,15 +666,43 @@ impl<'a> AsmPrinter<'a> {
 
     /// Print the block label and argument list for a block, i.e. `^block0(%0: i32):`
     ///
+    /// With [OpPrintingFlags::print_source_locations], each argument is followed by its location
+    /// (`^block0(%0: i32 loc("f.runic":1:1)):`), which the parser gives the argument back.
+    ///
     /// No leading or trailing newlines are emitted by this method.
     pub fn print_block_label_and_arguments(&mut self, block: &Block) {
         use crate::formatter::*;
 
         self.document += display(block.id());
         if block.has_arguments() {
-            self.print_value_id_and_type_list(block.argument_values());
+            if self.flags.print_source_locations {
+                self.document += const_text("(");
+                for (index, argument) in block.argument_values().enumerate() {
+                    if index > 0 {
+                        self.document += const_text(", ");
+                    }
+                    let argument = argument.borrow();
+                    self.document += display(argument.id()) + const_text(": ");
+                    self.print_type(argument.ty());
+                    self.print_argument_location(&*argument);
+                }
+                self.document += const_text(")");
+            } else {
+                self.print_value_id_and_type_list(block.argument_values());
+            }
         }
         self.document += const_text(":");
+    }
+
+    /// With [OpPrintingFlags::print_source_locations], a space and the location of `argument`, a
+    /// block argument, as its definition in a block label or a callable's parameter list writes
+    /// it; nothing otherwise.
+    pub fn print_argument_location(&mut self, argument: &dyn crate::Value) {
+        if self.flags.print_source_locations {
+            let loc = Location::from_span(argument.span(), &self.context);
+            self.print_space();
+            self.print_trailing_location_specifier(&loc);
+        }
     }
 
     /// Print an attribute value

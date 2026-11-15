@@ -70,6 +70,11 @@
 //! line-number   := nonzero-decimal-literal
 //! column-number := nonzero-decimal-literal
 //!
+//! With [OpPrintingFlags::print_source_locations], every operation is followed by its location,
+//! and so is every block argument where it is defined: in a block label, or in the parameter
+//! list of a function's custom form; both forms read the locations back. A location alias
+//! (`loc(#name)`) is an error, since nothing defines one.
+//!
 //! # Numbers
 //!
 //! decimal-literal := [0-9]+
@@ -127,7 +132,8 @@
 //! entry-block     := operation+
 //! block           := block-label operation+
 //! block-label     := block-id block-arguments? ':'
-//! block-arguments := '(' value-id-and-type-list? ')'
+//! block-arguments := '(' (block-argument (',' block-argument)*)? ')'
+//! block-argument  := value-id ':' type trailing-location?
 //!
 //! The label of a region's entry block is left out when nothing needs it: in the generic form,
 //! when the block has no arguments; in a custom form, also when the form gives the arguments

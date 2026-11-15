@@ -38,11 +38,6 @@ pub struct OperationParser<P> {
     /// may store references to them in local state and use them after forward references
     /// have been resolved.
     forward_ref_ops: SmallSet<OperationRef, 2>,
-
-    /// Deferred locations: when parsing `loc(#loc42)` we add an entry to this map.
-    ///
-    /// After parsing the definition `#loc42 = ...` we'll patch back users of this location.
-    deferred_locs_references: Vec<DeferredLocInfo>,
 }
 
 impl<'input, P> Parser<'input> for OperationParser<P>
@@ -88,12 +83,6 @@ where
     fn parse_optional_type(&mut self) -> ParseResult<Option<Span<Type>>> {
         super::types::parse_optional_type(self)
     }
-}
-
-#[derive(Debug, Copy, Clone)]
-pub struct DeferredLocInfo {
-    loc: SourceSpan,
-    identifier: interner::Symbol,
 }
 
 /// This type is used to keep track of things that are either an Operation or a BlockArgument.
@@ -202,7 +191,6 @@ where
             forward_ref: Default::default(),
             forward_ref_placeholders: Default::default(),
             forward_ref_ops: Default::default(),
-            deferred_locs_references: Default::default(),
         };
 
         // The top level operation starts a new name scope.
@@ -227,8 +215,7 @@ where
 
     /// Like [`Self::finalize`], but never verifies, regardless of the parser configuration.
     ///
-    /// The caller supplies the root after reparenting the parsed operation, so deferred locations
-    /// and symbol uses are resolved in the hierarchy that will actually be returned. The caller
+    /// The caller supplies the root after reparenting the parsed operation. The caller
     /// is responsible for verifying that root when [`ParserConfig::should_verify_after_parse`]
     /// is set; see `parse_anchored_source`.
     pub fn finalize_without_verifying(mut self, root: WorldRef) -> ParseResult {
@@ -252,52 +239,6 @@ where
                 });
             }
             return Err(ParserError::UndeclaredValueUses { labels });
-        }
-
-        // Resolve the locations of any deferred operations.
-        let attribute_aliases = &self.parser.state().symbols.attribute_alias_definitions;
-        let resolve_location = |op_or_argument: OpOrArgument| {
-            let fwd_loc = op_or_argument.span();
-            let Some(loc_index) = Location::is_deferred(fwd_loc) else {
-                return Ok(());
-            };
-            let loc_info = self.deferred_locs_references[loc_index];
-            let Some(attr) = attribute_aliases.get(&loc_info.identifier) else {
-                return Err(ParserError::UnresolvedLocationAlias { span: loc_info.loc });
-            };
-            let Some(loc_attr) = attr.try_downcast_attr::<LocationAttr>().ok() else {
-                return Err(ParserError::InvalidLocationAlias {
-                    span: loc_info.loc,
-                    reason: format!("expected location, but found '{:?}'", attr.borrow()),
-                });
-            };
-            let loc = loc_attr.borrow().as_value().try_into_span(self.context());
-            op_or_argument.set_span(loc.unwrap_or(SourceSpan::UNKNOWN));
-            Ok(())
-        };
-
-        let walk_result =
-            self.top_level
-                .as_operation_ref()
-                .raw_prewalk::<Forward, _, _>(|op: OperationRef| {
-                    if let Err(err) = resolve_location(OpOrArgument::Op(op)) {
-                        return WalkResult::Break(err);
-                    }
-                    let op = op.borrow();
-                    for region in op.regions() {
-                        for block in region.body() {
-                            for arg in block.arguments() {
-                                if let Err(err) = resolve_location(OpOrArgument::Arg(*arg)) {
-                                    return WalkResult::Break(err);
-                                }
-                            }
-                        }
-                    }
-                    WalkResult::Continue(())
-                });
-
-        if let WalkResult::Break(err) = walk_result {
-            return Err(err);
         }
 
         // Pop the top level name scope.
@@ -1373,11 +1314,11 @@ where
         self.parser.parse_rparen()
     }
 
-    /// Parse an optional trailing location and add it to the specifier Operation or
-    /// [UnresolvedOperand] if present.
+    /// Parse an optional trailing location and give it to the operation or block argument.
     ///
-    ///   trailing-location ::= (`loc` (`(` location `)` | attribute-alias))?
+    ///   trailing-location ::= (`loc` `(` location `)`)?
     ///
+    /// A location alias (`loc(#loc42)`) is an error: nothing defines one.
     fn parse_trailing_location_specifier(&mut self, op_or_argument: OpOrArgument) -> ParseResult {
         // If there is a 'loc' we parse a trailing location.
         if !self.token_stream_mut().next_if_eq(Token::Loc)? {
@@ -1385,19 +1326,8 @@ where
         }
 
         self.parser.parse_lparen()?;
-
-        // Check to see if we are parsing a location alias. We are parsing a location
-        // alias if the token is a hash identifier *without* a dot in it - the dot
-        // signifies a dialect attribute. Otherwise, we parse the location directly.
-        let loc = if self
-            .token_stream_mut()
-            .is_next(|tok| matches!(tok, Token::HashIdent(id) if !id.contains('.')))
-        {
-            self.parse_location_alias()?
-        } else {
-            self.parser.parse_location_instance()?
-        };
-
+        self.reject_location_alias()?;
+        let loc = self.parser.parse_location_instance()?;
         self.parser.parse_rparen()?;
 
         if let Some(span) = loc.try_into_span(self.context()) {
@@ -1407,47 +1337,20 @@ where
         Ok(())
     }
 
-    /// Parse a location alias, that is a sequence looking like `#loc42`
-    ///
-    /// The alias may have already be defined or may be defined later, in which case an OpaqueLoc
-    /// is used a placeholder. The caller must ensure that the token is actually an alias, which
-    /// means it must not contain a dot.
-    fn parse_location_alias(&mut self) -> ParseResult<Location> {
-        let (alias_span, alias) = self
+    /// An error if the next token is a location alias, a hash identifier without a dot (with
+    /// one, it starts a dialect attribute): the text cannot define an alias, so none resolves.
+    fn reject_location_alias(&mut self) -> ParseResult {
+        if self
             .token_stream_mut()
-            .expect_map("location alias", |tok| match tok {
-                Token::HashIdent(id) => Some(id),
+            .is_next(|tok| matches!(tok, Token::HashIdent(id) if !id.contains('.')))
+        {
+            let alias = self.token_stream_mut().expect_map("location alias", |tok| match tok {
+                Token::HashIdent(_) => Some(()),
                 _ => None,
-            })?
-            .into_parts();
-
-        assert!(alias.contains('.'), "unexpected dialect attribute token, expecteed alias");
-
-        let alias = interner::Symbol::intern(alias);
-        if let Some(asm_state) = self.state_mut().asm_state.as_deref_mut() {
-            asm_state.add_attr_alias_uses(alias, &[alias_span]);
+            })?;
+            return Err(ParserError::LocationAlias { span: alias.span() });
         }
-
-        // If this alias can be resolved, do it now.
-        if let Some(attr) = self.state_mut().symbols.attribute_alias_definitions.get(&alias) {
-            if let Ok(loc) = attr.try_downcast_attr::<LocationAttr>() {
-                Ok(loc.borrow().as_value().clone())
-            } else {
-                Err(ParserError::InvalidLocationAlias {
-                    span: alias_span,
-                    reason: format!("expected location, but found '{attr:?}'"),
-                })
-            }
-        } else {
-            // Otherwise, remember this operation and resolve its location later.
-            // In the meantime, use a special OpaqueLoc as a marker.
-            let id = self.deferred_locs_references.len();
-            self.deferred_locs_references.push(DeferredLocInfo {
-                loc: alias_span,
-                identifier: alias,
-            });
-            Ok(Location::Opaque(id))
-        }
+        Ok(())
     }
 
     /// Parse an operation instance that is in the op-defined custom form.
@@ -1655,20 +1558,26 @@ where
                         prev_span: def_loc,
                     });
                 }
-                let arg = self
+                let argument = self
                     .context()
                     .append_block_argument(owning_block, arg.ty, arg_info.loc)
                     .borrow()
                     .downcast_ref::<BlockArgument>()
                     .unwrap()
                     .as_block_argument_ref();
+                // An argument written with a location takes it.
+                if let Some(span) =
+                    arg.loc.as_ref().and_then(|loc| loc.try_into_span(self.context()))
+                {
+                    OpOrArgument::Arg(argument).set_span(span);
+                }
                 // Add a definition of this arg to the assembly state if provided.
                 if let Some(asm_state) = self.state_mut().asm_state.as_deref_mut() {
-                    asm_state.add_block_argument_definition(arg, arg_info.loc);
+                    asm_state.add_block_argument_definition(argument, arg_info.loc);
                 }
 
                 // Record the definition for this argument.
-                self.add_definition(arg_info, arg as ValueRef)?;
+                self.add_definition(arg_info, argument as ValueRef)?;
             }
         }
 
@@ -2232,7 +2141,7 @@ where
         if allow_attrs {
             self.parse_optional_attribute_dict(&mut attrs)?;
         }
-        let loc = self.parse_optional_location_specifier()?.unwrap_or(Location::Unknown);
+        let loc = self.parse_optional_location_specifier()?;
         Ok(Argument {
             name,
             ty: ty.map_or_else(|| self.context().unknown_type(), |t| t.into_inner()),
@@ -2329,20 +2238,8 @@ where
         }
 
         self.parser.parse_lparen()?;
-
-        // Check to see if we are parsing a location alias. We are parsing a location alias if the
-        // token is a hash identifier *without* a dot in it - the dot signifies a dialect attribute.
-        // Otherwise, we parse the location directly.
-        let loc = if self
-            .parser
-            .token_stream_mut()
-            .is_next(|tok| matches!(tok, Token::HashIdent(id) if !id.contains('.')))
-        {
-            self.parser.parse_location_alias()?
-        } else {
-            self.parser.parse_location_instance()?
-        };
-
+        self.parser.reject_location_alias()?;
+        let loc = self.parser.parse_location_instance()?;
         self.parser.parse_rparen()?;
 
         Ok(Some(loc))
