@@ -1,0 +1,124 @@
+// RUN: runic-opt %s -p cfg-to-scf | filecheck %s
+// RUN: runic-opt %s -p cfg-to-scf | runic-opt - --verify-roundtrip | filecheck %s
+
+// cfg-to-scf lifts unstructured control flow to structured control flow: a diamond of
+// `cf.cond_br` to an `scf.if` yielding what the join block takes, a cycle to an `scf.while`, two
+// returns to one return of what an `scf.if` yields, a `cf.switch` to an `scf.index_switch`. With
+// one kind of return, no `cf` operation remains. A function that is already structured is left as
+// it is. The second RUN line reads the output back.
+builtin.module public @cfg_to_scf_lift {
+    // CHECK-LABEL: @simple_conditional(
+    // CHECK-SAME: [[X:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[ZERO:%[0-9]+]] = arith.constant 0 : i32;
+    // CHECK-NEXT: [[C:%[0-9]+]] = arith.cmpi eq [[X]], [[ZERO]];
+    // CHECK-NEXT: [[R:%[0-9]+]] = scf.if [[C]] then {
+    // CHECK-NEXT: [[ONE:%[0-9]+]] = arith.constant 1 : i32;
+    // CHECK-NEXT: [[INC:%[0-9]+]] = arith.add [[X]], [[ONE]];
+    // CHECK-NEXT: scf.yield [[INC]] : (i32);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: [[SQ:%[0-9]+]] = arith.mul [[X]], [[X]];
+    // CHECK-NEXT: scf.yield [[SQ]] : (i32);
+    // CHECK-NEXT: } : (i1) -> (i32);
+    // CHECK-NEXT: builtin.ret [[R]] : (i32);
+    builtin.function public extern("C") @simple_conditional(%x: i32) -> i32 {
+        %zero = arith.constant 0 : i32;
+        %c = arith.cmpi eq %x, %zero;
+        cf.cond_br %c ^then, ^else : (i1);
+    ^then:
+        %one = arith.constant 1 : i32;
+        %inc = arith.add %x, %one;
+        cf.br ^join(%inc : i32);
+    ^else:
+        %sq = arith.mul %x, %x;
+        cf.br ^join(%sq : i32);
+    ^join(%r: i32):
+        builtin.ret %r : (i32);
+    };
+
+    // The loop's condition is computed in its before region, which also holds the body, under an
+    // `scf.if` on the exit condition; the after region forwards the iteration values.
+    // CHECK-LABEL: @simple_while_loop(
+    // CHECK-SAME: [[N:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NOT: {{\bcf\.}}
+    // CHECK: {{%[0-9]+}}, {{%[0-9]+}}, [[R:%[0-9]+]] = scf.while [[N]], {{%[0-9]+}}, {{%[0-9]+}} before {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[I:%[0-9]+]]: i32, [[ACC:%[0-9]+]]: i32, {{%[0-9]+}}: i32):
+    // CHECK-NEXT: [[DONE:%[0-9]+]] = arith.cmpi eq [[I]], {{%[0-9]+}};
+    // CHECK-NEXT: {{.*}} = scf.if [[DONE]] then {
+    // CHECK-NOT: {{\bcf\.}}
+    // CHECK: scf.condition {{%[0-9]+}}, {{%[0-9]+}}, {{%[0-9]+}}, [[ACC]] : (i1, i32, i32, i32);
+    // CHECK-NEXT: } after {
+    // CHECK-NOT: {{\bcf\.}}
+    // CHECK: builtin.ret [[R]] : (i32);
+    builtin.function public extern("C") @simple_while_loop(%n: i32) -> i32 {
+        %zero = arith.constant 0 : i32;
+        %one = arith.constant 1 : i32;
+        cf.br ^head(%n, %zero : i32, i32);
+    ^head(%i: i32, %acc: i32):
+        %done = arith.cmpi eq %i, %zero;
+        cf.cond_br %done ^exit, ^body : (i1);
+    ^exit:
+        builtin.ret %acc : (i32);
+    ^body:
+        %next = arith.sub %i, %one;
+        %acc2 = arith.add %acc, %one;
+        cf.br ^head(%next, %acc2 : i32, i32);
+    };
+
+    // CHECK-LABEL: @two_returns(
+    // CHECK-SAME: [[C:%[0-9]+]]: i1, [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[R:%[0-9]+]] = scf.if [[C]] then {
+    // CHECK-NEXT: scf.yield [[A]] : (i32);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: scf.yield [[B]] : (i32);
+    // CHECK-NEXT: } : (i1) -> (i32);
+    // CHECK-NEXT: builtin.ret [[R]] : (i32);
+    builtin.function public extern("C") @two_returns(%c: i1, %a: i32, %b: i32) -> i32 {
+        cf.cond_br %c ^left, ^right : (i1);
+    ^left:
+        builtin.ret %a : (i32);
+    ^right:
+        builtin.ret %b : (i32);
+    };
+
+    // CHECK-LABEL: @switch(
+    // CHECK-SAME: [[S:%[0-9]+]]: i32, [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[R:%[0-9]+]] = scf.index_switch [[S]]
+    // CHECK-NEXT: case 1 {
+    // CHECK-NEXT: scf.yield [[A]] : (i32);
+    // CHECK-NEXT: }
+    // CHECK-NEXT: case 2 {
+    // CHECK-NEXT: scf.yield [[B]] : (i32);
+    // CHECK-NEXT: }
+    // CHECK-NEXT: default {
+    // CHECK-NEXT: scf.yield [[S]] : (i32);
+    // CHECK-NEXT: } : (i32);
+    // CHECK-NEXT: builtin.ret [[R]] : (i32);
+    builtin.function public extern("C") @switch(%s: i32, %a: i32, %b: i32) -> i32 {
+        cf.switch %s [#builtin.i32<1> -> ^one, #builtin.i32<2> -> ^two], ^other : (i32);
+    ^one:
+        cf.br ^join(%a : i32);
+    ^two:
+        cf.br ^join(%b : i32);
+    ^other:
+        cf.br ^join(%s : i32);
+    ^join(%r: i32):
+        builtin.ret %r : (i32);
+    };
+
+    // CHECK-LABEL: @already_structured(
+    // CHECK-SAME: [[C:%[0-9]+]]: i1, [[A:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[R:%[0-9]+]] = scf.if [[C]] then {
+    // CHECK-NEXT: scf.yield [[A]] : (i32);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: scf.yield [[A]] : (i32);
+    // CHECK-NEXT: } : (i1) -> (i32);
+    // CHECK-NEXT: builtin.ret [[R]] : (i32);
+    builtin.function public extern("C") @already_structured(%c: i1, %a: i32) -> i32 {
+        %r = scf.if %c then {
+            scf.yield %a : (i32);
+        } else {
+            scf.yield %a : (i32);
+        } : (i1) -> (i32);
+        builtin.ret %r : (i32);
+    };
+};

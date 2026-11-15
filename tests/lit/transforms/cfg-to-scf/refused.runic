@@ -1,0 +1,29 @@
+// RUN: runic-opt %s --split-input-file -p cfg-to-scf --verify-diagnostics | filecheck %s
+
+// What cfg-to-scf refuses: a region with a block that cannot be reached from its entry. The pass
+// fails before it changes anything, with an error that has no location. The first case is lifted,
+// and is the only one printed.
+
+// CHECK-LABEL: @lifted(
+// CHECK-NEXT: scf.if
+builtin.function public extern("C") @lifted(%c: i1, %a: i32, %b: i32) -> i32 {
+    cf.cond_br %c ^left, ^right : (i1);
+^left:
+    builtin.ret %a : (i32);
+^right:
+    builtin.ret %b : (i32);
+};
+
+// -----
+
+// CHECK-NOT: @unreachable
+// expected-error@unknown {{transformation does not support unreachable blocks}}
+builtin.function public extern("C") @unreachable(%c: i1, %a: i32) -> i32 {
+    cf.cond_br %c ^left, ^right : (i1);
+^left:
+    builtin.ret %a : (i32);
+^right:
+    builtin.ret %a : (i32);
+^island:
+    cf.br ^island;
+};
