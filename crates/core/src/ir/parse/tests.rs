@@ -1413,6 +1413,82 @@ fn a_module_and_a_function_with_one_raw_name_are_reported() {
     }
 }
 
+/// `resolve_all` gives every symbol a path passes through, outermost first, and last the symbol
+/// the path names: from a world, from a root that is itself a symbol, and for a relative path.
+/// A path that does not resolve adds nothing.
+#[test]
+fn every_symbol_on_a_path_is_given_outermost_first() -> TestResult {
+    use smallvec::SmallVec;
+
+    use crate::{
+        OperationRef, SymbolName, SymbolNameComponent, SymbolPath,
+        dialects::builtin::{Component, GlobalVariable},
+    };
+
+    const COMPONENT: &str = "\
+    builtin.component private @app {
+        builtin.module private @m {
+            builtin.global_variable public @v : i32;
+        };
+    };";
+    let absolute = |leaf: &str| {
+        SymbolPath::from_iter([
+            SymbolNameComponent::Root,
+            SymbolNameComponent::Component("app".into()),
+            SymbolNameComponent::Component("m".into()),
+            SymbolNameComponent::Leaf(SymbolName::intern(leaf)),
+        ])
+    };
+    let names = |symbols: &[OperationRef]| {
+        symbols.iter().map(|op| op.borrow().name().to_string()).collect::<Vec<_>>()
+    };
+    let test = ParserTest::default();
+
+    // From a world: the component, the module, the variable
+    let world =
+        test.parse_any("all_world.runic", &format!("builtin.world {{\n{COMPONENT}\n}};"))?;
+    let world = world.try_downcast_op::<World>().expect("expected a world");
+    let mut symbols = SmallVec::<[OperationRef; 4]>::new();
+    let found = world.borrow().resolve_all(&absolute("v"), &mut symbols).expect("`v` resolves");
+    assert!(found.borrow().as_symbol_operation().is::<GlobalVariable>());
+    assert_eq!(
+        names(&symbols),
+        ["builtin.component", "builtin.module", "builtin.global_variable"]
+    );
+    assert_eq!(symbols[2], found.borrow().as_symbol_operation().as_operation_ref());
+
+    // A path that does not resolve leaves what was collected before it as it was
+    assert!(world.borrow().resolve_all(&absolute("w"), &mut symbols).is_none());
+    assert_eq!(symbols.len(), 3);
+
+    // A relative path, from the component: the module and the variable
+    let component = symbols[0].try_downcast_op::<Component>().expect("a component");
+    let relative = SymbolPath::from_iter([
+        SymbolNameComponent::Component("m".into()),
+        SymbolNameComponent::Leaf("v".into()),
+    ]);
+    let mut symbols = SmallVec::<[OperationRef; 4]>::new();
+    component
+        .borrow()
+        .resolve_all(&relative, &mut symbols)
+        .expect("`m::v` resolves");
+    assert_eq!(names(&symbols), ["builtin.module", "builtin.global_variable"]);
+
+    // A root that is itself a symbol is the first symbol on an absolute path
+    let component = test.parse::<Component>("all_root.runic", COMPONENT.trim_start())?;
+    let mut symbols = SmallVec::<[OperationRef; 4]>::new();
+    component
+        .borrow()
+        .resolve_all(&absolute("v"), &mut symbols)
+        .expect("`v` resolves");
+    assert_eq!(
+        names(&symbols),
+        ["builtin.component", "builtin.module", "builtin.global_variable"]
+    );
+    assert_eq!(symbols[0], component.as_operation_ref());
+    Ok(())
+}
+
 /// A reference spells only raw segments: a segment wrapped in quotes is not read as the segment
 /// it quotes.
 #[test]

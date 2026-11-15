@@ -55,6 +55,19 @@ pub trait SymbolTable {
         found.as_trait_ref::<dyn Symbol>()
     }
 
+    /// Resolves `path` as [SymbolTable::resolve] does, and appends to `symbols` every symbol the
+    /// path passes through, outermost first, ending with the symbol it names. Returns that symbol.
+    ///
+    /// If the path does not resolve, `symbols` is left as it was. See [SymbolMap::resolve_all].
+    fn resolve_all(
+        &self,
+        path: &SymbolPath,
+        symbols: &mut SmallVec<[OperationRef; 4]>,
+    ) -> Option<SymbolRef> {
+        let found = self.symbol_manager().lookup_all_symbol_refs(path, symbols)?;
+        found.as_trait_ref::<dyn Symbol>()
+    }
+
     /// Like [SymbolTable::resolve], but follows symbol aliases (e.g. [`FunctionAlias`]) to the
     /// canonical symbol.
     ///
@@ -391,6 +404,43 @@ impl SymbolMap {
     /// Path components are matched against symbol names as described in
     /// `SymbolMap::lookup_prefix`.
     pub fn resolve(&self, symbol_table: &Operation, attr: &SymbolPath) -> Option<OperationRef> {
+        self.resolve_visiting(symbol_table, attr, &mut |_| {})
+    }
+
+    /// Resolves `attr` as [Self::resolve] does, and appends to `symbols` every symbol the path
+    /// passes through, outermost first, ending with the symbol it names: for `a::b::f`, the
+    /// symbol tables `a` and `a::b`, then `f`. Returns the symbol the path names.
+    ///
+    /// A pass that keeps what is referenced needs all of them: the symbol a path names is only
+    /// reachable while each symbol table on the way to it is kept too.
+    ///
+    /// When the path is absolute and the root operation is itself a symbol, the root is the first
+    /// symbol appended. If the path does not resolve, `None` is returned and `symbols` is left as
+    /// it was.
+    pub fn resolve_all(
+        &self,
+        symbol_table: &Operation,
+        attr: &SymbolPath,
+        symbols: &mut SmallVec<[OperationRef; 4]>,
+    ) -> Option<OperationRef> {
+        let len = symbols.len();
+        let resolved =
+            self.resolve_visiting(symbol_table, attr, &mut |symbol| symbols.push(symbol));
+        if resolved.is_none() {
+            symbols.truncate(len);
+        }
+        resolved
+    }
+
+    /// [Self::resolve], calling `visit` with each symbol the path passes through, outermost
+    /// first, and last with the symbol it names. `visit` may have been called for a prefix of a
+    /// path that then fails to resolve.
+    fn resolve_visiting(
+        &self,
+        symbol_table: &Operation,
+        attr: &SymbolPath,
+        visit: &mut dyn FnMut(OperationRef),
+    ) -> Option<OperationRef> {
         let components = attr.components().collect::<SmallVec<[SymbolNameComponent; 4]>>();
 
         // Resolve absolute paths via the root symbol table
@@ -426,36 +476,35 @@ impl SymbolMap {
                                 && i + 1 == segments.len()
                                 && i + 1 == components.len() =>
                         {
+                            visit(root);
                             return Some(root);
                         }
                         _ => return None,
                     }
                 }
                 components = &components[segments.len()..];
+                visit(root);
             }
 
             // Resolve the symbol from `root`
             let root_symbol_table = root_op.as_trait::<dyn SymbolTable>()?;
             let symbol_manager = root_symbol_table.symbol_manager();
-            symbol_manager.symbols().resolve_components(components)
+            symbol_manager.symbols().resolve_components(components, visit)
         } else {
-            self.resolve_components(&components)
+            self.resolve_components(&components, visit)
         }
     }
 
-    pub fn resolve_all_in(
-        &self,
-        _symbol_table: &Operation,
-        _attr: &SymbolPath,
-        _nested_references: &mut SmallVec<[OperationRef; 4]>,
-    ) -> Option<OperationRef> {
-        todo!()
-    }
-
     /// Resolves the relative path `components` starting from this map, descending one nested
-    /// symbol table per [SymbolMap::lookup_prefix] match.
-    fn resolve_components(&self, components: &[SymbolNameComponent]) -> Option<OperationRef> {
+    /// symbol table per [SymbolMap::lookup_prefix] match, and calling `visit` with each symbol
+    /// found on the way and last with the one the path names.
+    fn resolve_components(
+        &self,
+        components: &[SymbolNameComponent],
+        visit: &mut dyn FnMut(OperationRef),
+    ) -> Option<OperationRef> {
         let (mut found, mut rest) = self.lookup_prefix(components)?;
+        visit(found);
         while !rest.is_empty() {
             let next = {
                 let op = found.borrow();
@@ -463,6 +512,7 @@ impl SymbolMap {
                 symbol_table.symbol_manager().symbols().lookup_prefix(rest)?
             };
             (found, rest) = next;
+            visit(found);
         }
         Some(found)
     }
@@ -804,6 +854,18 @@ impl<'a> SymbolManager<'a> {
     /// See [SymbolMap::resolve] for more details about symbol resolution.
     pub fn lookup_symbol_ref(&self, attr: &SymbolPath) -> Option<OperationRef> {
         self.symbols.resolve(self.symbol_table, attr)
+    }
+
+    /// Get the symbol referenced by `attr`, appending to `symbols` every symbol the path passes
+    /// through, outermost first, and last the one it names.
+    ///
+    /// See [SymbolMap::resolve_all] for more details.
+    pub fn lookup_all_symbol_refs(
+        &self,
+        attr: &SymbolPath,
+        symbols: &mut SmallVec<[OperationRef; 4]>,
+    ) -> Option<OperationRef> {
+        self.symbols.resolve_all(self.symbol_table, attr, symbols)
     }
 }
 
