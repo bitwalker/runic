@@ -141,6 +141,10 @@ pub struct Options {
     /// List the registered dialects, with the number of operations of each, and exit.
     #[arg(long)]
     pub list_dialects: bool,
+
+    /// List the registered operations, one name per line, sorted, and exit.
+    #[arg(long)]
+    pub list_operations: bool,
 }
 
 /// What is verified (see the command line's `--no-verify` and `--verify-each`).

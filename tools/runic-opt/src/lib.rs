@@ -290,6 +290,10 @@ fn run_to_buffers(
         list_dialects(out);
         return Ok(true);
     }
+    if options.list_operations {
+        list_operations(out);
+        return Ok(true);
+    }
 
     // A pass named wrongly, or an empty marker, is an error before anything is read.
     let printing = match options.ir_printing() {
@@ -502,6 +506,22 @@ fn list_dialects(out: &mut String) {
     for (name, ops) in dialects {
         let noun = if ops == 1 { "operation" } else { "operations" };
         let _ = writeln!(out, "{name:width$}  {ops} {noun}");
+    }
+}
+
+/// The name of each registered operation, one per line, sorted.
+fn list_operations(out: &mut String) {
+    use fmt::Write;
+
+    let context = Context::default();
+    let dialects = context.registered_dialects();
+    let mut names = dialects
+        .values()
+        .flat_map(|dialect| dialect.registered_ops().iter().map(|name| name.to_string()))
+        .collect::<Vec<_>>();
+    names.sort();
+    for name in names {
+        let _ = writeln!(out, "{name}");
     }
 }
 

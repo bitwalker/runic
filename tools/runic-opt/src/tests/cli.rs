@@ -49,6 +49,7 @@ fn help_goes_to_the_given_stdout() {
         "--dump-pass-pipeline",
         "--list-passes",
         "--list-dialects",
+        "--list-operations",
     ] {
         assert!(output.stdout.contains(switch), "{switch}: {}", output.stdout);
     }
@@ -171,6 +172,40 @@ fn list_dialects_holds_every_linked_dialect_with_its_operation_count() {
             .find(|line| line.split_whitespace().next() == Some(dialect))
             .unwrap_or_else(|| panic!("{dialect} is listed: {}", output.stdout));
         assert!(line.ends_with(" operations") || line.ends_with(" operation"), "{line}");
+    }
+}
+
+#[test]
+fn list_operations_names_every_registered_operation_once_sorted() {
+    let output = opt(&["--list-operations"], "not read");
+    output.succeeded();
+    assert_eq!(output.stderr, "");
+    let names = output.stdout.lines().collect::<Vec<_>>();
+    let mut sorted = names.clone();
+    sorted.sort();
+    sorted.dedup();
+    assert_eq!(names, sorted, "sorted, each once");
+    for name in [
+        "arith.add",
+        "builtin.function",
+        "cf.br",
+        "di.debug_value",
+        "mem.load",
+        "scf.while",
+    ] {
+        assert!(names.contains(&name), "{name} is listed: {}", output.stdout);
+    }
+    assert!(names.iter().all(|name| name.contains('.') && !name.contains(' ')), "{names:?}");
+
+    // As many names of each dialect as `--list-dialects` counts.
+    let dialects = opt(&["--list-dialects"], "not read");
+    for line in dialects.stdout.lines() {
+        let mut words = line.split_whitespace();
+        let dialect = words.next().unwrap();
+        let count = words.next().unwrap().parse::<usize>().unwrap();
+        let prefix = format!("{dialect}.");
+        let listed = names.iter().filter(|name| name.starts_with(&prefix)).count();
+        assert_eq!(listed, count, "{dialect}");
     }
 }
 
