@@ -38,7 +38,7 @@ jobs:
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@055f5df8c3f65ea01cd41e9dc855becd88953486 # v2.75.18
         with:
-          tool: cargo-make@0.37.24,cargo-llvm-cov@0.9.1,cargo-nextest,litcheck@0.4.6
+          tool: cargo-make@0.37.24,cargo-llvm-cov@0.9.1,cargo-nextest,litcheck@0.5.0
       - name: Collect combined Rust and lit coverage
         run: cargo make coverage
       - name: Check for a report

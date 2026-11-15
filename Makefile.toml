@@ -234,9 +234,20 @@ args = ["check", "${@}"]
 [tasks.check-each]
 category = "Build"
 description = "Runs cargo check on each member of the workspace independently"
-workspace = true
-command = "cargo"
-args = ["check", "${@}"]
+# `skip_crate_env_info` (see `[config]`) also empties the member list a `workspace = true` task
+# iterates, so the loop is here: one `cargo check -p <member>` per member, with the task's
+# arguments. Selecting one package resolves features for that package alone, as running in its
+# directory did, so feature unification across members cannot hide an error.
+script_runner = "bash"
+script = ['''
+set -euo pipefail
+members=$(cargo metadata --no-deps --format-version 1 |
+    python3 -c 'import json, sys; print(" ".join(p["name"] for p in json.load(sys.stdin)["packages"]))')
+for member in $members; do
+    echo "cargo check -p $member $*"
+    cargo check -p "$member" "$@"
+done
+''']
 
 [tasks.clean]
 category = "Build"
