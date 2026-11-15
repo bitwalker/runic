@@ -1,6 +1,8 @@
 mod frontier;
 mod info;
 pub mod nca;
+#[cfg(test)]
+mod tests;
 mod traits;
 mod tree;
 

@@ -5,7 +5,7 @@ use smallvec::{SmallVec, smallvec};
 
 use super::{DomTreeBase, DomTreeNode, DomTreeRoots};
 use crate::{
-    BlockRef, EntityId, EntityWithId, Region,
+    BlockRef, EntityWithId, FxHashMap, Region,
     cfg::{self, Graph, GraphDiff, Inverse},
     formatter::{DisplayOptional, DisplayValues},
 };
@@ -30,7 +30,10 @@ use crate::{
 pub struct SemiNCA<const IS_POST_DOM: bool> {
     /// Number to node mapping is 1-based.
     num_to_node: SmallVec<[Option<BlockRef>; 64]>,
-    /// Infos are mapped to nodes using block indices
+    /// The slot in `node_infos` of each block, assigned when the block is first looked up, so the
+    /// table grows with the blocks this instance visits, not with the blocks of the context.
+    block_slots: RefCell<FxHashMap<BlockRef, u32>>,
+    /// The info of each block, by its slot in `block_slots`; slot 0 is the virtual node.
     node_infos: RefCell<SmallVec<[NodeInfo; 64]>>,
     batch_updates: Option<BatchUpdateInfo<IS_POST_DOM>>,
 }
@@ -150,7 +153,8 @@ impl<const IS_POST_DOM: bool> SemiNCA<IS_POST_DOM> {
     pub fn new(batch_updates: Option<BatchUpdateInfo<IS_POST_DOM>>) -> Self {
         Self {
             num_to_node: smallvec![None],
-            node_infos: Default::default(),
+            block_slots: Default::default(),
+            node_infos: RefCell::new(smallvec![NodeInfo::default()]),
             batch_updates,
         }
     }
@@ -161,42 +165,46 @@ impl<const IS_POST_DOM: bool> SemiNCA<IS_POST_DOM> {
         // we need this information to continue it.
         self.num_to_node.clear();
         self.num_to_node.push(None);
-        self.node_infos.get_mut().clear();
+        self.block_slots.get_mut().clear();
+        let node_infos = self.node_infos.get_mut();
+        node_infos.clear();
+        node_infos.push(NodeInfo::default());
+    }
+
+    /// The slot of `block` in `node_infos`, assigning the next one if `block` has none yet.
+    fn slot(&self, block: BlockRef) -> usize {
+        if let Some(slot) = self.block_slots.borrow().get(&block) {
+            return *slot as usize;
+        }
+        let mut node_infos = self.node_infos.borrow_mut();
+        let slot = node_infos.len();
+        node_infos.push(NodeInfo::default());
+        self.block_slots.borrow_mut().insert(block, slot as u32);
+        slot
+    }
+
+    /// The number of entries in the info table, the virtual node's included.
+    #[cfg(test)]
+    pub(super) fn table_len(&self) -> usize {
+        self.node_infos.borrow().len()
     }
 
     /// Look up information about a block in the Semi-NCA state
     pub fn node_info(&self, block: Option<BlockRef>) -> Ref<'_, NodeInfo> {
-        match block {
-            None => Ref::map(self.node_infos.borrow(), |ni| {
-                ni.first().expect("no virtual node present")
-            }),
-            Some(block) => {
-                let index = block.borrow().id().as_usize() + 1;
-
-                if index >= self.node_infos.borrow().len() {
-                    self.node_infos.borrow_mut().resize_with(index + 1, NodeInfo::default);
-                }
-
-                Ref::map(self.node_infos.borrow(), |ni| unsafe { ni.get_unchecked(index) })
-            }
-        }
+        let slot = match block {
+            None => 0,
+            Some(block) => self.slot(block),
+        };
+        Ref::map(self.node_infos.borrow(), |ni| unsafe { ni.get_unchecked(slot) })
     }
 
     /// Get a mutable reference to the stored informaton for `block`
     pub fn node_info_mut(&mut self, block: Option<BlockRef>) -> &mut NodeInfo {
-        match block {
-            None => self.node_infos.get_mut().get_mut(0).expect("no virtual node present"),
-            Some(block) => {
-                let index = block.borrow().id().as_usize() + 1;
-
-                let node_infos = self.node_infos.get_mut();
-                if index >= node_infos.len() {
-                    node_infos.resize_with(index + 1, NodeInfo::default);
-                }
-
-                unsafe { node_infos.get_unchecked_mut(index) }
-            }
-        }
+        let slot = match block {
+            None => 0,
+            Some(block) => self.slot(block),
+        };
+        unsafe { self.node_infos.get_mut().get_unchecked_mut(slot) }
     }
 
     /// Look up the immediate dominator for `block`, if it has one.

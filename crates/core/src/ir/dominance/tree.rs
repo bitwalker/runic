@@ -9,7 +9,7 @@ use smallvec::{SmallVec, smallvec};
 
 use super::{BatchUpdateInfo, SemiNCA};
 use crate::{
-    BlockRef, EntityId, EntityWithId, RegionRef,
+    BlockRef, EntityWithId, FxHashMap, RegionRef,
     cfg::{self, Graph, Inverse, InvertibleGraph},
     formatter::DisplayOptional,
 };
@@ -54,9 +54,12 @@ pub struct DomTreeBase<const IS_POST_DOM: bool> {
     /// For forward dominance trees, there is always a single root. For post-dominance trees, there
     /// may be multiple, one for each exit from the region.
     roots: DomTreeRoots,
-    /// The nodes represented in this dominance tree
-    #[allow(clippy::type_complexity)]
-    nodes: SmallVec<[Option<(Option<BlockRef>, Rc<DomTreeNode>)>; 64]>,
+    /// The nodes represented in this dominance tree, by block; `None` is the virtual node of a
+    /// post-dominator tree.
+    ///
+    /// The table holds only the blocks of the tree, so its size depends on the region alone, not
+    /// on how many blocks the context has created.
+    nodes: FxHashMap<Option<BlockRef>, Rc<DomTreeNode>>,
     /// The root dominance tree node.
     root: Option<Rc<DomTreeNode>>,
     /// The parent region for which this dominance tree was computed
@@ -136,9 +139,9 @@ impl<const IS_POST_DOM: bool> fmt::Debug for DomTreeBase<IS_POST_DOM> {
         }
 
         builder.field_with("nodes", |f| {
-            f.debug_set()
-                .entries(self.nodes.iter().filter_map(|node| node.as_ref().map(|(_, n)| n.clone())))
-                .finish()
+            let mut nodes = self.nodes.values().cloned().collect::<Vec<_>>();
+            nodes.sort_by_key(|node| node.block.map(|block| block.borrow().id()));
+            f.debug_set().entries(nodes).finish()
         });
 
         builder.finish()
@@ -352,30 +355,28 @@ impl DomTreeBase<false> {
         self.roots[0].unwrap()
     }
 
-    /// Get all the nodes of this tree as a vector in pre-order visitation order
-    pub fn preorder(&self) -> Vec<Rc<DomTreeNode>> {
+    /// The nodes of the blocks of this tree (not the virtual node), ordered by block id: the
+    /// order in which the sorts below break ties between nodes whose DFS numbers are stale.
+    fn block_nodes(&self) -> Vec<Rc<DomTreeNode>> {
         let mut nodes = self
             .nodes
             .iter()
-            .filter_map(|entry| match entry {
-                Some((Some(_), node)) => Some(node.clone()),
-                _ => None,
-            })
+            .filter_map(|(block, node)| block.map(|_| node.clone()))
             .collect::<Vec<_>>();
+        nodes.sort_by_key(|node| node.block.map(|block| block.borrow().id()));
+        nodes
+    }
+
+    /// Get all the nodes of this tree as a vector in pre-order visitation order
+    pub fn preorder(&self) -> Vec<Rc<DomTreeNode>> {
+        let mut nodes = self.block_nodes();
         nodes.sort_by_key(|node| node.num_in.get());
         nodes
     }
 
     /// Get all the nodes of this tree as a vector in post-order visitation order
     pub fn postorder(&self) -> Vec<Rc<DomTreeNode>> {
-        let mut nodes = self
-            .nodes
-            .iter()
-            .filter_map(|entry| match entry {
-                Some((Some(_), node)) => Some(node.clone()),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
+        let mut nodes = self.block_nodes();
         nodes.sort_by_key(|node| node.num_out.get());
         nodes
     }
@@ -388,14 +389,7 @@ impl DomTreeBase<false> {
     /// children are visited. Thus, a reverse post-order traversal is equivalent to a preorder
     /// traversal of the dominance tree, where `preorder` corresponds to a traversal of the CFG.
     pub fn reverse_postorder(&self) -> Vec<Rc<DomTreeNode>> {
-        let mut nodes = self
-            .nodes
-            .iter()
-            .filter_map(|entry| match entry {
-                Some((Some(_), node)) => Some(node.clone()),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
+        let mut nodes = self.block_nodes();
         nodes.sort_by(|a, b| a.num_out.get().cmp(&b.num_out.get()).reverse());
         nodes
     }
@@ -406,10 +400,8 @@ impl<const IS_POST_DOM: bool> DomTreeBase<IS_POST_DOM> {
     pub fn new(region: RegionRef) -> Result<Self, DomTreeError> {
         let entry = region.borrow().entry_block_ref().ok_or(DomTreeError::EmptyRegion)?;
         let root = Rc::new(DomTreeNode::new(Some(entry), None));
-        let root_id = entry.borrow().id().as_usize() + 1;
-        let mut nodes = SmallVec::default();
-        nodes.resize(root_id + 2, None);
-        nodes[root_id] = Some((Some(entry), root.clone()));
+        let mut nodes = FxHashMap::default();
+        nodes.insert(Some(entry), root.clone());
         let roots = smallvec![Some(entry)];
 
         let mut this = Self {
@@ -436,11 +428,17 @@ impl<const IS_POST_DOM: bool> DomTreeBase<IS_POST_DOM> {
     }
 
     pub fn len(&self) -> usize {
-        self.nodes.iter().filter(|entry| entry.is_some()).count()
+        self.nodes.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.nodes.is_empty() || self.nodes.iter().all(|entry| entry.is_none())
+        self.nodes.is_empty()
+    }
+
+    /// The number of entries in the node table.
+    #[cfg(test)]
+    pub(super) fn table_len(&self) -> usize {
+        self.nodes.len()
     }
 
     #[inline]
@@ -476,25 +474,16 @@ impl<const IS_POST_DOM: bool> DomTreeBase<IS_POST_DOM> {
     ///
     /// Use `None` to get the virtual node, if this is a post-dominator tree
     pub fn get(&self, block: Option<BlockRef>) -> Option<Rc<DomTreeNode>> {
-        let index = self.node_index(block);
-        self.nodes.get(index).and_then(|entry| match entry {
-            Some((_, node)) => Some(node.clone()),
-            _ => None,
-        })
+        self.assert_in_region(block);
+        self.nodes.get(&block).cloned()
     }
 
     #[inline]
-    fn node_index(&self, block: Option<BlockRef>) -> usize {
+    fn assert_in_region(&self, block: Option<BlockRef>) {
         assert!(
             block.is_none_or(|block| block.parent().is_some_and(|parent| parent == self.parent)),
             "cannot get dominance info of block with different parent"
         );
-        if let Some(block) = block {
-            block.borrow().id().as_usize() + 1
-        } else {
-            // Reserve index 0 for None
-            0
-        }
     }
 
     /// Returns the entry node for the CFG of the region.
@@ -795,9 +784,8 @@ impl<const IS_POST_DOM: bool> DomTreeBase<IS_POST_DOM> {
     /// Removes node from the children of its immediate dominator. Deletes dominator node associated
     /// with `block`.
     pub fn erase_node(&mut self, block: BlockRef) {
-        let node_index = self.node_index(Some(block));
-        let entry = unsafe { self.nodes.get_unchecked_mut(node_index).take() };
-        let Some((_, node)) = entry else {
+        self.assert_in_region(Some(block));
+        let Some(node) = self.nodes.remove(&Some(block)) else {
             panic!("no node in tree for {block}");
         };
         assert!(node.is_leaf(), "node is not a leaf node");
@@ -872,12 +860,9 @@ impl<const IS_POST_DOM: bool> DomTreeBase<IS_POST_DOM> {
         block: Option<BlockRef>,
         idom: Option<Rc<DomTreeNode>>,
     ) -> Rc<DomTreeNode> {
+        self.assert_in_region(block);
         let node = Rc::new(DomTreeNode::new(block, idom.clone()));
-        let node_index = self.node_index(block);
-        if node_index >= self.nodes.len() {
-            self.nodes.resize(node_index + 1, None);
-        }
-        self.nodes[node_index] = Some((block, node.clone()));
+        self.nodes.insert(block, node.clone());
         if let Some(idom) = idom {
             idom.add_child(node.clone());
         }
@@ -1021,13 +1006,10 @@ impl<const IS_POST_DOM: bool> PartialEq for DomTreeBase<IS_POST_DOM> {
             && self.roots.len() == other.roots.len()
             && self.roots.iter().all(|root| other.roots.contains(root))
             && self.nodes.len() == other.nodes.len()
-            && self.nodes.iter().all(|entry| match entry {
-                Some((_, node)) => {
-                    let block = node.block();
-                    other.get(block).is_some_and(|n| node == &n)
-                }
-                None => true,
-            })
+            && self
+                .nodes
+                .iter()
+                .all(|(block, node)| other.get(*block).is_some_and(|n| node == &n))
     }
 }
 
