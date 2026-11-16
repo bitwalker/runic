@@ -43,6 +43,29 @@
 //! [WasmOpBuilder] builds them. [ConstantInstruction] marks the operations a Wasm constant
 //! expression may hold, and [is_constant_instruction] is the precise question to ask about one.
 //!
+//! **Module-level operations.** A memory, a table, a global, an element segment and a tag are
+//! symbols that sit beside the functions of a `builtin.module`, in its one name space. Each is
+//! defined, or, written with `declaration` (a global: with no initializer region), an import.
+//! [ModuleEntity] marks them, and [referenced_entity] is the check an operation makes that a
+//! symbol names the kind it needs (a load names a [Memory]).
+//!
+//! | Operation | Text | Is |
+//! |---|---|---|
+//! | [Memory] (`memory`) | `wasm.memory public @mem : 1..16;` | limits in 64 KiB pages, at most 65536 |
+//! | [Table] (`table`) | `wasm.table private @tab : 0..8 x !wasm.funcref;` | limits in elements and a reference type |
+//! | [Global] (`global`) | `wasm.global private @sp : mut i32 { %v = wasm.const 65536 : i32; };` | a value type, `mut`, and a region of one constant expression |
+//! | [Elem] (`elem`) | `wasm.elem private @init : @tab at 0 [@f, @g];` | an active segment of functions of a `funcref` table |
+//! | [Tag] (`tag`) | `wasm.tag private @exn : (i32, i64);` | parameter types |
+//!
+//! **Imports and exports.** Two entries of the attribute dictionary mark them, on a
+//! `builtin.function` or on one of the operations above: `wasm.import_module` (a non-empty string,
+//! on a declaration; `env` when absent, see [import_module]) and `wasm.export_name` (a string or
+//! an array of distinct strings, on a definition, see [export_names]). The dialect checks both on
+//! any operation, and rejects any other key that begins with `wasm.`. The field name of an import
+//! is the symbol's effective link name. What a module as a whole must satisfy (how many memories
+//! it has, the order of its index spaces, that the exported names are unique) is for a later
+//! stage.
+//!
 //! **Attributes.** [LimitsAttr] (`#wasm.limits<1..16>`) bounds the size of a memory or a table,
 //! [MemArgAttr] (`#wasm.memarg<offset = 8, align = 4>`) is the static part of a memory access,
 //! and [MutabilityAttr] (`#wasm.mutability<mut>`) says whether a global may be written.
@@ -61,6 +84,7 @@
 #![no_std]
 #![feature(unboxed_closures)]
 #![feature(fn_traits)]
+#![feature(ptr_metadata)]
 #![allow(incomplete_features)]
 #![deny(warnings)]
 
@@ -71,6 +95,7 @@ extern crate std;
 
 mod attributes;
 mod builders;
+mod linking;
 mod ops;
 mod types;
 
@@ -78,13 +103,14 @@ mod types;
 mod tests;
 
 use runic_ir::{
-    AttributeRef, Builder, Dialect, DialectInfo, OperationRef, SourceSpan, Type,
-    derive::DialectRegistration,
+    AttributeRef, Builder, Dialect, DialectInfo, Operation, OperationRef, Report, SourceSpan, Type,
+    derive::DialectRegistration, interner,
 };
 
 pub use self::{
     attributes::{Limits, LimitsAttr, MemArg, MemArgAttr, Mutability, MutabilityAttr},
     builders::WasmOpBuilder,
+    linking::{DEFAULT_IMPORT_MODULE, EXPORT_NAME, IMPORT_MODULE, export_names, import_module},
     ops::*,
     types::{
         ExternRefType, FloatType, FuncRefType, I32, I64, IntType, NumType, RefType, ValType,
@@ -109,6 +135,18 @@ impl Dialect for WasmDialect {
     #[inline]
     fn info(&self) -> &DialectInfo {
         &self.info
+    }
+
+    /// Checks the dictionary entries of any operation whose key begins with `wasm.`:
+    /// `wasm.import_module` and `wasm.export_name`, which mark imports and exports (see
+    /// [import_module] and [export_names]). Any other `wasm.` key is an error.
+    fn verify_operation_attribute(
+        &self,
+        op: &Operation,
+        name: interner::Symbol,
+        attr: &AttributeRef,
+    ) -> Result<(), Report> {
+        linking::verify_entry(op, name, attr)
     }
 
     /// The dialect has no folds, so it materializes no constant: `None`.

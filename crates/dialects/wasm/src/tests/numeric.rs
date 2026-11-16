@@ -326,14 +326,22 @@ fn parse_function_from(
     (context, function)
 }
 
-/// Every operation name the dialect registers is one of the tested names, and each tested name is
-/// registered.
+/// Every operation name the dialect registers is one of the tested names or a module-level
+/// operation, and each tested name is registered.
 #[test]
 fn the_dialect_has_exactly_the_numeric_operations_the_tables_list() {
     let context = context();
     let dialect = context.get_or_register_dialect::<WasmDialect>();
-    let mut registered =
-        dialect.registered_ops().iter().map(|name| name.to_string()).collect::<Vec<_>>();
+    let mut registered = dialect
+        .registered_ops()
+        .iter()
+        .map(|name| name.to_string())
+        .filter(|name| {
+            !["memory", "table", "global", "elem", "tag"]
+                .map(|op| format!("wasm.{op}"))
+                .contains(name)
+        })
+        .collect::<Vec<_>>();
     registered.sort();
     let mut expected = ["const", "constf", "select", "eqz"]
         .iter()

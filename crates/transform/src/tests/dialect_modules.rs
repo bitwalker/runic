@@ -7,7 +7,7 @@
 //! name with what it adds.
 
 /// The modules, each with the name of its dialect.
-pub const DIALECT_MODULES: [(&str, &str); 13] = [
+pub const DIALECT_MODULES: [(&str, &str); 14] = [
     ("arith", include_str!("../../../../tests/lit/parse/arith.runic")),
     (
         "arith (floats)",
@@ -33,4 +33,5 @@ pub const DIALECT_MODULES: [(&str, &str); 13] = [
     ),
     ("ub", include_str!("../../../../tests/lit/parse/ub.runic")),
     ("wasm (numeric)", include_str!("../../../../tests/lit/parse/wasm-numeric.runic")),
+    ("wasm (module)", include_str!("../../../../tests/lit/parse/wasm-module.runic")),
 ];

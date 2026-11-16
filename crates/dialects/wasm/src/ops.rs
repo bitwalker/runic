@@ -8,13 +8,14 @@ use crate::types::is_int_type;
 mod macros;
 mod compare;
 mod convert;
+mod module;
 mod numeric;
 mod verify;
 
 pub(crate) use self::verify::{
     ResultRule, verify_constant, verify_conversion, verify_select, verify_uniform,
 };
-pub use self::{compare::*, convert::*, numeric::*};
+pub use self::{compare::*, convert::*, module::*, numeric::*};
 
 /// Marks an operation that may appear in a Wasm constant expression (the initializer of a global,
 /// of a table or of a segment offset).

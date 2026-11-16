@@ -1,8 +1,14 @@
 //! The builder trait of the dialect.
 
 use runic_ir::{
-    Builder, BuilderExt, Float, Int, OpBuilder, ReadyAttr, Report, SourceSpan, Type, ValueRef,
-    dialects::builtin::FunctionBuilder,
+    AsCallableSymbolRef, Builder, BuilderExt, Float, Ident, InsertionGuard, Int, OpBuilder,
+    OpRegistration, ReadyAttr, Report, SourceSpan, Spanned, SymbolName, SymbolTable, Type,
+    ValueRef, Visibility,
+    attributes::AttrList,
+    dialects::builtin::{
+        FunctionBuilder,
+        attributes::{Array, List, SymbolRef, SymbolRefAttr},
+    },
 };
 
 use crate::*;
@@ -64,6 +70,36 @@ macro_rules! fixed_conversion_builders {
             Ok(op.borrow().result().as_value_ref())
         }
     )*};
+}
+
+/// Checks that `builder` can define the symbol `name` of the kind `T` where it inserts: a symbol
+/// whose name is taken in the enclosing symbol table is an error, where inserting it would fail an
+/// assertion. A builder with no symbol table at its insertion point defines anything.
+fn ensure_definable<T: OpRegistration, B: ?Sized + Builder>(
+    builder: &B,
+    name: SymbolName,
+) -> Result<(), Report> {
+    let Some(owner) = builder.insertion_block().and_then(|block| block.borrow().parent_op()) else {
+        return Ok(());
+    };
+    let table = if owner.name().implements::<dyn SymbolTable>() {
+        owner
+    } else {
+        let Some(table) = owner.borrow().nearest_symbol_table() else {
+            return Ok(());
+        };
+        table
+    };
+    let kind = builder
+        .context()
+        .get_or_register_dialect::<T::Dialect>()
+        .expect_registered_name::<T>();
+    table
+        .borrow()
+        .as_trait::<dyn SymbolTable>()
+        .expect("a symbol table")
+        .can_define(name, &kind)
+        .map_err(Report::msg)
 }
 
 /// Builds the operations of the `wasm` dialect, returning their results.
@@ -203,6 +239,169 @@ pub trait WasmOpBuilder<'f, B: ?Sized + Builder> {
         extend_u, ExtendU, i64, "an `i32` zero-extended to an `i64`";
         promote, Promote, f64, "an `f32` as an `f64`";
         demote, Demote, f32, "an `f64` rounded to an `f32`";
+    }
+
+    /// Creates a [Memory] named `name` with `limits` in pages: a definition.
+    ///
+    /// Returns an error when the name is taken in the enclosing symbol table.
+    fn create_memory(
+        &mut self,
+        name: Ident,
+        visibility: Visibility,
+        limits: Limits,
+    ) -> Result<MemoryRef, Report> {
+        ensure_definable::<Memory, _>(self.builder(), name.name)?;
+        let op_builder = self.builder_mut().create::<Memory, (_, _, _)>(name.span());
+        op_builder(name, visibility, limits)
+    }
+
+    /// Creates a [Memory] declaration, an import: as [Self::create_memory], with the property
+    /// `declaration`.
+    fn create_memory_declaration(
+        &mut self,
+        name: Ident,
+        visibility: Visibility,
+        limits: Limits,
+    ) -> Result<MemoryRef, Report> {
+        ensure_definable::<Memory, _>(self.builder(), name.name)?;
+        let op_builder = self.builder_mut().create::<Memory, (_, _, _)>(name.span());
+        let mut op = op_builder(name, visibility, limits)?;
+        op.borrow_mut().set_declaration(true);
+        Ok(op)
+    }
+
+    /// Creates a [Table] named `name` with `limits` in elements and the reference type
+    /// `element_type`: a definition. Any other element type does not verify.
+    ///
+    /// Returns an error when the name is taken in the enclosing symbol table.
+    fn create_table(
+        &mut self,
+        name: Ident,
+        visibility: Visibility,
+        limits: Limits,
+        element_type: Type,
+    ) -> Result<TableRef, Report> {
+        ensure_definable::<Table, _>(self.builder(), name.name)?;
+        let op_builder = self.builder_mut().create::<Table, (_, _, _, _)>(name.span());
+        op_builder(name, visibility, limits, element_type)
+    }
+
+    /// Creates a [Table] declaration, an import: as [Self::create_table], with the property
+    /// `declaration`.
+    fn create_table_declaration(
+        &mut self,
+        name: Ident,
+        visibility: Visibility,
+        limits: Limits,
+        element_type: Type,
+    ) -> Result<TableRef, Report> {
+        ensure_definable::<Table, _>(self.builder(), name.name)?;
+        let op_builder = self.builder_mut().create::<Table, (_, _, _, _)>(name.span());
+        let mut op = op_builder(name, visibility, limits, element_type)?;
+        op.borrow_mut().set_declaration(true);
+        Ok(op)
+    }
+
+    /// Creates a [Global] declaration, an import, of the type `ty`: its region is empty. A
+    /// definition is made by [Self::create_global].
+    fn create_global_declaration(
+        &mut self,
+        name: Ident,
+        visibility: Visibility,
+        ty: Type,
+        mutability: Mutability,
+    ) -> Result<GlobalRef, Report> {
+        ensure_definable::<Global, _>(self.builder(), name.name)?;
+        let op_builder = self.builder_mut().create::<Global, (_, _, _)>(name.span());
+        let mut global = op_builder(name, visibility, ty)?;
+        global.borrow_mut().set_mutability(mutability);
+        Ok(global)
+    }
+
+    /// Creates a [Global] of the type `ty` whose initializer `init` builds: a definition.
+    ///
+    /// The initializer is a region of one block; `init` is called with the builder positioned in
+    /// it, builds the constant expression (`wasm.const` and the like), and returns the value the
+    /// global has. The value is not checked here: an expression that is not constant, or has
+    /// another type, does not verify. The insertion point is as it was before the call when it
+    /// returns.
+    ///
+    /// Returns an error when the name is taken in the enclosing symbol table, or when `init` fails.
+    fn create_global(
+        &mut self,
+        name: Ident,
+        visibility: Visibility,
+        ty: Type,
+        mutability: Mutability,
+        init: impl FnOnce(&mut B) -> Result<ValueRef, Report>,
+    ) -> Result<GlobalRef, Report> {
+        let global = self.create_global_declaration(name, visibility, ty, mutability)?;
+        let region = global.borrow().initializer().as_region_ref();
+        let mut guard = InsertionGuard::new(self.builder_mut());
+        let block = guard.create_block(region, None, &[]);
+        guard.set_insertion_point_to_end(block);
+        init(&mut *guard).map(|_| global)
+    }
+
+    /// Creates an active [Elem] named `name` that puts `functions` into `table` from the element
+    /// `offset`.
+    ///
+    /// Returns an error when the name is taken in the enclosing symbol table. The table and the
+    /// functions are checked when the segment is verified.
+    fn create_elem<C: AsCallableSymbolRef>(
+        &mut self,
+        name: Ident,
+        visibility: Visibility,
+        table: TableRef,
+        offset: i32,
+        functions: impl IntoIterator<Item = C>,
+    ) -> Result<ElemRef, Report> {
+        ensure_definable::<Elem, _>(self.builder(), name.name)?;
+        let context = self.builder().context_rc();
+        let i32 = context.i32();
+        let offset = context.int_attr(Int::from(offset), i32);
+        let mut list = AttrList::new();
+        for function in functions {
+            let path = function.as_callable_symbol_ref().borrow().path();
+            let reference =
+                context.create_attribute::<SymbolRefAttr, _>(SymbolRef::new(path, None));
+            list.push_back(runic_ir::Attribute::as_attr(&*reference.borrow()).as_attr_ref());
+        }
+        let functions = List::from(list);
+        let op_builder = self.builder_mut().create::<Elem, (_, _, _, _, _)>(name.span());
+        let elem = op_builder(name, visibility, table, ReadyAttr(offset), functions)?;
+        // The references of the list are linked once the segment is in its table
+        runic_ir::link_symbol_refs(runic_ir::Op::as_operation_ref(&*elem.borrow()));
+        Ok(elem)
+    }
+
+    /// Creates a [Tag] named `name` with the parameter types `params`: a definition.
+    ///
+    /// Returns an error when the name is taken in the enclosing symbol table.
+    fn create_tag(
+        &mut self,
+        name: Ident,
+        visibility: Visibility,
+        params: &[Type],
+    ) -> Result<TagRef, Report> {
+        ensure_definable::<Tag, _>(self.builder(), name.name)?;
+        let op_builder = self.builder_mut().create::<Tag, (_, _, _)>(name.span());
+        op_builder(name, visibility, Array::from(params.to_vec()))
+    }
+
+    /// Creates a [Tag] declaration, an import: as [Self::create_tag], with the property
+    /// `declaration`.
+    fn create_tag_declaration(
+        &mut self,
+        name: Ident,
+        visibility: Visibility,
+        params: &[Type],
+    ) -> Result<TagRef, Report> {
+        ensure_definable::<Tag, _>(self.builder(), name.name)?;
+        let op_builder = self.builder_mut().create::<Tag, (_, _, _)>(name.span());
+        let mut op = op_builder(name, visibility, Array::from(params.to_vec()))?;
+        op.borrow_mut().set_declaration(true);
+        Ok(op)
     }
 
     /// The builder this builder wraps.

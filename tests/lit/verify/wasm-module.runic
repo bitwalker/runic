@@ -1,0 +1,224 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// The module-level operations of `wasm`: what each states by itself is checked where it is
+// written, and a symbol it names must resolve to the right kind of operation. The rules that need
+// the whole module (how many memories there may be) are not checked. The two dictionary entries
+// that mark imports and exports are checked on any operation.
+
+builtin.module public @valid {
+    wasm.memory public @mem : 1..65536;
+    wasm.table private @tab : 0..4294967295 x !wasm.externref;
+    wasm.global private @g : mut f32 { %v = wasm.constf 1.5 : f32; };
+    wasm.global private @sum : i64 {
+        %a = wasm.const 1 : i64;
+        %b = wasm.const 2 : i64;
+        %c = wasm.add %a, %b;
+    };
+    wasm.global private @ext : i32;
+    wasm.tag private @t : (i32, f64, !wasm.funcref);
+    builtin.function public extern("C") @f();
+    wasm.table private @funcs : 2 x !wasm.funcref;
+    wasm.elem private @e : @funcs at 1 [@f];
+};
+
+// -----
+
+builtin.module public @memory_minimum {
+    wasm.memory public @mem : 65537; // expected-error {{`wasm.memory` `@mem` has a minimum of 65537, but a 32-bit memory has at most 65536}}
+};
+
+// -----
+
+builtin.module public @memory_maximum {
+    wasm.memory public @mem : 1..65537; // expected-error {{`wasm.memory` `@mem` has a maximum of 65537, but a 32-bit memory has at most 65536}}
+};
+
+// -----
+
+builtin.module public @memory_order {
+    wasm.memory public @mem : 8..4; // expected-error {{limits `8..4` with a maximum below the minimum, but Wasm limits satisfy min <= max}}
+};
+
+// -----
+
+builtin.module public @table_bound {
+    wasm.table private @tab : 0..4294967296 x !wasm.funcref; // expected-error {{`wasm.table` `@tab` has a maximum of 4294967296, but a Wasm table has at most 4294967295}}
+};
+
+// -----
+
+builtin.module public @table_type {
+    wasm.table private @tab : 0 x i32; // expected-error {{`wasm.table` `@tab` has the element type `i32`, but a Wasm table holds references: `funcref` or `externref`}}
+};
+
+// -----
+
+builtin.module public @global_type {
+    wasm.global private @g : i8; // expected-error {{`wasm.global` `@g` has the type `i8`, but a Wasm global holds a value: `i32`, `i64`, `f32`, `f64`, `funcref` or `externref`}}
+};
+
+// -----
+
+builtin.module public @global_value_type {
+    wasm.global private @g : i32 { // expected-error {{the initializer of `wasm.global` `@g` has the value type `i64`, but the global has the type `i32`}}
+        %v = wasm.const 1 : i64;
+    };
+};
+
+// -----
+
+builtin.module public @global_not_constant {
+    wasm.global private @g : i32 { // expected-error {{the initializer of `wasm.global` `@g` holds `wasm.div_s`, but a Wasm constant expression holds only constant instructions}}
+        %a = wasm.const 1 : i32;
+        %b = wasm.div_s %a, %a;
+    };
+};
+
+// -----
+
+builtin.module public @global_float_add {
+    wasm.global private @g : f32 { // expected-error {{the initializer of `wasm.global` `@g` holds `wasm.add`, but a Wasm constant expression holds only constant instructions}}
+        %a = wasm.constf 1.0 : f32;
+        %b = wasm.add %a, %a;
+    };
+};
+
+// -----
+
+builtin.module public @elem_not_a_table {
+    wasm.memory public @mem : 1;
+    builtin.function public extern("C") @f();
+    wasm.elem private @e : @mem at 0 [@f]; // expected-error {{`wasm.elem` names `mem`, which is a `wasm.memory`, not a `wasm.table`}}
+};
+
+// -----
+
+builtin.module public @elem_extern_table {
+    wasm.table private @tab : 1 x !wasm.externref;
+    builtin.function public extern("C") @f();
+    wasm.elem private @e : @tab at 0 [@f]; // expected-error {{`wasm.elem` `@e` fills the table `tab` of `externref`, but a segment of functions fills a `funcref` table}}
+};
+
+// -----
+
+builtin.module public @elem_not_a_function {
+    wasm.table private @tab : 1 x !wasm.funcref;
+    wasm.memory public @mem : 1;
+    wasm.elem private @e : @tab at 0 [@mem]; // expected-error {{`wasm.elem` `@e` lists `mem`, which is a `wasm.memory`, but every element of a segment of functions is a function}}
+};
+
+// -----
+
+builtin.module public @elem_offset_type {
+    wasm.table private @tab : 1 x !wasm.funcref;
+    builtin.function public extern("C") @f();
+    "wasm.elem"() <{ name = #builtin.ident<@e>, visibility = #builtin.visibility<private>, table = #builtin.symbol<@tab>, offset = #builtin.int<0 : i64>, functions = [#builtin.symbol<@f>] }> : () -> (); // expected-error {{`wasm.elem` `@e` has an offset of type `i64`, but the offset of a segment is an `i32` constant}}
+};
+
+// -----
+
+builtin.module public @tag_type {
+    wasm.tag private @t : (i32, i1); // expected-error {{`wasm.tag` `@t` has parameter 1 of type `i1`, but a Wasm tag takes values: `i32`, `i64`, `f32`, `f64`, `funcref` or `externref`}}
+};
+
+// -----
+
+builtin.module public @import_ok {
+    builtin.function public extern("C") @f() attributes { wasm.import_module = "other" };
+    wasm.global private @g : i32 attributes { wasm.import_module = "env", link_name = "field" };
+    wasm.memory public declaration @m : 1 attributes { wasm.import_module = "env" };
+    wasm.table private declaration @t : 1 x !wasm.funcref attributes { wasm.import_module = "env" };
+    wasm.tag private declaration @e : (i32) attributes { wasm.import_module = "env" };
+};
+
+// -----
+
+builtin.module public @import_empty {
+    wasm.memory public declaration @m : 1 attributes { wasm.import_module = "" }; // expected-error {{`wasm.import_module` must be a non-empty string, the name of the module an import comes from, but this is #builtin.string<"">}}
+};
+
+// -----
+
+builtin.module public @import_not_a_string {
+    wasm.memory public declaration @m : 1 attributes { wasm.import_module = #builtin.i32<1> }; // expected-error {{`wasm.import_module` must be a non-empty string, the name of the module an import comes from, but this is #builtin.i32<1>}}
+};
+
+// -----
+
+builtin.module public @import_definition {
+    wasm.memory public @m : 1 attributes { wasm.import_module = "env" }; // expected-error {{`wasm.import_module` marks an import, and an import is a declaration, but `wasm.memory @m` is a definition}}
+};
+
+// -----
+
+builtin.module public @import_function_definition {
+    builtin.function public extern("C") @f() { // expected-error {{`wasm.import_module` marks an import, and an import is a declaration, but `builtin.function @f` is a definition}}
+        builtin.ret;
+    } attributes { wasm.import_module = "env" };
+};
+
+// -----
+
+builtin.module public @import_global_variable {
+    builtin.global_variable public @g : i32 attributes { wasm.import_module = "env" }; // expected-error {{`wasm.import_module` marks an import, but `builtin.global_variable @g` is not one: data in linear memory is not something Wasm imports}}
+};
+
+// -----
+
+builtin.module public @import_elsewhere {
+    builtin.module public @inner attributes { wasm.import_module = "env" } {}; // expected-error {{`wasm.import_module` marks an import, but `builtin.module @inner` is not one: Wasm imports functions, globals, memories, tables and tags}}
+};
+
+// -----
+
+builtin.module public @export_ok {
+    builtin.function public extern("C") @f() {
+        builtin.ret;
+    } attributes { wasm.export_name = "f" };
+    wasm.memory public @m : 1 attributes { wasm.export_name = ["memory", "mem"] };
+    wasm.global private @g : i32 { %v = wasm.const 0 : i32; } attributes { wasm.export_name = "g" };
+    wasm.table private @t : 1 x !wasm.funcref attributes { wasm.export_name = "table" };
+    wasm.tag private @e : (i32) attributes { wasm.export_name = "tag" };
+};
+
+// -----
+
+builtin.module public @export_empty {
+    wasm.memory public @m : 1 attributes { wasm.export_name = "" }; // expected-error {{`wasm.export_name` must be a non-empty string or an array of distinct non-empty strings, but this is an empty string}}
+};
+
+// -----
+
+builtin.module public @export_empty_entry {
+    wasm.memory public @m : 1 attributes { wasm.export_name = ["a", ""] }; // expected-error {{`wasm.export_name` must be a non-empty string or an array of distinct non-empty strings, but entry 1 is an empty string}}
+};
+
+// -----
+
+builtin.module public @export_duplicate {
+    wasm.memory public @m : 1 attributes { wasm.export_name = ["a", "b", "a"] }; // expected-error {{`wasm.export_name` must be a non-empty string or an array of distinct non-empty strings, but `a` is exported twice}}
+};
+
+// -----
+
+builtin.module public @export_not_strings {
+    wasm.memory public @m : 1 attributes { wasm.export_name = #builtin.i32<1> }; // expected-error {{`wasm.export_name` must be a non-empty string or an array of distinct non-empty strings, but this is #builtin.i32<1>}}
+};
+
+// -----
+
+builtin.module public @export_declaration {
+    wasm.memory public declaration @m : 1 attributes { wasm.export_name = "m" }; // expected-error {{`wasm.export_name` marks an export, and an export is a definition, but `wasm.memory @m` is a declaration (an import)}}
+};
+
+// -----
+
+builtin.module public @export_global_variable {
+    builtin.global_variable public @g : i32 attributes { wasm.export_name = "g" }; // expected-error {{`wasm.export_name` marks an export, but `builtin.global_variable @g` is not one: Wasm exports functions, globals, memories, tables and tags}}
+};
+
+// -----
+
+builtin.module public @unknown_key {
+    wasm.memory public @m : 1 attributes { wasm.nonsense = "x" }; // expected-error {{`wasm.nonsense` is not an attribute of the `wasm` dialect: it knows `wasm.import_module` and `wasm.export_name`}}
+};

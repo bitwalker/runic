@@ -20,6 +20,7 @@ use crate::*;
 mod attributes;
 mod compare;
 mod convert;
+mod module;
 mod numeric;
 mod types;
 
