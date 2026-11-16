@@ -18,6 +18,8 @@ doctest = false
 
 [dependencies]
 runic-core.workspace = true
+runic-transform.workspace = true
 
 [dev-dependencies]
+runic-dialect-arith.workspace = true
 tempfile.workspace = true

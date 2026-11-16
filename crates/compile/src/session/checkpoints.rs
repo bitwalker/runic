@@ -11,13 +11,15 @@ use crate::{
 };
 
 /// What a session has done so far: the checkpoints reached, the artifact kept at the stop point,
-/// the outputs delivered, and whether the translate step has run.
+/// the outputs delivered, and whether the translate and optimize steps have run, and what the pass pipeline printed.
 #[derive(Default)]
 pub(super) struct Progress {
     pub(super) reached: Vec<CheckpointId>,
     pub(super) stopped: Option<Artifact>,
     pub(super) emitted: Vec<Emitted>,
     pub(super) translated: bool,
+    pub(super) optimized: bool,
+    pub(super) pass_output: String,
 }
 
 /// The stage that is running, and so which checkpoints it may reach.

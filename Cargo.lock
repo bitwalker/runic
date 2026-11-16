@@ -1307,6 +1307,8 @@ name = "runic-compile"
 version = "0.1.0"
 dependencies = [
  "runic-core",
+ "runic-dialect-arith",
+ "runic-transform",
  "tempfile",
 ]
 

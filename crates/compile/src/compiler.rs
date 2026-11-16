@@ -1,6 +1,10 @@
-use runic_core::Report;
+use runic_core::{Report, pass::OpPassManager};
 
-use crate::{Backend, Declarer, Frontend, Route, Triple};
+use crate::{Backend, Declarer, Frontend, Route, Session, Triple, session::default_optimization};
+
+/// What adds the optimization passes of a compilation to a pass manager anchored on the world.
+type Optimization =
+    Box<dyn Fn(&Session<'_>, &mut OpPassManager) -> Result<(), Report> + Send + Sync>;
 
 /// A compiler: the frontends and backends it offers and the target it assumes, checked once.
 ///
@@ -12,6 +16,7 @@ pub struct Compiler {
     frontends: Vec<Box<dyn Frontend>>,
     backends: Vec<Box<dyn Backend>>,
     default_target: Option<Triple>,
+    optimization: Option<Optimization>,
 }
 
 impl Compiler {
@@ -21,6 +26,7 @@ impl Compiler {
             frontends: Vec::new(),
             backends: Vec::new(),
             default_target: None,
+            optimization: None,
         }
     }
 
@@ -59,6 +65,19 @@ impl Compiler {
     pub fn default_target(&self) -> Option<&Triple> {
         self.default_target.as_ref()
     }
+
+    /// Adds the optimization passes of this compiler to `passes`: those its builder gave, or the
+    /// default for the session's optimization level.
+    pub(crate) fn add_optimization_passes(
+        &self,
+        session: &Session<'_>,
+        passes: &mut OpPassManager,
+    ) -> Result<(), Report> {
+        match &self.optimization {
+            Some(optimization) => optimization(session, passes),
+            None => default_optimization(session, passes),
+        }
+    }
 }
 
 /// Collects the stages and the default target of a [Compiler], and checks them in [build].
@@ -68,6 +87,7 @@ pub struct CompilerBuilder {
     frontends: Vec<Box<dyn Frontend>>,
     backends: Vec<Box<dyn Backend>>,
     default_target: Option<String>,
+    optimization: Option<Optimization>,
 }
 
 impl CompilerBuilder {
@@ -90,6 +110,23 @@ impl CompilerBuilder {
         self
     }
 
+    /// Replaces the default optimization passes of the compiler with `optimization`.
+    ///
+    /// The optimization pipeline calls it after the passes of the frontends, with the session and
+    /// a pass manager anchored on the world, and it adds the passes to run. Without one, the
+    /// compiler runs no pass at `-O0` and, at every other level, `canonicalizer`, `cse`, `sccp`,
+    /// `canonicalizer` and `dce`, in that order. A request's own pipeline replaces all of it.
+    pub fn optimization(
+        mut self,
+        optimization: impl Fn(&Session<'_>, &mut OpPassManager) -> Result<(), Report>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.optimization = Some(Box::new(optimization));
+        self
+    }
+
     /// Checks the configuration and builds the compiler.
     ///
     /// Fails, with a message that names the stage or the text at fault, when:
@@ -108,6 +145,7 @@ impl CompilerBuilder {
             frontends,
             backends,
             default_target,
+            optimization,
         } = self;
 
         check_names(&frontends, &backends)?;
@@ -166,6 +204,7 @@ impl CompilerBuilder {
             frontends,
             backends,
             default_target,
+            optimization,
         })
     }
 }

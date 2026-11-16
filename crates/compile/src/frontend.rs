@@ -1,4 +1,4 @@
-use runic_core::{Report, dialects::builtin::WorldRef};
+use runic_core::{Report, dialects::builtin::WorldRef, pass::OpPassManager};
 
 use crate::{CheckpointDecl, Checkpoints, Flow, Input, Session};
 
@@ -44,4 +44,19 @@ pub trait Frontend: Send + Sync {
         world: WorldRef,
         checkpoints: &mut Checkpoints<'_>,
     ) -> Result<Flow<()>, Report>;
+
+    /// Adds to `passes` the passes to run on what the frontends translated, before the default
+    /// optimizations of the compilation.
+    ///
+    /// The optimization pipeline asks each frontend that has inputs, in the order the frontends
+    /// ran, and `passes` is anchored on the world. A frontend that has none to add keeps the
+    /// default, which adds nothing. An error ends the compilation and is returned to the caller as
+    /// it is.
+    fn add_passes(
+        &self,
+        _session: &Session<'_>,
+        _passes: &mut OpPassManager,
+    ) -> Result<(), Report> {
+        Ok(())
+    }
 }

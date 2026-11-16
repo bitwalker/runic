@@ -24,6 +24,10 @@
 //!   rendered and delivered when their checkpoint is reached: a file is written through a
 //!   temporary file and a rename, and standard output and memory are kept as bytes in the
 //!   session's list of [Emitted] outputs;
+//! * the optimization pipeline runs on the world after the frontends: the passes each frontend
+//!   adds, then the compiler's optimization (by default the dialect-independent passes of the
+//!   optimization level), or the pipeline the request gives instead; [Session::optimize] runs it
+//!   and [Session::pass_output] holds what it printed;
 //! * an [IrFrontend] reads Runic's own textual IR: each file holds a module, a component or a
 //!   world.
 #![deny(warnings)]

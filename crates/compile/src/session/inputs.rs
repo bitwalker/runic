@@ -17,7 +17,7 @@ impl Session<'_> {
     }
 
     /// The checkpoints reached, in the order they were reached, as of the last time the translate
-    /// step returned. While the step runs the stages see none: they learn of progress from what
+    /// or optimize step returned. While the step runs the stages see none: they learn of progress from what
     /// [Checkpoints::reach](crate::Checkpoints::reach) answers.
     pub fn reached(&self) -> &[CheckpointId] {
         &self.progress.reached

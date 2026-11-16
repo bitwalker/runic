@@ -16,11 +16,13 @@ use crate::{
 
 mod checkpoints;
 mod inputs;
+mod pipeline;
 mod resolve;
 mod translate;
 
 pub use self::checkpoints::Checkpoints;
 use self::checkpoints::Progress;
+pub(crate) use self::pipeline::default_optimization;
 
 /// A frontend that takes part in a session, with the inputs it reads.
 type Participant<'c> = (&'c dyn Frontend, Vec<Input>);
