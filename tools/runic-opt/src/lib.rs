@@ -24,6 +24,15 @@
 //! operation are checked to read back (see the module `roundtrip`); a form that does not is an
 //! error of the case.
 //!
+//! The tool has a second path, through the compiler harness (see the module `harness`). An input
+//! that a registered frontend other than the one for textual IR reads (by its file extension, or
+//! by `--language`), or a command line that writes `--target`, `--backend`, `--stop-after`,
+//! `--emit NAME=PATH`, or a flag of a stage or a `-Z` entry, is compiled by `runic-compile`
+//! instead of being parsed as IR: each case becomes a request, and what it emits is written as
+//! `--emit` says. `--list-stages` lists the registered frontends and backends. With the cargo
+//! feature `toy`, the toy language `calc` and the toy machines `stackvm` and `altvm` are
+//! registered.
+//!
 //! [`run`] is the whole tool, given its arguments and streams; the binary calls it with the
 //! process's.
 // The operations the tests declare are built by the operation derive, which needs these.

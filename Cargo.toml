@@ -7,7 +7,6 @@ resolver = "3"
 members = [
     "crates/analysis",
     "crates/compile",
-    "crates/ir",
     "crates/diagnostics",
     "crates/diagnostics-macros",
     "crates/dialects/arith",
@@ -16,6 +15,7 @@ members = [
     "crates/dialects/scf",
     "crates/dialects/ub",
     "crates/driver",
+    "crates/ir",
     "crates/log",
     "crates/macros",
     "crates/symbol",
@@ -98,15 +98,15 @@ toml = { version = "^1.1.2", features = ["preserve_order"] }
 # Workspace crates
 runic-analysis = { version = "0.1.0", path = "crates/analysis" }
 runic-compile = { version = "0.1.0", path = "crates/compile" }
-runic-driver = { version = "0.1.0", path = "crates/driver" }
-runic-ir = { version = "0.1.0", path = "crates/ir" }
 runic-diagnostics = { version = "0.1.0", path = "crates/diagnostics", default-features = false }
 runic-diagnostics-macros = { version = "0.1.0", path = "crates/diagnostics-macros" }
 runic-dialect-arith = { version = "0.1.0", path = "crates/dialects/arith" }
+runic-dialect-cf = { version = "0.1.0", path = "crates/dialects/cf" }
 runic-dialect-mem = { version = "0.1.0", path = "crates/dialects/mem" }
 runic-dialect-scf = { version = "0.1.0", path = "crates/dialects/scf" }
-runic-dialect-cf = { version = "0.1.0", path = "crates/dialects/cf" }
 runic-dialect-ub = { version = "0.1.0", path = "crates/dialects/ub" }
+runic-driver = { version = "0.1.0", path = "crates/driver" }
+runic-ir = { version = "0.1.0", path = "crates/ir" }
 runic-log = { version = "0.1.0", path = "crates/log", features = ["kv"] }
 runic-macros = { version = "0.1.0", path = "crates/macros" }
 runic-symbol = { version = "0.1.0", path = "crates/symbol" }

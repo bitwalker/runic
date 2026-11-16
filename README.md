@@ -10,12 +10,14 @@ of their own. A region is either an SSA region (a control-flow graph of blocks) 
 The IR has a textual form, written in files with the extension `.runic`, in two forms, both parsed
 and printed: a custom form, defined per operation, and a generic form that every operation has.
 
-What exists today is the core IR, its dialects and passes, and the test tool. No workspace member
-is a frontend or a backend: a compiler built on Runic brings its own.
+What exists today is the core IR, its dialects and passes, the compiler harness and the command
+line a compiler embeds, and `runic-opt`. No workspace member is a frontend or a backend of a real
+language or target: a compiler built on Runic brings its own. The toy language and machines the
+harness is tested against are part of `runic-compile`, behind its `testing` feature.
 
 ## The crates
 
-The workspace has sixteen members:
+The workspace has seventeen members:
 
 | crate | path | what it is for |
 |---|---|---|
@@ -27,14 +29,14 @@ The workspace has sixteen members:
 | `runic-dialect-ub` | `crates/dialects/ub` | undefined behaviour (`ub.poison`, `ub.unreachable`) |
 | `runic-analysis` | `crates/analysis` | the data-flow analysis framework and its analyses |
 | `runic-transform` | `crates/transform` | transformation passes and utilities |
-| `runic-compile` | `crates/compile` | the compiler harness: what a compilation is asked to do and the stages it runs through (being built; no tool uses it yet) |
-| `runic-driver` | `crates/driver` | the command line of a compiler built on Runic: the driver's flags and those its frontends and backends declare (being built; no tool uses it yet) |
+| `runic-compile` | `crates/compile` | the compiler harness: a request that says what one compilation is asked to do, the stages it runs through (frontends, the optimization pipeline, backends), the checkpoints and outputs, and the toy language `calc` and machines `stackvm` and `altvm` behind the `testing` feature |
+| `runic-driver` | `crates/driver` | the command line of a compiler built on Runic: the driver's flags and those its frontends and backends declare, the exit codes, and the example compiler `toyc`; `runic-opt` uses its pieces |
 | `runic-diagnostics` | `crates/diagnostics` | structured diagnostics: describing, collecting and rendering them with their source |
 | `runic-diagnostics-macros` | `crates/diagnostics-macros` | derive macros for `runic-diagnostics` |
 | `runic-macros` | `crates/macros` | derive and attribute macros for defining dialects, operations, types, attributes and operation traits |
 | `runic-symbol` | `crates/symbol` | string interning |
 | `runic-log` | `crates/log` | the trace logger `runic-opt` installs (see Tracing) |
-| `runic-opt` | `tools/runic-opt` | the command-line tool (below) |
+| `runic-opt` | `tools/runic-opt` | the IR-to-IR command-line tool, which also runs a compilation through the harness (below) |
 | `runic-expect-test` | `tools/expect-test` | snapshot testing for the Rust tests |
 
 The directories `crates/eval` and `crates/dialects/wasm` hold an evaluator and a WebAssembly
@@ -56,7 +58,8 @@ builds every member. The tool alone:
 
 ```sh
 cargo build -p runic-opt   # target/debug/runic-opt
-cargo make runic-opt       # the same, and copies it to bin/runic-opt
+cargo make runic-opt       # with the `toy` feature, copied to bin/runic-opt
+cargo make toyc            # the example compiler, copied to bin/toyc
 ```
 
 ## `runic-opt`
@@ -90,6 +93,14 @@ builtin.function public extern("C") @simple_constant() -> (i32, i32) {
 ```
 
 With `--print-generic`, the same result is printed in the generic form.
+
+An input that a registered frontend reads (a file with the extension of a frontend other than the
+one for textual IR), or a command line that writes `--target`, `--backend`, `--stop-after`,
+`--emit NAME=PATH`, `--language` or a flag or `-Z` entry of a stage, takes the harness path: the
+input is compiled by `runic-compile` instead of being parsed as IR, and the exit code is 0 or 1
+as for IR. `--list-stages` lists the registered frontends and backends. With the cargo feature
+`toy` (which `cargo make runic-opt` turns on), the tool registers the toy language `calc` and the
+toy machines `stackvm` and `altvm`, so that the path can be run and tested.
 
 ### Tracing
 
@@ -202,7 +213,7 @@ in `tools/`:
 ```sh
 cargo test --workspace     # the Rust tests
 cargo make test            # the Rust tests under cargo-nextest, and the tests of the Python scripts in tools/
-cargo make test-lit        # builds runic-opt into bin/ and runs the lit suite in tests/lit
+cargo make test-lit        # builds runic-opt and toyc into bin/ and runs the lit suite in tests/lit
 cargo make test-all        # the two above, then removes old build output from target/
 ```
 
@@ -211,8 +222,9 @@ they are missing (this needs the network). At its end, `cargo make test-all` del
 build output from `target/` (`tools/sweep-target.py`): in `target/debug`, what the workspace's build
 and tests no longer use and is older than a day (`--age`); in the directories it cannot check (other
 profiles, such as `test-release`, and nested caches), whatever is older than 14 days
-(`--cache-age`), in use or not. Set `RUNIC_SKIP_SWEEP` to skip that. How the lit suite is
-written and run, and how to run one test or one directory, is in
+(`--cache-age`), in use or not. Set `RUNIC_SKIP_SWEEP` to skip that. The lit suite has two areas for the harness:
+`tests/lit/harness/` runs `runic-opt` on `calc` programs and with `--target`, and `tests/lit/toyc/`
+runs `toyc`. How the lit suite is written and run, and how to run one test or one directory, is in
 [`tests/lit/README.md`](tests/lit/README.md).
 
 How to contribute, and the lint and format commands, are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
