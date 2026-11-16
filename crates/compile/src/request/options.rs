@@ -2,16 +2,17 @@ use core::{
     any::{Any, TypeId},
     fmt,
 };
-use std::{collections::HashMap, rc::Rc};
+use std::{collections::HashMap, sync::Arc};
 
 /// Settings that belong to a frontend or a backend rather than to the harness, held by type.
 ///
 /// Whoever builds the request sets a value of the frontend's or backend's options type, and the
 /// frontend or backend reads it back when it runs; the harness never looks inside. There is one value per type: setting a type again replaces its
-/// value. Cloning shares the values rather than copying them.
+/// value. Cloning shares the values rather than copying them. The values are plain data: they can be
+/// sent to and read from another thread, so that a request can be.
 #[derive(Clone, Default)]
 pub struct ExtensionOptions {
-    values: HashMap<TypeId, Rc<dyn Any>>,
+    values: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
 }
 
 impl ExtensionOptions {
@@ -21,12 +22,12 @@ impl ExtensionOptions {
     }
 
     /// Stores `value`, replacing any earlier value of the same type.
-    pub fn set<T: Any>(&mut self, value: T) {
-        self.values.insert(TypeId::of::<T>(), Rc::new(value));
+    pub fn set<T: Any + Send + Sync>(&mut self, value: T) {
+        self.values.insert(TypeId::of::<T>(), Arc::new(value));
     }
 
     /// The value of type `T`, if one was set.
-    pub fn get<T: Any>(&self) -> Option<&T> {
+    pub fn get<T: Any + Send + Sync>(&self) -> Option<&T> {
         self.values.get(&TypeId::of::<T>()).and_then(|value| value.downcast_ref::<T>())
     }
 }

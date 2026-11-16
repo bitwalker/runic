@@ -162,8 +162,8 @@ pub type Flow<T> = ControlFlow<Stopped, T>;
 
 /// Is told of each artifact as it is produced, without taking it.
 ///
-/// A program that embeds the compiler adds observers to a request to watch a compilation. An
-/// observer does not write output: writing artifacts is the harness's job.
+/// A program that embeds the compiler gives observers to a compilation to watch it. An observer
+/// does not write output: writing artifacts is the harness's job.
 pub trait Observer {
     /// Called after `artifact` has been produced at `checkpoint`.
     fn on_checkpoint(&mut self, checkpoint: CheckpointId, artifact: &Artifact);
