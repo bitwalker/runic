@@ -1393,7 +1393,9 @@ dependencies = [
 name = "runic-dialect-wasm"
 version = "0.1.0"
 dependencies = [
+ "paste",
  "runic-ir",
+ "runic-transform",
 ]
 
 [[package]]
@@ -1516,6 +1518,7 @@ dependencies = [
  "runic-dialect-mem",
  "runic-dialect-scf",
  "runic-dialect-ub",
+ "runic-dialect-wasm",
  "runic-expect-test",
  "runic-ir",
 ]

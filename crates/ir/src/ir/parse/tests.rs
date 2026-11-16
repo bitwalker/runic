@@ -8040,7 +8040,7 @@ mod floats {
     /// What a file of the lit suite holds when it is about floats: a float attribute or a float
     /// constant, the only places a float literal is written.
     #[cfg(feature = "std")]
-    const FLOAT_CONSTRUCTS: &[&str] = &["#builtin.float", "arith.constantf"];
+    const FLOAT_CONSTRUCTS: &[&str] = &["#builtin.float", "arith.constantf", "wasm.constf"];
 
     /// A file of the lit suite that writes no float construct lexes to no float token: the float
     /// rule finds a float only where one is meant, so it changed how none of the files written

@@ -130,6 +130,7 @@ pub(super) fn new_context() -> Rc<Context> {
     use runic_dialect_arith as _;
     use runic_dialect_mem as _;
     use runic_dialect_scf as _;
+    use runic_dialect_wasm as _;
     let context = Rc::new(Context::default());
     context.get_or_register_dialect::<runic_dialect_cf::ControlFlowDialect>();
     context

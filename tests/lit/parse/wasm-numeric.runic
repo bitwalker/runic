@@ -1,0 +1,500 @@
+// RUN: runic-opt %s | filecheck %s
+// RUN: runic-opt %s --verify-roundtrip | filecheck %s
+// RUN: runic-opt %s --print-generic | runic-opt - --verify-roundtrip
+
+// Every numeric operation of `wasm`, at each type it accepts, read and printed in its custom form;
+// the last RUN line reads the generic form of each back. A binary operation prints no type, since
+// its result has the type of its operands; a conversion writes the type of its result as the
+// property `ty` (a bare type in the input, `#builtin.type<..>` in the output). A comparison gives
+// an `i32`. Where the parser takes more than the printer writes, the input uses the other
+// spelling: hexadecimal literals, a float constant written as bits, a generic form.
+// CHECK: builtin.module public @wasm_numeric {
+builtin.module public @wasm_numeric {
+    // `wasm.const` and `wasm.constf`: decimal, negative and hexadecimal integers; a NaN, an infinity
+    // or a negative zero as the bits of the float; an attribute dictionary after the type.
+    // CHECK-LABEL: builtin.function public extern("C") @constants(
+    // CHECK-SAME: ) {
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.const 7 : i32;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.const -1 : i32;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.const 255 : i32;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.const -1 : i32;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.const 9223372036854775807 : i64;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.const -9223372036854775808 : i64;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.constf 1.5 : f32;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.constf -0.0 : f64;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.constf 0x7ff8000000000001 : f64;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.constf 0x7fc00000 : f32;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.const 3 : i32 attributes { note = #builtin.i32<1> };
+    // CHECK-NEXT: builtin.ret;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @constants() {
+        %a = wasm.const 7 : i32;
+        %b = wasm.const -1 : i32;
+        %c = wasm.const 0xff : i32;
+        %d = wasm.const 0xffffffff : i32;
+        %e = wasm.const 9223372036854775807 : i64;
+        %f = wasm.const -9223372036854775808 : i64;
+        %g = wasm.constf 1.5 : f32;
+        %h = wasm.constf -0.0 : f64;
+        %i = wasm.constf 0x7ff8000000000001 : f64;
+        %j = wasm.constf 0x7fc00000 : f32;
+        %k = wasm.const 3 : i32 attributes { note = #builtin.i32<1> };
+        builtin.ret;
+    };
+
+    // CHECK-LABEL: builtin.function public extern("C") @i32_arithmetic(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) {
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.add [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.sub [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.mul [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.div_s [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.div_u [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.rem_s [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.rem_u [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.and [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.or [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.xor [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.shl [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.shr_s [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.shr_u [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.rotl [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.rotr [[A]], [[B]];
+    // CHECK-NEXT: builtin.ret;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @i32_arithmetic(%a: i32, %b: i32) {
+        %0 = wasm.add %a, %b;
+        %1 = wasm.sub %a, %b;
+        %2 = wasm.mul %a, %b;
+        %3 = wasm.div_s %a, %b;
+        %4 = wasm.div_u %a, %b;
+        %5 = wasm.rem_s %a, %b;
+        %6 = wasm.rem_u %a, %b;
+        %7 = wasm.and %a, %b;
+        %8 = wasm.or %a, %b;
+        %9 = wasm.xor %a, %b;
+        %10 = wasm.shl %a, %b;
+        %11 = wasm.shr_s %a, %b;
+        %12 = wasm.shr_u %a, %b;
+        %13 = wasm.rotl %a, %b;
+        %14 = wasm.rotr %a, %b;
+        builtin.ret;
+    };
+
+    // CHECK-LABEL: builtin.function public extern("C") @i64_arithmetic(
+    // CHECK-SAME: [[A:%[0-9]+]]: i64, [[B:%[0-9]+]]: i64) {
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.add [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.sub [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.mul [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.div_s [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.div_u [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.rem_s [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.rem_u [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.and [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.or [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.xor [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.shl [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.shr_s [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.shr_u [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.rotl [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.rotr [[A]], [[B]];
+    // CHECK-NEXT: builtin.ret;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @i64_arithmetic(%a: i64, %b: i64) {
+        %0 = wasm.add %a, %b;
+        %1 = wasm.sub %a, %b;
+        %2 = wasm.mul %a, %b;
+        %3 = wasm.div_s %a, %b;
+        %4 = wasm.div_u %a, %b;
+        %5 = wasm.rem_s %a, %b;
+        %6 = wasm.rem_u %a, %b;
+        %7 = wasm.and %a, %b;
+        %8 = wasm.or %a, %b;
+        %9 = wasm.xor %a, %b;
+        %10 = wasm.shl %a, %b;
+        %11 = wasm.shr_s %a, %b;
+        %12 = wasm.shr_u %a, %b;
+        %13 = wasm.rotl %a, %b;
+        %14 = wasm.rotr %a, %b;
+        builtin.ret;
+    };
+
+    // CHECK-LABEL: builtin.function public extern("C") @f32_arithmetic(
+    // CHECK-SAME: [[A:%[0-9]+]]: f32, [[B:%[0-9]+]]: f32) {
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.add [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.sub [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.mul [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.div [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.min [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.max [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.copysign [[A]], [[B]];
+    // CHECK-NEXT: builtin.ret;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @f32_arithmetic(%a: f32, %b: f32) {
+        %0 = wasm.add %a, %b;
+        %1 = wasm.sub %a, %b;
+        %2 = wasm.mul %a, %b;
+        %3 = wasm.div %a, %b;
+        %4 = wasm.min %a, %b;
+        %5 = wasm.max %a, %b;
+        %6 = wasm.copysign %a, %b;
+        builtin.ret;
+    };
+
+    // CHECK-LABEL: builtin.function public extern("C") @f64_arithmetic(
+    // CHECK-SAME: [[A:%[0-9]+]]: f64, [[B:%[0-9]+]]: f64) {
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.add [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.sub [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.mul [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.div [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.min [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.max [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.copysign [[A]], [[B]];
+    // CHECK-NEXT: builtin.ret;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @f64_arithmetic(%a: f64, %b: f64) {
+        %0 = wasm.add %a, %b;
+        %1 = wasm.sub %a, %b;
+        %2 = wasm.mul %a, %b;
+        %3 = wasm.div %a, %b;
+        %4 = wasm.min %a, %b;
+        %5 = wasm.max %a, %b;
+        %6 = wasm.copysign %a, %b;
+        builtin.ret;
+    };
+
+    // CHECK-LABEL: builtin.function public extern("C") @i32_unary(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32) {
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.clz [[A]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.ctz [[A]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.popcnt [[A]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.extend8_s [[A]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.extend16_s [[A]];
+    // CHECK-NEXT: builtin.ret;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @i32_unary(%a: i32) {
+        %0 = wasm.clz %a;
+        %1 = wasm.ctz %a;
+        %2 = wasm.popcnt %a;
+        %3 = wasm.extend8_s %a;
+        %4 = wasm.extend16_s %a;
+        builtin.ret;
+    };
+
+    // CHECK-LABEL: builtin.function public extern("C") @i64_unary(
+    // CHECK-SAME: [[A:%[0-9]+]]: i64) {
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.clz [[A]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.ctz [[A]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.popcnt [[A]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.extend8_s [[A]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.extend16_s [[A]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.extend32_s [[A]];
+    // CHECK-NEXT: builtin.ret;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @i64_unary(%a: i64) {
+        %0 = wasm.clz %a;
+        %1 = wasm.ctz %a;
+        %2 = wasm.popcnt %a;
+        %3 = wasm.extend8_s %a;
+        %4 = wasm.extend16_s %a;
+        %5 = wasm.extend32_s %a;
+        builtin.ret;
+    };
+
+    // CHECK-LABEL: builtin.function public extern("C") @f32_unary(
+    // CHECK-SAME: [[A:%[0-9]+]]: f32) {
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.abs [[A]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.neg [[A]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.sqrt [[A]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.ceil [[A]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.floor [[A]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.trunc [[A]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.nearest [[A]];
+    // CHECK-NEXT: builtin.ret;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @f32_unary(%a: f32) {
+        %0 = wasm.abs %a;
+        %1 = wasm.neg %a;
+        %2 = wasm.sqrt %a;
+        %3 = wasm.ceil %a;
+        %4 = wasm.floor %a;
+        %5 = wasm.trunc %a;
+        %6 = wasm.nearest %a;
+        builtin.ret;
+    };
+
+    // CHECK-LABEL: builtin.function public extern("C") @f64_unary(
+    // CHECK-SAME: [[A:%[0-9]+]]: f64) {
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.abs [[A]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.neg [[A]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.sqrt [[A]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.ceil [[A]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.floor [[A]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.trunc [[A]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.nearest [[A]];
+    // CHECK-NEXT: builtin.ret;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @f64_unary(%a: f64) {
+        %0 = wasm.abs %a;
+        %1 = wasm.neg %a;
+        %2 = wasm.sqrt %a;
+        %3 = wasm.ceil %a;
+        %4 = wasm.floor %a;
+        %5 = wasm.trunc %a;
+        %6 = wasm.nearest %a;
+        builtin.ret;
+    };
+
+    // CHECK-LABEL: builtin.function public extern("C") @i32_comparisons(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) {
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.eq [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.ne [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.lt_s [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.lt_u [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.gt_s [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.gt_u [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.le_s [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.le_u [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.ge_s [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.ge_u [[A]], [[B]];
+    // CHECK-NEXT: builtin.ret;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @i32_comparisons(%a: i32, %b: i32) {
+        %0 = wasm.eq %a, %b;
+        %1 = wasm.ne %a, %b;
+        %2 = wasm.lt_s %a, %b;
+        %3 = wasm.lt_u %a, %b;
+        %4 = wasm.gt_s %a, %b;
+        %5 = wasm.gt_u %a, %b;
+        %6 = wasm.le_s %a, %b;
+        %7 = wasm.le_u %a, %b;
+        %8 = wasm.ge_s %a, %b;
+        %9 = wasm.ge_u %a, %b;
+        builtin.ret;
+    };
+
+    // CHECK-LABEL: builtin.function public extern("C") @i64_comparisons(
+    // CHECK-SAME: [[A:%[0-9]+]]: i64, [[B:%[0-9]+]]: i64) {
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.eq [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.ne [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.lt_s [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.lt_u [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.gt_s [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.gt_u [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.le_s [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.le_u [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.ge_s [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.ge_u [[A]], [[B]];
+    // CHECK-NEXT: builtin.ret;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @i64_comparisons(%a: i64, %b: i64) {
+        %0 = wasm.eq %a, %b;
+        %1 = wasm.ne %a, %b;
+        %2 = wasm.lt_s %a, %b;
+        %3 = wasm.lt_u %a, %b;
+        %4 = wasm.gt_s %a, %b;
+        %5 = wasm.gt_u %a, %b;
+        %6 = wasm.le_s %a, %b;
+        %7 = wasm.le_u %a, %b;
+        %8 = wasm.ge_s %a, %b;
+        %9 = wasm.ge_u %a, %b;
+        builtin.ret;
+    };
+
+    // CHECK-LABEL: builtin.function public extern("C") @f32_comparisons(
+    // CHECK-SAME: [[A:%[0-9]+]]: f32, [[B:%[0-9]+]]: f32) {
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.eq [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.ne [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.lt [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.gt [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.le [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.ge [[A]], [[B]];
+    // CHECK-NEXT: builtin.ret;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @f32_comparisons(%a: f32, %b: f32) {
+        %0 = wasm.eq %a, %b;
+        %1 = wasm.ne %a, %b;
+        %2 = wasm.lt %a, %b;
+        %3 = wasm.gt %a, %b;
+        %4 = wasm.le %a, %b;
+        %5 = wasm.ge %a, %b;
+        builtin.ret;
+    };
+
+    // CHECK-LABEL: builtin.function public extern("C") @f64_comparisons(
+    // CHECK-SAME: [[A:%[0-9]+]]: f64, [[B:%[0-9]+]]: f64) {
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.eq [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.ne [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.lt [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.gt [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.le [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.ge [[A]], [[B]];
+    // CHECK-NEXT: builtin.ret;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @f64_comparisons(%a: f64, %b: f64) {
+        %0 = wasm.eq %a, %b;
+        %1 = wasm.ne %a, %b;
+        %2 = wasm.lt %a, %b;
+        %3 = wasm.gt %a, %b;
+        %4 = wasm.le %a, %b;
+        %5 = wasm.ge %a, %b;
+        builtin.ret;
+    };
+
+    // CHECK-LABEL: builtin.function public extern("C") @i32_eqz(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32) {
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.eqz [[A]];
+    // CHECK-NEXT: builtin.ret;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @i32_eqz(%a: i32) {
+        %r = wasm.eqz %a;
+        builtin.ret;
+    };
+
+    // CHECK-LABEL: builtin.function public extern("C") @i64_eqz(
+    // CHECK-SAME: [[A:%[0-9]+]]: i64) {
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.eqz [[A]];
+    // CHECK-NEXT: builtin.ret;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @i64_eqz(%a: i64) {
+        %r = wasm.eqz %a;
+        builtin.ret;
+    };
+
+    // CHECK-LABEL: builtin.function public extern("C") @from_i32(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32) {
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.extend_s [[A]] <{ ty = #builtin.type<i64> }>;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.extend_u [[A]] <{ ty = #builtin.type<i64> }>;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.convert_s [[A]] <{ ty = #builtin.type<f32> }>;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.convert_s [[A]] <{ ty = #builtin.type<f64> }>;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.convert_u [[A]] <{ ty = #builtin.type<f32> }>;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.convert_u [[A]] <{ ty = #builtin.type<f64> }>;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.reinterpret [[A]] <{ ty = #builtin.type<f32> }>;
+    // CHECK-NEXT: builtin.ret;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @from_i32(%a: i32) {
+        %0 = wasm.extend_s %a <{ ty = i64 }>;
+        %1 = wasm.extend_u %a <{ ty = i64 }>;
+        %2 = wasm.convert_s %a <{ ty = f32 }>;
+        %3 = wasm.convert_s %a <{ ty = f64 }>;
+        %4 = wasm.convert_u %a <{ ty = f32 }>;
+        %5 = wasm.convert_u %a <{ ty = f64 }>;
+        %6 = wasm.reinterpret %a <{ ty = f32 }>;
+        builtin.ret;
+    };
+
+    // CHECK-LABEL: builtin.function public extern("C") @from_i64(
+    // CHECK-SAME: [[A:%[0-9]+]]: i64) {
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.wrap [[A]] <{ ty = #builtin.type<i32> }>;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.convert_s [[A]] <{ ty = #builtin.type<f32> }>;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.convert_s [[A]] <{ ty = #builtin.type<f64> }>;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.convert_u [[A]] <{ ty = #builtin.type<f32> }>;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.convert_u [[A]] <{ ty = #builtin.type<f64> }>;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.reinterpret [[A]] <{ ty = #builtin.type<f64> }>;
+    // CHECK-NEXT: builtin.ret;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @from_i64(%a: i64) {
+        %0 = wasm.wrap %a <{ ty = i32 }>;
+        %1 = wasm.convert_s %a <{ ty = f32 }>;
+        %2 = wasm.convert_s %a <{ ty = f64 }>;
+        %3 = wasm.convert_u %a <{ ty = f32 }>;
+        %4 = wasm.convert_u %a <{ ty = f64 }>;
+        %5 = wasm.reinterpret %a <{ ty = f64 }>;
+        builtin.ret;
+    };
+
+    // CHECK-LABEL: builtin.function public extern("C") @from_f32(
+    // CHECK-SAME: [[A:%[0-9]+]]: f32) {
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.trunc_s [[A]] <{ ty = #builtin.type<i32> }>;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.trunc_s [[A]] <{ ty = #builtin.type<i64> }>;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.trunc_u [[A]] <{ ty = #builtin.type<i32> }>;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.trunc_u [[A]] <{ ty = #builtin.type<i64> }>;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.trunc_sat_s [[A]] <{ ty = #builtin.type<i32> }>;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.trunc_sat_s [[A]] <{ ty = #builtin.type<i64> }>;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.trunc_sat_u [[A]] <{ ty = #builtin.type<i32> }>;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.trunc_sat_u [[A]] <{ ty = #builtin.type<i64> }>;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.promote [[A]] <{ ty = #builtin.type<f64> }>;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.reinterpret [[A]] <{ ty = #builtin.type<i32> }>;
+    // CHECK-NEXT: builtin.ret;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @from_f32(%a: f32) {
+        %0 = wasm.trunc_s %a <{ ty = i32 }>;
+        %1 = wasm.trunc_s %a <{ ty = i64 }>;
+        %2 = wasm.trunc_u %a <{ ty = i32 }>;
+        %3 = wasm.trunc_u %a <{ ty = i64 }>;
+        %4 = wasm.trunc_sat_s %a <{ ty = i32 }>;
+        %5 = wasm.trunc_sat_s %a <{ ty = i64 }>;
+        %6 = wasm.trunc_sat_u %a <{ ty = i32 }>;
+        %7 = wasm.trunc_sat_u %a <{ ty = i64 }>;
+        %8 = wasm.promote %a <{ ty = f64 }>;
+        %9 = wasm.reinterpret %a <{ ty = i32 }>;
+        builtin.ret;
+    };
+
+    // CHECK-LABEL: builtin.function public extern("C") @from_f64(
+    // CHECK-SAME: [[A:%[0-9]+]]: f64) {
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.trunc_s [[A]] <{ ty = #builtin.type<i32> }>;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.trunc_s [[A]] <{ ty = #builtin.type<i64> }>;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.trunc_u [[A]] <{ ty = #builtin.type<i32> }>;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.trunc_u [[A]] <{ ty = #builtin.type<i64> }>;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.trunc_sat_s [[A]] <{ ty = #builtin.type<i32> }>;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.trunc_sat_s [[A]] <{ ty = #builtin.type<i64> }>;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.trunc_sat_u [[A]] <{ ty = #builtin.type<i32> }>;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.trunc_sat_u [[A]] <{ ty = #builtin.type<i64> }>;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.demote [[A]] <{ ty = #builtin.type<f32> }>;
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.reinterpret [[A]] <{ ty = #builtin.type<i64> }>;
+    // CHECK-NEXT: builtin.ret;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @from_f64(%a: f64) {
+        %0 = wasm.trunc_s %a <{ ty = i32 }>;
+        %1 = wasm.trunc_s %a <{ ty = i64 }>;
+        %2 = wasm.trunc_u %a <{ ty = i32 }>;
+        %3 = wasm.trunc_u %a <{ ty = i64 }>;
+        %4 = wasm.trunc_sat_s %a <{ ty = i32 }>;
+        %5 = wasm.trunc_sat_s %a <{ ty = i64 }>;
+        %6 = wasm.trunc_sat_u %a <{ ty = i32 }>;
+        %7 = wasm.trunc_sat_u %a <{ ty = i64 }>;
+        %8 = wasm.demote %a <{ ty = f32 }>;
+        %9 = wasm.reinterpret %a <{ ty = i64 }>;
+        builtin.ret;
+    };
+
+    // `wasm.select`: a condition that is an `i32` and two values of one value type, a number or a
+    // reference.
+    // CHECK-LABEL: builtin.function public extern("C") @selects(
+    // CHECK-SAME: [[C:%[0-9]+]]: i32, [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32, [[X:%[0-9]+]]: i64, [[Y:%[0-9]+]]: i64, [[P:%[0-9]+]]: f32, [[Q:%[0-9]+]]: f32, [[M:%[0-9]+]]: f64, [[N:%[0-9]+]]: f64, [[F:%[0-9]+]]: !wasm.funcref, [[G:%[0-9]+]]: !wasm.funcref, [[E:%[0-9]+]]: !wasm.externref, [[H:%[0-9]+]]: !wasm.externref) {
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.select [[C]], [[A]], [[B]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.select [[C]], [[X]], [[Y]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.select [[C]], [[P]], [[Q]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.select [[C]], [[M]], [[N]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.select [[C]], [[F]], [[G]];
+    // CHECK-NEXT: {{%[0-9]+}} = wasm.select [[C]], [[E]], [[H]];
+    // CHECK-NEXT: builtin.ret;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @selects(%c: i32, %a: i32, %b: i32, %x: i64, %y: i64, %p: f32, %q: f32, %m: f64, %n: f64, %f: !wasm.funcref, %g: !wasm.funcref, %e: !wasm.externref, %h: !wasm.externref) {
+        %r0 = wasm.select %c, %a, %b;
+        %r1 = wasm.select %c, %x, %y;
+        %r2 = wasm.select %c, %p, %q;
+        %r3 = wasm.select %c, %m, %n;
+        %r4 = wasm.select %c, %f, %g;
+        %r5 = wasm.select %c, %e, %h;
+        builtin.ret;
+    };
+
+    // Results used by later operations, and the generic form as input: the printer writes the
+    // custom form either way.
+    // CHECK-LABEL: builtin.function public extern("C") @chained(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i64) -> (i32, i32) {
+    // CHECK-NEXT: [[W:%[0-9]+]] = wasm.wrap [[B]] <{ ty = #builtin.type<i32> }>;
+    // CHECK-NEXT: [[S:%[0-9]+]] = wasm.add [[A]], [[W]];
+    // CHECK-NEXT: [[Z:%[0-9]+]] = wasm.eqz [[S]];
+    // CHECK-NEXT: [[G:%[0-9]+]] = wasm.mul [[S]], [[Z]];
+    // CHECK-NEXT: builtin.ret [[G]], [[Z]] : (i32, i32);
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @chained(%a: i32, %b: i64) -> (i32, i32) {
+        %w = "wasm.wrap"(%b) <{ ty = i32 }> : (i64) -> i32;
+        %s = "wasm.add"(%a, %w) : (i32, i32) -> i32;
+        %z = wasm.eqz %s;
+        %g = wasm.mul %s, %z;
+        builtin.ret %g, %z : (i32, i32);
+    };
+};

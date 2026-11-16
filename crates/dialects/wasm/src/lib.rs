@@ -21,6 +21,28 @@
 //! The other builtin types (`i8`, `i1`, `isize`, pointers, structs) are not Wasm value types and
 //! no `wasm` operation accepts them.
 //!
+//! **Numeric operations.** Each operation is free of effects, has no fold, and prints its operands
+//! only: the result type follows from them (`%r = wasm.add %a, %b;`), except for a conversion,
+//! which writes its result type as the property `ty` (`%r = wasm.trunc_s %a <{ ty = i64 }>;`).
+//! A comparison gives an `i32`. Where a Wasm instruction traps (an integer division, a truncation
+//! of a float), the operation says so and is still free of effects.
+//!
+//! | Family | Operations | Operands |
+//! |---|---|---|
+//! | Constants | [Const] (`const`), [ConstF] (`constf`) | an integer or float literal and its type |
+//! | Selection | [Select] (`select`) | an `i32` and two values of one value type |
+//! | Arithmetic, any number | [Add], [Sub], [Mul] | two of one number type |
+//! | Arithmetic, integers | [DivS], [DivU], [RemS], [RemU], [And], [Or], [Xor], [Shl], [ShrS], [ShrU], [Rotl], [Rotr] | two of one integer type |
+//! | Counts, integers | [Clz], [Ctz], [Popcnt] | one integer |
+//! | Sign extension in place | [Extend8S], [Extend16S], [Extend32S] | one integer (`extend32_s`: `i64`) |
+//! | Arithmetic, floats | [Div], [Min], [Max], [Copysign] | two of one float type |
+//! | Unary, floats | [Abs], [Neg], [Sqrt], [Ceil], [Floor], [Trunc], [Nearest] | one float |
+//! | Comparisons | [Eqz], [struct@Eq], [Ne], [LtS], [LtU], [GtS], [GtU], [LeS], [LeU], [GeS], [GeU], [Lt], [Gt], [Le], [Ge] | one or two numbers; `i32` result |
+//! | Conversions | [Wrap], [ExtendS], [ExtendU], [TruncS], [TruncU], [TruncSatS], [TruncSatU], [ConvertS], [ConvertU], [Promote], [Demote], [Reinterpret] | one number; the result type is written |
+//!
+//! [WasmOpBuilder] builds them. [ConstantInstruction] marks the operations a Wasm constant
+//! expression may hold, and [is_constant_instruction] is the precise question to ask about one.
+//!
 //! **Attributes.** [LimitsAttr] (`#wasm.limits<1..16>`) bounds the size of a memory or a table,
 //! [MemArgAttr] (`#wasm.memarg<offset = 8, align = 4>`) is the static part of a memory access,
 //! and [MutabilityAttr] (`#wasm.mutability<mut>`) says whether a global may be written.
@@ -37,6 +59,9 @@
 //! threads and atomics, stack switching, and the Component Model.
 
 #![no_std]
+#![feature(unboxed_closures)]
+#![feature(fn_traits)]
+#![allow(incomplete_features)]
 #![deny(warnings)]
 
 extern crate alloc;
@@ -45,6 +70,8 @@ extern crate alloc;
 extern crate std;
 
 mod attributes;
+mod builders;
+mod ops;
 mod types;
 
 #[cfg(test)]
@@ -57,9 +84,11 @@ use runic_ir::{
 
 pub use self::{
     attributes::{Limits, LimitsAttr, MemArg, MemArgAttr, Mutability, MutabilityAttr},
+    builders::WasmOpBuilder,
+    ops::*,
     types::{
-        ExternRefType, FloatType, FuncRefType, IntType, NumType, RefType, ValType, is_float_type,
-        is_int_type, is_num_type, is_ref_type, is_val_type, val_type_name,
+        ExternRefType, FloatType, FuncRefType, I32, I64, IntType, NumType, RefType, ValType,
+        is_float_type, is_int_type, is_num_type, is_ref_type, is_val_type, val_type_name,
     },
 };
 

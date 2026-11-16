@@ -8,8 +8,7 @@
 // A list does not read the input: given a file, the tool still only lists. The counts are those of
 // this build (with the `wasm` dialect, which `cargo make runic-opt` links), and change when an
 // operation is added. The last operation listed anchors the end of the operations: it is the last
-// name in sort order, `ub.unreachable` while `wasm` has no operations, and the last `wasm.*`
-// operation after.
+// name in sort order, which is the last `wasm.*` operation.
 
 // PASSES: canonicalizer {{ +}}Applies the canonicalization patterns of all loaded dialects
 // PASSES-NEXT: cfg-to-scf
@@ -32,13 +31,13 @@
 // DIALECTS-NEXT: scf {{ +}}7 operations
 // DIALECTS-NEXT: test {{ +}}22 operations
 // DIALECTS-NEXT: ub {{ +}}2 operations
-// DIALECTS-NEXT: wasm {{ +}}0 operations
+// DIALECTS-NEXT: wasm {{ +}}62 operations
 // DIALECTS-NOT: {{.}}
 
 // OPERATIONS: {{^}}arith.add{{$}}
 // OPERATIONS-NEXT: {{^}}arith.add_overflowing{{$}}
 // OPERATIONS: {{^}}builtin.call{{$}}
-// OPERATIONS: {{^}}ub.unreachable{{$}}
+// OPERATIONS: {{^}}wasm.xor{{$}}
 // OPERATIONS-NOT: {{.}}
 builtin.module public @not_read {
     this is not read;

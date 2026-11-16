@@ -47,5 +47,5 @@ runic-transform.workspace = true
 
 [dev-dependencies]
 # The crate itself with its `toy` feature on, so `cargo test` builds the tests with the toy stages.
-runic-opt = { path = ".", features = ["toy"] }
+runic-opt = { path = ".", features = ["toy", "wasm"] }
 tempfile.workspace = true

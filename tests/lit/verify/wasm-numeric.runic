@@ -1,0 +1,169 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// The rules of the numeric operations of `wasm`, one case per kind of error. The message of an
+// operation says what the Wasm instruction takes, then what is wrong in what was written. That
+// the result has the type the operation gives it is a rule the parser answers first (the custom
+// form infers the result, and the generic form's mismatch is a parser error), so the verifier's
+// message for it is tested in Rust, as are the parser's errors for a constant of another type.
+
+// Each family at a legal type.
+builtin.function public extern("C") @valid(%a: i32, %b: i32, %w: i64, %f: f32) {
+    %add = wasm.add %a, %b;
+    %lt = wasm.lt_s %a, %b;
+    %eqz = wasm.eqz %w;
+    %clz = wasm.clz %a;
+    %wrap = wasm.wrap %w <{ ty = i32 }>;
+    %convert = wasm.convert_s %a <{ ty = f64 }>;
+    %select = wasm.select %a, %f, %f;
+    builtin.ret;
+};
+
+// -----
+
+// An operation of two operands takes the types of its instructions: `shl` is for integers.
+builtin.function public extern("C") @binary_on_a_float(%a: f32, %b: f32) {
+    %x = wasm.shl %a, %b; // expected-error {{`wasm.shl` takes two operands of one type, `i32` or `i64`, and gives a result of that type, but its first operand has type `f32`}}
+    builtin.ret;
+};
+
+// -----
+
+// `div` is for floats.
+builtin.function public extern("C") @float_division_on_integers(%a: i32, %b: i32) {
+    %x = wasm.div %a, %b; // expected-error {{`wasm.div` takes two operands of one type, `f32` or `f64`, and gives a result of that type, but its first operand has type `i32`}}
+    builtin.ret;
+};
+
+// -----
+
+// The operands have one type.
+builtin.function public extern("C") @binary_of_two_types(%a: i32, %b: i64) {
+    %x = wasm.add %a, %b; // expected-error {{`wasm.add` takes two operands of one type, `i32`, `i64`, `f32` or `f64`, and gives a result of that type, but its operands have the types `i32` and `i64`}}
+    builtin.ret;
+};
+
+// -----
+
+// A type that is not a Wasm number type is not accepted: `i8`, `i1`, `isize` and references.
+builtin.function public extern("C") @binary_on_a_narrow_integer(%a: i8, %b: i8) {
+    %x = wasm.add %a, %b; // expected-error {{but its first operand has type `i8`}}
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @binary_on_isize(%a: isize, %b: isize) {
+    %x = wasm.xor %a, %b; // expected-error {{but its first operand has type `isize`}}
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @binary_on_references(%a: !wasm.funcref, %b: !wasm.funcref) {
+    %x = wasm.add %a, %b; // expected-error {{but its first operand has type `funcref`}}
+    builtin.ret;
+};
+
+// -----
+
+// An operation of one operand.
+builtin.function public extern("C") @unary_on_a_float(%a: f64) {
+    %x = wasm.clz %a; // expected-error {{`wasm.clz` takes one operand, `i32` or `i64`, and gives a result of its type, but its operand has type `f64`}}
+    builtin.ret;
+};
+
+// -----
+
+// `extend32_s` exists for `i64` only.
+builtin.function public extern("C") @extend32_on_i32(%a: i32) {
+    %x = wasm.extend32_s %a; // expected-error {{`wasm.extend32_s` takes one operand, `i64`, and gives a result of its type, but its operand has type `i32`}}
+    builtin.ret;
+};
+
+// -----
+
+// A comparison takes the types of its instructions and gives an `i32`.
+builtin.function public extern("C") @signed_comparison_of_floats(%a: f32, %b: f32) {
+    %x = wasm.lt_s %a, %b; // expected-error {{`wasm.lt_s` takes two operands of one type, `i32` or `i64`, and gives an `i32`, but its first operand has type `f32`}}
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @float_comparison_of_integers(%a: i32, %b: i32) {
+    %x = wasm.ge %a, %b; // expected-error {{`wasm.ge` takes two operands of one type, `f32` or `f64`, and gives an `i32`, but its first operand has type `i32`}}
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @eqz_of_a_float(%a: f32) {
+    %x = wasm.eqz %a; // expected-error {{`wasm.eqz` takes one operand, `i32` or `i64`, and gives an `i32`, but its operand has type `f32`}}
+    builtin.ret;
+};
+
+// -----
+
+// A conversion has the pairs of types of its instructions, and its result type is written.
+builtin.function public extern("C") @wrap_of_an_i32(%a: i32) {
+    %x = wasm.wrap %a <{ ty = i32 }>; // expected-error {{`wasm.wrap` converts an `i64` to an `i32`, but its operand has type `i32`}}
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @wrap_to_an_i64(%a: i64) {
+    %x = wasm.wrap %a <{ ty = i64 }>; // expected-error {{`wasm.wrap` converts an `i64` to an `i32`, but `i64` to `i64` is not one of them}}
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @truncation_of_an_integer(%a: i32) {
+    %x = wasm.trunc_s %a <{ ty = i32 }>; // expected-error {{`wasm.trunc_s` converts a float (`f32` or `f64`) to an integer (`i32` or `i64`), but its operand has type `i32`}}
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @conversion_to_the_wrong_kind(%a: i32) {
+    %x = wasm.convert_u %a <{ ty = i64 }>; // expected-error {{`wasm.convert_u` converts an integer (`i32` or `i64`) to a float (`f32` or `f64`), but `i32` to `i64` is not one of them}}
+    builtin.ret;
+};
+
+// -----
+
+// A reinterpretation keeps the width.
+builtin.function public extern("C") @reinterpret_to_another_width(%a: f32) {
+    %x = wasm.reinterpret %a <{ ty = f64 }>; // expected-error {{but `f32` to `f64` is not one of them}}
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @promote_of_an_f64(%a: f64) {
+    %x = wasm.promote %a <{ ty = f64 }>; // expected-error {{`wasm.promote` converts an `f32` to an `f64`, but `f64` to `f64` is not one of them}}
+    builtin.ret;
+};
+
+// -----
+
+// `select` takes an `i32` condition and two values of one Wasm value type.
+builtin.function public extern("C") @select_on_an_i64_condition(%c: i64, %a: i32, %b: i32) {
+    %x = wasm.select %c, %a, %b; // expected-error {{but its condition has type `i64`}}
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @select_of_two_types(%c: i32, %a: i32, %b: f32) {
+    %x = wasm.select %c, %a, %b; // expected-error {{but its values have the types `i32` and `f32`}}
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @select_of_a_narrow_integer(%c: i32, %a: i8, %b: i8) {
+    %x = wasm.select %c, %a, %b; // expected-error {{but its first value has type `i8`}}
+    builtin.ret;
+};

@@ -98,6 +98,20 @@ macro_rules! constraint {
 }
 
 constraint!(
+    /// Exactly `i32`.
+    I32,
+    "`i32`",
+    |ty| ty.integer_width() == Some(32)
+);
+
+constraint!(
+    /// Exactly `i64`.
+    I64,
+    "`i64`",
+    |ty| ty.integer_width() == Some(64)
+);
+
+constraint!(
     /// `i32` or `i64`: Wasm's `inn`, the integer number types. Not `i8`, `i1` or `isize`.
     IntType,
     "`i32` or `i64`",

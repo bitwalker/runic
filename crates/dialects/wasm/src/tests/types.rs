@@ -95,6 +95,8 @@ fn the_constraints_accept_exactly_their_wasm_types() {
     let [i32, i64, f32, f64, funcref, externref] = value_types(&context);
     let mut all: Vec<Type> = value_types(&context).to_vec();
     all.extend(other_types(&context));
+    assert_accepts::<I32>(&[i32], &all);
+    assert_accepts::<I64>(&[i64], &all);
     assert_accepts::<IntType>(&[i32, i64], &all);
     assert_accepts::<FloatType>(&[f32, f64], &all);
     assert_accepts::<NumType>(&[i32, i64, f32, f64], &all);

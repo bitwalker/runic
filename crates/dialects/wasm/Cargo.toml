@@ -19,8 +19,10 @@ default = ["std"]
 std = ["runic-ir/std"]
 
 [dependencies]
+paste.workspace = true
 runic-ir.workspace = true
 
 [dev-dependencies]
 # Use local paths for dev-only dependency to avoid relying on crates.io during packaging
 runic-ir = { path = "../../ir", features = ["logging"] }
+runic-transform = { path = "../../transform" }
