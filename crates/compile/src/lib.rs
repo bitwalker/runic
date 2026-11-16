@@ -36,7 +36,10 @@
 //!   text the passes printed and the diagnostics that were not fatal, whether it succeeded or
 //!   failed;
 //! * an [IrFrontend] reads Runic's own textual IR: each file holds a module, a component or a
-//!   world.
+//!   world;
+//! * with the `testing` feature, the `testing` module holds a small language, `calc`, with a
+//!   frontend, and two small machines, `stackvm` and `altvm`, with backends: a real frontend and
+//!   real backends to run the harness against.
 #![deny(warnings)]
 
 mod backend;
@@ -52,8 +55,8 @@ mod route;
 mod session;
 mod triple;
 
-#[cfg(test)]
-mod testing;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 
 pub use self::{
     backend::Backend,

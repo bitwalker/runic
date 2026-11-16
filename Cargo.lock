@@ -1306,6 +1306,7 @@ dependencies = [
 name = "runic-compile"
 version = "0.1.0"
 dependencies = [
+ "runic-compile",
  "runic-core",
  "runic-dialect-arith",
  "runic-transform",
