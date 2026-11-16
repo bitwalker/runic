@@ -2,7 +2,7 @@
 // RUN: runic-opt %s -p canonicalizer | runic-opt - --verify-roundtrip | filecheck %s
 
 // The folds of the float conversions of `arith` and `bitcast`, through the canonicalizer as in
-// `float_fold.runic`. A conversion of a constant folds to a constant, except where the result would
+// `float-fold.runic`. A conversion of a constant folds to a constant, except where the result would
 // be poison (`fptosi` and `fptoui` of a NaN, of an infinity, or of a value the integer type cannot
 // hold) or a NaN (`fpext` and `fptrunc` of a NaN): those stay. `sitofp`, `uitofp` and `bitcast`
 // always fold, a NaN's bits included. The second RUN line reads the output back.

@@ -22,7 +22,7 @@ The workspace has seventeen members:
 | crate | path | what it is for |
 |---|---|---|
 | `runic-ir` | `crates/ir` | the IR (operations, regions, blocks, values, types, attributes), its textual form (parser and printer), the verifier, the pass manager, pattern rewriting and dialect conversion; the `builtin` and `di` (debug information) dialects, and the `test` dialect the tests use |
-| `runic-dialect-arith` | `crates/dialects/arith` | constants, arithmetic, bitwise operations, comparisons and casts on signless integers |
+| `runic-dialect-arith` | `crates/dialects/arith` | constants, arithmetic, bitwise operations, comparisons and casts on signless integers; constants, arithmetic, comparisons and conversions on `f32` and `f64` |
 | `runic-dialect-cf` | `crates/dialects/cf` | unstructured control flow (`cf.br`, `cf.cond_br`, `cf.switch`), `cf.select` and `cf.assert` |
 | `runic-dialect-scf` | `crates/dialects/scf` | structured control flow (`scf.if`, `scf.index_switch`, `scf.while` and their terminators) |
 | `runic-dialect-mem` | `crates/dialects/mem` | byte-addressed memory, typed and opaque pointers |

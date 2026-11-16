@@ -15,12 +15,12 @@ pub const DIALECT_MODULES: [(&str, &str); 11] = [
     ),
     (
         "arith (float conversions)",
-        include_str!("../../../../tests/lit/dialects/arith/float_conv.runic"),
+        include_str!("../../../../tests/lit/dialects/arith/float-conv.runic"),
     ),
     ("builtin", include_str!("../../../../tests/lit/parse/builtin.runic")),
     (
         "builtin (tail calls)",
-        include_str!("../../../../tests/lit/dialects/builtin/tail_call.runic"),
+        include_str!("../../../../tests/lit/dialects/builtin/tail-call.runic"),
     ),
     ("cf", include_str!("../../../../tests/lit/parse/cf.runic")),
     ("di", include_str!("../../../../tests/lit/parse/di.runic")),

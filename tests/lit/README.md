@@ -76,9 +76,12 @@ lit.suite.toml        the suite: name `runic`, files `*.runic` and `*.calc`, `pi
 parse/                reading and printing IR
 verify/               the verifier's rules, one diagnostic per case
 roundtrip/            both forms read back
-dialects/<dialect>/   a dialect's folds (fold.runic) and canonicalization patterns (canonicalize.runic)
+dialects/<dialect>/   a dialect's folds (fold.runic) and canonicalization patterns (canonicalize.runic),
+                      and the operations added after its parse test was written (tail-call.runic,
+                      float.runic, float-conv.runic), with their own folds beside them
 transforms/<pass>/    a pass: cse, dce, sccp, canonicalizer, control-flow-sink, sink
                       (sink-operand-defs), local2reg, cfg-to-scf
+transforms/pipeline/   several passes in a row, where what matters is what survives all of them
 conversion/           dialect conversion, through the test passes
 analysis/             analyses, through the test passes
 tool/                 options and behaviour of runic-opt itself
