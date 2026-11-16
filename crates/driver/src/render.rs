@@ -72,15 +72,15 @@ pub(crate) struct Rendered {
 
 /// Renders `compilation` to `stderr` and returns what is meant for standard output.
 ///
-/// To `stderr`, in this order: what the passes printed, each diagnostic that is not the error, and
-/// the error. A request that did not resolve is followed by the usage lines of the program `name`.
+/// To `stderr`, in this order: each diagnostic that is not the error, and the error. What the
+/// passes printed is already in `stderr`: the compilation sent it there as it was printed, so it
+/// comes first. A request that did not resolve is followed by the usage lines of the program `name`.
 pub(crate) fn render_compilation(
     compilation: &Compilation,
     styled: bool,
     name: &str,
     stderr: &SharedBuffer,
 ) -> Rendered {
-    stderr.push(compilation.pass_output());
     let sources = compilation.context().sources();
     for entry in compilation.diagnostics().iter() {
         stderr.push(&render(entry.diagnostic.display_with_sources(&*sources), styled));

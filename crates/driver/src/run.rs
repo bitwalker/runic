@@ -179,9 +179,9 @@ impl Driver<'_> {
     /// [EXIT_FAILURE] when it failed, or when standard output could not be written; [EXIT_USAGE]
     /// for a command line that is not valid and for a request that does not resolve; and
     /// [EXIT_INTERNAL] when a stage panicked. After a panic the files the compilation had already
-    /// written stay written, and standard error holds what was rendered before it, then
-    /// the report of the panic; what the passes printed is lost with the session the panic
-    /// unwound. A color of `auto` is off here, as [RunOptions::default] has it: [run_with]
+    /// written stay written, and standard error holds what was rendered before it, including what
+    /// the passes printed (it is written to the buffer as it is printed), then the report of the
+    /// panic. A color of `auto` is off here, as [RunOptions::default] has it: [run_with]
     /// turns it on, and the process's [main] turns it on when standard error is a terminal.
     ///
     /// Everything standard output holds is written when the compilation has ended, after what
@@ -252,7 +252,8 @@ impl Driver<'_> {
                 .stack_size(WORKER_STACK_SIZE)
                 .spawn_scoped(scope, || {
                     WORKER.with(|worker| *worker.borrow_mut() = Some(slot.clone()));
-                    let compilation = compiler.compile(*request, &mut ());
+                    let compilation =
+                        compiler.compile_to(*request, &mut (), Box::new(slot.stderr.clone()));
                     let rendered = render_compilation(&compilation, styled, name, &slot.stderr);
                     let code = if rendered.unresolved {
                         EXIT_USAGE
@@ -786,10 +787,10 @@ mod tests {
     }
 
     #[test]
-    fn what_the_passes_printed_is_lost_when_a_backend_panics_after_them() {
+    fn what_the_passes_printed_precedes_the_internal_error_when_a_backend_panics_after_them() {
         let dir = tempfile::tempdir().unwrap();
         let input = file(dir.path(), "demo.calc", INC);
-        let args = [
+        let run = drive(&[
             input.as_str(),
             "--target",
             "boom-unknown-unknown",
@@ -797,16 +798,47 @@ mod tests {
             "print-ir-after=all",
             "-Z",
             "dump-pass-pipeline",
-        ];
-        let run = drive(&args);
+        ]);
         assert_eq!(run.code, EXIT_INTERNAL, "{run:?}");
-        assert!(run.stderr.starts_with("error: internal compiler error: the boom backend"));
-        // The same command line with a backend that does not panic prints them.
-        let mut args = args;
-        args[2] = "stackvm-unknown-unknown";
-        let printed = drive(&[&args[..], &["--backend", "stackvm"]].concat());
-        assert_eq!(printed.code, 0, "{printed:?}");
-        assert!(!printed.stderr.is_empty());
+        let printed = run.stderr.find("IR after").expect("the passes' output is kept");
+        let error = run.stderr.find("error: internal compiler error: the boom backend").unwrap();
+        assert!(run.stderr.starts_with("builtin.world("), "{}", run.stderr);
+        assert!(printed < error, "{}", run.stderr);
+    }
+
+    #[test]
+    fn a_pipeline_or_a_pass_name_that_does_not_read_is_a_usage_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = file(dir.path(), "demo.calc", INC);
+        for (flag, text) in [
+            ("pass-pipeline=nonesuch", "nonesuch"),
+            ("pass-pipeline=cse(", "cse("),
+            ("print-ir-after=nonesuch", "unknown pass 'nonesuch'"),
+        ] {
+            let run = drive(&[&input, "-Z", flag]);
+            assert_eq!(run.code, EXIT_USAGE, "{flag}: {run:?}");
+            assert!(run.stderr.contains(text), "{flag}: {}", run.stderr);
+            assert!(
+                run.stderr.ends_with(
+                    "usage: probe-compiler [OPTIONS] <INPUT>...\nFor more information, try \
+                     '--help'.\n"
+                ),
+                "{flag}: {}",
+                run.stderr
+            );
+            assert_eq!(run.stdout, "", "{flag}");
+        }
+    }
+
+    #[test]
+    fn pass_output_comes_before_diagnostics_on_standard_error_for_a_compilation_that_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = file(dir.path(), "careful.probe", "warn\n");
+        let run = drive(&[&input, "-Z", "print-ir-after=all"]);
+        assert_eq!(run.code, 0, "{run:?}");
+        let printed = run.stderr.find("IR after").expect("the passes printed");
+        let warning = run.stderr.find("take care").expect("the warning is rendered");
+        assert!(printed < warning, "{}", run.stderr);
     }
 
     #[test]
