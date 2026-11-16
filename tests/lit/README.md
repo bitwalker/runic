@@ -44,7 +44,8 @@ variable.
 
 A clean machine needs the pinned toolchain (`rust-toolchain.toml`), the `cargo-make` crate
 installed, and network access once, for the `litcheck` task's `cargo install`: the task installs
-`litcheck` only when no `litcheck` is installed.
+`litcheck` only when no `litcheck` is installed. The `toyc` tests that tell exit code 1 from 2
+run the command in `sh -c` with `test`, so they need a POSIX `sh`.
 
 A checkout whose path holds a space is not supported: RUN lines write `%s` bare, as LLVM's suites
 do, and `litcheck` substitutes the path unquoted.
@@ -132,7 +133,7 @@ file reads `//` as a comment, so its RUN lines and checks are written in comment
 `{{.*}}`, as in `{{.*}}::k:`. A test that needs no input (`--print`, `--help`, `-Z help`) is a
 `*.runic` file with only RUN lines and checks.
 
-`toyc` writes its output beside the current directory when it is given neither `-o` nor
+`toyc` writes its output in the current directory when it is given neither `-o` nor
 `--output-dir`: every test points the output at `-o -` (standard output), at `-o %t..`, or at
 `--output-dir %t.dir`, or writes nothing (`--print`, `--help`, a request that fails).
 

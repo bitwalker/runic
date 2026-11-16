@@ -9,6 +9,6 @@
 // CHECK:      ; {{.*}}::two: 2 parameters
 // CHECK-NEXT: {{.*}}::two:
 // PLAIN-NOT: ;
-// PLAIN: {{.*}}::one:
+// PLAIN: ::two:
 fn one(x) = x;
 fn two(a, b) = a + b;

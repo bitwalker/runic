@@ -10,5 +10,5 @@
 // CHECK:      {{.*}}::k:
 // CHECK-NEXT:   load 0
 // CHECK-NEXT:   ret
-// NOLANG: error:
+// NOLANG: error: the input '-' is standard input, which has no file name to tell its language by
 fn k(x) = x;

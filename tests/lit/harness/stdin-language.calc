@@ -7,5 +7,6 @@
 // CHECK: {{.*}}::k:
 // CHECK-NEXT: load 0
 // CHECK-NEXT: ret
-// NOLANG: error:
+// NOLANG: error: invalid operation
+// NOLANG-NEXT: --> <stdin>:[[@LINE+1]]:1
 fn k(x) = x;
