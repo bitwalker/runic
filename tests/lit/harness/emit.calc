@@ -1,0 +1,20 @@
+// RUN: runic-opt %s --emit ast=%t.ast | filecheck %s
+// RUN: filecheck %s --check-prefix=AST --input-file %t.ast
+// RUN: runic-opt %s --target stackvm-unknown-tiny --emit ast=%t.tree --emit ir.lowered=%t.low | filecheck %s --check-prefix=LISTING
+// RUN: filecheck %s --check-prefix=AST --input-file %t.tree
+// RUN: filecheck %s --check-prefix=LOWERED --input-file %t.low
+
+// `--emit NAME=PATH` writes the artifact at a checkpoint to a file as well, and the result is
+// still printed. The flag may be repeated; each file holds the artifact of its checkpoint.
+
+// CHECK: builtin.world {
+// CHECK: arith.add
+// AST: file {{.*}}
+// AST-NEXT: fn k(x)
+// AST-NEXT: add
+// LISTING: {{.*}}::k:
+// LISTING-NEXT: load 0
+// LOWERED: builtin.world {
+// LOWERED: arith.add
+// LOWERED: data_layout
+fn k(x) = x + 1;

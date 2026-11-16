@@ -1,5 +1,5 @@
 name = "runic"
-patterns = ["*.runic"]
+patterns = ["*.runic", "*.calc"]
 
 # Without `pipefail`, a RUN line `runic-opt .. | filecheck %s` passes whenever filecheck does, even
 # when runic-opt fails: the status of a pipeline would be that of its last command.

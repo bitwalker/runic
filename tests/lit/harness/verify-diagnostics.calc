@@ -1,0 +1,8 @@
+// RUN: runic-opt %s --verify-diagnostics
+
+// A diagnostic of the frontend is checked against the expectations written in the input, like one
+// of the IR path. The syntax error is expected on its line, and every diagnostic met and every
+// expectation matched make a run that succeeds and prints nothing.
+
+fn ok() = 1;
+fn broken() = 1 +* 2; // expected-error {{expected an expression}}

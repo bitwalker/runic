@@ -1,0 +1,10 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics | filecheck %s
+
+// With `--split-input-file` each case has its own expectations. A case that is fine is printed
+// and one that fails as expected prints nothing.
+
+// CHECK: @fine(
+// CHECK-NOT: @broken
+fn fine() = 1;
+// -----
+fn broken() = 1 +* 2; // expected-error {{expected an expression}}

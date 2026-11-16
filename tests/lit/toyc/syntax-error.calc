@@ -1,0 +1,10 @@
+// RUN: sh -c "toyc %s -o - 2>&1; test \$? -eq 1" | filecheck %s
+
+// A syntax error is an error that names the file and the position, and a compilation that failed
+// is exit code 1 (a usage error is 2). Nothing is written to standard output.
+
+// CHECK: error: expected an expression, found '*'
+// CHECK-NEXT: --> {{.*}}syntax-error.calc:[[@LINE+3]]:18
+// CHECK: fn broken() = 1 +* 2;
+// CHECK-NOT: ::
+fn broken() = 1 +* 2;

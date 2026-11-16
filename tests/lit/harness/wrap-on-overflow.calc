@@ -1,0 +1,10 @@
+// RUN: runic-opt %s --wrap-on-overflow | filecheck %s
+// RUN: runic-opt %s | filecheck %s --check-prefix=CHECKED
+
+// A flag of the frontend changes the translation: with `--wrap-on-overflow` the arithmetic
+// carries no overflow attribute, and by default it traps.
+
+// CHECK: arith.add {{%[0-9]+}}, {{%[0-9]+}};
+// CHECK-NOT: overflow
+// CHECKED: arith.add {{%[0-9]+}}, {{%[0-9]+}} <{ overflow = #builtin.overflow<checked signed> }>;
+fn k(x) = x + 1;

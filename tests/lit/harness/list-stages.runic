@@ -1,0 +1,19 @@
+// RUN: runic-opt --list-stages | filecheck %s
+
+// `--list-stages` lists what is registered and exits, reading no input: the frontends with their
+// extensions, the backends with their targets, and the checkpoints with the extension of their
+// artifact and the aliases they answer to.
+
+// CHECK:      frontends:
+// CHECK-NEXT:   runic: .runic
+// CHECK-NEXT:   calc: .calc
+// CHECK-NEXT: backends:
+// CHECK-NEXT:   stackvm: stackvm-unknown-unknown, stackvm-unknown-tiny
+// CHECK-NEXT:   altvm: stackvm-unknown-unknown
+// CHECK-NEXT: checkpoints:
+// CHECK-NEXT:   calc.ast (alias ast) -> .ast
+// CHECK-NEXT:   ir.translated -> .translated.runic
+// CHECK-NEXT:   ir.optimized (alias ir) -> .runic
+// CHECK-NEXT:   ir.lowered -> .lowered.runic
+// CHECK-NEXT:   stackvm.asm (alias asm) -> .svm
+// CHECK-NEXT:   altvm.out -> .alt

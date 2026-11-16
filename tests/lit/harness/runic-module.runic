@@ -1,0 +1,18 @@
+// RUN: runic-opt %s --target stackvm-unknown-tiny | filecheck %s
+// RUN: runic-opt %s --target stackvm-unknown-unknown --backend altvm | filecheck %s --check-prefix=ALT
+
+// Textual IR goes through a backend like the output of a frontend: with a target the module is
+// lowered and its functions are listed.
+
+// CHECK:      user::twice:
+// CHECK-NEXT:   load 0
+// CHECK-NEXT:   load 0
+// CHECK-NEXT:   add
+// CHECK-NEXT:   ret
+// ALT: user::twice/1
+builtin.module public @user {
+    builtin.function public extern("C") @twice(%x: i32) -> i32 {
+        %r = arith.add %x, %x;
+        builtin.ret %r : (i32);
+    };
+};

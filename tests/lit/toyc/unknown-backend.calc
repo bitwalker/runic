@@ -1,0 +1,6 @@
+// RUN: sh -c "toyc %s --target stackvm-unknown-tiny --backend altvm -o - 2>&1; test \$? -eq 2" | filecheck %s
+
+// A backend that does not support the target is a request that does not resolve: exit code 2.
+
+// CHECK: error: the backend 'altvm' does not support the target 'stackvm-unknown-tiny'; its targets are 'stackvm-unknown-unknown'
+fn k(x) = x;

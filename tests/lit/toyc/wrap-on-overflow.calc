@@ -1,0 +1,10 @@
+// RUN: toyc %s --wrap-on-overflow --stop-after ir.translated -o - | filecheck %s
+// RUN: toyc %s --stop-after ir.translated -o - | filecheck %s --check-prefix=CHECKED
+
+// A flag of a frontend changes the translation: with `--wrap-on-overflow` the arithmetic carries
+// no overflow attribute, and by default it traps.
+
+// CHECK: arith.add {{%[0-9]+}}, {{%[0-9]+}};
+// CHECK-NOT: overflow
+// CHECKED: arith.add {{%[0-9]+}}, {{%[0-9]+}} <{ overflow = #builtin.overflow<checked signed> }>;
+fn k(x) = x + 1;

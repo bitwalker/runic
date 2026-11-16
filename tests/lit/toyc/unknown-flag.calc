@@ -1,0 +1,9 @@
+// RUN: sh -c "toyc %s --no-such-flag -o - 2>&1; test \$? -eq 2" | filecheck %s
+
+// A flag nothing declares is a usage error: exit code 2, the flag named, nothing written to
+// standard output.
+
+// CHECK:      error: unexpected argument '--no-such-flag' found
+// CHECK-NOT:  ::k
+// CHECK:      For more information, try '--help'.
+fn k(x) = x;

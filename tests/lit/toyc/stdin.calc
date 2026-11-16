@@ -1,0 +1,14 @@
+// RUN: toyc --language calc - -o - < %s | filecheck %s
+// RUN: toyc --language calc - --name unit --output-dir %t.dir < %s
+// RUN: filecheck %s --input-file %t.dir/unit.svm
+// RUN: sh -c "toyc - -o - < %s 2>&1; test \$? -eq 2" | filecheck %s --check-prefix=NOLANG
+
+// Standard input is `-`, and a program on it is read with `--language NAME`, as it has no
+// extension to tell the language. Its unit is named with `--name`. Without a language the input
+// cannot be read and the request is a usage error.
+
+// CHECK:      {{.*}}::k:
+// CHECK-NEXT:   load 0
+// CHECK-NEXT:   ret
+// NOLANG: error:
+fn k(x) = x;

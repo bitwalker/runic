@@ -1,0 +1,12 @@
+// RUN: runic-opt %s --stop-after ast | filecheck %s
+// RUN: runic-opt %s --stop-after calc.ast | filecheck %s
+
+// `--stop-after` stops the compilation at a checkpoint, by alias or by id, and the artifact there
+// is the result: the frontend's syntax tree, as text, in place of IR.
+
+// CHECK:      file {{.*}}
+// CHECK-NEXT:   fn k(x)
+// CHECK-NEXT:     add
+// CHECK-NEXT:       param x
+// CHECK-NEXT:       int 1
+fn k(x) = x + 1;

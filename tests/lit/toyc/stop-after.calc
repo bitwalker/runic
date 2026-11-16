@@ -1,0 +1,18 @@
+// RUN: toyc %s --stop-after ast -o - | filecheck %s --check-prefix=AST
+// RUN: toyc %s --stop-after ir.translated -o - | filecheck %s --check-prefix=TRANSLATED
+// RUN: toyc %s --stop-after ir -o - | filecheck %s --check-prefix=OPTIMIZED
+// RUN: toyc %s --stop-after ir.lowered -o - | filecheck %s --check-prefix=LOWERED
+// RUN: toyc %s --stop-after asm -o - | filecheck %s --check-prefix=ASM
+
+// `--stop-after NAME` ends the compilation after a checkpoint, and the artifact there is what
+// `-o` receives: the syntax tree, the IR as translated, optimized and lowered, and the listing.
+
+// AST:        file {{.*}}
+// AST-NEXT:     fn k(x)
+// TRANSLATED: arith.mul
+// OPTIMIZED:  arith.constant 6 : i32
+// OPTIMIZED-NOT: arith.mul
+// LOWERED:    data_layout = #builtin.data_layout<little, ptr = 32>
+// ASM:        {{.*}}::k:
+// ASM-NEXT:     load 0
+fn k(x) = x + 2 * 3;

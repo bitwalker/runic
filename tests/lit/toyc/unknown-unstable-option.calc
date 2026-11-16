@@ -1,0 +1,7 @@
+// RUN: sh -c "toyc %s -Z no-such-option -o - 2>&1; test \$? -eq 2" | filecheck %s
+
+// An unstable option that no stage declares is a usage error (exit code 2) that lists the ones
+// there are and says where they are described.
+
+// CHECK: error: unknown unstable option '-Z no-such-option': the unstable options are 'pass-pipeline', {{.*}}'stackvm-keep-subtractions' ('-Z help' describes them)
+fn k(x) = x;

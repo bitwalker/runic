@@ -1,0 +1,21 @@
+// RUN: toyc --print targets | filecheck %s --check-prefix=TARGETS
+// RUN: toyc --print backends | filecheck %s --check-prefix=BACKENDS
+// RUN: toyc --print frontends | filecheck %s --check-prefix=FRONTENDS
+// RUN: toyc --print checkpoints | filecheck %s --check-prefix=CHECKPOINTS
+
+// `--print WHAT` lists what the compiler offers and exits, reading no input: the targets (the
+// default marked), the backends with their targets, the frontends with their extensions, and the
+// checkpoints with their aliases and the extension of their artifact.
+
+// TARGETS:      stackvm-unknown-unknown
+// TARGETS-NEXT: stackvm-unknown-tiny (default)
+// BACKENDS:      stackvm: stackvm-unknown-unknown, stackvm-unknown-tiny
+// BACKENDS-NEXT: altvm: stackvm-unknown-unknown
+// FRONTENDS:      calc: .calc
+// FRONTENDS-NEXT: runic: .runic
+// CHECKPOINTS:      calc.ast (alias ast) -> .ast
+// CHECKPOINTS-NEXT: ir.translated -> .translated.runic
+// CHECKPOINTS-NEXT: ir.optimized (alias ir) -> .runic
+// CHECKPOINTS-NEXT: ir.lowered -> .lowered.runic
+// CHECKPOINTS-NEXT: stackvm.asm (alias asm) -> .svm
+// CHECKPOINTS-NEXT: altvm.out -> .alt

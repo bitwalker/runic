@@ -1,7 +1,8 @@
 # The lit suite
 
-Tests of `runic-opt` written as text: each `*.runic` file holds IR and `// RUN:` lines that run the
-tool on it, and checks of what it prints. The suite is run by `litcheck` (a lit runner and FileCheck
+Tests of `runic-opt` and of the toy compiler `toyc` written as text: each `*.runic` file holds IR,
+and each `*.calc` file a program of the toy language `calc`, with `// RUN:` lines that run a tool
+on it, and checks of what it prints. The suite is run by `litcheck` (a lit runner and FileCheck
 in one binary), which provides `filecheck` and `not` itself. The suite is written for `litcheck`
 0.5.0 or newer.
 
@@ -11,13 +12,17 @@ in one binary), which provides `filecheck` and `not` itself. The suite is writte
 cargo make test-lit
 ```
 
-builds `runic-opt` into `bin/` (git-ignored) and runs every test. To run tests by hand, build once
-and point `litcheck` at `bin`. The suite is run from the repository root, as below: run from a
+builds `runic-opt` and `toyc` into `bin/` (git-ignored) and runs every test. `runic-opt` is built
+with the cargo feature `toy`, which registers the toy frontend `calc` and the toy backends `stackvm`
+and `altvm`; `toyc` is the example `toyc` of `crates/driver`, a compiler built on the driver crate
+with the same stages (`cargo make toyc` builds it alone). To run tests by hand, build once and point
+`litcheck` at `bin`. The suite is run from the repository root, as below: run from a
 directory inside the suite, `litcheck` does not find it, and it refuses a path outside the working
 directory:
 
 ```sh
 cargo make runic-opt
+cargo make toyc
 litcheck lit run --path bin tests/lit
 litcheck lit run --path bin tests/lit/transforms/cse/graph-no-replaceable-uses.runic
 litcheck lit run --path bin tests/lit/transforms
@@ -27,8 +32,8 @@ litcheck lit run --path bin --filter 'runic::transforms/' tests/lit
 After the build, the lines run the suite, one file, one area (a directory), and the same area
 by name. `--filter` is a regular expression over `suite::path`, where the suite is `runic` and the
 path is relative to this directory: `'^transforms/'` selects nothing. `-v`
-(`--verbose`) prints the commands and output of every test that fails. `cargo make lit` builds the
-tool and passes its arguments to `litcheck lit`:
+(`--verbose`, written before `--path`) prints the commands and output of every test that fails. `cargo make lit` builds the
+tools and passes its arguments to `litcheck lit`:
 
 ```sh
 cargo make lit run --path bin tests/lit/transforms
@@ -66,7 +71,7 @@ read too (`crates/transform/src/tests/dialect_modules.rs`).
 Directories are added with their first test.
 
 ```
-lit.suite.toml        the suite: name `runic`, files `*.runic`, `pipefail = true`
+lit.suite.toml        the suite: name `runic`, files `*.runic` and `*.calc`, `pipefail = true`
 parse/                reading and printing IR
 verify/               the verifier's rules, one diagnostic per case
 roundtrip/            both forms read back
@@ -76,6 +81,10 @@ transforms/<pass>/    a pass: cse, dce, sccp, canonicalizer, control-flow-sink, 
 conversion/           dialect conversion, through the test passes
 analysis/             analyses, through the test passes
 tool/                 options and behaviour of runic-opt itself
+harness/              runic-opt's harness path: an input a frontend reads (`*.calc`) or a
+                      `--target` that sends it through a backend; the stage flags, `--emit`,
+                      `--stop-after`, `--list-stages`
+toyc/                 the command line of a compiler built on the driver crate, through `toyc`
 ```
 
 A test is named in lower case with hyphens, `*.runic`, in the directory of its area:
@@ -95,7 +104,8 @@ A test is RUN lines, IR, and checks in comments:
 ```
 
 `%s` is the test file, and `%t` a file of the test's own that a RUN line may write
-(`runic-opt %s -o %t`). `--split-input-file` runs each case between lines `// -----` on its own;
+(`runic-opt %s -o %t`); the path is fresh for each run of the test, and a suffix makes another
+(`%t.svm`, or `%t.dir` for a directory the tool creates). `--split-input-file` runs each case between lines `// -----` on its own;
 diagnostics keep the file's line numbers, and a case that fails prints nothing.
 
 ### A failure is checked, never ignored
@@ -112,6 +122,32 @@ or for a pipeline the tool rejects before it reads the input (so no expectation 
 // RUN: not runic-opt %s -p test-fail 2>&1 | filecheck %s --check-prefix=PLAIN
 // RUN: not runic-opt %s -p 'builtin.module(builtin.function(dce{x=1}))' 2>&1 | filecheck %s --check-prefix=NOOPT
 ```
+
+### The toy compiler and the harness path
+
+`harness/` runs `runic-opt` on `*.calc` files and with `--target`; `toyc/` runs `toyc`. A `calc`
+file reads `//` as a comment, so its RUN lines and checks are written in comments like those of a
+`.runic` file, and the program follows them. The module of a program is named after the file
+(`harness/emit.calc` is `@emit`; a name with a hyphen prints quoted), so a check matches it with
+`{{.*}}`, as in `{{.*}}::k:`. A test that needs no input (`--print`, `--help`, `-Z help`) is a
+`*.runic` file with only RUN lines and checks.
+
+`toyc` writes its output beside the current directory when it is given neither `-o` nor
+`--output-dir`: every test points the output at `-o -` (standard output), at `-o %t..`, or at
+`--output-dir %t.dir`, or writes nothing (`--print`, `--help`, a request that fails).
+
+`runic-opt` exits 1 for every failure, and `not` is enough. `toyc` exits 1 when a compilation
+failed and 2 for a usage error (an unknown flag, a request that does not resolve), and a test
+tells the two apart: `litcheck`'s `not` checks only that the command did not succeed, and its
+shell has no `;`. The form the suite uses runs the command in `sh -c`, with standard error
+joined to standard output, and ends the string with the exact code, so that the pipeline's status
+is that of the check and the output goes on to `filecheck`:
+
+```
+// RUN: sh -c "toyc %s --no-such-flag -o - 2>&1; test \$? -eq 2" | filecheck %s
+```
+
+Do not write `toyc .. || test $? -eq 2`: it passes when `toyc` succeeds.
 
 ### One function per case, under a label that names it
 

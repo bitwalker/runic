@@ -1,0 +1,11 @@
+// RUN: not runic-opt %s 2>&1 | filecheck %s
+// RUN: not runic-opt %s --target stackvm-unknown-tiny 2>&1 | filecheck %s
+
+// A syntax error in a calc file is an error with the file and the position, the run fails, and
+// nothing is printed to standard output.
+
+// CHECK: error: expected an expression, found '*'
+// CHECK-NEXT: --> {{.*}}syntax-error.calc:[[@LINE+3]]:18
+// CHECK: fn broken() = 1 +* 2;
+// CHECK-NOT: builtin.world
+fn broken() = 1 +* 2;

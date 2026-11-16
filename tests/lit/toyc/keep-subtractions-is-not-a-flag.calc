@@ -1,0 +1,8 @@
+// RUN: sh -c "toyc %s --stackvm-keep-subtractions -o - 2>&1; test \$? -eq 2" | filecheck %s
+
+// An unstable option is reached only as `-Z NAME`: the same name as a flag is an unknown argument,
+// a usage error (exit code 2) that points to the stable flag nearest to it.
+
+// CHECK: error: unexpected argument '--stackvm-keep-subtractions' found
+// CHECK: tip: a similar argument exists: '--stackvm-comments'
+fn k(x) = x - 3;

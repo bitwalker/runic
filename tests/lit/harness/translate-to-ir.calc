@@ -1,0 +1,15 @@
+// RUN: runic-opt %s | filecheck %s
+
+// A file the calc frontend reads is translated to IR, and the IR is the result. With no pipeline
+// and no target nothing is folded: the constants and the multiplication are as written.
+
+// CHECK: builtin.world {
+// CHECK-NEXT: builtin.module public @{{.*}} {
+// CHECK-NEXT: builtin.function public extern("C") @twice(
+// CHECK-SAME: -> i32 {
+// CHECK-NEXT: [[A:%[0-9]+]] = arith.constant 2 : i32;
+// CHECK-NEXT: [[B:%[0-9]+]] = arith.constant 3 : i32;
+// CHECK-NEXT: [[M:%[0-9]+]] = arith.mul [[A]], [[B]] <{ overflow = #builtin.overflow<checked signed> }>;
+// CHECK-NEXT: [[S:%[0-9]+]] = arith.add {{%[0-9]+}}, [[M]] <{ overflow = #builtin.overflow<checked signed> }>;
+// CHECK-NEXT: builtin.ret [[S]] : (i32);
+fn twice(x) = x + 2 * 3;

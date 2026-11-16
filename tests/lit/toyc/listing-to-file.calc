@@ -1,0 +1,16 @@
+// RUN: toyc %s -o %t.svm | filecheck %s --check-prefix=NOTHING --allow-empty
+// RUN: filecheck %s --input-file %t.svm
+// RUN: toyc %s --name unit --output-dir %t.dir | filecheck %s --check-prefix=NOTHING --allow-empty
+// RUN: filecheck %s --input-file %t.dir/unit.svm
+
+// `-o FILE` writes the listing to the file and nothing to standard output. `--output-dir DIR`
+// (created when it is not there) takes the file named after the unit: `--name`, or the input's
+// name without its extension.
+
+// NOTHING-NOT: {{.}}
+// CHECK:      {{.*}}::k:
+// CHECK-NEXT:   load 0
+// CHECK-NEXT:   push 1
+// CHECK-NEXT:   add
+// CHECK-NEXT:   ret
+fn k(x) = x + 1;

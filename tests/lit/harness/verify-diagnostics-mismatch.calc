@@ -1,0 +1,12 @@
+// RUN: not runic-opt %s --verify-diagnostics 2>&1 | filecheck %s
+// RUN: not runic-opt %s --verify-diagnostics 2>&1 | filecheck %s --check-prefix=LINE
+
+// A diagnostic that no expectation names, and an expectation that no diagnostic meets, are both
+// errors, and the run fails.
+
+// CHECK: error: unexpected error: expected an expression, found '*'
+// CHECK: error: expected error "expected something else" was not produced
+// LINE: --> {{.*}}verify-diagnostics-mismatch.calc:[[@LINE+3]]:
+// LINE: --> {{.*}}verify-diagnostics-mismatch.calc:[[@LINE+2]]:
+
+fn broken() = 1 +* 2; // expected-error {{expected something else}}

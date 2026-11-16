@@ -1,0 +1,29 @@
+// RUN: toyc %s --name unit --output-dir %t.dir --emit ast --emit ir.translated --emit ir --emit ir.lowered --emit asm
+// RUN: filecheck %s --check-prefix=AST --input-file %t.dir/unit.ast
+// RUN: filecheck %s --check-prefix=TRANSLATED --input-file %t.dir/unit.translated.runic
+// RUN: filecheck %s --check-prefix=OPTIMIZED --input-file %t.dir/unit.runic
+// RUN: filecheck %s --check-prefix=LOWERED --input-file %t.dir/unit.lowered.runic
+// RUN: filecheck %s --check-prefix=ASM --input-file %t.dir/unit.svm
+// RUN: toyc %s --emit ast=%t.tree --emit ir.optimized=%t.opt --emit asm=%t.out
+// RUN: filecheck %s --check-prefix=AST --input-file %t.tree
+// RUN: filecheck %s --check-prefix=OPTIMIZED --input-file %t.opt
+// RUN: filecheck %s --check-prefix=ASM --input-file %t.out
+
+// `--emit NAME` writes the artifact at a checkpoint (by id or alias) to a file named after the unit
+// with the extension the checkpoint declares; `--emit NAME=PATH` names the file. Every checkpoint
+// of the route can be written in one run, along with the listing.
+
+// AST:         fn k(x)
+// AST-NEXT:      add
+// TRANSLATED:  arith.mul
+// TRANSLATED:  arith.add
+// OPTIMIZED:   arith.constant 6 : i32
+// OPTIMIZED-NOT: arith.mul
+// LOWERED:     arith.constant 6 : i32
+// LOWERED:     data_layout
+// ASM:         {{.*}}::k:
+// ASM-NEXT:      load 0
+// ASM-NEXT:      push 6
+// ASM-NEXT:      add
+// ASM-NEXT:      ret
+fn k(x) = x + 2 * 3;

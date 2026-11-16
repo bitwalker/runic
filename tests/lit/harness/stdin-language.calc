@@ -1,0 +1,11 @@
+// RUN: runic-opt --language calc - --target stackvm-unknown-tiny < %s | filecheck %s
+// RUN: not runic-opt --target stackvm-unknown-tiny < %s 2>&1 | filecheck %s --check-prefix=NOLANG
+
+// Standard input has no extension, so a program on it is read with `--language NAME`. Without a
+// language the input is read as IR, and the calc text is a syntax error.
+
+// CHECK: {{.*}}::k:
+// CHECK-NEXT: load 0
+// CHECK-NEXT: ret
+// NOLANG: error:
+fn k(x) = x;

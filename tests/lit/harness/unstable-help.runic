@@ -1,0 +1,8 @@
+// RUN: runic-opt -Z help | filecheck %s
+
+// `-Z help` lists the unstable options of the registered stages, grouped by stage, and exits,
+// reading no input.
+
+// CHECK:      Unstable options (-Z NAME[=VALUE]):
+// CHECK:      stackvm backend
+// CHECK-NEXT:   stackvm-keep-subtractions  Leave subtractions as they are

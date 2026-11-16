@@ -1,0 +1,32 @@
+// RUN: runic-opt %s --split-input-file | filecheck %s
+// RUN: runic-opt %s --split-input-file --target stackvm-unknown-tiny | filecheck %s --check-prefix=LISTING
+
+// Each case between lines `// -----` is a program of its own, translated alone: no case sees the
+// functions of another, and the results are printed in order with the marker between them.
+
+// CHECK-LABEL: builtin.function public extern("C") @one(
+// CHECK: builtin.ret
+// CHECK: // -----
+// CHECK-LABEL: builtin.function public extern("C") @two(
+// CHECK: builtin.ret
+// CHECK: // -----
+// CHECK-LABEL: builtin.function public extern("C") @three(
+// CHECK: builtin.ret
+// LISTING: {{.*}}::one:
+// LISTING-NEXT: push 1
+// LISTING-NEXT: ret
+// LISTING-NEXT: // -----
+// LISTING-NEXT: {{.*}}::two:
+// LISTING-NEXT: load 0
+// LISTING-NEXT: push 2
+// LISTING-NEXT: mul
+// LISTING-NEXT: ret
+// LISTING-NEXT: // -----
+// LISTING-NEXT: {{.*}}::three:
+// LISTING-NEXT: push 3
+// LISTING-NEXT: ret
+fn one() = 1;
+// -----
+fn two(x) = x * 2;
+// -----
+fn three() = 3;

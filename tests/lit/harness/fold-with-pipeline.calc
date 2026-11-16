@@ -1,0 +1,13 @@
+// RUN: runic-opt %s -p canonicalizer | filecheck %s
+// RUN: runic-opt %s --pass-pipeline 'builtin.world(builtin.module(builtin.function(canonicalizer)))' | filecheck %s
+// RUN: runic-opt %s -p cse | filecheck %s --check-prefix=UNFOLDED
+
+// A pass pipeline runs on the translated IR: the canonicalizer folds `2 * 3` into a constant, and
+// a pipeline that does not fold leaves it.
+
+// CHECK-LABEL: @twice(
+// CHECK-NOT: arith.mul
+// CHECK: arith.constant 6 : i32;
+// CHECK: arith.add
+// UNFOLDED: arith.mul
+fn twice(x) = x + 2 * 3;

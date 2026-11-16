@@ -1,0 +1,15 @@
+// RUN: runic-opt %s --stop-after ir.lowered --target stackvm-unknown-tiny | filecheck %s
+// RUN: not runic-opt %s --stop-after ir.lowered 2>&1 | filecheck %s --check-prefix=NOTARGET
+
+// A checkpoint behind the backend's lowering is the IR the target's legalization produced: here
+// the subtraction of a constant is already an addition. The checkpoint is reached only with a
+// target.
+
+// CHECK-LABEL: @k(
+// CHECK: [[C:%[0-9]+]] = arith.constant -3 : i32;
+// CHECK-NEXT: [[R:%[0-9]+]] = arith.add {{%[0-9]+}}, [[C]] <{
+// CHECK-NOT: arith.sub
+// CHECK: builtin.ret [[R]] : (i32);
+// CHECK: data_layout = #builtin.data_layout<little, ptr = 32>
+// NOTARGET: error: the checkpoint 'ir.lowered' is reached only with a backend, and no target was given: give one with --target
+fn k(x) = x - 3;

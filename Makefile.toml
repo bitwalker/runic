@@ -190,6 +190,22 @@ args = [
     "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/bin",
 ]
 
+[tasks.toyc]
+category = "Build"
+description = "Builds the toy compiler (the toyc example of runic-driver) and installs it to the bin folder"
+command = "cargo"
+args = [
+    "-Z",
+    "unstable-options",
+    "build",
+    "-p",
+    "runic-driver",
+    "--example",
+    "toyc",
+    "--artifact-dir",
+    "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/bin",
+]
+
 [tasks.build]
 category = "Build"
 description = "Runs cargo build on the workspace"
@@ -428,7 +444,7 @@ dependencies = ["install-nextest"]
 
 [tasks.test-lit]
 category = "Test"
-description = "Builds runic-opt into bin and runs the lit suite of tests/lit"
+description = "Builds runic-opt and toyc into bin and runs the lit suite of tests/lit"
 command = "litcheck"
 args = [
     "lit",
@@ -438,17 +454,17 @@ args = [
     "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/bin",
     "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/tests/lit",
 ]
-dependencies = ["litcheck", "runic-opt"]
+dependencies = ["litcheck", "runic-opt", "toyc"]
 
 [tasks.lit]
 category = "Test"
-description = "Builds runic-opt into bin and runs `litcheck lit` with the arguments given"
+description = "Builds runic-opt and toyc into bin and runs `litcheck lit` with the arguments given"
 command = "litcheck"
 args = [
     "lit",
     "${@}",
 ]
-dependencies = ["litcheck", "runic-opt"]
+dependencies = ["litcheck", "runic-opt", "toyc"]
 
 [tasks.lit-coverage]
 category = "Test"

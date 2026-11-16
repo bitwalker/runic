@@ -1,0 +1,11 @@
+// RUN: not runic-opt %s --emit ast 2>&1 | filecheck %s
+// RUN: not runic-opt %s --emit ast=- 2>&1 | filecheck %s --check-prefix=DASH
+// RUN: not runic-opt %s --emit ast= 2>&1 | filecheck %s --check-prefix=EMPTY
+
+// `--emit` names the file the artifact is written to, and the path is required: the result already
+// goes to standard output.
+
+// CHECK: error: --emit ast: the checkpoint needs a file to be written to: write '--emit NAME=PATH'
+// DASH: error: --emit ast=-: the checkpoint needs a file to be written to: write '--emit NAME=PATH'
+// EMPTY: error: --emit ast=:
+fn k() = 1;

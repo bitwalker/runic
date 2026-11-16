@@ -1,0 +1,15 @@
+// RUN: sh -c "toyc %s --target stackvm-unknown-unknown -o - 2>&1; test \$? -eq 2" | filecheck %s --check-prefix=AMBIGUOUS
+// RUN: toyc %s --target stackvm-unknown-unknown --backend altvm -o - | filecheck %s --check-prefix=ALT
+// RUN: toyc %s --target stackvm-unknown-unknown --backend stackvm -o - | filecheck %s --check-prefix=STACK
+
+// Two backends support the triple `stackvm-unknown-unknown`. A request that does not resolve is a
+// usage error (exit code 2, not the 1 of a compilation that failed): the message names both
+// backends and the flag that settles it, and no output is written. With `--backend` the named
+// backend generates the code.
+
+// AMBIGUOUS: error: more than one backend supports the target 'stackvm-unknown-unknown': choose one with --backend; the candidates are 'stackvm', 'altvm'
+// AMBIGUOUS-NEXT: usage: toyc
+// ALT:   {{.*}}::k/1
+// STACK: {{.*}}::k:
+// STACK-NEXT: load 0
+fn k(x) = x;

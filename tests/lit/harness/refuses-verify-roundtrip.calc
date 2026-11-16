@@ -1,0 +1,10 @@
+// RUN: not runic-opt %s --verify-roundtrip 2>&1 | filecheck %s --check-prefix=CALC
+// RUN: not runic-opt --verify-roundtrip --target stackvm-unknown-tiny < %s 2>&1 | filecheck %s --check-prefix=TARGET
+
+// A check of how IR reads back has no meaning when the input is translated or lowered, so the
+// flags that ask it are refused before anything is read, naming what sent the input through the
+// compiler.
+
+// CALC: error: --verify-roundtrip is not available when the input goes through a frontend or a backend, as it does here: '{{.*}}refuses-verify-roundtrip.calc' is read by the frontend 'calc'
+// TARGET: error: --verify-roundtrip is not available when the input goes through a frontend or a backend, as it does here: --target
+fn k() = 1;

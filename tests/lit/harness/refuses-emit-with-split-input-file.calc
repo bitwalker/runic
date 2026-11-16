@@ -1,0 +1,8 @@
+// RUN: not runic-opt %s --emit ast=%t --split-input-file 2>&1 | filecheck %s
+
+// Every case would write the same file, so `--emit` and `--split-input-file` do not go together.
+
+// CHECK: error: --emit is not available with --split-input-file: every case would write the same file
+fn k() = 1;
+// -----
+fn l() = 2;

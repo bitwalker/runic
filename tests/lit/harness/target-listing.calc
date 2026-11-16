@@ -1,0 +1,23 @@
+// RUN: runic-opt %s --target stackvm-unknown-tiny | filecheck %s
+
+// With a target a backend generates code, and the result is the listing of the end of the
+// compilation. A subtraction of a constant becomes the addition of its negation.
+
+// CHECK:      {{.*}}::add:
+// CHECK-NEXT:   load 0
+// CHECK-NEXT:   load 1
+// CHECK-NEXT:   add
+// CHECK-NEXT:   ret
+// CHECK-NEXT: {{.*}}::f:
+// CHECK-NEXT:   load 0
+// CHECK-NEXT:   push -3
+// CHECK-NEXT:   add
+// CHECK-NEXT:   push 2
+// CHECK-NEXT:   push 3
+// CHECK-NEXT:   push 4
+// CHECK-NEXT:   mul
+// CHECK-NEXT:   add
+// CHECK-NEXT:   call {{.*}}::add
+// CHECK-NEXT:   ret
+fn add(a, b) = a + b;
+fn f(x) = add(x - 3, 2 + 3 * 4);

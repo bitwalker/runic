@@ -1,0 +1,16 @@
+// RUN: runic-opt %s --target stackvm-unknown-tiny -Z stackvm-keep-subtractions | filecheck %s
+// RUN: runic-opt %s --target stackvm-unknown-tiny | filecheck %s --check-prefix=REWRITTEN
+// RUN: not runic-opt %s --target stackvm-unknown-tiny --stackvm-keep-subtractions 2>&1 | filecheck %s --check-prefix=STABLE
+
+// An unstable option of a backend is reached only as `-Z NAME`. With it the subtraction of a
+// constant stays a subtraction; without it the backend rewrites it as an addition. The option is
+// not a flag of its own.
+
+// CHECK:      load 0
+// CHECK-NEXT: push 3
+// CHECK-NEXT: sub
+// REWRITTEN:      load 0
+// REWRITTEN-NEXT: push -3
+// REWRITTEN-NEXT: add
+// STABLE: error: unexpected argument '--stackvm-keep-subtractions' found
+fn k(x) = x - 3;

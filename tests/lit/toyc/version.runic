@@ -1,0 +1,10 @@
+// RUN: toyc --version | filecheck %s
+// RUN: toyc -V | filecheck %s --check-prefix=SHORT
+
+// `--version` prints the compiler's name and version, and the version of Runic it is built on;
+// `-V` prints the first line only.
+
+// CHECK:      toyc {{[0-9]+\.[0-9]+\.[0-9]+}}
+// CHECK-NEXT: runic {{.+}}
+// SHORT:      toyc {{[0-9]+\.[0-9]+\.[0-9]+}}
+// SHORT-NOT:  runic

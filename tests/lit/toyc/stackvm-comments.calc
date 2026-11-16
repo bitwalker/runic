@@ -1,0 +1,14 @@
+// RUN: toyc %s --stackvm-comments -o - | filecheck %s
+// RUN: toyc %s -o - | filecheck %s --check-prefix=PLAIN
+
+// A flag of a backend is a flag of the compiler: with it the listing has a comment line before each
+// function, and without it none.
+
+// CHECK:      ; {{.*}}::one: 1 parameter
+// CHECK-NEXT: {{.*}}::one:
+// CHECK:      ; {{.*}}::two: 2 parameters
+// CHECK-NEXT: {{.*}}::two:
+// PLAIN-NOT: ;
+// PLAIN: {{.*}}::one:
+fn one(x) = x;
+fn two(a, b) = a + b;

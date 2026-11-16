@@ -1,0 +1,13 @@
+// RUN: toyc %s -Z stackvm-keep-subtractions -o - | filecheck %s
+// RUN: toyc %s -o - | filecheck %s --check-prefix=REWRITTEN
+
+// `-Z stackvm-keep-subtractions` keeps the subtraction of a constant a subtraction. Without it the
+// backend rewrites it as the addition of the negated constant.
+
+// CHECK:      load 0
+// CHECK-NEXT: push 3
+// CHECK-NEXT: sub
+// REWRITTEN:      load 0
+// REWRITTEN-NEXT: push -3
+// REWRITTEN-NEXT: add
+fn k(x) = x - 3;

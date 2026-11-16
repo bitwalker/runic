@@ -1,0 +1,13 @@
+// RUN: toyc %s --stop-after ir -o - | filecheck %s --check-prefix=DEFAULT
+// RUN: toyc %s -O0 --stop-after ir -o - | filecheck %s --check-prefix=O0
+// RUN: toyc %s -O0 -o - | filecheck %s --check-prefix=LISTING
+
+// By default the optimizer folds the constants. With `-O0` it does not run, and the multiplication
+// stays, in the IR and as instructions of the listing.
+
+// DEFAULT:     arith.constant 6 : i32
+// DEFAULT-NOT: arith.mul
+// O0:          arith.mul
+// LISTING:     push 3
+// LISTING:     mul
+fn k(x) = x + 2 * 3;

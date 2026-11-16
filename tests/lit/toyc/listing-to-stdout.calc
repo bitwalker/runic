@@ -1,0 +1,19 @@
+// RUN: toyc %s -o - | filecheck %s
+
+// `-o -` writes the listing of the default target (`stackvm-unknown-tiny`) to standard output. The
+// folded constant and the rewritten subtraction are the optimizer's and the backend's work.
+
+// CHECK:      {{.*}}::add:
+// CHECK-NEXT:   load 0
+// CHECK-NEXT:   load 1
+// CHECK-NEXT:   add
+// CHECK-NEXT:   ret
+// CHECK-NEXT: {{.*}}::f:
+// CHECK-NEXT:   load 0
+// CHECK-NEXT:   push -3
+// CHECK-NEXT:   add
+// CHECK-NEXT:   push 14
+// CHECK-NEXT:   call {{.*}}::add
+// CHECK-NEXT:   ret
+fn add(a, b) = a + b;
+fn f(x) = add(x - 3, 2 + 3 * 4);

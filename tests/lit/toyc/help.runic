@@ -1,0 +1,13 @@
+// RUN: toyc --help | filecheck %s
+
+// `--help` shows the compiler's own description, a usage line named after the compiler, the flags
+// of the driver, and the flags of each registered stage under a heading of its own.
+
+// CHECK:      Compiles calc, a toy language, for two toy stack machines
+// CHECK:      Usage: toyc [OPTIONS] [INPUT]...
+// CHECK:      --target <TRIPLE>
+// CHECK:      --stop-after <NAME>
+// CHECK:      calc frontend options:
+// CHECK-NEXT:       --wrap-on-overflow
+// CHECK:      stackvm backend options:
+// CHECK-NEXT:       --stackvm-comments

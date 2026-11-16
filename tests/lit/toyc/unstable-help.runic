@@ -1,0 +1,11 @@
+// RUN: toyc -Z help | filecheck %s
+
+// `-Z help` lists the unstable options, those of the driver first and then those of each stage
+// under its own heading, and exits.
+
+// CHECK:      Unstable options (-Z NAME[=VALUE]):
+// CHECK:      driver
+// CHECK:        pass-pipeline=PIPELINE
+// CHECK:        dump-pass-pipeline
+// CHECK:      stackvm backend
+// CHECK-NEXT:   stackvm-keep-subtractions
