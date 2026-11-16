@@ -27,7 +27,7 @@ The workspace has sixteen members:
 | `runic-dialect-ub` | `crates/dialects/ub` | undefined behaviour (`ub.poison`, `ub.unreachable`) |
 | `runic-analysis` | `crates/analysis` | the data-flow analysis framework and its analyses |
 | `runic-transform` | `crates/transform` | transformation passes and utilities |
-| `runic-session` | `crates/session` | the metadata and configuration of a compilation session (no tool uses it yet) |
+| `runic-compile` | `crates/compile` | the compiler harness: what a compilation is asked to do and the stages it runs through (being built; no tool uses it yet) |
 | `runic-diagnostics` | `crates/diagnostics` | structured diagnostics: describing, collecting and rendering them with their source |
 | `runic-diagnostics-macros` | `crates/diagnostics-macros` | derive macros for `runic-diagnostics` |
 | `runic-macros` | `crates/macros` | derive and attribute macros for defining dialects, operations, types, attributes and operation traits |
@@ -36,10 +36,9 @@ The workspace has sixteen members:
 | `runic-opt` | `tools/runic-opt` | the command-line tool (below) |
 | `runic-expect-test` | `tools/expect-test` | snapshot testing for the Rust tests |
 
-The directories `runic/`, `crates/driver`, `crates/compile`, `crates/eval` and
-`crates/dialects/wasm` hold a compile harness and driver, an evaluator and a WebAssembly dialect
-from before Runic was split out of an earlier compiler, kept, not built: they are not workspace
-members, and they are not tested.
+The directories `crates/eval` and `crates/dialects/wasm` hold an evaluator and a WebAssembly
+dialect from before Runic was split out of an earlier compiler, kept, not built: they are not
+workspace members, and they are not tested.
 
 ## Building
 

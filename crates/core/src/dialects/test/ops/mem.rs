@@ -61,22 +61,7 @@ impl InferTypeOpInterface for Load {
                 self.result_mut().set_type(pointee);
                 Ok(())
             }
-            None => {
-                // let addr = self.addr();
-                // let addr_value = addr.value();
-                // let addr_ty = addr_value.ty();
-                // Err(context
-                //     .session
-                //     .diagnostics
-                //     .diagnostic(runic_session::diagnostics::Severity::Error)
-                //     .with_message("invalid operand for 'load'")
-                //     .with_primary_label(
-                //         span,
-                //         format!("invalid 'addr' operand, expected pointer, got '{addr_ty}'"),
-                //     )
-                //     .into_report())
-                Ok(())
-            }
+            None => Ok(()),
         }
     }
 }

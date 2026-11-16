@@ -6,6 +6,7 @@ resolver = "3"
 # explicit decision. See `.release/config.toml` for package classification.
 members = [
     "crates/analysis",
+    "crates/compile",
     "crates/core",
     "crates/diagnostics",
     "crates/diagnostics-macros",
@@ -16,17 +17,13 @@ members = [
     "crates/dialects/ub",
     "crates/log",
     "crates/macros",
-    "crates/session",
     "crates/symbol",
     "crates/transform",
     "tools/expect-test",
     "tools/runic-opt",
     # Parked: kept in the tree, not members, and not built.
-    #"crates/compile",
     #"crates/dialects/wasm",
-    #"crates/driver",
     #"crates/eval",
-    #"runic",
 ]
 exclude = [
     "tests/",

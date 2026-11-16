@@ -38,6 +38,10 @@ name = "runic-analysis"
 unit = "compiler"
 
 [[packages]]
+name = "runic-compile"
+unit = "compiler"
+
+[[packages]]
 name = "runic-core"
 unit = "compiler"
 
@@ -79,10 +83,6 @@ unit = "compiler"
 
 [[packages]]
 name = "runic-opt"
-unit = "compiler"
-
-[[packages]]
-name = "runic-session"
 unit = "compiler"
 
 [[packages]]

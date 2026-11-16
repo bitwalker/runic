@@ -1303,6 +1303,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "runic-compile"
+version = "0.1.0"
+dependencies = [
+ "runic-core",
+]
+
+[[package]]
 name = "runic-core"
 version = "0.1.0"
 dependencies = [
@@ -1452,20 +1459,6 @@ dependencies = [
  "runic-log",
  "runic-transform",
  "tempfile",
-]
-
-[[package]]
-name = "runic-session"
-version = "0.1.0"
-dependencies = [
- "clap",
- "inventory",
- "log",
- "runic-core",
- "runic-symbol",
- "smallvec",
- "tempfile",
- "thiserror",
 ]
 
 [[package]]
