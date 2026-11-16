@@ -117,7 +117,9 @@ pub fn render_ir(
         printer.finish().to_string()
     };
     writeln!(out, "{text}").map_err(|error| {
-        Report::msg(format!("could not render checkpoint '{checkpoint}': {error}"))
+        Report::msg(format!(
+            "the IR of checkpoint '{checkpoint}' could not be written out: {error}"
+        ))
     })
 }
 

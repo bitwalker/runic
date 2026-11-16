@@ -1,6 +1,6 @@
 //! The translate step: the frontends run, and the world is verified.
 
-use core::{mem, ops::ControlFlow};
+use core::ops::ControlFlow;
 
 use runic_core::{Report, link_symbol_refs};
 
@@ -24,12 +24,7 @@ impl Session<'_> {
     /// point among its own checkpoints unreached, or to leave IR that does not verify. The
     /// session keeps what was reached whatever the outcome.
     pub fn translate(&mut self, observer: &mut dyn Observer) -> Result<Flow<()>, Report> {
-        // Frontends see the session through `&Session`, so the progress is moved out for the
-        // step and put back on every path.
-        let mut progress = mem::take(&mut self.progress);
-        let result = self.run_translate(&mut progress, observer);
-        self.progress = progress;
-        result
+        self.step("translate", |session, progress| session.run_translate(progress, observer))
     }
 
     fn run_translate(

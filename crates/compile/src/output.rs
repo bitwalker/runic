@@ -87,12 +87,23 @@ pub fn write_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let name = target
         .file_name()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "the path names no file"))?;
-    let mut temporary = name.to_os_string();
     static WRITES: AtomicU64 = AtomicU64::new(0);
-    let write = WRITES.fetch_add(1, Ordering::Relaxed);
-    temporary.push(format!(".runic-{}-{write}.tmp", std::process::id()));
-    let temporary = target.with_file_name(temporary);
-    let written = fs::File::create(&temporary).and_then(|mut file| {
+    // The temporary file is created anew, never opened if something is already there under its
+    // name: a name that is taken is passed over.
+    let mut attempts = 0;
+    let (temporary, created) = loop {
+        let write = WRITES.fetch_add(1, Ordering::Relaxed);
+        let mut temporary = name.to_os_string();
+        temporary.push(format!(".runic-{}-{write}.tmp", std::process::id()));
+        let temporary = target.with_file_name(temporary);
+        match fs::OpenOptions::new().write(true).create_new(true).open(&temporary) {
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists && attempts < 16 => {
+                attempts += 1;
+            }
+            created => break (temporary, created),
+        }
+    };
+    let written = created.and_then(|mut file| {
         file.write_all(bytes)?;
         if let Some(permissions) = permissions {
             file.set_permissions(permissions)?;
@@ -197,7 +208,12 @@ mod tests {
     #[test]
     fn a_device_is_written_directly() {
         write_file(Path::new("/dev/null"), b"discarded").unwrap();
-        assert!(!Path::new("/dev/null.runic-0.tmp").exists());
+        let temporaries = fs::read_dir("/dev")
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("null.runic-"))
+            .count();
+        assert_eq!(temporaries, 0, "no temporary file is made beside a device");
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! The optimization step: the pass pipeline is built, run on the world, and `ir.optimized` is
 //! reached.
 
-use core::{cell::RefCell, fmt, mem, ops::ControlFlow};
+use core::{cell::RefCell, fmt, ops::ControlFlow};
 use std::rc::Rc;
 
 use runic_core::{
@@ -89,12 +89,7 @@ impl Session<'_> {
     /// give a pipeline that does not read, load or anchor on the world, and for a pass or the
     /// verification to fail; the error is returned as it is.
     pub fn optimize(&mut self, observer: &mut dyn Observer) -> Result<Flow<()>, Report> {
-        // The pipeline sees the session through `&Session`, so the progress is moved out for the
-        // step and put back on every path.
-        let mut progress = mem::take(&mut self.progress);
-        let result = self.run_optimize(&mut progress, observer);
-        self.progress = progress;
-        result
+        self.step("optimize", |session, progress| session.run_optimize(progress, observer))
     }
 
     fn run_optimize(
@@ -145,12 +140,7 @@ impl Session<'_> {
     /// backend to fail to add its passes (the error says which backend), for a pass to fail, or
     /// for the verification to fail; the error is returned as it is.
     pub fn lower(&mut self, observer: &mut dyn Observer) -> Result<Flow<()>, Report> {
-        // The pipeline sees the session through `&Session`, so the progress is moved out for the
-        // step and put back on every path.
-        let mut progress = mem::take(&mut self.progress);
-        let result = self.run_lower(&mut progress, observer);
-        self.progress = progress;
-        result
+        self.step("lower", |session, progress| session.run_lower(progress, observer))
     }
 
     fn run_lower(
@@ -937,6 +927,17 @@ mod tests {
         let mut session = translated(compiler, request);
         assert!(session.optimize(&mut ()).is_err());
         assert!(session.emitted().is_empty());
+    }
+
+    #[test]
+    fn no_step_runs_after_a_step_that_failed() {
+        let mut request = request(&["x.a"]);
+        request.pipeline = Some("test-fail".into());
+        let compiler = compiler();
+        let mut session = translated(compiler, request);
+        assert!(session.optimize(&mut ()).is_err());
+        let message = session.lower(&mut ()).unwrap_err().to_string();
+        assert_eq!(message, "the lower step cannot run: an earlier step of the compilation failed");
     }
 
     // The default pipeline on real IR

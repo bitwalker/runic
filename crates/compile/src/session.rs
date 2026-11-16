@@ -185,6 +185,33 @@ impl Compiler {
 }
 
 impl<'c> Session<'c> {
+    /// Runs one step. The stages a step calls see the session through `&Session`, so the progress
+    /// is moved out for the step and put back when it returns. A step that began and failed ends
+    /// the session's work: every later step is an error.
+    fn step(
+        &mut self,
+        name: &str,
+        run: impl FnOnce(&Self, &mut Progress) -> Result<Flow<()>, Report>,
+    ) -> Result<Flow<()>, Report> {
+        let mut progress = core::mem::take(&mut self.progress);
+        let began = |progress: &Progress| {
+            (progress.translated, progress.optimized, progress.lowered, progress.code_emitted)
+        };
+        let before = began(&progress);
+        let result = if progress.failed {
+            Err(Report::msg(format!(
+                "the {name} step cannot run: an earlier step of the compilation failed"
+            )))
+        } else {
+            run(self, &mut progress)
+        };
+        // A step that was refused because it was asked for out of turn did nothing, and the
+        // session goes on; one that began and failed ends it.
+        progress.failed |= result.is_err() && began(&progress) != before;
+        self.progress = progress;
+        result
+    }
+
     /// Ends the session: moves what it did into a [Compilation].
     ///
     /// `outcome` is what the last step that ran answered. A compilation succeeded when that is the

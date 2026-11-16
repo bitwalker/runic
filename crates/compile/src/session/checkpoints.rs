@@ -22,6 +22,8 @@ pub(super) struct Progress {
     pub(super) lowered: bool,
     pub(super) code_emitted: bool,
     pub(super) pass_output: String,
+    /// A step returned an error: no later step runs.
+    pub(super) failed: bool,
 }
 
 /// The stage that is running, and so which checkpoints it may reach.

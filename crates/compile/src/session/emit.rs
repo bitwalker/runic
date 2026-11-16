@@ -1,6 +1,6 @@
 //! The emission step: the backend produces its artifacts from the lowered world.
 
-use core::{mem, ops::ControlFlow};
+use core::ops::ControlFlow;
 
 use runic_core::Report;
 
@@ -26,12 +26,7 @@ impl Session<'_> {
     /// a stop it did not reach, to go on after the checkpoint the compilation stops at, or to
     /// finish without reaching it.
     pub fn emit_code(&mut self, observer: &mut dyn Observer) -> Result<Flow<()>, Report> {
-        // The backend sees the session through `&Session`, so the progress is moved out for the
-        // step and put back on every path.
-        let mut progress = mem::take(&mut self.progress);
-        let result = self.run_emit_code(&mut progress, observer);
-        self.progress = progress;
-        result
+        self.step("emit", |session, progress| session.run_emit_code(progress, observer))
     }
 
     fn run_emit_code(

@@ -16,9 +16,10 @@ impl Session<'_> {
         self.progress.stopped.as_ref()
     }
 
-    /// The checkpoints reached, in the order they were reached, as of the last time the translate
-    /// or optimize step returned. While the step runs the stages see none: they learn of progress from what
-    /// [Checkpoints::reach](crate::Checkpoints::reach) answers.
+    /// The checkpoints reached, in the order they were reached, as of the last time a step
+    /// returned. While a step runs, the stages it calls see none here, and nothing in
+    /// [Session::stopped], [Session::emitted] or [Session::pass_output]: they learn of progress
+    /// from what [Checkpoints::reach](crate::Checkpoints::reach) answers.
     pub fn reached(&self) -> &[CheckpointId] {
         &self.progress.reached
     }
