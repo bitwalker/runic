@@ -26,6 +26,9 @@
 //! or text to print) or an [Exit] (help, or a usage error). The driver's own flags, the `-Z`
 //! settings and the stages' flags are all read there, and each fills a field of the request or of
 //! a stage's options and nothing else.
+//!
+//! `examples/toyc.rs` is a whole compiler built on the driver: a few lines that name its stages and
+//! hand the compiler to [main_with]. The tests in `tests/toyc.rs` run it through [Driver::run].
 #![feature(panic_can_unwind)]
 #![deny(warnings)]
 

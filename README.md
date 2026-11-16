@@ -106,6 +106,90 @@ With `--print-generic`, the same result is printed in the generic form.
 Records are written to standard error. A malformed `RUNIC_TRACE_FILTER` or `RUNIC_TRACE_TIMING`
 is an error, and the tool runs nothing.
 
+## Building a compiler on Runic
+
+A compiler built on Runic supplies three things: its frontends, its backends and a `main`. A
+frontend reads inputs of one language and builds IR. A backend lowers IR for the targets it
+supports and writes the result. The rest comes from the workspace: the IR, the passes, the
+harness in `runic-compile` that routes a compilation through the stages, and the command line
+in `runic-driver`. The driver gives the compiler the flags of a compiler (`--target`, `--emit`,
+`--stop-after`, `-O`, `-o`, `--print`, `--help`, `--version`, `-Z`) and the flags each of its stages
+declares, and turns the outcome of a compilation into an exit code: 0 for success, 1 for a failed
+compilation, 2 for a command line that is not valid, and 101 for a panic in a stage.
+
+`crates/driver/examples/toyc.rs` is a whole compiler. It compiles `calc`, a toy language, and
+the textual IR, for two toy stack machines. Its text:
+
+```rust
+use std::process::ExitCode;
+
+use runic_compile::{
+    Compiler, IrFrontend,
+    testing::{AltVmBackend, CalcFrontend, StackVmBackend},
+};
+use runic_driver::{Driver, EXIT_INTERNAL};
+
+fn main() -> ExitCode {
+    let compiler = Compiler::builder()
+        .frontend(CalcFrontend)
+        .frontend(IrFrontend)
+        .backend(StackVmBackend)
+        .backend(AltVmBackend)
+        .default_target("stackvm-unknown-tiny")
+        .build();
+    let compiler = match compiler {
+        Ok(compiler) => compiler,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return ExitCode::from(EXIT_INTERNAL);
+        }
+    };
+    let driver = Driver::new(&compiler)
+        .name("toyc")
+        .version(env!("CARGO_PKG_VERSION"))
+        .about("Compiles calc, a toy language, for two toy stack machines")
+        .build();
+    match driver {
+        Ok(driver) => runic_driver::main_with(&driver),
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::from(EXIT_INTERNAL)
+        }
+    }
+}
+```
+
+Three command lines:
+
+```sh
+# Compile f.calc for the default target (stackvm-unknown-tiny). The listing goes to f.svm.
+toyc f.calc
+
+# Stop after the optimized IR and print it to standard output.
+toyc f.calc --stop-after ir -o -
+
+# Both machines support stackvm-unknown-unknown, so the command line names one. The altvm
+# output goes to f.alt in the directory out, which is created if it is not there.
+toyc f.calc --target stackvm-unknown-unknown --backend altvm --output-dir out
+```
+
+`toyc --print targets`, `--print backends`, `--print frontends` and `--print checkpoints` list what
+the compiler has. `toyc --help` groups the flags of each stage under its own heading, such as
+`stackvm backend options`.
+
+A stage declares its options with a struct that derives `clap::Args`, and returns it from
+`Frontend::options` or `Backend::options` as an `OptionsDecl`. Each field is a long flag. A stage
+cannot declare a short flag, a positional argument or a required argument. A flag only fills a
+field of the struct, so everything the command line says can be said in code. The driver prefixes
+the flags of a backend with the backend's name: the field `comments` of the backend `stackvm` is
+`--stackvm-comments`. The flags of a frontend have no prefix, unless the driver is built with
+`DriverBuilder::prefix_frontend`.
+
+An option that is not stable goes in a second struct, given with `OptionsDecl::unstable`. It is
+not a flag. A user sets it with `-Z NAME[=VALUE]`, where a backend's setting has the backend's name
+as a prefix: the field `keep_subtractions` of `stackvm` is `-Z stackvm-keep-subtractions`.
+`-Z help` lists every unstable setting of the driver and of the stages.
+
 ## Testing
 
 There are two test suites, the Rust tests and the lit suite, and unit tests of the Python scripts
