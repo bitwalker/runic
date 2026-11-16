@@ -16,7 +16,10 @@ use smallvec::SmallVec;
 
 pub(crate) use self::quoting::push_quoted;
 pub use self::{
-    link::link_symbol_refs,
+    link::{
+        EffectiveLinkName, LINK_NAME, LinkedSymbol, SECTION, default_link_name,
+        effective_link_name, link_name, link_symbol_refs, section, verify_link_attributes,
+    },
     name::*,
     path::*,
     quoting::unescape_quoted,

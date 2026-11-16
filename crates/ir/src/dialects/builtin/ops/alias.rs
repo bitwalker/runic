@@ -175,6 +175,8 @@ impl crate::Verify<dyn CallableSymbol> for FunctionAlias {
     fn verify(&self, _context: &crate::Context) -> Result<(), crate::Report> {
         use crate::Spanned;
 
+        crate::verify_link_attributes(self.as_operation())?;
+
         let span = self.as_operation().span();
         let callee = self
             .as_operation()

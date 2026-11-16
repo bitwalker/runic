@@ -1,8 +1,9 @@
 use alloc::format;
 
 use crate::{
-    AsSymbolRef, Context, IdentAttr, OpParser, OpPrinter, Operation, Report, Spanned, Symbol,
-    SymbolName, SymbolRef, SymbolUseList, UnsafeIntrusiveEntityRef, Usable, Value, Visibility,
+    AsSymbolRef, Context, IdentAttr, LinkedSymbol, OpParser, OpPrinter, Operation, Report, Spanned,
+    Symbol, SymbolName, SymbolRef, SymbolUseList, UnsafeIntrusiveEntityRef, Usable, Value,
+    Visibility,
     derive::{EffectOpInterface, operation},
     diagnostics::report,
     dialects::builtin::{
@@ -39,7 +40,7 @@ pub type GlobalVariableRef = UnsafeIntrusiveEntityRef<GlobalVariable>;
         NoTerminator,
         IsolatedFromAbove,
     ),
-    implements(Symbol, OpPrinter)
+    implements(Symbol, OpPrinter, LinkedSymbol)
 )]
 pub struct GlobalVariable {
     #[attr]
@@ -108,6 +109,16 @@ impl Symbol for GlobalVariable {
     #[inline]
     fn is_declaration(&self) -> bool {
         self.initializer().is_empty()
+    }
+}
+
+impl LinkedSymbol for GlobalVariable {}
+
+/// The `link_name` and `section` entries of the dictionary are well formed (see
+/// [verify_link_attributes](crate::verify_link_attributes)).
+impl crate::Verify<dyn LinkedSymbol> for GlobalVariable {
+    fn verify(&self, _context: &Context) -> Result<(), Report> {
+        crate::verify_link_attributes(&self.op)
     }
 }
 

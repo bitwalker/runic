@@ -1,0 +1,29 @@
+// RUN: runic-opt %s | filecheck %s
+// RUN: runic-opt %s | runic-opt - --verify-roundtrip | filecheck %s
+// RUN: runic-opt %s -p 'canonicalizer,cse,sccp,canonicalizer,dce' | filecheck %s
+// RUN: runic-opt %s -p 'canonicalizer,cse,sccp,canonicalizer,dce' | runic-opt - --verify-roundtrip | filecheck %s
+
+// The attributes `link_name` and `section` are ordinary entries of an operation's dictionary with a
+// fixed meaning: the name a function, an alias or a global has for a linker or a host, and the
+// data section a global is placed in. They are read back as they were written, and the passes of
+// the pipeline leave them where they are. The later RUN lines run the pipeline, and read what it
+// prints back.
+builtin.module public @builtin_link_name {
+    // CHECK: builtin.function public extern("C") @add(
+    // CHECK: } attributes { link_name = #builtin.string<"erlang:+/2"> };
+    builtin.function public extern("C") @add(%a: i32, %b: i32) -> i32 {
+        builtin.ret %a : (i32);
+    } attributes { link_name = "erlang:+/2" };
+
+    // CHECK: builtin.function public extern("C") @declared()
+    // CHECK-SAME: attributes { link_name = #builtin.string<"host:declared/0"> };
+    builtin.function public extern("C") @declared() attributes { link_name = "host:declared/0" };
+
+    // CHECK: builtin.function_alias public @alias -> @add
+    // CHECK-SAME: attributes { link_name = #builtin.string<"erlang:plus/2"> };
+    builtin.function_alias public @alias -> @add attributes { link_name = "erlang:plus/2" };
+
+    // CHECK: builtin.global_variable public @table : i32
+    // CHECK-SAME: attributes { link_name = #builtin.string<"table_0">, section = #builtin.string<".data.tables"> };
+    builtin.global_variable public @table : i32 attributes { link_name = "table_0", section = ".data.tables" };
+};

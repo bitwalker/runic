@@ -1,0 +1,50 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// `link_name` is a non-empty string on a function, an alias or a global variable; `section` is a
+// non-empty string on a global variable, and a function or an alias has none. That link names are
+// unique is for a backend to check, and two symbols may share one here.
+
+builtin.module public @valid {
+    builtin.function public extern("C") @f() attributes { link_name = "same" };
+    builtin.function public extern("C") @g() attributes { link_name = "same" };
+    builtin.function_alias public @a -> @f attributes { link_name = "same" };
+    builtin.global_variable public @v : i32 attributes { link_name = "same", section = ".data.x" };
+};
+
+// -----
+
+builtin.function public extern("C") @not_a_string() attributes { link_name = #builtin.i32<1> }; // expected-error {{link_name must be a non-empty string, but this is #builtin.i32<1>}}
+
+// -----
+
+builtin.function public extern("C") @empty() attributes { link_name = "" }; // expected-error {{link_name must be a non-empty string, but this is #builtin.string<"">}}
+
+// -----
+
+builtin.module public @alias {
+    builtin.function public extern("C") @f();
+    builtin.function_alias public @a -> @f attributes { link_name = #builtin.i32<1> }; // expected-error {{link_name must be a non-empty string, but this is #builtin.i32<1>}}
+};
+
+// -----
+
+builtin.global_variable public @g : i32 attributes { link_name = "" }; // expected-error {{link_name must be a non-empty string, but this is #builtin.string<"">}}
+
+// -----
+
+builtin.global_variable public @g : i32 attributes { section = "" }; // expected-error {{section must be a non-empty string, but this is #builtin.string<"">}}
+
+// -----
+
+builtin.global_variable public @g : i32 attributes { section = #builtin.i32<2> }; // expected-error {{section must be a non-empty string, but this is #builtin.i32<2>}}
+
+// -----
+
+builtin.function public extern("C") @f() attributes { section = ".text.x" }; // expected-error {{only a global variable has a section, not builtin.function}}
+
+// -----
+
+builtin.module public @alias_section {
+    builtin.function public extern("C") @f();
+    builtin.function_alias public @a -> @f attributes { section = ".text.x" }; // expected-error {{only a global variable has a section, not builtin.function_alias}}
+};

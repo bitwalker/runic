@@ -1,10 +1,183 @@
-use alloc::vec::Vec;
+//! What a symbol is called, and where it is placed, outside the IR.
+//!
+//! Two entries of an operation's attribute dictionary have a fixed meaning: [LINK_NAME] and
+//! [SECTION]. They are written as any attribute is, `attributes { link_name = "erlang:+/2" }`, and
+//! travel with the operation through cloning, printing, parsing and the passes. A backend that
+//! produces something a linker or a host reads takes the name it exports a function, an alias or a
+//! global under from [effective_link_name], and the data section a global's storage is placed in
+//! from [section], so that all globals of one section can be collected together.
+//!
+//! Only the shape of the entries is verified (see [verify_link_attributes]): a link name is a
+//! non-empty string, and only a global variable has a section. That link names are unique is a
+//! property of a link, not of one module, and is for a backend to check.
+//!
+//! This module also links symbol references that were built apart (see [link_symbol_refs]).
 
-use super::{SymbolRef, SymbolUse};
-use crate::{
-    OperationRef, UnsafeIntrusiveEntityRef, WalkResult,
-    dialects::builtin::attributes::SymbolRefAttr,
+use alloc::{
+    format,
+    string::{String, ToString},
+    vec::Vec,
 };
+
+use super::{SymbolNameComponent, SymbolRef, SymbolUse};
+use crate::{
+    CompactString, Operation, OperationRef, Report, Spanned, UnsafeIntrusiveEntityRef, WalkResult,
+    diagnostics::report,
+    dialects::builtin::attributes::{StringAttr, SymbolRefAttr},
+};
+
+/// The name of the attribute that gives a symbol the name it has for a linker or a host.
+///
+/// When present on a function, a function alias or a global variable, its value is a non-empty
+/// string that replaces the default name, the symbol's absolute path (see [default_link_name]).
+pub const LINK_NAME: &str = "link_name";
+
+/// The name of the attribute that gives a global variable the data section its storage is placed in.
+///
+/// Its value is a non-empty string. A linker can collect all globals of one section together.
+/// Only a global variable may have it.
+pub const SECTION: &str = "section";
+
+/// The string value of the entry `name` of the dictionary of `op`, or `None` when `op` has no
+/// such entry or the entry is not a string attribute.
+fn string_entry(op: &Operation, name: &str) -> Option<CompactString> {
+    let handle = op.get_attribute(crate::interner::Symbol::intern(name))?;
+    let value = handle.borrow();
+    value
+        .downcast_ref::<StringAttr>()
+        .map(|string| CompactString::from(string.as_str()))
+}
+
+/// A symbol whose dictionary may hold the `link_name` entry, and the `section` entry if it is a
+/// global variable.
+///
+/// It is a marker that makes an operation's verifier check those entries (see
+/// [verify_link_attributes]); a function and an alias, which have a verifier of their own, call
+/// that function from it instead.
+pub trait LinkedSymbol: super::Symbol {}
+
+/// The value of the `link_name` entry of the dictionary of `op`: the name the symbol has for a
+/// linker or a host. It is `None` when `op` has no such entry or the entry is not a string.
+///
+/// The string is a copy of the attribute's (a short name is copied without allocating).
+pub fn link_name(op: &Operation) -> Option<CompactString> {
+    string_entry(op, LINK_NAME)
+}
+
+/// The value of the `section` entry of the dictionary of `op`: the data section the storage of a
+/// global variable is placed in. It is `None` when `op` has no such entry or the entry is not a
+/// string.
+///
+/// The string is a copy of the attribute's (a short name is copied without allocating).
+pub fn section(op: &Operation) -> Option<CompactString> {
+    string_entry(op, SECTION)
+}
+
+/// The name `op` has for a linker or a host when it has no `link_name`: its absolute path, the
+/// names of the symbol tables that enclose it and its own joined by `::`, with no leading `::` and
+/// no quoting (`lib::math::add` for `::@lib::@math::@add`).
+///
+/// It is `None` when `op` is not a symbol, and when it is a symbol that is neither a symbol table
+/// nor in one: a symbol that is not attached to a root has no path to name it by.
+///
+/// The ancestors of `op` are borrowed to find the path, as [Symbol::path](super::Symbol::path) borrows them.
+pub fn default_link_name(op: &Operation) -> Option<String> {
+    let symbol = op.as_symbol()?;
+    if op.parent_op().is_none() && !op.implements::<dyn super::SymbolTable>() {
+        return None;
+    }
+    let mut name = String::new();
+    for component in symbol.path().components() {
+        let segment = match component {
+            SymbolNameComponent::Root => continue,
+            SymbolNameComponent::Component(segment) | SymbolNameComponent::Leaf(segment) => segment,
+        };
+        if !name.is_empty() {
+            name.push_str("::");
+        }
+        name.push_str(segment.as_str());
+    }
+    Some(name)
+}
+
+/// The name a symbol has for a linker or a host, as [effective_link_name] finds it: the value of
+/// the `link_name` entry, or the default, which is built. It dereferences to the string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EffectiveLinkName {
+    /// The value of the `link_name` entry.
+    Declared(CompactString),
+    /// The absolute path of the symbol (see [default_link_name]).
+    Default(String),
+}
+
+impl core::ops::Deref for EffectiveLinkName {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        match self {
+            Self::Declared(name) => name,
+            Self::Default(name) => name,
+        }
+    }
+}
+
+/// The name `op` has for a linker or a host: its `link_name` when it has one, else its
+/// [default_link_name].
+pub fn effective_link_name(op: &Operation) -> Option<EffectiveLinkName> {
+    match link_name(op) {
+        Some(name) => Some(EffectiveLinkName::Declared(name)),
+        None => default_link_name(op).map(EffectiveLinkName::Default),
+    }
+}
+
+/// The text form of the attribute `attr` of `op`: `#builtin.i32<1>`.
+fn print_attribute(op: &Operation, attr: &crate::AttributeRef) -> String {
+    let flags = Default::default();
+    let mut printer = crate::print::AsmPrinter::root(op.context_rc(), &flags);
+    printer.print_attribute_value(&*attr.borrow());
+    printer.finish().to_string()
+}
+
+/// Verifies the `link_name` and `section` entries of the dictionary of `op`, which is a
+/// `builtin.function`, a `builtin.function_alias` or a `builtin.global_variable` (`op`'s name is
+/// the one the errors report).
+///
+/// A `link_name` is a string that is not empty, and a `section` is a string that is not empty on a
+/// global variable; a function or an alias has no section. The error is an invalid operation whose
+/// primary label says what was found.
+pub fn verify_link_attributes(op: &Operation) -> Result<(), Report> {
+    let invalid = |label: String| {
+        report!(
+            message: (format!("invalid operation {}", op.name())),
+            labels: [primary(op.span(), label)],
+        )
+    };
+    let non_empty_string = |name: &str| -> Option<String> {
+        let attr = op.get_attribute(crate::interner::Symbol::intern(name))?;
+        match string_entry(op, name) {
+            Some(value) if !value.is_empty() => None,
+            _ => Some(format!(
+                "{name} must be a non-empty string, but this is {}",
+                print_attribute(op, &attr)
+            )),
+        }
+    };
+    if let Some(label) = non_empty_string(LINK_NAME) {
+        return Err(invalid(label));
+    }
+    if op.has_attribute(crate::interner::Symbol::intern(SECTION)) {
+        if op.downcast_ref::<crate::dialects::builtin::GlobalVariable>().is_none() {
+            return Err(invalid(format!(
+                "only a global variable has a section, not {}",
+                op.name()
+            )));
+        }
+        if let Some(label) = non_empty_string(SECTION) {
+            return Err(invalid(label));
+        }
+    }
+    Ok(())
+}
 
 /// Links every symbol reference under `root` that is linked to no symbol to the symbol its path
 /// names, and returns how many it linked.
@@ -98,7 +271,12 @@ pub fn link_symbol_refs(root: OperationRef) -> usize {
 mod tests {
     extern crate std;
 
-    use alloc::{format, rc::Rc, string::ToString};
+    use alloc::{
+        format,
+        rc::Rc,
+        string::{String, ToString},
+        vec::Vec,
+    };
 
     use super::*;
     use crate::{
@@ -283,5 +461,208 @@ mod tests {
         let error = owner.borrow().as_operation().verify().expect_err("the copy is reported");
         let text = crate::testing::text::describe(&error);
         assert!(text.contains("shares the use of another reference"), "{text}");
+    }
+
+    /// Parses `source` without verifying it, and returns the operations named `name` in the order
+    /// they appear.
+    fn ops_named(context: &Rc<Context>, source: &str, name: &str) -> Vec<OperationRef> {
+        let root = parse(context, "link.runic", source);
+        let mut found = Vec::new();
+        root.borrow().prewalk_all(|op| {
+            if op.name().to_string() == name {
+                found.push(op.as_operation_ref());
+            }
+        });
+        found
+    }
+
+    const THREE: &str = "builtin.world { builtin.module public @m { builtin.function public \
+                         extern(\"C\") @plain() { builtin.ret; }; builtin.function public \
+                         extern(\"C\") @named() attributes { link_name = \"erlang:+/2\" }; \
+                         builtin.function_alias public @alias -> @named attributes { link_name = \
+                         \"other\" }; builtin.global_variable public @g : ptr<i32> attributes { \
+                         link_name = \"g_name\", section = \".data.x\" }; }; };";
+
+    fn text_of(
+        op: OperationRef,
+        getter: fn(&Operation) -> Option<CompactString>,
+    ) -> Option<String> {
+        let op = op.borrow();
+        getter(&op).map(|name| String::from(&*name))
+    }
+
+    #[test]
+    fn the_link_name_and_section_of_an_operation_are_read_from_its_dictionary() {
+        let context = Rc::new(Context::default());
+        let functions = ops_named(&context, THREE, "builtin.function");
+        assert_eq!(text_of(functions[0], link_name), None);
+        assert_eq!(text_of(functions[1], link_name).as_deref(), Some("erlang:+/2"));
+        assert_eq!(text_of(functions[1], section), None);
+        let aliases = ops_named(&context, THREE, "builtin.function_alias");
+        assert_eq!(text_of(aliases[0], link_name).as_deref(), Some("other"));
+        let globals = ops_named(&context, THREE, "builtin.global_variable");
+        assert_eq!(text_of(globals[0], link_name).as_deref(), Some("g_name"));
+        assert_eq!(text_of(globals[0], section).as_deref(), Some(".data.x"));
+    }
+
+    #[test]
+    fn an_entry_that_is_not_a_string_has_no_link_name() {
+        let context = Rc::new(Context::default());
+        let source = "builtin.function public extern(\"C\") @f() attributes { link_name = \
+                      #builtin.i32<1> };";
+        let functions = ops_named(&context, source, "builtin.function");
+        assert_eq!(text_of(functions[0], link_name), None);
+    }
+
+    fn default_of(context: &Rc<Context>, source: &str, name: &str, index: usize) -> Option<String> {
+        let ops = ops_named(context, source, name);
+        default_link_name(&ops[index].borrow())
+    }
+
+    #[test]
+    fn the_default_link_name_is_the_absolute_path_without_quoting() {
+        let context = Rc::new(Context::default());
+        let source = "builtin.world { builtin.module public @lib { builtin.module public @math { \
+                      builtin.function public extern(\"C\") @add(); builtin.function public \
+                      extern(\"C\") @\"a b::c\"(); }; }; builtin.component public @acme::@a { \
+                      builtin.function public extern(\"C\") @run(); }; };";
+        assert_eq!(
+            default_of(&context, source, "builtin.function", 0).as_deref(),
+            Some("lib::math::add")
+        );
+        assert_eq!(
+            default_of(&context, source, "builtin.function", 1).as_deref(),
+            Some("lib::math::a b::c")
+        );
+        assert_eq!(
+            default_of(&context, source, "builtin.function", 2).as_deref(),
+            Some("acme::a::run")
+        );
+        assert_eq!(
+            default_of(&context, source, "builtin.component", 0).as_deref(),
+            Some("acme::a")
+        );
+    }
+
+    #[test]
+    fn an_operation_that_is_not_a_symbol_has_no_default_link_name() {
+        let context = Rc::new(Context::default());
+        assert_eq!(default_of(&context, THREE, "builtin.ret", 0), None);
+    }
+
+    #[test]
+    fn the_effective_link_name_is_the_link_name_or_else_the_default() {
+        let context = Rc::new(Context::default());
+        let functions = ops_named(&context, THREE, "builtin.function");
+        let named = functions[1].borrow();
+        let name = effective_link_name(&named).unwrap();
+        assert!(matches!(name, EffectiveLinkName::Declared(_)));
+        assert_eq!(&*name, "erlang:+/2");
+        let plain = functions[0].borrow();
+        let name = effective_link_name(&plain).unwrap();
+        assert!(matches!(name, EffectiveLinkName::Default(_)));
+        assert_eq!(&*name, "m::plain");
+    }
+
+    fn verify_source(source: &str) -> Result<(), std::string::String> {
+        let context = Rc::new(Context::default());
+        let config = ParserConfig::new(context);
+        parse::parse_any(config, "link.runic", source)
+            .into_result()
+            .map(|_| ())
+            .map_err(|report| format!("{report:?}"))
+    }
+
+    fn rejected(source: &str, message: &str) {
+        let error = verify_source(source).expect_err("the entry is invalid");
+        assert!(error.contains(message), "expected {message:?} in {error}");
+    }
+
+    #[test]
+    fn well_formed_entries_verify() {
+        verify_source(THREE).unwrap();
+    }
+
+    #[test]
+    fn a_link_name_that_is_not_a_string_is_rejected_on_each_operation() {
+        let attrs = "attributes { link_name = #builtin.i32<1> }";
+        let message = "link_name must be a non-empty string, but this is #builtin.i32<1>";
+        rejected(&format!("builtin.function public extern(\"C\") @f() {attrs};"), message);
+        rejected(
+            &format!(
+                "builtin.module public @m {{ builtin.function public extern(\"C\") @f(); \
+                 builtin.function_alias public @a -> @f {attrs}; }};"
+            ),
+            message,
+        );
+        rejected(&format!("builtin.global_variable public @g : ptr<i32> {attrs};"), message);
+    }
+
+    #[test]
+    fn an_empty_link_name_is_rejected_on_each_operation() {
+        let attrs = "attributes { link_name = \"\" }";
+        let message = "link_name must be a non-empty string, but this is #builtin.string<\"\">";
+        rejected(&format!("builtin.function public extern(\"C\") @f() {attrs};"), message);
+        rejected(
+            &format!(
+                "builtin.module public @m {{ builtin.function public extern(\"C\") @f(); \
+                 builtin.function_alias public @a -> @f {attrs}; }};"
+            ),
+            message,
+        );
+        rejected(&format!("builtin.global_variable public @g : ptr<i32> {attrs};"), message);
+    }
+
+    #[test]
+    fn a_section_that_is_not_a_non_empty_string_is_rejected_on_a_global() {
+        rejected(
+            "builtin.global_variable public @g : ptr<i32> attributes { section = \"\" };",
+            "section must be a non-empty string, but this is #builtin.string<\"\">",
+        );
+        rejected(
+            "builtin.global_variable public @g : ptr<i32> attributes { section = #builtin.i32<2> \
+             };",
+            "section must be a non-empty string, but this is #builtin.i32<2>",
+        );
+    }
+
+    #[test]
+    fn a_section_on_a_function_or_an_alias_is_rejected() {
+        let message = "only a global variable has a section, not builtin.function";
+        rejected(
+            "builtin.function public extern(\"C\") @f() attributes { section = \"s\" };",
+            message,
+        );
+        rejected(
+            "builtin.module public @m { builtin.function public extern(\"C\") @f(); \
+             builtin.function_alias public @a -> @f attributes { section = \"s\" }; };",
+            "only a global variable has a section, not builtin.function_alias",
+        );
+    }
+
+    #[test]
+    fn the_entries_survive_the_text_round_trip() {
+        let context = Rc::new(Context::default());
+        let root = parse(&context, "link.runic", THREE);
+        let printed = root.borrow().to_string();
+        for entry in [
+            "link_name = #builtin.string<\"erlang:+/2\">",
+            "link_name = #builtin.string<\"g_name\">",
+            "section = #builtin.string<\".data.x\">",
+        ] {
+            assert!(printed.contains(entry), "{entry} in {printed}");
+        }
+        let again = parse(&context, "again.runic", &printed);
+        assert_eq!(again.borrow().to_string(), printed);
+    }
+
+    #[test]
+    fn a_cloned_entry_keeps_its_string() {
+        let context = Rc::new(Context::default());
+        let functions = ops_named(&context, THREE, "builtin.function");
+        let entry = functions[1].borrow().get_attribute(LINK_NAME).unwrap();
+        let copy = entry.borrow().dyn_clone();
+        let copy = copy.borrow();
+        assert_eq!(copy.downcast_ref::<StringAttr>().unwrap().as_str(), "erlang:+/2");
     }
 }

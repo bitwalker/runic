@@ -537,6 +537,8 @@ impl crate::Verify<dyn CallableSymbol> for Function {
     fn verify(&self, _context: &crate::Context) -> Result<(), crate::Report> {
         use crate::{Spanned, ValueRef, WalkResult, diagnostics::report};
 
+        crate::verify_link_attributes(self.as_operation())?;
+
         let span = self.as_operation().span();
         let invalid = |label: String| {
             report!(
