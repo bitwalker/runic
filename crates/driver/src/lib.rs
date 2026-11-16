@@ -18,14 +18,21 @@
 //!
 //! The command is checked when it is built, and each failure names what was declared and by whom.
 //!
+//! [Driver::run] runs a command line: it starts the compilation on a thread with a large stack,
+//! renders what it printed and the diagnostics it reported to the streams it is given, and answers
+//! with an exit code. [main] is a compiler's whole `main`.
+//!
 //! [Driver::request] reads a command line and answers with an [Invocation] (a compilation to run,
 //! or text to print) or an [Exit] (help, or a usage error). The driver's own flags, the `-Z`
 //! settings and the stages' flags are all read there, and each fills a field of the request or of
 //! a stage's options and nothing else.
+#![feature(panic_can_unwind)]
 #![deny(warnings)]
 
 mod command;
+mod render;
 mod request;
+mod run;
 mod unstable;
 
 use std::collections::HashMap;
@@ -37,6 +44,7 @@ use runic_ir::Report;
 pub use self::{
     command::ColorChoice,
     request::{Exit, Invocation, RenderOptions},
+    run::{EXIT_FAILURE, EXIT_INTERNAL, EXIT_USAGE, main, main_with},
 };
 use self::{
     command::{Flags, PrintKind, UNSTABLE_ARG},

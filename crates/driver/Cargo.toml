@@ -19,8 +19,11 @@ doctest = false
 [dependencies]
 # `string`: owned strings for the names of generated flags.
 clap = { workspace = true, features = ["string"] }
+log.workspace = true
 runic-compile.workspace = true
 runic-ir.workspace = true
+runic-log.workspace = true
 
 [dev-dependencies]
 runic-compile = { workspace = true, features = ["testing"] }
+tempfile.workspace = true

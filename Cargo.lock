@@ -1394,8 +1394,11 @@ name = "runic-driver"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "log",
  "runic-compile",
  "runic-ir",
+ "runic-log",
+ "tempfile",
 ]
 
 [[package]]
