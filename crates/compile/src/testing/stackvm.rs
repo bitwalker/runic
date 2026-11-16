@@ -23,7 +23,8 @@ use runic_ir::{
 };
 
 use crate::{
-    Artifact, Backend, CheckpointDecl, CheckpointId, Checkpoints, Flow, Render, Session, Triple,
+    Artifact, Backend, CheckpointDecl, CheckpointId, Checkpoints, Flow, OptionsDecl, Render,
+    Session, Triple,
 };
 
 const UNKNOWN: &str = "stackvm-unknown-unknown";
@@ -31,6 +32,9 @@ const TINY: &str = "stackvm-unknown-tiny";
 
 /// The name of the lowering pass of the `stackvm` backend, as pipeline text writes it.
 const LEGALIZE: &str = "stackvm-legalize";
+
+/// The option of `stackvm-legalize` that leaves subtractions alone.
+const KEEP_SUBTRACTIONS: &str = "keep-subtractions";
 
 const ASM: CheckpointId = CheckpointId::new("stackvm.asm");
 const OUT: CheckpointId = CheckpointId::new("altvm.out");
@@ -71,6 +75,23 @@ fn render_listing(
     })
 }
 
+/// What the options of the `stackvm` backend say.
+#[derive(clap::Args, Default, Debug, Clone, PartialEq)]
+pub struct StackVmOptions {
+    /// Write a comment line before each function in the listing: `; NAME: N parameter(s)`.
+    #[arg(long)]
+    pub comments: bool,
+}
+
+/// What the unstable options of the `stackvm` backend say.
+#[derive(clap::Args, Default, Debug, Clone, PartialEq)]
+pub struct StackVmUnstable {
+    /// Leave subtractions as they are, instead of rewriting the subtraction of a constant as the
+    /// addition of its negation.
+    #[arg(long)]
+    pub keep_subtractions: bool,
+}
+
 /// The backend for the `stackvm` machine.
 ///
 /// It lowers the world with the pass `stackvm-legalize`, which rejects what the machine cannot run
@@ -86,6 +107,9 @@ fn render_listing(
 ///   add
 ///   ret
 /// ```
+///
+/// [StackVmOptions] add a comment line before each function (`; demo::inc: 1 parameter`), and the
+/// unstable [StackVmUnstable] keep subtractions from being rewritten.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct StackVmBackend;
 
@@ -113,21 +137,33 @@ impl Backend for StackVmBackend {
         STACKVM_CHECKPOINTS
     }
 
-    fn add_passes(&self, _session: &Session<'_>, passes: &mut OpPassManager) -> Result<(), Report> {
+    fn options(&self) -> Option<OptionsDecl> {
+        Some(OptionsDecl::of::<StackVmOptions>().unstable::<StackVmUnstable>())
+    }
+
+    fn add_passes(&self, session: &Session<'_>, passes: &mut OpPassManager) -> Result<(), Report> {
         let info = PassInfo::lookup(LEGALIZE)
             .ok_or_else(|| Report::msg(format!("the pass '{LEGALIZE}' is not registered")))?;
-        info.add_to_pipeline(passes, &PassOptions::new())
+        let mut options = PassOptions::new();
+        if session
+            .options::<StackVmUnstable>()
+            .is_some_and(|unstable| unstable.keep_subtractions)
+        {
+            options.push(KEEP_SUBTRACTIONS, None::<&str>);
+        }
+        info.add_to_pipeline(passes, &options)
     }
 
     fn emit(
         &self,
-        _session: &Session<'_>,
+        session: &Session<'_>,
         world: WorldRef,
         checkpoints: &mut Checkpoints<'_>,
     ) -> Result<Flow<()>, Report> {
+        let comments = session.options::<StackVmOptions>().is_some_and(|options| options.comments);
         let mut listing = String::new();
         for function in functions(world) {
-            list(&function, &mut listing)?;
+            list(&function, comments, &mut listing)?;
         }
         Ok(match checkpoints.reach(ASM, listing)? {
             Flow::Continue(_) => Flow::Continue(()),
@@ -221,10 +257,19 @@ fn qualified_name(op: &Operation) -> String {
 }
 
 /// Appends the lines of the listing of `function`.
-fn list(function: &OperationRef, listing: &mut String) -> Result<(), Report> {
+fn list(function: &OperationRef, comments: bool, listing: &mut String) -> Result<(), Report> {
     let function = function.borrow();
     let name = qualified_name(&function);
     let function = function.downcast_ref::<Function>().expect("only functions are listed");
+    if comments {
+        let parameters = function.get_signature().arity();
+        let noun = if parameters == 1 {
+            "parameter"
+        } else {
+            "parameters"
+        };
+        listing.push_str(&format!("; {name}: {parameters} {noun}\n"));
+    }
     listing.push_str(&format!("{name}:\n"));
     let entry = function.entry_block();
     let entry = entry.borrow();
@@ -315,9 +360,12 @@ fn constant_value(op: &Operation) -> Option<i128> {
 }
 
 /// `stackvm-legalize`: fails on an operation in a function that the machine cannot run, and
-/// rewrites a subtraction of a constant into the addition of the negated constant.
+/// rewrites a subtraction of a constant into the addition of the negated constant, unless its
+/// option `keep-subtractions` is given.
 #[derive(Default)]
-struct Legalize;
+struct Legalize {
+    keep_subtractions: bool,
+}
 
 runic_ir::inventory::submit!(PassInfo::new::<Legalize>(
     LEGALIZE,
@@ -344,6 +392,27 @@ impl Pass for Legalize {
         true
     }
 
+    fn initialize_options(&mut self, options: &PassOptions) -> Result<(), Report> {
+        options.check_keys(LEGALIZE, &[KEEP_SUBTRACTIONS])?;
+        if let Some(value) = options.get(KEEP_SUBTRACTIONS) {
+            if value.is_some() {
+                return Err(Report::msg(format!(
+                    "option '{KEEP_SUBTRACTIONS}' of pass '{LEGALIZE}' takes no value"
+                )));
+            }
+            self.keep_subtractions = true;
+        }
+        Ok(())
+    }
+
+    fn print_as_textual_pipeline(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(LEGALIZE)?;
+        if self.keep_subtractions {
+            write!(f, "{{{KEEP_SUBTRACTIONS}}}")?;
+        }
+        Ok(())
+    }
+
     fn run_on_operation(
         &mut self,
         op: EntityMut<'_, Operation>,
@@ -365,7 +434,7 @@ impl Pass for Legalize {
             }
             let name = qualified_name(op);
             function.body().as_region_ref().borrow().prewalk_all(|op: &Operation| {
-                if op.is::<Sub>() {
+                if op.is::<Sub>() && !self.keep_subtractions {
                     subtractions.push(op.as_operation_ref());
                 }
                 let runs = op.is::<Constant>()
@@ -461,6 +530,6 @@ fn negate_constant_subtraction(
 
 impl fmt::Debug for Legalize {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(LEGALIZE)
+        self.print_as_textual_pipeline(f)
     }
 }

@@ -1,6 +1,6 @@
 use runic_ir::{DataLayoutSpec, Report, dialects::builtin::WorldRef, pass::OpPassManager};
 
-use crate::{CheckpointDecl, Checkpoints, Flow, Session, Triple};
+use crate::{CheckpointDecl, Checkpoints, Flow, OptionsDecl, Session, Triple};
 
 /// A code generator a compiler offers: it says what it is called, which targets it supports, how
 /// data is laid out on each, and which checkpoints it reaches.
@@ -49,4 +49,17 @@ pub trait Backend: Send + Sync {
         world: WorldRef,
         checkpoints: &mut Checkpoints<'_>,
     ) -> Result<Flow<()>, Report>;
+
+    /// The options this backend lets a command line set, or `None` when it has none.
+    ///
+    /// A declared type derives `clap::Args` and `Default`, and keeps the rules of the command line:
+    /// no short flags, no positional arguments and no required arguments. The struct does not
+    /// spell the backend's name: the driver prefixes each flag with it (`allow_undefined` of the
+    /// backend `wasm-cm` is `--wasm-cm-allow-undefined`). The session stores the default of the
+    /// type in the request when the target's backend is this one and the request holds no value of
+    /// it, so that the backend reads it with [Session::options](crate::Session::options). The
+    /// default declares none.
+    fn options(&self) -> Option<OptionsDecl> {
+        None
+    }
 }

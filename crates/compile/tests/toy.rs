@@ -6,7 +6,9 @@ use std::{fs, path::Path};
 use runic_compile::{
     Compilation, CompilationRequest, Compiler, EmitRequest, EmitTo, Emitted, Input, IrFrontend,
     OptLevel, OutputFile,
-    testing::{AltVmBackend, CalcFrontend, CalcOptions, StackVmBackend},
+    testing::{
+        AltVmBackend, CalcFrontend, CalcOptions, StackVmBackend, StackVmOptions, StackVmUnstable,
+    },
 };
 use runic_ir::diagnostics::{Label, LayeredSourceProvider, SourceKey, VisitDiagnostic};
 
@@ -739,4 +741,46 @@ fn a_function_body_that_is_too_long_is_an_error_and_not_a_stack_overflow() {
         let error = compilation.error().expect("the body is too long").to_string();
         assert!(error.contains("too long"), "{error}");
     }
+}
+
+#[test]
+fn the_comments_option_puts_a_line_before_each_function_in_the_listing() {
+    let listing = |options: Option<StackVmOptions>| {
+        let mut request = request(vec![calc("demo.calc", PROGRAM)], Some(TINY));
+        emit_to_memory(&mut request, &["stackvm.asm"]);
+        if let Some(options) = options {
+            request.set_options(options);
+        }
+        let compilation = compile(request);
+        succeeded(&compilation);
+        memory(&compilation, "stackvm.asm")
+    };
+    let commented = listing(Some(StackVmOptions { comments: true }));
+    assert!(commented.starts_with("; demo::add: 2 parameters\ndemo::add:\n"), "{commented}");
+    assert!(commented.contains("; demo::f: 1 parameter\ndemo::f:\n"), "{commented}");
+    assert_eq!(listing(None), PROGRAM_LISTING);
+    assert_eq!(listing(Some(StackVmOptions::default())), PROGRAM_LISTING);
+}
+
+#[test]
+fn keeping_subtractions_leaves_one_in_the_lowered_ir_and_in_the_listing() {
+    let compiled = |options: Option<StackVmUnstable>| {
+        let mut request = request(vec![calc("demo.calc", PROGRAM)], Some(TINY));
+        emit_to_memory(&mut request, &["ir.lowered", "stackvm.asm"]);
+        if let Some(options) = options {
+            request.set_options(options);
+        }
+        let compilation = compile(request);
+        succeeded(&compilation);
+        (memory(&compilation, "ir.lowered"), memory(&compilation, "stackvm.asm"))
+    };
+    let (lowered, listing) = compiled(Some(StackVmUnstable {
+        keep_subtractions: true,
+    }));
+    assert!(lowered.contains("arith.sub"), "{lowered}");
+    assert!(listing.contains("  push 3\n  sub\n"), "{listing}");
+
+    let (lowered, listing) = compiled(None);
+    assert!(!lowered.contains("arith.sub"), "{lowered}");
+    assert_eq!(listing, PROGRAM_LISTING);
 }

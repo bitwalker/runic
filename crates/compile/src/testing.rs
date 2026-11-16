@@ -12,7 +12,7 @@ pub mod stackvm;
 
 pub use self::{
     calc::{CalcAst, CalcFrontend, CalcOptions},
-    stackvm::{AltVmBackend, StackVmBackend},
+    stackvm::{AltVmBackend, StackVmBackend, StackVmOptions, StackVmUnstable},
 };
 
 #[cfg(test)]

@@ -83,10 +83,12 @@ impl Compiler {
     ///
     /// In order: the unit's name; the frontend of each input; the target and backend; the route of
     /// the frontends that have inputs and the backend; the goal; then a new context with an empty
-    /// world that states the target's data layout. Fails at the first step that cannot be
+    /// world that states the target's data layout. The session's copy of the request also holds
+    /// the default of each type of options the frontends that have inputs and the target's backend
+    /// declare, where the request held none. Fails at the first step that cannot be
     /// resolved, with a message that names what the request wrote and lists what is known, and
     /// then nothing has been created.
-    pub fn session(&self, request: CompilationRequest) -> Result<Session<'_>, Report> {
+    pub fn session(&self, mut request: CompilationRequest) -> Result<Session<'_>, Report> {
         let name = request.unit_name()?;
         let frontends = resolve::assign_inputs(self, &request.inputs)?;
         let target = resolve::resolve_target(
@@ -158,6 +160,15 @@ impl Compiler {
                     path.display()
                 )));
             }
+        }
+
+        // The stages that take part find a value of each type of options they declared.
+        let participating = frontends
+            .iter()
+            .map(|(frontend, _)| frontend.options())
+            .chain(target.as_ref().map(|target| target.backend.options()));
+        for decl in participating.flatten() {
+            decl.store_defaults(&mut request);
         }
 
         let context = Rc::new(Context::default());
@@ -298,7 +309,8 @@ impl<'c> Session<'c> {
         self.world
     }
 
-    /// The options of type `T` the request carries, if any.
+    /// The options of type `T` the request carries, if any. For a type that a stage taking part in
+    /// the compilation declares, there is always a value: the request's, or else the default.
     pub fn options<T: Any + Send + Sync>(&self) -> Option<&T> {
         self.request.options::<T>()
     }
@@ -582,5 +594,100 @@ mod tests {
         let session = compiler.session(request).unwrap();
         assert_eq!(session.options::<Options>(), Some(&Options(7)));
         assert_eq!(session.options::<u32>(), None);
+    }
+
+    #[derive(clap::Args, Default, Debug, Clone, PartialEq)]
+    struct AlphaOptions {
+        #[arg(long)]
+        loud: bool,
+    }
+
+    #[derive(clap::Args, Default, Debug, Clone, PartialEq)]
+    struct OneOptions {
+        #[arg(long)]
+        tight: bool,
+    }
+
+    #[derive(clap::Args, Default, Debug, Clone, PartialEq)]
+    struct TwoOptions {
+        #[arg(long)]
+        slow: bool,
+    }
+
+    fn alpha_options() -> Option<crate::OptionsDecl> {
+        Some(crate::OptionsDecl::of::<AlphaOptions>())
+    }
+
+    fn one_options() -> Option<crate::OptionsDecl> {
+        Some(crate::OptionsDecl::of::<OneOptions>())
+    }
+
+    fn two_options() -> Option<crate::OptionsDecl> {
+        Some(crate::OptionsDecl::unstable_only::<TwoOptions>())
+    }
+
+    const TWO_OUT: &[CheckpointDecl] = &[decl("two.out", &[], "t")];
+
+    #[derive(clap::Args, Default, Debug, Clone, PartialEq)]
+    struct BetaOptions {
+        #[arg(long)]
+        quiet: bool,
+    }
+
+    fn beta_options() -> Option<crate::OptionsDecl> {
+        Some(crate::OptionsDecl::of::<BetaOptions>())
+    }
+
+    fn declaring_compiler() -> Compiler {
+        Compiler::builder()
+            .frontend(A.with_options(alpha_options))
+            .frontend(B.with_options(beta_options))
+            .backend(ONE.with_options(one_options))
+            .backend(
+                TestBackend::new("two", &["mips-unknown-none"], TWO_OUT).with_options(two_options),
+            )
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_session_holds_the_default_of_the_options_a_participating_stage_declares() {
+        let mut request = request(&["x.a"]);
+        request.target = Some("wasm32-wasip2".parse().unwrap());
+        let compiler = declaring_compiler();
+        let session = compiler.session(request).unwrap();
+        assert_eq!(session.options::<AlphaOptions>(), Some(&AlphaOptions::default()));
+        assert_eq!(session.options::<OneOptions>(), Some(&OneOptions::default()));
+    }
+
+    #[test]
+    fn a_session_keeps_the_options_the_request_set() {
+        let mut request = request(&["x.a"]);
+        request.target = Some("wasm32-wasip2".parse().unwrap());
+        request.set_options(AlphaOptions { loud: true });
+        let compiler = declaring_compiler();
+        let session = compiler.session(request).unwrap();
+        assert_eq!(session.options::<AlphaOptions>(), Some(&AlphaOptions { loud: true }));
+    }
+
+    #[test]
+    fn a_stage_that_does_not_participate_gets_no_defaults() {
+        let mut request = request(&["x.a"]);
+        request.target = Some("wasm32-wasip2".parse().unwrap());
+        let compiler = declaring_compiler();
+        let session = compiler.session(request).unwrap();
+        // The other backend is not the target's, and no input is of the frontend `beta`.
+        assert_eq!(session.options::<TwoOptions>(), None);
+        assert_eq!(session.options::<BetaOptions>(), None);
+    }
+
+    #[test]
+    fn a_compilation_with_no_target_gets_no_defaults_for_backends() {
+        let mut request = request(&["x.a"]);
+        request.stop_after = Some("ir.translated".into());
+        let compiler = declaring_compiler();
+        let session = compiler.session(request).unwrap();
+        assert_eq!(session.options::<AlphaOptions>(), Some(&AlphaOptions::default()));
+        assert_eq!(session.options::<OneOptions>(), None);
     }
 }

@@ -1,6 +1,6 @@
 use runic_ir::{Report, dialects::builtin::WorldRef, pass::OpPassManager};
 
-use crate::{CheckpointDecl, Checkpoints, Flow, Input, Session};
+use crate::{CheckpointDecl, Checkpoints, Flow, Input, OptionsDecl, Session};
 
 /// A source language a compiler reads: it says what it is called, which file extensions are its
 /// inputs, and which checkpoints it reaches.
@@ -58,5 +58,17 @@ pub trait Frontend: Send + Sync {
         _passes: &mut OpPassManager,
     ) -> Result<(), Report> {
         Ok(())
+    }
+
+    /// The options this frontend lets a command line set, or `None` when it has none.
+    ///
+    /// A declared type derives `clap::Args` and `Default`, and keeps the rules of the command line:
+    /// no short flags, no positional arguments and no required arguments. The driver adds the
+    /// flags of the type as the struct declares them, without a prefix unless it was asked to
+    /// prefix this frontend, and the session stores the default of the type in the request when
+    /// the request holds no value of it, so that the frontend reads it with
+    /// [Session::options](crate::Session::options). The default declares none.
+    fn options(&self) -> Option<OptionsDecl> {
+        None
     }
 }

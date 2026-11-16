@@ -15,6 +15,8 @@
 //! * a [Frontend] reads inputs of one language and a [Backend] generates code for targets, and a
 //!   [Compiler], built by a [CompilerBuilder] that checks the whole configuration, holds the ones a
 //!   compiler offers;
+//! * an [OptionsDecl] is what a frontend or backend lets a command line set: types of options that
+//!   derive `clap::Args`, which a [Session] defaults when the stage takes part in a compilation;
 //! * a [Goal] says where a compilation stops and which [Output]s it produces, each with a
 //!   [Destination] decided by [resolve_goal] before anything runs;
 //! * a [Session] resolves a request against a compiler: which frontend reads each input, the
@@ -49,6 +51,7 @@ mod compiler;
 mod frontend;
 mod frontends;
 mod goal;
+mod options;
 mod output;
 mod request;
 mod route;
@@ -69,6 +72,7 @@ pub use self::{
     frontend::Frontend,
     frontends::IrFrontend,
     goal::{Destination, Goal, Output, OutputNaming, resolve_goal},
+    options::OptionsDecl,
     output::{Emitted, write_file},
     request::{
         CompilationRequest, DebugInfo, EmitRequest, EmitTo, ExtensionOptions, Extern, Input,

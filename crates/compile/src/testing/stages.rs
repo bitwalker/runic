@@ -17,8 +17,8 @@ use runic_ir::{
 };
 
 use crate::{
-    Artifact, Backend, CheckpointDecl, CheckpointId, Checkpoints, Flow, Frontend, Input, Session,
-    Triple,
+    Artifact, Backend, CheckpointDecl, CheckpointId, Checkpoints, Flow, Frontend, Input,
+    OptionsDecl, Session, Triple,
 };
 
 /// What a test frontend does when it translates.
@@ -61,6 +61,13 @@ fn translate_nothing(
     _checkpoints: &mut Checkpoints<'_>,
 ) -> Result<Flow<()>, Report> {
     Ok(Flow::Continue(()))
+}
+
+/// What a test stage declares as its options: none, unless a test says otherwise.
+pub type OptionsFn = fn() -> Option<OptionsDecl>;
+
+fn declare_nothing() -> Option<OptionsDecl> {
+    None
 }
 
 /// A checkpoint declaration, for a test that declares one in a constant.
@@ -107,6 +114,8 @@ pub struct TestFrontend {
     pub translate: TranslateFn,
     /// What the frontend does when it adds passes: nothing, unless a test says otherwise.
     pub add_passes: AddPassesFn,
+    /// The options the frontend declares: none, unless a test says otherwise.
+    pub options: OptionsFn,
 }
 
 impl TestFrontend {
@@ -118,7 +127,13 @@ impl TestFrontend {
             checkpoints: &[],
             translate: translate_nothing,
             add_passes: add_nothing,
+            options: declare_nothing,
         }
+    }
+
+    /// The same frontend, declaring the options `options` returns.
+    pub const fn with_options(self, options: OptionsFn) -> Self {
+        Self { options, ..self }
     }
 
     /// The same frontend, doing `translate` when it translates.
@@ -166,6 +181,10 @@ impl Frontend for TestFrontend {
     fn add_passes(&self, session: &Session<'_>, passes: &mut OpPassManager) -> Result<(), Report> {
         (self.add_passes)(session, passes)
     }
+
+    fn options(&self) -> Option<OptionsDecl> {
+        (self.options)()
+    }
 }
 
 /// A backend that is only its configuration: it supports exactly its triples, on a little-endian
@@ -184,6 +203,8 @@ pub struct TestBackend {
     /// What the backend does when it emits: reaches each checkpoint it declares, in order, with a
     /// `String` naming it, unless a test says otherwise.
     pub emit: EmitFn,
+    /// The options the backend declares: none, unless a test says otherwise.
+    pub options: OptionsFn,
 }
 
 impl TestBackend {
@@ -199,7 +220,13 @@ impl TestBackend {
             checkpoints,
             add_passes: add_nothing,
             emit: emit_each_checkpoint,
+            options: declare_nothing,
         }
+    }
+
+    /// The same backend, declaring the options `options` returns.
+    pub const fn with_options(self, options: OptionsFn) -> Self {
+        Self { options, ..self }
     }
 
     /// The same backend, doing `add_passes` when it adds its lowering passes.
@@ -248,6 +275,10 @@ impl Backend for TestBackend {
         checkpoints: &mut Checkpoints<'_>,
     ) -> Result<Flow<()>, Report> {
         (self.emit)(session, world, checkpoints)
+    }
+
+    fn options(&self) -> Option<OptionsDecl> {
+        (self.options)()
     }
 }
 

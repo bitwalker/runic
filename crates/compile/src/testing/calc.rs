@@ -27,7 +27,8 @@ use runic_ir::{
 };
 
 use crate::{
-    Artifact, CheckpointDecl, CheckpointId, Checkpoints, Flow, Frontend, Input, Render, Session,
+    Artifact, CheckpointDecl, CheckpointId, Checkpoints, Flow, Frontend, Input, OptionsDecl,
+    Render, Session,
 };
 
 /// The checkpoint at which the parsed files are held.
@@ -35,10 +36,11 @@ const AST: CheckpointId = CheckpointId::new("calc.ast");
 
 /// What the options of the `calc` frontend say; a request carries them with
 /// [CompilationRequest::set_options](crate::CompilationRequest::set_options).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(clap::Args, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CalcOptions {
-    /// Whether `+`, `-` and `*` wrap around when the result does not fit in 32 bits. When it is
-    /// not set the operations trap on overflow, read as signed numbers.
+    /// Wrap `+`, `-` and `*` around when the result does not fit in 32 bits, instead of trapping
+    /// on overflow of signed numbers.
+    #[arg(long)]
     pub wrap_on_overflow: bool,
 }
 
@@ -89,11 +91,17 @@ impl Frontend for CalcFrontend {
             Flow::Continue(ast) => ast,
             Flow::Break(stopped) => return Ok(Flow::Break(stopped)),
         };
-        let options = session.options::<CalcOptions>().copied().unwrap_or_default();
+        let options = session.options::<CalcOptions>().copied().ok_or_else(|| {
+            Report::msg("the options of the calc frontend were not stored in the session")
+        })?;
         for file in &ast.files {
             build(session, world, file, options)?;
         }
         Ok(Flow::Continue(()))
+    }
+
+    fn options(&self) -> Option<OptionsDecl> {
+        Some(OptionsDecl::of::<CalcOptions>())
     }
 }
 
