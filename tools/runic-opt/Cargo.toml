@@ -13,6 +13,11 @@ license.workspace = true
 readme.workspace = true
 edition.workspace = true
 
+[features]
+# The toy language `calc` and the toy machines `stackvm` and `altvm` among the stages the tool
+# registers: stages to run the harness path against, for the tests and the lit suite.
+toy = ["runic-compile/testing"]
+
 [lib]
 doctest = false
 
@@ -38,4 +43,6 @@ runic-log.workspace = true
 runic-transform.workspace = true
 
 [dev-dependencies]
+# The crate itself with its `toy` feature on, so `cargo test` builds the tests with the toy stages.
+runic-opt = { path = ".", features = ["toy"] }
 tempfile.workspace = true

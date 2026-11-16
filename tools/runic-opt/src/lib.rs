@@ -34,6 +34,7 @@
 extern crate alloc;
 
 mod expect;
+mod harness;
 mod options;
 mod roundtrip;
 mod split;
@@ -49,14 +50,18 @@ use std::{
     rc::Rc,
 };
 
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
+use runic_compile::{Compilation, Compiler};
 // The dialects and passes the tool links: naming each crate keeps its registrations.
 use runic_dialect_arith as _;
 use runic_dialect_cf as _;
 use runic_dialect_mem as _;
 use runic_dialect_scf as _;
 use runic_dialect_ub as _;
-use runic_driver::worker::{self, SharedBuffer, WorkerError, WorkerPanic};
+use runic_driver::{
+    StageFlags,
+    worker::{self, SharedBuffer, WorkerError, WorkerPanic},
+};
 use runic_ir::{
     Context, OpPrinter, OpPrintingFlags, OperationRef, Report,
     diagnostics::{
@@ -73,7 +78,11 @@ use runic_ir::{
 };
 use runic_transform as _;
 
-use self::options::{Options, Verification};
+pub use self::harness::compiler;
+use self::{
+    harness::Harness,
+    options::{Options, Verification},
+};
 
 /// How deeply regions may nest in the input: text with a region inside more enclosing regions
 /// than this is the parser's diagnostic.
@@ -124,10 +133,26 @@ pub fn run_with_setup(
     stderr: &mut dyn Write,
     setup: impl FnOnce() -> Result<(), String>,
 ) -> ExitCode {
+    run_on(&compiler(), args, stdin, stdout, stderr, setup)
+}
+
+/// [`run_with_setup`] over `compiler`'s stages instead of the ones the tool registers: for a tool
+/// that registers more, and for tests.
+///
+/// The frontends and backends of `compiler` are the ones that read an input, and generate code
+/// for it, on the harness path (see [`compiler`]).
+pub fn run_on(
+    compiler: &Compiler,
+    args: impl IntoIterator<Item = OsString>,
+    stdin: &mut dyn Read,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+    setup: impl FnOnce() -> Result<(), String>,
+) -> ExitCode {
     let mut failed = false;
     let mut out = String::new();
     let mut err = String::new();
-    match run_to_buffers(args, stdin, &mut out, &mut err, setup) {
+    match run_to_buffers(compiler, args, stdin, &mut out, &mut err, setup) {
         Ok(true) => {}
         Ok(false) => failed = true,
         Err(Exit::Help(text)) => out = text,
@@ -196,9 +221,20 @@ enum Exit {
     Usage(String),
 }
 
+/// What the driver's pieces say ends the command line, as this tool's exit.
+fn exit_of(exit: runic_driver::Exit) -> Exit {
+    match exit {
+        runic_driver::Exit::Help(text) => Exit::Help(text),
+        runic_driver::Exit::Usage(text) => Exit::Usage(text),
+        // A way to end that the driver adds later is a usage error here.
+        other => Exit::Usage(format!("error: the command line cannot be used: {other:?}\n")),
+    }
+}
+
 /// Runs the tool, writing what goes to standard output to `out` and what goes to standard error
 /// to `err`; returns whether it succeeded.
 fn run_to_buffers(
+    compiler: &Compiler,
     args: impl IntoIterator<Item = OsString>,
     stdin: &mut dyn Read,
     out: &mut String,
@@ -206,7 +242,16 @@ fn run_to_buffers(
     setup: impl FnOnce() -> Result<(), String>,
 ) -> Result<bool, Exit> {
     let args = core::iter::once(OsString::from("runic-opt")).chain(args);
-    let options = Options::try_parse_from(args).map_err(|error| {
+    // A flag of a stage that collides with one of the tool's is a defect of the build.
+    let flags = StageFlags::new(compiler)
+        .build()
+        .and_then(|flags| {
+            let command = flags.augment(Options::command(), "runic-opt")?;
+            Ok((flags, command))
+        })
+        .map_err(|error| Exit::Usage(render(error.display())))?;
+    let (flags, command) = flags;
+    let from_clap = |error: clap::Error| {
         let text = error.render().to_string();
         match error.kind() {
             clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion => {
@@ -214,8 +259,23 @@ fn run_to_buffers(
             }
             _ => Exit::Usage(text),
         }
-    })?;
+    };
+    let matches = command.try_get_matches_from(args).map_err(from_clap)?;
+    let options = Options::from_arg_matches(&matches).map_err(from_clap)?;
+
+    // Whether the input goes through the compiler is known from the arguments alone.
+    let mut harness = match harness::reason(compiler, &options, flags.written(&matches)) {
+        Some(reason) => {
+            Some(Harness::new(compiler, &options, &flags, &matches, reason).map_err(exit_of)?)
+        }
+        None => None,
+    };
     setup().map_err(|message| Exit::Usage(format!("error: {message}\n")))?;
+
+    if options.list_stages {
+        harness::list_stages(compiler, out);
+        return Ok(true);
+    }
 
     if options.list_passes {
         list_passes(out);
@@ -228,6 +288,13 @@ fn run_to_buffers(
     if options.list_operations {
         list_operations(out);
         return Ok(true);
+    }
+
+    if let Some(harness) = &mut harness
+        && let Err(error) = harness.check(&options)
+    {
+        *err += &render(error.display());
+        return Ok(false);
     }
 
     // A pass named wrongly, or an empty marker, is an error before anything is read.
@@ -275,6 +342,7 @@ fn run_to_buffers(
     let finished = SharedBuffer::default();
     for case in cases {
         let chunk = Chunk {
+            harness: harness.as_ref(),
             name: name.clone(),
             text: case.text,
             first_line: case.first_line,
@@ -357,10 +425,14 @@ fn check_pipeline(text: &str) -> Result<(), Report> {
 fn list_passes(out: &mut String) {
     use fmt::Write;
 
-    // `test-panic` exists for the tool's own tests and is not offered.
+    // `test-panic` exists for the tool's own tests and is not offered, nor are the passes of the
+    // toy stages: they are the passes of a backend, which a pipeline can still name.
     let passes = PassInfo::registered()
         .into_iter()
-        .filter(|pass| pass.argument() != test_passes::panic::NAME)
+        .filter(|pass| {
+            pass.argument() != test_passes::panic::NAME
+                && !harness::STAGE_PASSES.contains(&pass.argument())
+        })
         .collect::<Vec<_>>();
     let width = passes.iter().map(|pass| pass.argument().len()).max().unwrap_or(0);
     for pass in passes {
@@ -475,6 +547,43 @@ impl Diagnostics {
         }
     }
 
+    /// An error of a case that is not a diagnostic of an operation: it points into the sources of
+    /// the chunk's context, which is the compilation's when there was one.
+    fn failure(&mut self, error: &Report) {
+        match &mut self.found {
+            None => {
+                let sources = self.context.sources();
+                self.stderr.push(&render(error.display_with_sources(&*sources)));
+            }
+            Some(found) => {
+                let sources = self.context.sources();
+                let own = sources.find_by_name(self.name.as_str());
+                let mut collector = expect::Collector::new(&sources, own);
+                collector.report(error);
+                found.extend(collector.finish());
+            }
+        }
+    }
+
+    /// What a compilation reported: its diagnostics that are not its error, then its error. They
+    /// point into the compilation's context, which the chunk's sources are looked up in from now
+    /// on.
+    fn compilation(&mut self, compilation: &Compilation) {
+        self.context = compilation.context().clone();
+        match &mut self.found {
+            None => {
+                let sources = self.context.sources();
+                for entry in compilation.diagnostics().iter() {
+                    self.stderr.push(&render(entry.diagnostic.display_with_sources(&*sources)));
+                }
+            }
+            Some(_) => self.set(compilation.diagnostics()),
+        }
+        if let Some(error) = compilation.error() {
+            self.failure(error);
+        }
+    }
+
     fn owned(&mut self, diagnostic: OwnedDiagnostic) {
         match &mut self.found {
             None => self.stderr.push(&render(diagnostic.display())),
@@ -491,7 +600,10 @@ impl Diagnostics {
 }
 
 /// One top-level operation's text and what to do with it.
-struct Chunk {
+struct Chunk<'c> {
+    /// How the case is compiled, when it goes through a frontend or a backend instead of being
+    /// read as IR
+    harness: Option<&'c Harness<'c>>,
     /// The name the text is registered under
     name: String,
     /// The case's text, padded with a newline for each line of the input before it
@@ -532,7 +644,7 @@ struct Outcome {
     skipped: bool,
 }
 
-impl Chunk {
+impl Chunk<'_> {
     /// Processes the chunk on a thread of its own, with a large stack. Everything made from it,
     /// the context first, lives and dies on that thread. A panic there is an internal error.
     ///
@@ -635,7 +747,14 @@ impl Chunk {
             stderr: stderr.clone(),
             found: expectations.as_ref().map(|_| Vec::new()),
         };
-        let succeeded = self.process_into(&context, text, stdout, &mut diagnostics);
+        let succeeded = match self.harness {
+            Some(harness) => {
+                harness.process_into(self.name.as_str(), text, stdout, &mut diagnostics)
+            }
+            None => self.process_into(&context, text, stdout, &mut diagnostics),
+        };
+        // The diagnostics point into the context of the compilation, when there was one.
+        let context = diagnostics.context.clone();
         let Some(expectations) = expectations else {
             return Outcome {
                 succeeded,

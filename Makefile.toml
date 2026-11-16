@@ -184,6 +184,8 @@ args = [
     "build",
     "-p",
     "runic-opt",
+    "--features",
+    "toy",
     "--artifact-dir",
     "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/bin",
 ]

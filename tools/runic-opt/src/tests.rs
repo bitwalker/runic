@@ -3,6 +3,7 @@
 mod cli;
 mod dominance;
 mod expectations;
+mod harness;
 mod pipeline;
 mod roundtrip;
 mod splitting;
@@ -12,7 +13,9 @@ mod verification;
 
 use std::{ffi::OsString, process::ExitCode};
 
-use super::run;
+use runic_compile::Compiler;
+
+use super::{run, run_on};
 
 /// What a run of the tool wrote and returned.
 #[derive(Debug)]
@@ -42,6 +45,26 @@ fn opt(args: &[&str], stdin: &str) -> Output {
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let code = run(args.iter().map(OsString::from), &mut input, &mut stdout, &mut stderr);
+    Output {
+        code,
+        stdout: String::from_utf8(stdout).expect("standard output is UTF-8"),
+        stderr: String::from_utf8(stderr).expect("standard error is UTF-8"),
+    }
+}
+
+/// Runs the tool over the stages of `compiler` with `args` and `stdin`.
+fn opt_on(compiler: &Compiler, args: &[&str], stdin: &str) -> Output {
+    let mut input = stdin.as_bytes();
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let code = run_on(
+        compiler,
+        args.iter().map(OsString::from),
+        &mut input,
+        &mut stdout,
+        &mut stderr,
+        || Ok(()),
+    );
     Output {
         code,
         stdout: String::from_utf8(stdout).expect("standard output is UTF-8"),

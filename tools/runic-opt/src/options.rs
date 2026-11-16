@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
+use runic_compile::Triple;
 use runic_ir::{
     OpPrintingFlags, Report,
     pass::{IRPrintingConfig, PassInfo, PassSelection},
@@ -15,6 +16,12 @@ use runic_ir::{
 /// Diagnostics and IR printed between passes go to standard error. The pipeline is checked
 /// before the input is read. The exit code is 0 when no case produced an error (an error a pass
 /// emits counts, as one it fails with does), 1 otherwise.
+///
+/// An input that a registered frontend reads (such as a file with its extension, or any input with
+/// `--language`), or one of `--target`, `--backend`, `--stop-after`, `--emit`, or a flag of a
+/// frontend or a backend, or `-Z`, sends the input through the compiler: the frontend translates
+/// it, the pass pipeline runs on the result, and with a target a backend lowers it and generates
+/// code. The result is the artifact at the stop point. `--list-stages` lists what is registered.
 #[derive(Debug, Parser)]
 #[command(name = "runic-opt", version)]
 pub struct Options {
@@ -37,6 +44,34 @@ pub struct Options {
     /// reach deeper.
     #[arg(short = 'p', long = "pass-pipeline", value_name = "PIPELINE")]
     pub pass_pipeline: Option<String>,
+
+    /// Generate code for the target TRIPLE with a registered backend.
+    #[arg(long, value_name = "TRIPLE", value_parser = triple)]
+    pub target: Option<Triple>,
+
+    /// The backend to generate code with, when several support the target.
+    #[arg(long, value_name = "NAME")]
+    pub backend: Option<String>,
+
+    /// The checkpoint to stop at, by id or alias; its artifact is the result. Without a target the
+    /// default is `ir.optimized`, and with one the end of the compilation.
+    #[arg(long, value_name = "NAME")]
+    pub stop_after: Option<String>,
+
+    /// Also write the artifact at the checkpoint NAME to PATH. May be repeated; the path is
+    /// required. The result is still printed.
+    #[arg(long, value_name = "NAME=PATH")]
+    pub emit: Vec<String>,
+
+    /// The frontend that reads the input, by name, whatever the input's file name. Standard input
+    /// that goes through the compiler needs it unless it holds textual IR.
+    #[arg(long, value_name = "NAME")]
+    pub language: Option<String>,
+
+    /// List the frontends with their extensions, the backends with their targets and the
+    /// checkpoints, and exit.
+    #[arg(long)]
+    pub list_stages: bool,
 
     /// Verify nothing: neither the parsed input, nor the IR after each pass, nor the result.
     #[arg(long)]
@@ -146,6 +181,11 @@ pub struct Options {
     /// List the registered operations, one name per line, sorted, and exit.
     #[arg(long)]
     pub list_operations: bool,
+}
+
+/// Reads a target triple, for `clap`.
+fn triple(text: &str) -> Result<Triple, String> {
+    text.parse().map_err(|error: Report| error.to_string())
 }
 
 /// What is verified (see the command line's `--no-verify` and `--verify-each`).
