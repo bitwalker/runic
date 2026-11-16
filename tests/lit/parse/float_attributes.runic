@@ -1,0 +1,39 @@
+// RUN: runic-opt %s | filecheck %s
+// RUN: runic-opt %s --verify-roundtrip | filecheck %s
+// RUN: runic-opt %s --print-generic | runic-opt - --verify-roundtrip
+
+// `#builtin.float` of both widths, read from every spelling of a float literal and printed in one:
+// the shortest decimal that reads back to the same bits, with a point in the mantissa, or the bits
+// in hex for a NaN or an infinity. The printer sorts a dictionary by key. A body-less
+// `#builtin.float` is the 64-bit zero.
+// CHECK: builtin.module public @floats {
+builtin.module public @floats {
+    // Decimal literals: a fraction, an exponent in either case and with either sign, a negative
+    // value, and a value whose shortest text needs an exponent.
+    // CHECK-LABEL: builtin.function public extern("C") @decimal(
+    // CHECK-SAME: ) {
+    // CHECK-NEXT: builtin.ret;
+    // CHECK-NEXT: } attributes { big = #builtin.float<1.0e100 : f64>, exp = #builtin.float<0.0025 : f64>, exp_upper = #builtin.float<1000.0 : f32>, neg = #builtin.float<-1.5 : f32>, plain = #builtin.float<1.5 : f64>, small = #builtin.float<1.5e-7 : f64>, tiny = #builtin.float<5.0e-324 : f64> };
+    builtin.function public extern("C") @decimal() {
+        builtin.ret;
+    } attributes { plain = #builtin.float<1.5 : f64>, neg = #builtin.float<-1.5 : f32>, exp = #builtin.float<2.5e-3 : f64>, exp_upper = #builtin.float<1E+3 : f32>, big = #builtin.float<1e100 : f64>, small = #builtin.float<1.5e-7 : f64>, tiny = #builtin.float<5e-324 : f64> };
+
+    // Negative zero is its own value, and the zeros keep their widths.
+    // CHECK-LABEL: builtin.function public extern("C") @zeros(
+    // CHECK-SAME: ) {
+    // CHECK-NEXT: builtin.ret;
+    // CHECK-NEXT: } attributes { default = #builtin.float<0.0 : f64>, nz32 = #builtin.float<-0.0 : f32>, nz64 = #builtin.float<-0.0 : f64>, z32 = #builtin.float<0.0 : f32>, z64 = #builtin.float<0.0 : f64> };
+    builtin.function public extern("C") @zeros() {
+        builtin.ret;
+    } attributes { z64 = #builtin.float<0.0 : f64>, nz64 = #builtin.float<-0.0 : f64>, z32 = #builtin.float<0.0 : f32>, nz32 = #builtin.float<-0.0 : f32>, default = #builtin.float };
+
+    // Hex literals are the bits: eight digits for `f32`, sixteen for `f64`. A finite value written
+    // in hex prints in decimal; a NaN or an infinity prints as its bits.
+    // CHECK-LABEL: builtin.function public extern("C") @hex(
+    // CHECK-SAME: ) {
+    // CHECK-NEXT: builtin.ret;
+    // CHECK-NEXT: } attributes { finite32 = #builtin.float<1.0 : f32>, finite64 = #builtin.float<1.0 : f64>, inf32 = #builtin.float<0x7f800000 : f32>, inf64 = #builtin.float<0xfff0000000000000 : f64>, nan32 = #builtin.float<0xffc00001 : f32>, nan64 = #builtin.float<0x7ff8000000000000 : f64> };
+    builtin.function public extern("C") @hex() {
+        builtin.ret;
+    } attributes { nan64 = #builtin.float<0x7ff8000000000000 : f64>, inf64 = #builtin.float<0xFFF0000000000000 : f64>, nan32 = #builtin.float<0xffc00001 : f32>, inf32 = #builtin.float<0x7f800000 : f32>, finite32 = #builtin.float<0x3f800000 : f32>, finite64 = #builtin.float<0x3ff0000000000000 : f64> };
+};

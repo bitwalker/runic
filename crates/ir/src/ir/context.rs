@@ -393,6 +393,18 @@ impl Context {
         )
     }
 
+    /// Creates the floating-point constant `value`, whose type is `f32` for a 32-bit value and
+    /// `f64` for a 64-bit one. It never yields an invalid `FloatAttr`.
+    pub fn float_attr(
+        self: &Rc<Context>,
+        value: crate::Float,
+    ) -> UnsafeIntrusiveEntityRef<crate::dialects::builtin::attributes::FloatAttr> {
+        let ty = value.ty(self);
+        self.create_attribute_with_type::<crate::dialects::builtin::attributes::FloatAttr, _>(
+            value, ty,
+        )
+    }
+
     pub fn create_constant(&self, data: impl Into<ConstantData>) -> ConstantId {
         let mut constants = self.constants.borrow_mut();
         constants.insert(data.into())

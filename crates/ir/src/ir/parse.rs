@@ -63,7 +63,7 @@ pub use self::{
     delimiter::Delimiter,
     error::ParserError,
     from_str_radix::FromStrRadix,
-    parser::{IntegerLiteral, Parser, ParserExt},
+    parser::{FloatLiteral, IntegerLiteral, Parser, ParserExt},
     token::Token,
 };
 use super::{

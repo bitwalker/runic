@@ -19,7 +19,7 @@ use super::{
     Attribute, AttributeRef, AttributeRegistration, IntoAttributeRef, MaybeInferAttributeType,
 };
 use crate::{
-    Align, CallConv, Int, SymbolPath, SymbolUseRef, Type, UnsafeIntrusiveEntityRef,
+    Align, CallConv, Float, Int, SymbolPath, SymbolUseRef, Type, UnsafeIntrusiveEntityRef,
     diagnostics::{ColumnNumber, LineNumber, SourceSpan},
     effects::MemoryEffect,
     interner::Symbol,
@@ -80,7 +80,7 @@ pub trait ElementReplacer {
 ///   visited, not offered to a replacer, and an attribute rebuilt because its value changed takes
 ///   the type inferred from the new value.
 /// - Otherwise the own type is an element, after the value's: `IntAttr`'s (its width is in its
-///   value, but its type may be `isize`).
+///   value, but its type may be `isize`) and `FloatAttr`'s.
 ///
 /// Some kinds' choices, as built: a signature's elements are, per parameter, its type then its
 /// attributes, then the same per result; a `LocalVariableAttr` holds its type (in its value; its
@@ -305,6 +305,7 @@ plain_components!(
     String,
     CallConv,
     Int,
+    Float,
     Align,
     MemoryEffect,
     SymbolPath,
@@ -338,7 +339,7 @@ macro_rules! component_values {
 
 // The `remote` values of `TypeAttr` (and `ub`'s `PoisonAttr`), the marker attributes, `BoolAttr`,
 // `StringAttr`, `IntAttr` and the fixed-width integer attributes.
-component_values!(Type, (), bool, CompactString, Int, i8, i16, i32, i64, i128);
+component_values!(Type, (), bool, CompactString, Int, Float, i8, i16, i32, i64, i128);
 
 impl<T: AttributeComponent> AttributeComponent for Option<T> {
     fn visit_elements(&self, visitor: &mut dyn ElementVisitor) {
@@ -567,6 +568,11 @@ mod tests {
             Row::new("i64", cx.create_attribute::<I64Attr, _>(1i64), []),
             Row::new("i128", cx.create_attribute::<I128Attr, _>(1i128), []),
             Row::new("int: its own type only", cx.int_attr(Int::from(7i64), i64), [ty(i64)]),
+            Row::new(
+                "float: its own type only",
+                cx.float_attr(crate::Float::from_f64(1.5)),
+                [ty(cx.f64())],
+            ),
             Row::new(
                 "list of attributes",
                 cx.create_attribute::<ListAttr, _>(List::from(list)),

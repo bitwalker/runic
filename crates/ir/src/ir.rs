@@ -9,6 +9,7 @@ pub mod dominance;
 pub mod effects;
 mod elements;
 pub mod entity;
+mod float;
 mod ident;
 mod int;
 mod int_range;
@@ -58,6 +59,7 @@ pub use self::{
         RawEntityRef, StorableEntity, UnsafeEntityRef, UnsafeIntrusiveEntityRef,
         UnsafeIntrusiveMapEntityRef,
     },
+    float::Float,
     ident::{FunctionIdent, Ident, IdentAttr},
     int::{Int, IsizeFold, fold_isize},
     int_range::{ConstantIntRange, IntegerValueRange},

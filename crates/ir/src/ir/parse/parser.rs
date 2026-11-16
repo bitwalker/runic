@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    AttributeRef, AttributeRegistration, Int, SymbolNameComponent, SymbolPath, SymbolUse,
+    AttributeRef, AttributeRegistration, Float, Int, SymbolNameComponent, SymbolPath, SymbolUse,
     diagnostics::{Report, report},
     dialects::builtin::{
         self,
@@ -917,6 +917,74 @@ pub trait ParserExt<'input>: Parser<'input> {
         ))
     }
 
+    /// Parses a float literal written for a value of the float type `ty`, `f32` or `f64`.
+    ///
+    /// The literal is one of:
+    ///
+    /// - an optional `-` and a decimal float (`1.5`, `-0.0`, `2.5e-3`, `1e10`): the nearest value
+    ///   of `ty`, ties to even. A decimal too large for `ty` (it would round to infinity) is an
+    ///   error, since an infinity is written in hex; one too small rounds to zero or a subnormal.
+    /// - a hex literal giving the bits of the value, with exactly 8 digits for `f32` and 16 for
+    ///   `f64`, so any value, a NaN and an infinity included, can be written. It cannot be negated:
+    ///   its sign is in its bits.
+    ///
+    /// A decimal integer (`1`) is an error: a float literal has a `.` or an exponent. `ty` is
+    /// checked before the literal's value is, and an error is reported at the literal's span.
+    ///
+    /// See [FloatLiteral::to_float] for the conversion, and
+    /// [Self::parse_float_literal_text] to read the literal before its type is known.
+    fn parse_float_literal(&mut self, ty: Type) -> ParseResult<Span<Float>> {
+        let (span, literal) = self.parse_float_literal_text()?.into_parts();
+        literal.to_float(ty, span).map(|value| Span::new(span, value))
+    }
+
+    /// Parses a float literal as written, without the type that gives it a width: the same forms
+    /// [Self::parse_float_literal] reads, fitted to a type later with [FloatLiteral::to_float].
+    ///
+    /// Fails at the literal's span for a decimal integer or a `-` before a hex literal, and at the
+    /// next token if it is no literal at all.
+    fn parse_float_literal_text(&mut self) -> ParseResult<Span<FloatLiteral>> {
+        let start = match self.token_stream_mut().peek()? {
+            Some((start, ..)) => start,
+            None => 0,
+        };
+        let negative = self.token_stream_mut().next_if_eq(Token::Minus)?;
+        let token = self
+            .token_stream_mut()
+            .expect_if("float", |tok| {
+                matches!(tok, Token::Int(_) | Token::Float(_) | Token::Hex(_))
+            })?
+            .into_inner();
+        let span = span!(self.source_id(), start, self.token_stream().previous_end());
+        let literal = match token {
+            Token::Float(text) => FloatLiteral::Decimal {
+                negative,
+                text: text.into(),
+            },
+            Token::Hex(digits) if negative => {
+                return Err(ParserError::InvalidFloatLiteral {
+                    span,
+                    reason: format!(
+                        "a hex float literal cannot be negative: it is the bits of the value, so \
+                         its sign is the top bit of `0x{digits}`"
+                    ),
+                });
+            }
+            Token::Hex(digits) => FloatLiteral::Bits(digits.into()),
+            Token::Int(digits) => {
+                return Err(ParserError::InvalidFloatLiteral {
+                    span,
+                    reason: format!(
+                        "`{digits}` is an integer literal: a float literal needs a `.` or an \
+                         exponent, as in `{digits}.0` or `{digits}e0`"
+                    ),
+                });
+            }
+            _ => unreachable!(),
+        };
+        Ok(Span::new(span, literal))
+    }
+
     /// Parse an integer value from the stream.
     fn parse_integer<I>(&mut self) -> ParseResult<Span<I>>
     where
@@ -1143,6 +1211,91 @@ pub trait ParserExt<'input>: Parser<'input> {
 }
 
 impl<'input, P: ?Sized + Parser<'input>> ParserExt<'input> for P {}
+
+/// A float literal as written, before it is fitted to the type that gives it a width.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FloatLiteral {
+    /// A decimal float: the text of its digits (`1.5`, `2e10`) and whether a `-` precedes it.
+    Decimal {
+        negative: bool,
+        text: alloc::string::String,
+    },
+    /// A hex literal: the digits after the `0x`, which are the bits of the value.
+    Bits(alloc::string::String),
+}
+
+impl FloatLiteral {
+    /// The value this literal, found at `span`, stands for as a value of the float type `ty`.
+    ///
+    /// A decimal is the nearest value of `ty` (ties to even). Hex digits are the bits of the
+    /// value, and there must be exactly 8 for `f32` and 16 for `f64`.
+    ///
+    /// Fails, with an error at `span`, when `ty` is not `f32` or `f64`, when a decimal is too
+    /// large to be finite in `ty`, or when a hex literal has the wrong number of digits.
+    pub fn to_float(&self, ty: Type, span: SourceSpan) -> ParseResult<Float> {
+        let width = Float::width_for_type(ty).ok_or_else(|| ParserError::InvalidFloatLiteral {
+            span,
+            reason: format!("expected a floating-point type, `f32` or `f64`, got `{ty}`"),
+        })?;
+        match self {
+            Self::Bits(digits) => {
+                let expected = (width / 4) as usize;
+                if digits.len() != expected {
+                    return Err(ParserError::InvalidFloatLiteral {
+                        span,
+                        reason: format!(
+                            "a hex literal of type `{ty}` is its {width} bits, written with \
+                             exactly {expected} hex digits, but this has {}",
+                            digits.len()
+                        ),
+                    });
+                }
+                let bits = u64::from_str_radix(digits, 16).map_err(|err| {
+                    ParserError::InvalidFloatLiteral {
+                        span,
+                        reason: err.to_string(),
+                    }
+                })?;
+                Ok(if width == 32 {
+                    Float::from_bits32(bits as u32)
+                } else {
+                    Float::from_bits64(bits)
+                })
+            }
+            Self::Decimal { negative, text } => {
+                let overflow = || ParserError::InvalidFloatLiteral {
+                    span,
+                    reason: format!(
+                        "`{text}` does not fit in `{ty}`: it rounds to infinity, which is written \
+                         as hex bits, such as `0x{}`",
+                        if width == 32 {
+                            "7f800000"
+                        } else {
+                            "7ff0000000000000"
+                        }
+                    ),
+                };
+                let malformed = |err: &dyn core::fmt::Display| ParserError::InvalidFloatLiteral {
+                    span,
+                    reason: format!("`{text}` is not a float: {err}"),
+                };
+                if width == 32 {
+                    let magnitude: f32 = text.parse().map_err(|err| malformed(&err))?;
+                    if magnitude.is_infinite() {
+                        return Err(overflow());
+                    }
+                    Ok(Float::from_f32(if *negative { -magnitude } else { magnitude }))
+                } else {
+                    let magnitude: f64 = text.parse().map_err(|err| malformed(&err))?;
+                    if magnitude.is_infinite() {
+                        return Err(overflow());
+                    }
+                    Ok(Float::from_f64(if *negative { -magnitude } else { magnitude }))
+                }
+            }
+        }
+    }
+}
 
 /// An integer literal as written: its magnitude, and whether a `-` precedes it.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]

@@ -57,6 +57,12 @@ pub enum ParserError {
         span: SourceSpan,
         reason: String,
     },
+    #[error("invalid float literal")]
+    InvalidFloatLiteral {
+        #[label(primary, "{reason}")]
+        span: SourceSpan,
+        reason: String,
+    },
     #[error("invalid string")]
     InvalidString {
         #[label(primary, "{reason}")]

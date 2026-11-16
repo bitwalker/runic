@@ -7875,3 +7875,442 @@ builtin.module public @m {
         "{err}"
     );
 }
+
+mod floats {
+    use alloc::{format, rc::Rc, string::String, vec, vec::Vec};
+
+    use crate::{
+        Context, Float, Type,
+        dialects::builtin::attributes::FloatAttr,
+        parse::{
+            DefaultParser, Lexer, ParseResult, Parser, ParserConfig, ParserError, ParserExt,
+            ParserState, Scanner, Token, TokenStream,
+        },
+        print::AsmPrinter,
+        testing::text::Rng,
+    };
+
+    fn parser_for<'a>(context: &Rc<Context>, text: &'a str) -> DefaultParser<'a> {
+        let id = context.add_source("float.runic", text).unwrap();
+        let token_stream = TokenStream::new(id, Scanner::new(text));
+        DefaultParser::new(ParserState::new(ParserConfig::new(context.clone()), token_stream))
+    }
+
+    /// Parses `text` as a float literal of type `ty`.
+    fn parse_float(context: &Rc<Context>, text: &str, ty: Type) -> ParseResult<Float> {
+        parser_for(context, text)
+            .parse_float_literal(ty)
+            .map(|value| value.into_inner())
+    }
+
+    /// The reason of a float literal error.
+    fn float_error(context: &Rc<Context>, text: &str, ty: Type) -> String {
+        match parse_float(context, text, ty) {
+            Err(ParserError::InvalidFloatLiteral { reason, .. }) => reason,
+            Err(other) => panic!("`{text}`: not a float literal error: {other}"),
+            Ok(value) => panic!("`{text}` parsed as {value}"),
+        }
+    }
+
+    fn print_float(context: &Rc<Context>, value: Float) -> String {
+        let flags = Default::default();
+        let mut printer = AsmPrinter::fragment(context.clone(), &flags);
+        printer.print_float(value);
+        format!("{}", printer.finish())
+    }
+
+    fn tokens(text: &str) -> Vec<Token<'_>> {
+        Lexer::new(crate::diagnostics::SourceId::UNKNOWN, Scanner::new(text))
+            .map(|lexed| lexed.unwrap_or_else(|err| panic!("`{text}`: {err}")).1)
+            .filter(|token| *token != Token::Eof)
+            .collect()
+    }
+
+    #[test]
+    fn the_lexer_reads_each_shape_of_float() {
+        for text in [
+            "1.5",
+            "0.5",
+            "10.25",
+            "00.5",
+            "1.5e3",
+            "1.5E3",
+            "1.5e-3",
+            "1.5e+3",
+            "1e10",
+            "1E10",
+            "1e-10",
+            "1e+10",
+            "0e0",
+            "0e5",
+            "0.0e0",
+            "123456789.987654321e-12",
+        ] {
+            assert_eq!(tokens(text), [Token::Float(text)], "{text}");
+        }
+        assert_eq!(tokens("-1.5"), [Token::Minus, Token::Float("1.5")]);
+    }
+
+    #[test]
+    fn the_lexer_reads_text_without_a_fraction_or_exponent_as_before() {
+        for (text, expected) in [
+            ("1", vec![Token::Int("1")]),
+            ("0", vec![Token::Int("0")]),
+            ("1.", vec![Token::Int("1"), Token::Dot]),
+            ("0.", vec![Token::Int("0"), Token::Dot]),
+            ("1.x", vec![Token::Int("1"), Token::Dot, Token::BareIdent("x")]),
+            ("1.)", vec![Token::Int("1"), Token::Dot, Token::Rparen]),
+            ("1..2", vec![Token::Int("1"), Token::Dot, Token::Dot, Token::Int("2")]),
+            ("1...", vec![Token::Int("1"), Token::Ellipsis]),
+            ("1e", vec![Token::Int("1"), Token::BareIdent("e")]),
+            ("0e", vec![Token::Int("0"), Token::BareIdent("e")]),
+            ("1e+", vec![Token::Int("1"), Token::BareIdent("e"), Token::Plus]),
+            ("1e-x", vec![Token::Int("1"), Token::BareIdent("e-x")]),
+            ("1else", vec![Token::Int("1"), Token::BareIdent("else")]),
+            ("1.5e", vec![Token::Float("1.5"), Token::BareIdent("e")]),
+            ("1.5.3", vec![Token::Float("1.5"), Token::Dot, Token::Int("3")]),
+            ("0x1e5", vec![Token::Hex("1e5")]),
+            ("0x7ff8000000000000", vec![Token::Hex("7ff8000000000000")]),
+            ("0b101", vec![Token::Binary("101")]),
+            ("rec.0", vec![Token::BareIdent("rec.0")]),
+            ("a.1.5", vec![Token::BareIdent("a.1.5")]),
+            ("%1.5", vec![Token::PercentIdent("1"), Token::Dot, Token::Int("5")]),
+            ("%a.1", vec![Token::PercentIdent("a.1")]),
+            ("\"1.5 v1.2e3\"", vec![Token::String("1.5 v1.2e3")]),
+            ("i32 1.5", vec![Token::IntType(32), Token::Float("1.5")]),
+        ] {
+            assert_eq!(tokens(text), expected, "{text}");
+        }
+    }
+
+    /// What a file of the lit suite holds when it is about floats: a float attribute or a float
+    /// constant, the only places a float literal is written.
+    #[cfg(feature = "std")]
+    const FLOAT_CONSTRUCTS: &[&str] = &["#builtin.float", "arith.constantf"];
+
+    /// A file of the lit suite that writes no float construct lexes to no float token: the float
+    /// rule finds a float only where one is meant, so it changed how none of the files written
+    /// before floats existed is read. A file the lexer rejects (the tests of error messages) is
+    /// lexed up to the error.
+    #[cfg(feature = "std")]
+    #[test]
+    fn a_lit_file_without_a_float_construct_lexes_to_no_float() {
+        extern crate std;
+
+        fn collect(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("the lit directory") {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    collect(&path, files);
+                } else if path.extension().is_some_and(|ext| ext == "runic") {
+                    files.push(path);
+                }
+            }
+        }
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/lit");
+        let mut files = Vec::new();
+        collect(&root, &mut files);
+        assert!(files.len() > 100, "found only {} files under {}", files.len(), root.display());
+        for path in files {
+            let text = std::fs::read_to_string(&path).unwrap();
+            if FLOAT_CONSTRUCTS.iter().any(|construct| text.contains(construct)) {
+                continue;
+            }
+            let lexer = Lexer::new(crate::diagnostics::SourceId::UNKNOWN, Scanner::new(&text));
+            for lexed in lexer {
+                match lexed {
+                    Ok((start, Token::Float(float), _)) => {
+                        panic!("{}: a float token `{float}` at byte {start}", path.display())
+                    }
+                    Ok(_) => (),
+                    Err(_) => break,
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_decimal_literal_is_the_nearest_value() -> Result<(), ParserError> {
+        let context = Rc::new(Context::default());
+        let (f32, f64) = (context.f32(), context.f64());
+        for (text, ty, expected) in [
+            ("1.5", f64, Float::from_f64(1.5)),
+            ("-0.0", f64, Float::from_f64(-0.0)),
+            ("0.0", f32, Float::from_f32(0.0)),
+            ("-0.0", f32, Float::from_f32(-0.0)),
+            ("2.5e-3", f64, Float::from_f64(2.5e-3)),
+            ("1e10", f32, Float::from_f32(1e10)),
+            ("-1.0E+2", f64, Float::from_f64(-100.0)),
+            ("0.1", f32, Float::from_f32(0.1)),
+            ("0.1", f64, Float::from_f64(0.1)),
+            ("1.0e100", f64, Float::from_f64(1e100)),
+            // Too small to be anything but zero, or a subnormal: rounded, not an error
+            ("1e-400", f64, Float::from_f64(0.0)),
+            ("-1e-60", f32, Float::from_f32(-0.0)),
+            ("5e-324", f64, Float::from_bits64(1)),
+            // 2^24 + 1 is halfway between two f32 values: ties to even
+            ("16777217.0", f32, Float::from_f32(16777216.0)),
+            ("16777219.0", f32, Float::from_f32(16777220.0)),
+            // The largest f32, and a value just under the halfway point to infinity
+            ("3.4028235e38", f32, Float::from_f32(f32::MAX)),
+            ("3.40282356e38", f32, Float::from_f32(f32::MAX)),
+        ] {
+            assert_eq!(parse_float(&context, text, ty)?, expected, "{text}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_hex_literal_is_the_bits() -> Result<(), ParserError> {
+        let context = Rc::new(Context::default());
+        let (f32, f64) = (context.f32(), context.f64());
+        for (text, ty, expected) in [
+            ("0x7ff8000000000000", f64, Float::from_bits64(0x7ff8_0000_0000_0000)),
+            ("0xfff0000000000000", f64, Float::from_f64(f64::NEG_INFINITY)),
+            ("0x0000000000000001", f64, Float::from_bits64(1)),
+            ("0x7f800000", f32, Float::from_f32(f32::INFINITY)),
+            ("0xffc00001", f32, Float::from_bits32(0xffc0_0001)),
+            ("0x3F800000", f32, Float::from_f32(1.0)),
+        ] {
+            assert_eq!(parse_float(&context, text, ty)?, expected, "{text}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_decimal_integer_is_not_a_float_literal() {
+        let context = Rc::new(Context::default());
+        assert_eq!(
+            float_error(&context, "1", context.f64()),
+            "`1` is an integer literal: a float literal needs a `.` or an exponent, as in `1.0` \
+             or `1e0`"
+        );
+        assert_eq!(
+            float_error(&context, "-42", context.f32()),
+            "`42` is an integer literal: a float literal needs a `.` or an exponent, as in `42.0` \
+             or `42e0`"
+        );
+    }
+
+    #[test]
+    fn a_hex_literal_has_exactly_the_digits_of_its_type() {
+        let context = Rc::new(Context::default());
+        assert_eq!(
+            float_error(&context, "0x7f80000", context.f32()),
+            "a hex literal of type `f32` is its 32 bits, written with exactly 8 hex digits, but \
+             this has 7"
+        );
+        assert_eq!(
+            float_error(&context, "0x7f800000", context.f64()),
+            "a hex literal of type `f64` is its 64 bits, written with exactly 16 hex digits, but \
+             this has 8"
+        );
+        assert_eq!(
+            float_error(&context, "0x7ff00000000000000", context.f64()),
+            "a hex literal of type `f64` is its 64 bits, written with exactly 16 hex digits, but \
+             this has 17"
+        );
+    }
+
+    #[test]
+    fn a_minus_before_a_hex_literal_is_an_error() {
+        let context = Rc::new(Context::default());
+        assert_eq!(
+            float_error(&context, "-0x7f800000", context.f32()),
+            "a hex float literal cannot be negative: it is the bits of the value, so its sign is \
+             the top bit of `0x7f800000`"
+        );
+    }
+
+    #[test]
+    fn a_decimal_that_rounds_to_infinity_does_not_fit() {
+        let context = Rc::new(Context::default());
+        assert_eq!(
+            float_error(&context, "1e400", context.f64()),
+            "`1e400` does not fit in `f64`: it rounds to infinity, which is written as hex bits, \
+             such as `0x7ff0000000000000`"
+        );
+        assert_eq!(
+            float_error(&context, "1e39", context.f32()),
+            "`1e39` does not fit in `f32`: it rounds to infinity, which is written as hex bits, \
+             such as `0x7f800000`"
+        );
+        // It fits in the wider type.
+        assert!(parse_float(&context, "1e39", context.f64()).is_ok());
+        // The overflow is of the magnitude: a negative one is as large.
+        assert!(float_error(&context, "-1e400", context.f64()).contains("does not fit"));
+    }
+
+    #[test]
+    fn a_type_that_is_not_a_float_is_an_error() {
+        let context = Rc::new(Context::default());
+        for ty in [context.i32(), context.isize(), context.opaque_ptr_type()] {
+            assert_eq!(
+                float_error(&context, "1.5", ty),
+                format!("expected a floating-point type, `f32` or `f64`, got `{ty}`")
+            );
+        }
+    }
+
+    #[test]
+    fn something_that_is_not_a_literal_is_an_unexpected_token() {
+        let context = Rc::new(Context::default());
+        for text in ["foo", "0b101", "", "-", "-foo"] {
+            let err = parse_float(&context, text, context.f64()).unwrap_err();
+            assert!(!matches!(err, ParserError::InvalidFloatLiteral { .. }), "`{text}`: {err}");
+        }
+    }
+
+    #[test]
+    fn a_float_literal_has_the_span_of_its_text() {
+        let context = Rc::new(Context::default());
+        let (span, _) = parser_for(&context, "  -2.5e3 : f64")
+            .parse_float_literal(context.f64())
+            .unwrap()
+            .into_parts();
+        assert_eq!((span.range().start(), span.range().end()), (2, 8));
+    }
+
+    /// Prints `value` and reads the text back as a value of its own type.
+    fn round_trip(context: &Rc<Context>, value: Float) -> Float {
+        let text = print_float(context, value);
+        parse_float(context, &text, value.ty(context))
+            .unwrap_or_else(|err| panic!("{value:?} printed as `{text}`: {err}"))
+    }
+
+    #[test]
+    fn edge_values_print_and_parse_to_the_same_bits() {
+        let context = Rc::new(Context::default());
+        let singles = [
+            0x0000_0000u32, // 0.0
+            0x8000_0000,    // -0.0
+            0x0000_0001,    // the smallest subnormal
+            0x007f_ffff,    // the largest subnormal
+            0x0080_0000,    // the smallest normal
+            0x3f80_0000,    // 1.0
+            0x3f80_0001,    // just above 1.0
+            0x3f7f_ffff,    // just below 1.0
+            0x7f7f_ffff,    // the largest finite value
+            0xff7f_ffff,    // the smallest finite value
+            0x7f80_0000,    // +inf
+            0xff80_0000,    // -inf
+            0x7fc0_0000,    // the quiet NaN
+            0x7f80_0001,    // a signalling NaN
+            0xffc0_1234,    // a negative NaN with a payload
+            0x7fff_ffff,    // all payload bits set
+        ];
+        for bits in singles {
+            let value = Float::from_bits32(bits);
+            assert_eq!(round_trip(&context, value), value, "{bits:#010x}");
+        }
+        let doubles = [
+            0x0000_0000_0000_0000u64,
+            0x8000_0000_0000_0000,
+            0x0000_0000_0000_0001,
+            0x000f_ffff_ffff_ffff,
+            0x0010_0000_0000_0000,
+            0x3ff0_0000_0000_0000,
+            0x3ff0_0000_0000_0001,
+            0x3fef_ffff_ffff_ffff,
+            0x7fef_ffff_ffff_ffff,
+            0xffef_ffff_ffff_ffff,
+            0x7ff0_0000_0000_0000,
+            0xfff0_0000_0000_0000,
+            0x7ff8_0000_0000_0000,
+            0x7ff0_0000_0000_0001,
+            0xfff8_0000_dead_beef,
+            0x7fff_ffff_ffff_ffff,
+        ];
+        for bits in doubles {
+            let value = Float::from_bits64(bits);
+            assert_eq!(round_trip(&context, value), value, "{bits:#018x}");
+        }
+    }
+
+    /// The seed of a randomized test: `FLOAT_TEST_SEED` if set, else `default`.
+    fn seed(default: u64) -> u64 {
+        extern crate std;
+
+        match std::env::var("FLOAT_TEST_SEED") {
+            Ok(seed) => seed.parse().expect("FLOAT_TEST_SEED is a u64"),
+            Err(_) => default,
+        }
+    }
+
+    #[test]
+    fn random_bit_patterns_print_and_parse_to_the_same_bits() {
+        const SAMPLES: usize = 20_000;
+
+        let seed = seed(0x000f_10a7);
+        let context = Rc::new(Context::default());
+        let mut rng = Rng(seed);
+        for round in 0..SAMPLES {
+            let mut bits = rng.next_u64();
+            let mut single_bits = (bits >> 32) as u32;
+            // A quarter of the samples have a small exponent, to cover the subnormals and the
+            // smallest normals, which the uniform sample would almost never reach.
+            if round % 4 == 0 {
+                bits = bits & !(0x7ff << 52) | rng.below(4) << 52;
+                single_bits = single_bits & !(0xff << 23) | (rng.below(4) as u32) << 23;
+            }
+            let single = Float::from_bits32(single_bits);
+            let double = Float::from_bits64(bits);
+            for value in [single, double] {
+                assert_eq!(
+                    round_trip(&context, value),
+                    value,
+                    "seed {seed:#x} (FLOAT_TEST_SEED={seed}), round {round}, bits {:#x}",
+                    value.bits()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_float_attribute_prints_and_parses() -> Result<(), ParserError> {
+        let context = Rc::new(Context::default());
+        let unknown = context.unknown_type();
+        for (text, expected) in [
+            ("#builtin.float<1.5 : f64>", "#builtin.float<1.5 : f64>"),
+            ("#builtin.float<1.5 : f32>", "#builtin.float<1.5 : f32>"),
+            ("#builtin.float<-0.0 : f64>", "#builtin.float<-0.0 : f64>"),
+            ("#builtin.float<2.5e-3 : f64>", "#builtin.float<0.0025 : f64>"),
+            ("#builtin.float<1e100 : f64>", "#builtin.float<1.0e100 : f64>"),
+            ("#builtin.float<1.5E-7 : f32>", "#builtin.float<1.5e-7 : f32>"),
+            (
+                "#builtin.float<0x7ff8000000000000 : f64>",
+                "#builtin.float<0x7ff8000000000000 : f64>",
+            ),
+            ("#builtin.float<0x7f800000 : f32>", "#builtin.float<0x7f800000 : f32>"),
+            ("#builtin.float<0x3ff0000000000000 : f64>", "#builtin.float<1.0 : f64>"),
+        ] {
+            let attr = super::parse_attribute_text(&context, text, unknown)?;
+            assert_eq!(super::print_attribute_text(&context, &attr), expected, "{text}");
+            assert!(attr.borrow().is::<FloatAttr>());
+        }
+        // A body-less attribute is the 64-bit zero.
+        let attr = super::parse_attribute_text(&context, "#builtin.float", unknown)?;
+        assert_eq!(super::print_attribute_text(&context, &attr), "#builtin.float<0.0 : f64>");
+        Ok(())
+    }
+
+    #[test]
+    fn a_float_attribute_with_a_bad_literal_or_type_is_a_diagnostic() {
+        let context = Rc::new(Context::default());
+        let unknown = context.unknown_type();
+        for (text, message) in [
+            ("#builtin.float<1 : f64>", "is an integer literal"),
+            ("#builtin.float<1.5 : i32>", "expected a floating-point type"),
+            ("#builtin.float<0x7f800000 : f64>", "exactly 16 hex digits"),
+            ("#builtin.float<-0x7f800000 : f32>", "cannot be negative"),
+            ("#builtin.float<1e400 : f64>", "does not fit"),
+            ("#builtin.float<1.5>", "Expected(\":\")"),
+        ] {
+            let err = super::parse_attribute_text(&context, text, unknown)
+                .map(|_| ())
+                .expect_err(text);
+            assert!(format!("{err:?}").contains(message), "{text}: {err:?}");
+        }
+    }
+}

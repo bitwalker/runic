@@ -29,6 +29,10 @@ pub enum Token<'input> {
     String(&'input str),
     /// 128
     Int(&'input str),
+    /// 1.5, 1.5e-3, 2e10: digits with a fractional part, an exponent, or both. The token holds the
+    /// text as written. `1.` followed by no digit and `1e` followed by no exponent digits are not
+    /// floats: they lex as an `Int` and what follows it.
+    Float(&'input str),
     /// 0x0F
     Hex(&'input str),
     /// 0b00001111
@@ -124,6 +128,7 @@ impl Token<'_> {
             | Self::BangIdent(s)
             | Self::String(s)
             | Self::Int(s)
+            | Self::Float(s)
             | Self::Hex(s)
             | Self::Binary(s) => CompactString::from(*s),
             Self::Comment => CompactString::const_new("comment"),
@@ -209,7 +214,7 @@ impl fmt::Display for Token<'_> {
                 }
                 f.write_char('"')
             }
-            Self::Int(digits) => f.write_str(digits),
+            Self::Int(digits) | Self::Float(digits) => f.write_str(digits),
             Self::Hex(digits) => write!(f, "0x{digits}"),
             Self::Binary(digits) => write!(f, "0b{digits}"),
             Self::Comment => f.write_str("comment"),

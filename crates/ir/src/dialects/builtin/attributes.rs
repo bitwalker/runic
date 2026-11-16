@@ -3,6 +3,7 @@ mod boolean;
 mod bytes;
 mod data_layout;
 pub(crate) mod effects;
+mod float;
 mod integer;
 mod list;
 mod local_variable;
@@ -24,6 +25,7 @@ pub use self::{
     effects::{
         DeclaredEffects, DeclaredEffectsAttr, MemoryEffectDescriptor, remap_declared_effects,
     },
+    float::FloatAttr,
     integer::*,
     list::{List, ListAttr},
     local_variable::{LocalVariable, LocalVariableAttr},

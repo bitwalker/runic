@@ -833,6 +833,15 @@ impl<'a> AsmPrinter<'a> {
         self.document += display(value);
     }
 
+    /// Print a float value as [crate::Float]'s text form: the shortest decimal digits that read
+    /// back to the same bits, with a `.` in the mantissa, for a finite value; the bits in hex, with
+    /// every digit, for a NaN or an infinity. The type is not printed.
+    pub fn print_float(&mut self, value: crate::Float) {
+        use crate::formatter::*;
+
+        self.document += display(value);
+    }
+
     /// Print a Rust integer in decimal, as it is (signed if its type is signed)
     pub fn print_decimal_integer<I: PrimitiveInteger>(&mut self, value: I) {
         use crate::formatter::*;

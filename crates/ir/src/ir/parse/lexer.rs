@@ -343,7 +343,8 @@ impl<'input> Lexer<'input> {
                     self.skip();
                     self.lex_bin()
                 }
-                '0'..='9' => self.lex_decimal(),
+                // `lex_decimal` reads a lone `0` as an `Int`, and a `0` that starts a float
+                '0'..='9' | '.' | 'e' | 'E' => self.lex_decimal(),
                 _ => pop!(self, Token::Int("0")),
             },
             '1'..='9' => self.lex_decimal(),
@@ -531,8 +532,40 @@ impl<'input> Lexer<'input> {
             self.skip();
         }
 
-        let digits = self.slice();
-        Ok(Token::Int(digits))
+        // A `.` makes a float only if a digit follows it, and an `e` only if an exponent follows
+        // it, so that `1.`, `1..2`, `1...` and `1else` lex as they did before floats existed.
+        let mut is_float = false;
+        if self.read() == '.' && self.peek().is_ascii_digit() {
+            self.skip();
+            while let '0'..='9' = self.read() {
+                self.skip();
+            }
+            is_float = true;
+        }
+        if matches!(self.read(), 'e' | 'E') {
+            let has_exponent = match self.peek() {
+                '0'..='9' => true,
+                '+' | '-' => self.peek_next().is_ascii_digit(),
+                _ => false,
+            };
+            if has_exponent {
+                self.skip();
+                if matches!(self.read(), '+' | '-') {
+                    self.skip();
+                }
+                while let '0'..='9' = self.read() {
+                    self.skip();
+                }
+                is_float = true;
+            }
+        }
+
+        let text = self.slice();
+        Ok(if is_float {
+            Token::Float(text)
+        } else {
+            Token::Int(text)
+        })
     }
 
     fn lex_hex(&mut self) -> Result<Token<'input>, ParserError> {
