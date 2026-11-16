@@ -8,7 +8,7 @@ use runic_ir::{
     dominance::DominanceInfo,
     matchers::{self, Matcher},
     pass::{Pass, PassExecutionState, PostPassStatus},
-    traits::{BinaryOp, ConstantLike, ReturnLike, Transparent},
+    traits::{BinaryOp, ConstantLike, ReturnLike, TailCallLike, Transparent},
 };
 
 /// Check whether `operation` is the sole _non-transparent_ user of `value`.
@@ -22,7 +22,7 @@ fn is_sole_non_transparent_user(value: &dyn Value, operation: OperationRef) -> b
 }
 
 /// Whether any region of `op` (transitively) contains an operation that LEAVES the region it
-/// terminates — a return, an `scf.break`, an `scf.continue`.
+/// terminates — a return, a tail call, an `scf.break`, an `scf.continue`.
 fn regions_contain_an_exit(op: &Operation) -> bool {
     let root = op.as_operation_ref();
     let mut found = false;
@@ -31,6 +31,7 @@ fn regions_contain_an_exit(op: &Operation) -> bool {
             return;
         }
         found |= nested.implements::<dyn ReturnLike>()
+            || nested.implements::<dyn TailCallLike>()
             || nested.implements::<dyn RegionExitTerminatorOpInterface>();
     });
     found
@@ -1079,6 +1080,81 @@ mod tests {
             let udiv = text.find("arith.udiv").unwrap();
             assert!(udiv > text.find("scf.if").unwrap(), "{name}: {text}");
             assert!(udiv < text.find("} else {").unwrap(), "{name}: {text}");
+        }
+        Ok(())
+    }
+
+    /// An operation whose regions hold a tail call holds an exit, as one whose regions hold a
+    /// return does: both leave the function from inside the operation. The operations here have no
+    /// `scf.yield`, which is return-like and would count by itself.
+    #[test]
+    fn a_tail_call_in_a_region_is_an_exit() {
+        use runic_ir::{Operation, SymbolTable, dialects::builtin::Module};
+
+        let exits = |exit: &str| {
+            let context = Rc::new(Context::default());
+            let text = alloc::format!(
+                "builtin.module public @m {{
+    builtin.function public extern(\"C\") @g(i32) -> i32;
+    builtin.function public extern(\"C\") @f(%c: i1, %a: i32) -> i32 {{
+        %v = scf.if %c then {{
+            {exit}
+        }} else {{
+            {exit}
+        }} : (i1) -> (i32);
+        builtin.ret %v : (i32);
+    }};
+}};"
+            );
+            let module = parse::parse::<Module>(ParserConfig::new(context.clone()), "sink", text)
+                .into_result()
+                .unwrap();
+            let function = module.borrow().symbol_manager().lookup_op("f").unwrap();
+            let mut found = None;
+            function.borrow().prewalk_all(|op: &Operation| {
+                if op.name().name() == "if" {
+                    found = Some(op.as_operation_ref());
+                }
+            });
+            super::regions_contain_an_exit(&found.unwrap().borrow())
+        };
+        assert!(exits(r#"builtin.tail_call @g(%a) : extern("C") (i32) -> i32;"#));
+        assert!(exits("%r = arith.constant 1 : i32; builtin.ret %r : (i32);"));
+    }
+
+    /// An operation that holds a tail call stays where it is: it has unknown effects, and it
+    /// holds an exit, and neither pass moves it into the loop condition that reads its result.
+    #[test]
+    fn an_operation_holding_a_tail_call_is_not_sunk_into_a_loop_condition() -> Result<(), Report> {
+        let body = r#"
+    %v = scf.if %c then {
+        builtin.tail_call @unknown(%a) : extern("C") (i32) -> i32;
+    } else {
+        builtin.tail_call @unknown(%b) : extern("C") (i32) -> i32;
+    } : (i1) -> (i32);
+    %zero = arith.constant 0 : i32;
+    %n = scf.while %zero before {
+    ^head(%i: i32):
+        %k = arith.cmpi ult %i, %v;
+        scf.condition %k, %i : (i1, i32);
+    } after {
+    ^body(%j: i32):
+        %one = arith.constant 1 : i32;
+        %next = arith.add %j, %one;
+        scf.yield %next : (i32);
+    } : (i32) -> i32;
+    builtin.ret %n : (i32);"#;
+        for pass in [
+            Box::<SinkOperandDefs>::default() as Box<dyn runic_ir::pass::OperationPass>,
+            Box::<ControlFlowSink>::default(),
+        ] {
+            let name = pass.name();
+            let text = run_with_callees(pass, body)?;
+            assert!(
+                text.find("scf.if").unwrap() < text.find("scf.while").unwrap(),
+                "{name}: {text}"
+            );
+            assert_eq!(text.matches("builtin.tail_call").count(), 2, "{name}: {text}");
         }
         Ok(())
     }

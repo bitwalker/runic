@@ -1,0 +1,136 @@
+// RUN: runic-opt %s -p 'canonicalizer,cse,sccp,canonicalizer,dce' | filecheck %s
+// RUN: runic-opt %s -p 'canonicalizer,cse,sccp,canonicalizer,dce' | runic-opt - --verify-roundtrip | filecheck %s
+
+// What the pipeline `canonicalizer,cse,sccp,canonicalizer,dce` keeps of a tail call, which is
+// everything: a tail call is a terminator that leaves the function with unknown effects, so no
+// pass removes, merges, copies or moves one, the operations that compute its arguments stay, the
+// function it names stays, and a call of a function that tail calls is not folded, as nothing is
+// known of what the function returns. (The `sccp` pass does not follow calls today, so these
+// checks hold with or without that; the analyses that do, run across calls, are tested in
+// `runic-analysis`.) The second RUN line reads the output back.
+builtin.module public @tail_call_pipeline {
+    // Two kinds of caller: the function is entered with 1 and with 2, which no pass assumes.
+    // CHECK-LABEL: @called_twice(
+    // CHECK-SAME: [[X:%[0-9]+]]: i32) -> i32 {
+    // CHECK: arith.add [[X]],
+    builtin.function private extern("C") @called_twice(%x: i32) -> i32 {
+        %one = arith.constant 1 : i32;
+        %r = arith.add %x, %one;
+        builtin.ret %r : (i32);
+    };
+    // CHECK-LABEL: @by_call(
+    // CHECK: builtin.call @called_twice(
+    builtin.function public extern("C") @by_call() -> i32 {
+        %c = arith.constant 1 : i32;
+        %r = builtin.call @called_twice(%c) : extern("C") (i32) -> i32;
+        builtin.ret %r : (i32);
+    };
+    // The computation of the argument stays, the dead one beside it goes.
+    // CHECK-LABEL: @by_tail_call(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[TWO:%[0-9]+]] = arith.constant 2 : i32;
+    // CHECK-NEXT: [[SUM:%[0-9]+]] = arith.add [[A]], [[TWO]];
+    // CHECK-NEXT: builtin.tail_call @called_twice([[SUM]]) : extern("C") (i32) -> i32;
+    builtin.function public extern("C") @by_tail_call(%a: i32) -> i32 {
+        %two = arith.constant 2 : i32;
+        %sum = arith.add %a, %two;
+        %dead = arith.mul %a, %a;
+        builtin.tail_call @called_twice(%sum) : extern("C") (i32) -> i32;
+    };
+
+    // A function whose only exit is a tail call, and its caller: the call is not folded to 5.
+    // CHECK-LABEL: @five(
+    // CHECK-NEXT: arith.constant 5 : i32;
+    builtin.function private extern("C") @five() -> i32 {
+        %c = arith.constant 5 : i32;
+        builtin.ret %c : (i32);
+    };
+    // CHECK-LABEL: @through(
+    // CHECK-NEXT: builtin.tail_call @five() : extern("C") () -> i32;
+    builtin.function private extern("C") @through() -> i32 {
+        builtin.tail_call @five() : extern("C") () -> i32;
+    };
+    // CHECK-LABEL: @use_through(
+    // CHECK-NEXT: [[R:%[0-9]+]] = builtin.call @through() : extern("C") () -> i32;
+    // CHECK-NEXT: builtin.ret [[R]] : (i32);
+    builtin.function public extern("C") @use_through() -> i32 {
+        %r = builtin.call @through() : extern("C") () -> i32;
+        builtin.ret %r : (i32);
+    };
+
+    // A return of 7 and a tail call of a function that returns 9: the call is not folded to 7.
+    // CHECK-LABEL: @nine(
+    // CHECK-NEXT: arith.constant 9 : i32;
+    builtin.function private extern("C") @nine() -> i32 {
+        %c = arith.constant 9 : i32;
+        builtin.ret %c : (i32);
+    };
+    // CHECK-LABEL: @two_exits(
+    // CHECK: builtin.ret
+    // CHECK: builtin.tail_call @nine() : extern("C") () -> i32;
+    builtin.function private extern("C") @two_exits(%c: i1) -> i32 {
+        cf.cond_br %c ^seven, ^nine : (i1);
+    ^seven:
+        %s = arith.constant 7 : i32;
+        builtin.ret %s : (i32);
+    ^nine:
+        builtin.tail_call @nine() : extern("C") () -> i32;
+    };
+    // CHECK-LABEL: @use_two_exits(
+    // CHECK-NEXT: [[R:%[0-9]+]] = builtin.call @two_exits(
+    // CHECK-NEXT: builtin.ret [[R]] : (i32);
+    builtin.function public extern("C") @use_two_exits(%c: i1) -> i32 {
+        %r = builtin.call @two_exits(%c) : extern("C") (i1) -> i32;
+        builtin.ret %r : (i32);
+    };
+
+    // A tail call in the arm of an `scf.if` is an exit of the function: the call of the function
+    // is not folded to the 4 it returns after the `scf.if`.
+    // CHECK-LABEL: @in_an_arm(
+    // CHECK: scf.if
+    // CHECK-NEXT: builtin.tail_call @nine() : extern("C") () -> i32;
+    builtin.function private extern("C") @in_an_arm(%c: i1) -> i32 {
+        scf.if %c then {
+            builtin.tail_call @nine() : extern("C") () -> i32;
+        } else {
+            scf.yield : ();
+        } : (i1) -> ();
+        %n = arith.constant 4 : i32;
+        builtin.ret %n : (i32);
+    };
+    // CHECK-LABEL: @use_in_an_arm(
+    // CHECK-NEXT: [[R:%[0-9]+]] = builtin.call @in_an_arm(
+    // CHECK-NEXT: builtin.ret [[R]] : (i32);
+    builtin.function public extern("C") @use_in_an_arm(%c: i1) -> i32 {
+        %r = builtin.call @in_an_arm(%c) : extern("C") (i1) -> i32;
+        builtin.ret %r : (i32);
+    };
+
+    // Identical tail calls in two blocks stay two, and the indirect form stays; a function
+    // reference as the callee makes it a direct tail call.
+    // CHECK-LABEL: @two_identical(
+    // CHECK: builtin.tail_call @five_arg(
+    // CHECK: builtin.tail_call @five_arg(
+    builtin.function public extern("C") @two_identical(%c: i1, %a: i32) -> i32 {
+        cf.cond_br %c ^x, ^y : (i1);
+    ^x:
+        builtin.tail_call @five_arg(%a) : extern("C") (i32) -> i32;
+    ^y:
+        builtin.tail_call @five_arg(%a) : extern("C") (i32) -> i32;
+    };
+    builtin.function public extern("C") @five_arg(%a: i32) -> i32 {
+        builtin.ret %a : (i32);
+    };
+    // CHECK-LABEL: @indirect(
+    // CHECK-SAME: [[F:%[0-9]+]]: (i32) -> i32, [[A:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: builtin.tail_call_indirect [[F]]([[A]]) : extern("C") (i32) -> i32;
+    builtin.function public extern("C") @indirect(%f: (i32) -> i32, %a: i32) -> i32 {
+        builtin.tail_call_indirect %f(%a) : extern("C") (i32) -> i32;
+    };
+    // CHECK-LABEL: @through_reference(
+    // CHECK-NEXT: builtin.tail_call @five_arg(
+    builtin.function public extern("C") @through_reference(%a: i32) -> i32 {
+        %f = builtin.function_ref @five_arg : (i32) -> i32;
+        builtin.tail_call_indirect %f(%a) : extern("C") (i32) -> i32;
+    };
+};

@@ -426,4 +426,5 @@ mod pipeline_runs;
 mod pipeline_text;
 mod printing;
 mod registry;
+mod tail_calls;
 mod wide;

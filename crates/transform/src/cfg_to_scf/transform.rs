@@ -279,7 +279,15 @@ impl<'a> TransformationContext<'a> {
                 let exit_block = exit_block.borrow();
                 let exit_args = exit_block.arguments().as_value_range();
                 log::trace!(target: "cfg-to-scf", "rewriting original return-like op operands to {exit_args}");
-                return_like_op.set_operands(exit_args);
+                // Each operand takes the block argument that stands for it, where it is: the
+                // operation keeps the operand groups it was built with (`set_operands` would put
+                // all of them in one group, which an operation with several groups rejects).
+                debug_assert_eq!(return_like_op.num_operands(), exit_args.len());
+                for (operand, exit_arg) in
+                    return_like_op.operands_mut().iter_mut().zip(exit_args.iter())
+                {
+                    operand.borrow_mut().set(exit_arg);
+                }
             }
         }
 

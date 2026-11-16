@@ -1,0 +1,119 @@
+// RUN: runic-opt %s -p cfg-to-scf | filecheck %s
+// RUN: runic-opt %s -p cfg-to-scf | runic-opt - --verify-roundtrip | filecheck %s
+
+// cfg-to-scf treats a tail call as an exit of the function, as it treats a `builtin.ret`: the
+// exits that are the same operation with the same attributes and operand types become one exit
+// that takes its operands from an `scf.if`. The merged operation keeps the operand groups of the
+// original (a `builtin.tail_call_indirect` has the callee in one group and the arguments in
+// another). Every output verifies, and the second RUN line reads it back.
+builtin.module public @cfg_to_scf_tail_call {
+    builtin.function public extern("C") @g(i32) -> i32;
+    builtin.function public extern("C") @h(i32) -> i32;
+
+    // One tail call is one exit: nothing changes.
+    // CHECK-LABEL: @one_tail_call(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: builtin.tail_call @g([[A]]) : extern("C") (i32) -> i32;
+    builtin.function public extern("C") @one_tail_call(%a: i32) -> i32 {
+        builtin.tail_call @g(%a) : extern("C") (i32) -> i32;
+    };
+
+    // Tail calls of one callee from two blocks are one exit that takes the argument from the `scf.if`.
+    // CHECK-LABEL: @same_callee(
+    // CHECK-SAME: [[C:%[0-9]+]]: i1, [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[X:%[0-9]+]] = scf.if [[C]] then {
+    // CHECK-NEXT: scf.yield [[A]] : (i32);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: scf.yield [[B]] : (i32);
+    // CHECK-NEXT: } : (i1) -> (i32);
+    // CHECK-NEXT: builtin.tail_call @g([[X]]) : extern("C") (i32) -> i32;
+    builtin.function public extern("C") @same_callee(%c: i1, %a: i32, %b: i32) -> i32 {
+        cf.cond_br %c ^x, ^y : (i1);
+    ^x:
+        builtin.tail_call @g(%a) : extern("C") (i32) -> i32;
+    ^y:
+        builtin.tail_call @g(%b) : extern("C") (i32) -> i32;
+    };
+
+    // Tail calls of two callees and a return are three exits, and the dispatch between them stays
+    // a `cf.switch` for now: the pass does not lift a region with more than one kind of exit into
+    // structured control flow. Removing the dispatch is later work, and this output is what the
+    // pass produces today, not what it should.
+    // CHECK-LABEL: @three_exits(
+    // CHECK-SAME: [[S:%[0-9]+]]: i32, [[A:%[0-9]+]]: i32) -> i32 {
+    // CHECK: cf.switch [[S]]
+    // CHECK: builtin.tail_call @g([[A]]) : extern("C") (i32) -> i32;
+    // CHECK: builtin.tail_call @h([[A]]) : extern("C") (i32) -> i32;
+    // CHECK: builtin.ret [[A]] : (i32);
+    builtin.function public extern("C") @three_exits(%s: i32, %a: i32) -> i32 {
+        cf.switch %s [#builtin.i32<0> -> ^h_exit, #builtin.i32<1> -> ^r_exit], ^g_exit : (i32);
+    ^g_exit:
+        builtin.tail_call @g(%a) : extern("C") (i32) -> i32;
+    ^h_exit:
+        builtin.tail_call @h(%a) : extern("C") (i32) -> i32;
+    ^r_exit:
+        builtin.ret %a : (i32);
+    };
+
+    // The same for `builtin.tail_call_indirect`, whose callee and arguments are two operand groups:
+    // the merged exit takes both from the `scf.if`.
+    // CHECK-LABEL: @indirect_same(
+    // CHECK-SAME: [[C:%[0-9]+]]: i1, [[F:%[0-9]+]]: (i32) -> i32, [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[FX:%[0-9]+]], [[AX:%[0-9]+]] = scf.if [[C]] then {
+    // CHECK-NEXT: scf.yield [[F]], [[A]] : ((i32) -> i32, i32);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: scf.yield [[F]], [[B]] : ((i32) -> i32, i32);
+    // CHECK-NEXT: } : (i1) -> ((i32) -> i32, i32);
+    // CHECK-NEXT: builtin.tail_call_indirect [[FX]]([[AX]]) : extern("C") (i32) -> i32;
+    builtin.function public extern("C") @indirect_same(%c: i1, %f: (i32) -> i32, %a: i32, %b: i32) -> i32 {
+        cf.cond_br %c ^x, ^y : (i1);
+    ^x:
+        builtin.tail_call_indirect %f(%a) : extern("C") (i32) -> i32;
+    ^y:
+        builtin.tail_call_indirect %f(%b) : extern("C") (i32) -> i32;
+    };
+
+    // Two indirect tail calls of the same signature and a return: the tail calls are one exit, as
+    // they would be in the `@indirect_same` above, so there are two exits, and an `scf.index_switch`
+    // yields the arguments of each and which one to take. The `cf.switch` that dispatches between
+    // the two exits stays for now; removing it is later work, and this is what the pass produces
+    // today.
+    // CHECK-LABEL: @indirect_and_return(
+    // CHECK: scf.index_switch
+    // CHECK: cf.switch
+    // CHECK: builtin.tail_call_indirect {{%[0-9]+}}({{%[0-9]+}}) : extern("C") (i32) -> i32;
+    // CHECK: builtin.ret
+    builtin.function public extern("C") @indirect_and_return(%s: i32, %f: (i32) -> i32, %k: (i32) -> i32, %a: i32) -> i32 {
+        cf.switch %s [#builtin.i32<0> -> ^k_exit, #builtin.i32<1> -> ^r_exit], ^f_exit : (i32);
+    ^f_exit:
+        builtin.tail_call_indirect %f(%a) : extern("C") (i32) -> i32;
+    ^k_exit:
+        builtin.tail_call_indirect %k(%a) : extern("C") (i32) -> i32;
+    ^r_exit:
+        builtin.ret %a : (i32);
+    };
+
+    // A tail call inside a loop body is an exit from a cycle: the loop leaves with the value it
+    // passes, and the tail call is after the loop.
+    // CHECK-LABEL: @in_loop(
+    // CHECK: scf.while
+    // CHECK: scf.condition
+    // CHECK: builtin.tail_call @g(
+    // CHECK: builtin.ret
+    builtin.function public extern("C") @in_loop(%n: i32, %a: i32) -> i32 {
+        %zero = arith.constant 0 : i32;
+        cf.br ^head(%zero : i32);
+    ^head(%i: i32):
+        %done = arith.cmpi uge %i, %n;
+        cf.cond_br %done ^exit, ^body : (i1);
+    ^body:
+        %one = arith.constant 1 : i32;
+        %next = arith.add %i, %one;
+        %hit = arith.cmpi eq %next, %a;
+        cf.cond_br %hit ^leave, ^head(%next : i32) : (i1);
+    ^leave:
+        builtin.tail_call @g(%next) : extern("C") (i32) -> i32;
+    ^exit:
+        builtin.ret %i : (i32);
+    };
+};
