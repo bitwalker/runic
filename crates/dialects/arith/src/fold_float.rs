@@ -5,9 +5,11 @@
 //! operation has, read the operand constants, compute the result with a closure over
 //! [Float]s, and create a new attribute for it.
 //!
-//! A fold never produces a NaN: which NaN an operation gives (its sign and payload) differs between
-//! hosts and engines, so the closures return `None` for a result that is one, and the operation is
-//! left to run. A comparison is deterministic, NaN operands included, and does fold.
+//! An operation that computes a NaN does not fold: which NaN it gives (its sign and payload) differs
+//! between hosts and engines, so the closures of `addf`, `subf`, `mulf`, `divf`, `fpext` and
+//! `fptrunc` return `None` for a result that is one, and the operation is left to run. An operation
+//! that is exact on bits folds for every bit pattern: `bitcast`, and `negf`, which flips the sign
+//! bit (see [negated]). A comparison is deterministic, NaN operands included, and does fold.
 
 use alloc::rc::Rc;
 

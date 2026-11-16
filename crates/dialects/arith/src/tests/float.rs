@@ -372,14 +372,21 @@ fn an_operation_with_one_constant_operand_does_not_fold() {
 }
 
 #[test]
-fn negation_folds_by_flipping_the_sign_bit_unless_the_operand_is_a_nan() {
+fn negation_folds_by_flipping_the_sign_bit_of_every_constant_a_nan_included() {
     let negate = |value| fold_floats(&[value], |b, v| b.negf(v[0], SPAN).unwrap());
     assert_eq!(negate(d(1.5)), Some(Folded::Float(d(-1.5))));
     assert_eq!(negate(d(0.0)), Some(Folded::Float(d(-0.0))));
     assert_eq!(negate(d(-0.0)), Some(Folded::Float(d(0.0))));
     assert_eq!(negate(s(f32::INFINITY)), Some(Folded::Float(s(f32::NEG_INFINITY))));
-    assert_eq!(negate(d(f64::NAN)), None);
-    assert_eq!(negate(Float::from_bits32(0xffc0_0001)), None);
+    // A NaN keeps its payload and has its sign flipped: the operation is exact on bits.
+    assert_eq!(
+        negate(Float::from_bits32(0xffc0_0001)),
+        Some(Folded::Float(Float::from_bits32(0x7fc0_0001)))
+    );
+    assert_eq!(
+        negate(Float::from_bits64(0x7ff8_0000_0000_0007)),
+        Some(Folded::Float(Float::from_bits64(0xfff8_0000_0000_0007)))
+    );
 }
 
 #[test]
@@ -471,11 +478,9 @@ fn a_seeded_sample_of_bit_patterns_folds_to_exactly_the_host_bits() {
         }
         match fold_floats(&[a], |bld, v| bld.negf(v[0], SPAN).unwrap()) {
             Some(Folded::Float(got)) => {
-                assert!(!a.is_nan());
                 assert_eq!(got.bits(), a.bits() ^ (1 << (a.width() - 1)));
             }
-            None => assert!(a.is_nan()),
-            other => panic!("{other:?}"),
+            other => panic!("negf of {a:?} did not fold to the flipped bits: {other:?}"),
         }
     }
     assert!(folded.iter().all(|count| *count > 100), "{folded:?}");

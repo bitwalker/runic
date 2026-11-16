@@ -3,9 +3,9 @@
 
 // The folds of the floating-point operations of `arith`: an operation whose operands are constants
 // folds to a constant computed in the width of its type, and the constants it read are erased as
-// dead. A fold never gives a NaN, since which NaN an operation gives differs between hosts and
-// engines: `0.0 / 0.0`, `inf - inf` and an operand that is a NaN stay as they are, while
-// `1.0 / 0.0` is an infinity and does not trap. A comparison folds even on NaNs. An operation
+// dead. An operation that computes a NaN does not fold, since which NaN it gives differs between
+// hosts and engines: `0.0 / 0.0`, `inf - inf` and an operand that is a NaN stay as they are, while
+// `1.0 / 0.0` is an infinity and does not trap. `arith.negf` is exact on bits and folds on a NaN. A comparison folds even on NaNs. An operation
 // with one constant operand does not fold: `x + 0.0` is not `x`, it changes `-0.0`. The second RUN
 // line reads the output back.
 builtin.module public @arith_float_fold {
@@ -69,14 +69,13 @@ builtin.module public @arith_float_fold {
     };
 
     // What would be a NaN does not fold: `0.0 / 0.0`, `inf - inf`, `0.0 * inf`, and every
-    // operation on a NaN operand, `arith.negf` of a NaN included. The constants stay as they are.
+    // operation on a NaN operand. The constants stay as they are.
     // CHECK-LABEL: @nan(
     // CHECK: arith.divf
     // CHECK: arith.subf
     // CHECK: arith.mulf
     // CHECK: arith.addf
-    // CHECK: arith.negf
-    builtin.function public extern("C") @nan() -> (f64, f64, f64, f64, f64) {
+    builtin.function public extern("C") @nan() -> (f64, f64, f64, f64) {
         %zero = arith.constantf 0.0 : f64;
         %infinity = arith.constantf 0x7ff0000000000000 : f64;
         %nan = arith.constantf 0x7ff8000000000000 : f64;
@@ -85,8 +84,21 @@ builtin.module public @arith_float_fold {
         %b = arith.subf %infinity, %infinity;
         %c = arith.mulf %zero, %infinity;
         %d = arith.addf %nan, %one;
-        %e = arith.negf %nan;
-        builtin.ret %a, %b, %c, %d, %e : (f64, f64, f64, f64, f64);
+        builtin.ret %a, %b, %c, %d : (f64, f64, f64, f64);
+    };
+
+    // `arith.negf` flips the sign bit of every bit pattern, so it folds on a NaN too, and the
+    // payload is kept.
+    // CHECK-LABEL: @negated_nan(
+    // CHECK-NEXT: [[A:%[0-9]+]] = arith.constantf 0xfff8000000000007 : f64;
+    // CHECK-NEXT: [[B:%[0-9]+]] = arith.constantf 0x7fc00001 : f32;
+    // CHECK-NEXT: builtin.ret [[A]], [[B]] : (f64, f32);
+    builtin.function public extern("C") @negated_nan() -> (f64, f32) {
+        %nan = arith.constantf 0x7ff8000000000007 : f64;
+        %signed_nan = arith.constantf 0xffc00001 : f32;
+        %a = arith.negf %nan;
+        %b = arith.negf %signed_nan;
+        builtin.ret %a, %b : (f64, f32);
     };
 
     // A comparison is deterministic and folds, NaNs included: a NaN is unordered with everything,

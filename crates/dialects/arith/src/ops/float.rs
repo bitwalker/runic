@@ -247,7 +247,9 @@ fold_float_one!(Divf, |_op| |[a, b]| FloatBinary::Div.apply(a, b));
 /// Floating-point negation: flips the sign bit and nothing else, for every bit pattern, NaNs
 /// included (a NaN keeps its payload).
 ///
-/// It is free of effects and never traps. It folds on a constant that is not a NaN.
+/// It is free of effects and never traps. It folds on every constant, NaNs included: a sign-bit
+/// flip is exact (IEEE 754-2019 negation, LLVM's `fneg` and Wasm's `fN.neg` are the same), so the
+/// result does not depend on the host.
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
 #[operation(
     dialect = ArithDialect,
@@ -262,7 +264,7 @@ pub struct Negf {
 }
 
 infer_float_return_ty!(Negf, operand);
-fold_float_one!(Negf, |_op| |[a]| (!a.is_nan()).then(|| negated(a)));
+fold_float_one!(Negf, |_op| |[a]| Some(negated(a)));
 
 /// Floating-point comparison: `arith.cmpf olt %a, %b` is `1` if `%a` is ordered and less than
 /// `%b`, and `0` otherwise.

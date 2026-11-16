@@ -7,9 +7,11 @@
 //! `arith.constantf`, `addf`, `subf`, `mulf`, `divf`, `negf` and `cmpf` work on `f32` and `f64`
 //! with IEEE 754-2019 semantics, rounding to nearest, ties to even. None of them traps: a division
 //! by zero gives an infinity or a NaN. When a result is a NaN, its sign and payload are
-//! unspecified, and no fold produces one (which NaN an operation gives differs between hosts and
-//! engines), so an operation whose result would be a NaN is left in place. A comparison is
-//! deterministic and does fold, NaN operands included. No float operation has an algebraic
+//! unspecified. An operation that computes a NaN (`addf`, `subf`, `mulf`, `divf`, and `fpext` and
+//! `fptrunc` of a NaN) does not fold, because which NaN it gives differs between hosts and engines,
+//! so it is left in place. An operation that is exact on bits folds for every bit pattern: `bitcast`,
+//! and `negf`, which flips the sign bit and keeps the payload. A comparison is deterministic and
+//! does fold, NaN operands included. No float operation has an algebraic
 //! simplification (`x + 0.0` is not `x`: it changes `-0.0`), and the dialect has no float
 //! canonicalization pattern; only folds on constant operands.
 //!
@@ -26,9 +28,9 @@
 //! the truncated value is not representable in the result type (for `fptoui`, a negative value that
 //! truncates to zero gives `0`, and any other negative value is poison). This is LLVM's and MLIR's
 //! rule; a target whose conversion traps or saturates (Wasm has both) refines it. `sitofp` and
-//! `uitofp` round to nearest, ties to even. A fold never produces a NaN or a poison value: a
-//! conversion whose result would be either stays in place. A `bitcast` always folds, a NaN's bits
-//! included, and a `bitcast` of a `bitcast` back to the original type folds to the original value.
+//! `uitofp` round to nearest, ties to even. A fold never produces poison, and `fpext` and
+//! `fptrunc` do not fold a NaN: a conversion whose result would be either stays in place. A
+//! `bitcast` is exact and always folds, a NaN's bits included, and a `bitcast` of a `bitcast` back to the original type folds to the original value.
 //! A conversion that involves `isize` folds only when the 32-bit and the 64-bit target agree.
 //! Their integer results have the full range of their type.
 //!
