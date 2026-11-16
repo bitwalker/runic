@@ -25,8 +25,10 @@ use crate::{
 /// unlinked, and stays so when the two are moved under one symbol table. Linking the whole after
 /// the move is what makes it verify.
 ///
-/// Each symbol that gains a use is mutably borrowed while it does: the caller must hold no borrow
-/// of an operation under `root`, nor of a symbol a reference under `root` may name.
+/// The operations under `root`, and the symbol tables above it that a path is looked up in, are
+/// borrowed while the references are found, and each symbol that gains a use is mutably borrowed
+/// while it does: the caller must hold no mutable borrow of an operation under `root` or of a
+/// symbol table above it, and no borrow at all of a symbol a reference under `root` may name.
 pub fn link_symbol_refs(root: OperationRef) -> usize {
     // What to link is found first, so that no operation is borrowed while a symbol is changed.
     let mut found: Vec<(OperationRef, UnsafeIntrusiveEntityRef<SymbolRefAttr>, SymbolRef)> =
