@@ -65,8 +65,8 @@ impl fmt::Display for Textual<'_> {
 impl Session<'_> {
     /// What the pass pipeline printed: the pipeline itself, when the request asked to dump it,
     /// and the IR before and after the passes the request selected, in the order they were
-    /// printed. It is empty until the optimize step has run, and holds what was printed up to the
-    /// failure when the step failed.
+    /// printed, for the optimization pipeline and then for the lowering pipeline. It is empty until
+    /// the optimize step has run, and holds what was printed up to the failure when a step failed.
     pub fn pass_output(&self) -> &str {
         &self.progress.pass_output
     }
@@ -118,6 +118,103 @@ impl Session<'_> {
         }
         progress.optimized = true;
 
+        self.run_pipeline(progress, || self.build_pipeline(), "optimization")?;
+
+        let mut checkpoints =
+            Checkpoints::new(progress, observer, &self.route, &self.goal, self, Stage::Harness);
+        match checkpoints.reach(CheckpointId::IR_OPTIMIZED, self.world)? {
+            ControlFlow::Break(stopped) => Ok(ControlFlow::Break(stopped)),
+            ControlFlow::Continue(_) => Ok(ControlFlow::Continue(())),
+        }
+    }
+
+    /// Runs the lowering step: the backend's passes are built, run on the world, and the harness
+    /// reaches `ir.lowered` with the world.
+    ///
+    /// The pipeline is the passes the backend of the target adds, anchored on the world; a
+    /// request's pipeline applies to the optimization step only and does not change it. The
+    /// request's IR options apply as they do to [Session::optimize]: the pipeline is dumped on a
+    /// line of its own after the optimization pipeline's, the IR is printed before and after the
+    /// passes the request names, and the IR is verified after each pass, once after the last, or
+    /// never. Everything printed is added to [Session::pass_output].
+    ///
+    /// `observer` is told of the checkpoint reached. The answer is `Break` when the compilation
+    /// was asked to stop at `ir.lowered`, and then [Session::stopped] holds its artifact. It is an
+    /// error to run the step when the compilation has no target and so no backend, before the
+    /// optimize step reached `ir.optimized`, after the compilation stopped, or twice, and for the
+    /// backend to fail to add its passes (the error says which backend), for a pass to fail, or
+    /// for the verification to fail; the error is returned as it is.
+    pub fn lower(&mut self, observer: &mut dyn Observer) -> Result<Flow<()>, Report> {
+        // The pipeline sees the session through `&Session`, so the progress is moved out for the
+        // step and put back on every path.
+        let mut progress = mem::take(&mut self.progress);
+        let result = self.run_lower(&mut progress, observer);
+        self.progress = progress;
+        result
+    }
+
+    fn run_lower(
+        &self,
+        progress: &mut Progress,
+        observer: &mut dyn Observer,
+    ) -> Result<Flow<()>, Report> {
+        let Some(target) = &self.target else {
+            return Err(Report::msg(
+                "the lower step cannot run: the route of this compilation has no backend, because \
+                 no target was given",
+            ));
+        };
+        if progress.lowered {
+            return Err(Report::msg("the lower step was run twice: a session lowers once"));
+        }
+        if progress.stopped.is_some() {
+            return Err(Report::msg(format!(
+                "the lower step cannot run: the compilation stopped at '{}'",
+                self.goal.stop_after()
+            )));
+        }
+        if !progress.reached.contains(&CheckpointId::IR_OPTIMIZED) {
+            return Err(Report::msg(
+                "the lower step cannot run before the optimize step reached 'ir.optimized'",
+            ));
+        }
+        progress.lowered = true;
+
+        let backend = target.backend;
+        self.run_pipeline(
+            progress,
+            || {
+                let mut pm = PassManager::new(self.context.clone(), WORLD, Nesting::Implicit)?;
+                backend.add_passes(self, pm.op_pass_manager_mut()).map_err(|error| {
+                    error.context(format!(
+                        "backend '{}' could not add its lowering passes",
+                        backend.name()
+                    ))
+                })?;
+                Ok(pm)
+            },
+            "lowering",
+        )?;
+
+        let mut checkpoints =
+            Checkpoints::new(progress, observer, &self.route, &self.goal, self, Stage::Harness);
+        match checkpoints.reach(CheckpointId::IR_LOWERED, self.world)? {
+            ControlFlow::Break(stopped) => Ok(ControlFlow::Break(stopped)),
+            ControlFlow::Continue(_) => Ok(ControlFlow::Continue(())),
+        }
+    }
+
+    /// Runs the pipeline `build` makes on the world with the request's IR options, for the step
+    /// that `what` names (`optimization` or `lowering`): the IR printing selections are checked
+    /// before anything is built, the pipeline is dumped when the request asked, and the IR is
+    /// verified after each pass, once after the last, or never. What was printed is added to the
+    /// session's pass output whether or not the pipeline succeeded.
+    fn run_pipeline(
+        &self,
+        progress: &mut Progress,
+        build: impl FnOnce() -> Result<PassManager, Report>,
+        what: &str,
+    ) -> Result<(), Report> {
         let ir = &self.request.ir;
         let printing = IRPrintingConfig {
             before: selection("before", &ir.print_before)?,
@@ -130,7 +227,7 @@ impl Session<'_> {
             ..Default::default()
         };
 
-        let mut pm = self.build_pipeline()?;
+        let mut pm = build()?;
         pm.enable_verifier(ir.verification == Verification::EachPass);
         let output = Buffer::default();
         pm.enable_ir_printing(printing, Box::new(output.clone()));
@@ -145,16 +242,10 @@ impl Session<'_> {
 
         if ir.verification == Verification::Once {
             self.world.as_operation_ref().borrow().recursively_verify().map_err(|report| {
-                report.context("the IR the optimization pipeline produced does not verify")
+                report.context(format!("the IR the {what} pipeline produced does not verify"))
             })?;
         }
-
-        let mut checkpoints =
-            Checkpoints::new(progress, observer, &self.route, &self.goal, self, Stage::Harness);
-        match checkpoints.reach(CheckpointId::IR_OPTIMIZED, self.world)? {
-            ControlFlow::Break(stopped) => Ok(ControlFlow::Break(stopped)),
-            ControlFlow::Continue(_) => Ok(ControlFlow::Continue(())),
-        }
+        Ok(())
     }
 
     /// The pass manager of the optimization pipeline, anchored on the world: loaded from the
@@ -241,14 +332,14 @@ mod tests {
     use runic_core::{
         OpPrinter, OpPrintingFlags, Report,
         dialects::builtin::{Module, WorldRef},
-        pass::{Nesting, PassPipeline},
+        pass::{Nesting, PassInfo, PassOptions, PassPipeline, registry::RegistryEntry},
         print::AsmPrinter,
     };
 
     use crate::{
         CheckpointDecl, CheckpointId, CompilationRequest, Compiler, EmitRequest, EmitTo, Emitted,
         Input, IrFrontend, OptLevel, RecordingObserver, Session, Verification,
-        testing::{TestFrontend, add_mark, decl},
+        testing::{TestBackend, TestFrontend, add_mark, decl},
     };
 
     const ALPHA: &[CheckpointDecl] = &[decl("alpha.ast", &[], "ast")];
@@ -879,5 +970,292 @@ mod tests {
         assert!(session.pass_output().contains(DEFAULT));
         assert_ne!(before, after, "the default pipeline changed nothing:\n{after}");
         assert!(!after.contains("%dead"), "{after}");
+    }
+
+    // The lowering step
+
+    const OUT: &[CheckpointDecl] = &[decl("one.out", &["out"], "o")];
+    const ONE: TestBackend = TestBackend::new("one", &["wasm32-wasip2"], OUT)
+        .with_add_passes(|_, passes| add_mark(passes, "from_backend"));
+
+    fn with_backend() -> &'static Compiler {
+        static COMPILER: LazyLock<Compiler> = LazyLock::new(|| {
+            Compiler::builder()
+                .frontend(ALPHA_FRONTEND)
+                .frontend(BETA_FRONTEND)
+                .backend(ONE)
+                .build()
+                .unwrap()
+        });
+        &COMPILER
+    }
+
+    fn targeted(inputs: &[&str]) -> CompilationRequest {
+        let mut request = request(inputs);
+        request.target = Some("wasm32-wasip2".parse().unwrap());
+        request
+    }
+
+    fn lowered(compiler: &Compiler, request: CompilationRequest) -> Session<'_> {
+        let mut session = optimized(compiler, request);
+        let _ = session.lower(&mut ()).unwrap();
+        session
+    }
+
+    fn add_named(passes: &mut runic_core::pass::OpPassManager, name: &str) -> Result<(), Report> {
+        PassInfo::lookup(name)
+            .expect("the test pass is registered")
+            .add_to_pipeline(passes, &PassOptions::new())
+    }
+
+    fn backend_with(add_passes: crate::testing::BackendAddPassesFn) -> Compiler {
+        Compiler::builder()
+            .frontend(ALPHA_FRONTEND)
+            .backend(ONE.with_add_passes(add_passes))
+            .build()
+            .unwrap()
+    }
+
+    fn error_text(report: Report) -> String {
+        let mut text = report.to_string();
+        for context in report.contexts() {
+            text.push('\n');
+            text.push_str(context.message());
+        }
+        text
+    }
+
+    #[test]
+    fn the_backends_passes_run_after_the_optimization_pipeline() {
+        let session = lowered(with_backend(), targeted(&["x.a", "y.b"]));
+        assert_eq!(marks(&session), ["from_alpha", "from_beta", "from_backend"]);
+    }
+
+    #[test]
+    fn the_requests_pipeline_replaces_the_optimization_pipeline_and_leaves_the_backends_passes() {
+        let mut request = targeted(&["x.a"]);
+        request.pipeline = Some("test-mark{name=p1}".into());
+        let session = lowered(with_backend(), request);
+        assert_eq!(marks(&session), ["p1", "from_backend"]);
+    }
+
+    #[test]
+    fn the_lowering_pipeline_is_dumped_on_its_own_line_after_the_optimization_pipeline() {
+        let mut request = targeted(&["x.a"]);
+        request.opt_level = OptLevel::None;
+        request.ir.dump_pass_pipeline = true;
+        let session = lowered(with_backend(), request);
+        let lines: Vec<_> = session.pass_output().lines().collect();
+        assert_eq!(
+            lines,
+            [
+                "builtin.world(test-mark{name=\"from_alpha\"})",
+                "builtin.world(test-mark{name=\"from_backend\"})"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_dumped_lowering_pipeline_is_the_backends_even_when_the_request_gives_a_pipeline() {
+        let mut request = targeted(&["x.a"]);
+        request.pipeline = Some("test-mark{name=p1}".into());
+        request.ir.dump_pass_pipeline = true;
+        let session = lowered(with_backend(), request);
+        let lines: Vec<_> = session.pass_output().lines().collect();
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[0].contains("\"p1\""), "{lines:?}");
+        assert!(lines[1].contains("\"from_backend\"") && !lines[1].contains("p1"), "{lines:?}");
+    }
+
+    #[test]
+    fn the_ir_is_printed_around_the_backends_passes_too() {
+        let mut request = targeted(&["x.a"]);
+        request.ir.print_before = vec!["test-mark".into()];
+        request.ir.print_after = vec!["test-mark".into()];
+        let session = lowered(with_backend(), request);
+        let output = session.pass_output();
+        // One mark of the frontend, one of the backend.
+        assert_eq!(output.matches("IR before").count(), 2, "{output}");
+        assert_eq!(output.matches("IR after").count(), 2, "{output}");
+        assert!(output.contains("@from_backend"), "{output}");
+    }
+
+    fn breaking_backend() -> Compiler {
+        backend_with(|_, passes| {
+            add_mark(passes, "before")?;
+            add_named(passes, "test-break")?;
+            add_mark(passes, "after")
+        })
+    }
+
+    #[test]
+    fn verifying_each_pass_stops_at_the_backends_pass_that_broke_the_ir() {
+        let compiler = breaking_backend();
+        let mut request = targeted(&["x.a"]);
+        request.ir.verification = Verification::EachPass;
+        let mut session = optimized(&compiler, request);
+        let message = session.lower(&mut ()).unwrap_err().to_string();
+        assert!(message.contains("does not end with a terminator"), "{message}");
+        assert_eq!(marks(&session), ["from_alpha", "before", "broken"]);
+        assert_eq!(session.reached().last(), Some(&CheckpointId::IR_OPTIMIZED));
+    }
+
+    #[test]
+    fn verifying_once_runs_all_the_backends_passes_and_then_fails() {
+        let compiler = breaking_backend();
+        let mut request = targeted(&["x.a"]);
+        request.ir.verification = Verification::Once;
+        let mut session = optimized(&compiler, request);
+        let text = error_text(session.lower(&mut ()).unwrap_err());
+        assert!(text.contains("the lowering pipeline produced"), "{text}");
+        assert_eq!(marks(&session), ["from_alpha", "before", "broken", "after"]);
+        assert_eq!(session.reached().last(), Some(&CheckpointId::IR_OPTIMIZED));
+    }
+
+    #[test]
+    fn with_verification_off_a_world_the_backend_broke_is_lowered() {
+        let compiler = breaking_backend();
+        let mut request = targeted(&["x.a"]);
+        request.ir.verification = Verification::None;
+        let session = lowered(&compiler, request);
+        assert_eq!(session.reached().last(), Some(&CheckpointId::IR_LOWERED));
+    }
+
+    #[test]
+    fn what_was_printed_stays_in_the_pass_output_when_a_backend_pass_fails() {
+        let compiler = backend_with(|_, passes| {
+            add_mark(passes, "one")?;
+            add_named(passes, "test-fail")
+        });
+        let mut request = targeted(&["x.a"]);
+        request.ir.print_before = vec!["all".into()];
+        let mut session = optimized(&compiler, request);
+        let before = session.pass_output().matches("IR before").count();
+        let message = session.lower(&mut ()).unwrap_err().to_string();
+        assert_eq!(message, "test-fail");
+        assert_eq!(session.pass_output().matches("IR before").count() - before, 2);
+    }
+
+    #[test]
+    fn a_backend_that_cannot_add_its_passes_is_named_in_the_error() {
+        let compiler = backend_with(|_, _| Err(Report::msg("one has no passes")));
+        let mut session = optimized(&compiler, targeted(&["x.a"]));
+        let text = error_text(session.lower(&mut ()).unwrap_err());
+        assert!(text.contains("one has no passes"), "{text}");
+        assert!(text.contains("backend 'one'"), "{text}");
+        assert_eq!(session.reached().last(), Some(&CheckpointId::IR_OPTIMIZED));
+    }
+
+    #[test]
+    fn lowering_with_no_target_says_the_route_has_no_backend() {
+        let mut request = request(&["x.a"]);
+        request.stop_after = Some("ir.optimized".into());
+        let mut session = optimized(with_backend(), request);
+        let message = session.lower(&mut ()).unwrap_err().to_string();
+        assert!(message.contains("no backend") && message.contains("no target"), "{message}");
+    }
+
+    #[test]
+    fn lowering_for_a_compiler_with_no_backend_says_the_route_has_no_backend() {
+        let mut session = optimized(compiler(), request(&["x.a"]));
+        let message = session.lower(&mut ()).unwrap_err().to_string();
+        assert!(message.contains("no backend"), "{message}");
+    }
+
+    #[test]
+    fn lowering_before_optimizing_is_an_error_and_uses_nothing_up() {
+        let compiler = with_backend();
+        let mut session = translated(compiler, targeted(&["x.a"]));
+        let message = session.lower(&mut ()).unwrap_err().to_string();
+        assert!(message.contains("before the optimize step reached 'ir.optimized'"), "{message}");
+        assert!(marks(&session).is_empty());
+        let _ = session.optimize(&mut ()).unwrap();
+        let _ = session.lower(&mut ()).unwrap();
+    }
+
+    #[test]
+    fn lowering_before_translating_is_an_error() {
+        let compiler = with_backend();
+        let mut session = compiler.session(targeted(&["x.a"])).unwrap();
+        let message = session.lower(&mut ()).unwrap_err().to_string();
+        assert!(message.contains("'ir.optimized'"), "{message}");
+    }
+
+    #[test]
+    fn lowering_twice_is_an_error() {
+        let mut session = lowered(with_backend(), targeted(&["x.a"]));
+        let message = session.lower(&mut ()).unwrap_err().to_string();
+        assert!(message.contains("run twice"), "{message}");
+        assert_eq!(marks(&session), ["from_alpha", "from_backend"]);
+    }
+
+    #[test]
+    fn lowering_after_a_stop_at_the_optimized_ir_is_an_error() {
+        let mut request = targeted(&["x.a"]);
+        request.stop_after = Some("ir.optimized".into());
+        let mut session = optimized(with_backend(), request);
+        let message = session.lower(&mut ()).unwrap_err().to_string();
+        assert!(message.contains("the compilation stopped at 'ir.optimized'"), "{message}");
+        assert_eq!(marks(&session), ["from_alpha"]);
+    }
+
+    #[test]
+    fn the_step_reaches_the_lowered_ir_and_tells_the_observer() {
+        let mut session = optimized(with_backend(), targeted(&["x.a"]));
+        let mut observer = RecordingObserver::default();
+        let flow = session.lower(&mut observer).unwrap();
+        assert!(matches!(flow, ControlFlow::Continue(())));
+        assert_eq!(session.reached().last(), Some(&CheckpointId::IR_LOWERED));
+        assert_eq!(observer.checkpoints(), [CheckpointId::IR_LOWERED]);
+    }
+
+    #[test]
+    fn a_stop_at_the_lowered_ir_is_honoured_and_holds_the_world() {
+        let mut request = targeted(&["x.a"]);
+        request.stop_after = Some("ir.lowered".into());
+        let mut session = optimized(with_backend(), request);
+        match session.lower(&mut ()).unwrap() {
+            ControlFlow::Break(stopped) => {
+                assert_eq!(stopped.checkpoint(), CheckpointId::IR_LOWERED)
+            }
+            ControlFlow::Continue(()) => panic!("the compilation should have stopped"),
+        }
+        let artifact = session.stopped().unwrap();
+        assert_eq!(artifact.checkpoint(), CheckpointId::IR_LOWERED);
+        assert!(artifact.downcast_ref::<WorldRef>().is_some());
+    }
+
+    #[test]
+    fn an_output_at_the_lowered_ir_holds_the_ir_the_backends_passes_left() {
+        let mut request = targeted(&["x.a"]);
+        request.output_file = None;
+        for checkpoint in ["ir.optimized", "ir.lowered"] {
+            request.emit.push(EmitRequest {
+                checkpoint: checkpoint.into(),
+                to: EmitTo::Memory,
+            });
+        }
+        let session = lowered(with_backend(), request);
+        let texts: Vec<String> = session
+            .emitted()
+            .iter()
+            .map(|emitted| String::from_utf8(emitted.bytes().unwrap().to_vec()).unwrap())
+            .collect();
+        assert!(!texts[0].contains("from_backend"), "{}", texts[0]);
+        assert!(texts[1].contains("from_backend"), "{}", texts[1]);
+    }
+
+    #[test]
+    fn no_output_is_delivered_when_a_backend_pass_fails() {
+        let compiler = backend_with(|_, passes| add_named(passes, "test-fail"));
+        let mut request = targeted(&["x.a"]);
+        request.output_file = None;
+        request.emit.push(EmitRequest {
+            checkpoint: "ir.lowered".into(),
+            to: EmitTo::Memory,
+        });
+        let mut session = optimized(&compiler, request);
+        assert!(session.lower(&mut ()).is_err());
+        assert!(session.emitted().is_empty());
     }
 }

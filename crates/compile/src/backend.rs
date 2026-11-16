@@ -1,6 +1,6 @@
-use runic_core::{DataLayoutSpec, Report};
+use runic_core::{DataLayoutSpec, Report, dialects::builtin::WorldRef, pass::OpPassManager};
 
-use crate::{CheckpointDecl, Triple};
+use crate::{CheckpointDecl, Checkpoints, Flow, Session, Triple};
 
 /// A code generator a compiler offers: it says what it is called, which targets it supports, how
 /// data is laid out on each, and which checkpoints it reaches.
@@ -29,4 +29,24 @@ pub trait Backend: Send + Sync {
     /// The checkpoints this backend reaches, in the order it reaches them. A backend reaches at
     /// least one: the artifact it produces.
     fn checkpoints(&self) -> &'static [CheckpointDecl];
+
+    /// Adds the passes that legalize and lower the world for this backend to `passes`, which runs
+    /// on the world after the optimization pipeline. What they leave is the IR at `ir.lowered`.
+    /// The session is the one of the compilation, for the options and the target; the request
+    /// cannot replace these passes.
+    fn add_passes(&self, session: &Session<'_>, passes: &mut OpPassManager) -> Result<(), Report>;
+
+    /// Produces this backend's artifacts from `world`, which its own passes lowered.
+    ///
+    /// The backend reaches its declared checkpoints through `checkpoints`, in order, each with the
+    /// artifact it holds there, and returns the `Break` the first of them answers at once (that
+    /// is the compilation stopping). It returns `Continue` only after reaching its last
+    /// checkpoint when the compilation does not stop earlier. An error is the failure of the
+    /// compilation, and the outputs delivered before it stay listed.
+    fn emit(
+        &self,
+        session: &Session<'_>,
+        world: WorldRef,
+        checkpoints: &mut Checkpoints<'_>,
+    ) -> Result<Flow<()>, Report>;
 }

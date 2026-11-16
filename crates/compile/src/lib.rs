@@ -28,6 +28,9 @@
 //!   adds, then the compiler's optimization (by default the dialect-independent passes of the
 //!   optimization level), or the pipeline the request gives instead; [Session::optimize] runs it
 //!   and [Session::pass_output] holds what it printed;
+//! * the backend of the target lowers the world after that, with passes of its own that a request
+//!   cannot replace ([Session::lower]), and then produces its artifacts ([Session::emit_code]),
+//!   reaching its checkpoints in order; a compilation that runs to the end stops at the last one;
 //! * an [IrFrontend] reads Runic's own textual IR: each file holds a module, a component or a
 //!   world.
 #![deny(warnings)]

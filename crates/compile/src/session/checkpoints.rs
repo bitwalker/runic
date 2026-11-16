@@ -6,12 +6,12 @@ use runic_core::Report;
 
 use super::Session;
 use crate::{
-    Artifact, CheckpointDecl, CheckpointId, Destination, Emitted, Flow, Frontend, Goal,
+    Artifact, Backend, CheckpointDecl, CheckpointId, Destination, Emitted, Flow, Frontend, Goal,
     IR_CHECKPOINTS, Observer, Route, Stopped, write_file,
 };
 
 /// What a session has done so far: the checkpoints reached, the artifact kept at the stop point,
-/// the outputs delivered, and whether the translate and optimize steps have run, and what the pass pipeline printed.
+/// the outputs delivered, and whether each step has run, and what the pass pipeline printed.
 #[derive(Default)]
 pub(super) struct Progress {
     pub(super) reached: Vec<CheckpointId>,
@@ -19,6 +19,8 @@ pub(super) struct Progress {
     pub(super) emitted: Vec<Emitted>,
     pub(super) translated: bool,
     pub(super) optimized: bool,
+    pub(super) lowered: bool,
+    pub(super) code_emitted: bool,
     pub(super) pass_output: String,
 }
 
@@ -26,6 +28,7 @@ pub(super) struct Progress {
 #[derive(Clone, Copy)]
 pub(super) enum Stage<'a> {
     Frontend(&'a dyn Frontend),
+    Backend(&'a dyn Backend),
     Harness,
 }
 
@@ -33,6 +36,7 @@ impl Stage<'_> {
     fn declared(&self) -> &'static [CheckpointDecl] {
         match self {
             Self::Frontend(frontend) => frontend.checkpoints(),
+            Self::Backend(backend) => backend.checkpoints(),
             Self::Harness => &IR_CHECKPOINTS,
         }
     }
@@ -40,6 +44,7 @@ impl Stage<'_> {
     fn describe(&self) -> String {
         match self {
             Self::Frontend(frontend) => format!("frontend '{}'", frontend.name()),
+            Self::Backend(backend) => format!("backend '{}'", backend.name()),
             Self::Harness => "the harness".to_string(),
         }
     }
@@ -47,7 +52,7 @@ impl Stage<'_> {
 
 /// How the stage that is running reaches the checkpoints it declared.
 ///
-/// A frontend is given one by the translate step and calls [Checkpoints::reach] each time it holds
+/// A frontend is given one by the translate step, and a backend by the emission step; each calls [Checkpoints::reach] each time it holds
 /// an artifact it declared a checkpoint for. The harness checks that the checkpoint is the stage's
 /// own and comes after the last one reached, tells the observer, delivers the output requested at
 /// the checkpoint, if any, and, at the checkpoint the compilation is to stop after, keeps the

@@ -32,6 +32,28 @@ fn add_nothing(_session: &Session<'_>, _passes: &mut OpPassManager) -> Result<()
     Ok(())
 }
 
+/// What a test backend does when it adds passes.
+pub type BackendAddPassesFn = AddPassesFn;
+
+/// What a test backend does when it emits.
+pub type EmitFn = fn(&Session<'_>, WorldRef, &mut Checkpoints<'_>) -> Result<Flow<()>, Report>;
+
+/// Reaches each checkpoint the backend declares, in order, with a `String` that names it, and
+/// returns the first `Break`.
+fn emit_each_checkpoint(
+    session: &Session<'_>,
+    _world: WorldRef,
+    checkpoints: &mut Checkpoints<'_>,
+) -> Result<Flow<()>, Report> {
+    let backend = session.target().expect("a backend emits for a target").backend();
+    for decl in backend.checkpoints() {
+        if let Flow::Break(stopped) = checkpoints.reach(decl.id, decl.id.as_str().to_owned())? {
+            return Ok(Flow::Break(stopped));
+        }
+    }
+    Ok(Flow::Continue(()))
+}
+
 fn translate_nothing(
     _session: &Session<'_>,
     _inputs: &[Input],
@@ -156,6 +178,12 @@ pub struct TestBackend {
     pub triples: &'static [&'static str],
     /// The checkpoints the backend declares.
     pub checkpoints: &'static [CheckpointDecl],
+    /// What the backend does when it adds its lowering passes: nothing, unless a test says
+    /// otherwise.
+    pub add_passes: BackendAddPassesFn,
+    /// What the backend does when it emits: reaches each checkpoint it declares, in order, with a
+    /// `String` naming it, unless a test says otherwise.
+    pub emit: EmitFn,
 }
 
 impl TestBackend {
@@ -169,7 +197,19 @@ impl TestBackend {
             name,
             triples,
             checkpoints,
+            add_passes: add_nothing,
+            emit: emit_each_checkpoint,
         }
+    }
+
+    /// The same backend, doing `add_passes` when it adds its lowering passes.
+    pub const fn with_add_passes(self, add_passes: BackendAddPassesFn) -> Self {
+        Self { add_passes, ..self }
+    }
+
+    /// The same backend, doing `emit` when it emits.
+    pub const fn with_emit(self, emit: EmitFn) -> Self {
+        Self { emit, ..self }
     }
 }
 
@@ -195,6 +235,19 @@ impl Backend for TestBackend {
 
     fn checkpoints(&self) -> &'static [CheckpointDecl] {
         self.checkpoints
+    }
+
+    fn add_passes(&self, session: &Session<'_>, passes: &mut OpPassManager) -> Result<(), Report> {
+        (self.add_passes)(session, passes)
+    }
+
+    fn emit(
+        &self,
+        session: &Session<'_>,
+        world: WorldRef,
+        checkpoints: &mut Checkpoints<'_>,
+    ) -> Result<Flow<()>, Report> {
+        (self.emit)(session, world, checkpoints)
     }
 }
 

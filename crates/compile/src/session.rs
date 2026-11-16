@@ -15,6 +15,7 @@ use crate::{
 };
 
 mod checkpoints;
+mod emit;
 mod inputs;
 mod pipeline;
 mod resolve;
