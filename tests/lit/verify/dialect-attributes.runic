@@ -1,0 +1,41 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// A dialect checks the entries of the attribute dictionary of any operation whose key begins with
+// its name and a dot. The `test` dialect knows `test.checked`, an `i32`, and `test.any`.
+
+// An entry of the dialect on an operation of another dialect, and on one of its own, with the
+// value it expects.
+builtin.function public extern("C") @valid(%a: i32) -> i32 {
+    %s = test.add %a, %a attributes { test.checked = #builtin.i32<1>, test.any = #builtin.bool<true> };
+    builtin.ret %s : (i32);
+} attributes { test.checked = #builtin.i32<2> };
+
+// -----
+
+// A key with no dot, and a key whose prefix is not a registered dialect, are not checked.
+builtin.function public extern("C") @not_checked(%a: i32) -> i32 {
+    builtin.ret %a : (i32);
+} attributes { plain = #builtin.bool<true>, nodialect.x = #builtin.bool<true> };
+
+// -----
+
+// A value the dialect rejects, on a function.
+builtin.function public extern("C") @wrong_value_on_a_function(%a: i32) -> i32 { // expected-error {{on builtin.function: 'test.checked' must be an `i32` constant, but it is a}}
+    builtin.ret %a : (i32);
+} attributes { test.checked = #builtin.bool<true> };
+
+// -----
+
+// A value the dialect rejects, on an operation of the dialect.
+builtin.function public extern("C") @wrong_value_on_a_test_op(%a: i32) -> i32 {
+    %s = test.add %a, %a attributes { test.checked = #builtin.bool<true> }; // expected-error {{on test.add: 'test.checked' must be an `i32` constant, but it is a}}
+    builtin.ret %s : (i32);
+};
+
+// -----
+
+// A key of the dialect that it does not know is rejected, so a misspelling is not ignored.
+builtin.function public extern("C") @unknown_key(%a: i32) -> i32 {
+    %s = test.add %a, %a attributes { test.unknown_key = #builtin.i32<1> }; // expected-error {{'test.unknown_key' is not an attribute of the 'test' dialect}}
+    builtin.ret %s : (i32);
+};

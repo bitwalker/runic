@@ -570,6 +570,7 @@ impl Operation {
         // One walk of the attributes checks the attributes and the symbol references among them
         self.verify_held_attributes()?;
         self.verify_held_types()?;
+        self.verify_dialect_attributes()?;
         let dyn_op: &dyn Op = self.as_ref();
         dyn_op.verify(self.context())
     }
@@ -731,6 +732,26 @@ impl Operation {
             }
         })
         .into_result()
+    }
+
+    /// Call [Dialect::verify_operation_attribute](crate::Dialect::verify_operation_attribute) of
+    /// the dialect each dictionary entry of this operation is named for, once per entry: an entry
+    /// whose key is `<prefix>.<rest>`, where `<prefix>` is a dialect registered in this operation's
+    /// context. Properties are not dictionary entries and are not checked here.
+    fn verify_dialect_attributes(&self) -> Result<(), Report> {
+        let context = self.context();
+        for entry in self.attributes() {
+            let entry = entry.as_named_attribute();
+            let Some((prefix, _)) = entry.name.as_str().split_once('.') else {
+                continue;
+            };
+            // The registry is not borrowed while the hook runs: the dialect is cloned out of it
+            let Some(dialect) = context.find_registered_dialect(prefix) else {
+                continue;
+            };
+            dialect.verify_operation_attribute(self, entry.name, &entry.value)?;
+        }
+        Ok(())
     }
 
     /// Check every type this operation holds, at any depth, in one walk ([Self::walk_types]): it

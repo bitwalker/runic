@@ -2,21 +2,41 @@ mod builders;
 mod ops;
 mod types;
 
+use core::cell::Cell;
+
 pub use self::{builders::TestOpBuilder, ops::*, types::TestVectorType};
 use crate::{
-    AttributeRef, Builder, BuilderExt, Dialect, DialectInfo, OperationRef, SourceSpan, Type,
-    attributes::IntegerLikeAttr, derive::DialectRegistration,
+    AttributeRef, Builder, BuilderExt, Dialect, DialectInfo, Operation, OperationRef, Report,
+    SourceSpan, Type, attributes::IntegerLikeAttr, derive::DialectRegistration, interner,
 };
 
+/// The dialect of the operations and types that tests of the framework use.
+///
+/// It gives meaning to two keys of the attribute dictionary of any operation: `test.checked`, whose
+/// value must be an `i32`, and `test.any`, whose value may be anything (see
+/// [Dialect::verify_operation_attribute]).
 #[derive(DialectRegistration, Debug)]
 pub struct TestDialect {
     #[dialect(info)]
     info: DialectInfo,
+    /// How many times the dictionary entry hook has been called
+    attribute_checks: Cell<usize>,
 }
 
 impl From<DialectInfo> for TestDialect {
     fn from(info: DialectInfo) -> Self {
-        Self { info }
+        Self {
+            info,
+            attribute_checks: Cell::new(0),
+        }
+    }
+}
+
+impl TestDialect {
+    /// How many times [Dialect::verify_operation_attribute] has been called on this dialect, for
+    /// any key.
+    pub fn attribute_checks(&self) -> usize {
+        self.attribute_checks.get()
     }
 }
 
@@ -24,6 +44,38 @@ impl Dialect for TestDialect {
     #[inline]
     fn info(&self) -> &DialectInfo {
         &self.info
+    }
+
+    /// The dictionary entry `test.checked` of any operation must be an `i32` and `test.any` may be
+    /// anything; any other key of this dialect is rejected.
+    fn verify_operation_attribute(
+        &self,
+        op: &Operation,
+        name: interner::Symbol,
+        attr: &AttributeRef,
+    ) -> Result<(), Report> {
+        self.attribute_checks.set(self.attribute_checks.get() + 1);
+        let problem = match name.as_str() {
+            "test.any" => return Ok(()),
+            "test.checked" => {
+                let value = attr.borrow();
+                if value.ty() == op.context().i32() && value.as_int().is_some() {
+                    return Ok(());
+                }
+                alloc::format!(
+                    "'{name}' must be an `i32` constant, but it is a '{}' of type `{}`",
+                    value.name(),
+                    value.ty()
+                )
+            }
+            _ => alloc::format!(
+                "'{name}' is not an attribute of the 'test' dialect: it knows 'test.checked'"
+            ),
+        };
+        Err(crate::diagnostics::report!(
+            message: "invalid operation",
+            labels: [primary(op.span, alloc::format!("on {}: {problem}", op.name()))],
+        ))
     }
 
     fn materialize_constant(

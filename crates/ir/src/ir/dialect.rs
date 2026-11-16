@@ -5,7 +5,7 @@ use core::ptr::{DynMetadata, Pointee};
 
 pub use self::info::DialectInfo;
 use crate::{
-    AttributeRef, Builder, OperationName, OperationRef, SourceSpan, Type,
+    AttributeRef, Builder, Operation, OperationName, OperationRef, Report, SourceSpan, Type,
     any::AsAny,
     attributes::AttributeName,
     interner,
@@ -39,6 +39,32 @@ pub trait Dialect {
     /// Get the set of registered types associated with this dialect, sorted by name
     fn registered_types(&self) -> &[TypeName] {
         self.info().registered_types()
+    }
+
+    /// A hook to verify an entry of the attribute dictionary of an operation, of any dialect, whose
+    /// key is named for this dialect: the key is `<this dialect's name>.<rest>`. It mirrors MLIR's
+    /// `Dialect::verifyOperationAttribute` (`mlir/include/mlir/IR/Dialect.h`).
+    ///
+    /// [Operation::verify](crate::Operation::verify) calls it once for each such entry of the
+    /// operation, after the attributes and types the operation holds are found well formed (so
+    /// `attr` is valid by itself) and before the operation's own verifiers. The key is passed
+    /// whole, with its prefix. An entry whose key has no dot, and one whose prefix names no dialect
+    /// registered in the operation's context, are not passed to any hook. Properties of an
+    /// operation (its declared attributes) are not dictionary entries, and are not passed either.
+    ///
+    /// A dialect that gives meaning to some keys should check the placement and the value of each
+    /// (that `op` may carry it, that `attr` is of the kind it expects) and reject a key of its own
+    /// that it does not know: a misspelled key would otherwise be silently ignored. The default
+    /// accepts every entry.
+    #[allow(unused_variables)]
+    #[inline]
+    fn verify_operation_attribute(
+        &self,
+        op: &Operation,
+        name: interner::Symbol,
+        attr: &AttributeRef,
+    ) -> Result<(), Report> {
+        Ok(())
     }
 
     /// A hook to materialize a single constant operation from a given attribute value.
@@ -332,3 +358,6 @@ pub(super) fn dialect_init<T: DialectRegistration>() -> Rc<dyn Dialect> {
 
     Rc::new(<T as DialectRegistration>::init(info)) as Rc<dyn Dialect>
 }
+
+#[cfg(test)]
+mod tests;
