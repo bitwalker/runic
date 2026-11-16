@@ -26,4 +26,6 @@ runic-ir.workspace = true
 [dev-dependencies]
 # Use local paths for dev-only dependency to avoid relying on crates.io during packaging
 runic-ir = { path = "../../ir", features = ["logging"] }
+runic-analysis = { path = "../../analysis" }
+runic-dialect-scf = { path = "../scf" }
 runic-transform = { path = "../../transform" }

@@ -1,0 +1,276 @@
+// RUN: runic-opt %s | filecheck %s
+// RUN: runic-opt %s --verify-roundtrip | filecheck %s
+// RUN: runic-opt %s --print-generic | runic-opt - --verify-roundtrip
+
+// The structured control flow of `wasm`, read and printed: `wasm.block`, `wasm.loop`, `wasm.if`,
+// `wasm.end`, `wasm.br`, `wasm.br_table` and `wasm.unreachable`; the last RUN line reads the
+// generic form of each back. The operands of a construct are its parameters, the arguments of the
+// entry block of its body (of both bodies of an `if`), and its results are the results of the
+// operation. A body ends with `wasm.end`, which leaves the construct with its operands, or leaves
+// it by a branch. `wasm.br N` names label N: 0 is the innermost enclosing block, loop or if, and
+// each further level the next one. A branch to a loop goes back to the top of its body, with the
+// operands as the new arguments. A `wasm.if` with no `else` passes its operands through when the
+// condition is zero: the text may leave the `else` out, and the printer does. `br_if` is such an
+// `if` whose first region holds a `wasm.br`.
+// CHECK: builtin.module public @wasm_control {
+builtin.module public @wasm_control {
+    // Blocks with parameters and results, several of each, none of each, and nested three deep.
+    // CHECK-LABEL: builtin.function public extern("C") @blocks(
+    // CHECK-SAME: ) -> i32 {
+    // CHECK-NEXT: [[R1:%[0-9]+]], [[R2:%[0-9]+]] = wasm.block [[A:%[0-9]+]], [[B:%[0-9]+]] {
+    // CHECK-NEXT: ^[[B1:block[0-9]+]]([[X:%[0-9]+]]: i32, [[Y:%[0-9]+]]: i64):
+    // CHECK-NEXT: wasm.end [[X]], [[Y]] : (i32, i64);
+    // CHECK-NEXT: } : (i32, i64) -> (i32, i64);
+    // CHECK-NEXT: wasm.block {
+    // CHECK-NEXT: wasm.end : ();
+    // CHECK-NEXT: } : () -> ();
+    // CHECK-NEXT: [[N:%[0-9]+]] = wasm.block {
+    // CHECK-NEXT: [[M:%[0-9]+]] = wasm.block {
+    // CHECK-NEXT: [[L:%[0-9]+]] = wasm.block {
+    // CHECK-NEXT: wasm.br 2 [[A]] : (i32);
+    // CHECK-NEXT: } : () -> (i32);
+    // CHECK-NEXT: wasm.end [[L]] : (i32);
+    // CHECK-NEXT: } : () -> (i32);
+    // CHECK-NEXT: wasm.end [[M]] : (i32);
+    // CHECK-NEXT: } : () -> (i32);
+    // CHECK-NEXT: builtin.ret [[N]] : (i32);
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @blocks(%a: i32, %b: i64) -> i32 {
+        %r1, %r2 = wasm.block %a, %b {
+        ^body(%x: i32, %y: i64):
+            wasm.end %x, %y : (i32, i64);
+        } : (i32, i64) -> (i32, i64);
+        wasm.block {
+            wasm.end : ();
+        } : () -> ();
+        %n = wasm.block {
+            %m = wasm.block {
+                %l = wasm.block {
+                    wasm.br 2 %a : (i32);
+                } : () -> (i32);
+                wasm.end %l : (i32);
+            } : () -> (i32);
+            wasm.end %m : (i32);
+        } : () -> (i32);
+        builtin.ret %n : (i32);
+    };
+
+    // A loop is left by its `wasm.end`, and gone back to by a `wasm.br` that names it: label 0
+    // directly in its body, label 1 from an `if` in it, which is label 0 there.
+    // CHECK-LABEL: builtin.function public extern("C") @loops(
+    // CHECK-SAME: ) -> i32 {
+    // CHECK-NEXT: [[R:%[0-9]+]] = wasm.loop [[A:%[0-9]+]] {
+    // CHECK-NEXT: ^[[B1:block[0-9]+]]([[I:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[ONE:%[0-9]+]] = wasm.const 1 : i32;
+    // CHECK-NEXT: [[NEXT:%[0-9]+]] = wasm.add [[I]], [[ONE]];
+    // CHECK-NEXT: [[DONE:%[0-9]+]] = wasm.eq [[NEXT]], [[A]];
+    // CHECK-NEXT: wasm.if [[DONE]] then {
+    // CHECK-NEXT: wasm.br 1 [[NEXT]] : (i32);
+    // CHECK-NEXT: } : (i32) -> ();
+    // CHECK-NEXT: wasm.end [[I]] : (i32);
+    // CHECK-NEXT: } : (i32) -> (i32);
+    // CHECK-NEXT: wasm.loop {
+    // CHECK-NEXT: wasm.br 0 : ();
+    // CHECK-NEXT: } : () -> ();
+    // CHECK-NEXT: builtin.ret [[R]] : (i32);
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @loops(%a: i32) -> i32 {
+        %r = wasm.loop %a {
+        ^body(%i: i32):
+            %one = wasm.const 1 : i32;
+            %next = wasm.add %i, %one;
+            %done = wasm.eq %next, %a;
+            wasm.if %done then {
+                wasm.br 1 %next : (i32);
+            } : (i32) -> ();
+            wasm.end %i : (i32);
+        } : (i32) -> (i32);
+        wasm.loop {
+            wasm.br 0 : ();
+        } : () -> ();
+        builtin.ret %r : (i32);
+    };
+
+    // An `if` with both regions, with parameters and results; one with no operands but the
+    // condition, whose `else` is a trap; an `if` with no `else`, and the same written with an
+    // `else` that only passes the operands through, which prints without it.
+    // CHECK-LABEL: builtin.function public extern("C") @ifs(
+    // CHECK-SAME: ) -> i32 {
+    // CHECK-NEXT: [[R1:%[0-9]+]], [[R2:%[0-9]+]] = wasm.if [[C:%[0-9]+]], [[A:%[0-9]+]], [[B:%[0-9]+]] then {
+    // CHECK-NEXT: ^[[T:block[0-9]+]]([[X:%[0-9]+]]: i32, [[Y:%[0-9]+]]: i64):
+    // CHECK-NEXT: wasm.end [[X]], [[Y]] : (i32, i64);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: ^[[E:block[0-9]+]]([[X2:%[0-9]+]]: i32, [[Y2:%[0-9]+]]: i64):
+    // CHECK-NEXT: wasm.br 0 [[X2]], [[Y2]] : (i32, i64);
+    // CHECK-NEXT: } : (i32, i32, i64) -> (i32, i64);
+    // CHECK-NEXT: wasm.if [[C]] then {
+    // CHECK-NEXT: wasm.end : ();
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: wasm.unreachable;
+    // CHECK-NEXT: } : (i32) -> ();
+    // CHECK-NEXT: [[S:%[0-9]+]] = wasm.if [[C]], [[A]] then {
+    // CHECK-NEXT: ^[[T2:block[0-9]+]]([[X3:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[D:%[0-9]+]] = wasm.add [[X3]], [[X3]];
+    // CHECK-NEXT: wasm.end [[D]] : (i32);
+    // CHECK-NEXT: } : (i32, i32) -> (i32);
+    // CHECK-NEXT: [[Q:%[0-9]+]] = wasm.if [[C]], [[S]] then {
+    // CHECK-NEXT: ^[[T3:block[0-9]+]]([[X4:%[0-9]+]]: i32):
+    // CHECK-NEXT: wasm.end [[X4]] : (i32);
+    // CHECK-NEXT: } : (i32, i32) -> (i32);
+    // CHECK-NEXT: builtin.ret [[Q]] : (i32);
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @ifs(%c: i32, %a: i32, %b: i64) -> i32 {
+        %r1, %r2 = wasm.if %c, %a, %b then {
+        ^then(%x: i32, %y: i64):
+            wasm.end %x, %y : (i32, i64);
+        } else {
+        ^else(%x: i32, %y: i64):
+            wasm.br 0 %x, %y : (i32, i64);
+        } : (i32, i32, i64) -> (i32, i64);
+        wasm.if %c then {
+            wasm.end : ();
+        } else {
+            wasm.unreachable;
+        } : (i32) -> ();
+        %s = wasm.if %c, %a then {
+        ^then(%x: i32):
+            %d = wasm.add %x, %x;
+            wasm.end %d : (i32);
+        } : (i32, i32) -> (i32);
+        %q = wasm.if %c, %s then {
+        ^then(%x: i32):
+            wasm.end %x : (i32);
+        } else {
+        ^else(%x: i32):
+            wasm.end %x : (i32);
+        } : (i32, i32) -> (i32);
+        builtin.ret %q : (i32);
+    };
+
+    // `br_if` is an `if` whose first region branches and whose second passes through: here the
+    // branch leaves the block with the value, when the condition is not zero.
+    // CHECK-LABEL: builtin.function public extern("C") @br_if(
+    // CHECK-SAME: ) -> i32 {
+    // CHECK-NEXT: [[R:%[0-9]+]] = wasm.block [[A:%[0-9]+]] {
+    // CHECK-NEXT: ^[[B1:block[0-9]+]]([[V:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[W:%[0-9]+]] = wasm.if [[C:%[0-9]+]], [[V]] then {
+    // CHECK-NEXT: ^[[B2:block[0-9]+]]([[X:%[0-9]+]]: i32):
+    // CHECK-NEXT: wasm.br 1 [[X]] : (i32);
+    // CHECK-NEXT: } : (i32, i32) -> (i32);
+    // CHECK-NEXT: wasm.end [[W]] : (i32);
+    // CHECK-NEXT: } : (i32) -> (i32);
+    // CHECK-NEXT: builtin.ret [[R]] : (i32);
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @br_if(%c: i32, %a: i32) -> i32 {
+        %r = wasm.block %a {
+        ^body(%v: i32):
+            %w = wasm.if %c, %v then {
+            ^taken(%x: i32):
+                wasm.br 1 %x : (i32);
+            } : (i32, i32) -> (i32);
+            wasm.end %w : (i32);
+        } : (i32) -> (i32);
+        builtin.ret %r : (i32);
+    };
+
+    // A branch crosses an operation that forwards early exits and does not count it as a level:
+    // `scf.if` here, so label 0 is the block.
+    // CHECK-LABEL: builtin.function public extern("C") @through_scf(
+    // CHECK-SAME: ) -> i32 {
+    // CHECK-NEXT: [[R:%[0-9]+]] = wasm.block {
+    // CHECK-NEXT: scf.if [[F:%[0-9]+]] then {
+    // CHECK-NEXT: wasm.br 0 [[A:%[0-9]+]] : (i32);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: scf.yield : ();
+    // CHECK-NEXT: } : (i1) -> ();
+    // CHECK-NEXT: wasm.end [[A]] : (i32);
+    // CHECK-NEXT: } : () -> (i32);
+    // CHECK-NEXT: builtin.ret [[R]] : (i32);
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @through_scf(%f: i1, %a: i32) -> i32 {
+        %r = wasm.block {
+            scf.if %f then {
+                wasm.br 0 %a : (i32);
+            } else {
+                scf.yield : ();
+            } : (i1) -> ();
+            wasm.end %a : (i32);
+        } : () -> (i32);
+        builtin.ret %r : (i32);
+    };
+
+    // A branch table, with entries that name different labels, no entry, and no value; a trap
+    // ends a block.
+    // CHECK-LABEL: builtin.function public extern("C") @tables(
+    // CHECK-SAME: ) -> i32 {
+    // CHECK-NEXT: [[R:%[0-9]+]] = wasm.block [[A:%[0-9]+]] {
+    // CHECK-NEXT: ^[[B1:block[0-9]+]]([[V:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[Q:%[0-9]+]] = wasm.loop [[V]] {
+    // CHECK-NEXT: ^[[B2:block[0-9]+]]([[W:%[0-9]+]]: i32):
+    // CHECK-NEXT: wasm.br_table [[I:%[0-9]+]], [[W]] [{
+    // CHECK-NEXT: wasm.br 0 [[W]] : (i32);
+    // CHECK-NEXT: }, {
+    // CHECK-NEXT: wasm.br 1 [[W]] : (i32);
+    // CHECK-NEXT: }] default {
+    // CHECK-NEXT: wasm.br 1 [[W]] : (i32);
+    // CHECK-NEXT: } : (i32, i32);
+    // CHECK-NEXT: } : (i32) -> (i32);
+    // CHECK-NEXT: wasm.end [[Q]] : (i32);
+    // CHECK-NEXT: } : (i32) -> (i32);
+    // CHECK-NEXT: wasm.block {
+    // CHECK-NEXT: wasm.br_table [[I]] [] default {
+    // CHECK-NEXT: wasm.br 0 : ();
+    // CHECK-NEXT: } : (i32);
+    // CHECK-NEXT: } : () -> ();
+    // CHECK-NEXT: wasm.block {
+    // CHECK-NEXT: wasm.unreachable;
+    // CHECK-NEXT: } : () -> ();
+    // CHECK-NEXT: builtin.ret [[R]] : (i32);
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @tables(%i: i32, %a: i32) -> i32 {
+        %r = wasm.block %a {
+        ^body(%v: i32):
+            %q = wasm.loop %v {
+            ^head(%w: i32):
+                wasm.br_table %i, %w [{
+                    wasm.br 0 %w : (i32);
+                }, {
+                    wasm.br 1 %w : (i32);
+                }] default {
+                    wasm.br 1 %w : (i32);
+                } : (i32, i32);
+            } : (i32) -> (i32);
+            wasm.end %q : (i32);
+        } : (i32) -> (i32);
+        wasm.block {
+            wasm.br_table %i [] default {
+                wasm.br 0 : ();
+            } : (i32);
+        } : () -> ();
+        wasm.block {
+            wasm.unreachable;
+        } : () -> ();
+        builtin.ret %r : (i32);
+    };
+
+    // A construct may carry an attribute dictionary, and so may `end` and `br`.
+    // CHECK-LABEL: builtin.function public extern("C") @attributes(
+    // CHECK-SAME: ) {
+    // CHECK-NEXT: wasm.block {
+    // CHECK-NEXT: wasm.br 0 attributes { note = #builtin.i32<2> } : ();
+    // CHECK-NEXT: } attributes { note = #builtin.i32<1> } : () -> ();
+    // CHECK-NEXT: wasm.loop {
+    // CHECK-NEXT: wasm.end attributes { note = #builtin.i32<4> } : ();
+    // CHECK-NEXT: } attributes { note = #builtin.i32<3> } : () -> ();
+    // CHECK-NEXT: builtin.ret;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @attributes() {
+        wasm.block {
+            wasm.br 0 attributes { note = #builtin.i32<2> } : ();
+        } attributes { note = #builtin.i32<1> } : () -> ();
+        wasm.loop {
+            wasm.end attributes { note = #builtin.i32<4> } : ();
+        } attributes { note = #builtin.i32<3> } : () -> ();
+        builtin.ret;
+    };
+};

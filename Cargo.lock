@@ -1394,7 +1394,9 @@ name = "runic-dialect-wasm"
 version = "0.1.0"
 dependencies = [
  "paste",
+ "runic-analysis",
  "runic-dialect-mem",
+ "runic-dialect-scf",
  "runic-ir",
  "runic-transform",
 ]

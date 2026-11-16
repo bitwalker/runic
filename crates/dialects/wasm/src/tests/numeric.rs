@@ -327,8 +327,8 @@ fn parse_function_from(
 }
 
 /// Every operation name the dialect registers is a numeric operation the tables list or one of
-/// [OTHER_OPERATIONS] (the module-level, memory, variable, reference and call operations, which
-/// their own tests cover), and each is registered.
+/// [OTHER_OPERATIONS] (the module-level, memory, variable, reference, call and control flow
+/// operations, which their own tests cover), and each is registered.
 #[test]
 fn the_dialect_has_exactly_the_numeric_operations_the_tables_list() {
     let context = context();

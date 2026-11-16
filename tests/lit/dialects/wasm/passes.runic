@@ -1,0 +1,128 @@
+// RUN: runic-opt %s -p 'canonicalizer,cse,sccp,canonicalizer,dce' | filecheck %s
+// RUN: runic-opt %s -p 'canonicalizer,cse,sccp,canonicalizer,dce' | runic-opt - --verify-roundtrip | filecheck %s
+
+// What the passes make of the structured control flow of `wasm`: a counted loop written with
+// `wasm.loop`, `wasm.if` and `wasm.br`, an early exit from two levels down, and a branch table.
+// The constructs state every edge a branch takes, so nothing that is live is lost: the loop that a
+// branch repeats, the blocks and the `if`s that hold a branch out of a construct around them, and
+// the branches themselves stay, while what nothing uses (a product, an equal sum, a constant) goes.
+builtin.module public @wasm_control_passes {
+    // The sum of the numbers below `%n`. The block is left by the branch of the `if`, two levels
+    // out of it, with the sum; the loop goes back to its top with the next numbers. The product is
+    // unused and is removed, the two equal sums are one, and the loop, the `if` and the branches
+    // stay.
+    // CHECK-LABEL: builtin.function public extern("C") @count(
+    // CHECK-SAME: [[N:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[ZERO:%[0-9]+]] = wasm.const 0 : i32;
+    // CHECK-NEXT: [[ONE:%[0-9]+]] = wasm.const 1 : i32;
+    // CHECK-NEXT: [[R:%[0-9]+]] = wasm.block {
+    // CHECK-NEXT: [[L:%[0-9]+]] = wasm.loop [[ZERO]], [[ZERO]] {
+    // CHECK-NEXT: ^[[B:block[0-9]+]]([[I:%[0-9]+]]: i32, [[ACC:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[DONE:%[0-9]+]] = wasm.eq [[I]], [[N]];
+    // CHECK-NEXT: wasm.if [[DONE]] then {
+    // CHECK-NEXT: wasm.br 2 [[ACC]] : (i32);
+    // CHECK-NEXT: } : (i32) -> ();
+    // CHECK-NEXT: [[NEXT:%[0-9]+]] = wasm.add [[I]], [[ONE]];
+    // CHECK-NEXT: [[SUM:%[0-9]+]] = wasm.add [[ACC]], [[I]];
+    // CHECK-NEXT: wasm.br 0 [[NEXT]], [[SUM]] : (i32, i32);
+    // CHECK-NEXT: } : (i32, i32) -> (i32);
+    // CHECK-NEXT: wasm.end [[L]] : (i32);
+    // CHECK-NEXT: } : () -> (i32);
+    // CHECK-NEXT: builtin.ret [[R]] : (i32);
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @count(%n: i32) -> i32 {
+        %zero = wasm.const 0 : i32;
+        %one = wasm.const 1 : i32;
+        %again = wasm.const 1 : i32;
+        %r = wasm.block {
+            %l = wasm.loop %zero, %zero {
+            ^head(%i: i32, %acc: i32):
+                %done = wasm.eq %i, %n;
+                wasm.if %done then {
+                    wasm.br 2 %acc : (i32);
+                } : (i32) -> ();
+                %next = wasm.add %i, %one;
+                %same = wasm.add %i, %again;
+                %product = wasm.mul %i, %acc;
+                %sum = wasm.add %acc, %i;
+                wasm.br 0 %next, %sum : (i32, i32);
+            } : (i32, i32) -> (i32);
+            wasm.end %l : (i32);
+        } : () -> (i32);
+        builtin.ret %r : (i32);
+    };
+
+    // An early exit from two levels down: the branch in the `if` leaves the outer block, past the
+    // inner block, whose result nothing uses. The inner block holds the exit, so it stays; the
+    // value the outer block ends with is not the value the branch carries, and is not folded. The
+    // canonicalizer moves the constant to the top of the function.
+    // CHECK-LABEL: builtin.function public extern("C") @early(
+    // CHECK-SAME: [[C:%[0-9]+]]: i32, [[A:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[TWO:%[0-9]+]] = wasm.const 2 : i32;
+    // CHECK-NEXT: [[R:%[0-9]+]] = wasm.block {
+    // CHECK-NEXT: wasm.block {
+    // CHECK-NEXT: wasm.if [[C]] then {
+    // CHECK-NEXT: wasm.br 2 [[A]] : (i32);
+    // CHECK-NEXT: } : (i32) -> ();
+    // CHECK-NEXT: wasm.end : ();
+    // CHECK-NEXT: } : () -> ();
+    // CHECK-NEXT: [[S:%[0-9]+]] = wasm.add [[A]], [[TWO]];
+    // CHECK-NEXT: wasm.end [[S]] : (i32);
+    // CHECK-NEXT: } : () -> (i32);
+    // CHECK-NEXT: builtin.ret [[R]] : (i32);
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @early(%c: i32, %a: i32) -> i32 {
+        %r = wasm.block {
+            wasm.block {
+                wasm.if %c then {
+                    wasm.br 2 %a : (i32);
+                } : (i32) -> ();
+                wasm.end : ();
+            } : () -> ();
+            %two = wasm.const 2 : i32;
+            %unused = wasm.const 3 : i32;
+            %s = wasm.add %a, %two;
+            wasm.end %s : (i32);
+        } : () -> (i32);
+        builtin.ret %r : (i32);
+    };
+
+    // A branch table: each entry leaves a block, and the default leaves the outer one. The table
+    // is the end of the inner block, which gives its result by the branches; the sum after it is
+    // used, and the table stays.
+    // CHECK-LABEL: builtin.function public extern("C") @table(
+    // CHECK-SAME: [[I:%[0-9]+]]: i32, [[A:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[TWO:%[0-9]+]] = wasm.const 2 : i32;
+    // CHECK-NEXT: [[R:%[0-9]+]] = wasm.block {
+    // CHECK-NEXT: [[Q:%[0-9]+]] = wasm.block {
+    // CHECK-NEXT: wasm.br_table [[I]], [[A]] [{
+    // CHECK-NEXT: wasm.br 0 [[A]] : (i32);
+    // CHECK-NEXT: }, {
+    // CHECK-NEXT: wasm.br 1 [[A]] : (i32);
+    // CHECK-NEXT: }] default {
+    // CHECK-NEXT: wasm.br 1 [[A]] : (i32);
+    // CHECK-NEXT: } : (i32, i32);
+    // CHECK-NEXT: } : () -> (i32);
+    // CHECK-NEXT: [[S:%[0-9]+]] = wasm.add [[Q]], [[TWO]];
+    // CHECK-NEXT: wasm.end [[S]] : (i32);
+    // CHECK-NEXT: } : () -> (i32);
+    // CHECK-NEXT: builtin.ret [[R]] : (i32);
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @table(%i: i32, %a: i32) -> i32 {
+        %r = wasm.block {
+            %q = wasm.block {
+                wasm.br_table %i, %a [{
+                    wasm.br 0 %a : (i32);
+                }, {
+                    wasm.br 1 %a : (i32);
+                }] default {
+                    wasm.br 1 %a : (i32);
+                } : (i32, i32);
+            } : () -> (i32);
+            %two = wasm.const 2 : i32;
+            %s = wasm.add %q, %two;
+            wasm.end %s : (i32);
+        } : () -> (i32);
+        builtin.ret %r : (i32);
+    };
+};

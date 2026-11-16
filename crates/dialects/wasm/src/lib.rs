@@ -119,8 +119,60 @@
 //! result is unused. An operation has an effect only when it reads or writes a memory, a global
 //! or a table.
 //!
-//! **Control flow.** Structured control flow, branches and direct calls are those of `builtin`,
-//! `cf` and `scf`; the dialect does not repeat them. It adds the indirect calls above, which go
+//! **Control flow.** Direct calls and returns are those of `builtin` (`builtin.call`,
+//! `builtin.tail_call`, `builtin.ret`; Wasm's `br` that names the function is `builtin.ret`). The
+//! dialect adds Wasm's structured control flow, with the operand stack turned into SSA: the
+//! parameters of a `block`, `loop` or `if` are its operands, which are the arguments of the entry
+//! block of its body, and its results are the results of the operation.
+//!
+//! | Operation | Text | Wasm |
+//! |---|---|---|
+//! | [BlockOp] (`block`) | `%r = wasm.block %a { ^body(%x: i32): .. wasm.end %y : (i32); } : (i32) -> (i32);` | `block` |
+//! | [Loop] (`loop`) | `%r = wasm.loop %a { ^body(%x: i32): .. wasm.br 0 %n : (i32); } : (i32) -> (i32);` | `loop` |
+//! | [If] (`if`) | `%r = wasm.if %c, %a then { ^t(%x: i32): .. } else { ^e(%x: i32): .. } : (i32, i32) -> (i32);` | `if`, `else` |
+//! | [End] (`end`) | `wasm.end %y : (i32);` | falling off the `end` of a construct |
+//! | [Br] (`br`) | `wasm.br 1 %v : (i32);` | `br` |
+//! | [BrTable] (`br_table`) | `wasm.br_table %i, %v [{ wasm.br 0 %v : (i32); }] default { wasm.br 1 %v : (i32); } : (i32, i32);` | `br_table` |
+//! | [Unreachable] (`unreachable`) | `wasm.unreachable;` | `unreachable` |
+//!
+//! A body ends with [End], which leaves the construct with its operands as its results (for a
+//! `loop`, falling off the end leaves the loop), or with an early exit: [Br], [BrTable],
+//! `builtin.ret` or a tail call, or [Unreachable]. [Br] names a label: 0 is the innermost
+//! enclosing `wasm.block`, `wasm.loop` or `wasm.if`, and each further level the next one of those
+//! three; no other operation counts as a level, and each operation a branch crosses must forward
+//! early exits (`scf.if` does, and is no label). A branch to a block or an `if` leaves it with the
+//! values of its results; a branch to a loop goes back to the top of its body with the values as
+//! the new arguments of its entry block. A label that would name the function itself is an error:
+//! this IR leaves a function with `builtin.ret`. A `wasm.if` with no `else` stands for one whose
+//! second region only passes its operands through, which the text leaves out.
+//!
+//! `br_if` is not an operation. It is an `if` whose first region holds a `br` and whose second
+//! passes through (a later stage's emitter writes that shape as `br_if`):
+//!
+//! ```text,ignore
+//! wasm.block %a {
+//! ^body(%v: i32):
+//!     %w = wasm.if %c, %v then {
+//!     ^taken(%x: i32):
+//!         wasm.br 1 %x : (i32);      // label 1: the block; label 0 is the `if`
+//!     } : (i32, i32) -> (i32);
+//!     wasm.end %w : (i32);
+//! } : (i32) -> (i32);
+//! ```
+//!
+//! `br_table` is a terminator with one region for each entry of the table and one for the default,
+//! each holding one `br` of the values of the table: a branch states one target, and the table
+//! many, so each region holds the single-target branch that every analysis knows. It never falls
+//! through. Because a body may end in it, in a `unreachable` or in a `builtin.ret`, which are no
+//! `end`, the results of that construct are not known to the analyses that follow the values: they
+//! stay correct, and are less precise.
+//!
+//! [BlockOp], [Loop] and [If] carry `PropagateControlFlowBreak` and are `RegionBranchOpInterface`
+//! operations; each states the edge to its parent that its body falls off its end by, which is
+//! also where a nested branch that names it arrives, and a [Br] states its own edge, to the
+//! results of the block or the `if` it names or to the entry block of the loop. [Loop] is a
+//! `LoopLikeOpInterface` whose one region is both header and body, and allows a continue from its
+//! header. The effects of the three are those of what they hold. The indirect calls above go
 //! through a table.
 //!
 //! **What is not here.** Garbage-collected types and their instructions, exceptions, SIMD,
@@ -130,6 +182,7 @@
 #![feature(unboxed_closures)]
 #![feature(fn_traits)]
 #![feature(ptr_metadata)]
+#![feature(specialization)]
 #![allow(incomplete_features)]
 #![deny(warnings)]
 

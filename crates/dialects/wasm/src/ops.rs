@@ -8,6 +8,7 @@ use crate::types::is_int_type;
 mod macros;
 mod call;
 mod compare;
+mod control;
 mod convert;
 mod memory;
 mod module;
@@ -19,7 +20,9 @@ mod verify;
 pub(crate) use self::verify::{
     ResultRule, verify_constant, verify_conversion, verify_select, verify_uniform,
 };
-pub use self::{call::*, compare::*, convert::*, memory::*, module::*, numeric::*, variable::*};
+pub use self::{
+    call::*, compare::*, control::*, convert::*, memory::*, module::*, numeric::*, variable::*,
+};
 
 /// Marks an operation that may appear in a Wasm constant expression (the initializer of a global,
 /// of a table or of a segment offset).

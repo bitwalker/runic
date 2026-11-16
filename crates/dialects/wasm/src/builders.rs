@@ -13,6 +13,28 @@ use runic_ir::{
 
 use crate::*;
 
+/// Gives the operation `owner` a result of each of the types `results`.
+fn add_results(
+    context: &runic_ir::Context,
+    mut owner: runic_ir::OperationRef,
+    results: &[Type],
+    span: SourceSpan,
+) {
+    for ty in results {
+        let result = context.make_result(span, *ty, owner, 0);
+        owner.borrow_mut().results_mut().push(result);
+    }
+}
+
+/// The types of the operands of `op`.
+fn operand_types(op: runic_ir::OperationRef) -> alloc::vec::Vec<Type> {
+    op.borrow()
+        .operands()
+        .iter()
+        .map(|o| o.borrow().as_value_ref().borrow().ty())
+        .collect()
+}
+
 /// Defines the builder methods of the binary operations (two operands of one type).
 macro_rules! binary_builders {
     ($($method:ident, $Op:ident, $doc:literal;)*) => {$(
@@ -706,6 +728,117 @@ pub trait WasmOpBuilder<'f, B: ?Sized + Builder> {
         let op = op_builder(callee)?;
         let result = op.borrow().result().as_value_ref();
         Ok(result)
+    }
+
+    /// Builds a `wasm.block` with the parameters `inputs` and results of the types `results`. The
+    /// body has one block, with an argument for each parameter, which the caller fills and ends
+    /// with a `wasm.end` or an early exit.
+    fn block<T: IntoIterator<Item = ValueRef>>(
+        &mut self,
+        inputs: T,
+        results: &[Type],
+        span: SourceSpan,
+    ) -> Result<BlockOpRef, Report> {
+        let op_builder = self.builder_mut().create::<BlockOp, (T,)>(span);
+        let mut block_op = op_builder(inputs)?;
+        add_results(self.builder().context(), block_op.as_operation_ref(), results, span);
+        let types = operand_types(block_op.as_operation_ref());
+        let entry = self.builder().context_rc().create_block_with_params(types);
+        block_op.borrow_mut().body_mut().body_mut().push_back(entry);
+        Ok(block_op)
+    }
+
+    /// Builds a `wasm.loop` with the parameters `inputs` and results of the types `results`. The
+    /// body has one block, with an argument for each parameter, which the caller fills and ends
+    /// with a `wasm.end` (which leaves the loop) or an early exit (a `wasm.br` that names the loop
+    /// goes back to the top).
+    fn r#loop<T: IntoIterator<Item = ValueRef>>(
+        &mut self,
+        inputs: T,
+        results: &[Type],
+        span: SourceSpan,
+    ) -> Result<LoopRef, Report> {
+        let op_builder = self.builder_mut().create::<Loop, (T,)>(span);
+        let mut loop_op = op_builder(inputs)?;
+        add_results(self.builder().context(), loop_op.as_operation_ref(), results, span);
+        let types = operand_types(loop_op.as_operation_ref());
+        let entry = self.builder().context_rc().create_block_with_params(types);
+        loop_op.borrow_mut().body_mut().body_mut().push_back(entry);
+        Ok(loop_op)
+    }
+
+    /// Builds a `wasm.if` on the `i32` `condition` with the parameters `inputs` and results of the
+    /// types `results`. Each of the two regions has one block, with an argument for each
+    /// parameter, which the caller fills and ends with a `wasm.end` or an early exit.
+    fn r#if<T: IntoIterator<Item = ValueRef>>(
+        &mut self,
+        condition: ValueRef,
+        inputs: T,
+        results: &[Type],
+        span: SourceSpan,
+    ) -> Result<IfRef, Report> {
+        let op_builder = self.builder_mut().create::<If, (_, T)>(span);
+        let mut if_op = op_builder(condition, inputs)?;
+        add_results(self.builder().context(), if_op.as_operation_ref(), results, span);
+        let mut types = operand_types(if_op.as_operation_ref());
+        types.remove(0);
+        let then_entry = self.builder().context_rc().create_block_with_params(types.clone());
+        let else_entry = self.builder().context_rc().create_block_with_params(types);
+        let mut op = if_op.borrow_mut();
+        op.then_body_mut().body_mut().push_back(then_entry);
+        op.else_body_mut().body_mut().push_back(else_entry);
+        drop(op);
+        Ok(if_op)
+    }
+
+    /// Builds a `wasm.end` of `values`: falling off the end of a block, loop or if.
+    fn end<T: IntoIterator<Item = ValueRef>>(
+        &mut self,
+        values: T,
+        span: SourceSpan,
+    ) -> Result<EndRef, Report> {
+        let op_builder = self.builder_mut().create::<End, (T,)>(span);
+        op_builder(values)
+    }
+
+    /// Builds a `wasm.br` to label `level` (0 is the innermost enclosing block, loop or if)
+    /// carrying `values`. The label is resolved when the operation is verified, with its
+    /// enclosing operations in place.
+    fn br<T: IntoIterator<Item = ValueRef>>(
+        &mut self,
+        level: i32,
+        values: T,
+        span: SourceSpan,
+    ) -> Result<BrRef, Report> {
+        let op_builder = self.builder_mut().create::<Br, (_, T)>(span);
+        op_builder(level, values)
+    }
+
+    /// Builds a `wasm.br_table` on the `i32` `index`, carrying `values`, with `entries` empty
+    /// entry regions after the (empty) default region. The caller gives each region a block that
+    /// holds one `wasm.br` of `values`.
+    fn br_table<T: IntoIterator<Item = ValueRef>>(
+        &mut self,
+        index: ValueRef,
+        values: T,
+        entries: usize,
+        span: SourceSpan,
+    ) -> Result<BrTableRef, Report> {
+        let op_builder = self.builder_mut().create::<BrTable, (_, T)>(span);
+        let table = op_builder(index, values)?;
+        let mut owner = table.as_operation_ref();
+        for _ in 0..entries {
+            let region = self.builder().context().create_region();
+            owner.borrow_mut().regions_mut().push_back(region);
+        }
+        Ok(table)
+    }
+
+    /// Builds a `wasm.unreachable`, which traps. (The name is not `unreachable`, which the builder
+    /// of `ub`, whose operation does not trap, has.)
+    fn trap(&mut self, span: SourceSpan) -> Result<UnreachableRef, Report> {
+        let op_builder = self.builder_mut().create::<Unreachable, _>(span);
+        op_builder()
     }
 
     /// Calls the function in entry `index`, an `i32`, of `table` with `arguments` and the

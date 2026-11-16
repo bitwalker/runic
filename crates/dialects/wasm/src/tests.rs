@@ -20,6 +20,9 @@ use crate::*;
 mod attributes;
 mod call;
 mod compare;
+mod control;
+mod control_analyses;
+mod control_random;
 mod convert;
 mod memory;
 mod module;
@@ -323,8 +326,9 @@ const STATE: &str = r#"
 "#;
 
 /// The operations that are not numeric: the module-level ones, the memory operations, the
-/// variable, reference and address operations, and the indirect calls.
-const OTHER_OPERATIONS: [&str; 27] = [
+/// variable, reference and address operations, the indirect calls, and the structured control
+/// flow.
+const OTHER_OPERATIONS: [&str; 34] = [
     "memory",
     "table",
     "global",
@@ -352,6 +356,13 @@ const OTHER_OPERATIONS: [&str; 27] = [
     "func_index",
     "call_indirect",
     "return_call_indirect",
+    "block",
+    "loop",
+    "if",
+    "end",
+    "br",
+    "br_table",
+    "unreachable",
 ];
 
 /// The parameters of the function the tests of the state operations put a body in.

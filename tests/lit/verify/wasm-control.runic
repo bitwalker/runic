@@ -1,0 +1,261 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// The rules of the structured control flow of `wasm`. A `wasm.br` names a label: 0 is the
+// innermost enclosing `wasm.block`, `wasm.loop` or `wasm.if`, and each further level the next one;
+// every operation the branch crosses forwards it, and none but those three counts. A branch to a
+// block or an `if` carries the types of its results, a branch to a loop those of its parameters,
+// and a label that would name the function is an error: a function is left with `builtin.ret`.
+// One error to each case.
+
+// A branch to each construct, at each of its levels, and one that crosses an `scf.if`, which is
+// no label.
+builtin.function public extern("C") @valid(%c: i32, %f: i1, %a: i32, %b: i64) -> i32 {
+    %r = wasm.block {
+        %q = wasm.loop %b {
+        ^head(%p: i64):
+            %s = wasm.if %c then {
+                wasm.br 2 %a : (i32);
+            } else {
+                wasm.br 1 %p : (i64);
+            } : (i32) -> (i32);
+            scf.if %f then {
+                wasm.br 0 %p : (i64);
+            } else {
+                scf.yield : ();
+            } : (i1) -> ();
+            wasm.end %p : (i64);
+        } : (i64) -> (i64);
+        wasm.end %a : (i32);
+    } : () -> (i32);
+    builtin.ret %r : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @names_the_function(%a: i32) -> i32 {
+    wasm.block {
+        wasm.br 1 : (); // expected-error {{`wasm.br` names label 1, which is the function itself: Wasm lets `br` name the function's label, but this IR leaves a function with `builtin.ret`}}
+    } : () -> ();
+    builtin.ret %a : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @beyond_the_function(%a: i32) -> i32 {
+    wasm.block {
+        wasm.br 3 : (); // expected-error {{`wasm.br` names label 3, but only 1 `wasm.block`, `wasm.loop` or `wasm.if` enclose it (label 1 would be the function itself, which this IR leaves with `builtin.ret`)}}
+    } : () -> ();
+    builtin.ret %a : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @no_label(%a: i32) -> i32 {
+    wasm.br 0 : (); // expected-error {{`wasm.br` names label 0, which is the function itself}}
+};
+
+// -----
+
+builtin.function public extern("C") @negative(%a: i32) -> i32 {
+    wasm.block {
+        wasm.br -1 : (); // expected-error {{`wasm.br` names label -1, but a label is numbered from 0, the innermost enclosing `wasm.block`, `wasm.loop` or `wasm.if`}}
+    } : () -> ();
+    builtin.ret %a : (i32);
+};
+
+// -----
+
+// An `scf.if` is crossed and is no label: label 1 is the function.
+builtin.function public extern("C") @scf_if_is_no_label(%f: i1, %a: i32) -> i32 {
+    %r = wasm.block {
+        scf.if %f then {
+            wasm.br 1 %a : (i32); // expected-error {{`wasm.br` names label 1, which is the function itself}}
+        } else {
+            scf.yield : ();
+        } : (i1) -> ();
+        wasm.end %a : (i32);
+    } : () -> (i32);
+    builtin.ret %r : (i32);
+};
+
+// -----
+
+// `test.reads_locals_and_holds` does not forward an exit (it has no custom form).
+builtin.function public extern("C") @crosses_opaque(%a: i32) -> i32 {
+    %r = wasm.block {
+        "test.reads_locals_and_holds"() ({
+            wasm.br 0 %a : (i32); // expected-error {{`wasm.br` names label 0, but would have to cross `test.reads_locals_and_holds`, which has not declared that it forwards breaking control flow}}
+        }) : () -> ();
+        wasm.end %a : (i32);
+    } : () -> (i32);
+    builtin.ret %r : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @block_results(%b: i64) -> i32 {
+    %r = wasm.block {
+        wasm.br 0 %b : (i64); // expected-error {{`wasm.br` names an enclosing `wasm.block`, `wasm.loop` or `wasm.if` and carries the values it expects: the results of a block or an if, the parameters of a loop, but it carries (i64), and the results of the `wasm.block` or `wasm.if` it names are (i32)}}
+    } : () -> (i32);
+    builtin.ret %r : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @loop_parameters(%a: i32, %b: i64) -> i32 {
+    %r = wasm.loop %a {
+    ^head(%p: i32):
+        wasm.br 0 %b : (i64); // expected-error {{but it carries (i64), and the parameters of the `wasm.loop` it names (the arguments of its body) are (i32)}}
+    } : (i32) -> (i32);
+    builtin.ret %r : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @if_results(%c: i32, %a: i32) -> i32 {
+    %r = wasm.if %c then {
+        wasm.br 0 : (); // expected-error {{but it carries (), and the results of the `wasm.block` or `wasm.if` it names are (i32)}}
+    } else {
+        wasm.br 0 %a : (i32);
+    } : (i32) -> (i32);
+    builtin.ret %r : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @end_type(%a: i64) -> i32 {
+    %r = wasm.block {
+        wasm.end %a : (i64); // expected-error {{operand 0 for successor 0 (the results of wasm.block) has type 'i64', but the result it binds has type 'i32'}}
+    } : () -> (i32);
+    builtin.ret %r : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @end_under_scf(%f: i1) {
+    scf.if %f then {
+        wasm.end : (); // expected-error {{`wasm.end` cannot end a region of `scf.if`}}
+    } else {
+        scf.yield : ();
+    } : (i1) -> ();
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @entry_arguments(%a: i32) -> i32 {
+    %r = wasm.block %a { // expected-error {{`wasm.block` takes parameters and gives results of Wasm value types, and its body's entry block takes the parameters as its arguments, but the entry block of its body takes (i64), not the parameters (i32)}}
+    ^body(%x: i64):
+        wasm.end %a : (i32);
+    } : (i32) -> (i32);
+    builtin.ret %r : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @if_entry_arguments(%c: i32, %a: i32) -> i32 {
+    %r = wasm.if %c, %a then { // expected-error {{but the entry block of its second region takes (i64), not the parameters (i32)}}
+    ^t(%x: i32):
+        wasm.end %x : (i32);
+    } else {
+    ^e(%x: i64):
+        wasm.end %a : (i32);
+    } : (i32, i32) -> (i32);
+    builtin.ret %r : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @condition(%b: i64) {
+    wasm.if %b then { // expected-error {{its condition has type `i64`}}
+        wasm.end : ();
+    } else {
+        wasm.end : ();
+    } : (i64) -> ();
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @value_types(%x: i8) {
+    wasm.block %x { // expected-error {{but its operand 0 has type `i8`}}
+    ^body(%y: i8):
+        wasm.end : ();
+    } : (i8) -> ();
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @table_region_with_two_operations(%i: i32, %a: i32) -> i32 {
+    %r = wasm.block {
+        wasm.br_table %i, %a [{ // expected-error {{its entry 0 holds 2 operations}}
+            %z = wasm.add %a, %a;
+            wasm.br 0 %a : (i32);
+        }] default {
+            wasm.br 0 %a : (i32);
+        } : (i32, i32);
+    } : () -> (i32);
+    builtin.ret %r : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @table_region_is_not_a_branch(%i: i32, %a: i32) -> i32 {
+    %r = wasm.block {
+        wasm.br_table %i, %a [{ // expected-error {{its entry 0 holds `wasm.add`, not a `wasm.br`}}
+            %z = wasm.add %a, %a;
+        }] default {
+            wasm.br 0 %a : (i32);
+        } : (i32, i32);
+    } : () -> (i32);
+    builtin.ret %r : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @table_default_is_a_trap(%i: i32, %a: i32) -> i32 {
+    %r = wasm.block {
+        wasm.br_table %i, %a [] default { // expected-error {{its default region holds `wasm.unreachable`, not a `wasm.br`}}
+            wasm.unreachable;
+        } : (i32, i32);
+    } : () -> (i32);
+    builtin.ret %r : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @table_carries_other_values(%i: i32, %a: i32, %b: i32) -> i32 {
+    %r = wasm.block {
+        wasm.br_table %i, %a [{ // expected-error {{the `wasm.br` of its entry 0 carries (i32), not the values of the table (i32)}}
+            wasm.br 0 %b : (i32);
+        }] default {
+            wasm.br 0 %a : (i32);
+        } : (i32, i32);
+    } : () -> (i32);
+    builtin.ret %r : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @table_index(%j: i64, %a: i32) -> i32 {
+    %r = wasm.block {
+        wasm.br_table %j, %a [] default { // expected-error {{but its index has type `i64`}}
+            wasm.br 0 %a : (i32);
+        } : (i64, i32);
+    } : () -> (i32);
+    builtin.ret %r : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @table_branch_names_the_function(%i: i32, %a: i32) -> i32 {
+    %r = wasm.block {
+        wasm.br_table %i, %a [{
+            wasm.br 0 %a : (i32);
+        }] default {
+            wasm.br 1 %a : (i32); // expected-error {{`wasm.br` names label 1, which is the function itself}}
+        } : (i32, i32);
+    } : () -> (i32);
+    builtin.ret %r : (i32);
+};
