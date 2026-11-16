@@ -1,0 +1,49 @@
+// RUN: runic-opt %s | filecheck %s
+// RUN: runic-opt %s --verify-roundtrip | filecheck %s
+// RUN: runic-opt %s --print-generic | runic-opt - --verify-roundtrip
+
+// The `test` dialect's loop with one region, and the operations that end its region or leave it
+// early: `test.yield` ends a region, passing its operands to the results of the operation that
+// holds it; `test.continue` goes back to the top of the nearest enclosing loop; `test.guard` runs
+// its region when its condition is true. A continue may come from the loop's own region, which is
+// its header, and from a region nested in it.
+
+// CHECK: builtin.module public @test_loop {
+builtin.module public @test_loop {
+    // CHECK-LABEL: builtin.function public extern("C") @loop(
+    // CHECK-SAME: [[N:%[0-9]+]]: i32, [[C:%[0-9]+]]: i1) -> i32 {
+    // CHECK-NEXT: [[R:%[0-9]+]] = test.loop [[N]] {
+    // CHECK-NEXT: ^{{[a-z0-9]+}}([[I:%[0-9]+]]: i32):
+    // CHECK-NEXT: test.guard [[C]] {
+    // CHECK-NEXT: test.continue [[I]] : (i32);
+    // CHECK-NEXT: } : (i1);
+    // CHECK-NEXT: test.yield [[I]] : (i32);
+    // CHECK-NEXT: } : (i32) -> (i32);
+    // CHECK-NEXT: builtin.ret [[R]] : (i32);
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @loop(%n: i32, %c: i1) -> i32 {
+        %r = test.loop %n {
+        ^head(%i: i32):
+            test.guard %c {
+                test.continue %i : (i32);
+            } : (i1);
+            test.yield %i : (i32);
+        } : (i32) -> (i32);
+        builtin.ret %r : (i32);
+    };
+
+    // A continue directly in the body, which ends in it, and a loop that carries nothing.
+    // CHECK-LABEL: builtin.function public extern("C") @spin() {
+    // CHECK-NEXT: test.loop {
+    // CHECK-NEXT: test.continue : ();
+    // CHECK-NEXT: } : () -> ();
+    // CHECK-NEXT: builtin.ret;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @spin() {
+        test.loop {
+        ^head:
+            test.continue : ();
+        } : () -> ();
+        builtin.ret;
+    };
+};

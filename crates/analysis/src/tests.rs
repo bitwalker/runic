@@ -14,6 +14,7 @@ use runic_ir::{
     },
 };
 
+mod one_region_loop;
 mod tail_calls;
 
 use crate::{

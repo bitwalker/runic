@@ -3,6 +3,8 @@ mod interfaces;
 mod invocation_bounds;
 mod isolate;
 mod kind;
+#[cfg(test)]
+mod one_region_loop_tests;
 mod successor;
 #[cfg(test)]
 mod tests;

@@ -729,9 +729,8 @@ fn verify_exit(
             }
         }
         RegionExitKind::Continue => {
-            let Some(header) = target_op
-                .as_trait::<dyn HasBreakingControlFlowOpInterface>()
-                .and_then(|receiver| receiver.get_continue_target_region())
+            let receiver = target_op.as_trait::<dyn HasBreakingControlFlowOpInterface>();
+            let Some(header) = receiver.and_then(|receiver| receiver.get_continue_target_region())
             else {
                 return reject(
                     alloc::format!(
@@ -744,7 +743,9 @@ fn verify_exit(
             };
 
             // A continue must originate outside the target header.
-            if resolved.from_region == header {
+            let header_may_continue =
+                receiver.is_some_and(|receiver| receiver.continue_may_originate_in_header());
+            if resolved.from_region == header && !header_may_continue {
                 return reject(
                     alloc::string::ToString::to_string(
                         "this continue originates in the header of the loop it targets, where it \
@@ -815,6 +816,25 @@ pub trait HasBreakingControlFlowOpInterface: RegionBranchOpInterface {
     fn has_nested_predecessors(&self) -> bool;
     /// The region a `continue` re-enters (for a loop: the header).
     fn get_continue_target_region(&self) -> Option<RegionRef>;
+
+    /// Whether a continue may originate in the region [Self::get_continue_target_region] names.
+    ///
+    /// The header of a loop is the region a continue re-enters: the region whose entry-block
+    /// arguments are the loop-carried values. There are two shapes of loop. In one the header only
+    /// decides whether to go on (the `before` region of `scf.while`) and the continue comes from
+    /// another region (its `after` region): a continue that originates in the header would
+    /// re-enter the region it is already in, and the exit verifier rejects it. That is the
+    /// default, `false`. In the other the loop has one region, which is the header and the body at
+    /// once (WebAssembly's `loop`): every continue originates in the header, and the operation
+    /// answers `true`, so that the exit verifier accepts it.
+    ///
+    /// An operation that answers `true` makes its back edge an exit, not an `Entering` edge, so
+    /// the default [RegionBranchOpInterface::has_loop] and
+    /// [RegionBranchOpInterface::is_repetitive_region], which follow `Entering` edges only, answer
+    /// `false` for it: it overrides both (and implements [LoopLikeOpInterface]).
+    fn continue_may_originate_in_header(&self) -> bool {
+        false
+    }
 }
 
 /// This trait is implemented by operations which have loop-like semantics.

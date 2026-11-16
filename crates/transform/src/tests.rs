@@ -422,6 +422,7 @@ mod generic_form;
 mod interp;
 mod local2reg_model;
 mod nesting;
+mod one_region_loop;
 mod pipeline_runs;
 mod pipeline_text;
 mod printing;

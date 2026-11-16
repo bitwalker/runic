@@ -619,10 +619,19 @@ fn visit_region_successors<A>(
             }
         }
 
-        for (operand, lattice) in
-            operands.forwarded().iter().zip(lattices.iter_mut().skip(first_index))
+        for (index, (operand, lattice)) in operands
+            .forwarded()
+            .iter()
+            .zip(lattices.iter_mut().skip(first_index))
+            .enumerate()
         {
             let operand = operand.borrow().as_value_ref();
+            // A value forwarded to itself (a continue that carries an entry argument of a loop
+            // with one region back to it) is joined with itself, which changes nothing, and its
+            // lattice is borrowed mutably here
+            if inputs[index] == operand {
+                continue;
+            }
             log::trace!(target: analysis.debug_name(), "joining lattice for {} with {operand}", lattice.anchor());
             let operand_lattice = get_lattice_element_for::<A>(point, operand, solver);
             let change_result = lattice.join(operand_lattice.lattice());

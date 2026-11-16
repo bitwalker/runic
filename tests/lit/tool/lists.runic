@@ -27,7 +27,7 @@
 // DIALECTS-NEXT: di {{ +}}3 operations
 // DIALECTS-NEXT: mem {{ +}}13 operations
 // DIALECTS-NEXT: scf {{ +}}7 operations
-// DIALECTS-NEXT: test {{ +}}18 operations
+// DIALECTS-NEXT: test {{ +}}22 operations
 // DIALECTS-NEXT: ub {{ +}}2 operations
 // DIALECTS-NOT: {{.}}
 
