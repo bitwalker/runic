@@ -16,7 +16,10 @@
 //!   [Compiler], built by a [CompilerBuilder] that checks the whole configuration, holds the ones a
 //!   compiler offers;
 //! * a [Goal] says where a compilation stops and which [Output]s it produces, each with a
-//!   [Destination] decided by [resolve_goal] before anything runs.
+//!   [Destination] decided by [resolve_goal] before anything runs;
+//! * a [Session] resolves a request against a compiler: which frontend reads each input, the
+//!   [Target] and its backend, the route and the goal, and the context and world the stages build
+//!   in.
 #![deny(warnings)]
 
 mod backend;
@@ -26,6 +29,7 @@ mod frontend;
 mod goal;
 mod request;
 mod route;
+mod session;
 mod triple;
 
 #[cfg(test)]
@@ -45,6 +49,7 @@ pub use self::{
         InputSource, IrOptions, OptLevel, OutputFile, RemapPathPrefix, Verification,
     },
     route::{Declarer, Route},
+    session::{Session, Target},
     triple::Triple,
 };
 
