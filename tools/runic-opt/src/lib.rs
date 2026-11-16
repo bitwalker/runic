@@ -26,7 +26,6 @@
 //!
 //! [`run`] is the whole tool, given its arguments and streams; the binary calls it with the
 //! process's.
-#![feature(panic_can_unwind)]
 // The operations the tests declare are built by the operation derive, which needs these.
 #![cfg_attr(test, feature(unboxed_closures, fn_traits))]
 #![deny(warnings)]
@@ -45,10 +44,9 @@ use std::{
     collections::BTreeMap,
     ffi::OsString,
     fmt, fs,
-    io::{self, Read, Write},
+    io::{Read, Write},
     process::ExitCode,
     rc::Rc,
-    sync::{Arc, Mutex, Once, PoisonError},
 };
 
 use clap::Parser;
@@ -58,11 +56,12 @@ use runic_dialect_cf as _;
 use runic_dialect_mem as _;
 use runic_dialect_scf as _;
 use runic_dialect_ub as _;
+use runic_driver::worker::{self, SharedBuffer, WorkerError, WorkerPanic};
 use runic_ir::{
     Context, OpPrinter, OpPrintingFlags, OperationRef, Report,
     diagnostics::{
-        DiagnosticDisplay, DiagnosticSet, NoteKind, OwnedDiagnostic, RenderConfig, SourceId,
-        SourceSpan, TextRange, diagnostic,
+        DiagnosticDisplay, DiagnosticSet, NoteKind, OwnedDiagnostic, SourceId, SourceSpan,
+        TextRange, diagnostic,
     },
     parse::{ParserConfig, parse_any},
     pass::{
@@ -84,24 +83,13 @@ pub const MAX_REGION_DEPTH: u32 = 1_000;
 /// than this is the parser's diagnostic.
 pub const MAX_LIST_NESTING: u32 = 1_000;
 
-/// The stack of the thread an input is processed on, which regions nested
-/// [`MAX_REGION_DEPTH`] deep, and lists nested [`MAX_LIST_NESTING`] deep, need in every build.
-const CHUNK_STACK_SIZE: usize = 256 << 20;
-
 /// The name of the thread an input is processed on. A panic on it is reported by the tool, as an
 /// internal error on the standard error it was given (see [`run`]).
 const CHUNK_THREAD: &str = "runic-opt chunk";
 
-/// How diagnostics are rendered: plain text of a fixed width, with the source lines each one is
-/// about rather than the whole source, so that the output does not depend on the terminal.
-const RENDER_CONFIG: RenderConfig = RenderConfig {
-    fold: true,
-    ..RenderConfig::DEFAULT
-};
-
 /// Runs the tool. `args` excludes the program name. Returns the process's exit code.
 ///
-/// The first call installs a panic hook for the whole process, which stays installed. It acts
+/// The first input processed installs a panic hook for the whole process, which stays installed. It acts
 /// only on the threads `run` starts to process the input: it records a panic's message, location
 /// and (when `RUST_BACKTRACE` asks for one) backtrace, which the tool then reports as an internal
 /// error on `stderr`; a panic that cannot unwind is written, after what the input's thread wrote,
@@ -136,7 +124,6 @@ pub fn run_with_setup(
     stderr: &mut dyn Write,
     setup: impl FnOnce() -> Result<(), String>,
 ) -> ExitCode {
-    install_panic_hook();
     let mut failed = false;
     let mut out = String::new();
     let mut err = String::new();
@@ -163,113 +150,41 @@ pub fn run_with_setup(
     }
 }
 
-std::thread_local! {
-    /// Where a panic on this thread is recorded: set on a chunk's thread only.
-    static CHUNK_PANIC: RefCell<Option<PanicSlot>> = const { RefCell::new(None) };
-}
-
-/// Installs, once in the process, a panic hook that records a panic on a chunk's thread for the
-/// tool to report, and hands any other to the hook installed before it.
-fn install_panic_hook() {
-    static INSTALL: Once = Once::new();
-    INSTALL.call_once(|| {
-        let previous = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
-            let slot = CHUNK_PANIC
-                .try_with(|slot| slot.try_borrow().ok().and_then(|slot| slot.clone()))
-                .ok()
-                .flatten();
-            let Some(slot) = slot else {
-                return previous(info);
-            };
-            let panic = ChunkPanic {
-                message: panic_message(info.payload()),
-                location: info.location().map(ToString::to_string),
-                backtrace: {
-                    let backtrace = std::backtrace::Backtrace::capture();
-                    (backtrace.status() == std::backtrace::BacktraceStatus::Captured)
-                        .then(|| backtrace.to_string())
-                },
-            };
-            let mut recorded = slot.panic.lock().unwrap_or_else(PoisonError::into_inner);
-            if info.can_unwind() {
-                // The first panic is the one that says what went wrong; a later one (a destructor
-                // that panics while the first unwinds) is kept after it.
-                recorded.push(panic);
-            } else {
-                // The process aborts after the hook: nothing would write what the cases that
-                // finished and this chunk wrote. A panic that reaches a function that cannot
-                // unwind may follow others; the first is the one that says what went wrong.
-                let mut stderr = io::stderr();
-                let _ = stderr.write_all(slot.finished.take().as_bytes());
-                let _ = stderr.write_all(slot.stderr.take().as_bytes());
-                recorded.push(panic);
-                let _ = stderr.write_all(ChunkPanic::report(&recorded).as_bytes());
-                drop(recorded);
-                let _ = stderr.flush();
-                previous(info);
-            }
-        }));
-    });
-}
-
-/// What a chunk's thread shares with the panic hook.
-#[derive(Clone)]
-struct PanicSlot {
-    /// What the cases processed before this chunk wrote to standard error
-    finished: SharedBuffer,
-    /// What the chunk wrote to its standard error
-    stderr: SharedBuffer,
-    /// The panics, in the order they happened, once there was one
-    panic: Arc<Mutex<Vec<ChunkPanic>>>,
-}
-
-/// A panic on a chunk's thread, as the panic hook saw it.
-struct ChunkPanic {
-    message: String,
-    /// `file:line:column`
-    location: Option<String>,
-    /// The backtrace, when one was asked for
-    backtrace: Option<String>,
-}
-
-impl ChunkPanic {
-    /// The internal error, rendered: the first panic's message, where it happened, a note for
-    /// each later panic, and the first's backtrace.
-    fn report(panics: &[Self]) -> String {
-        let Some((first, later)) = panics.split_first() else {
-            return String::new();
-        };
-        let message = format!("internal error: {}", first.message);
-        let mut error = match &first.location {
-            Some(location) => diagnostic!(
-                severity: Error,
-                message: (message),
-                notes: [note((format!("the panic happened at {location}")))],
+/// The internal error for the panics on a chunk's thread, rendered: the first panic's message,
+/// where it happened, a note for each later panic, and the first's backtrace.
+fn report_panics(panics: &[WorkerPanic]) -> String {
+    let Some((first, later)) = panics.split_first() else {
+        return String::new();
+    };
+    let message = format!("internal error: {}", first.message);
+    let mut error = match &first.location {
+        Some(location) => diagnostic!(
+            severity: Error,
+            message: (message),
+            notes: [note((format!("the panic happened at {location}")))],
+        ),
+        None => diagnostic!(severity: Error, message: (message)),
+    };
+    for panic in later {
+        match &panic.location {
+            Some(location) => error.push_note(
+                NoteKind::Note,
+                format_args!("then a panic at {location}: {}", panic.message),
             ),
-            None => diagnostic!(severity: Error, message: (message)),
-        };
-        for panic in later {
-            match &panic.location {
-                Some(location) => error.push_note(
-                    NoteKind::Note,
-                    format_args!("then a panic at {location}: {}", panic.message),
-                ),
-                None => {
-                    error.push_note(NoteKind::Note, format_args!("then a panic: {}", panic.message))
-                }
+            None => {
+                error.push_note(NoteKind::Note, format_args!("then a panic: {}", panic.message))
             }
         }
-        let mut text = render(OwnedDiagnostic::new(error).display());
-        if let Some(backtrace) = &first.backtrace {
-            text += "stack backtrace:\n";
-            text += backtrace;
-            if !text.ends_with('\n') {
-                text.push('\n');
-            }
-        }
-        text
     }
+    let mut text = render(OwnedDiagnostic::new(error).display());
+    if let Some(backtrace) = &first.backtrace {
+        text += "stack backtrace:\n";
+        text += backtrace;
+        if !text.ends_with('\n') {
+            text.push('\n');
+        }
+    }
+    text
 }
 
 /// What ends the tool before it reads its input.
@@ -374,7 +289,6 @@ fn run_to_buffers(
         };
         match chunk.process_on_its_own_thread(&finished) {
             Ok(output) => {
-                finished.push(&output.stderr);
                 if output.succeeded && !output.skipped {
                     written.push(output.stdout);
                 }
@@ -394,7 +308,7 @@ fn run_to_buffers(
             }
         }
     }
-    *err += &finished.take();
+    *err += &String::from_utf8_lossy(&finished.take());
 
     let separator = match marker {
         Some(marker) => format!("{marker}\n"),
@@ -405,7 +319,7 @@ fn run_to_buffers(
         // The file is written only when everything succeeded: otherwise it is left as it was.
         Some(_) if !succeeded => {}
         Some(path) => {
-            if let Err(error) = write_file(path, result.as_bytes()) {
+            if let Err(error) = runic_compile::write_file(path, result.as_bytes()) {
                 *err += &render(
                     Report::msg(format!("could not write '{}': {error}", path.display())).display(),
                 );
@@ -415,60 +329,6 @@ fn run_to_buffers(
         None => *out += &result,
     }
     Ok(succeeded)
-}
-
-/// Writes `bytes` to `path`.
-///
-/// A regular file, or a path where nothing is yet, is written through a temporary file beside
-/// it, renamed into place once it is complete, so that a write that fails part of the way leaves
-/// `path` as it was; the file keeps its permissions. A link is followed, and what it points at is
-/// written, so the link stays. Anything else (a device such as `/dev/null`, a pipe) is written
-/// directly.
-fn write_file(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> {
-    let target = match fs::canonicalize(path) {
-        Ok(target) => target,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            // A link to nothing: writing through it creates what it points at.
-            if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
-                return write_directly(path, bytes);
-            }
-            path.to_path_buf()
-        }
-        Err(error) => return Err(error),
-    };
-    let permissions = match fs::metadata(&target) {
-        Ok(metadata) if metadata.is_file() => Some(metadata.permissions()),
-        Ok(_) => return write_directly(&target, bytes),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error),
-    };
-    let name = target
-        .file_name()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "the path names no file"))?;
-    let mut temporary = name.to_os_string();
-    temporary.push(format!(".runic-opt-{}.tmp", std::process::id()));
-    let temporary = target.with_file_name(temporary);
-    let written = fs::File::create(&temporary).and_then(|mut file| {
-        file.write_all(bytes)?;
-        if let Some(permissions) = permissions {
-            file.set_permissions(permissions)?;
-        }
-        file.sync_all()
-    });
-    match written.and_then(|()| fs::rename(&temporary, &target)) {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            let _ = fs::remove_file(&temporary);
-            Err(error)
-        }
-    }
-}
-
-/// Writes `bytes` to `path` as it is, for what a temporary file cannot stand in for.
-fn write_directly(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> {
-    let mut file = fs::File::create(path)?;
-    file.write_all(bytes)?;
-    file.flush()
 }
 
 /// Checks the pipeline's `text` as [`read_pipeline`] reads it, apart from its anchor: its syntax,
@@ -565,11 +425,7 @@ fn read_input(options: &Options, stdin: &mut dyn Read) -> Result<(String, String
 
 /// Renders a diagnostic, ending with a newline.
 fn render(display: DiagnosticDisplay<'_>) -> String {
-    let mut text = display.with_config(RENDER_CONFIG).to_string();
-    if !text.ends_with('\n') {
-        text.push('\n');
-    }
-    text
+    runic_driver::render::diagnostic(display, false)
 }
 
 /// Where the diagnostics of a chunk go: rendered to its standard error as they come, or, when
@@ -662,7 +518,6 @@ struct Chunk {
 /// match its expectations.
 struct ChunkOutput {
     stdout: String,
-    stderr: String,
     succeeded: bool,
     mismatched: bool,
     /// The chunk held no operation and was not processed
@@ -678,64 +533,40 @@ struct Outcome {
 }
 
 impl Chunk {
-    /// Processes the chunk on a thread with a stack of [`CHUNK_STACK_SIZE`]. Everything made from
-    /// it, the context first, lives and dies on that thread. A panic there is an internal error.
+    /// Processes the chunk on a thread of its own, with a large stack. Everything made from it,
+    /// the context first, lives and dies on that thread. A panic there is an internal error.
     ///
-    /// What the chunk wrote to its standard error survives a panic: it is kept, and followed by
-    /// the internal error, and the chunk failed (and, when diagnostics are checked, mismatched).
-    ///
-    /// `finished` holds what the cases before it wrote to standard error, which a panic that
-    /// cannot unwind writes first.
-    fn process_on_its_own_thread(self, finished: &SharedBuffer) -> Result<ChunkOutput, Report> {
-        let stderr = SharedBuffer::default();
-        let chunk_stderr = stderr.clone();
-        let slot = PanicSlot {
-            finished: finished.clone(),
-            stderr: stderr.clone(),
-            panic: Arc::default(),
-        };
-        let chunk_slot = slot.clone();
-        let thread = std::thread::Builder::new()
-            .name(String::from(CHUNK_THREAD))
-            .stack_size(CHUNK_STACK_SIZE)
-            .spawn(move || {
-                CHUNK_PANIC.with(|slot| *slot.borrow_mut() = Some(chunk_slot));
-                let mut stdout = String::new();
-                let outcome = self.check_into(&mut stdout, &chunk_stderr);
-                (stdout, outcome)
-            })
-            .map_err(|error| Report::msg(format!("could not start a thread: {error}")))?;
-        match thread.join() {
+    /// What the chunk writes to its standard error goes to `stderr`, after what the cases before it
+    /// wrote, and survives a panic: it is followed by the internal error, and the chunk failed
+    /// (and, when diagnostics are checked, mismatched). A panic that cannot unwind writes `stderr`
+    /// to the process's standard error before the process aborts.
+    fn process_on_its_own_thread(self, stderr: &SharedBuffer) -> Result<ChunkOutput, Report> {
+        let worker = worker::run(CHUNK_THREAD, stderr, report_panics, || {
+            let mut stdout = String::new();
+            let outcome = self.check_into(&mut stdout, stderr);
+            (stdout, outcome)
+        });
+        match worker {
             Ok((stdout, outcome)) => Ok(ChunkOutput {
                 stdout,
-                stderr: stderr.take(),
                 succeeded: outcome.succeeded,
                 mismatched: outcome.mismatched,
                 skipped: outcome.skipped,
             }),
-            Err(payload) => {
-                // The hook recorded the panic, unless a host replaced it: then its message is all
-                // there is.
-                let mut panics = core::mem::take(
-                    &mut *slot.panic.lock().unwrap_or_else(PoisonError::into_inner),
-                );
-                if panics.is_empty() {
-                    panics.push(ChunkPanic {
-                        message: panic_message(payload.as_ref()),
-                        location: None,
-                        backtrace: None,
-                    });
-                }
-                let mut written = stderr.take();
-                written += &ChunkPanic::report(&panics);
+            Err(WorkerError::NotStarted(error)) => {
+                Err(Report::msg(format!("could not start a thread: {error}")))
+            }
+            Err(WorkerError::Panicked(panics)) => {
+                stderr.push(&report_panics(&panics));
                 Ok(ChunkOutput {
                     stdout: String::new(),
-                    stderr: written,
                     succeeded: false,
                     mismatched: true,
                     skipped: false,
                 })
             }
+            // A way for a worker to end that the driver adds later is still a failure to run.
+            Err(error) => Err(Report::msg(format!("could not run a thread: {error:?}"))),
         }
     }
 
@@ -1017,17 +848,6 @@ fn target_of(context: &Rc<Context>, name: &str) -> Option<runic_ir::OperationNam
     pm.passes().first()?.target_name(context)
 }
 
-/// The message of a panic.
-fn panic_message(payload: &(dyn core::any::Any + Send)) -> String {
-    if let Some(text) = payload.downcast_ref::<&str>() {
-        String::from(*text)
-    } else if let Some(text) = payload.downcast_ref::<String>() {
-        text.clone()
-    } else {
-        String::from("a panic without a message")
-    }
-}
-
 /// Prints `op` with `flags`.
 fn print_operation(op: OperationRef, flags: &OpPrintingFlags) -> String {
     let op = op.borrow();
@@ -1054,38 +874,6 @@ impl PassInstrumentation for CountRuns {
         if !argument.is_empty() {
             *self.0.borrow_mut().entry(argument).or_default() += 1;
         }
-    }
-}
-
-/// What the chunk writes to standard error, shared with the pass manager's IR printing so that
-/// everything stays in the order it was written, and with the thread that started the chunk so
-/// that it survives a panic.
-#[derive(Clone, Default)]
-struct SharedBuffer(Arc<Mutex<Vec<u8>>>);
-
-impl SharedBuffer {
-    fn push(&self, text: &str) {
-        self.bytes().extend_from_slice(text.as_bytes());
-    }
-
-    fn take(&self) -> String {
-        String::from_utf8_lossy(&core::mem::take(&mut *self.bytes())).into_owned()
-    }
-
-    /// The bytes, also after a panic while they were held.
-    fn bytes(&self) -> std::sync::MutexGuard<'_, Vec<u8>> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-}
-
-impl Write for SharedBuffer {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.bytes().extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
     }
 }
 

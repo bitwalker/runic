@@ -26,6 +26,8 @@ log.workspace = true
 # With Unicode classes for `expected-<kind>-re`.
 regex = { workspace = true, features = ["unicode"] }
 runic-analysis.workspace = true
+runic-compile.workspace = true
+runic-driver.workspace = true
 runic-ir.workspace = true
 runic-dialect-arith.workspace = true
 runic-dialect-cf.workspace = true
