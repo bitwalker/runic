@@ -169,6 +169,9 @@ impl Compiler {
     /// The sink is set before the first step, so it is the way to keep what passes printed when a
     /// later pass or stage panics: the text is in the sink when the panic unwinds. A write error
     /// of the sink is ignored. A request that does not resolve prints nothing.
+    ///
+    /// The session owns the sink, so a caller that wants to read it afterwards shares it
+    /// (`Rc<RefCell<..>>`, or `Arc<Mutex<..>>` across threads).
     pub fn compile_to(
         &self,
         request: CompilationRequest,

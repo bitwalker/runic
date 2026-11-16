@@ -105,6 +105,9 @@ impl Session<'_> {
     /// the text is already in the sink when the panic unwinds the session. A write error of the
     /// sink is ignored. Only output printed after the call goes to the sink: what an earlier
     /// pipeline printed stays in [Session::pass_output].
+    ///
+    /// The session owns the sink, so a caller that wants to read it afterwards shares it
+    /// (`Rc<RefCell<..>>`, or `Arc<Mutex<..>>` across threads).
     pub fn set_pass_output(&mut self, sink: Box<dyn io::Write>) {
         self.pass_sink = Some(Rc::new(RefCell::new(sink)));
     }
