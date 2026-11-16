@@ -30,6 +30,9 @@ fn regions_contain_an_exit(op: &Operation) -> bool {
         if OperationRef::ptr_eq(&nested.as_operation_ref(), &root) {
             return;
         }
+        // `ReturnLike` counts a yield and a condition too, which `leaves_callable` does not: an
+        // operation that holds a region terminated by one is held where it was written, and the
+        // lit test `sink/regions.runic` depends on that.
         found |= nested.implements::<dyn ReturnLike>()
             || nested.implements::<dyn TailCallLike>()
             || nested.implements::<dyn RegionExitTerminatorOpInterface>();

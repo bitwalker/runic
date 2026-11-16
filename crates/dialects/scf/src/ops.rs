@@ -309,8 +309,8 @@ impl HasBreakingControlFlowOpInterface for While {
 ///
 /// * The entry block of the `before` region terminates with [Condition], and the entry block of
 ///   the `after` region terminates with [Yield] — or either with an exit that leaves the region:
-///   a return-like terminator that is neither of the two ([Break] or [Continue], addressing this
-///   loop or an enclosing one, or a function return). Such an exit's operands belong to what it
+///   an operation that leaves the function ([Operation::leaves_callable]: a return or a tail
+///   call), or a [Break] or [Continue] addressing this loop or an enclosing one. Such an exit's operands belong to what it
 ///   addresses, so they are not compared with this loop's lists. `ub.unreachable` is not an
 ///   exit: the loop asks a region's terminator for the operands of its edge, which an unreachable
 ///   cannot answer.
@@ -339,9 +339,10 @@ impl Verify<dyn LoopLikeOpInterface> for While {
             .ok_or_else(|| invalid("the after region has no block".into()))?;
         let after_block = after_block.borrow();
 
-        // An exit leaves the region: return-like, and not the terminator of the other region.
+        // An exit leaves the region: an operation that leaves the function (a return or a tail
+        // call), or an early exit that addresses this loop or an enclosing one.
         let is_exit = |op: &Operation| {
-            op.implements::<dyn ReturnLike>() && !op.is::<Condition>() && !op.is::<Yield>()
+            op.leaves_callable() || op.implements::<dyn RegionExitTerminatorOpInterface>()
         };
         let before_term = before_block
             .terminator()
@@ -1408,6 +1409,106 @@ builtin.function public extern("C") @exit(%flag: i1, %value: i32) -> i32 {
     builtin.ret %result : (i32);
 };"#;
         parse_function_fixpoint(&context, "nested_break.runic", source)?;
+        Ok(())
+    }
+
+    /// The shape of what a [While] reports through [RegionBranchOpInterface] and
+    /// [LoopLikeOpInterface], for a loop whose `before` or `after` block ends in `exit`.
+    fn while_report_with_exit(exit: &str, in_after: bool) -> Result<Vec<String>, Report> {
+        let (before, after) = if in_after {
+            ("scf.condition %c, %i : (i1, i32);", exit)
+        } else {
+            (exit, "scf.yield %j : (i32);")
+        };
+        let source = format!(
+            r#"
+builtin.function public extern("C") @f(%c: i1, %x: i32, %fn: (i32) -> i32) -> i32 {{
+    %r = scf.while %x before {{
+    ^head(%i: i32):
+        {before}
+    }} after {{
+    ^body(%j: i32):
+        {after}
+    }} : (i32) -> (i32);
+    builtin.ret %r : (i32);
+}};"#
+        );
+        let context = Rc::new(Context::default());
+        let (function, _) = parse_function_fixpoint(&context, "while_exit.runic", &source)?;
+        let mut report = Vec::new();
+        function.as_operation_ref().borrow().prewalk_all(|op: &Operation| {
+            let Some(w) = op.downcast_ref::<While>() else {
+                return;
+            };
+            let before = w.before().as_region_ref();
+            let after = w.after().as_region_ref();
+            let name = |info: &RegionSuccessorInfo| match info {
+                RegionSuccessorInfo::Entering(region) if *region == before => "enter before",
+                RegionSuccessorInfo::Entering(_) => "enter after",
+                RegionSuccessorInfo::Returning(_) => "return to the loop's parent",
+                RegionSuccessorInfo::Exiting { .. } => "exit",
+            };
+            for (what, region) in [("before", before), ("after", after)] {
+                let infos = w.get_successor_regions(RegionBranchPoint::Child(region));
+                let names = infos.into_successor_infos().iter().map(name).collect::<Vec<_>>();
+                report.push(format!("from {what}: {names:?}"));
+            }
+            report.push(format!("loop regions: {}", w.get_loop_regions().len()));
+            report.push(format!("has nested predecessors: {}", w.has_nested_predecessors()));
+            report.push(format!("condition: {}", w.condition_op().is_some()));
+            report.push(format!("yield: {}", w.yield_op().is_some()));
+        });
+        Ok(report)
+    }
+
+    /// A loop whose condition block or body block ends in a tail call is valid where it is valid
+    /// ending in a return, and reads back.
+    #[test]
+    fn a_while_block_may_end_in_a_tail_call() -> Result<(), Report> {
+        for in_after in [false, true] {
+            let tail_call = r#"builtin.tail_call_indirect %fn(%x) : extern("C") (i32) -> i32;"#
+                .replace("%x", if in_after { "%j" } else { "%i" });
+            while_report_with_exit(&tail_call, in_after)?;
+        }
+        Ok(())
+    }
+
+    /// What a loop reports through the region branch and loop interfaces does not depend on
+    /// whether its exit is a return or a tail call.
+    #[test]
+    fn a_while_reports_the_same_for_a_tail_call_as_for_a_return() -> Result<(), Report> {
+        for in_after in [false, true] {
+            let arg = if in_after { "%j" } else { "%i" };
+            let tail_call =
+                format!(r#"builtin.tail_call_indirect %fn({arg}) : extern("C") (i32) -> i32;"#);
+            let ret = format!("builtin.ret {arg} : (i32);");
+            let with_return = while_report_with_exit(&ret, in_after)?;
+            let with_tail_call = while_report_with_exit(&tail_call, in_after)?;
+            assert!(!with_return.is_empty());
+            assert_eq!(with_return, with_tail_call, "in_after = {in_after}");
+        }
+        Ok(())
+    }
+
+    /// An `scf.if` arm and an `scf.index_switch` case may end in a tail call.
+    #[test]
+    fn an_if_arm_and_a_switch_case_may_end_in_a_tail_call() -> Result<(), Report> {
+        let context = Rc::new(Context::default());
+        let source = r#"
+builtin.function public extern("C") @f(%c: i1, %s: i32, %fn: (i32) -> i32) -> i32 {
+    scf.if %c then {
+        builtin.tail_call_indirect %fn(%s) : extern("C") (i32) -> i32;
+    } else {
+        scf.yield : ();
+    } : (i1) -> ();
+    scf.index_switch %s case 1 {
+        builtin.tail_call_indirect %fn(%s) : extern("C") (i32) -> i32;
+    } default {
+        scf.yield : ();
+    } : ();
+    builtin.ret %s : (i32);
+};"#;
+        parse_function_fixpoint(&context, "tail_call_in_arms.runic", source)?;
         Ok(())
     }
 

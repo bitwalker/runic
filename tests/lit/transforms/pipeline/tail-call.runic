@@ -133,4 +133,22 @@ builtin.module public @tail_call_pipeline {
         %f = builtin.function_ref @five_arg : (i32) -> i32;
         builtin.tail_call_indirect %f(%a) : extern("C") (i32) -> i32;
     };
+    // A loop whose body ends in a tail call keeps its shape: the exit is no yield and no pass
+    // treats the body as one that falls through.
+    // CHECK-LABEL: @loop_ends_in_a_tail_call(
+    // CHECK: scf.while
+    // CHECK: scf.condition
+    // CHECK: } after {
+    // CHECK-NEXT: ^block{{[0-9]+}}([[J:%[0-9]+]]: i32):
+    // CHECK-NEXT: builtin.tail_call @five_arg([[J]]) : extern("C") (i32) -> i32;
+    builtin.function public extern("C") @loop_ends_in_a_tail_call(%c: i1, %a: i32) -> i32 {
+        %r = scf.while %a before {
+        ^head(%i: i32):
+            scf.condition %c, %i : (i1, i32);
+        } after {
+        ^body(%j: i32):
+            builtin.tail_call @five_arg(%j) : extern("C") (i32) -> i32;
+        } : (i32) -> (i32);
+        builtin.ret %r : (i32);
+    };
 };
