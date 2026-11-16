@@ -14,6 +14,8 @@ use runic_ir::{
     },
 };
 
+mod tail_calls;
+
 use crate::{
     DataFlowConfig, DataFlowSolver,
     analyses::{

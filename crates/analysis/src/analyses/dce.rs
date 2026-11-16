@@ -8,11 +8,12 @@ use core::{
 use runic_ir::{
     AsValueRange, AttributeRef, Block, BlockRef, CallOpInterface, CallableOpInterface,
     EntityWithId, Forward, Operation, OperationRef, ProgramPoint, RegionBranchOpInterface,
-    RegionBranchPoint, RegionBranchTerminatorOpInterface, RegionRef, RegionSuccessorIter,
-    RegionSuccessorKind, Report, SmallVec, SourceSpan, Spanned, SymbolMap, ValueRef,
+    RegionBranchPoint, RegionBranchTerminatorOpInterface, RegionExitTerminatorOpInterface,
+    RegionRef, RegionSuccessorIter, RegionSuccessorKind, Report, SmallVec, SourceSpan, Spanned,
+    SymbolMap, ValueRef,
     adt::{SmallDenseMap, SmallSet},
     pass::AnalysisManager,
-    traits::{BranchOpInterface, ReturnLike},
+    traits::{BranchOpInterface, ReturnLike, TailCallLike},
 };
 
 use super::{CallableUseSnapshot, constant_propagation::ConstantValue};
@@ -509,6 +510,27 @@ impl DataFlowAnalysis for DeadCodeAnalysis {
             }
         }
 
+        // A function exit nested in region control flow (`builtin.ret` or a tail call in the arm
+        // of an `scf.if`) leaves the enclosing callable, not only its own region: the call sites
+        // of that callable must see it as one of their return points.
+        if leaves_callable_through_regions(&op) {
+            let mut ancestor = op.parent_op();
+            while let Some(parent) = ancestor {
+                let parent = parent.borrow();
+                if let Some(callable) = parent.as_trait::<dyn CallableOpInterface>() {
+                    log::debug!(
+                        target: self.debug_name(),
+                        "{} leaves {} through region control flow",
+                        op.name(),
+                        parent.name()
+                    );
+                    self.visit_callable_terminator(&op, callable, solver);
+                    break;
+                }
+                ancestor = parent.parent_op();
+            }
+        }
+
         // Visit the successors.
         if op.has_successors() {
             log::debug!(target: self.debug_name(), "visiting successors of {}", op.name());
@@ -962,6 +984,21 @@ fn is_region_or_callable_return(op: &Operation) -> bool {
             });
             is_region_or_callable_op && block.borrow().terminator() == Some(op.as_operation_ref())
         })
+}
+
+/// Returns true if `op` leaves its enclosing callable and sits in a region of an operation with
+/// region control flow, not directly in the callable: a return-like operation that is no
+/// terminator of region control flow, or a tail call.
+fn leaves_callable_through_regions(op: &Operation) -> bool {
+    let exits_callable = op.implements::<dyn TailCallLike>()
+        || (op.implements::<dyn ReturnLike>()
+            && !op.implements::<dyn RegionBranchTerminatorOpInterface>()
+            && !op.implements::<dyn RegionExitTerminatorOpInterface>());
+    exits_callable
+        && !op.has_successors()
+        && op
+            .parent_op()
+            .is_some_and(|parent| parent.borrow().implements::<dyn RegionBranchOpInterface>())
 }
 
 /// Get the constant values of the operands of an operation.
