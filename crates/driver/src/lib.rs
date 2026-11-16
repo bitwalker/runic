@@ -2,7 +2,7 @@
 //!
 //! A [Driver] is the `clap` command of a [Compiler]: the driver's own flags, the flags
 //! each of the compiler's frontends and backends declares through an
-//! [OptionsDecl], and `-Z`, with which a user sets the unstable
+//! [OptionsDecl](runic_compile::OptionsDecl), and `-Z`, with which a user sets the unstable
 //! settings of the driver and of the stages.
 //!
 //! The rules the command holds its stages to:
@@ -31,132 +31,42 @@
 //! settings and the stages' flags are all read there, and each fills a field of the request or of
 //! a stage's options and nothing else.
 //!
+//! The pieces the driver is built on are public, for a command line of another shape that runs a
+//! compilation (a developer tool with its own flags): [StageFlags] adds the stages' flags and `-Z`
+//! to any `clap` command and reads them back into a request, [worker] runs work on a thread with a
+//! large stack and records its panic, and [render] renders a diagnostic as the driver does.
+//!
 //! `examples/toyc.rs` is a whole compiler built on the driver: a few lines that name its stages and
 //! hand the compiler to [main_with]. The tests in `tests/toyc.rs` run it through [Driver::run].
 #![feature(panic_can_unwind)]
 #![deny(warnings)]
 
 mod command;
-mod render;
+pub mod render;
 mod request;
 mod run;
+mod stages;
 mod unstable;
+pub mod worker;
 
-use std::{any::TypeId, collections::HashMap};
-
-use clap::{Arg, ArgAction, Args as _, Command};
-use runic_compile::{Compiler, OptionsDecl, RUNIC_REVISION, RUNIC_VERSION};
+use clap::{Args as _, Command};
+use runic_compile::{Compiler, RUNIC_REVISION, RUNIC_VERSION};
 use runic_ir::Report;
 
 pub use self::{
     command::ColorChoice,
     request::{Exit, Invocation, RenderOptions},
     run::{EXIT_FAILURE, EXIT_INTERNAL, EXIT_USAGE, RunOptions, main, main_with},
+    stages::{StageFlags, StageFlagsBuilder},
 };
 use self::{
-    command::{Flags, PrintKind, UNSTABLE_ARG},
+    command::{Flags, PrintKind},
+    stages::{check_prefixes, scratch},
     unstable::Unstable,
 };
 
 /// The name of a driver that is given none.
 const DEFAULT_NAME: &str = "runic";
-
-/// Whether a stage is a frontend or a backend.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum StageKind {
-    /// A stage that reads inputs.
-    Frontend,
-    /// A stage that generates code.
-    Backend,
-}
-
-impl core::fmt::Display for StageKind {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(match self {
-            Self::Frontend => "frontend",
-            Self::Backend => "backend",
-        })
-    }
-}
-
-/// A flag of the main command that is a stable option of a stage.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct StageFlag {
-    id: String,
-    long: String,
-    field: String,
-}
-
-impl StageFlag {
-    /// The id of the argument in the main command, `frontend:NAME:FIELD` or `backend:NAME:FIELD`.
-    pub fn id(&self) -> &str {
-        &self.id
-    }
-
-    /// The long name of the flag, with the stage's prefix when it has one, without the dashes.
-    pub fn long(&self) -> &str {
-        &self.long
-    }
-
-    /// The id the stage's own options declare for the argument, which is the name of the field,
-    /// and the id it has in the stage's scratch commands.
-    pub fn field(&self) -> &str {
-        &self.field
-    }
-}
-
-/// A frontend or backend that declares options, and what the driver built from them.
-///
-/// A reader of the main command's matches hands the stage its values through the scratch
-/// commands: it rebuilds a command line for them, parses it with [StageCommands::stable] or
-/// [StageCommands::unstable], and stores the result with the stage's
-/// [OptionsDecl]. The ids and long names of the scratch commands are
-/// the ones in [StageCommands::flags], without the id prefix.
-#[derive(Debug, Clone)]
-pub(crate) struct StageCommands {
-    kind: StageKind,
-    name: &'static str,
-    decl: OptionsDecl,
-    stable: Command,
-    unstable: Command,
-    flags: Vec<StageFlag>,
-}
-
-impl StageCommands {
-    /// Whether the stage is a frontend or a backend.
-    #[cfg(test)]
-    pub fn kind(&self) -> StageKind {
-        self.kind
-    }
-
-    /// The name of the stage.
-    #[cfg(test)]
-    pub fn name(&self) -> &'static str {
-        self.name
-    }
-
-    /// What the stage declares.
-    pub fn decl(&self) -> &OptionsDecl {
-        &self.decl
-    }
-
-    /// A command of the stage's stable options only, with the long names the main command has
-    /// (prefixed) and the ids the stage's own options declare. It has no binary name.
-    pub fn stable(&self) -> &Command {
-        &self.stable
-    }
-
-    /// A command of the stage's unstable options only, with prefixed long names and the ids the
-    /// stage declares. It has no binary name.
-    pub fn unstable(&self) -> &Command {
-        &self.unstable
-    }
-
-    /// The stable flags of the stage that are on the main command, in declaration order.
-    pub fn flags(&self) -> &[StageFlag] {
-        &self.flags
-    }
-}
 
 /// The command line of a compiler: the driver's flags, and those its frontends and backends
 /// declare.
@@ -166,9 +76,7 @@ impl StageCommands {
 pub struct Driver<'c> {
     compiler: &'c Compiler,
     command: Command,
-    unstable_allowed: bool,
-    unstable: Command,
-    stages: Vec<StageCommands>,
+    stage_flags: StageFlags<'c>,
 }
 
 impl<'c> Driver<'c> {
@@ -195,82 +103,16 @@ impl<'c> Driver<'c> {
         &self.command
     }
 
-    /// Whether the command accepts `-Z`.
-    pub(crate) fn unstable_allowed(&self) -> bool {
-        self.unstable_allowed
-    }
-
-    /// A command of the driver's own unstable settings ([Unstable]) only, with no binary name.
-    pub(crate) fn unstable_command(&self) -> &Command {
-        &self.unstable
-    }
-
-    /// The frontends and backends that declare options, frontends first, each group in
-    /// registration order.
-    pub(crate) fn stages(&self) -> &[StageCommands] {
-        &self.stages
+    /// The flags of the compiler's stages the command carries.
+    pub(crate) fn stage_flags(&self) -> &StageFlags<'c> {
+        &self.stage_flags
     }
 
     /// The text `-Z help` prints: every unstable setting with its help, grouped by declarer. Empty
     /// when the driver does not allow unstable flags.
     pub fn unstable_help(&self) -> String {
-        if !self.unstable_allowed {
-            return String::new();
-        }
-        let mut groups: Vec<(String, Vec<(String, String)>)> =
-            vec![("driver".to_owned(), settings(&self.unstable))];
-        for stage in self.stages.iter().filter(|stage| stage.decl.has_unstable()) {
-            groups.push((format!("{} {}", stage.name, stage.kind), settings(&stage.unstable)));
-        }
-        let width = groups
-            .iter()
-            .flat_map(|(_, settings)| settings.iter().map(|(spec, _)| spec.len()))
-            .max()
-            .unwrap_or(0);
-        let mut text = String::from("Unstable options (-Z NAME[=VALUE]):\n");
-        for (heading, settings) in &groups {
-            text.push('\n');
-            text.push_str(heading);
-            text.push('\n');
-            for (spec, help) in settings {
-                text.push_str(&format!("  {spec:width$}  {help}\n").replace("  \n", "\n"));
-            }
-        }
-        text
+        self.stage_flags.unstable_help()
     }
-}
-
-/// The settings of a built command of unstable arguments, each as the name a user writes (with
-/// `=VALUE`, or `[=VALUE]` when the value is optional) and its help on one line.
-fn settings(command: &Command) -> Vec<(String, String)> {
-    command
-        .get_arguments()
-        .filter(|arg| !arg.is_hide_set())
-        .filter_map(|arg| {
-            let long = arg.get_long()?;
-            let takes_value = matches!(arg.get_action(), ArgAction::Set | ArgAction::Append)
-                && arg.get_num_args().is_some_and(|range| range.max_values() > 0);
-            let spec = if takes_value {
-                let value = arg
-                    .get_value_names()
-                    .and_then(|names| names.first())
-                    .map(|name| name.as_str().to_owned())
-                    .unwrap_or_else(|| "VALUE".to_owned());
-                if arg.get_num_args().is_some_and(|range| range.min_values() == 0) {
-                    format!("{long}[={value}]")
-                } else {
-                    format!("{long}={value}")
-                }
-            } else {
-                long.to_owned()
-            };
-            let help = arg
-                .get_help()
-                .map(|help| help.to_string().split_whitespace().collect::<Vec<_>>().join(" "))
-                .unwrap_or_default();
-            Some((spec, help))
-        })
-        .collect()
 }
 
 /// Builds a [Driver]; made by [Driver::new].
@@ -349,20 +191,7 @@ impl<'c> DriverBuilder<'c> {
             prefixed,
         } = self;
 
-        let frontends: Vec<&str> = compiler.frontends().map(|f| f.name()).collect();
-        for wanted in &prefixed {
-            if !frontends.contains(&wanted.as_str()) {
-                let known = if frontends.is_empty() {
-                    "none".to_owned()
-                } else {
-                    frontends.join(", ")
-                };
-                return Err(Report::msg(format!(
-                    "the driver was asked to prefix the flags of the frontend '{wanted}', but the \
-                     compiler has no such frontend; its frontends are {known}"
-                )));
-            }
-        }
+        check_prefixes(compiler, &prefixed, "the driver was")?;
 
         let program = name.clone().unwrap_or_else(|| DEFAULT_NAME.to_owned());
         let customized = name.is_some_and(|name| name != DEFAULT_NAME)
@@ -385,288 +214,31 @@ impl<'c> DriverBuilder<'c> {
         if let Some(about) = about {
             command = command.about(about);
         }
-        if unstable {
-            command = command.arg(
-                Arg::new(UNSTABLE_ARG)
-                    .short('Z')
-                    .value_name("NAME[=VALUE]")
-                    .action(ArgAction::Append)
-                    .help("Set an unstable option; `-Z help` lists them"),
-            );
+
+        let mut stage_flags = StageFlags::new(compiler)
+            .unstable(unstable)
+            .own_unstable("driver", scratch(Unstable::augment_args));
+        for frontend in &prefixed {
+            stage_flags = stage_flags.prefix_frontend(frontend);
         }
-
-        let mut stable_names = Namespace::new("flag", "--");
-        let mut unstable_names = Namespace::new("unstable setting", "-Z ");
-        for name in command.get_arguments().filter_map(Arg::get_long) {
-            stable_names.claim(name, "the driver")?;
-        }
-        stable_names.claim("help", "the driver")?;
-        stable_names.claim("version", "the driver")?;
-
-        let mut driver_unstable = scratch(Unstable::augment_args);
-        driver_unstable.build();
-        for name in driver_unstable.get_arguments().filter_map(Arg::get_long) {
-            unstable_names.claim(name, "the driver")?;
-        }
-        unstable_names.claim("help", "the driver")?;
-
-        let mut types: HashMap<TypeId, String> = HashMap::new();
-        let mut stages = Vec::new();
-        let stage_decls = compiler
-            .frontends()
-            .map(|f| (StageKind::Frontend, f.name(), f.options()))
-            .chain(compiler.backends().map(|b| (StageKind::Backend, b.name(), b.options())));
-        for (kind, stage_name, decl) in stage_decls {
-            let Some(decl) = decl else { continue };
-            let prefix = match kind {
-                StageKind::Backend => Some(stage_name),
-                StageKind::Frontend => {
-                    prefixed.iter().any(|p| p == stage_name).then_some(stage_name)
-                }
-            };
-            let declarer = format!("the {kind} '{stage_name}'");
-
-            let stable = declared(&decl, kind, stage_name, prefix, false)?;
-            let unstable_scratch = declared(&decl, kind, stage_name, prefix, true)?;
-            for name in stable.get_arguments().filter_map(Arg::get_long) {
-                stable_names.claim(name, &declarer)?;
-            }
-            for name in unstable_scratch.get_arguments().filter_map(Arg::get_long) {
-                unstable_names.claim(name, &declarer)?;
-            }
-            for (type_id, type_name) in
-                [decl.stable_type(), decl.unstable_type()].into_iter().flatten()
-            {
-                match types.get(&type_id) {
-                    Some(first) if *first == declarer => {
-                        return Err(Report::msg(format!(
-                            "the options type '{type_name}' is declared by {declarer} as both its \
-                             stable and its unstable options: each needs a type of its own, since \
-                             a request holds one value of a type"
-                        )));
-                    }
-                    Some(first) => {
-                        return Err(Report::msg(format!(
-                            "the options type '{type_name}' is declared by {first} and by \
-                             {declarer}: each declarer needs a type of its own, since a request \
-                             holds one value of a type"
-                        )));
-                    }
-                    None => {
-                        types.insert(type_id, declarer.clone());
-                    }
-                }
-            }
-
-            let heading = format!("{stage_name} {kind} options");
-            let mut flags = Vec::new();
-            for arg in stable.get_arguments() {
-                let field = arg.get_id().as_str().to_owned();
-                let id = format!("{kind}:{stage_name}:{field}");
-                let long = arg.get_long().unwrap_or_default().to_owned();
-                command = command.arg(carried(arg, &id, &long, &heading));
-                flags.push(StageFlag { id, long, field });
-            }
-            stages.push(StageCommands {
-                kind,
-                name: stage_name,
-                decl,
-                stable,
-                unstable: unstable_scratch,
-                flags,
-            });
-        }
+        let stage_flags = stage_flags.build()?;
+        let mut command = stage_flags.augment(command, "the driver")?;
 
         command.build();
         Ok(Driver {
             compiler,
             command,
-            unstable_allowed: unstable,
-            unstable: driver_unstable,
-            stages,
+            stage_flags,
         })
-    }
-}
-
-/// A command with no binary name and no help or version flag, to hold declared arguments.
-fn scratch(add: impl FnOnce(Command) -> Command) -> Command {
-    add(Command::new("options")
-        .no_binary_name(true)
-        .disable_help_flag(true)
-        .disable_version_flag(true)
-        .disable_help_subcommand(true))
-}
-
-/// The scratch command of one stage's stable or unstable options, with long names prefixed, built
-/// and checked.
-fn declared(
-    decl: &OptionsDecl,
-    kind: StageKind,
-    name: &str,
-    prefix: Option<&str>,
-    unstable: bool,
-) -> Result<Command, Report> {
-    let mut command = scratch(|command| {
-        if unstable {
-            decl.augment_unstable(command)
-        } else {
-            decl.augment(command)
-        }
-    });
-    if let Some(prefix) = prefix {
-        command = command.mut_args(|arg| match arg.get_long().map(str::to_owned) {
-            Some(long) => arg.long(format!("{prefix}-{long}")),
-            None => arg,
-        });
-    }
-    command.build();
-    let what = if unstable {
-        "unstable option"
-    } else {
-        "option"
-    };
-    for arg in command.get_arguments() {
-        check(arg, kind, name, what)?;
-    }
-    let by = format!("the {kind} '{name}' declares {what}s");
-    if let Some(group) = command.get_groups().find(|group| group.is_required_set()) {
-        return Err(Report::msg(format!(
-            "{by} with the required group '{}'; options of a stage are never required",
-            group.get_id()
-        )));
-    }
-    if command.has_subcommands() {
-        return Err(Report::msg(format!("{by} with subcommands; options of a stage are flags")));
-    }
-    Ok(command)
-}
-
-/// The argument of the main command that stands for `arg`, a stable option of a stage: its
-/// spelling, what it takes and how that is parsed, and its help, under `heading`.
-///
-/// It carries the option's default of a value-taking option, so that help shows it, but not its
-/// relations to the stage's other options (conflicts, requirements): those name ids of the stage's
-/// own command, where they are applied when the stage is handed its values. A default is not a
-/// value the command line wrote (its source is `DefaultValue`), so the stage is handed only what
-/// was written, and its own command applies the defaults.
-fn carried(arg: &Arg, id: &str, long: &str, heading: &str) -> Arg {
-    let mut carried = Arg::new(id.to_owned())
-        .long(long.to_owned())
-        .action(arg.get_action().clone())
-        .value_parser(arg.get_value_parser().clone())
-        .require_equals(arg.is_require_equals_set())
-        .allow_hyphen_values(arg.is_allow_hyphen_values_set())
-        .allow_negative_numbers(arg.is_allow_negative_numbers_set())
-        .ignore_case(arg.is_ignore_case_set())
-        .hide(arg.is_hide_set())
-        .help_heading(heading.to_owned());
-    if let Some(range) = arg.get_num_args() {
-        carried = carried.num_args(range);
-    }
-    if let Some(names) = arg.get_value_names() {
-        carried = carried.value_names(names.iter().map(|name| name.as_str().to_owned()));
-    }
-    if let Some(delimiter) = arg.get_value_delimiter() {
-        carried = carried.value_delimiter(delimiter);
-    }
-    if matches!(arg.get_action(), ArgAction::Set | ArgAction::Append)
-        && !arg.get_default_values().is_empty()
-    {
-        carried = carried.default_values(arg.get_default_values().iter().cloned());
-    }
-    if let Some(help) = arg.get_help() {
-        carried = carried.help(help.clone());
-    }
-    if let Some(help) = arg.get_long_help() {
-        carried = carried.long_help(help.clone());
-    }
-    carried
-}
-
-/// Checks one declared argument of a stage against the rules of the command line.
-fn check(arg: &Arg, kind: StageKind, name: &str, what: &str) -> Result<(), Report> {
-    let field = arg.get_id();
-    let by = format!("the {kind} '{name}' declares the {what} '{field}'");
-    let fail = |problem: &str| Err(Report::msg(format!("{by}, which {problem}")));
-    if let Some(short) = arg.get_short() {
-        return fail(&format!(
-            "has the short flag '-{short}'; options of a stage have long flags only"
-        ));
-    }
-    if arg.is_positional() {
-        return fail("is positional; options of a stage are flags");
-    }
-    if arg.is_required_set() {
-        return fail("is required; options of a stage are never required");
-    }
-    if !matches!(
-        arg.get_action(),
-        ArgAction::Set
-            | ArgAction::Append
-            | ArgAction::SetTrue
-            | ArgAction::SetFalse
-            | ArgAction::Count
-    ) {
-        return fail(
-            "has an action the driver cannot carry; it must set a value, append one, be a switch \
-             or count",
-        );
-    }
-    if let Some(variable) = arg.get_env() {
-        return fail(&format!(
-            "reads the environment variable '{}'; options of a stage never read the environment, \
-             since nothing in a compilation reads it except through the request",
-            variable.to_string_lossy()
-        ));
-    }
-    if arg.get_num_args().is_some_and(|range| range.max_values() > 1) {
-        return fail("takes more than one value per occurrence; it takes at most one");
-    }
-    let has_alias = arg.get_all_aliases().is_some_and(|aliases| !aliases.is_empty())
-        || arg.get_all_short_aliases().is_some_and(|aliases| !aliases.is_empty());
-    if has_alias {
-        return fail("has an alias, which a stage's prefix cannot be applied to");
-    }
-    Ok(())
-}
-
-/// The spellings in use in one namespace of the command line, and who declared each.
-struct Namespace {
-    what: &'static str,
-    dashes: &'static str,
-    seen: HashMap<String, String>,
-}
-
-impl Namespace {
-    fn new(what: &'static str, dashes: &'static str) -> Self {
-        Self {
-            what,
-            dashes,
-            seen: HashMap::new(),
-        }
-    }
-
-    /// Records that `declarer` gives `name` to a flag, or fails naming the declarer that did first.
-    fn claim(&mut self, name: &str, declarer: &str) -> Result<(), Report> {
-        match self.seen.get(name) {
-            Some(first) => Err(Report::msg(format!(
-                "the {} '{}{name}' is declared by {first} and by {declarer}",
-                self.what, self.dashes
-            ))),
-            None => {
-                self.seen.insert(name.to_owned(), declarer.to_owned());
-                Ok(())
-            }
-        }
     }
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use clap::{Args, error::ErrorKind, parser::ValueSource};
+    use clap::{Arg, Args, error::ErrorKind};
     use runic_compile::{
         Artifact, Backend, CheckpointDecl, CheckpointId, Checkpoints, Flow, Frontend, Input,
-        Session, Triple,
+        OptionsDecl, Session, Triple,
         testing::{AltVmBackend, CalcFrontend, StackVmBackend},
     };
     use runic_ir::{
@@ -674,6 +246,7 @@ pub(crate) mod tests {
     };
 
     use super::*;
+    use crate::command::UNSTABLE_ARG;
 
     #[derive(Args, Default, Debug, Clone)]
     struct Loud {
@@ -767,7 +340,7 @@ pub(crate) mod tests {
     type Declare = fn() -> Option<OptionsDecl>;
 
     /// A frontend that declares what a test says and does nothing else.
-    struct Fe(&'static str, fn() -> Option<OptionsDecl>);
+    pub(crate) struct Fe(pub(crate) &'static str, pub(crate) fn() -> Option<OptionsDecl>);
 
     impl Frontend for Fe {
         fn name(&self) -> &'static str {
@@ -972,22 +545,6 @@ pub(crate) mod tests {
         let flag = command.get_arguments().find(|a| a.get_long() == Some("calc-wrap-on-overflow"));
         assert_eq!(flag.unwrap().get_help_heading(), Some("calc frontend options"));
         assert!(!command.get_arguments().any(|a| a.get_long() == Some("wrap-on-overflow")));
-    }
-
-    #[test]
-    fn a_stage_flag_is_recorded_with_its_main_id_and_long_name() {
-        let compiler = toy();
-        let driver = Driver::new(&compiler).build().unwrap();
-        let names: Vec<(StageKind, &str)> =
-            driver.stages().iter().map(|s| (s.kind(), s.name())).collect();
-        assert_eq!(names, [(StageKind::Frontend, "calc"), (StageKind::Backend, "stackvm")]);
-        let stackvm = &driver.stages()[1];
-        let flag = &stackvm.flags()[0];
-        assert_eq!(
-            (flag.id(), flag.long(), flag.field()),
-            ("backend:stackvm:comments", "stackvm-comments", "comments")
-        );
-        assert!(stackvm.stable().get_arguments().any(|a| a.get_id() == "comments"));
     }
 
     #[test]
@@ -1209,10 +766,10 @@ pub(crate) mod tests {
     fn the_command_accepts_dash_z_only_when_unstable_flags_are_allowed() {
         let compiler = toy();
         let allowed = Driver::new(&compiler).build().unwrap();
-        assert!(allowed.unstable_allowed());
+        assert!(allowed.stage_flags().unstable_allowed());
         assert!(built(&allowed).get_arguments().any(|a| a.get_short() == Some('Z')));
         let refused = Driver::new(&compiler).unstable(false).build().unwrap();
-        assert!(!refused.unstable_allowed());
+        assert!(!refused.stage_flags().unstable_allowed());
         assert!(!built(&refused).get_arguments().any(|a| a.get_short() == Some('Z')));
         assert_eq!(refused.unstable_help(), "");
     }
@@ -1285,68 +842,6 @@ pub(crate) mod tests {
             .command()
             .clone()
             .debug_assert();
-    }
-
-    #[derive(Args, Default, Debug, Clone)]
-    struct Related {
-        /// How many.
-        #[arg(long, value_name = "N", default_value_t = 3)]
-        level: u8,
-        #[arg(long, conflicts_with = "level")]
-        plain: bool,
-        #[arg(long, value_name = "WHEN", num_args = 0..=1, require_equals = true,
-              default_missing_value = "always")]
-        trace: Option<String>,
-    }
-
-    #[test]
-    fn a_stage_flag_on_the_main_command_carries_its_default_and_no_relation() {
-        let compiler = Compiler::builder()
-            .backend(backend("rel", || Some(OptionsDecl::of::<Related>())))
-            .build()
-            .unwrap();
-        let driver = Driver::new(&compiler).build().unwrap();
-        // The relation names an id of the stage's own command; the main command stays consistent.
-        driver.command().clone().debug_assert();
-
-        // A default is not a value the command line wrote: its source says so, and the driver
-        // hands the stage only what was written.
-        let matches = driver.command().clone().try_get_matches_from(["x"]).unwrap();
-        assert_eq!(matches.value_source("backend:rel:level"), Some(ValueSource::DefaultValue));
-        assert_eq!(matches.get_one::<u8>("backend:rel:level"), Some(&3));
-        assert_eq!(matches.value_source("backend:rel:trace"), None);
-        let mut command = driver.command().clone();
-        let help = command.render_long_help().to_string();
-        assert!(help.contains("[default: 3]"), "{help}");
-
-        // What the flag takes and how it is parsed is carried.
-        let matches = driver
-            .command()
-            .clone()
-            .try_get_matches_from(["x", "--rel-level", "7", "--rel-trace", "in.x"])
-            .unwrap();
-        assert_eq!(matches.get_one::<u8>("backend:rel:level"), Some(&7));
-        assert_eq!(matches.value_source("backend:rel:level"), Some(ValueSource::CommandLine));
-        // `--rel-trace` takes its value with `=` only, so `in.x` is an input.
-        assert_eq!(matches.get_raw("backend:rel:trace").map(|values| values.count()), Some(0));
-        let error = driver
-            .command()
-            .clone()
-            .try_get_matches_from(["x", "--rel-level", "many"])
-            .unwrap_err();
-        assert!(error.to_string().contains("--rel-level <N>"), "{error}");
-
-        // The stage's own command applies the default and the relation.
-        let stage = &driver.stages()[0];
-        let matches = stage.stable().clone().try_get_matches_from(["--rel-trace"]).unwrap();
-        assert_eq!(matches.get_one::<u8>("level"), Some(&3));
-        assert_eq!(matches.get_one::<String>("trace").map(String::as_str), Some("always"));
-        let error = stage
-            .stable()
-            .clone()
-            .try_get_matches_from(["--rel-level=1", "--rel-plain"])
-            .unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
     }
 
     #[test]

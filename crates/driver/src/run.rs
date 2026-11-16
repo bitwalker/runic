@@ -2,18 +2,17 @@
 //! exit code.
 
 use std::{
-    cell::RefCell,
     ffi::OsString,
     io::{self, IsTerminal, Read, Write},
     process::ExitCode,
-    sync::{Arc, Mutex, Once, PoisonError},
 };
 
 use runic_compile::Compiler;
 
 use crate::{
     ColorChoice, Driver, Exit, Invocation,
-    render::{SharedBuffer, render_compilation},
+    render::render_compilation,
+    worker::{self, SharedBuffer, WorkerError, WorkerPanic},
 };
 
 /// The exit code of a compilation that failed, of a `setup` that failed, and of standard output
@@ -26,46 +25,8 @@ pub const EXIT_USAGE: u8 = 2;
 /// The exit code of a defect of the compiler: a panic while it compiled.
 pub const EXIT_INTERNAL: u8 = 101;
 
-/// The size of the stack of the thread a compilation runs on.
-const WORKER_STACK_SIZE: usize = 256 * 1024 * 1024;
-
 /// The name of the thread a compilation runs on.
 const WORKER_THREAD: &str = "runic-driver compile";
-
-/// A panic on the worker thread, as the panic hook recorded it.
-#[derive(Debug, Clone)]
-struct WorkerPanic {
-    message: String,
-    location: Option<String>,
-    backtrace: Option<String>,
-}
-
-/// Where a panic on the worker thread is recorded, and what the worker has rendered so far.
-#[derive(Clone)]
-struct PanicSlot {
-    /// What the worker has written to standard error.
-    stderr: SharedBuffer,
-    /// The panics, in the order they happened.
-    panics: Arc<Mutex<Vec<WorkerPanic>>>,
-    /// The program name the report names.
-    name: Arc<str>,
-}
-
-std::thread_local! {
-    /// Where a panic on this thread is recorded: set on a worker thread only.
-    static WORKER: RefCell<Option<PanicSlot>> = const { RefCell::new(None) };
-}
-
-/// The message of a panic.
-fn panic_message(payload: &(dyn core::any::Any + Send)) -> String {
-    if let Some(text) = payload.downcast_ref::<&str>() {
-        String::from(*text)
-    } else if let Some(text) = payload.downcast_ref::<String>() {
-        text.clone()
-    } else {
-        String::from("a panic without a message")
-    }
-}
 
 /// The text that reports `panics`, the first of which is what went wrong.
 fn report_panics(panics: &[WorkerPanic], name: &str) -> String {
@@ -94,50 +55,6 @@ fn report_panics(panics: &[WorkerPanic], name: &str) -> String {
         }
     }
     text
-}
-
-/// Installs, once in the process, a panic hook that records a panic on a worker thread for the
-/// driver to report, and hands any other to the hook installed before it.
-fn install_panic_hook() {
-    static INSTALL: Once = Once::new();
-    INSTALL.call_once(|| {
-        let previous = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
-            let slot = WORKER
-                .try_with(|slot| slot.try_borrow().ok().and_then(|slot| slot.clone()))
-                .ok()
-                .flatten();
-            let Some(slot) = slot else {
-                return previous(info);
-            };
-            let panic = WorkerPanic {
-                message: panic_message(info.payload()),
-                location: info.location().map(ToString::to_string),
-                backtrace: {
-                    let backtrace = std::backtrace::Backtrace::capture();
-                    (backtrace.status() == std::backtrace::BacktraceStatus::Captured)
-                        .then(|| backtrace.to_string())
-                },
-            };
-            let mut recorded = slot.panics.lock().unwrap_or_else(PoisonError::into_inner);
-            if info.can_unwind() && !cfg!(panic = "abort") {
-                // The first panic is the one that says what went wrong; a later one (a destructor
-                // that panics while the first unwinds) is kept after it.
-                recorded.push(panic);
-            } else {
-                // The process aborts after the hook (the panic cannot unwind, or the program is
-                // built with `panic = "abort"`), and nothing would write what the worker had
-                // rendered or the report.
-                recorded.push(panic);
-                let mut stderr = io::stderr();
-                let _ = stderr.write_all(&slot.stderr.take());
-                let _ = stderr.write_all(report_panics(&recorded, &slot.name).as_bytes());
-                drop(recorded);
-                let _ = stderr.flush();
-                previous(info);
-            }
-        }));
-    });
 }
 
 /// Writes `bytes` to `stream` and flushes it.
@@ -214,7 +131,6 @@ impl Driver<'_> {
         options: RunOptions,
         setup: impl FnOnce() -> Result<(), String>,
     ) -> u8 {
-        install_panic_hook();
         let (request, render) = match self.request(args, stdin) {
             Ok(Invocation::Compile { request, render }) => (request, render),
             Ok(Invocation::Print(text)) | Err(Exit::Help(text)) => {
@@ -240,60 +156,43 @@ impl Driver<'_> {
         };
 
         let name = self.command().get_name();
-        let slot = PanicSlot {
-            stderr: SharedBuffer::default(),
-            panics: Arc::default(),
-            name: Arc::from(name),
-        };
+        let stderr_buffer = SharedBuffer::default();
         let compiler: &Compiler = self.compiler();
-        let joined = std::thread::scope(|scope| {
-            let worker = std::thread::Builder::new()
-                .name(String::from(WORKER_THREAD))
-                .stack_size(WORKER_STACK_SIZE)
-                .spawn_scoped(scope, || {
-                    WORKER.with(|worker| *worker.borrow_mut() = Some(slot.clone()));
-                    let compilation =
-                        compiler.compile_to(*request, &mut (), Box::new(slot.stderr.clone()));
-                    let rendered = render_compilation(&compilation, styled, name, &slot.stderr);
-                    let code = if rendered.unresolved {
-                        EXIT_USAGE
-                    } else if rendered.failed {
-                        EXIT_FAILURE
-                    } else {
-                        0
-                    };
-                    WorkerResult {
-                        stdout: rendered.stdout,
-                        code,
-                    }
-                })?;
-            Ok::<_, io::Error>(worker.join())
-        });
+        let report_name = name.to_owned();
+        let joined = worker::run(
+            WORKER_THREAD,
+            &stderr_buffer,
+            move |panics| report_panics(panics, &report_name),
+            || {
+                let compilation =
+                    compiler.compile_to(*request, &mut (), Box::new(stderr_buffer.clone()));
+                let rendered = render_compilation(&compilation, styled, name, &stderr_buffer);
+                let code = if rendered.unresolved {
+                    EXIT_USAGE
+                } else if rendered.failed {
+                    EXIT_FAILURE
+                } else {
+                    0
+                };
+                WorkerResult {
+                    stdout: rendered.stdout,
+                    code,
+                }
+            },
+        );
         match joined {
-            Err(error) => finish(
+            Err(WorkerError::NotStarted(error)) => finish(
                 stdout,
                 stderr,
                 &[],
                 format!("error: could not start a thread: {error}\n").as_bytes(),
                 EXIT_INTERNAL,
             ),
-            Ok(Ok(result)) => {
-                finish(stdout, stderr, &result.stdout, &slot.stderr.take(), result.code)
+            Ok(result) => {
+                finish(stdout, stderr, &result.stdout, &stderr_buffer.take(), result.code)
             }
-            Ok(Err(payload)) => {
-                // The hook recorded the panic, unless a host replaced it: then its message is all
-                // there is.
-                let mut panics = core::mem::take(
-                    &mut *slot.panics.lock().unwrap_or_else(PoisonError::into_inner),
-                );
-                if panics.is_empty() {
-                    panics.push(WorkerPanic {
-                        message: panic_message(payload.as_ref()),
-                        location: None,
-                        backtrace: None,
-                    });
-                }
-                let mut text = slot.stderr.take();
+            Err(WorkerError::Panicked(panics)) => {
+                let mut text = stderr_buffer.take();
                 text.extend_from_slice(report_panics(&panics, name).as_bytes());
                 finish(stdout, stderr, &[], &text, EXIT_INTERNAL)
             }

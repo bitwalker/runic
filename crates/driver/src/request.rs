@@ -1,16 +1,11 @@
 //! From a command line to a [CompilationRequest].
 
-use std::{
-    ffi::{OsStr, OsString},
-    io::Read,
-};
+use std::{ffi::OsString, io::Read};
 
-use clap::{
-    Arg, ArgAction, ArgMatches, Command, FromArgMatches, error::ErrorKind, parser::ValueSource,
-};
+use clap::{ArgMatches, FromArgMatches, error::ErrorKind, parser::ValueSource};
 use runic_compile::{CompilationRequest, Compiler, IR_CHECKPOINTS, Input, Verification};
 
-use crate::{ColorChoice, Driver, Flags, PrintKind, StageCommands, UNSTABLE_ARG, Unstable};
+use crate::{ColorChoice, Driver, Flags, PrintKind, Unstable};
 
 /// What a command line asks for.
 #[derive(Debug)]
@@ -46,7 +41,7 @@ pub enum Exit {
 }
 
 /// The text of a usage error that `message` says, as the driver words its own errors.
-fn usage(message: impl core::fmt::Display) -> Exit {
+pub(crate) fn usage(message: impl core::fmt::Display) -> Exit {
     Exit::Usage(format!("error: {message}\n"))
 }
 
@@ -72,7 +67,7 @@ fn from_clap(error: clap::Error) -> Exit {
 
 /// What `clap` says about the arguments of a scratch command, which has no program name or help
 /// to point to: the message without the usage and the hint that follow it.
-fn scratch_text(error: &clap::Error) -> String {
+pub(crate) fn scratch_text(error: &clap::Error) -> String {
     let text = error.render().to_string();
     let end = ["\n\nUsage:", "\n\nFor more information"]
         .iter()
@@ -80,52 +75,6 @@ fn scratch_text(error: &clap::Error) -> String {
         .min()
         .unwrap_or(text.len());
     with_newline(text[..end].trim_end().to_owned())
-}
-
-/// The usage error for a failed parse of unstable settings, which speaks of `-Z NAME` where the
-/// scratch command says `--NAME`.
-fn in_z_words(error: &clap::Error, settings: &[&Setting]) -> Exit {
-    let mut text = scratch_text(error);
-    for setting in settings {
-        text = text.replace(&format!("--{}", setting.name), &format!("-Z {}", setting.name));
-    }
-    Exit::Usage(text)
-}
-
-/// How many values one occurrence of an unstable setting takes.
-enum Arity {
-    /// A switch: none.
-    None,
-    /// `-Z NAME` and `-Z NAME=VALUE` are both allowed.
-    Optional,
-    /// Only `-Z NAME=VALUE` is allowed.
-    Required,
-}
-
-impl Arity {
-    fn of(arg: &Arg) -> Self {
-        let takes_value = matches!(arg.get_action(), ArgAction::Set | ArgAction::Append)
-            && arg.get_num_args().is_some_and(|range| range.max_values() > 0);
-        match arg.get_num_args() {
-            Some(range) if takes_value && range.min_values() == 0 => Self::Optional,
-            _ if takes_value => Self::Required,
-            _ => Self::None,
-        }
-    }
-}
-
-/// The owner of an unstable setting.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Owner {
-    Driver,
-    Stage(usize),
-}
-
-/// One `-Z` entry, resolved: its name, the argument it becomes and who owns it.
-struct Setting {
-    name: String,
-    arg: OsString,
-    owner: Owner,
 }
 
 impl Driver<'_> {
@@ -152,7 +101,7 @@ impl Driver<'_> {
             .map_err(from_clap)?;
         let flags = Flags::from_arg_matches(&matches).map_err(from_clap)?;
 
-        let settings = self.settings(&matches)?;
+        let settings = self.stage_flags().resolve(&matches)?;
 
         if !flags.print.is_empty() {
             let listings: String =
@@ -176,10 +125,9 @@ impl Driver<'_> {
         request.output_dir = flags.output_dir;
         request.remap_path_prefixes = flags.remap_path_prefix;
 
-        for stage in self.stages() {
-            store_stable(stage, &matches, &mut request)?;
+        if let Some(own) = self.stage_flags().store_resolved(&matches, &settings, &mut request)? {
+            store_unstable(&own, &mut request)?;
         }
-        self.store_unstable(&settings, &mut request)?;
 
         Ok(Invocation::Compile {
             request: Box::new(request),
@@ -257,245 +205,33 @@ impl Driver<'_> {
         }
         Ok(inputs)
     }
-
-    /// The `-Z` entries of the command line, each resolved to the argument it becomes. `-Z help` is
-    /// an [Exit::Help].
-    fn settings(&self, matches: &ArgMatches) -> Result<Vec<Setting>, Exit> {
-        if !self.unstable_allowed() {
-            return Ok(Vec::new());
-        }
-        let Ok(Some(entries)) = matches.try_get_many::<String>(UNSTABLE_ARG) else {
-            return Ok(Vec::new());
-        };
-        let mut settings = Vec::new();
-        for entry in entries {
-            let (name, value) = match entry.split_once('=') {
-                Some((name, value)) => (name, Some(value)),
-                None => (entry.as_str(), None),
-            };
-            if name.is_empty() {
-                return Err(usage(
-                    "'-Z' needs the name of an unstable option; '-Z help' lists them",
-                ));
-            }
-            if name == "help" {
-                return match value {
-                    None => Err(Exit::Help(self.unstable_help())),
-                    Some(_) => Err(usage("'-Z help' takes no value")),
-                };
-            }
-            let Some((owner, arg)) = self.setting(name) else {
-                return Err(usage(format!(
-                    "unknown unstable option '-Z {name}': the unstable options are {} ('-Z help' \
-                     describes them)",
-                    self.setting_names()
-                        .iter()
-                        .map(|name| format!("'{name}'"))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )));
-            };
-            match (Arity::of(arg), value) {
-                (Arity::None, Some(_)) => {
-                    return Err(usage(format!(
-                        "'-Z {entry}' gives a value to '-Z {name}', which takes none"
-                    )));
-                }
-                (Arity::Required, None) => {
-                    return Err(usage(format!(
-                        "'-Z {name}' needs a value: write '-Z {name}=VALUE'"
-                    )));
-                }
-                _ => {}
-            }
-            settings.push(Setting {
-                name: name.to_owned(),
-                arg: OsString::from(format!("--{entry}")),
-                owner,
-            });
-        }
-        Ok(settings)
-    }
-
-    /// The unstable setting called `name`, and who owns it.
-    fn setting(&self, name: &str) -> Option<(Owner, &Arg)> {
-        let by_name = |arg: &&Arg| arg.get_long() == Some(name);
-        if let Some(arg) = self.unstable_command().get_arguments().find(by_name) {
-            return Some((Owner::Driver, arg));
-        }
-        self.stages().iter().enumerate().find_map(|(index, stage)| {
-            let arg = stage.unstable().get_arguments().find(by_name)?;
-            Some((Owner::Stage(index), arg))
-        })
-    }
-
-    /// The names of every unstable setting that is not hidden, the driver's first.
-    fn setting_names(&self) -> Vec<&str> {
-        let driver = self.unstable_command().get_arguments();
-        let stages = self.stages().iter().flat_map(|stage| stage.unstable().get_arguments());
-        driver
-            .chain(stages)
-            .filter(|arg| !arg.is_hide_set())
-            .filter_map(Arg::get_long)
-            .collect()
-    }
-
-    /// Parses the entries each owner has and stores what they say in `request`.
-    fn store_unstable(
-        &self,
-        settings: &[Setting],
-        request: &mut CompilationRequest,
-    ) -> Result<(), Exit> {
-        let owned = |owner: Owner| -> Vec<&Setting> {
-            settings.iter().filter(|setting| setting.owner == owner).collect()
-        };
-        // An error of a parse speaks of `-Z NAME`: the scratch commands know only `--NAME`.
-        let parse = |command: &Command, owned: &[&Setting]| -> Result<ArgMatches, Exit> {
-            command
-                .clone()
-                .try_get_matches_from(owned.iter().map(|setting| setting.arg.clone()))
-                .map_err(|error| in_z_words(&error, owned))
-        };
-
-        let driver = owned(Owner::Driver);
-        if !driver.is_empty() {
-            let matches = parse(self.unstable_command(), &driver)?;
-            let unstable = Unstable::from_arg_matches(&matches).map_err(from_clap)?;
-            let explicit = matches.value_source("verify_each") == Some(ValueSource::CommandLine);
-            if unstable.no_verify && explicit {
-                return Err(usage(
-                    "'-Z no-verify' and '-Z verify-each' contradict each other: the first \
-                     verifies nothing and the second says when to verify",
-                ));
-            }
-            request.pipeline = unstable.pass_pipeline;
-            request.ir.print_before = unstable.print_ir_before;
-            request.ir.print_after = unstable.print_ir_after;
-            request.ir.print_generic = unstable.print_generic;
-            request.ir.print_locations = unstable.print_locations;
-            request.ir.dump_pass_pipeline = unstable.dump_pass_pipeline;
-            request.ir.verification = if unstable.no_verify {
-                Verification::None
-            } else if unstable.verify_each {
-                Verification::EachPass
-            } else {
-                Verification::Once
-            };
-        }
-
-        for (index, stage) in self.stages().iter().enumerate() {
-            let owned = owned(Owner::Stage(index));
-            if owned.is_empty() {
-                continue;
-            }
-            let matches = parse(stage.unstable(), &owned)?;
-            stage
-                .decl()
-                .store_unstable(&matches, request)
-                .map_err(|error| in_z_words(&error, &owned))?;
-        }
-        Ok(())
-    }
 }
 
-/// Hands a stage the stable flags the command line gave it: rebuilds them as the arguments of the
-/// stage's own command, which applies the stage's defaults and relations, and stores the result in
-/// `request`. A stage none of whose flags was written stores nothing.
-///
-/// The arguments are rebuilt in the order the command line wrote them, so that a stage's own
-/// relations that depend on order (`overrides_with`: `--color --no-color`) resolve as the user
-/// wrote them. `clap` reports one index for each value of a flag (and one for a switch, and one,
-/// the last, for a count), so:
-///
-/// * a switch is placed at its index, and a count's arguments all at the count's index;
-/// * an occurrence of a flag that takes a value is one argument, `--LONG=VALUE` (a value-delimited
-///   occurrence is rejoined with the delimiter), placed at the index of its first value;
-/// * when the indices of a flag cannot be matched to its occurrences (an occurrence with no value
-///   at all: an optional value left out where the argument has no `default_missing_value`), all of
-///   the flag's arguments are placed at the flag's first index, or at the start when it has none.
-fn store_stable(
-    stage: &StageCommands,
-    matches: &ArgMatches,
-    request: &mut CompilationRequest,
-) -> Result<(), Exit> {
-    let mut args: Vec<(usize, OsString)> = Vec::new();
-    let mut given = false;
-    for flag in stage.flags() {
-        if matches.value_source(flag.id()) != Some(ValueSource::CommandLine) {
-            continue;
-        }
-        given = true;
-        let Some(arg) = stage.stable().get_arguments().find(|arg| arg.get_id() == flag.field())
-        else {
-            continue;
-        };
-        let long = format!("--{}", flag.long());
-        let indices: Vec<usize> =
-            matches.indices_of(flag.id()).map(Iterator::collect).unwrap_or_default();
-        let first = indices.first().copied().unwrap_or(0);
-        match arg.get_action() {
-            ArgAction::SetTrue | ArgAction::SetFalse => args.push((first, long.into())),
-            ArgAction::Count => {
-                for _ in 0..matches.get_count(flag.id()) {
-                    args.push((first, long.clone().into()));
-                }
-            }
-            _ => {
-                let occurrences: Vec<Vec<&OsStr>> = matches
-                    .get_raw_occurrences(flag.id())
-                    .into_iter()
-                    .flatten()
-                    .map(Iterator::collect)
-                    .collect();
-                let values: usize = occurrences.iter().map(Vec::len).sum();
-                let placed = values == indices.len() && occurrences.iter().all(|o| !o.is_empty());
-                let mut next = 0;
-                for occurrence in occurrences {
-                    let at = if placed { indices[next] } else { first };
-                    next += occurrence.len();
-                    match (occurrence.as_slice(), arg.get_value_delimiter()) {
-                        ([], _) => args.push((at, long.clone().into())),
-                        (values, Some(delimiter)) => {
-                            let mut joined = OsString::new();
-                            for (position, value) in values.iter().enumerate() {
-                                if position > 0 {
-                                    joined.push(delimiter.to_string());
-                                }
-                                joined.push(value);
-                            }
-                            args.push((at, with_value(&long, &joined)));
-                        }
-                        (values, None) => {
-                            for value in values {
-                                args.push((at, with_value(&long, value)));
-                            }
-                        }
-                    }
-                }
-            }
-        }
+/// Stores the settings of the driver itself that `matches`, the parse of the `-Z` entries it owns,
+/// holds in `request`.
+fn store_unstable(matches: &ArgMatches, request: &mut CompilationRequest) -> Result<(), Exit> {
+    let unstable = Unstable::from_arg_matches(matches).map_err(from_clap)?;
+    let explicit = matches.value_source("verify_each") == Some(ValueSource::CommandLine);
+    if unstable.no_verify && explicit {
+        return Err(usage(
+            "'-Z no-verify' and '-Z verify-each' contradict each other: the first verifies \
+             nothing and the second says when to verify",
+        ));
     }
-    if !given {
-        return Ok(());
-    }
-    args.sort_by_key(|(at, _)| *at);
-    let scratch = stage
-        .stable()
-        .clone()
-        .try_get_matches_from(args.into_iter().map(|(_, arg)| arg))
-        .map_err(|error| Exit::Usage(scratch_text(&error)))?;
-    stage
-        .decl()
-        .store(&scratch, request)
-        .map_err(|error| Exit::Usage(scratch_text(&error)))
-}
-
-/// The argument `--LONG=VALUE`, built without going through a string.
-fn with_value(long: &str, value: &OsStr) -> OsString {
-    let mut arg = OsString::from(long);
-    arg.push("=");
-    arg.push(value);
-    arg
+    request.pipeline = unstable.pass_pipeline;
+    request.ir.print_before = unstable.print_ir_before;
+    request.ir.print_after = unstable.print_ir_after;
+    request.ir.print_generic = unstable.print_generic;
+    request.ir.print_locations = unstable.print_locations;
+    request.ir.dump_pass_pipeline = unstable.dump_pass_pipeline;
+    request.ir.verification = if unstable.no_verify {
+        Verification::None
+    } else if unstable.verify_each {
+        Verification::EachPass
+    } else {
+        Verification::Once
+    };
+    Ok(())
 }
 
 /// The text `--print KIND` writes.
@@ -549,7 +285,7 @@ fn listing(compiler: &Compiler, kind: PrintKind) -> String {
 mod tests {
     use std::path::PathBuf;
 
-    use clap::{ArgAction, Args};
+    use clap::{Arg, ArgAction, Args};
     use runic_compile::{
         Artifact, Backend, CheckpointDecl, CheckpointId, Checkpoints, DebugInfo, EmitRequest,
         EmitTo, Extern, Flow, IrOptions, OptLevel, OptionsDecl, OutputFile, RemapPathPrefix,
@@ -1017,9 +753,9 @@ mod tests {
         let compiler = toy();
         let driver = Driver::new(&compiler).build().unwrap();
         let hidden: Vec<&str> = driver
-            .unstable_command()
-            .get_arguments()
-            .chain(driver.stages().iter().flat_map(|stage| stage.unstable().get_arguments()))
+            .stage_flags()
+            .unstable_commands()
+            .flat_map(|command| command.get_arguments())
             .filter(|arg| arg.is_hide_set())
             .filter_map(Arg::get_long)
             .collect();
