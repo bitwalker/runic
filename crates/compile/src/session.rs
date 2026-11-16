@@ -1,4 +1,4 @@
-//! A session: one request resolved against a compiler, before any stage runs.
+//! A session: one request resolved against a compiler, and the steps that run it.
 
 use core::{any::Any, cell::RefCell};
 use std::{path::PathBuf, rc::Rc};
@@ -67,10 +67,11 @@ pub struct Session<'c> {
     target: Option<Target<'c>>,
     route: Route,
     goal: Goal,
-    context: Rc<Context>,
     world: WorldRef,
     progress: Progress,
     files_read: RefCell<Vec<PathBuf>>,
+    // Declared last, so that it is dropped last: the artifact the progress keeps may hold IR.
+    context: Rc<Context>,
 }
 
 impl Compiler {
@@ -98,20 +99,28 @@ impl Compiler {
         let backend = target.as_ref().map(|t| (t.backend.name(), t.backend.checkpoints()));
         let route = Route::new(&declared, backend)?;
 
-        if target.is_none() && self.backends().next().is_some() {
+        if target.is_none() {
+            // A name that only a backend would put on the route is missing for want of a target;
+            // any other unknown name gets the goal's own error.
             let wanted = request
                 .stop_after
                 .iter()
                 .map(String::as_str)
                 .chain(request.emit.iter().map(|emit| emit.checkpoint.as_str()));
             for wanted in wanted {
-                if route.resolve(wanted).is_none() {
+                if route.resolve(wanted).is_some() {
+                    continue;
+                }
+                let with_backend = self.backends().any(|backend| {
+                    Route::new(&declared, Some((backend.name(), backend.checkpoints())))
+                        .is_ok_and(|route| route.resolve(wanted).is_some())
+                });
+                if with_backend {
                     let known: Vec<String> =
                         self.targets().iter().map(|triple| format!("'{triple}'")).collect();
                     return Err(Report::msg(format!(
-                        "no checkpoint '{wanted}' is on the route: no target was given, so the \
-                         checkpoints of a backend are not on it; give a target with --target (the \
-                         targets are {})",
+                        "the checkpoint '{wanted}' is reached only with a backend, and no target \
+                         was given: give one with --target (the targets are {})",
                         known.join(", ")
                     )));
                 }
@@ -298,6 +307,24 @@ mod tests {
         request.emit.push("out".parse::<EmitRequest>().unwrap());
         let message = error(&compiler(), request);
         assert!(message.contains("'out'") && message.contains("--target"), "{message}");
+    }
+
+    #[test]
+    fn a_misspelt_checkpoint_with_no_target_is_not_blamed_on_the_target() {
+        let mut request = request(&["x.a"]);
+        request.stop_after = Some("ir.optimised".into());
+        let message = error(&compiler(), request);
+        assert!(message.contains("unknown checkpoint 'ir.optimised'"), "{message}");
+        assert!(!message.contains("--target"), "{message}");
+        assert!(message.contains("'ir.optimized'"), "{message}");
+    }
+
+    #[test]
+    fn the_lowered_ir_with_no_target_asks_for_a_target() {
+        let mut request = request(&["x.a"]);
+        request.stop_after = Some("ir.lowered".into());
+        let message = error(&compiler(), request);
+        assert!(message.contains("'ir.lowered'") && message.contains("--target"), "{message}");
     }
 
     #[test]

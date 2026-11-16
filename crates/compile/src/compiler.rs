@@ -96,13 +96,13 @@ impl CompilerBuilder {
     ///
     /// * two stages have one name (a name `Route` rejects, such as an empty one, is reported as
     ///   `Route` words it);
-    /// * a frontend claims an empty extension, or claims one twice, or two frontends claim the
-    ///   same one;
+    /// * a frontend claims an extension that is empty or holds a `.` (an input's extension is the
+    ///   text after its last `.`), or claims one twice, or two frontends claim the same one;
+    /// * a backend lists a target it does not support;
     /// * the frontends with no backend, or with any one backend, make a route that [Route::new]
     ///   rejects;
-    /// * the default target is not a triple;
-    /// * the compiler has a backend and none supports the default target. A compiler without a
-    ///   backend accepts any well-formed default target.
+    /// * the default target is not a triple, the compiler has no backend to support it, no backend
+    ///   supports it, or a backend that supports it cannot state its data layout.
     pub fn build(self) -> Result<Compiler, Report> {
         let Self {
             frontends,
@@ -112,6 +112,14 @@ impl CompilerBuilder {
 
         check_names(&frontends, &backends)?;
         check_extensions(&frontends)?;
+        for backend in &backends {
+            if let Some(unsupported) = backend.targets().iter().find(|t| !backend.supports(t)) {
+                return Err(Report::msg(format!(
+                    "the backend '{}' lists the target '{unsupported}', which it does not support",
+                    backend.name()
+                )));
+            }
+        }
 
         let declared: Vec<Declarer<'_>> =
             frontends.iter().map(|f| (f.name(), f.checkpoints())).collect();
@@ -126,7 +134,24 @@ impl CompilerBuilder {
                 let triple: Triple = text.parse().map_err(|error| {
                     Report::msg(format!("the default target is not usable: {error}"))
                 })?;
-                if !backends.is_empty() && !backends.iter().any(|b| b.supports(&triple)) {
+                if backends.is_empty() {
+                    return Err(Report::msg(format!(
+                        "the default target '{triple}' was set, but the compiler has no backend: \
+                         a target is what a backend generates code for"
+                    )));
+                }
+                let mut supported = false;
+                for backend in backends.iter().filter(|b| b.supports(&triple)) {
+                    supported = true;
+                    backend.data_layout(&triple).map_err(|report| {
+                        report.context(format!(
+                            "the backend '{}' cannot state the data layout of the default target \
+                             '{triple}'",
+                            backend.name()
+                        ))
+                    })?;
+                }
+                if !supported {
                     let known = known_targets(&backends);
                     return Err(Report::msg(format!(
                         "no backend supports the default target '{triple}'; the known targets are \
@@ -201,6 +226,12 @@ fn check_extensions(frontends: &[Box<dyn Frontend>]) -> Result<(), Report> {
             if extension.is_empty() {
                 return Err(Report::msg(format!(
                     "the frontend '{name}' claims an empty file extension"
+                )));
+            }
+            if extension.contains('.') {
+                return Err(Report::msg(format!(
+                    "the frontend '{name}' claims the file extension '{extension}', which holds a \
+                     '.': the extension of an input is the text after its last '.'"
                 )));
             }
             if frontend.extensions()[..position].contains(extension) {
@@ -394,9 +425,28 @@ mod tests {
     }
 
     #[test]
-    fn a_default_target_is_accepted_when_the_compiler_has_no_backend() {
-        let compiler = Compiler::builder().default_target("riscv64-unknown-none").build().unwrap();
-        assert_eq!(compiler.default_target().map(Triple::as_str), Some("riscv64-unknown-none"));
+    fn a_default_target_is_rejected_when_the_compiler_has_no_backend() {
+        let message = error(Compiler::builder().default_target("riscv64-unknown-none"));
+        assert_eq!(
+            message,
+            "the default target 'riscv64-unknown-none' was set, but the compiler has no backend: \
+             a target is what a backend generates code for"
+        );
+    }
+
+    #[test]
+    fn an_extension_with_a_dot_is_rejected() {
+        let message = error(Compiler::builder().frontend(TestFrontend::new("tar", &["tar.gz"])));
+        assert!(
+            message.contains("claims the file extension 'tar.gz', which holds a '.'"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_compiler_can_be_shared_between_threads() {
+        fn shareable<T: Send + Sync>() {}
+        shareable::<Compiler>();
     }
 
     #[test]

@@ -6,10 +6,11 @@ use crate::{CheckpointDecl, Checkpoints, Flow, Input, Session};
 /// inputs, and which checkpoints it reaches.
 ///
 /// A compiler registers each frontend once, and that one registered stage serves every session of
-/// the compiler, so a frontend holds no state of one compilation. The harness reads the name to
+/// the compiler, on whatever thread that session runs, so a frontend holds no state of one
+/// compilation and is `Send + Sync`. The harness reads the name to
 /// match `--language`, the extensions to find the frontend of an input that names no language,
 /// and the checkpoints to build the route of a compilation.
-pub trait Frontend {
+pub trait Frontend: Send + Sync {
     /// The name of the frontend: what `--language` takes, and the prefix of each checkpoint id
     /// the frontend declares.
     fn name(&self) -> &'static str;

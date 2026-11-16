@@ -56,10 +56,10 @@ impl Session<'_> {
             };
             match flow {
                 ControlFlow::Break(stopped) => {
-                    if progress.stopped.is_none() {
+                    if progress.stopped.is_none() || stopped.checkpoint() != stop {
                         return Err(Report::msg(format!(
                             "frontend '{name}' reported that the compilation stopped at '{}', but \
-                             it never reached that checkpoint",
+                             it never reached that checkpoint as the stop point",
                             stopped.checkpoint()
                         )));
                     }

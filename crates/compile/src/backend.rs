@@ -6,11 +6,12 @@ use crate::{CheckpointDecl, Triple};
 /// data is laid out on each, and which checkpoints it reaches.
 ///
 /// A compiler registers each backend once, and that one registered stage serves every session of
-/// the compiler, so a backend holds no state of one compilation. The harness reads the name to
+/// the compiler, on whatever thread that session runs, so a backend holds no state of one
+/// compilation and is `Send + Sync`. The harness reads the name to
 /// match `--backend`, `supports` and `targets` to choose the backend for `--target`, the data
 /// layout to give the frontends before they run, and the checkpoints to build the route of a
 /// compilation.
-pub trait Backend {
+pub trait Backend: Send + Sync {
     /// The name of the backend: what `--backend` takes, and the prefix of each checkpoint id the
     /// backend declares.
     fn name(&self) -> &'static str;

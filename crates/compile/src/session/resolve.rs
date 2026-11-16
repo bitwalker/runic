@@ -130,11 +130,24 @@ pub(super) fn resolve_target<'c>(
         return Ok(None);
     };
 
+    // Said of the triple in a message when the request did not give it.
+    let origin = if target.is_some() {
+        ""
+    } else {
+        " (the compiler's default)"
+    };
+    if compiler.backends().next().is_none() {
+        return Err(Report::msg(format!(
+            "the target '{triple}' was given, but this compiler has no backend: a target is what \
+             a backend generates code for"
+        )));
+    }
     let backend = match named {
         Some(backend) => {
             if !backend.supports(triple) {
                 return Err(Report::msg(format!(
-                    "the backend '{}' does not support the target '{triple}'; its targets are {}",
+                    "the backend '{}' does not support the target '{triple}'{origin}; its targets \
+                     are {}",
                     backend.name(),
                     targets(&backend.targets())
                 )));
@@ -147,22 +160,27 @@ pub(super) fn resolve_target<'c>(
             match candidates.as_slice() {
                 [] => {
                     return Err(Report::msg(format!(
-                        "no backend supports the target '{triple}'; the targets are {}",
+                        "no backend supports the target '{triple}'{origin}; the targets are {}",
                         targets(&compiler.targets())
                     )));
                 }
                 [only] => *only,
                 several => {
                     return Err(Report::msg(format!(
-                        "more than one backend supports the target '{triple}': choose one with \
-                         --backend; the candidates are {}",
+                        "more than one backend supports the target '{triple}'{origin}: choose one \
+                         with --backend; the candidates are {}",
                         list(several.iter().map(|backend| backend.name()))
                     )));
                 }
             }
         }
     };
-    let data_layout = backend.data_layout(triple)?;
+    let data_layout = backend.data_layout(triple).map_err(|report| {
+        report.context(format!(
+            "the backend '{}' cannot state the data layout of the target '{triple}'",
+            backend.name()
+        ))
+    })?;
     Ok(Some(Target {
         triple: triple.clone(),
         backend,
@@ -445,9 +463,13 @@ mod tests {
     }
 
     #[test]
-    fn a_target_on_a_compiler_with_no_backend_is_an_error_listing_no_targets() {
+    fn a_target_on_a_compiler_with_no_backend_is_an_error_that_says_so() {
         let message = target_error(&frontends(), Some("wasm32-wasip2"), None, false);
-        assert!(message.contains("'wasm32-wasip2'") && message.contains("none"), "{message}");
+        assert_eq!(
+            message,
+            "the target 'wasm32-wasip2' was given, but this compiler has no backend: a target is \
+             what a backend generates code for"
+        );
     }
 
     #[test]
