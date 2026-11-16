@@ -5,7 +5,7 @@ use smallvec::SmallVec;
 
 use super::TypeConverter;
 use crate::{
-    BlockRef, CallOpInterface, Context, Operation, Report, Type, Value, ValueRef,
+    BlockRef, CallOpInterface, Context, OpOperandRange, Operation, Report, Type, Value, ValueRef,
     dialects::builtin::attributes::{AbiParam, Signature},
 };
 
@@ -245,8 +245,52 @@ fn new_index(index: usize) -> u32 {
     u32::try_from(index).expect("system limit: a signature has at most u32::MAX parameters")
 }
 
+/// Verify that `arguments`, the operands of `op` that are passed to a callee, agree with
+/// `signature` in count and type: one argument per parameter, of the parameter's type.
+///
+/// `noun` is what the operation is called in the messages: `"call"` for `builtin.call`,
+/// `"tail call"` for `builtin.tail_call`. The error is `invalid operation <name>`, with a primary
+/// label on `op` that reads "the {noun} passes N argument(s), but its signature has M
+/// parameter(s)", or "argument I has type `T`, but parameter I of the signature has type `P`".
+pub fn verify_call_signature_arguments(
+    op: &Operation,
+    arguments: &OpOperandRange<'_>,
+    signature: &Signature,
+    noun: &str,
+) -> Result<(), Report> {
+    use crate::{Spanned, diagnostics::report};
+
+    let span = op.span();
+    let invalid = |label: alloc::string::String| {
+        report!(
+            message: (format!("invalid operation {}", op.name())),
+            labels: [primary(span, label)],
+        )
+    };
+
+    if arguments.len() != signature.params().len() {
+        return Err(invalid(format!(
+            "the {noun} passes {} argument(s), but its signature has {} parameter(s)",
+            arguments.len(),
+            signature.params().len()
+        )));
+    }
+    for (index, (argument, param)) in arguments.iter().zip(signature.params()).enumerate() {
+        let argument_ty = argument.borrow().ty();
+        if argument_ty != param.ty {
+            return Err(invalid(format!(
+                "argument {index} has type `{argument_ty}`, but parameter {index} of the \
+                 signature has type `{}`",
+                param.ty
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Verify that the arguments and results of `op`, a call-like operation, agree with `signature`
-/// in count and type: the signature the call carries, or the one of its resolved callee.
+/// in count and type: the signature the call carries, or the one of its resolved callee. The
+/// arguments are checked by [verify_call_signature_arguments], with the noun "call".
 ///
 /// An operation that does not implement [CallOpInterface] is accepted.
 pub fn verify_call_signature_operands_and_results(
@@ -266,24 +310,7 @@ pub fn verify_call_signature_operands_and_results(
         )
     };
 
-    let arguments = call.arguments();
-    if arguments.len() != signature.params().len() {
-        return Err(invalid(format!(
-            "the call passes {} argument(s), but its signature has {} parameter(s)",
-            arguments.len(),
-            signature.params().len()
-        )));
-    }
-    for (index, (argument, param)) in arguments.iter().zip(signature.params()).enumerate() {
-        let argument_ty = argument.borrow().ty();
-        if argument_ty != param.ty {
-            return Err(invalid(format!(
-                "argument {index} has type `{argument_ty}`, but parameter {index} of the \
-                 signature has type `{}`",
-                param.ty
-            )));
-        }
-    }
+    verify_call_signature_arguments(op, &call.arguments(), signature, "call")?;
 
     let results = signature.results();
     if op.num_results() != results.len() {

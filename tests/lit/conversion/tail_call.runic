@@ -1,0 +1,63 @@
+// RUN: runic-opt %s -p test-convert-wide-ints | filecheck %s
+// RUN: runic-opt %s -p test-convert-wide-ints | runic-opt - -p test-convert-wide-ints | filecheck %s
+// RUN: runic-opt %s -p test-convert-wide-ints | filecheck %s --check-prefix=GONE
+
+// The partial conversion of `i128` to `(i64, i64)` converts `builtin.tail_call` and
+// `builtin.tail_call_indirect` as it converts a call: the signature by type, and the arguments
+// split into their halves, with the callee and the function that holds the tail call converted
+// the same way, so the tail call returns what the function returns. The second RUN line converts
+// the converted module again: nothing changes. The third checks that no signature, tail call or
+// argument still names `i128`.
+
+// GONE: builtin.module public @m {
+// GONE-NOT: {{[(: ]i128[),; ]}}
+// GONE: {{^}}};
+builtin.module public @m {
+    // The callee of the direct tail calls.
+    // CHECK-LABEL: @callee(
+    // CHECK-SAME: i64, i64, i32) -> (i64, i64);
+    builtin.function public extern("C") @callee(i128, i32) -> i128;
+
+    // The arguments of a tail call are the halves of the operands that were split.
+    // CHECK-LABEL: @direct(
+    // CHECK-SAME: [[LO:%[0-9]+]]: i64, [[HI:%[0-9]+]]: i64, [[N:%[0-9]+]]: i32) -> (i64, i64) {
+    // CHECK-NEXT: builtin.tail_call @callee([[LO]], [[HI]], [[N]]) : extern("C") (i64, i64, i32) -> (i64, i64);
+    builtin.function public extern("C") @direct(%x: i128, %n: i32) -> i128 {
+        builtin.tail_call @callee(%x, %n) : extern("C") (i128, i32) -> i128;
+    };
+
+    // The callee is the one value of the converted function type; an attribute is kept.
+    // CHECK-LABEL: @indirect(
+    // CHECK-SAME: [[F:%[0-9]+]]: (i64, i64, i32) -> (i64, i64), [[LO:%[0-9]+]]: i64, [[HI:%[0-9]+]]: i64, [[N:%[0-9]+]]: i32) -> (i64, i64) {
+    // CHECK-NEXT: builtin.tail_call_indirect [[F]]([[LO]], [[HI]], [[N]]) : extern("C") (i64, i64, i32) -> (i64, i64) attributes { note = #builtin.i32<7> };
+    builtin.function public extern("C") @indirect(%f: (i128, i32) -> i128, %x: i128, %n: i32) -> i128 {
+        builtin.tail_call_indirect %f(%x, %n) : extern("C") (i128, i32) -> i128 attributes { note = #builtin.i32<7> };
+    };
+
+    // A function with two exits: a return of the halves, and a tail call of the callee.
+    // CHECK-LABEL: @two_exits(
+    // CHECK-SAME: [[LO:%[0-9]+]]: i64, [[HI:%[0-9]+]]: i64, [[N:%[0-9]+]]: i32, [[C:%[0-9]+]]: i1) -> (i64, i64) {
+    // CHECK-NEXT: cf.cond_br [[C]] ^[[RET:block[0-9]+]], ^[[TAIL:block[0-9]+]] : (i1);
+    // CHECK-NEXT: ^[[RET]]:
+    // CHECK-NEXT: builtin.ret [[LO]], [[HI]] : (i64, i64);
+    // CHECK-NEXT: ^[[TAIL]]:
+    // CHECK-NEXT: builtin.tail_call @callee([[LO]], [[HI]], [[N]]) : extern("C") (i64, i64, i32) -> (i64, i64);
+    builtin.function public extern("C") @two_exits(%x: i128, %n: i32, %c: i1) -> i128 {
+        cf.cond_br %c ^ret, ^tail : (i1);
+    ^ret:
+        builtin.ret %x : (i128);
+    ^tail:
+        builtin.tail_call @callee(%x, %n) : extern("C") (i128, i32) -> i128;
+    };
+
+    // A tail call of a function whose results do not change keeps them (a label would stop at the
+    // first `@takes_wide(`, in the tail call, so the declaration has a plain check).
+    // CHECK-LABEL: @narrow(
+    // CHECK-SAME: [[LOW:%[0-9]+]]: i64, [[HIGH:%[0-9]+]]: i64) -> i32 {
+    // CHECK-NEXT: builtin.tail_call @takes_wide([[LOW]], [[HIGH]]) : extern("C") (i64, i64) -> i32;
+    builtin.function public extern("C") @narrow(%x: i128) -> i32 {
+        builtin.tail_call @takes_wide(%x) : extern("C") (i128) -> i32;
+    };
+    // CHECK: @takes_wide(i64, i64) -> i32;
+    builtin.function public extern("C") @takes_wide(i128) -> i32;
+};

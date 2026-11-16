@@ -104,9 +104,15 @@
 //! `builtin.call_indirect` is converted the same way; its callee, a function value, becomes the
 //! one value of the converted function type. A `builtin.function_ref` becomes a reference to the
 //! same symbol of the converted function type. A `builtin.ret` becomes a return of the values its
-//! operands became, flattened. Each keeps its attribute dictionary. A call whose signature does not
-//! change and whose operands are themselves, a reference whose type does not change, and a return
-//! whose operands are themselves do not match. `builtin.ret_imm` is not converted here.
+//! operands became, flattened. A `builtin.tail_call` and a `builtin.tail_call_indirect` are
+//! converted as the call and the indirect call are, and a tail call never has results of its own
+//! to replace; because the function that holds it returns what the callee returns, the converted
+//! tail call must return what the (converted) function returns, and a conversion that would leave
+//! it returning anything else, because the function's signature was converted by other means than
+//! [convert_signature], is an error that names the tail call. Each keeps its attribute
+//! dictionary. A call whose signature does not change and whose operands are themselves, a
+//! reference whose type does not change, and a return whose operands are themselves do not match.
+//! `builtin.ret_imm` is not converted here.
 //!
 //! # Branches
 //!
@@ -134,7 +140,7 @@ use crate::{
     dialects::{
         builtin::{
             Call, CallIndirect, CopiedAttributes, Function, FunctionAlias, FunctionReference,
-            LoadLocal, Ret, RetImm, StoreLocal,
+            LoadLocal, Ret, RetImm, StoreLocal, TailCall, TailCallIndirect,
             attributes::{
                 DeclaredEffects, DeclaredEffectsAttr, IntAttr, LocalVariable, LocalVariableAttr,
                 Signature, SignatureAttr, TypeArrayAttr, remap_declared_effects,
@@ -161,8 +167,8 @@ const EXPRESSION: &str = "expression";
 /// converter does not convert function types, before anything is added.
 ///
 /// The patterns added are the function pattern, the patterns of `builtin.load_local` and
-/// `builtin.store_local`, of `builtin.call`, `builtin.call_indirect`, `builtin.function_ref` and
-/// `builtin.ret`, and the branch pattern, for every operation that implements `BranchOpInterface`
+/// `builtin.store_local`, of `builtin.call`, `builtin.call_indirect`, `builtin.tail_call`,
+/// `builtin.tail_call_indirect`, `builtin.function_ref` and `builtin.ret`, and the branch pattern, for every operation that implements `BranchOpInterface`
 /// and is registered when the pattern set is frozen (see the module documentation).
 ///
 /// `builtin.ret_imm` gets no pattern: a constant of a type that is not legal belongs to the
@@ -216,6 +222,22 @@ pub fn populate_builtin_conversion_patterns(
         ),
         converter: converter.clone(),
     });
+    patterns.push(TailCallPattern {
+        info: pattern_info::<TailCall>(
+            &context,
+            "builtin-tail-call-by-type",
+            [registered::<TailCall>(&context)],
+        ),
+        converter: converter.clone(),
+    });
+    patterns.push(TailCallIndirectPattern {
+        info: pattern_info::<TailCallIndirect>(
+            &context,
+            "builtin-tail-call-indirect-by-type",
+            [registered::<TailCallIndirect>(&context)],
+        ),
+        converter: converter.clone(),
+    });
     patterns.push(FunctionReferencePattern {
         info: pattern_info::<FunctionReference>(
             &context,
@@ -242,7 +264,7 @@ pub fn populate_builtin_conversion_patterns(
     Ok(())
 }
 
-/// Marks `builtin.function`, the call operations, `builtin.function_ref`, the returns, the local
+/// Marks `builtin.function`, the call and tail call operations, `builtin.function_ref`, the returns, the local
 /// operations, and every operation that implements `BranchOpInterface`, legal exactly when
 /// `converter.is_legal_op` says so. (A rule for an operation or its dialect wins over the interface
 /// rule: a target that calls a branch operation or its dialect legal outright never offers it.)
@@ -260,6 +282,8 @@ pub fn add_builtin_legality_by_type(target: &mut ConversionTarget, converter: &T
         .add_dynamically_legal_op::<Function, _>(by_type())
         .add_dynamically_legal_op::<Call, _>(by_type())
         .add_dynamically_legal_op::<CallIndirect, _>(by_type())
+        .add_dynamically_legal_op::<TailCall, _>(by_type())
+        .add_dynamically_legal_op::<TailCallIndirect, _>(by_type())
         .add_dynamically_legal_op::<FunctionReference, _>(by_type())
         .add_dynamically_legal_op::<Ret, _>(by_type())
         .add_dynamically_legal_op::<RetImm, _>(by_type())
@@ -1197,6 +1221,182 @@ impl ConversionPattern for CallIndirectPattern {
             .create_op::<CallIndirect, _>(span, (callee, arguments, converted.signature.clone()))?;
         let call = call.as_operation_ref();
         replace_with_grouped_results(rewriter, op, call, attributes, &converted.results)?;
+        Ok(true)
+    }
+}
+
+/// An error, naming the tail call, when the results and the calling convention of `converted`, the
+/// signature a tail call is converted to, are not those of the function that holds it as it is now:
+/// the function returns what the callee returns, and a tail call left with other results would
+/// not verify.
+///
+/// The function is converted before the operations in its body, and by the same
+/// [convert_signature], so the two agree unless something converted the function's signature by
+/// other means (a pattern of the user's, or a target that left the function alone). A tail call
+/// that is in no function is accepted: its verifier reports it.
+fn check_tail_call_results_are_the_functions(
+    tail_call: OperationRef,
+    converted: &ConvertedSignature,
+) -> Result<(), Report> {
+    let mut parent = tail_call.borrow().parent_op();
+    while let Some(enclosing) = parent {
+        if enclosing.borrow().implements::<dyn CallableOpInterface>() {
+            let enclosing_ref = enclosing.borrow();
+            let Some(function) = enclosing_ref.downcast_ref::<Function>() else {
+                return Ok(());
+            };
+            let signature = function.get_signature();
+            let converted = &converted.signature;
+            let name = format!("@{}", Symbol::name(function));
+            let reason = if converted.declared_results() != signature.declared_results() {
+                let list = |results: &[crate::dialects::builtin::attributes::AbiParam]| {
+                    results.iter().map(|result| format!("{result}")).collect::<Vec<_>>().join(", ")
+                };
+                format!(
+                    "the conversion makes this tail call return ({}), but the function {name} \
+                     returns ({}): a tail call returns what the function returns",
+                    list(converted.declared_results()),
+                    list(signature.declared_results()),
+                )
+            } else if converted.calling_convention() != signature.calling_convention() {
+                format!(
+                    "the conversion makes this tail call use the calling convention \"{}\", but \
+                     the function {name} uses \"{}\"",
+                    converted.calling_convention().as_str(),
+                    signature.calling_convention().as_str(),
+                )
+            } else {
+                return Ok(());
+            };
+            return Err(crate::diagnostics::report!(
+                message: (format!("cannot convert {}", describe_op(tail_call))),
+                labels: [primary(tail_call.borrow().span(), reason)],
+            ));
+        }
+        parent = enclosing.borrow().parent_op();
+    }
+    Ok(())
+}
+
+/// Converts a `builtin.tail_call`: a tail call of the same callee, by the same path, with the
+/// converted signature and the operands' ranges flattened. It is an error if the converted
+/// signature returns other than the function that holds the tail call does.
+struct TailCallPattern {
+    info: PatternInfo,
+    converter: TypeConverter,
+}
+
+impl Pattern for TailCallPattern {
+    fn info(&self) -> &PatternInfo {
+        &self.info
+    }
+}
+
+impl ConversionPattern for TailCallPattern {
+    fn type_converter(&self) -> Option<&TypeConverter> {
+        Some(&self.converter)
+    }
+
+    fn match_and_rewrite(
+        &self,
+        op: OperationRef,
+        operands: ConvertedOperands<'_>,
+        rewriter: &mut ConversionPatternRewriter,
+    ) -> Result<bool, Report> {
+        let context = op.borrow().context_rc();
+        let signature = op
+            .borrow()
+            .downcast_ref::<TailCall>()
+            .expect("rooted at builtin.tail_call")
+            .get_signature()
+            .clone();
+        let converted = convert_signature(&context, &signature, &self.converter);
+        check_answers_are_legal(&context, &self.converter, &signature, &converted, op)?;
+        if converted.signature == signature
+            && operands_are_themselves(&op.borrow(), operands.iter())
+        {
+            return Ok(false);
+        }
+        check_tail_call_results_are_the_functions(op, &converted)?;
+        let (callee, attributes, span) = {
+            let op_ref = op.borrow();
+            let call = op_ref.downcast_ref::<TailCall>().expect("rooted at builtin.tail_call");
+            let callee = named_callee(op, &call.callee(), rewriter);
+            (callee, CopiedAttributes::of(&op_ref), op_ref.span())
+        };
+        let Some((callee, path)) = callee else {
+            return Ok(false);
+        };
+        let arguments = operands.group_flattened(0);
+        rewriter.set_insertion_point_before(op);
+        let mut call = rewriter
+            .create_op::<TailCall, _>(span, (callee, converted.signature.clone(), arguments))?;
+        call.borrow_mut().callee_mut().set_path(path);
+        attributes.install(call.borrow_mut().as_operation_mut());
+        rewriter.erase_op(op)?;
+        Ok(true)
+    }
+}
+
+/// Converts a `builtin.tail_call_indirect`: a tail call of the callee's one converted value, with
+/// the converted signature and the arguments' ranges flattened. It is an error if the converted
+/// signature returns other than the function that holds the tail call does.
+struct TailCallIndirectPattern {
+    info: PatternInfo,
+    converter: TypeConverter,
+}
+
+impl Pattern for TailCallIndirectPattern {
+    fn info(&self) -> &PatternInfo {
+        &self.info
+    }
+}
+
+impl ConversionPattern for TailCallIndirectPattern {
+    fn type_converter(&self) -> Option<&TypeConverter> {
+        Some(&self.converter)
+    }
+
+    fn match_and_rewrite(
+        &self,
+        op: OperationRef,
+        operands: ConvertedOperands<'_>,
+        rewriter: &mut ConversionPatternRewriter,
+    ) -> Result<bool, Report> {
+        let context = op.borrow().context_rc();
+        let signature = op
+            .borrow()
+            .downcast_ref::<TailCallIndirect>()
+            .expect("rooted at builtin.tail_call_indirect")
+            .get_signature()
+            .clone();
+        let converted = convert_signature(&context, &signature, &self.converter);
+        check_answers_are_legal(&context, &self.converter, &signature, &converted, op)?;
+        if converted.signature == signature
+            && operands_are_themselves(&op.borrow(), operands.iter())
+        {
+            return Ok(false);
+        }
+        check_tail_call_results_are_the_functions(op, &converted)?;
+        let (attributes, span) = {
+            let op_ref = op.borrow();
+            (CopiedAttributes::of(&op_ref), op_ref.span())
+        };
+        let Some(callee) = operands.one(0) else {
+            rewriter.notify_match_failure(
+                op,
+                Report::msg("the callee, a function value, did not become exactly one value"),
+            );
+            return Ok(false);
+        };
+        let arguments = operands.group_flattened(1);
+        rewriter.set_insertion_point_before(op);
+        let mut call = rewriter.create_op::<TailCallIndirect, _>(
+            span,
+            (callee, arguments, converted.signature.clone()),
+        )?;
+        attributes.install(call.borrow_mut().as_operation_mut());
+        rewriter.erase_op(op)?;
         Ok(true)
     }
 }

@@ -164,7 +164,9 @@ fn the_patterns_refuse_a_converter_they_cannot_be_driven_by() {
     assert!(patterns.patterns().is_empty());
 
     populate_builtin_conversion_patterns(&mut patterns, &wide_converter(&context)).unwrap();
-    assert_eq!(patterns.patterns().len(), 8);
+    // The function, two local, two call, two tail call, function reference, return and branch
+    // patterns.
+    assert_eq!(patterns.patterns().len(), 10);
 }
 
 /// A declaration's signature and declared effects are converted: an effect on parameter 1 follows
@@ -1551,4 +1553,155 @@ fn replaced_operations_keep_their_references_with_uses_of_their_own() {
     });
     assert_eq!(references, 8);
     assert_eq!(uses(f), 10);
+}
+
+/// A tail call is converted as a call is: the signature by type, and the arguments flattened, for
+/// the direct and the indirect form, with the function, which returns what the tail call does.
+#[test]
+fn a_tail_call_is_converted_with_its_signature_and_arguments() {
+    let (context, module) = parse_module(
+        "    builtin.function public extern(\"C\") @f(i128, i32) -> i128;
+    builtin.function public extern(\"C\") @direct(%0: i128, %1: i32) -> i128 {
+        builtin.tail_call @f(%0, %1) : extern(\"C\") (i128, i32) -> i128 attributes { note = \
+         #builtin.i32<7>, target = #builtin.symbol<@f> };
+    };
+    builtin.function public extern(\"C\") @indirect(%0: (i128, i32) -> i128, %1: i128, %2: i32) -> \
+         i128 {
+        builtin.tail_call_indirect %0(%1, %2) : extern(\"C\") (i128, i32) -> i128 attributes { \
+         note = #builtin.i32<8> };
+    };",
+    );
+    let converter = wide_converter(&context);
+    convert_full(module, by_type_target(&context, &converter), &converter)
+        .unwrap_or_else(|err| panic!("{}", describe(&err)));
+    let text = converted_text(module);
+    assert!(
+        text.contains(
+            "builtin.tail_call @f(%5, %6, %7) : extern(\"C\") (i64, i64, i32) -> (i64, i64) \
+             attributes { note = #builtin.i32<7>, target = #builtin.symbol<@f> };"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "builtin.tail_call_indirect %9(%10, %11, %12) : extern(\"C\") (i64, i64, i32) -> \
+             (i64, i64) attributes { note = #builtin.i32<8> };"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "@indirect(%9: (i64, i64, i32) -> (i64, i64), %10: i64, %11: i64, %12: i32) -> (i64, \
+             i64)"
+        ),
+        "{text}"
+    );
+    assert!(!text.contains("i128"), "{text}");
+    module
+        .borrow()
+        .recursively_verify()
+        .unwrap_or_else(|err| panic!("{}", describe(&err)));
+
+    // The reference in the dictionary is linked to `@f` and used by the new tail call.
+    let mut call = None;
+    module.borrow().prewalk_all(|op: &Operation| {
+        if op.is::<TailCall>() {
+            call = Some(op.as_operation_ref());
+        }
+    });
+    let call = call.unwrap();
+    let target = call.borrow().get_attribute("target").unwrap();
+    let target = target.try_downcast_attr::<SymbolRefAttr>().ok().unwrap();
+    assert_eq!(target.borrow().resolve().unwrap().borrow().name().as_str(), "f");
+    assert_eq!(target.borrow().try_user().unwrap().borrow().owner, call);
+}
+
+/// The tail calls of a marker-typed argument and result lose them with the callee and the function
+/// that holds the tail call, the three agreeing.
+#[test]
+fn a_marker_argument_vanishes_from_a_tail_call_and_its_function() {
+    let (context, module) = parse_module(
+        "    builtin.function public extern(\"C\") @m(%0: array<i8; 0>, %1: i32) -> (array<i8; \
+         0>, i32) {
+        builtin.ret %0, %1 : (array<i8; 0>, i32);
+    };
+    builtin.function public extern(\"C\") @caller(%0: array<i8; 0>, %1: i32) -> (array<i8; 0>, \
+         i32) {
+        builtin.tail_call @m(%0, %1) : extern(\"C\") (array<i8; 0>, i32) -> (array<i8; 0>, i32);
+    };",
+    );
+    let converter = wide_converter(&context);
+    convert_full(module, by_type_target(&context, &converter), &converter)
+        .unwrap_or_else(|err| panic!("{}", describe(&err)));
+    let text = converted_text(module);
+    assert!(!text.contains("array"), "{text}");
+    assert!(text.contains("builtin.tail_call @m(%"), "{text}");
+    module
+        .borrow()
+        .recursively_verify()
+        .unwrap_or_else(|err| panic!("{}", describe(&err)));
+}
+
+/// A tail call whose signature does not change is not matched.
+#[test]
+fn a_tail_call_that_does_not_change_is_left_alone() {
+    let (context, module) = parse_module(
+        "    builtin.function public extern(\"C\") @f(i32) -> i32;
+    builtin.function public extern(\"C\") @caller(%0: i32) -> i32 {
+        builtin.tail_call @f(%0) : extern(\"C\") (i32) -> i32;
+    };",
+    );
+    let converter = wide_converter(&context);
+    let before = converted_text(module);
+    convert_full(module, by_type_target(&context, &converter), &converter)
+        .unwrap_or_else(|err| panic!("{}", describe(&err)));
+    assert_str_eq!(converted_text(module), before);
+}
+
+/// The function that holds a tail call is converted before it, by the same signature conversion,
+/// so the results agree. The reachable case that they do not is a function whose signature was
+/// converted by other means (a target that leaves the function alone): the conversion is an
+/// error that names the tail call, and says what each returns.
+#[test]
+fn a_tail_call_that_would_return_other_than_its_function_is_an_error() {
+    let (context, module) = parse_module(
+        "    builtin.function public extern(\"C\") @f(i128) -> i128;
+    builtin.function public extern(\"C\") @caller(%0: i128) -> i128 {
+        builtin.tail_call @f(%0) : extern(\"C\") (i128) -> i128;
+    };",
+    );
+    let converter = wide_converter(&context);
+    let mut target = by_type_target(&context, &converter);
+    // The function that holds the tail call is judged legal outright, so its signature stays.
+    let only_the_callee = converter.clone();
+    target.add_dynamically_legal_op::<Function, _>(move |op: &Operation| {
+        let caller = op.as_trait::<dyn Symbol>().is_some_and(|f| f.name().as_str() == "caller");
+        DynamicLegalityResult::legal_if(caller || only_the_callee.is_legal_op(op))
+    });
+    let err = describe(&convert_full(module, target, &converter).unwrap_err());
+    assert!(err.contains("cannot convert 'builtin.tail_call'"), "{err}");
+    assert!(
+        err.contains(
+            "the conversion makes this tail call return (i64, i64), but the function @caller \
+             returns (i128): a tail call returns what the function returns"
+        ),
+        "{err}"
+    );
+}
+
+/// The same for a tail call whose conversion would change the calling convention: not reachable
+/// from a converter, which keeps the convention, but a function converted by other means can.
+#[test]
+fn an_indirect_tail_call_that_would_return_other_than_its_function_is_an_error() {
+    let (context, module) = parse_module(
+        "    builtin.function public extern(\"C\") @caller(%0: (i128) -> i128, %1: i128) -> i128 {
+        builtin.tail_call_indirect %0(%1) : extern(\"C\") (i128) -> i128;
+    };",
+    );
+    let converter = wide_converter(&context);
+    let mut target = by_type_target(&context, &converter);
+    target.add_dynamically_legal_op::<Function, _>(|_: &Operation| DynamicLegalityResult::Legal);
+    let err = describe(&convert_full(module, target, &converter).unwrap_err());
+    assert!(err.contains("cannot convert 'builtin.tail_call_indirect'"), "{err}");
+    assert!(err.contains("returns what the function returns"), "{err}");
 }

@@ -238,23 +238,7 @@ fn verify_tail_call(
         )
     };
 
-    if arguments.len() != signature.params().len() {
-        return Err(invalid(format!(
-            "the tail call passes {} argument(s), but its signature has {} parameter(s)",
-            arguments.len(),
-            signature.params().len()
-        )));
-    }
-    for (index, (argument, param)) in arguments.iter().zip(signature.params()).enumerate() {
-        let ty = argument.borrow().ty();
-        if ty != param.ty {
-            return Err(invalid(format!(
-                "argument {index} has type `{ty}`, but parameter {index} of the signature has \
-                 type `{}`",
-                param.ty
-            )));
-        }
-    }
+    crate::conversion::verify_call_signature_arguments(op, arguments, signature, "tail call")?;
     if op.num_results() != 0 {
         return Err(invalid(format!(
             "a tail call has no results, because the function returns what the callee returns, \
