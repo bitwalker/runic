@@ -1,7 +1,7 @@
-//! What a compilation prints: its diagnostics for standard error, its outputs for standard output.
+//! How a command line renders a diagnostic.
 //!
-//! [diagnostic] is how a command line renders a diagnostic: the lines around a label, not the whole
-//! source.
+//! [diagnostic] is the text of a diagnostic and the sources it names, as a command line prints it:
+//! the lines around a label, not the whole source.
 
 use runic_compile::{Compilation, Emitted};
 use runic_ir::diagnostics::{DiagnosticDisplay, RenderConfig};

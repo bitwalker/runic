@@ -84,6 +84,40 @@ pub enum WorkerError {
     Panicked(Vec<WorkerPanic>),
 }
 
+impl core::fmt::Display for WorkerPanic {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(&self.message)?;
+        match &self.location {
+            Some(location) => write!(f, " at {location}"),
+            None => Ok(()),
+        }
+    }
+}
+
+impl core::fmt::Display for WorkerError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NotStarted(error) => write!(f, "could not start a thread: {error}"),
+            Self::Panicked(panics) => {
+                f.write_str("the work panicked")?;
+                if let Some(first) = panics.first() {
+                    write!(f, ": {first}")?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+impl std::error::Error for WorkerError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::NotStarted(error) => Some(error),
+            Self::Panicked(_) => None,
+        }
+    }
+}
+
 /// What makes the text that reports panics when the process aborts.
 type AbortReport = dyn Fn(&[WorkerPanic]) -> String + Send + Sync;
 
@@ -213,6 +247,34 @@ mod tests {
 
     fn quiet(_panics: &[WorkerPanic]) -> String {
         String::new()
+    }
+
+    #[test]
+    fn a_panic_is_displayed_as_its_message_and_where_it_happened_when_known() {
+        let mut panic = WorkerPanic {
+            message: String::from("it broke"),
+            location: None,
+            backtrace: None,
+        };
+        assert_eq!(panic.to_string(), "it broke");
+        panic.location = Some(String::from("src/a.rs:1:2"));
+        assert_eq!(panic.to_string(), "it broke at src/a.rs:1:2");
+    }
+
+    #[test]
+    fn a_worker_error_is_displayed_with_its_cause_and_is_an_error() {
+        let panics = WorkerError::Panicked(vec![WorkerPanic {
+            message: String::from("it broke"),
+            location: Some(String::from("src/a.rs:1:2")),
+            backtrace: None,
+        }]);
+        assert_eq!(panics.to_string(), "the work panicked: it broke at src/a.rs:1:2");
+        let not_started = WorkerError::NotStarted(io::Error::other("no threads"));
+        assert_eq!(not_started.to_string(), "could not start a thread: no threads");
+        let error: &dyn std::error::Error = &not_started;
+        assert!(error.source().is_some());
+        let error: &dyn std::error::Error = &panics;
+        assert!(error.source().is_none());
     }
 
     #[test]

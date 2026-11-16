@@ -125,6 +125,38 @@ pub struct StageFlagsBuilder<'c> {
     own: Option<OwnUnstable>,
 }
 
+/// The names of `compiler`'s frontends and backends, for the `Debug` of what is made from it: a
+/// [Compiler] has no `Debug` of its own.
+fn stage_names(compiler: &Compiler) -> Vec<String> {
+    compiler
+        .frontends()
+        .map(|frontend| format!("frontend {}", frontend.name()))
+        .chain(compiler.backends().map(|backend| format!("backend {}", backend.name())))
+        .collect()
+}
+
+impl core::fmt::Debug for StageFlags<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("StageFlags")
+            .field("compiler", &stage_names(self.compiler))
+            .field("unstable_allowed", &self.unstable_allowed)
+            .field("own", &self.own)
+            .field("stages", &self.stages)
+            .finish()
+    }
+}
+
+impl core::fmt::Debug for StageFlagsBuilder<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("StageFlagsBuilder")
+            .field("compiler", &stage_names(self.compiler))
+            .field("unstable", &self.unstable)
+            .field("prefixed", &self.prefixed)
+            .field("own", &self.own)
+            .finish()
+    }
+}
+
 impl<'c> StageFlags<'c> {
     /// Starts the flags of `compiler`'s frontends and backends.
     #[allow(
@@ -206,6 +238,17 @@ impl<'c> StageFlags<'c> {
     ) -> Result<Option<ArgMatches>, Exit> {
         let settings = self.resolve(matches)?;
         self.store_resolved(matches, &settings, request)
+    }
+
+    /// Whether a frontend or a backend of `compiler` declares unstable options: a command line
+    /// that accepts `-Z` only for them has no use for it when this is `false`.
+    pub fn declares_unstable(compiler: &Compiler) -> bool {
+        compiler
+            .frontends()
+            .map(|frontend| frontend.options())
+            .chain(compiler.backends().map(|backend| backend.options()))
+            .flatten()
+            .any(|decl| decl.has_unstable())
     }
 
     /// Whether the command line the matches were read from wrote a flag of a stage or a `-Z`
@@ -855,7 +898,10 @@ fn store_stable(
     let mut args: Vec<(usize, OsString)> = Vec::new();
     let mut given = false;
     for flag in &stage.flags {
-        if matches.value_source(&flag.id) != Some(ValueSource::CommandLine) {
+        // Matches of a command that was not augmented know none of the flags.
+        if !matches.try_contains_id(&flag.id).unwrap_or(false)
+            || matches.value_source(&flag.id) != Some(ValueSource::CommandLine)
+        {
             continue;
         }
         given = true;
@@ -1049,6 +1095,27 @@ mod tests {
         assert!(flags.written(&matches_of(&command, &["--stackvm-comments"])));
         assert!(flags.written(&matches_of(&command, &["-Z", "stackvm-keep-subtractions"])));
         assert!(!flags.written(&matches_of(&own_command(), &["x"])));
+    }
+
+    #[test]
+    fn matches_of_a_command_that_was_not_augmented_store_nothing_and_do_not_panic() {
+        let compiler = toy();
+        let flags = flags(&compiler);
+        let matches = matches_of(&own_command(), &["x"]);
+        let mut request = CompilationRequest::new();
+        assert!(flags.store(&matches, &mut request).unwrap().is_none());
+        assert!(request.options::<StackVmOptions>().is_none());
+    }
+
+    #[test]
+    fn flags_say_whether_a_stage_declares_unstable_options_and_have_a_debug_naming_the_stages() {
+        assert!(StageFlags::declares_unstable(&toy()));
+        let none = Compiler::builder().build().unwrap();
+        assert!(!StageFlags::declares_unstable(&none));
+        let text = format!("{:?}", flags(&toy()));
+        assert!(text.contains("frontend calc") && text.contains("backend stackvm"), "{text}");
+        let text = format!("{:?}", StageFlags::new(&toy()));
+        assert!(text.contains("StageFlagsBuilder") && text.contains("backend altvm"), "{text}");
     }
 
     #[test]
