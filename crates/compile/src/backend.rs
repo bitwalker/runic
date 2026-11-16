@@ -52,10 +52,15 @@ pub trait Backend: Send + Sync {
 
     /// The options this backend lets a command line set, or `None` when it has none.
     ///
-    /// A declared type derives `clap::Args` and `Default`, and keeps the rules of the command line:
-    /// no short flags, no positional arguments and no required arguments. The struct does not
+    /// A declared type derives `clap::Args` (with `clap` 4, the major version this crate uses) and
+    /// `Default`, and keeps the rules of the command line: no short flags, no positional
+    /// arguments, no required arguments and no `env` (nothing in a compilation reads the
+    /// process's environment except through the request). Each declarer needs a type of its own,
+    /// since a request holds one value of a type. The value the stage reads for an option nobody
+    /// wrote is the one `clap` gives for an empty command line (`Default` is the fallback for a
+    /// type `clap` cannot build from one). The struct does not
     /// spell the backend's name: the driver prefixes each flag with it (`allow_undefined` of the
-    /// backend `wasm-cm` is `--wasm-cm-allow-undefined`). The session stores the default of the
+    /// backend `wasm-cm` is `--wasm-cm-allow-undefined`). The session stores that default in the
     /// type in the request when the target's backend is this one and the request holds no value of
     /// it, so that the backend reads it with [Session::options](crate::Session::options). The
     /// default declares none.

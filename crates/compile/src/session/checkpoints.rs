@@ -155,11 +155,17 @@ impl<'a> Checkpoints<'a> {
             )?;
             let emitted = match output.destination() {
                 Destination::File(path) => {
-                    // The output directory is the compilation's to make; the directory of a file
-                    // the request names itself is not.
+                    // The output directory is created when a file goes directly into it. The
+                    // directory of any other file is not made.
                     if let Some(dir) = self.session.request().output_dir.as_deref()
                         && path.parent() == Some(dir)
                     {
+                        if dir.exists() && !dir.is_dir() {
+                            return Err(Report::msg(format!(
+                                "the output directory '{}' is not a directory",
+                                dir.display()
+                            )));
+                        }
                         std::fs::create_dir_all(dir).map_err(|error| {
                             Report::msg(format!(
                                 "could not create the output directory '{}': {error}",

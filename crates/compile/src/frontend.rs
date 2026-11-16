@@ -62,10 +62,15 @@ pub trait Frontend: Send + Sync {
 
     /// The options this frontend lets a command line set, or `None` when it has none.
     ///
-    /// A declared type derives `clap::Args` and `Default`, and keeps the rules of the command line:
-    /// no short flags, no positional arguments and no required arguments. The driver adds the
+    /// A declared type derives `clap::Args` (with `clap` 4, the major version this crate uses) and
+    /// `Default`, and keeps the rules of the command line: no short flags, no positional
+    /// arguments, no required arguments and no `env` (nothing in a compilation reads the
+    /// process's environment except through the request). Each declarer needs a type of its own,
+    /// since a request holds one value of a type. The value the stage reads for an option nobody
+    /// wrote is the one `clap` gives for an empty command line (`Default` is the fallback for a
+    /// type `clap` cannot build from one). The driver adds the
     /// flags of the type as the struct declares them, without a prefix unless it was asked to
-    /// prefix this frontend, and the session stores the default of the type in the request when
+    /// prefix this frontend, and the session stores that default in the request when
     /// the request holds no value of it, so that the frontend reads it with
     /// [Session::options](crate::Session::options). The default declares none.
     fn options(&self) -> Option<OptionsDecl> {
