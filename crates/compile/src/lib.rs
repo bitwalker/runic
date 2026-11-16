@@ -8,13 +8,20 @@
 //! This crate holds the vocabulary of a compilation:
 //!
 //! * a [Triple] names the target;
+//! * a [CheckpointId] names a point at which a compilation holds an artifact, and an [Observer] is
+//!   told of each one reached;
 //! * a [CompilationRequest] says everything a caller can ask of one compilation.
 #![deny(warnings)]
 
+mod checkpoint;
 mod request;
 mod triple;
 
 pub use self::{
+    checkpoint::{
+        Artifact, CheckpointDecl, CheckpointId, Flow, IR_CHECKPOINTS, Observer, RecordingObserver,
+        Stopped,
+    },
     request::{
         CompilationRequest, DebugInfo, EmitRequest, EmitTo, ExtensionOptions, Extern, Input,
         InputSource, IrOptions, OptLevel, OutputFile, RemapPathPrefix, Verification,

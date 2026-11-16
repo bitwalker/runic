@@ -1,9 +1,9 @@
-use core::any::Any;
-use std::path::PathBuf;
+use core::{any::Any, cell::RefCell, fmt};
+use std::{path::PathBuf, rc::Rc};
 
 use runic_core::Report;
 
-use crate::Triple;
+use crate::{Observer, Triple};
 
 mod input;
 mod levels;
@@ -21,7 +21,7 @@ pub use self::{
 /// and nothing in it is checked until the harness runs it. Paths are kept as written. A command
 /// line fills it flag by flag; a program that embeds the compiler fills it directly. The doc of
 /// each field names the flag that sets it.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct CompilationRequest {
     /// The name of the unit being compiled (`--name`). When unset, the first input's file stem
     /// names it; see [CompilationRequest::unit_name]. Output file names derive from it.
@@ -62,7 +62,34 @@ pub struct CompilationRequest {
     /// Prefix rewrites for paths recorded in debug information (`--remap-path-prefix`). Frontends
     /// and the backend read them.
     pub remap_path_prefixes: Vec<RemapPathPrefix>,
+    /// The observers, told of each checkpoint as it is reached, in the order given. They are
+    /// shared, not copied, when the request is cloned.
+    pub observers: Vec<Rc<RefCell<dyn Observer>>>,
     options: ExtensionOptions,
+}
+
+impl fmt::Debug for CompilationRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CompilationRequest")
+            .field("name", &self.name)
+            .field("inputs", &self.inputs)
+            .field("target", &self.target)
+            .field("backend", &self.backend)
+            .field("opt_level", &self.opt_level)
+            .field("debug", &self.debug)
+            .field("externs", &self.externs)
+            .field("search_paths", &self.search_paths)
+            .field("emit", &self.emit)
+            .field("stop_after", &self.stop_after)
+            .field("output_file", &self.output_file)
+            .field("output_dir", &self.output_dir)
+            .field("pipeline", &self.pipeline)
+            .field("ir", &self.ir)
+            .field("remap_path_prefixes", &self.remap_path_prefixes)
+            .field("observers", &self.observers.len())
+            .field("options", &self.options)
+            .finish()
+    }
 }
 
 impl CompilationRequest {
@@ -170,5 +197,20 @@ mod tests {
         let copy = request.clone();
         assert_eq!(copy.options::<Frontend>(), Some(&Frontend("wasm")));
         assert!(format!("{copy:?}").contains("ExtensionOptions(1 entries)"));
+    }
+
+    #[test]
+    fn a_request_with_an_observer_is_still_clone_and_debug() {
+        use crate::{Artifact, CheckpointId, RecordingObserver};
+        let observer = Rc::new(RefCell::new(RecordingObserver::default()));
+        let mut request = CompilationRequest::new();
+        request.observers.push(observer.clone());
+        let copy = request.clone();
+        assert!(format!("{copy:?}").contains("observers: 1"));
+        let artifact = Artifact::new(CheckpointId::IR_TRANSLATED, ());
+        copy.observers[0]
+            .borrow_mut()
+            .on_checkpoint(CheckpointId::IR_TRANSLATED, &artifact);
+        assert_eq!(observer.borrow().checkpoints(), &[CheckpointId::IR_TRANSLATED]);
     }
 }
