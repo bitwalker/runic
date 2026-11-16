@@ -17,7 +17,8 @@ use crate::{
 ///
 /// A reference that is linked already is left as it is, whatever its path now names: a link that
 /// disagrees with its path is for the verifier to report, not for this function to repair. A
-/// reference whose path names no symbol is left unlinked, for the verifier to report.
+/// reference whose path names no symbol is left unlinked, and so is a copy of a reference that
+/// still shares the use of the reference it was copied from; the verifier reports both.
 ///
 /// This is for IR put together from parts that were built apart: the parser links the references
 /// of one input when it has read it, so a reference to a symbol of another input is left
@@ -58,13 +59,26 @@ pub fn link_symbol_refs(root: OperationRef) -> usize {
         });
     });
 
-    let linked = found.len();
+    let mut linked = 0;
     for (owner, mut reference, symbol) in found {
-        // A reference the parser could not resolve has no use yet: a use records the operation
-        // that holds the reference.
         let user = reference.borrow().try_user();
         let user = match user {
-            Some(user) => user,
+            Some(user) => {
+                // A copy of a reference shares the use of the reference it was copied from until
+                // it is given one of its own: a use that tracks another reference, or that was
+                // linked a moment ago on behalf of the reference it tracks, is left alone, and the
+                // verifier reports the copy.
+                let tracks_this = {
+                    let tracked = user.borrow();
+                    tracked.attr == reference && tracked.owner == owner
+                };
+                if user.is_linked() || !tracks_this {
+                    continue;
+                }
+                user
+            }
+            // A reference the parser could not resolve has no use yet: a use records the
+            // operation that holds the reference.
             None => {
                 let context = owner.borrow().context_rc();
                 let user = context.alloc_tracked(SymbolUse::new(owner, reference));
@@ -73,6 +87,7 @@ pub fn link_symbol_refs(root: OperationRef) -> usize {
             }
         };
         user.link_to_symbol(symbol);
+        linked += 1;
     }
     linked
 }
@@ -85,9 +100,14 @@ mod tests {
 
     use super::*;
     use crate::{
-        BlockRef, Context,
-        dialects::builtin::{Module, World},
+        AttributeRef, BlockRef, Context, Op, Symbol as _, Usable,
+        attributes::AttrList,
+        dialects::builtin::{
+            Module, World,
+            attributes::{List, ListAttr, SymbolRef as SymbolRefValue},
+        },
         parse::{self, ParserConfig},
+        testing::Test,
     };
 
     const CALLEE: &str =
@@ -205,5 +225,61 @@ mod tests {
         assert!(verify(world).is_err());
         assert_eq!(link_symbol_refs(caller), 1);
         verify(world).unwrap();
+    }
+
+    /// A list attribute holding `entries`.
+    fn list(
+        context: &Rc<Context>,
+        entries: impl IntoIterator<Item = AttributeRef>,
+    ) -> AttributeRef {
+        let mut list = AttrList::new();
+        for entry in entries {
+            list.push_back(entry.borrow().as_attr().as_attr_ref());
+        }
+        context.create_attribute::<ListAttr, _>(List::from(list)).as_attribute_ref()
+    }
+
+    #[test]
+    fn a_reference_nested_in_a_list_attribute_is_linked() {
+        let mut test = Test::named("link").in_module("m");
+        let mut owner = test.define_function("owner", &[], &[]);
+        let g = test.define_function("g", &[], &[]);
+        let context = test.context_rc();
+        let reference = context
+            .create_attribute::<SymbolRefAttr, _>(SymbolRefValue::new(g.borrow().path(), None));
+        owner
+            .borrow_mut()
+            .as_operation_mut()
+            .set_attribute("refs", list(&context, [reference.as_attribute_ref()]));
+        assert_eq!(g.borrow().iter_uses().count(), 0);
+
+        assert_eq!(link_symbol_refs(owner.as_operation_ref()), 1);
+        assert_eq!(g.borrow().iter_uses().count(), 1);
+        owner.borrow().as_operation().verify().expect("the operation verifies");
+    }
+
+    #[test]
+    fn a_copy_that_shares_the_use_of_its_original_is_left_for_the_verifier() {
+        let mut test = Test::named("link").in_module("m");
+        let mut owner = test.define_function("owner", &[], &[]);
+        let g = test.define_function("g", &[], &[]);
+        let context = test.context_rc();
+        // A reference with a use of its own that is linked to nothing, and a copy of it.
+        let mut reference = context
+            .create_attribute::<SymbolRefAttr, _>(SymbolRefValue::new(g.borrow().path(), None));
+        let user = context.alloc_tracked(SymbolUse::new(owner.as_operation_ref(), reference));
+        reference.borrow_mut().set_user(user);
+        let copy = reference.borrow().as_attribute_ref().borrow().dyn_clone();
+        owner
+            .borrow_mut()
+            .as_operation_mut()
+            .set_attribute("original", reference.as_attribute_ref());
+        owner.borrow_mut().as_operation_mut().set_attribute("copy", copy);
+
+        assert_eq!(link_symbol_refs(owner.as_operation_ref()), 1, "the shared use is linked once");
+        assert_eq!(g.borrow().iter_uses().count(), 1);
+        let error = owner.borrow().as_operation().verify().expect_err("the copy is reported");
+        let text = crate::testing::text::describe(&error);
+        assert!(text.contains("shares the use of another reference"), "{text}");
     }
 }

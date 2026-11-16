@@ -247,6 +247,12 @@ impl Context {
     }
 
     /// Drain the diagnostics emitted so far, with this context's sources attached.
+    /// How many diagnostics are pending on this context, by severity: those emitted and not yet
+    /// taken with [Self::take_diagnostics]. Nothing is taken.
+    pub fn diagnostic_counts(&self) -> runic_diagnostics::SeverityCounts {
+        self.diagnostics.borrow().counts()
+    }
+
     pub fn take_diagnostics(&self) -> DiagnosticSet {
         core::mem::take(&mut *self.diagnostics.borrow_mut())
             .finish()
