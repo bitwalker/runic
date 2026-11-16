@@ -2,11 +2,6 @@
 default_to_workspace = false
 skip_core_tasks = true
 skip_git_env_info = true
-# The checkout's directory is named `runic` and holds the parked `runic/Cargo.toml`. For a virtual
-# workspace, cargo-make 0.37.24 reads the crate information of the package in the subdirectory
-# named like the root, and that package is not a member: without this setting every task fails.
-# No task uses the `CARGO_MAKE_CRATE_*` variables this skips.
-skip_crate_env_info = true
 modify_core_tasks = { private = true, namespace = "default" }
 init_task = "init"
 
