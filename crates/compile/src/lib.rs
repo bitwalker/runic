@@ -10,11 +10,16 @@
 //! * a [Triple] names the target;
 //! * a [CheckpointId] names a point at which a compilation holds an artifact, and an [Observer] is
 //!   told of each one reached;
-//! * a [CompilationRequest] says everything a caller can ask of one compilation.
+//! * a [CompilationRequest] says everything a caller can ask of one compilation;
+//! * a [Route] lists the checkpoints a compilation passes through, in order;
+//! * a [Goal] says where a compilation stops and which [Output]s it produces, each with a
+//!   [Destination] decided by [resolve_goal] before anything runs.
 #![deny(warnings)]
 
 mod checkpoint;
+mod goal;
 mod request;
+mod route;
 mod triple;
 
 pub use self::{
@@ -22,10 +27,12 @@ pub use self::{
         Artifact, CheckpointDecl, CheckpointId, Flow, IR_CHECKPOINTS, Observer, RecordingObserver,
         Stopped,
     },
+    goal::{Destination, Goal, Output, OutputNaming, resolve_goal},
     request::{
         CompilationRequest, DebugInfo, EmitRequest, EmitTo, ExtensionOptions, Extern, Input,
         InputSource, IrOptions, OptLevel, OutputFile, RemapPathPrefix, Verification,
     },
+    route::{Declarer, Route},
     triple::Triple,
 };
 
