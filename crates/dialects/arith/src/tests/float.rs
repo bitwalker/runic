@@ -5,8 +5,8 @@ use runic_ir::{Float, dialects::builtin::attributes::FloatAttr};
 
 use super::*;
 
-const F32: TypeFn = Context::f32;
-const F64: TypeFn = Context::f64;
+pub(super) const F32: TypeFn = Context::f32;
+pub(super) const F64: TypeFn = Context::f64;
 
 type FloatBinaryBuilder = fn(Builder<'_, '_>, ValueRef, ValueRef) -> Result<ValueRef, Report>;
 
@@ -21,7 +21,7 @@ fn binary_ops() -> [(&'static str, FloatBinaryBuilder); 4] {
 
 /// The message and the label messages of the error that rejects the operation `built` gives: the
 /// builder's own, or the verification error of the operation it built.
-fn rejection(built: Result<ValueRef, Report>) -> (String, Vec<String>) {
+pub(super) fn rejection(built: Result<ValueRef, Report>) -> (String, Vec<String>) {
     let err = match built {
         Err(err) => err,
         Ok(value) => {
@@ -34,7 +34,7 @@ fn rejection(built: Result<ValueRef, Report>) -> (String, Vec<String>) {
 }
 
 /// The message and the label messages of the verification error of the operation defining `value`.
-fn verification_error(value: ValueRef) -> (String, Vec<String>) {
+pub(super) fn verification_error(value: ValueRef) -> (String, Vec<String>) {
     rejection(Ok(value))
 }
 
@@ -231,14 +231,16 @@ fn predicate_text_round_trips() {
 
 /// What a folded operation gave: a float constant or an `i1` one.
 #[derive(Debug, PartialEq, Eq)]
-enum Folded {
+pub(super) enum Folded {
     Float(Float),
     Flag(bool),
+    /// An integer constant that is not an `i1`.
+    Int(Int),
 }
 
 /// Folds the operation defining `value`, through `fold` and through `fold_with` with the operand
 /// attributes, which must agree.
-fn fold_value_of(value: ValueRef) -> Option<Folded> {
+pub(super) fn fold_value_of(value: ValueRef) -> Option<Folded> {
     let op = value.borrow().get_defining_op().unwrap();
     let attrs = op
         .borrow()
@@ -274,8 +276,11 @@ fn fold_value_of(value: ValueRef) -> Option<Folded> {
                 let attr = attr.borrow();
                 let int =
                     attr.as_attr().as_trait::<dyn runic_ir::attributes::IntegerLikeAttr>().unwrap();
-                assert_eq!(int.ty(), op.context().i1());
-                Folded::Flag(int.as_int() == Int::from(true))
+                if int.ty() == op.context().i1() {
+                    Folded::Flag(int.as_int() == Int::from(true))
+                } else {
+                    Folded::Int(int.as_int())
+                }
             }
         })
     };
@@ -300,11 +305,11 @@ fn fold_binary(which: usize, a: Float, b: Float) -> Option<Folded> {
     fold_floats(&[a, b], |builder, v| binary_ops()[which].1(builder, v[0], v[1]).unwrap())
 }
 
-fn d(value: f64) -> Float {
+pub(super) fn d(value: f64) -> Float {
     Float::from_f64(value)
 }
 
-fn s(value: f32) -> Float {
+pub(super) fn s(value: f32) -> Float {
     Float::from_f32(value)
 }
 

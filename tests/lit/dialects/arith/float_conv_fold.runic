@@ -1,0 +1,129 @@
+// RUN: runic-opt %s -p canonicalizer | filecheck %s
+// RUN: runic-opt %s -p canonicalizer | runic-opt - --verify-roundtrip | filecheck %s
+
+// The folds of the float conversions of `arith` and `bitcast`, through the canonicalizer as in
+// `float_fold.runic`. A conversion of a constant folds to a constant, except where the result would
+// be poison (`fptosi` and `fptoui` of a NaN, of an infinity, or of a value the integer type cannot
+// hold) or a NaN (`fpext` and `fptrunc` of a NaN): those stay. `sitofp`, `uitofp` and `bitcast`
+// always fold, a NaN's bits included. The second RUN line reads the output back.
+builtin.module public @arith_float_conv_fold {
+    // The edges of `f64` to `i32`: 2147483647.0 and -2147483648.0 fit, 2147483648.0 and
+    // -2147483649.0 do not; `-0.9` truncates to 0, which is also an unsigned value, and `-1.0` is not.
+    // CHECK-LABEL: @float_to_int(
+    // CHECK-DAG: arith.constant 2147483647 : i32;
+    // CHECK-DAG: arith.constant -2147483648 : i32;
+    // CHECK-DAG: arith.constant 0 : i32;
+    // CHECK: builtin.ret
+    builtin.function public extern("C") @float_to_int() -> (i32, i32, i32, i32, i32) {
+        %a = arith.constantf 2147483647.0 : f64;
+        %b = arith.constantf -2147483648.0 : f64;
+        %c = arith.constantf -0.9 : f64;
+        %d = arith.constantf 7.9 : f32;
+        %r0 = arith.fptosi %a <{ ty = i32 }>;
+        %r1 = arith.fptosi %b <{ ty = i32 }>;
+        %r2 = arith.fptosi %c <{ ty = i32 }>;
+        %r3 = arith.fptoui %c <{ ty = i32 }>;
+        %r4 = arith.fptoui %d <{ ty = i32 }>;
+        builtin.ret %r0, %r1, %r2, %r3, %r4 : (i32, i32, i32, i32, i32);
+    };
+
+    // A conversion whose result would be poison is not folded, and neither is one of a NaN.
+    // CHECK-LABEL: @poison(
+    // CHECK: arith.fptosi
+    // CHECK: arith.fptosi
+    // CHECK: arith.fptoui
+    // CHECK: arith.fptosi
+    // CHECK: arith.fptosi
+    // CHECK: arith.fptoui
+    builtin.function public extern("C") @poison() -> (i32, i32, i32, i32, i32, i32) {
+        %too_big = arith.constantf 2147483648.0 : f64;
+        %too_small = arith.constantf -2147483649.0 : f64;
+        %negative = arith.constantf -1.0 : f64;
+        %nan = arith.constantf 0x7ff8000000000000 : f64;
+        %infinity = arith.constantf 0x7ff0000000000000 : f64;
+        %unsigned_too_big = arith.constantf 4294967296.0 : f64;
+        %r0 = arith.fptosi %too_big <{ ty = i32 }>;
+        %r1 = arith.fptosi %too_small <{ ty = i32 }>;
+        %r2 = arith.fptoui %negative <{ ty = i32 }>;
+        %r3 = arith.fptosi %nan <{ ty = i32 }>;
+        %r4 = arith.fptosi %infinity <{ ty = i32 }>;
+        %r5 = arith.fptoui %unsigned_too_big <{ ty = i32 }>;
+        builtin.ret %r0, %r1, %r2, %r3, %r4, %r5 : (i32, i32, i32, i32, i32, i32);
+    };
+
+    // An integer reads as signed or unsigned: the bits of -1 in 8 bits are -1.0 or 255.0. A value
+    // that needs rounding rounds to nearest, ties to even: 2^53 + 1 to 2^53, 16777217 to 2^24.
+    // CHECK-LABEL: @int_to_float(
+    // CHECK-DAG: arith.constantf -1.0 : f64;
+    // CHECK-DAG: arith.constantf 255.0 : f64;
+    // CHECK-DAG: arith.constantf 9007199254740992.0 : f64;
+    // CHECK-DAG: arith.constantf 16777216.0 : f32;
+    // CHECK: builtin.ret
+    builtin.function public extern("C") @int_to_float() -> (f64, f64, f64, f32) {
+        %byte = arith.constant -1 : i8;
+        %tie = arith.constant 9007199254740993 : i64;
+        %single = arith.constant 16777217 : i32;
+        %r0 = arith.sitofp %byte <{ ty = f64 }>;
+        %r1 = arith.uitofp %byte <{ ty = f64 }>;
+        %r2 = arith.sitofp %tie <{ ty = f64 }>;
+        %r3 = arith.sitofp %single <{ ty = f32 }>;
+        builtin.ret %r0, %r1, %r2, %r3 : (f64, f64, f64, f32);
+    };
+
+    // Widening is exact, narrowing rounds and overflows to an infinity, and a NaN does not fold.
+    // CHECK-LABEL: @float_widths(
+    // CHECK-DAG: arith.constantf 1.5 : f64;
+    // CHECK-DAG: arith.constantf 1.5 : f32;
+    // CHECK-DAG: arith.constantf 0x7f800000 : f32;
+    // CHECK: arith.fpext
+    // CHECK: arith.fptrunc
+    builtin.function public extern("C") @float_widths() -> (f64, f32, f32, f64, f32) {
+        %single = arith.constantf 1.5 : f32;
+        %double = arith.constantf 1.5 : f64;
+        %huge = arith.constantf 1e300 : f64;
+        %single_nan = arith.constantf 0x7fc00000 : f32;
+        %double_nan = arith.constantf 0x7ff8000000000000 : f64;
+        %r0 = arith.fpext %single <{ ty = f64 }>;
+        %r1 = arith.fptrunc %double <{ ty = f32 }>;
+        %r2 = arith.fptrunc %huge <{ ty = f32 }>;
+        %r3 = arith.fpext %single_nan <{ ty = f64 }>;
+        %r4 = arith.fptrunc %double_nan <{ ty = f32 }>;
+        builtin.ret %r0, %r1, %r2, %r3, %r4 : (f64, f32, f32, f64, f32);
+    };
+
+    // A bitcast of a constant is its bits, a NaN with a payload included; a bitcast of a bitcast
+    // back to the original type is the original value.
+    // CHECK-LABEL: @bitcasts(
+    // CHECK-SAME: [[X:%[0-9]+]]: f32) -> (f32, f32, i32, f32) {
+    // CHECK-DAG: arith.constantf 0x7fc00001 : f32;
+    // CHECK-DAG: arith.constant 1069547520 : i32;
+    // CHECK: builtin.ret [[X]],
+    builtin.function public extern("C") @bitcasts(%x: f32) -> (f32, f32, i32, f32) {
+        %bits = arith.constant 2143289345 : i32;
+        %one_and_a_half = arith.constantf 1.5 : f32;
+        %as_int = arith.bitcast %x <{ ty = i32 }>;
+        %back = arith.bitcast %as_int <{ ty = f32 }>;
+        %nan = arith.bitcast %bits <{ ty = f32 }>;
+        %pattern = arith.bitcast %one_and_a_half <{ ty = i32 }>;
+        %as_float = arith.bitcast %pattern <{ ty = f32 }>;
+        builtin.ret %back, %nan, %pattern, %as_float : (f32, f32, i32, f32);
+    };
+
+    // An `isize` conversion folds only when the 32- and the 64-bit target agree.
+    // CHECK-LABEL: @isize(
+    // CHECK-DAG: arith.constantf 5.0 : f64;
+    // CHECK-DAG: arith.constant 2147483647 : isize;
+    // CHECK: arith.sitofp
+    // CHECK: arith.fptosi
+    builtin.function public extern("C") @isize() -> (f64, f64, isize, isize) {
+        %small = arith.constant 5 : isize;
+        %large = arith.constant 4294967296 : isize;
+        %fits = arith.constantf 2147483647.0 : f64;
+        %does_not_fit = arith.constantf 2147483648.0 : f64;
+        %r0 = arith.sitofp %small <{ ty = f64 }>;
+        %r1 = arith.sitofp %large <{ ty = f64 }>;
+        %r2 = arith.fptosi %fits <{ ty = isize }>;
+        %r3 = arith.fptosi %does_not_fit <{ ty = isize }>;
+        builtin.ret %r0, %r1, %r2, %r3 : (f64, f64, isize, isize);
+    };
+};

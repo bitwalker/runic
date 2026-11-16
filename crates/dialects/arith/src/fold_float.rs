@@ -11,7 +11,10 @@
 
 use alloc::rc::Rc;
 
-use runic_ir::{AttributeRef, Context, Float, Int, Type, dialects::builtin::attributes::FloatAttr};
+use runic_ir::{
+    AttributeRef, Context, Float, FoldResult, Int, OpFoldResult, Operation, SmallVec, Type,
+    dialects::builtin::attributes::FloatAttr,
+};
 
 /// The value of the constant `operand`, if it is a [FloatAttr] of type `ty` holding a value as
 /// wide as a constant of `ty`.
@@ -127,6 +130,169 @@ pub(crate) fn negated(value: Float) -> Float {
     } else {
         Float::from_bits64(bits)
     }
+}
+
+/// 2 to the power `n`, exactly, for `n` up to 1023.
+fn pow2(n: u32) -> f64 {
+    f64::from_bits((1023 + u64::from(n)) << 52)
+}
+
+/// `value` truncated toward zero, as a `width`-bit signed or unsigned integer; `None` if `value`
+/// is a NaN or the truncated value is not representable (the cases where the conversion is
+/// poison). The range is checked explicitly: Rust's `as` casts saturate.
+pub(crate) fn float_to_int(value: Float, width: u32, signed: bool) -> Option<Int> {
+    // An `f32` widens to `f64` exactly.
+    let value = match (value.to_f64(), value.to_f32()) {
+        (Some(value), _) => value,
+        (_, Some(value)) => f64::from(value),
+        _ => return None,
+    };
+    if value.is_nan() {
+        return None;
+    }
+    let truncated = value.trunc();
+    if signed {
+        let limit = pow2(width - 1);
+        (truncated >= -limit && truncated < limit)
+            .then(|| Int::from_signed(width, truncated as i128))
+            .flatten()
+    } else {
+        // `-0.5` truncates to `-0.0`, which is `0`: only a value of magnitude 1 or more is
+        // negative.
+        (truncated > -1.0 && truncated < pow2(width))
+            .then(|| Int::from_unsigned(width, truncated as u128))
+            .flatten()
+    }
+}
+
+/// `value`, read as signed or unsigned, rounded to nearest, ties to even, as a float of `width`
+/// bits (32 or 64).
+pub(crate) fn int_to_float(value: Int, width: u32, signed: bool) -> Float {
+    match (width, signed) {
+        (32, true) => Float::from_f32(value.signed() as f32),
+        (32, false) => Float::from_f32(value.unsigned() as f32),
+        (_, true) => Float::from_f64(value.signed() as f64),
+        (_, false) => Float::from_f64(value.unsigned() as f64),
+    }
+}
+
+/// The float with the low `width` bits (32 or 64) of `bits`.
+fn float_from_bits(width: u32, bits: u128) -> Float {
+    if width == 32 {
+        Float::from_bits32(bits as u32)
+    } else {
+        Float::from_bits64(bits as u64)
+    }
+}
+
+/// A conversion between types, folded on a constant operand by [fold_conversion].
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Conversion {
+    /// A float to an integer, truncating toward zero; no fold where the result would be poison.
+    FloatToInt { signed: bool },
+    /// An integer to a float, rounding to nearest, ties to even.
+    IntToFloat { signed: bool },
+    /// A float to the other float width; no fold for a NaN.
+    FloatResize,
+    /// The same bits as the other type.
+    Bitcast,
+}
+
+impl Conversion {
+    /// The constant that `self` gives for the constant `operand` of type `from`, at the result
+    /// type `to`; `None` if it does not fold.
+    ///
+    /// An `isize` operand or result folds only where the 64-bit and the 32-bit target agree
+    /// (as `fold_isize` decides for integers): the value is computed for both widths, and the
+    /// results must be the same value (for an `isize` result, the 64-bit one truncated to 32 bits
+    /// must be the 32-bit one).
+    fn apply(
+        self,
+        context: &Rc<Context>,
+        operand: Option<&Option<AttributeRef>>,
+        from: Type,
+        to: Type,
+    ) -> Option<AttributeRef> {
+        let operand = operand?;
+        match self {
+            Self::FloatToInt { signed } => {
+                let value = constant_float_operand(operand, from)?;
+                let result = if to.is_isize() {
+                    let wide = float_to_int(value, 64, signed)?;
+                    let narrow = float_to_int(value, 32, signed)?;
+                    (wide.trunc(32) == narrow).then_some(wide)?
+                } else {
+                    float_to_int(value, Int::width_for_type(to)?, signed)?
+                };
+                Some(context.int_attr(result, to).as_attribute_ref())
+            }
+            Self::IntToFloat { signed } => {
+                let value = crate::fold::constant_operand(operand, from)?;
+                let width = Float::width_for_type(to)?;
+                let result = int_to_float(value, width, signed);
+                if from.is_isize() && int_to_float(value.trunc(32), width, signed) != result {
+                    return None;
+                }
+                Some(context.float_attr(result).as_attribute_ref())
+            }
+            Self::FloatResize => {
+                let value = constant_float_operand(operand, from)?;
+                let result = match (value.to_f32(), value.to_f64()) {
+                    (Some(value), _) if Float::width_for_type(to) == Some(64) => {
+                        Float::from_f64(f64::from(value))
+                    }
+                    (_, Some(value)) if Float::width_for_type(to) == Some(32) => {
+                        Float::from_f32(value as f32)
+                    }
+                    _ => return None,
+                };
+                (!value.is_nan()).then(|| context.float_attr(result).as_attribute_ref())
+            }
+            Self::Bitcast => {
+                if from.is_float() {
+                    let value = constant_float_operand(operand, from)?;
+                    let width = Int::width_for_type(to)?;
+                    (width == value.width()).then(|| {
+                        let int = Int::from_bits(width, u128::from(value.bits()));
+                        context.int_attr(int, to).as_attribute_ref()
+                    })
+                } else {
+                    let value = crate::fold::constant_operand(operand, from)?;
+                    let width = Float::width_for_type(to)?;
+                    (width == value.width()).then(|| {
+                        context
+                            .float_attr(float_from_bits(width, value.unsigned()))
+                            .as_attribute_ref()
+                    })
+                }
+            }
+        }
+    }
+}
+
+/// Folds the conversion `op` to the type `ty` on its constant operand (`operands`) with
+/// `conversion`, pushing the constant on `results`.
+///
+/// It declines, pushing nothing, unless the result type is `ty` and `valid(context, from, to)`
+/// says the type pair is one the operation verifies: an operation that does not verify does not
+/// fold.
+pub(crate) fn fold_conversion(
+    op: &Operation,
+    operands: &[Option<AttributeRef>],
+    results: &mut SmallVec<[OpFoldResult; 1]>,
+    ty: Type,
+    valid: impl Fn(&Context, Type, Type) -> bool,
+    conversion: Conversion,
+) -> FoldResult {
+    let context = op.context_rc();
+    let from = crate::fold::operand_type(op);
+    let to = crate::fold::result_type(op, 0);
+    let folded = if to == ty && valid(&context, from, to) {
+        conversion.apply(&context, operands.first(), from, to)
+    } else {
+        None
+    };
+    crate::fold::push_folded(results, folded.map(|attr| [attr]))
 }
 
 /// Implements [Foldable](runic_ir::traits::Foldable) for an operation of one float result, of the

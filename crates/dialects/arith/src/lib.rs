@@ -1,5 +1,6 @@
 //! The `arith` dialect: constants, arithmetic, bitwise operations, comparisons and casts on
-//! signless integers, and constants, arithmetic and comparison on floating-point numbers.
+//! signless integers, and constants, arithmetic, comparison and conversion on floating-point
+//! numbers.
 //!
 //! # Floating-point operations
 //!
@@ -11,6 +12,25 @@
 //! deterministic and does fold, NaN operands included. No float operation has an algebraic
 //! simplification (`x + 0.0` is not `x`: it changes `-0.0`), and the dialect has no float
 //! canonicalization pattern; only folds on constant operands.
+//!
+//! # Float conversions
+//!
+//! `arith.fptosi`, `fptoui`, `sitofp`, `uitofp`, `fpext`, `fptrunc` and `bitcast` convert between
+//! floats and integers, between `f32` and `f64`, and between the bits of a value and a type of the
+//! same width. Each has one operand and one result, never traps and is free of effects, and writes
+//! its result type as the property `ty`, as the integer casts do. The integer side of the four
+//! integer conversions is any integer type, `isize` included; `fpext` is `f32` to `f64`, `fptrunc`
+//! `f64` to `f32`, and `bitcast` is `i32` and `f32`, or `i64` and `f64`, in either direction.
+//!
+//! `fptosi` and `fptoui` truncate toward zero. Their result is **poison** if the operand is a NaN or
+//! the truncated value is not representable in the result type (for `fptoui`, a negative value that
+//! truncates to zero gives `0`, and any other negative value is poison). This is LLVM's and MLIR's
+//! rule; a target whose conversion traps or saturates (Wasm has both) refines it. `sitofp` and
+//! `uitofp` round to nearest, ties to even. A fold never produces a NaN or a poison value: a
+//! conversion whose result would be either stays in place. A `bitcast` always folds, a NaN's bits
+//! included, and a `bitcast` of a `bitcast` back to the original type folds to the original value.
+//! A conversion that involves `isize` folds only when the 32-bit and the 64-bit target agree.
+//! Their integer results have the full range of their type.
 //!
 //! # Traps
 //!

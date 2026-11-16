@@ -114,6 +114,85 @@ pub trait ArithOpBuilder<'f, B: ?Sized + Builder> {
         Ok(op.borrow().result().as_value_ref())
     }
 
+    /// `operand`, a float, truncated toward zero to the signed integer type `ty`. Poison for a NaN and for a value `ty` cannot hold.
+    fn fptosi(
+        &mut self,
+        operand: ValueRef,
+        ty: Type,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Fptosi, _>(span);
+        let op = op_builder(operand, ty)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// `operand`, a float, truncated toward zero to the unsigned integer type `ty`. Poison for a NaN and for a value `ty` cannot hold.
+    fn fptoui(
+        &mut self,
+        operand: ValueRef,
+        ty: Type,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Fptoui, _>(span);
+        let op = op_builder(operand, ty)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// `operand`, an integer read as signed, rounded to the float type `ty`.
+    fn sitofp(
+        &mut self,
+        operand: ValueRef,
+        ty: Type,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Sitofp, _>(span);
+        let op = op_builder(operand, ty)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// `operand`, an integer read as unsigned, rounded to the float type `ty`.
+    fn uitofp(
+        &mut self,
+        operand: ValueRef,
+        ty: Type,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Uitofp, _>(span);
+        let op = op_builder(operand, ty)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// `operand`, an `f32`, extended to the `f64` type `ty`.
+    fn fpext(&mut self, operand: ValueRef, ty: Type, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Fpext, _>(span);
+        let op = op_builder(operand, ty)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// `operand`, an `f64`, rounded to the `f32` type `ty`.
+    fn fptrunc(
+        &mut self,
+        operand: ValueRef,
+        ty: Type,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Fptrunc, _>(span);
+        let op = op_builder(operand, ty)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// The bits of `operand` as the type `ty`: `i32` and `f32`, or `i64` and `f64`, in either direction.
+    fn bitcast(
+        &mut self,
+        operand: ValueRef,
+        ty: Type,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Bitcast, _>(span);
+        let op = op_builder(operand, ty)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
     /// The `i1` result of comparing the floats `lhs` and `rhs` with `predicate`.
     fn cmpf(
         &mut self,

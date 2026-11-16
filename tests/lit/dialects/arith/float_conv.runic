@@ -1,0 +1,180 @@
+// RUN: runic-opt %s | filecheck %s
+// RUN: runic-opt %s --verify-roundtrip | filecheck %s
+// RUN: runic-opt %s --print-generic | runic-opt - --verify-roundtrip | filecheck %s
+// RUN: runic-opt %s --print-generic | filecheck %s --check-prefix=GENERIC
+
+// The float conversions of `arith` and `bitcast`: `fptosi`, `fptoui`, `sitofp`, `uitofp`, `fpext`,
+// `fptrunc` and `bitcast`. Each is written as the integer casts are, with the result type as the
+// property `ty` after the operand. An integer type on either side is any integer type of the
+// integer casts, `isize` included; `fpext` is `f32` to `f64` and `fptrunc` the reverse; `bitcast`
+// is `i32` and `f32`, or `i64` and `f64`, in either direction. The generic form is read back by the
+// third RUN line.
+builtin.module public @arith_float_conv {
+    // CHECK-LABEL: @fptosi_from_f32(
+    // CHECK-NEXT: arith.fptosi %{{[0-9]+}} <{ ty = #builtin.type<i1> }>;
+    // CHECK-NEXT: arith.fptosi %{{[0-9]+}} <{ ty = #builtin.type<i8> }>;
+    // CHECK-NEXT: arith.fptosi %{{[0-9]+}} <{ ty = #builtin.type<i32> }>;
+    // CHECK-NEXT: arith.fptosi %{{[0-9]+}} <{ ty = #builtin.type<i64> }>;
+    // CHECK-NEXT: arith.fptosi %{{[0-9]+}} <{ ty = #builtin.type<i128> }>;
+    // CHECK-NEXT: arith.fptosi %{{[0-9]+}} <{ ty = #builtin.type<isize> }>;
+    builtin.function public extern("C") @fptosi_from_f32(%x: f32) -> (i1, i8, i32, i64, i128, isize) {
+        %r0 = arith.fptosi %x <{ ty = i1 }>;
+        %r1 = arith.fptosi %x <{ ty = i8 }>;
+        %r2 = arith.fptosi %x <{ ty = i32 }>;
+        %r3 = arith.fptosi %x <{ ty = i64 }>;
+        %r4 = arith.fptosi %x <{ ty = i128 }>;
+        %r5 = arith.fptosi %x <{ ty = isize }>;
+        builtin.ret %r0, %r1, %r2, %r3, %r4, %r5 : (i1, i8, i32, i64, i128, isize);
+    };
+
+    // CHECK-LABEL: @fptosi_from_f64(
+    // CHECK-NEXT: arith.fptosi %{{[0-9]+}} <{ ty = #builtin.type<i1> }>;
+    // CHECK-NEXT: arith.fptosi %{{[0-9]+}} <{ ty = #builtin.type<i8> }>;
+    // CHECK-NEXT: arith.fptosi %{{[0-9]+}} <{ ty = #builtin.type<i32> }>;
+    // CHECK-NEXT: arith.fptosi %{{[0-9]+}} <{ ty = #builtin.type<i64> }>;
+    // CHECK-NEXT: arith.fptosi %{{[0-9]+}} <{ ty = #builtin.type<i128> }>;
+    // CHECK-NEXT: arith.fptosi %{{[0-9]+}} <{ ty = #builtin.type<isize> }>;
+    builtin.function public extern("C") @fptosi_from_f64(%x: f64) -> (i1, i8, i32, i64, i128, isize) {
+        %r0 = arith.fptosi %x <{ ty = i1 }>;
+        %r1 = arith.fptosi %x <{ ty = i8 }>;
+        %r2 = arith.fptosi %x <{ ty = i32 }>;
+        %r3 = arith.fptosi %x <{ ty = i64 }>;
+        %r4 = arith.fptosi %x <{ ty = i128 }>;
+        %r5 = arith.fptosi %x <{ ty = isize }>;
+        builtin.ret %r0, %r1, %r2, %r3, %r4, %r5 : (i1, i8, i32, i64, i128, isize);
+    };
+
+    // CHECK-LABEL: @fptoui_from_f32(
+    // CHECK-NEXT: arith.fptoui %{{[0-9]+}} <{ ty = #builtin.type<i1> }>;
+    // CHECK-NEXT: arith.fptoui %{{[0-9]+}} <{ ty = #builtin.type<i8> }>;
+    // CHECK-NEXT: arith.fptoui %{{[0-9]+}} <{ ty = #builtin.type<i32> }>;
+    // CHECK-NEXT: arith.fptoui %{{[0-9]+}} <{ ty = #builtin.type<i64> }>;
+    // CHECK-NEXT: arith.fptoui %{{[0-9]+}} <{ ty = #builtin.type<i128> }>;
+    // CHECK-NEXT: arith.fptoui %{{[0-9]+}} <{ ty = #builtin.type<isize> }>;
+    builtin.function public extern("C") @fptoui_from_f32(%x: f32) -> (i1, i8, i32, i64, i128, isize) {
+        %r0 = arith.fptoui %x <{ ty = i1 }>;
+        %r1 = arith.fptoui %x <{ ty = i8 }>;
+        %r2 = arith.fptoui %x <{ ty = i32 }>;
+        %r3 = arith.fptoui %x <{ ty = i64 }>;
+        %r4 = arith.fptoui %x <{ ty = i128 }>;
+        %r5 = arith.fptoui %x <{ ty = isize }>;
+        builtin.ret %r0, %r1, %r2, %r3, %r4, %r5 : (i1, i8, i32, i64, i128, isize);
+    };
+
+    // CHECK-LABEL: @fptoui_from_f64(
+    // CHECK-NEXT: arith.fptoui %{{[0-9]+}} <{ ty = #builtin.type<i1> }>;
+    // CHECK-NEXT: arith.fptoui %{{[0-9]+}} <{ ty = #builtin.type<i8> }>;
+    // CHECK-NEXT: arith.fptoui %{{[0-9]+}} <{ ty = #builtin.type<i32> }>;
+    // CHECK-NEXT: arith.fptoui %{{[0-9]+}} <{ ty = #builtin.type<i64> }>;
+    // CHECK-NEXT: arith.fptoui %{{[0-9]+}} <{ ty = #builtin.type<i128> }>;
+    // CHECK-NEXT: arith.fptoui %{{[0-9]+}} <{ ty = #builtin.type<isize> }>;
+    builtin.function public extern("C") @fptoui_from_f64(%x: f64) -> (i1, i8, i32, i64, i128, isize) {
+        %r0 = arith.fptoui %x <{ ty = i1 }>;
+        %r1 = arith.fptoui %x <{ ty = i8 }>;
+        %r2 = arith.fptoui %x <{ ty = i32 }>;
+        %r3 = arith.fptoui %x <{ ty = i64 }>;
+        %r4 = arith.fptoui %x <{ ty = i128 }>;
+        %r5 = arith.fptoui %x <{ ty = isize }>;
+        builtin.ret %r0, %r1, %r2, %r3, %r4, %r5 : (i1, i8, i32, i64, i128, isize);
+    };
+
+    // CHECK-LABEL: @sitofp_to_f32(
+    // CHECK-NEXT: arith.sitofp %{{[0-9]+}} <{ ty = #builtin.type<f32> }>;
+    // CHECK-NEXT: arith.sitofp %{{[0-9]+}} <{ ty = #builtin.type<f32> }>;
+    // CHECK-NEXT: arith.sitofp %{{[0-9]+}} <{ ty = #builtin.type<f32> }>;
+    // CHECK-NEXT: arith.sitofp %{{[0-9]+}} <{ ty = #builtin.type<f32> }>;
+    // CHECK-NEXT: arith.sitofp %{{[0-9]+}} <{ ty = #builtin.type<f32> }>;
+    // CHECK-NEXT: arith.sitofp %{{[0-9]+}} <{ ty = #builtin.type<f32> }>;
+    builtin.function public extern("C") @sitofp_to_f32(%a0: i1, %a1: i8, %a2: i32, %a3: i64, %a4: i128, %a5: isize) -> (f32, f32, f32, f32, f32, f32) {
+        %r0 = arith.sitofp %a0 <{ ty = f32 }>;
+        %r1 = arith.sitofp %a1 <{ ty = f32 }>;
+        %r2 = arith.sitofp %a2 <{ ty = f32 }>;
+        %r3 = arith.sitofp %a3 <{ ty = f32 }>;
+        %r4 = arith.sitofp %a4 <{ ty = f32 }>;
+        %r5 = arith.sitofp %a5 <{ ty = f32 }>;
+        builtin.ret %r0, %r1, %r2, %r3, %r4, %r5 : (f32, f32, f32, f32, f32, f32);
+    };
+
+    // CHECK-LABEL: @sitofp_to_f64(
+    // CHECK-NEXT: arith.sitofp %{{[0-9]+}} <{ ty = #builtin.type<f64> }>;
+    // CHECK-NEXT: arith.sitofp %{{[0-9]+}} <{ ty = #builtin.type<f64> }>;
+    // CHECK-NEXT: arith.sitofp %{{[0-9]+}} <{ ty = #builtin.type<f64> }>;
+    // CHECK-NEXT: arith.sitofp %{{[0-9]+}} <{ ty = #builtin.type<f64> }>;
+    // CHECK-NEXT: arith.sitofp %{{[0-9]+}} <{ ty = #builtin.type<f64> }>;
+    // CHECK-NEXT: arith.sitofp %{{[0-9]+}} <{ ty = #builtin.type<f64> }>;
+    builtin.function public extern("C") @sitofp_to_f64(%a0: i1, %a1: i8, %a2: i32, %a3: i64, %a4: i128, %a5: isize) -> (f64, f64, f64, f64, f64, f64) {
+        %r0 = arith.sitofp %a0 <{ ty = f64 }>;
+        %r1 = arith.sitofp %a1 <{ ty = f64 }>;
+        %r2 = arith.sitofp %a2 <{ ty = f64 }>;
+        %r3 = arith.sitofp %a3 <{ ty = f64 }>;
+        %r4 = arith.sitofp %a4 <{ ty = f64 }>;
+        %r5 = arith.sitofp %a5 <{ ty = f64 }>;
+        builtin.ret %r0, %r1, %r2, %r3, %r4, %r5 : (f64, f64, f64, f64, f64, f64);
+    };
+
+    // CHECK-LABEL: @uitofp_to_f32(
+    // CHECK-NEXT: arith.uitofp %{{[0-9]+}} <{ ty = #builtin.type<f32> }>;
+    // CHECK-NEXT: arith.uitofp %{{[0-9]+}} <{ ty = #builtin.type<f32> }>;
+    // CHECK-NEXT: arith.uitofp %{{[0-9]+}} <{ ty = #builtin.type<f32> }>;
+    // CHECK-NEXT: arith.uitofp %{{[0-9]+}} <{ ty = #builtin.type<f32> }>;
+    // CHECK-NEXT: arith.uitofp %{{[0-9]+}} <{ ty = #builtin.type<f32> }>;
+    // CHECK-NEXT: arith.uitofp %{{[0-9]+}} <{ ty = #builtin.type<f32> }>;
+    builtin.function public extern("C") @uitofp_to_f32(%a0: i1, %a1: i8, %a2: i32, %a3: i64, %a4: i128, %a5: isize) -> (f32, f32, f32, f32, f32, f32) {
+        %r0 = arith.uitofp %a0 <{ ty = f32 }>;
+        %r1 = arith.uitofp %a1 <{ ty = f32 }>;
+        %r2 = arith.uitofp %a2 <{ ty = f32 }>;
+        %r3 = arith.uitofp %a3 <{ ty = f32 }>;
+        %r4 = arith.uitofp %a4 <{ ty = f32 }>;
+        %r5 = arith.uitofp %a5 <{ ty = f32 }>;
+        builtin.ret %r0, %r1, %r2, %r3, %r4, %r5 : (f32, f32, f32, f32, f32, f32);
+    };
+
+    // CHECK-LABEL: @uitofp_to_f64(
+    // CHECK-NEXT: arith.uitofp %{{[0-9]+}} <{ ty = #builtin.type<f64> }>;
+    // CHECK-NEXT: arith.uitofp %{{[0-9]+}} <{ ty = #builtin.type<f64> }>;
+    // CHECK-NEXT: arith.uitofp %{{[0-9]+}} <{ ty = #builtin.type<f64> }>;
+    // CHECK-NEXT: arith.uitofp %{{[0-9]+}} <{ ty = #builtin.type<f64> }>;
+    // CHECK-NEXT: arith.uitofp %{{[0-9]+}} <{ ty = #builtin.type<f64> }>;
+    // CHECK-NEXT: arith.uitofp %{{[0-9]+}} <{ ty = #builtin.type<f64> }>;
+    builtin.function public extern("C") @uitofp_to_f64(%a0: i1, %a1: i8, %a2: i32, %a3: i64, %a4: i128, %a5: isize) -> (f64, f64, f64, f64, f64, f64) {
+        %r0 = arith.uitofp %a0 <{ ty = f64 }>;
+        %r1 = arith.uitofp %a1 <{ ty = f64 }>;
+        %r2 = arith.uitofp %a2 <{ ty = f64 }>;
+        %r3 = arith.uitofp %a3 <{ ty = f64 }>;
+        %r4 = arith.uitofp %a4 <{ ty = f64 }>;
+        %r5 = arith.uitofp %a5 <{ ty = f64 }>;
+        builtin.ret %r0, %r1, %r2, %r3, %r4, %r5 : (f64, f64, f64, f64, f64, f64);
+    };
+
+    // CHECK-LABEL: @float_widths(
+    // CHECK-NEXT: arith.fpext %{{[0-9]+}} <{ ty = #builtin.type<f64> }>;
+    // CHECK-NEXT: arith.fptrunc %{{[0-9]+}} <{ ty = #builtin.type<f32> }>;
+    builtin.function public extern("C") @float_widths(%x: f32, %y: f64) -> (f64, f32) {
+        %wide = arith.fpext %x <{ ty = f64 }>;
+        %narrow = arith.fptrunc %y <{ ty = f32 }>;
+        builtin.ret %wide, %narrow : (f64, f32);
+    };
+
+    // CHECK-LABEL: @bitcasts(
+    // CHECK-NEXT: arith.bitcast %{{[0-9]+}} <{ ty = #builtin.type<f32> }>;
+    // CHECK-NEXT: arith.bitcast %{{[0-9]+}} <{ ty = #builtin.type<i32> }>;
+    // CHECK-NEXT: arith.bitcast %{{[0-9]+}} <{ ty = #builtin.type<f64> }>;
+    // CHECK-NEXT: arith.bitcast %{{[0-9]+}} <{ ty = #builtin.type<i64> }>;
+    builtin.function public extern("C") @bitcasts(%a: i32, %b: f32, %c: i64, %d: f64) -> (f32, i32, f64, i64) {
+        %e = arith.bitcast %a <{ ty = f32 }>;
+        %f = arith.bitcast %b <{ ty = i32 }>;
+        %g = arith.bitcast %c <{ ty = f64 }>;
+        %h = arith.bitcast %d <{ ty = i64 }>;
+        builtin.ret %e, %f, %g, %h : (f32, i32, f64, i64);
+    };
+
+    // An attribute dictionary follows the property, as it does on the integer casts.
+    // CHECK-LABEL: @with_attributes(
+    // CHECK-NEXT: arith.fptosi %{{[0-9]+}} <{ ty = #builtin.type<i32> }> attributes { note = #builtin.i32<1> };
+    // GENERIC-LABEL: "builtin.function"() <{ name = #builtin.ident<@with_attributes>
+    // GENERIC: = "arith.fptosi"(%{{[0-9]+}}) <{ ty = #builtin.type<i32> }> { note = #builtin.i32<1> } : f64 -> i32;
+    builtin.function public extern("C") @with_attributes(%x: f64) -> i32 {
+        %r = arith.fptosi %x <{ ty = i32 }> attributes { note = #builtin.i32<1> };
+        builtin.ret %r : (i32);
+    };
+};

@@ -21,7 +21,7 @@
 // PASSES-NEXT: test-print-int-ranges {{ +}}Emits a hint{{.*}}
 // PASSES-NOT: {{.}}
 
-// DIALECTS: arith {{ +}}43 operations
+// DIALECTS: arith {{ +}}50 operations
 // DIALECTS-NEXT: builtin {{ +}}19 operations
 // DIALECTS-NEXT: cf {{ +}}5 operations
 // DIALECTS-NEXT: di {{ +}}3 operations

@@ -24,6 +24,7 @@ mod differential;
 mod driver;
 mod elements;
 mod float;
+mod float_conv;
 mod folds;
 mod model;
 mod patterns;
