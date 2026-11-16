@@ -169,6 +169,11 @@ pub trait Observer {
     fn on_checkpoint(&mut self, checkpoint: CheckpointId, artifact: &Artifact);
 }
 
+/// An observer that watches nothing, for a caller that has nobody to tell.
+impl Observer for () {
+    fn on_checkpoint(&mut self, _checkpoint: CheckpointId, _artifact: &Artifact) {}
+}
+
 /// An [Observer] that keeps the checkpoints it was told of, in order, for tests to read.
 #[derive(Debug, Default)]
 pub struct RecordingObserver {

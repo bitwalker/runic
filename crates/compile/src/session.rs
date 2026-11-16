@@ -1,7 +1,7 @@
 //! A session: one request resolved against a compiler, before any stage runs.
 
-use core::any::Any;
-use std::rc::Rc;
+use core::{any::Any, cell::RefCell};
+use std::{path::PathBuf, rc::Rc};
 
 use runic_core::{
     BuilderExt, Context, DataLayoutSpec, Report, SourceSpan,
@@ -13,7 +13,13 @@ use crate::{
     Backend, CompilationRequest, Compiler, Frontend, Goal, Input, OutputNaming, Route, Triple,
 };
 
+mod checkpoints;
+mod inputs;
 mod resolve;
+mod translate;
+
+pub use self::checkpoints::Checkpoints;
+use self::checkpoints::Progress;
 
 /// A frontend that takes part in a session, with the inputs it reads.
 type Participant<'c> = (&'c dyn Frontend, Vec<Input>);
@@ -63,6 +69,8 @@ pub struct Session<'c> {
     goal: Goal,
     context: Rc<Context>,
     world: WorldRef,
+    progress: Progress,
+    files_read: RefCell<Vec<PathBuf>>,
 }
 
 impl Compiler {
@@ -139,6 +147,8 @@ impl Compiler {
             goal,
             context,
             world,
+            progress: Progress::default(),
+            files_read: RefCell::default(),
         })
     }
 }

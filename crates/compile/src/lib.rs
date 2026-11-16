@@ -49,7 +49,7 @@ pub use self::{
         InputSource, IrOptions, OptLevel, OutputFile, RemapPathPrefix, Verification,
     },
     route::{Declarer, Route},
-    session::{Session, Target},
+    session::{Checkpoints, Session, Target},
     triple::Triple,
 };
 

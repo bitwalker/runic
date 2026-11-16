@@ -1,9 +1,24 @@
 //! Stages for tests: a frontend and a backend whose configuration is given in a line, and that do
 //! nothing else.
 
-use runic_core::{DataLayoutSpec, Endianness, PointerSpec, Report};
+use runic_core::{DataLayoutSpec, Endianness, PointerSpec, Report, dialects::builtin::WorldRef};
 
-use crate::{Backend, CheckpointDecl, CheckpointId, Frontend, Triple};
+use crate::{
+    Backend, CheckpointDecl, CheckpointId, Checkpoints, Flow, Frontend, Input, Session, Triple,
+};
+
+/// What a test frontend does when it translates.
+pub type TranslateFn =
+    fn(&Session<'_>, &[Input], WorldRef, &mut Checkpoints<'_>) -> Result<Flow<()>, Report>;
+
+fn translate_nothing(
+    _session: &Session<'_>,
+    _inputs: &[Input],
+    _world: WorldRef,
+    _checkpoints: &mut Checkpoints<'_>,
+) -> Result<Flow<()>, Report> {
+    Ok(Flow::Continue(()))
+}
 
 /// A checkpoint declaration, for a test that declares one in a constant.
 pub const fn decl(
@@ -27,6 +42,8 @@ pub struct TestFrontend {
     pub extensions: &'static [&'static str],
     /// The checkpoints the frontend declares.
     pub checkpoints: &'static [CheckpointDecl],
+    /// What the frontend does when it translates: nothing, unless a test says otherwise.
+    pub translate: TranslateFn,
 }
 
 impl TestFrontend {
@@ -36,7 +53,13 @@ impl TestFrontend {
             name,
             extensions,
             checkpoints: &[],
+            translate: translate_nothing,
         }
+    }
+
+    /// The same frontend, doing `translate` when it translates.
+    pub const fn with_translate(self, translate: TranslateFn) -> Self {
+        Self { translate, ..self }
     }
 
     /// The same frontend, declaring `checkpoints`.
@@ -59,6 +82,16 @@ impl Frontend for TestFrontend {
 
     fn checkpoints(&self) -> &'static [CheckpointDecl] {
         self.checkpoints
+    }
+
+    fn translate(
+        &self,
+        session: &Session<'_>,
+        inputs: &[Input],
+        world: WorldRef,
+        checkpoints: &mut Checkpoints<'_>,
+    ) -> Result<Flow<()>, Report> {
+        (self.translate)(session, inputs, world, checkpoints)
     }
 }
 

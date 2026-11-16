@@ -1,4 +1,6 @@
-use crate::CheckpointDecl;
+use runic_core::{Report, dialects::builtin::WorldRef};
+
+use crate::{CheckpointDecl, Checkpoints, Flow, Input, Session};
 
 /// A source language a compiler reads: it says what it is called, which file extensions are its
 /// inputs, and which checkpoints it reaches.
@@ -21,4 +23,24 @@ pub trait Frontend {
     fn checkpoints(&self) -> &'static [CheckpointDecl] {
         &[]
     }
+
+    /// Translates `inputs`, all of this frontend's language, into IR in `world`.
+    ///
+    /// The session says what is being compiled: the world is the session's, and states the data
+    /// layout of the target when there is one. The frontend reads its inputs through the session,
+    /// which records the files it reads, adds to `world` what the inputs define, and reaches its
+    /// own checkpoints through `checkpoints`. When `checkpoints` answers that the compilation
+    /// stops, the frontend returns that answer at once as `Ok(Flow::Break(..))`; otherwise it
+    /// returns `Ok(Flow::Continue(()))`. An error ends the compilation and is returned to the
+    /// caller as it is.
+    ///
+    /// What the frontend leaves in `world` is valid IR: the harness verifies it after the last
+    /// frontend returns, unless the request turns verification off.
+    fn translate(
+        &self,
+        session: &Session<'_>,
+        inputs: &[Input],
+        world: WorldRef,
+        checkpoints: &mut Checkpoints<'_>,
+    ) -> Result<Flow<()>, Report>;
 }

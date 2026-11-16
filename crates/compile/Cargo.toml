@@ -18,3 +18,6 @@ doctest = false
 
 [dependencies]
 runic-core.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

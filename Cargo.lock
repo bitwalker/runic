@@ -1307,6 +1307,7 @@ name = "runic-compile"
 version = "0.1.0"
 dependencies = [
  "runic-core",
+ "tempfile",
 ]
 
 [[package]]
