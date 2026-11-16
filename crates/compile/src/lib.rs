@@ -31,12 +31,17 @@
 //! * the backend of the target lowers the world after that, with passes of its own that a request
 //!   cannot replace ([Session::lower]), and then produces its artifacts ([Session::emit_code]),
 //!   reaching its checkpoints in order; a compilation that runs to the end stops at the last one;
+//! * [Compiler::compile] runs a request through the steps of a session and answers with a
+//!   [Compilation]: where it stopped, the artifact there, the outputs delivered, the files read, the
+//!   text the passes printed and the diagnostics that were not fatal, whether it succeeded or
+//!   failed;
 //! * an [IrFrontend] reads Runic's own textual IR: each file holds a module, a component or a
 //!   world.
 #![deny(warnings)]
 
 mod backend;
 mod checkpoint;
+mod compilation;
 mod compiler;
 mod frontend;
 mod frontends;
@@ -56,6 +61,7 @@ pub use self::{
         Artifact, CheckpointDecl, CheckpointId, Flow, IR_CHECKPOINTS, Observer, RecordingObserver,
         Render, Stopped, render_ir,
     },
+    compilation::Compilation,
     compiler::{Compiler, CompilerBuilder},
     frontend::Frontend,
     frontends::IrFrontend,

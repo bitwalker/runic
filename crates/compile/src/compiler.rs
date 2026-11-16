@@ -12,6 +12,11 @@ type Optimization =
 /// could fail later for a reason the compiler's author controls. Frontends and backends are kept
 /// in the order they were registered, and every listing and lookup reads them in that order.
 /// One registered stage serves every session of the compiler.
+///
+/// [Compiler::compile] is the standard composition of the session's steps: translate, optimize,
+/// and with a target lower and emit, stopping at the first step that ends the compilation. A
+/// caller that needs a different composition resolves a [Session] with [Compiler::session] and
+/// calls the steps itself.
 pub struct Compiler {
     frontends: Vec<Box<dyn Frontend>>,
     backends: Vec<Box<dyn Backend>>,

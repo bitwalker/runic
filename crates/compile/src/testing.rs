@@ -259,6 +259,12 @@ pub fn add_mark(passes: &mut OpPassManager, name: &str) -> Result<(), Report> {
     info.add_to_pipeline(passes, &options)
 }
 
+/// Adds the pass `test-fail` to `passes`.
+pub fn add_fail(passes: &mut OpPassManager) -> Result<(), Report> {
+    let info = PassInfo::lookup(Fail::NAME).expect("test-fail is registered");
+    info.add_to_pipeline(passes, &PassOptions::new())
+}
+
 /// `test-mark`: adds an empty `builtin.module` named by its option `name` ("mark" when none is
 /// given) to the world it runs on, so that the order of the modules is the order the passes ran.
 #[derive(Default)]
@@ -335,6 +341,10 @@ impl Pass for Mark {
 /// `test-fail`: fails, with the message `test-fail`.
 #[derive(Default)]
 struct Fail;
+
+impl Fail {
+    const NAME: &'static str = "test-fail";
+}
 
 runic_core::inventory::submit!(PassInfo::new::<Fail>("test-fail", "Fails"));
 

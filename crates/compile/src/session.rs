@@ -10,8 +10,8 @@ use runic_core::{
 };
 
 use crate::{
-    Backend, CompilationRequest, Compiler, Emitted, Frontend, Goal, Input, OutputNaming, Route,
-    Triple,
+    Backend, Compilation, CompilationRequest, Compiler, Emitted, Flow, Frontend, Goal, Input,
+    OutputNaming, Route, Triple, compilation::Finished,
 };
 
 mod checkpoints;
@@ -167,6 +167,42 @@ impl Compiler {
 }
 
 impl<'c> Session<'c> {
+    /// Ends the session: moves what it did into a [Compilation].
+    ///
+    /// `outcome` is what the last step answered. The error of the compilation is the outcome's
+    /// error; otherwise, when the diagnostics pending on the context hold errors that stages
+    /// reported without failing, an error that says so (the diagnostics stay in the result); and
+    /// otherwise none. The pending diagnostics are taken from the context.
+    pub fn finish(self, outcome: Result<Flow<()>, Report>) -> Compilation {
+        let diagnostics = self.context.take_diagnostics();
+        let error = match outcome {
+            Err(report) => Some(report),
+            Ok(_) if diagnostics.has_errors() => Some(Report::msg(format!(
+                "the compilation reported {} error(s)",
+                diagnostics.counts().errors()
+            ))),
+            Ok(_) => None,
+        };
+        let Session {
+            progress,
+            files_read,
+            context,
+            ..
+        } = self;
+        Compilation::new(
+            error,
+            Finished {
+                reached: progress.reached,
+                stopped: progress.stopped,
+                emitted: progress.emitted,
+                pass_output: progress.pass_output,
+                files_read: files_read.into_inner(),
+            },
+            diagnostics,
+            context,
+        )
+    }
+
     /// The compiler this session was resolved against.
     pub fn compiler(&self) -> &'c Compiler {
         self.compiler
