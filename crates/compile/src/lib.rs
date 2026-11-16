@@ -7,12 +7,20 @@
 //!
 //! This crate holds the vocabulary of a compilation:
 //!
-//! * a [Triple] names the target.
+//! * a [Triple] names the target;
+//! * a [CompilationRequest] says everything a caller can ask of one compilation.
 #![deny(warnings)]
 
+mod request;
 mod triple;
 
-pub use self::triple::Triple;
+pub use self::{
+    request::{
+        CompilationRequest, DebugInfo, EmitRequest, EmitTo, ExtensionOptions, Extern, Input,
+        InputSource, IrOptions, OptLevel, OutputFile, RemapPathPrefix, Verification,
+    },
+    triple::Triple,
+};
 
 /// The version of Runic this crate was built from.
 pub const RUNIC_VERSION: &str = env!("RUNIC_BUILD_VERSION");
