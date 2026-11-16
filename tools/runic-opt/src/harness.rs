@@ -87,10 +87,16 @@ pub(crate) struct Harness<'c> {
     request: CompilationRequest,
     /// The language of the input, when the flags or the input's name do not settle it
     language: Option<String>,
-    /// The name of the unit: the stem of the input file
+    /// The name of the request's unit: the stem of the input file, or `stdin`
     unit: String,
-    /// The files `--emit` writes: the checkpoint and the path, checked by [Harness::check]
-    emit: Vec<(String, PathBuf)>,
+    /// The files `--emit` writes, as the user wrote each entry, the checkpoint and the path,
+    /// checked by [Harness::check]
+    emit: Vec<(String, String, PathBuf)>,
+    /// The outputs every case's request asks for, set by [Harness::resolve]
+    outputs: Vec<EmitRequest>,
+    /// The files written from the result of a case: those `--emit` names for the stop point, set
+    /// by [Harness::resolve]
+    deferred: Vec<PathBuf>,
     /// What brought the input here, for the errors that say a flag does not apply to it
     reason: String,
 }
@@ -152,6 +158,8 @@ impl<'c> Harness<'c> {
             language,
             unit,
             emit: Vec::new(),
+            outputs: Vec::new(),
+            deferred: Vec::new(),
             reason,
         })
     }
@@ -190,7 +198,7 @@ impl<'c> Harness<'c> {
             let request = EmitRequest::from_str(text)
                 .map_err(|error| Report::msg(format!("--emit {text}: {error}")))?;
             match request.to {
-                EmitTo::File(path) => self.emit.push((request.checkpoint, path)),
+                EmitTo::File(path) => self.emit.push((text.clone(), request.checkpoint, path)),
                 _ => return Err(needs_path()),
             }
         }
@@ -204,7 +212,7 @@ impl<'c> Harness<'c> {
         &self,
         name: &str,
         text: String,
-        stdout: &mut String,
+        stdout: &mut Vec<u8>,
         diagnostics: &mut Diagnostics,
     ) -> bool {
         let mut request = self.request.clone();
@@ -213,14 +221,7 @@ impl<'c> Harness<'c> {
         input.language = self.language.clone();
         request.inputs.push(input);
 
-        let (emit, deferred) = match self.outputs(&request) {
-            Ok(outputs) => outputs,
-            Err(error) => {
-                diagnostics.failure(&error);
-                return false;
-            }
-        };
-        request.emit = emit;
+        request.emit = self.outputs.clone();
 
         let sink = Box::new(diagnostics.stderr.clone());
         let compilation =
@@ -236,8 +237,8 @@ impl<'c> Harness<'c> {
         });
         let bytes = result.unwrap_or_default();
         // A file for the checkpoint the result is of is written from the result.
-        for path in deferred {
-            if let Err(error) = runic_compile::write_file(&path, bytes) {
+        for path in &self.deferred {
+            if let Err(error) = runic_compile::write_file(path, bytes) {
                 diagnostics.failure(&Report::msg(format!(
                     "could not write '{}': {error}",
                     path.display()
@@ -245,19 +246,29 @@ impl<'c> Harness<'c> {
                 return false;
             }
         }
-        stdout.push_str(&String::from_utf8_lossy(bytes));
+        stdout.extend_from_slice(bytes);
         true
     }
 
-    /// The outputs the request asks for, and the files written from the result.
+    /// Resolves the request the cases will use, once, before the input is read: the flags with a
+    /// placeholder memory input named `name`, through [Compiler::session]. A failure is what every
+    /// case would have reported: an unknown target, backend, checkpoint or language, a pipeline
+    /// that is not anchored on the world, an `--emit` of a checkpoint the compilation does not
+    /// reach.
     ///
-    /// The result is the artifact at the stop point, delivered to memory. A request has one
-    /// output for a checkpoint, so an `--emit` entry for the stop point is not given to the
+    /// Keeps what a case needs of it: the outputs its request asks for, and the files written from
+    /// its result. The result is the artifact at the stop point, delivered to memory. A request has
+    /// one output for a checkpoint, so an `--emit` entry for the stop point is not given to the
     /// compilation: its file is written from the result.
-    fn outputs(
-        &self,
-        request: &CompilationRequest,
-    ) -> Result<(Vec<EmitRequest>, Vec<PathBuf>), Report> {
+    ///
+    /// Two `--emit` entries that name one checkpoint, by id or by alias, are an error naming both.
+    pub(crate) fn resolve(&mut self, name: &str) -> Result<(), Report> {
+        let mut request = self.request.clone();
+        request.name = Some(self.unit.clone());
+        let mut input = Input::memory(name, String::new());
+        input.language = self.language.clone();
+        request.inputs.push(input);
+
         let session = self.compiler.session(request.clone())?;
         let stop = session.goal().stop_after();
         let route = session.route();
@@ -266,9 +277,23 @@ impl<'c> Harness<'c> {
             to: EmitTo::Memory,
         }];
         let mut deferred = Vec::new();
-        for (checkpoint, path) in &self.emit {
-            let at_stop = route.resolve(checkpoint).is_some_and(|at| route.get(at).id == stop);
-            if at_stop {
+        // The entries seen so far: the position of the checkpoint on the route, when it has one,
+        // the entry as written and its checkpoint as written.
+        let mut seen: Vec<(Option<usize>, &str, &str)> = Vec::new();
+        for (text, checkpoint, path) in &self.emit {
+            let at = route.resolve(checkpoint);
+            let first = seen.iter().find(|(other, _, written)| match (at, other) {
+                (Some(at), Some(other)) => at == *other,
+                _ => written == checkpoint,
+            });
+            if let Some((_, first, _)) = first {
+                return Err(Report::msg(format!(
+                    "--emit {first} and --emit {text} name the same checkpoint: a checkpoint is \
+                     written to one file"
+                )));
+            }
+            seen.push((at, text, checkpoint));
+            if at.is_some_and(|at| route.get(at).id == stop) {
                 deferred.push(path.clone());
             } else {
                 emit.push(EmitRequest {
@@ -277,7 +302,14 @@ impl<'c> Harness<'c> {
                 });
             }
         }
-        Ok((emit, deferred))
+        drop(session);
+
+        // The outputs are resolved too, so that one the compilation cannot deliver is found here.
+        request.emit = emit.clone();
+        self.compiler.session(request)?;
+        self.outputs = emit;
+        self.deferred = deferred;
+        Ok(())
     }
 }
 

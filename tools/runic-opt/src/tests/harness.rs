@@ -1,8 +1,11 @@
 //! The harness path: inputs that a frontend reads, and the flags that send an input through the
 //! compiler.
 
-use runic_compile::{Checkpoints, Compiler, Flow, Frontend, Input, IrFrontend, Session};
-use runic_ir::{Report, dialects::builtin::WorldRef};
+use runic_compile::{
+    Artifact, Backend, CheckpointDecl, CheckpointId, Checkpoints, Compiler, Flow, Frontend, Input,
+    IrFrontend, Session, Triple,
+};
+use runic_ir::{DataLayoutSpec, Report, dialects::builtin::WorldRef, pass::OpPassManager};
 
 use super::{Output, REPEATED_ADD, opt, opt_on};
 use crate::compiler;
@@ -355,7 +358,7 @@ fn split_cases_print_in_order_and_an_error_names_a_line_of_the_whole_file() {
 fn two_good_cases_are_separated_by_the_marker() {
     let output = toy_opt(
         &["--language", "calc", "--stop-after", "ast", "--split-input-file"],
-        "fn a(x) = x;\n// -----\n// nothing\n// -----\nfn b() = 1;\n",
+        "fn a(x) = x;\n// -----\n  \n// -----\nfn b() = 1;\n",
     );
     output.succeeded();
     assert_eq!(
@@ -659,4 +662,236 @@ fn the_passes_of_the_stages_are_not_listed_but_a_pipeline_can_name_them() {
     assert!(!output.stdout.contains("stackvm-legalize"), "{}", output.stdout);
     let output = toy_opt(&["-p", "stackvm-legalize"], REPEATED_ADD);
     assert!(!output.stderr.contains("unknown pass"), "{}", output.stderr);
+}
+
+// What an input with no operation is
+
+/// What a unit named `name` that has no function is at `ir.optimized`.
+fn empty_module(name: &str) -> String {
+    format!("builtin.world {{\n    builtin.module public @{name} {{ }};\n}};\n")
+}
+
+#[test]
+fn an_empty_calc_file_or_one_of_comments_alone_is_the_empty_module() {
+    let files = Files::new();
+    for (name, text) in [("e", ""), ("c", "// only a comment\n"), ("h", "# only a comment\n")] {
+        let input = files.write(&format!("{name}.calc"), text);
+        let output = toy_opt(&[&input], "");
+        output.succeeded();
+        assert_eq!(output.stderr, "", "{name}");
+        assert_eq!(output.stdout, empty_module(name), "{name}");
+    }
+}
+
+#[test]
+fn empty_standard_input_with_a_language_is_the_empty_module() {
+    let output = toy_opt(&["--language", "calc"], "");
+    output.succeeded();
+    assert_eq!(output.stdout, empty_module("\"<stdin>\""));
+}
+
+#[test]
+fn a_blank_last_case_is_skipped_and_the_first_is_printed_alone() {
+    let output =
+        toy_opt(&["--language", "calc", "--split-input-file"], "fn a(x) = x;\n// -----\n\n");
+    output.succeeded();
+    assert_eq!(output.stderr, "");
+    assert!(output.stdout.starts_with("builtin.world {"), "{}", output.stdout);
+    assert_eq!(output.stdout.matches("builtin.world {").count(), 1, "{}", output.stdout);
+    assert!(!output.stdout.contains("// -----"), "{}", output.stdout);
+}
+
+#[test]
+fn the_ir_path_still_refuses_an_input_with_no_operation() {
+    let output = toy_opt(&[], "// nothing\n");
+    output.failed();
+    assert_eq!(output.stderr, "error: no operation found in <stdin>\n");
+    opt(&["--split-input-file"], "// a\n// -----\n\n").failed();
+}
+
+// What is resolved before the input is read
+
+#[test]
+fn a_pipeline_anchored_on_a_module_is_reported_before_the_input_is_read() {
+    let output = toy_opt(&["no-such-file.calc", "-p", "builtin.module(cse)"], "");
+    output.failed();
+    assert_eq!(output.stdout, "");
+    assert!(output.stderr.contains("builtin.module"), "{}", output.stderr);
+    assert!(!output.stderr.contains("could not read"), "{}", output.stderr);
+}
+
+#[test]
+fn an_error_of_the_request_is_printed_once_however_many_cases_there_are() {
+    let files = Files::new();
+    let input = files.write("s.calc", "fn a() = 1;\n// -----\nfn b() = 2;\n");
+    let output = toy_opt(&[&input, "--split-input-file", "-p", "builtin.module(cse)"], "");
+    output.failed();
+    assert!(output.stderr.contains("builtin.module"), "{}", output.stderr);
+    assert_eq!(output.stderr.matches("error:").count(), 1, "{}", output.stderr);
+}
+
+#[test]
+fn a_stop_point_or_target_that_does_not_resolve_is_reported_once_before_the_input_is_read() {
+    let output = toy_opt(&["no-such-file.calc", "--stop-after", "nope"], "");
+    output.failed();
+    assert_eq!(output.stderr.matches("error:").count(), 1, "{}", output.stderr);
+    assert!(output.stderr.contains("unknown checkpoint 'nope'"), "{}", output.stderr);
+
+    let files = Files::new();
+    let input = files.write("s.calc", "fn a() = 1;\n// -----\nfn b() = 2;\n");
+    let output = toy_opt(&[&input, "--split-input-file", "--target", "nowhere-x-y"], "");
+    output.failed();
+    assert_eq!(output.stderr.matches("error:").count(), 1, "{}", output.stderr);
+    assert!(output.stderr.contains("nowhere-x-y"), "{}", output.stderr);
+    assert!(!output.stderr.contains("could not read"), "{}", output.stderr);
+}
+
+#[test]
+fn two_emits_of_one_checkpoint_by_id_or_alias_are_refused_with_both_texts() {
+    let files = Files::new();
+    let input = files.write("m.calc", SUBTRACTS);
+    let (a, b) = (files.path("a.out"), files.path("b.out"));
+    let (first, second) = (format!("ast={a}"), format!("calc.ast={b}"));
+    let output = toy_opt(&[&input, "--emit", &first, "--emit", &second], "");
+    output.failed();
+    assert_eq!(output.stdout, "");
+    assert_eq!(
+        output.stderr,
+        format!(
+            "error: --emit {first} and --emit {second} name the same checkpoint: a checkpoint is \
+             written to one file\n"
+        )
+    );
+    assert!(files.read("a.out").is_none() && files.read("b.out").is_none());
+
+    // The stop point is a checkpoint like any other.
+    let (first, second) = (format!("ir={a}"), format!("ir.optimized={b}"));
+    let output = toy_opt(&[&input, "--emit", &first, "--emit", &second], "");
+    output.failed();
+    assert!(output.stderr.contains("name the same checkpoint"), "{}", output.stderr);
+    assert!(
+        output.stderr.contains(&first) && output.stderr.contains(&second),
+        "{}",
+        output.stderr
+    );
+}
+
+#[test]
+fn one_emit_of_the_stop_point_still_writes_its_file_from_the_result() {
+    let files = Files::new();
+    let input = files.write("m.calc", SUBTRACTS);
+    let emit = format!("ir={}", files.path("o.runic"));
+    let output = toy_opt(&[&input, "--emit", &emit], "");
+    output.succeeded();
+    assert_eq!(files.read("o.runic").unwrap(), output.stdout);
+}
+
+// What the result is
+
+/// A backend whose artifact is the three bytes `[0xff, 0x00, 0xfe]`, which are not UTF-8.
+struct Bytes;
+
+const BYTES_OUT: CheckpointId = CheckpointId::new("bytes.out");
+
+const BYTES_CHECKPOINTS: &[CheckpointDecl] = &[CheckpointDecl {
+    id: BYTES_OUT,
+    aliases: &[],
+    extension: "bin",
+    render: render_bytes,
+}];
+
+fn render_bytes(_: &Artifact, _: &Session<'_>, out: &mut dyn std::io::Write) -> Result<(), Report> {
+    out.write_all(&[0xff, 0x00, 0xfe])
+        .map_err(|error| Report::msg(error.to_string()))
+}
+
+impl Backend for Bytes {
+    fn name(&self) -> &'static str {
+        "bytes"
+    }
+
+    fn supports(&self, triple: &Triple) -> bool {
+        triple.as_str() == "bytes-unknown-unknown"
+    }
+
+    fn targets(&self) -> Vec<Triple> {
+        vec!["bytes-unknown-unknown".parse().unwrap()]
+    }
+
+    fn data_layout(&self, _: &Triple) -> Result<DataLayoutSpec, Report> {
+        runic_compile::testing::StackVmBackend.data_layout(&"stackvm-unknown-tiny".parse().unwrap())
+    }
+
+    fn checkpoints(&self) -> &'static [CheckpointDecl] {
+        BYTES_CHECKPOINTS
+    }
+
+    fn add_passes(&self, _: &Session<'_>, _: &mut OpPassManager) -> Result<(), Report> {
+        Ok(())
+    }
+
+    fn emit(
+        &self,
+        _: &Session<'_>,
+        _: WorldRef,
+        checkpoints: &mut Checkpoints<'_>,
+    ) -> Result<Flow<()>, Report> {
+        Ok(match checkpoints.reach(BYTES_OUT, String::new())? {
+            Flow::Continue(_) => Flow::Continue(()),
+            Flow::Break(stopped) => Flow::Break(stopped),
+        })
+    }
+}
+
+#[test]
+fn an_artifact_that_is_not_utf_8_reaches_standard_output_and_the_file_of_o_unchanged() {
+    let compiler = Compiler::builder().frontend(IrFrontend).backend(Bytes).build().unwrap();
+    let files = Files::new();
+    let input = files.write("m.runic", "builtin.world {\n    builtin.module public @m { };\n};\n");
+
+    let mut stdin: &[u8] = b"";
+    let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+    let code = crate::run_on(
+        &compiler,
+        [input.as_str(), "--target", "bytes-unknown-unknown"].map(std::ffi::OsString::from),
+        &mut stdin,
+        &mut stdout,
+        &mut stderr,
+        || Ok(()),
+    );
+    assert_eq!(code, std::process::ExitCode::SUCCESS, "{}", String::from_utf8_lossy(&stderr));
+    assert_eq!(stdout, [0xff, 0x00, 0xfe]);
+
+    let out = files.path("out.bin");
+    let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+    let code = crate::run_on(
+        &compiler,
+        [input.as_str(), "--target", "bytes-unknown-unknown", "-o", out.as_str()]
+            .map(std::ffi::OsString::from),
+        &mut stdin,
+        &mut stdout,
+        &mut stderr,
+        || Ok(()),
+    );
+    assert_eq!(code, std::process::ExitCode::SUCCESS, "{}", String::from_utf8_lossy(&stderr));
+    assert!(stdout.is_empty());
+    assert_eq!(std::fs::read(&out).unwrap(), [0xff, 0x00, 0xfe]);
+}
+
+// `-Z`
+
+#[test]
+fn dash_z_is_on_the_command_only_when_a_stage_declares_unstable_options() {
+    let output = opt_on(&ir_only(), &["--help"], "");
+    output.succeeded();
+    assert!(!output.stdout.contains("unstable option"), "{}", output.stdout);
+    let output = opt_on(&ir_only(), &["-Z", "x"], REPEATED_ADD);
+    output.failed();
+    assert!(output.stderr.contains("unexpected argument '-Z'"), "{}", output.stderr);
+
+    let output = toy_opt(&["--help"], "");
+    assert!(output.stdout.contains("Set an unstable option"), "{}", output.stdout);
+    let output = toy_opt(&["-Z", "help"], "");
+    output.succeeded();
+    assert!(output.stdout.contains("stackvm-keep-subtractions"), "{}", output.stdout);
 }

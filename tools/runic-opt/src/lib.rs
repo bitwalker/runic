@@ -25,11 +25,16 @@
 //! error of the case.
 //!
 //! The tool has a second path, through the compiler harness (see the module `harness`). An input
-//! that a registered frontend other than the one for textual IR reads (by its file extension, or
-//! by `--language`), or a command line that writes `--target`, `--backend`, `--stop-after`,
-//! `--emit NAME=PATH`, or a flag of a stage or a `-Z` entry, is compiled by `runic-compile`
-//! instead of being parsed as IR: each case becomes a request, and what it emits is written as
-//! `--emit` says. `--list-stages` lists the registered frontends and backends. With the cargo
+//! that a registered frontend other than the one for textual IR reads by its file extension, or a
+//! command line that writes `--language` (`runic` included), `--target`, `--backend`,
+//! `--stop-after`, `--emit NAME=PATH`, or a flag of a stage or a `-Z` entry, is compiled by
+//! `runic-compile` instead of being parsed as IR: each case becomes a request, and what it emits
+//! is written as `--emit` says. The request is resolved once, before the input is read, so what
+//! is wrong with it is reported once. The pipeline then runs on the world (`builtin.world`): a
+//! whole pipeline is anchored on `builtin.world` or `any`, where on the IR path it is anchored on
+//! the input's top-level operation or `any`. Every case goes to the frontend, which decides what
+//! an input with no operation is; with `--split-input-file` only a case of whitespace is skipped.
+//! `-Z` is accepted only when a registered stage declares unstable options. `--list-stages` lists the registered frontends and backends. With the cargo
 //! feature `toy`, the toy language `calc` and the toy machines `stackvm` and `altvm` are
 //! registered.
 //!
@@ -149,7 +154,10 @@ pub fn run_with_setup(
 /// that registers more, and for tests.
 ///
 /// The frontends and backends of `compiler` are the ones that read an input, and generate code
-/// for it, on the harness path (see [`compiler`]).
+/// for it, on the harness path (see [`compiler`]). `compiler` must register the frontend for
+/// textual IR ([`IrFrontend`](runic_compile::IrFrontend)): standard input on the harness path
+/// without `--language` is read by it. `--list-passes` leaves out only the passes of the toy
+/// stages, whatever stages `compiler` registers.
 pub fn run_on(
     compiler: &Compiler,
     args: impl IntoIterator<Item = OsString>,
@@ -159,12 +167,12 @@ pub fn run_on(
     setup: impl FnOnce() -> Result<(), String>,
 ) -> ExitCode {
     let mut failed = false;
-    let mut out = String::new();
+    let mut out = Vec::new();
     let mut err = String::new();
     match run_to_buffers(compiler, args, stdin, &mut out, &mut err, setup) {
         Ok(true) => {}
         Ok(false) => failed = true,
-        Err(Exit::Help(text)) => out = text,
+        Err(Exit::Help(text)) => out = text.into_bytes(),
         Err(Exit::Usage(text)) => {
             err = text;
             failed = true;
@@ -172,7 +180,7 @@ pub fn run_on(
     }
     // Nothing is left to report a failure to write standard error to.
     let _ = stderr.write_all(err.as_bytes()).and_then(|()| stderr.flush());
-    if let Err(error) = stdout.write_all(out.as_bytes()).and_then(|()| stdout.flush()) {
+    if let Err(error) = stdout.write_all(&out).and_then(|()| stdout.flush()) {
         let error = Report::msg(format!("could not write standard output: {error}"));
         let _ = stderr.write_all(render(error.display()).as_bytes());
         failed = true;
@@ -246,13 +254,14 @@ fn run_to_buffers(
     compiler: &Compiler,
     args: impl IntoIterator<Item = OsString>,
     stdin: &mut dyn Read,
-    out: &mut String,
+    out: &mut Vec<u8>,
     err: &mut String,
     setup: impl FnOnce() -> Result<(), String>,
 ) -> Result<bool, Exit> {
     let args = core::iter::once(OsString::from("runic-opt")).chain(args);
     // A flag of a stage that collides with one of the tool's is a defect of the build.
     let flags = StageFlags::new(compiler)
+        .unstable(StageFlags::declares_unstable(compiler))
         .build()
         .and_then(|flags| {
             let command = flags.augment(Options::command(), "runic-opt")?;
@@ -282,20 +291,28 @@ fn run_to_buffers(
     setup().map_err(|message| Exit::Usage(format!("error: {message}\n")))?;
 
     if options.list_stages {
-        harness::list_stages(compiler, out);
+        let mut text = String::new();
+        harness::list_stages(compiler, &mut text);
+        out.extend_from_slice(text.as_bytes());
         return Ok(true);
     }
 
     if options.list_passes {
-        list_passes(out);
+        let mut text = String::new();
+        list_passes(&mut text);
+        out.extend_from_slice(text.as_bytes());
         return Ok(true);
     }
     if options.list_dialects {
-        list_dialects(out);
+        let mut text = String::new();
+        list_dialects(&mut text);
+        out.extend_from_slice(text.as_bytes());
         return Ok(true);
     }
     if options.list_operations {
-        list_operations(out);
+        let mut text = String::new();
+        list_operations(&mut text);
+        out.extend_from_slice(text.as_bytes());
         return Ok(true);
     }
 
@@ -329,6 +346,15 @@ fn run_to_buffers(
         return Ok(false);
     }
 
+    // The request is resolved once, whatever the input holds: what is wrong with it is wrong
+    // for every case.
+    if let Some(harness) = &mut harness
+        && let Err(error) = harness.resolve(&input_name(&options))
+    {
+        *err += &render(error.display());
+        return Ok(false);
+    }
+
     let (name, text) = match read_input(&options, stdin) {
         Ok(input) => input,
         Err(error) => {
@@ -337,11 +363,17 @@ fn run_to_buffers(
         }
     };
 
-    let cases = match marker {
+    let mut cases = match marker {
         Some(marker) => split::split(&text, marker),
         None => vec![split::whole(text)],
     };
-    if cases.iter().all(|case| case.empty) {
+    // On the harness path the frontend decides what an input with no operation is: only a case
+    // of whitespace under a marker (what a marker at the end of a file leaves) is skipped.
+    if harness.is_some() {
+        for case in &mut cases {
+            case.empty = marker.is_some() && case.blank;
+        }
+    } else if cases.iter().all(|case| case.empty) {
         *err += &render(Report::msg(format!("no operation found in {name}")).display());
         return Ok(false);
     }
@@ -391,19 +423,19 @@ fn run_to_buffers(
         Some(marker) => format!("{marker}\n"),
         None => String::new(),
     };
-    let result = written.join(separator.as_str());
+    let result = written.join(separator.as_bytes());
     match &options.output {
         // The file is written only when everything succeeded: otherwise it is left as it was.
         Some(_) if !succeeded => {}
         Some(path) => {
-            if let Err(error) = runic_compile::write_file(path, result.as_bytes()) {
+            if let Err(error) = runic_compile::write_file(path, &result) {
                 *err += &render(
                     Report::msg(format!("could not write '{}': {error}", path.display())).display(),
                 );
                 return Ok(false);
             }
         }
-        None => *out += &result,
+        None => out.extend_from_slice(&result),
     }
     Ok(succeeded)
 }
@@ -483,6 +515,14 @@ fn list_operations(out: &mut String) {
     names.sort();
     for name in names {
         let _ = writeln!(out, "{name}");
+    }
+}
+
+/// The name the input is known by in diagnostics.
+fn input_name(options: &Options) -> String {
+    match options.input.as_deref() {
+        None | Some("-") => String::from("<stdin>"),
+        Some(path) => String::from(path),
     }
 }
 
@@ -638,7 +678,7 @@ struct Chunk<'c> {
 /// What processing a chunk wrote, whether it succeeded, and whether its diagnostics did not
 /// match its expectations.
 struct ChunkOutput {
-    stdout: String,
+    stdout: Vec<u8>,
     succeeded: bool,
     mismatched: bool,
     /// The chunk held no operation and was not processed
@@ -663,7 +703,7 @@ impl Chunk<'_> {
     /// to the process's standard error before the process aborts.
     fn process_on_its_own_thread(self, stderr: &SharedBuffer) -> Result<ChunkOutput, Report> {
         let worker = worker::run(CHUNK_THREAD, stderr, report_panics, || {
-            let mut stdout = String::new();
+            let mut stdout = Vec::new();
             let outcome = self.check_into(&mut stdout, stderr);
             (stdout, outcome)
         });
@@ -680,14 +720,14 @@ impl Chunk<'_> {
             Err(WorkerError::Panicked(panics)) => {
                 stderr.push(&report_panics(&panics));
                 Ok(ChunkOutput {
-                    stdout: String::new(),
+                    stdout: Vec::new(),
                     succeeded: false,
                     mismatched: true,
                     skipped: false,
                 })
             }
             // A way for a worker to end that the driver adds later is still a failure to run.
-            Err(error) => Err(Report::msg(format!("could not run a thread: {error:?}"))),
+            Err(error) => Err(Report::msg(format!("could not run a thread: {error}"))),
         }
     }
 
@@ -695,7 +735,7 @@ impl Chunk<'_> {
     ///
     /// An expectation that cannot be read is a mismatch, and the chunk is then not processed. A
     /// chunk with no operation is skipped; an expectation in it is a mismatch.
-    fn check_into(mut self, stdout: &mut String, stderr: &SharedBuffer) -> Outcome {
+    fn check_into(mut self, stdout: &mut Vec<u8>, stderr: &SharedBuffer) -> Outcome {
         let context = Rc::new(Context::default());
         let text = core::mem::take(&mut self.text);
         let mismatch = |context: &Context, error: OwnedDiagnostic| {
@@ -792,7 +832,7 @@ impl Chunk<'_> {
         &mut self,
         context: &Rc<Context>,
         text: String,
-        stdout: &mut String,
+        stdout: &mut Vec<u8>,
         diagnostics: &mut Diagnostics,
     ) -> bool {
         let config = ParserConfig::new(context.clone())
@@ -837,8 +877,9 @@ impl Chunk<'_> {
             return false;
         }
 
-        *stdout = print_operation(op, &self.flags);
-        stdout.push('\n');
+        let mut printed = print_operation(op, &self.flags);
+        printed.push('\n');
+        *stdout = printed.into_bytes();
         true
     }
 

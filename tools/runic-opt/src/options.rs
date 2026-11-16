@@ -42,6 +42,9 @@ pub struct Options {
     /// operation is nested one level, under the operations of its kind directly inside the
     /// operation its pipeline runs on; `recursive(..)`, or the operations in between named,
     /// reach deeper.
+    ///
+    /// When the input goes through a frontend or a backend, the pipeline runs on the world
+    /// (`builtin.world`), so a whole pipeline is anchored on `builtin.world` or `any`.
     #[arg(short = 'p', long = "pass-pipeline", value_name = "PIPELINE")]
     pub pass_pipeline: Option<String>,
 

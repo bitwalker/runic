@@ -11,8 +11,11 @@ pub struct Case {
     /// The line (counted from 0) of the file at which the case begins: the lines before it in
     /// `text` are padding
     pub first_line: usize,
-    /// Whether the case holds only whitespace and `//` comments: it has no operation
+    /// Whether the case holds only whitespace and `//` comments: as IR it has no operation
     pub empty: bool,
+    /// Whether the case holds only whitespace: what a marker at the end of a file leaves, and the
+    /// only case a frontend does not read
+    pub blank: bool,
 }
 
 /// Splits `text` at each line that is, once surrounded whitespace is trimmed, exactly `marker`,
@@ -41,6 +44,7 @@ pub fn split(text: &str, marker: &str) -> Vec<Case> {
 pub fn whole(text: String) -> Case {
     Case {
         empty: is_empty(&text),
+        blank: text.trim().is_empty(),
         text,
         first_line: 0,
     }
@@ -54,6 +58,7 @@ fn case(text: &str, line: usize) -> Case {
         text: padded,
         first_line: line,
         empty: is_empty(text),
+        blank: text.trim().is_empty(),
     }
 }
 
