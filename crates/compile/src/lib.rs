@@ -12,21 +12,33 @@
 //!   told of each one reached;
 //! * a [CompilationRequest] says everything a caller can ask of one compilation;
 //! * a [Route] lists the checkpoints a compilation passes through, in order;
+//! * a [Frontend] reads inputs of one language and a [Backend] generates code for targets, and a
+//!   [Compiler], built by a [CompilerBuilder] that checks the whole configuration, holds the ones a
+//!   compiler offers;
 //! * a [Goal] says where a compilation stops and which [Output]s it produces, each with a
 //!   [Destination] decided by [resolve_goal] before anything runs.
 #![deny(warnings)]
 
+mod backend;
 mod checkpoint;
+mod compiler;
+mod frontend;
 mod goal;
 mod request;
 mod route;
 mod triple;
 
+#[cfg(test)]
+mod testing;
+
 pub use self::{
+    backend::Backend,
     checkpoint::{
         Artifact, CheckpointDecl, CheckpointId, Flow, IR_CHECKPOINTS, Observer, RecordingObserver,
         Stopped,
     },
+    compiler::{Compiler, CompilerBuilder},
+    frontend::Frontend,
     goal::{Destination, Goal, Output, OutputNaming, resolve_goal},
     request::{
         CompilationRequest, DebugInfo, EmitRequest, EmitTo, ExtensionOptions, Extern, Input,
