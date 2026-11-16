@@ -2,7 +2,7 @@
 
 use core::{mem, ops::ControlFlow};
 
-use runic_core::Report;
+use runic_core::{Report, link_symbol_refs};
 
 use super::{
     Session,
@@ -12,7 +12,8 @@ use crate::{CheckpointId, Flow, Observer, Verification};
 
 impl Session<'_> {
     /// Runs the translate step: each frontend that has inputs translates them in turn into the
-    /// world, the world is verified (unless the request's verification is
+    /// world, the symbol references left unlinked are linked to the symbols their paths name in
+    /// the whole world, the world is verified (unless the request's verification is
     /// [Verification::None]), and the harness reaches `ir.translated` with the world.
     ///
     /// `observer` is told of every checkpoint reached, in order; a caller that has nobody to tell
@@ -82,6 +83,10 @@ impl Session<'_> {
                 }
             }
         }
+
+        // Each frontend links the references it can see; a reference to a symbol another
+        // frontend, or another input, defined is linked now that the world is whole.
+        link_symbol_refs(self.world.as_operation_ref());
 
         if self.request.ir.verification != Verification::None {
             self.world.as_operation_ref().borrow().recursively_verify().map_err(|report| {

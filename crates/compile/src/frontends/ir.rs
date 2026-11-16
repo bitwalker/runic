@@ -23,8 +23,8 @@ use crate::{Checkpoints, Flow, Frontend, Input, Session};
 /// none. A module or a component that states a layout must state the world's; it may state one
 /// of its own only when the world has none.
 ///
-/// Each file is parsed by itself: a reference from one file to a symbol another file defines is
-/// not linked, and the world then does not verify.
+/// Each file is parsed by itself. A reference from one file to a symbol another input defines is
+/// linked by the translate step, once every frontend has run.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct IrFrontend;
 
@@ -566,7 +566,7 @@ mod tests {
     }
 
     #[test]
-    fn a_reference_to_a_symbol_of_another_file_is_an_error_whatever_the_order() {
+    fn a_reference_to_a_symbol_of_another_file_is_linked_whatever_the_order() {
         let a = runic(
             "a.runic",
             "builtin.module public @a { builtin.function public extern(\"C\") @callee(i32) -> \
@@ -580,10 +580,20 @@ mod tests {
         );
         let alone = failure(vec![b.clone()], false);
         assert!(alone.contains("'::@a::@callee' does not resolve"), "{alone}");
-        for inputs in [vec![a.clone(), b.clone()], vec![b, a]] {
-            let message = failure(inputs, false);
-            assert!(message.contains("'::@a::@callee' is not linked"), "{message}");
+        for inputs in [vec![a.clone(), b.clone()], vec![b.clone(), a.clone()]] {
+            let text = world_of(inputs, false);
+            assert!(text.contains("@callee") && text.contains("@f"), "{text}");
         }
+
+        // With verification off the reference is linked all the same.
+        let compiler = compiler();
+        let mut request = CompilationRequest::new();
+        request.inputs = vec![b, a];
+        request.stop_after = Some("ir.translated".into());
+        request.ir.verification = crate::Verification::None;
+        let mut session = compiler.session(request).unwrap();
+        let _ = session.translate(&mut ()).unwrap();
+        session.world().as_operation_ref().borrow().recursively_verify().unwrap();
     }
 
     #[test]
