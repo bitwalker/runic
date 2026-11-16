@@ -1,7 +1,7 @@
 //! A compilation in one call, and what it returns.
 
 use core::{fmt, ops::ControlFlow};
-use std::{path::PathBuf, rc::Rc};
+use std::{io, path::PathBuf, rc::Rc};
 
 use runic_ir::{Context, Report, diagnostics::DiagnosticSet};
 
@@ -115,7 +115,8 @@ impl Compilation {
         &self.files_read
     }
 
-    /// What the pass pipelines printed: the pipeline dump and the IR printed between passes.
+    /// What the pass pipelines printed: the pipeline dump and the IR printed between passes. It is
+    /// empty when the compilation ran with [Compiler::compile_to], which sent it to a sink.
     pub fn pass_output(&self) -> &str {
         &self.pass_output
     }
@@ -153,13 +154,43 @@ impl Compiler {
     ///
     /// This is the standard composition of the session's steps; a caller that needs a different
     /// one calls [Compiler::session] and the steps itself. It answers on every path: a request
-    /// that cannot be resolved gives a failed [Compilation] with a new empty context. It installs
+    /// that cannot be resolved gives a failed [Compilation] with a new empty context. What the passes
+    /// print is collected, and [Compilation::pass_output] hands it out; [Compiler::compile_to] sends
+    /// it to a sink instead. It installs
     /// nothing process-wide, prints nothing, never exits, and does not catch a panic in a stage.
     pub fn compile(&self, request: CompilationRequest, observer: &mut dyn Observer) -> Compilation {
+        self.run(request, observer, None)
+    }
+
+    /// [Compiler::compile], with what the passes print sent to `pass_output` as it is produced:
+    /// the dumped pipelines and the IR printed before and after passes, of the optimization and
+    /// of the lowering, in the order they were printed. [Compilation::pass_output] is then empty.
+    ///
+    /// The sink is set before the first step, so it is the way to keep what passes printed when a
+    /// later pass or stage panics: the text is in the sink when the panic unwinds. A write error
+    /// of the sink is ignored. A request that does not resolve prints nothing.
+    pub fn compile_to(
+        &self,
+        request: CompilationRequest,
+        observer: &mut dyn Observer,
+        pass_output: Box<dyn io::Write>,
+    ) -> Compilation {
+        self.run(request, observer, Some(pass_output))
+    }
+
+    fn run(
+        &self,
+        request: CompilationRequest,
+        observer: &mut dyn Observer,
+        pass_output: Option<Box<dyn io::Write>>,
+    ) -> Compilation {
         let mut session = match self.session(request) {
             Ok(session) => session,
             Err(error) => return Compilation::failed_to_start(error),
         };
+        if let Some(sink) = pass_output {
+            session.set_pass_output(sink);
+        }
         let mut outcome = session.translate(observer);
         if matches!(outcome, Ok(ControlFlow::Continue(()))) {
             outcome = session.optimize(observer);
@@ -176,15 +207,15 @@ impl Compiler {
 
 #[cfg(test)]
 mod tests {
-    use core::ops::ControlFlow;
-    use std::fs;
+    use core::{cell::RefCell, ops::ControlFlow};
+    use std::{fs, io, panic, rc::Rc};
 
     use runic_ir::{Report, diagnostics::diagnostic};
 
     use crate::{
         CheckpointDecl, CheckpointId, Compilation, CompilationRequest, Compiler, EmitRequest,
         EmitTo, Emitted, Input, IrFrontend, RecordingObserver,
-        testing::{TestBackend, TestFrontend, add_fail, decl},
+        testing::{TestBackend, TestFrontend, add_fail, add_mark, decl},
     };
 
     const OUT: &[CheckpointDecl] =
@@ -510,5 +541,234 @@ mod tests {
         let (compilation, _) = run(&plain(), stop_after("ir.translated"));
         let text = format!("{compilation:?}");
         assert!(text.contains("Compilation") && text.contains("reached"), "{text}");
+    }
+
+    // The sink for pass output
+
+    /// A sink the test keeps a hand on: the bytes written to it.
+    #[derive(Clone, Default)]
+    struct Shared(Rc<RefCell<Vec<u8>>>);
+
+    impl Shared {
+        fn text(&self) -> String {
+            String::from_utf8(self.0.borrow().clone()).unwrap()
+        }
+    }
+
+    impl io::Write for Shared {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.borrow_mut().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A request that prints what the passes of both steps do.
+    fn printing_request() -> CompilationRequest {
+        let mut request = request();
+        request.pipeline = Some("test-mark{name=opt}".into());
+        request.ir.dump_pass_pipeline = true;
+        request.ir.print_before = vec!["all".into()];
+        request.ir.print_after = vec!["all".into()];
+        request
+    }
+
+    fn marking_backend() -> Compiler {
+        let backend = ONE.with_add_passes(|_, passes| add_mark(passes, "low"));
+        compiler(backend, TestFrontend::new("alpha", &["a"]))
+    }
+
+    #[test]
+    fn with_a_sink_what_the_passes_print_arrives_in_order_across_both_steps() {
+        let sink = Shared::default();
+        let mut observer = RecordingObserver::default();
+        let compilation =
+            marking_backend().compile_to(printing_request(), &mut observer, Box::new(sink.clone()));
+        assert!(compilation.succeeded(), "{:?}", compilation.error());
+
+        let text = sink.text();
+        let positions: Vec<_> = [
+            "builtin.world(test-mark{name=\"opt\"})",
+            "IR before test-mark",
+            "IR after test-mark",
+            "builtin.world(test-mark{name=\"low\"})",
+        ]
+        .iter()
+        .map(|part| text.find(part).unwrap_or_else(|| panic!("no '{part}' in:\n{text}")))
+        .collect();
+        assert!(positions.is_sorted(), "{positions:?} in:\n{text}");
+        assert_eq!(text.matches("IR before").count(), 2, "{text}");
+        assert_eq!(text.matches("IR after").count(), 2, "{text}");
+        assert!(compilation.pass_output().is_empty());
+    }
+
+    #[test]
+    fn with_a_sink_the_session_collects_nothing() {
+        let compiler = marking_backend();
+        let sink = Shared::default();
+        let mut session = compiler.session(printing_request()).unwrap();
+        session.set_pass_output(Box::new(sink.clone()));
+        let _ = session.translate(&mut ()).unwrap();
+        let _ = session.optimize(&mut ()).unwrap();
+        assert!(session.pass_output().is_empty());
+        assert!(sink.text().contains("IR after"), "{}", sink.text());
+        let _ = session.lower(&mut ()).unwrap();
+        assert!(session.pass_output().is_empty());
+        assert!(sink.text().contains("test-mark{name=\"low\"}"), "{}", sink.text());
+    }
+
+    #[test]
+    fn a_sink_set_after_a_pipeline_ran_receives_only_what_is_printed_later() {
+        let compiler = marking_backend();
+        let sink = Shared::default();
+        let mut session = compiler.session(printing_request()).unwrap();
+        let _ = session.translate(&mut ()).unwrap();
+        let _ = session.optimize(&mut ()).unwrap();
+        let collected = session.pass_output().to_owned();
+        assert!(collected.contains("name=\"opt\""), "{collected}");
+        session.set_pass_output(Box::new(sink.clone()));
+        let _ = session.lower(&mut ()).unwrap();
+        assert_eq!(session.pass_output(), collected);
+        assert!(!sink.text().contains("name=\"opt\""), "{}", sink.text());
+        assert!(sink.text().contains("name=\"low\""), "{}", sink.text());
+    }
+
+    #[test]
+    fn without_a_sink_the_compilation_collects_what_the_passes_print() {
+        let (compilation, _) = run(&marking_backend(), printing_request());
+        assert!(compilation.succeeded(), "{:?}", compilation.error());
+        let text = compilation.pass_output();
+        assert!(text.contains("name=\"opt\"") && text.contains("name=\"low\""), "{text}");
+    }
+
+    #[test]
+    fn what_a_pass_printed_is_in_the_sink_when_a_later_pass_panics() {
+        let sink = Shared::default();
+        let mut request = printing_request();
+        request.pipeline = Some("test-mark{name=one},test-panic".into());
+        let kept = sink.clone();
+        let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+            plain().compile_to(request, &mut (), Box::new(kept))
+        }));
+        assert!(result.is_err(), "the pass should have panicked");
+        let text = sink.text();
+        assert!(text.contains("IR after test-mark"), "{text}");
+        assert!(text.contains("IR before test-panic"), "{text}");
+    }
+
+    #[test]
+    fn a_sink_that_fails_to_write_does_not_fail_the_compilation() {
+        struct Failing;
+        impl io::Write for Failing {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::Error::other("the sink is full"))
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let compilation =
+            marking_backend().compile_to(printing_request(), &mut (), Box::new(Failing));
+        assert!(compilation.succeeded(), "{:?}", compilation.error());
+    }
+
+    // The early checks of a request's passes
+
+    /// The message of a request the compiler refuses to resolve, then each context it was given.
+    fn refusal(request: CompilationRequest) -> String {
+        let compiler = plain();
+        let report =
+            compiler.session(request.clone()).err().expect("the request should not resolve");
+        let mut text = report.to_string();
+        for context in report.contexts() {
+            text.push('\n');
+            text.push_str(context.message());
+        }
+        let (compilation, observer) = run(&compiler, request);
+        assert!(!compilation.started());
+        assert!(!compilation.succeeded());
+        assert!(observer.checkpoints().is_empty());
+        text
+    }
+
+    #[test]
+    fn a_pipeline_with_a_syntax_error_does_not_start_and_names_the_text() {
+        let mut request = request();
+        request.pipeline = Some("cse(".into());
+        let text = refusal(request);
+        assert!(text.contains("'cse('"), "{text}");
+    }
+
+    #[test]
+    fn a_pipeline_with_an_unknown_pass_does_not_start_and_names_the_text() {
+        let mut request = request();
+        request.pipeline = Some("cse,nonesuch".into());
+        let text = refusal(request);
+        assert!(text.contains("'cse,nonesuch'") && text.contains("nonesuch"), "{text}");
+    }
+
+    #[test]
+    fn a_pipeline_with_a_bad_pass_option_does_not_start_and_names_the_text() {
+        let mut request = request();
+        request.pipeline = Some("test-mark{colour=red}".into());
+        let text = refusal(request);
+        assert!(text.contains("'test-mark{colour=red}'") && text.contains("colour"), "{text}");
+    }
+
+    #[test]
+    fn a_pipeline_anchored_off_the_world_does_not_start_and_names_the_text() {
+        let mut request = request();
+        request.pipeline = Some("builtin.module(cse)".into());
+        let text = refusal(request);
+        assert!(text.contains("'builtin.module(cse)'"), "{text}");
+        assert!(text.contains("runs on the world"), "{text}");
+    }
+
+    #[test]
+    fn a_pipeline_anchored_on_the_world_or_on_any_resolves() {
+        let compiler = plain();
+        for text in ["builtin.world(cse)", "any(cse)", "cse", ""] {
+            let mut request = request();
+            request.pipeline = Some(text.into());
+            assert!(compiler.session(request).is_ok(), "{text}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_pass_to_print_after_does_not_start_and_hints_at_the_pass() {
+        let mut request = request();
+        request.ir.print_after = vec!["cs".into()];
+        let text = refusal(request);
+        assert!(
+            text.contains(
+                "unknown pass 'cs' in the list of passes to print IR after; did you mean 'cse'?"
+            ),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_pass_to_print_before_does_not_start_and_hints_at_the_pass() {
+        let mut request = request();
+        request.ir.print_before = vec!["cse".into(), "cs".into()];
+        let text = refusal(request);
+        assert!(
+            text.contains(
+                "unknown pass 'cs' in the list of passes to print IR before; did you mean 'cse'?"
+            ),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn all_is_accepted_in_the_lists_of_passes_to_print() {
+        let mut request = request();
+        request.ir.print_before = vec!["all".into()];
+        request.ir.print_after = vec!["all".into()];
+        assert!(plain().session(request).is_ok());
     }
 }

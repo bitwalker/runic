@@ -407,6 +407,40 @@ impl Pass for Fail {
     }
 }
 
+/// `test-panic`: panics, with the message `test-panic`.
+#[derive(Default)]
+struct Panic;
+
+runic_ir::inventory::submit!(PassInfo::new::<Panic>("test-panic", "Panics"));
+
+impl Pass for Panic {
+    type Target = Operation;
+
+    fn name(&self) -> &'static str {
+        "test-panic"
+    }
+
+    fn argument(&self) -> &'static str {
+        "test-panic"
+    }
+
+    fn description(&self) -> &'static str {
+        "Panics"
+    }
+
+    fn can_schedule_on(&self, _name: &OperationName) -> bool {
+        true
+    }
+
+    fn run_on_operation(
+        &mut self,
+        _op: EntityMut<'_, Operation>,
+        _state: &mut PassExecutionState,
+    ) -> Result<(), Report> {
+        panic!("test-panic")
+    }
+}
+
 /// `test-break`: adds a module `broken` with a function that has no terminator to the world it
 /// runs on, so that the world no longer verifies.
 #[derive(Default)]

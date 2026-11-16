@@ -2,10 +2,11 @@
 //! reached.
 
 use core::{cell::RefCell, fmt, ops::ControlFlow};
-use std::rc::Rc;
+use std::{io, rc::Rc};
 
 use runic_ir::{
-    OpPrintingFlags, Report,
+    BuilderExt, Context, OpPrintingFlags, OperationName, Report, SourceSpan,
+    dialects::builtin::World,
     pass::{
         Anchor, IRPrintingConfig, Nesting, OpPassManager, PassInfo, PassManager, PassPipeline,
         PassSelection,
@@ -20,7 +21,7 @@ use super::{
     Session,
     checkpoints::{Checkpoints, Progress, Stage},
 };
-use crate::{CheckpointId, Flow, Observer, OptLevel, Verification};
+use crate::{CheckpointId, CompilationRequest, Flow, Observer, OptLevel, Verification};
 
 /// The name of the operation the optimization pipeline runs on.
 const WORLD: &str = "builtin.world";
@@ -53,6 +54,29 @@ impl fmt::Write for Buffer {
     }
 }
 
+/// The sink of a session's pass output, shared by the pass managers of its steps.
+pub(super) type Sink = Rc<RefCell<Box<dyn io::Write>>>;
+
+/// Where one pass manager's output goes: into a buffer the step keeps, or to the session's sink
+/// as it is produced. A write error of the sink is ignored.
+#[derive(Clone)]
+enum Output {
+    Buffer(Buffer),
+    Sink(Sink),
+}
+
+impl fmt::Write for Output {
+    fn write_str(&mut self, text: &str) -> fmt::Result {
+        match self {
+            Self::Buffer(buffer) => buffer.write_str(text),
+            Self::Sink(sink) => {
+                let _ = sink.borrow_mut().write_all(text.as_bytes());
+                Ok(())
+            }
+        }
+    }
+}
+
 /// The text of a loaded pass manager's pipeline.
 struct Textual<'a>(&'a PassManager);
 
@@ -67,8 +91,22 @@ impl Session<'_> {
     /// and the IR before and after the passes the request selected, in the order they were
     /// printed, for the optimization pipeline and then for the lowering pipeline. It is empty until
     /// the optimize step has run, and holds what was printed up to the failure when a step failed.
+    /// It stays empty when a sink was set with [Session::set_pass_output], which receives the
+    /// text instead.
     pub fn pass_output(&self) -> &str {
         &self.progress.pass_output
+    }
+
+    /// Sends what the pass managers of this session print to `sink`, as it is produced, in the
+    /// optimize step and in the lower step alike: the dumped pipeline and the IR printed before
+    /// and after passes. [Session::pass_output] then stays empty.
+    ///
+    /// The sink is the way to keep what passes printed when a later pass or stage panics, because
+    /// the text is already in the sink when the panic unwinds the session. A write error of the
+    /// sink is ignored. Only output printed after the call goes to the sink: what an earlier
+    /// pipeline printed stays in [Session::pass_output].
+    pub fn set_pass_output(&mut self, sink: Box<dyn io::Write>) {
+        self.pass_sink = Some(Rc::new(RefCell::new(sink)));
     }
 
     /// Runs the optimize step: the optimization pipeline is built, run on the world, and the
@@ -198,7 +236,8 @@ impl Session<'_> {
     /// that `what` names (`optimization` or `lowering`): the IR printing selections are checked
     /// before anything is built, the pipeline is dumped when the request asked, and the IR is
     /// verified after each pass, once after the last, or never. What was printed is added to the
-    /// session's pass output whether or not the pipeline succeeded.
+    /// session's pass output, or sent to its sink as it is produced, whether or not the pipeline
+    /// succeeded.
     fn run_pipeline(
         &self,
         progress: &mut Progress,
@@ -219,15 +258,19 @@ impl Session<'_> {
 
         let mut pm = build()?;
         pm.enable_verifier(ir.verification == Verification::EachPass);
-        let output = Buffer::default();
+        let buffer = Buffer::default();
+        let mut output = match &self.pass_sink {
+            Some(sink) => Output::Sink(sink.clone()),
+            None => Output::Buffer(buffer.clone()),
+        };
         pm.enable_ir_printing(printing, Box::new(output.clone()));
         if ir.dump_pass_pipeline {
-            output.0.borrow_mut().push_str(&format!("{}\n", Textual(&pm)));
+            let _ = fmt::Write::write_str(&mut output, &format!("{}\n", Textual(&pm)));
         }
 
         let result = pm.run(self.world.as_operation_ref());
         drop(pm);
-        progress.pass_output.push_str(&output.0.borrow());
+        progress.pass_output.push_str(&buffer.0.borrow());
         result?;
 
         if ir.verification == Verification::Once {
@@ -266,25 +309,77 @@ impl Session<'_> {
     /// Reads `text`: text that parses as a whole pipeline must be anchored on the world or on
     /// `any`; any other text is a list of passes anchored on the world.
     fn read_pipeline(&self, text: &str) -> Result<PassPipeline, Report> {
-        let name = self.world.as_operation_ref().borrow().name();
-        match PassPipeline::parse(text) {
-            Ok(pipeline) => match pipeline.anchor() {
-                Anchor::Any => Ok(pipeline),
-                Anchor::Operation { dialect, opcode }
-                    if *dialect == name.dialect() && *opcode == name.name() =>
-                {
-                    Ok(pipeline)
-                }
-                anchor => Err(Report::msg(format!(
-                    "the optimization pipeline '{text}' is anchored on '{anchor}', but the \
-                     optimization pipeline runs on the world: anchor it on '{WORLD}' or 'any', or \
-                     leave the anchor out"
-                ))),
-            },
-            Err(_) => PassPipeline::parse_elements(&name, text).map_err(|error| {
-                error.context(format!("cannot read the optimization pipeline '{text}'"))
-            }),
+        read_world_pipeline(&self.world.as_operation_ref().borrow().name(), text)
+    }
+}
+
+/// Reads `text` as the optimization pipeline of a world named `name`.
+fn read_world_pipeline(name: &OperationName, text: &str) -> Result<PassPipeline, Report> {
+    match PassPipeline::parse(text) {
+        Ok(pipeline) => match pipeline.anchor() {
+            Anchor::Any => Ok(pipeline),
+            Anchor::Operation { dialect, opcode }
+                if *dialect == name.dialect() && *opcode == name.name() =>
+            {
+                Ok(pipeline)
+            }
+            anchor => Err(Report::msg(format!(
+                "the optimization pipeline '{text}' is anchored on '{anchor}', but the \
+                 optimization pipeline runs on the world: anchor it on '{WORLD}' or 'any', or \
+                 leave the anchor out"
+            ))),
+        },
+        Err(_) => PassPipeline::parse_elements(name, text).map_err(|error| {
+            error.context(format!("cannot read the optimization pipeline '{text}'"))
+        }),
+    }
+}
+
+/// Checks what a request says about passes, before anything is created for it: the pipeline text
+/// reads as the optimize step reads it and loads (each pass is registered and takes the options
+/// given), and every name in its lists of passes to print IR before and after is `all` or a
+/// registered pass.
+pub(super) fn check_request(request: &CompilationRequest) -> Result<(), Report> {
+    check_names("before", &request.ir.print_before)?;
+    check_names("after", &request.ir.print_after)?;
+    let Some(text) = &request.pipeline else {
+        return Ok(());
+    };
+    // Reading and loading need a world's name and a context, and nothing else: they are the
+    // throwaway's, and the session's own context is created when the request resolves.
+    let context = Rc::new(Context::default());
+    let world = context.clone().builder().create::<World, ()>(SourceSpan::UNKNOWN)()?;
+    let name = world.as_operation_ref().borrow().name();
+    let pipeline = read_world_pipeline(&name, text)?;
+    pipeline.load(context, Nesting::Implicit).map_err(|error| {
+        error.context(format!("cannot load the optimization pipeline '{text}'"))
+    })?;
+    Ok(())
+}
+
+/// Checks that each of `names`, the passes to print IR `when` (`before` or `after`), is `all` or a
+/// registered pass.
+fn check_names(when: &str, names: &[String]) -> Result<(), Report> {
+    for name in names {
+        if name != "all" && PassInfo::lookup(name).is_none() {
+            return Err(Report::msg(format!(
+                "unknown pass '{name}' in the list of passes to print IR {when}{}",
+                did_you_mean(name)
+            )));
         }
+    }
+    Ok(())
+}
+
+/// `; did you mean 'x'?` when registered passes are named like `name`, and nothing otherwise.
+fn did_you_mean(name: &str) -> String {
+    match PassInfo::similar_to(name).as_slice() {
+        [] => String::new(),
+        [one] => format!("; did you mean '{one}'?"),
+        many => format!(
+            "; did you mean one of {}?",
+            many.iter().map(|name| format!("'{name}'")).collect::<Vec<_>>().join(", ")
+        ),
     }
 }
 
@@ -298,16 +393,9 @@ fn selection(when: &str, names: &[String]) -> Result<PassSelection, Report> {
     }
     for name in names {
         if PassInfo::lookup(name).is_none() {
-            let hint = match PassInfo::similar_to(name).as_slice() {
-                [] => String::new(),
-                [one] => format!("; did you mean '{one}'?"),
-                many => format!(
-                    "; did you mean one of {}?",
-                    many.iter().map(|name| format!("'{name}'")).collect::<Vec<_>>().join(", ")
-                ),
-            };
             return Err(Report::msg(format!(
-                "unknown pass '{name}' named to print the IR {when} it{hint}"
+                "unknown pass '{name}' named to print the IR {when} it{}",
+                did_you_mean(name)
             )));
         }
     }
@@ -360,7 +448,8 @@ mod tests {
 
     /// A session that has translated, with the world holding what its frontends made.
     fn translated(compiler: &Compiler, request: CompilationRequest) -> Session<'_> {
-        let mut session = compiler.session(request).unwrap();
+        // Unchecked: the tests of the step's own checks give it requests that `session` refuses.
+        let mut session = compiler.session_unchecked(request).unwrap();
         let _ = session.translate(&mut ()).unwrap();
         session
     }

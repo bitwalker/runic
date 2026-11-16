@@ -73,6 +73,7 @@ pub struct Session<'c> {
     goal: Goal,
     world: WorldRef,
     progress: Progress,
+    pass_sink: Option<pipeline::Sink>,
     files_read: RefCell<Vec<PathBuf>>,
     // Declared last, so that it is dropped last: the artifact the progress keeps may hold IR.
     context: Rc<Context>,
@@ -81,14 +82,32 @@ pub struct Session<'c> {
 impl Compiler {
     /// Resolves `request` against this compiler.
     ///
-    /// In order: the unit's name; the frontend of each input; the target and backend; the route of
+    /// First the request's text about passes is checked, before anything else: the pipeline must
+    /// read as the optimize step reads it (its syntax, each pass registered and taking the options
+    /// given, and an anchor that fits the world), and each name in the lists of passes to print IR
+    /// before and after must be `all` or a registered pass. Then, in order: the unit's name; the frontend of each input; the target and backend; the route of
     /// the frontends that have inputs and the backend; the goal; then a new context with an empty
     /// world that states the target's data layout. The session's copy of the request also holds
     /// the default of each type of options the frontends that have inputs and the target's backend
     /// declare, where the request held none. Fails at the first step that cannot be
     /// resolved, with a message that names what the request wrote and lists what is known, and
     /// then nothing has been created.
-    pub fn session(&self, mut request: CompilationRequest) -> Result<Session<'_>, Report> {
+    pub fn session(&self, request: CompilationRequest) -> Result<Session<'_>, Report> {
+        pipeline::check_request(&request)?;
+        self.resolve(request)
+    }
+
+    /// [Compiler::session] without the check of the request's passes, for tests of the steps' own
+    /// checks.
+    #[cfg(test)]
+    pub(crate) fn session_unchecked(
+        &self,
+        request: CompilationRequest,
+    ) -> Result<Session<'_>, Report> {
+        self.resolve(request)
+    }
+
+    fn resolve(&self, mut request: CompilationRequest) -> Result<Session<'_>, Report> {
         let name = request.unit_name()?;
         let frontends = resolve::assign_inputs(self, &request.inputs)?;
         let target = resolve::resolve_target(
@@ -190,6 +209,7 @@ impl Compiler {
             context,
             world,
             progress: Progress::default(),
+            pass_sink: None,
             files_read: RefCell::default(),
         })
     }
