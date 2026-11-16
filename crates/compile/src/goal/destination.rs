@@ -134,11 +134,13 @@ mod tests {
         id: CheckpointId::IR_OPTIMIZED,
         aliases: &[],
         extension: "runic",
+        render: |_, _, _| Ok(()),
     };
     const TRANS: CheckpointDecl = CheckpointDecl {
         id: CheckpointId::IR_TRANSLATED,
         aliases: &[],
         extension: "translated.runic",
+        render: |_, _, _| Ok(()),
     };
 
     fn naming<'a>(

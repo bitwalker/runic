@@ -247,6 +247,7 @@ mod tests {
     fn session<'c>(compiler: &'c Compiler, inputs: Vec<Input>, target: bool) -> Session<'c> {
         let mut request = CompilationRequest::new();
         request.inputs = inputs;
+        request.output_file = Some("-".parse().unwrap());
         if target {
             request.target = Some("wasm32-wasip2".parse().unwrap());
         } else {
@@ -589,6 +590,7 @@ mod tests {
         let compiler = compiler();
         let mut request = CompilationRequest::new();
         request.inputs = vec![b, a];
+        request.output_file = Some("-".parse().unwrap());
         request.stop_after = Some("ir.translated".into());
         request.ir.verification = crate::Verification::None;
         let mut session = compiler.session(request).unwrap();

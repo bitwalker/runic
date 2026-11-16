@@ -1,4 +1,11 @@
 use core::{any::Any, fmt, ops::ControlFlow};
+use std::io;
+
+use runic_core::{
+    OpPrinter, OpPrintingFlags, Report, dialects::builtin::WorldRef, print::AsmPrinter,
+};
+
+use crate::Session;
 
 /// Identifies a point in a compilation at which an artifact exists.
 ///
@@ -58,9 +65,9 @@ impl fmt::Display for CheckpointId {
 /// What a frontend or backend declares about one of its checkpoints: the id, the other names a
 /// user may write for it, and the extension of a file holding its artifact.
 ///
-/// A route is built from the declarations of its stages. How an artifact is turned into text or
-/// bytes is not part of the declaration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A route is built from the declarations of its stages, and the harness turns an artifact into
+/// the bytes of an output with the checkpoint's own renderer.
+#[derive(Debug, Clone, Copy)]
 pub struct CheckpointDecl {
     /// The id of the checkpoint.
     pub id: CheckpointId,
@@ -68,6 +75,50 @@ pub struct CheckpointDecl {
     pub aliases: &'static [&'static str],
     /// The extension, without the dot, of a file holding the artifact.
     pub extension: &'static str,
+    /// Writes an artifact of this checkpoint as the bytes of an output.
+    pub render: Render,
+}
+
+/// Writes an artifact as the bytes of an output.
+///
+/// The harness calls the renderer of a checkpoint with the artifact reached there, as it is at
+/// that moment, and the session for what the request says about how to print it. The renderer
+/// writes everything to `out` or returns an error, and then nothing of what it wrote is delivered.
+pub type Render = fn(&Artifact, &Session<'_>, &mut dyn io::Write) -> Result<(), Report>;
+
+/// Renders the world an artifact holds as IR text, followed by a newline.
+///
+/// This is the renderer of the harness's three IR checkpoints. The request's `print_generic` and
+/// `print_locations` choose how operations are printed. An artifact that does not hold a world is
+/// an error naming its checkpoint.
+pub fn render_ir(
+    artifact: &Artifact,
+    session: &Session<'_>,
+    out: &mut dyn io::Write,
+) -> Result<(), Report> {
+    let checkpoint = artifact.checkpoint();
+    let Some(world) = artifact.downcast_ref::<WorldRef>() else {
+        return Err(Report::msg(format!(
+            "the artifact at checkpoint '{checkpoint}' does not hold a world, so it cannot be \
+             rendered as IR"
+        )));
+    };
+    let ir = &session.request().ir;
+    let flags = OpPrintingFlags {
+        print_entry_block_headers: false,
+        print_source_locations: ir.print_locations,
+        generic: ir.print_generic,
+    };
+    let operation = world.as_operation_ref();
+    let text = {
+        let operation = operation.borrow();
+        let mut printer = AsmPrinter::root(operation.context_rc(), &flags);
+        operation.print(&mut printer);
+        printer.finish().to_string()
+    };
+    writeln!(out, "{text}").map_err(|error| {
+        Report::msg(format!("could not render checkpoint '{checkpoint}': {error}"))
+    })
 }
 
 /// The checkpoints the harness declares for the IR, in the order a route reaches them.
@@ -76,16 +127,19 @@ pub const IR_CHECKPOINTS: [CheckpointDecl; 3] = [
         id: CheckpointId::IR_TRANSLATED,
         aliases: &[],
         extension: "translated.runic",
+        render: render_ir,
     },
     CheckpointDecl {
         id: CheckpointId::IR_OPTIMIZED,
         aliases: &["ir"],
         extension: "runic",
+        render: render_ir,
     },
     CheckpointDecl {
         id: CheckpointId::IR_LOWERED,
         aliases: &[],
         extension: "lowered.runic",
+        render: render_ir,
     },
 ];
 

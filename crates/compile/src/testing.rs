@@ -4,7 +4,8 @@
 use runic_core::{DataLayoutSpec, Endianness, PointerSpec, Report, dialects::builtin::WorldRef};
 
 use crate::{
-    Backend, CheckpointDecl, CheckpointId, Checkpoints, Flow, Frontend, Input, Session, Triple,
+    Artifact, Backend, CheckpointDecl, CheckpointId, Checkpoints, Flow, Frontend, Input, Session,
+    Triple,
 };
 
 /// What a test frontend does when it translates.
@@ -30,7 +31,25 @@ pub const fn decl(
         id: CheckpointId::new(id),
         aliases,
         extension,
+        render: render_text,
     }
+}
+
+/// A renderer for tests: it writes the artifact's value when that is a `String` or a
+/// `&'static str`, and the id of the checkpoint otherwise.
+pub fn render_text(
+    artifact: &Artifact,
+    _session: &Session<'_>,
+    out: &mut dyn std::io::Write,
+) -> Result<(), Report> {
+    let written = if let Some(text) = artifact.downcast_ref::<String>() {
+        out.write_all(text.as_bytes())
+    } else if let Some(text) = artifact.downcast_ref::<&'static str>() {
+        out.write_all(text.as_bytes())
+    } else {
+        out.write_all(artifact.checkpoint().as_str().as_bytes())
+    };
+    written.map_err(|error| Report::msg(format!("could not render: {error}")))
 }
 
 /// A frontend that is only its configuration.

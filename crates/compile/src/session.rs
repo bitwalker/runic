@@ -10,7 +10,8 @@ use runic_core::{
 };
 
 use crate::{
-    Backend, CompilationRequest, Compiler, Frontend, Goal, Input, OutputNaming, Route, Triple,
+    Backend, CompilationRequest, Compiler, Emitted, Frontend, Goal, Input, OutputNaming, Route,
+    Triple,
 };
 
 mod checkpoints;
@@ -206,6 +207,12 @@ impl<'c> Session<'c> {
     /// The options of type `T` the request carries, if any.
     pub fn options<T: Any + Send + Sync>(&self) -> Option<&T> {
         self.request.options::<T>()
+    }
+
+    /// The outputs delivered so far, in the order their checkpoints were reached: files that were
+    /// written, and the bytes meant for standard output or for memory.
+    pub fn emitted(&self) -> &[Emitted] {
+        &self.progress.emitted
     }
 
     /// The frontends that have inputs, in the order they run, each with its inputs.

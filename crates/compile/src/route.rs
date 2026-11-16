@@ -14,7 +14,7 @@ pub type Declarer<'a> = (&'a str, &'a [CheckpointDecl]);
 /// and extensions, and every id is prefixed by the name of the stage that declares it, so a name
 /// written by a user stands for at most one checkpoint. The harness reads the route to resolve
 /// `--stop-after` and `--emit`, and to name output files.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Route {
     checkpoints: Vec<CheckpointDecl>,
 }
@@ -260,6 +260,7 @@ mod tests {
             id: CheckpointId::new(id),
             aliases,
             extension,
+            render: |_, _, _| Ok(()),
         }
     }
 

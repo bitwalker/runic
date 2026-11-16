@@ -51,6 +51,7 @@ impl Session<'_> {
                     observer,
                     &self.route,
                     &self.goal,
+                    self,
                     Stage::Frontend(*frontend),
                 );
                 frontend.translate(self, inputs, self.world, &mut checkpoints)?
@@ -95,7 +96,7 @@ impl Session<'_> {
         }
 
         let mut checkpoints =
-            Checkpoints::new(progress, observer, &self.route, &self.goal, Stage::Harness);
+            Checkpoints::new(progress, observer, &self.route, &self.goal, self, Stage::Harness);
         match checkpoints.reach(CheckpointId::IR_TRANSLATED, self.world)? {
             ControlFlow::Break(stopped) => Ok(ControlFlow::Break(stopped)),
             ControlFlow::Continue(_) => Ok(ControlFlow::Continue(())),
@@ -170,6 +171,8 @@ mod tests {
         let mut request = CompilationRequest::new();
         request.inputs = inputs.iter().map(|name| Input::memory(*name, "")).collect();
         request.stop_after = Some(stop_after.into());
+        // The one default output is kept, not written to the working directory.
+        request.output_file = Some("-".parse().unwrap());
         request
     }
 

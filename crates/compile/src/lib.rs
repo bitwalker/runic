@@ -20,6 +20,10 @@
 //! * a [Session] resolves a request against a compiler: which frontend reads each input, the
 //!   [Target] and its backend, the route and the goal, and the context and world the stages build
 //!   in;
+//! * each checkpoint declares how its artifact is rendered, and the outputs a goal names are
+//!   rendered and delivered when their checkpoint is reached: a file is written through a
+//!   temporary file and a rename, and standard output and memory are kept as bytes in the
+//!   session's list of [Emitted] outputs;
 //! * an [IrFrontend] reads Runic's own textual IR: each file holds a module, a component or a
 //!   world.
 #![deny(warnings)]
@@ -30,6 +34,7 @@ mod compiler;
 mod frontend;
 mod frontends;
 mod goal;
+mod output;
 mod request;
 mod route;
 mod session;
@@ -42,12 +47,13 @@ pub use self::{
     backend::Backend,
     checkpoint::{
         Artifact, CheckpointDecl, CheckpointId, Flow, IR_CHECKPOINTS, Observer, RecordingObserver,
-        Stopped,
+        Render, Stopped, render_ir,
     },
     compiler::{Compiler, CompilerBuilder},
     frontend::Frontend,
     frontends::IrFrontend,
     goal::{Destination, Goal, Output, OutputNaming, resolve_goal},
+    output::{Emitted, write_file},
     request::{
         CompilationRequest, DebugInfo, EmitRequest, EmitTo, ExtensionOptions, Extern, Input,
         InputSource, IrOptions, OptLevel, OutputFile, RemapPathPrefix, Verification,

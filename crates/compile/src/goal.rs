@@ -136,11 +136,13 @@ mod tests {
         id: CheckpointId::new("mylang.ast"),
         aliases: &["ast"],
         extension: "ast",
+        render: |_, _, _| Ok(()),
     }];
     const WASM: &[CheckpointDecl] = &[CheckpointDecl {
         id: CheckpointId::new("wasm.module"),
         aliases: &["wat"],
         extension: "wat",
+        render: |_, _, _| Ok(()),
     }];
 
     fn route() -> Route {
