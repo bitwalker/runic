@@ -1,0 +1,17 @@
+// RUN: not runic-opt %s --target stackvm-unknown-unknown --backend stackvm 2>&1 | filecheck %s
+// RUN: not runic-opt %s --target stackvm-unknown-tiny 2>&1 | filecheck %s
+
+// The stack machine has no tail calls. A backend that cannot guarantee a tail call must not emit
+// a call instead, so lowering a function that tail calls fails, with a message that names the
+// operation and the function, and says the machine has none.
+
+// CHECK: the function 'user::forwards' holds the tail call 'builtin.tail_call', and the stack machine has no tail calls
+builtin.module public @user {
+    builtin.function public extern("C") @twice(%x: i32) -> i32 {
+        %r = arith.add %x, %x;
+        builtin.ret %r : (i32);
+    };
+    builtin.function public extern("C") @forwards(%x: i32) -> i32 {
+        builtin.tail_call @twice(%x) : extern("C") (i32) -> i32;
+    };
+};

@@ -20,6 +20,7 @@ use runic_ir::{
         OpPassManager, Pass, PassExecutionState, PassInfo, PassOptions, PostPassStatus,
         registry::RegistryEntry,
     },
+    traits::TailCallLike,
 };
 
 use crate::{
@@ -444,11 +445,21 @@ impl Pass for Legalize {
                     || op.is::<Call>()
                     || op.is::<Ret>();
                 if !runs && rejected.is_none() {
-                    rejected = Some(format!(
-                        "the function '{name}' holds the operation '{}', which the stack machine \
-                         cannot run",
-                        op.name()
-                    ));
+                    rejected = Some(if op.implements::<dyn TailCallLike>() {
+                        // A call in its place would use a frame the tail call promises not to.
+                        format!(
+                            "the function '{name}' holds the tail call '{}', and the stack \
+                             machine has no tail calls: it cannot guarantee one, and does not \
+                             emit a call instead",
+                            op.name()
+                        )
+                    } else {
+                        format!(
+                            "the function '{name}' holds the operation '{}', which the stack \
+                             machine cannot run",
+                            op.name()
+                        )
+                    });
                 }
             });
         });
@@ -531,5 +542,79 @@ fn negate_constant_subtraction(
 impl fmt::Debug for Legalize {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.print_as_textual_pipeline(f)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        CompilationRequest, Compiler, EmitRequest, EmitTo, Input, IrFrontend,
+        testing::StackVmBackend,
+    };
+
+    /// The error of compiling `source`, a module, for the stack machine, or `None`.
+    fn error_of(source: &str) -> Option<String> {
+        let compiler = Compiler::builder()
+            .frontend(IrFrontend)
+            .backend(StackVmBackend)
+            .build()
+            .unwrap();
+        let mut request = CompilationRequest::new();
+        request.inputs.push(Input::memory("m.runic", source));
+        request.target = Some("stackvm-unknown-unknown".parse().unwrap());
+        // The listing is kept in memory: nothing is written beside the sources.
+        request.emit.push(EmitRequest {
+            checkpoint: "stackvm.asm".into(),
+            to: EmitTo::Memory,
+        });
+        compiler.compile(request, &mut ()).error().map(|error| error.to_string())
+    }
+
+    /// A module that holds `callee` and a function `@caller(%x: i32, %f: (i32) -> i32)` whose
+    /// body is `body`.
+    fn module(body: &str) -> String {
+        format!(
+            "builtin.module public @m {{
+    builtin.function public extern(\"C\") @callee(%x: i32) -> i32 {{
+        builtin.ret %x : (i32);
+    }};
+    builtin.function public extern(\"C\") @caller(%x: i32, %f: (i32) -> i32) -> i32 {{
+        {body}
+    }};
+}};"
+        )
+    }
+
+    /// A function that tail calls is rejected by the legalization with a message that names the
+    /// operation and says the machine has no tail calls: it does not become a call.
+    #[test]
+    fn a_tail_call_is_rejected_because_the_machine_has_no_tail_calls() {
+        for (operation, name) in [
+            (
+                "builtin.tail_call @callee(%x) : extern(\"C\") (i32) -> i32;",
+                "builtin.tail_call",
+            ),
+            (
+                "builtin.tail_call_indirect %f(%x) : extern(\"C\") (i32) -> i32;",
+                "builtin.tail_call_indirect",
+            ),
+        ] {
+            let error = error_of(&module(operation)).expect("the compilation fails");
+            assert!(
+                error.contains(&format!(
+                    "holds the tail call '{name}', and the stack machine has no tail calls"
+                )),
+                "{error}"
+            );
+            assert!(error.contains("m::caller"), "{error}");
+        }
+    }
+
+    /// The control: a call followed by a return is compiled.
+    #[test]
+    fn a_call_followed_by_a_return_is_compiled() {
+        let body = "%r = builtin.call @callee(%x) : extern(\"C\") (i32) -> i32;
+        builtin.ret %r : (i32);";
+        assert_eq!(error_of(&module(body)), None);
     }
 }
