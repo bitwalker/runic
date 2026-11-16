@@ -1,0 +1,525 @@
+// RUN: runic-opt %s --split-input-file | filecheck %s
+// RUN: runic-opt %s --split-input-file --verify-roundtrip | filecheck %s
+// RUN: runic-opt %s --split-input-file --print-generic | runic-opt - --split-input-file --verify-roundtrip
+// RUN: runic-opt %s --split-input-file -p 'canonicalizer,cse,sccp,canonicalizer,dce' | filecheck %s --check-prefix=OPT
+// RUN: runic-opt %s --split-input-file -p 'canonicalizer,cse,sccp,canonicalizer,dce' | runic-opt - --split-input-file --verify-roundtrip | filecheck %s --check-prefix=OPT
+
+// Seven small programs in `wasm`, each a complete module of the kind a compiler would write, run
+// through the printer and the passes. The first RUN lines read each, print it and read the print
+// back (the generic form too); the last two check what the passes `canonicalizer,cse,sccp,
+// canonicalizer,dce` leave of it. Every store, call, loop, exit, branch and initializer survives;
+// the one unused pure operation and the one repeated pure computation in a program are removed
+// and merged. The programs are separated by `// -----`.
+
+// Program 1: a frame on a shadow stack. The stack pointer is a mutable global; `@frame` lowers it
+// by 16, stores its two arguments in the frame, calls `@add_pair` with the frame's address, loads
+// the sum that function stored in the frame and restores the stack pointer. The text it
+// corresponds to:
+//
+//   (func $frame (param $x i32) (param $y i32) (result i32)
+//     (local $fp i32)
+//     (local.set $fp (i32.sub (global.get $sp) (i32.const 16)))
+//     (global.set $sp (local.get $fp))
+//     (i32.store (local.get $fp) (local.get $x))
+//     (i32.store offset=4 (local.get $fp) (local.get $y))
+//     (call $add_pair (local.get $fp))
+//     (i32.load offset=8 (local.get $fp))
+//     (global.set $sp (i32.add (global.get $sp) (i32.const 16))))
+//
+// The second `global.get` is not merged with the first: the `global.set` between them writes
+// what they read. The unused product is removed, the two equal sums of the frame address are one,
+// and the stores, the call, the restore and the initializer of the stack pointer stay.
+// CHECK-LABEL: builtin.module public @shadow_stack {
+// OPT-LABEL: builtin.module public @shadow_stack {
+builtin.module public @shadow_stack {
+    // CHECK: wasm.memory private @mem : 1..2;
+    // OPT: wasm.memory private @mem : 1..2;
+    wasm.memory private @mem : 1..2;
+    // OPT-NEXT: wasm.global private @sp : mut i32 {
+    // OPT-NEXT: {{%[0-9]+}} = wasm.const 65536 : i32;
+    // OPT-NEXT: };
+    wasm.global private @sp : mut i32 {
+        %top = wasm.const 65536 : i32;
+    };
+
+    // OPT-LABEL: builtin.function public extern("C") @add_pair(
+    // OPT-SAME: [[P:%[0-9]+]]: i32) {
+    // OPT-NEXT: [[A:%[0-9]+]] = wasm.load @mem, [[P]] : i32;
+    // OPT-NEXT: [[B:%[0-9]+]] = wasm.load @mem, [[P]] <{ offset = 4 }> : i32;
+    // OPT-NEXT: [[S:%[0-9]+]] = wasm.add [[A]], [[B]];
+    // OPT-NEXT: wasm.store @mem, [[P]], [[S]] <{ offset = 8 }>;
+    // OPT-NEXT: builtin.ret;
+    builtin.function public extern("C") @add_pair(%p: i32) {
+        %a = wasm.load @mem, %p : i32;
+        %b = wasm.load @mem, %p <{ offset = 4 }> : i32;
+        %sum = wasm.add %a, %b;
+        wasm.store @mem, %p, %sum <{ offset = 8 }>;
+        builtin.ret;
+    };
+
+    // OPT-LABEL: builtin.function public extern("C") @frame(
+    // OPT-SAME: [[X:%[0-9]+]]: i32, [[Y:%[0-9]+]]: i32) -> i32 {
+    // OPT-NEXT: [[SIZE:%[0-9]+]] = wasm.const 16 : i32;
+    // OPT-NEXT: [[SP:%[0-9]+]] = wasm.global_get @sp : i32;
+    // OPT-NEXT: [[FP:%[0-9]+]] = wasm.sub [[SP]], [[SIZE]];
+    // OPT-NEXT: wasm.global_set @sp, [[FP]];
+    // OPT-NEXT: wasm.store @mem, [[FP]], [[X]];
+    // OPT-NEXT: wasm.store @mem, [[FP]], [[Y]] <{ offset = 4 }>;
+    // OPT-NEXT: builtin.call @add_pair([[FP]]) : extern("C") (i32);
+    // OPT-NEXT: [[R:%[0-9]+]] = wasm.load @mem, [[FP]] <{ offset = 8 }> : i32;
+    // OPT-NEXT: [[SP2:%[0-9]+]] = wasm.global_get @sp : i32;
+    // OPT-NEXT: [[RESTORED:%[0-9]+]] = wasm.add [[SP2]], [[SIZE]];
+    // OPT-NEXT: wasm.global_set @sp, [[RESTORED]];
+    // OPT-NEXT: builtin.ret [[R]] : (i32);
+    builtin.function public extern("C") @frame(%x: i32, %y: i32) -> i32 {
+        %sp = wasm.global_get @sp : i32;
+        %size = wasm.const 16 : i32;
+        %fp = wasm.sub %sp, %size;
+        wasm.global_set @sp, %fp;
+        wasm.store @mem, %fp, %x;
+        wasm.store @mem, %fp, %y <{ offset = 4 }>;
+        builtin.call @add_pair(%fp) : extern("C") (i32);
+        %r = wasm.load @mem, %fp <{ offset = 8 }> : i32;
+        %unused = wasm.mul %x, %y;
+        %sp2 = wasm.global_get @sp : i32;
+        %size2 = wasm.const 16 : i32;
+        %restored = wasm.add %sp2, %size2;
+        %again = wasm.add %sp2, %size;
+        wasm.global_set @sp, %restored;
+        builtin.ret %r : (i32);
+    };
+};
+
+// -----
+
+// Program 2: a loop over memory. `@sum` adds the `n` 32-bit integers that start at an address. The
+// loop carries the address and the sum; the `if` leaves the block, two levels out (the `if` is
+// label 0, the loop 1, the block 2), with the sum when the address reaches the end; otherwise the
+// body loads, adds and goes back to the top of the loop (label 0 there) with the next address and
+// the new sum. The text it corresponds to:
+//
+//   (func $sum (param $p i32) (param $n i32) (result i32)
+//     (local $end i32) (local $acc i32)
+//     (local.set $end (i32.add (local.get $p) (i32.shl (local.get $n) (i32.const 2))))
+//     (block $done (result i32)
+//       (loop $next (param i32 i32) (result i32)      ;; address, sum
+//         (if (i32.ge_u (local.get $p) (local.get $end))
+//           (then (br $done (local.get $acc))))
+//         (local.set $acc (i32.add (local.get $acc) (i32.load (local.get $p))))
+//         (local.set $p (i32.add (local.get $p) (i32.const 4)))
+//         (br $next))))
+//
+// The shift of `n` that nothing uses is removed, the two equal products that make the end of the
+// range are one, and the loop, the exit, the load and the branch back stay.
+// CHECK-LABEL: builtin.module public @sum_loop {
+// OPT-LABEL: builtin.module public @sum_loop {
+builtin.module public @sum_loop {
+    wasm.memory private @mem : 1;
+
+    // OPT-LABEL: builtin.function public extern("C") @sum(
+    // OPT-SAME: [[P:%[0-9]+]]: i32, [[N:%[0-9]+]]: i32) -> i32 {
+    // OPT-NEXT: [[ZERO:%[0-9]+]] = wasm.const 0 : i32;
+    // OPT-NEXT: [[FOUR:%[0-9]+]] = wasm.const 4 : i32;
+    // OPT-NEXT: [[BYTES:%[0-9]+]] = wasm.mul [[N]], [[FOUR]];
+    // OPT-NEXT: [[END:%[0-9]+]] = wasm.add [[P]], [[BYTES]];
+    // OPT-NEXT: [[R:%[0-9]+]] = wasm.block {
+    // OPT-NEXT: [[L:%[0-9]+]] = wasm.loop [[P]], [[ZERO]] {
+    // OPT-NEXT: ^[[B:block[0-9]+]]([[CUR:%[0-9]+]]: i32, [[ACC:%[0-9]+]]: i32):
+    // OPT-NEXT: [[DONE:%[0-9]+]] = wasm.ge_u [[CUR]], [[END]];
+    // OPT-NEXT: wasm.if [[DONE]] then {
+    // OPT-NEXT: wasm.br 2 [[ACC]] : (i32);
+    // OPT-NEXT: } : (i32) -> ();
+    // OPT-NEXT: [[V:%[0-9]+]] = wasm.load @mem, [[CUR]] : i32;
+    // OPT-NEXT: [[SUM:%[0-9]+]] = wasm.add [[ACC]], [[V]];
+    // OPT-NEXT: [[NEXT:%[0-9]+]] = wasm.add [[CUR]], [[FOUR]];
+    // OPT-NEXT: wasm.br 0 [[NEXT]], [[SUM]] : (i32, i32);
+    // OPT-NEXT: } : (i32, i32) -> (i32);
+    // OPT-NEXT: wasm.end [[L]] : (i32);
+    // OPT-NEXT: } : () -> (i32);
+    // OPT-NEXT: builtin.ret [[R]] : (i32);
+    builtin.function public extern("C") @sum(%p: i32, %n: i32) -> i32 {
+        %zero = wasm.const 0 : i32;
+        %four = wasm.const 4 : i32;
+        %bytes = wasm.mul %n, %four;
+        %end = wasm.add %p, %bytes;
+        %bytes_again = wasm.mul %n, %four;
+        %unused = wasm.shl %n, %four;
+        %r = wasm.block {
+            %l = wasm.loop %p, %zero {
+            ^head(%cur: i32, %acc: i32):
+                %done = wasm.ge_u %cur, %end;
+                wasm.if %done then {
+                    wasm.br 2 %acc : (i32);
+                } : (i32) -> ();
+                %v = wasm.load @mem, %cur : i32;
+                %sum = wasm.add %acc, %v;
+                %next = wasm.add %cur, %four;
+                wasm.br 0 %next, %sum : (i32, i32);
+            } : (i32, i32) -> (i32);
+            wasm.end %l : (i32);
+        } : () -> (i32);
+        builtin.ret %r : (i32);
+    };
+};
+
+// -----
+
+// Program 3: tail calls. `@factorial` multiplies an accumulator down from `n`, and `@is_even` and
+// `@is_odd` call each other by `builtin.tail_call`, so that neither grows the stack. A tail call
+// is a terminator: the `if` that returns leaves the function by `builtin.ret`, and the code after
+// it ends with the call. The text it corresponds to:
+//
+//   (func $factorial (param $n i64) (param $acc i64) (result i64)
+//     (if (i64.eqz (local.get $n)) (then (return (local.get $acc))))
+//     (return_call $factorial
+//       (i64.sub (local.get $n) (i64.const 1))
+//       (i64.mul (local.get $acc) (local.get $n))))
+//
+// The constant `one` that `@factorial` writes twice is one, and the one unused sum goes; the
+// tail calls, the returns and the conditions stay.
+// CHECK-LABEL: builtin.module public @tail_calls {
+// OPT-LABEL: builtin.module public @tail_calls {
+builtin.module public @tail_calls {
+    // OPT-LABEL: builtin.function public extern("C") @factorial(
+    // OPT-SAME: [[N:%[0-9]+]]: i64, [[ACC:%[0-9]+]]: i64) -> i64 {
+    // OPT-NEXT: [[ONE:%[0-9]+]] = wasm.const 1 : i64;
+    // OPT-NEXT: [[Z:%[0-9]+]] = wasm.eqz [[N]];
+    // OPT-NEXT: wasm.if [[Z]] then {
+    // OPT-NEXT: builtin.ret [[ACC]] : (i64);
+    // OPT-NEXT: } : (i32) -> ();
+    // OPT-NEXT: [[N1:%[0-9]+]] = wasm.sub [[N]], [[ONE]];
+    // OPT-NEXT: [[A1:%[0-9]+]] = wasm.mul [[ACC]], [[N]];
+    // OPT-NEXT: builtin.tail_call @factorial([[N1]], [[A1]]) : extern("C") (i64, i64) -> i64;
+    builtin.function public extern("C") @factorial(%n: i64, %acc: i64) -> i64 {
+        %z = wasm.eqz %n;
+        wasm.if %z then {
+            builtin.ret %acc : (i64);
+        } : (i32) -> ();
+        %one = wasm.const 1 : i64;
+        %one_again = wasm.const 1 : i64;
+        %unused = wasm.add %n, %one_again;
+        %n1 = wasm.sub %n, %one;
+        %a1 = wasm.mul %acc, %n;
+        builtin.tail_call @factorial(%n1, %a1) : extern("C") (i64, i64) -> i64;
+    };
+
+    // OPT-LABEL: builtin.function public extern("C") @is_even(
+    // OPT-SAME: [[N:%[0-9]+]]: i32) -> i32 {
+    // OPT-NEXT: [[ONE:%[0-9]+]] = wasm.const 1 : i32;
+    // OPT-NEXT: [[Z:%[0-9]+]] = wasm.eqz [[N]];
+    // OPT-NEXT: wasm.if [[Z]] then {
+    // OPT-NEXT: builtin.ret [[ONE]] : (i32);
+    // OPT-NEXT: } : (i32) -> ();
+    // OPT-NEXT: [[M:%[0-9]+]] = wasm.sub [[N]], [[ONE]];
+    // OPT-NEXT: builtin.tail_call @is_odd([[M]]) : extern("C") (i32) -> i32;
+    builtin.function public extern("C") @is_even(%n: i32) -> i32 {
+        %z = wasm.eqz %n;
+        wasm.if %z then {
+            %yes = wasm.const 1 : i32;
+            builtin.ret %yes : (i32);
+        } : (i32) -> ();
+        %one = wasm.const 1 : i32;
+        %m = wasm.sub %n, %one;
+        builtin.tail_call @is_odd(%m) : extern("C") (i32) -> i32;
+    };
+
+    // OPT-LABEL: builtin.function public extern("C") @is_odd(
+    // OPT-SAME: [[N:%[0-9]+]]: i32) -> i32 {
+    // OPT-NEXT: [[ONE:%[0-9]+]] = wasm.const 1 : i32;
+    // OPT-NEXT: [[NO:%[0-9]+]] = wasm.const 0 : i32;
+    // OPT-NEXT: [[Z:%[0-9]+]] = wasm.eqz [[N]];
+    // OPT-NEXT: wasm.if [[Z]] then {
+    // OPT-NEXT: builtin.ret [[NO]] : (i32);
+    // OPT-NEXT: } : (i32) -> ();
+    // OPT-NEXT: [[M:%[0-9]+]] = wasm.sub [[N]], [[ONE]];
+    // OPT-NEXT: builtin.tail_call @is_even([[M]]) : extern("C") (i32) -> i32;
+    builtin.function public extern("C") @is_odd(%n: i32) -> i32 {
+        %z = wasm.eqz %n;
+        wasm.if %z then {
+            %no = wasm.const 0 : i32;
+            builtin.ret %no : (i32);
+        } : (i32) -> ();
+        %one = wasm.const 1 : i32;
+        %m = wasm.sub %n, %one;
+        builtin.tail_call @is_even(%m) : extern("C") (i32) -> i32;
+    };
+};
+
+// -----
+
+// Program 4: table dispatch. A table of three functions of one signature, filled by an element
+// segment; `@dispatch` calls one by index when the index is inside the table and gives -1
+// otherwise, and `@dispatch_tail` tail-calls one. The text it corresponds to:
+//
+//   (table $tab 3 funcref)
+//   (elem (table $tab) (i32.const 0) func $inc $dbl $neg)
+//   (func $dispatch_tail (param $i i32) (param $x i32) (result i32)
+//     (return_call_indirect $tab (type $unary) (local.get $x) (local.get $i)))
+//
+// The size of the table is read twice before the call and once after it (and not used): the two
+// before are one, the call between the reads is unknown and so the one after is not merged, and it
+// is removed because nothing uses it. The calls, the element segment and the table stay.
+// CHECK-LABEL: builtin.module public @dispatch_table {
+// OPT-LABEL: builtin.module public @dispatch_table {
+builtin.module public @dispatch_table {
+    // OPT: wasm.table private @tab : 3 x !wasm.funcref;
+    // OPT-NEXT: wasm.elem private @init : @tab at 0 [@inc, @dbl, @neg];
+    wasm.table private @tab : 3 x !wasm.funcref;
+    wasm.elem private @init : @tab at 0 [@inc, @dbl, @neg];
+
+    builtin.function private extern("C") @inc(%x: i32) -> i32 {
+        %one = wasm.const 1 : i32;
+        %r = wasm.add %x, %one;
+        builtin.ret %r : (i32);
+    };
+    builtin.function private extern("C") @dbl(%x: i32) -> i32 {
+        %one = wasm.const 1 : i32;
+        %r = wasm.shl %x, %one;
+        builtin.ret %r : (i32);
+    };
+    builtin.function private extern("C") @neg(%x: i32) -> i32 {
+        %zero = wasm.const 0 : i32;
+        %r = wasm.sub %zero, %x;
+        builtin.ret %r : (i32);
+    };
+
+    // OPT-LABEL: builtin.function public extern("C") @dispatch(
+    // OPT-SAME: [[I:%[0-9]+]]: i32, [[X:%[0-9]+]]: i32) -> i32 {
+    // OPT-NEXT: [[MINUS:%[0-9]+]] = wasm.const -1 : i32;
+    // OPT-NEXT: [[SIZE:%[0-9]+]] = wasm.table_size @tab;
+    // OPT-NEXT: [[IN:%[0-9]+]] = wasm.lt_u [[I]], [[SIZE]];
+    // OPT-NEXT: [[R:%[0-9]+]] = wasm.if [[IN]], [[X]] then {
+    // OPT-NEXT: ^[[T:block[0-9]+]]([[V:%[0-9]+]]: i32):
+    // OPT-NEXT: [[C:%[0-9]+]] = wasm.call_indirect @tab, [[I]]([[V]]) : extern("C") (i32) -> i32;
+    // OPT-NEXT: wasm.end [[C]] : (i32);
+    // OPT-NEXT: } else {
+    // OPT-NEXT: ^[[E:block[0-9]+]]({{%[0-9]+}}: i32):
+    // OPT-NEXT: wasm.end [[MINUS]] : (i32);
+    // OPT-NEXT: } : (i32, i32) -> (i32);
+    // OPT-NEXT: builtin.ret [[R]] : (i32);
+    builtin.function public extern("C") @dispatch(%i: i32, %x: i32) -> i32 {
+        %size = wasm.table_size @tab;
+        %size_again = wasm.table_size @tab;
+        %in = wasm.lt_u %i, %size_again;
+        %r = wasm.if %in, %x then {
+        ^taken(%v: i32):
+            %c = wasm.call_indirect @tab, %i(%v) : extern("C") (i32) -> i32;
+            %after = wasm.table_size @tab;
+            wasm.end %c : (i32);
+        } else {
+        ^missed(%w: i32):
+            %minus = wasm.const -1 : i32;
+            wasm.end %minus : (i32);
+        } : (i32, i32) -> (i32);
+        %unused = wasm.add %size, %size;
+        builtin.ret %r : (i32);
+    };
+
+    // OPT-LABEL: builtin.function public extern("C") @dispatch_tail(
+    // OPT-SAME: [[I:%[0-9]+]]: i32, [[X:%[0-9]+]]: i32) -> i32 {
+    // OPT-NEXT: wasm.return_call_indirect @tab, [[I]]([[X]]) : extern("C") (i32) -> i32;
+    builtin.function public extern("C") @dispatch_tail(%i: i32, %x: i32) -> i32 {
+        wasm.return_call_indirect @tab, %i(%x) : extern("C") (i32) -> i32;
+    };
+};
+
+// -----
+
+// Program 5: a switch. `@pick` chooses among four results by `wasm.br_table` in four nested
+// blocks, the way a compiler lowers a dense `switch`: the table leaves the innermost block for
+// the entry of its index (0, 1, 2) or the default (3, the outermost of the four), and the code
+// after each block's `end` is the case, which leaves the outer block with its result by a branch
+// to it. The text it corresponds to:
+//
+//   (block $out (result i32)
+//     (block $default (block $case2 (block $case1 (block $case0
+//       (br_table $case0 $case1 $case2 $default (local.get $i))))
+//       (br $out (i32.const 10)))             ;; after $case0
+//       ...
+//
+// The square that case 2 computes again is the one the function computed before the table; the
+// unused shift goes; the table, every case and every branch stay.
+// CHECK-LABEL: builtin.module public @switch {
+// OPT-LABEL: builtin.module public @switch {
+builtin.module public @switch {
+    // OPT-LABEL: builtin.function public extern("C") @pick(
+    // OPT-SAME: [[I:%[0-9]+]]: i32) -> i32 {
+    // OPT: wasm.br_table [[I]] [{
+    // OPT-NEXT: wasm.br 0 : ();
+    // OPT-NEXT: }, {
+    // OPT-NEXT: wasm.br 1 : ();
+    // OPT-NEXT: }, {
+    // OPT-NEXT: wasm.br 2 : ();
+    // OPT-NEXT: }] default {
+    // OPT-NEXT: wasm.br 3 : ();
+    // OPT-NEXT: } : (i32);
+    // OPT: wasm.br 3 {{%[0-9]+}} : (i32);
+    // OPT: wasm.br 2 {{%[0-9]+}} : (i32);
+    // OPT: wasm.br 1 [[SQ:%[0-9]+]] : (i32);
+    // OPT-NOT: wasm.mul [[I]], [[I]]
+    // OPT-NOT: wasm.shl
+    // OPT: wasm.end {{%[0-9]+}} : (i32);
+    builtin.function public extern("C") @pick(%i: i32) -> i32 {
+        %sq = wasm.mul %i, %i;
+        %dead = wasm.shl %i, %i;
+        %r = wasm.block {
+            wasm.block {
+                wasm.block {
+                    wasm.block {
+                        wasm.block {
+                            wasm.br_table %i [{
+                                wasm.br 0 : ();
+                            }, {
+                                wasm.br 1 : ();
+                            }, {
+                                wasm.br 2 : ();
+                            }] default {
+                                wasm.br 3 : ();
+                            } : (i32);
+                        } : () -> ();
+                        %c0 = wasm.const 10 : i32;
+                        wasm.br 3 %c0 : (i32);
+                    } : () -> ();
+                    %c1 = wasm.const 20 : i32;
+                    wasm.br 2 %c1 : (i32);
+                } : () -> ();
+                %sq2 = wasm.mul %i, %i;
+                wasm.br 1 %sq2 : (i32);
+            } : () -> ();
+            %c3 = wasm.const 40 : i32;
+            wasm.end %c3 : (i32);
+        } : () -> (i32);
+        %sum = wasm.add %r, %sq;
+        builtin.ret %sum : (i32);
+    };
+};
+
+// -----
+
+// Program 6: imports and exports. `@log` and `@base` come from the module `env`; `@log` is
+// declared and `@base` has a link name that differs from its symbol. The function `@bump`, the
+// memory and the global `@counter` are exported. A global's initializer is a region of constant
+// instructions and stays, as does the call to the import. The text it corresponds to:
+//
+//   (import "env" "log_i32" (func $log (param i32)))
+//   (import "env" "heap_base" (global $base i32))
+//   (memory $mem (export "memory") 1 16)
+//   (global $counter (export "counter") (mut i32) (i32.const 0))
+//   (func (export "bump") (param $by i32) (result i32) ...)
+// CHECK-LABEL: builtin.module public @imports_and_exports {
+// OPT-LABEL: builtin.module public @imports_and_exports {
+builtin.module public @imports_and_exports {
+    // OPT: builtin.function public extern("C") @log(
+    // OPT-SAME: i32) attributes { link_name = #builtin.string<"log_i32">, wasm.import_module = #builtin.string<"env"> };
+    builtin.function public extern("C") @log(i32) attributes { link_name = "log_i32", wasm.import_module = "env" };
+    // OPT-NEXT: wasm.global private @base : i32 attributes { link_name = #builtin.string<"heap_base">, wasm.import_module = #builtin.string<"env"> };
+    wasm.global private @base : i32 attributes { link_name = "heap_base", wasm.import_module = "env" };
+    // OPT-NEXT: wasm.memory public @mem : 1..16 attributes { wasm.export_name = #builtin.string<"memory"> };
+    wasm.memory public @mem : 1..16 attributes { wasm.export_name = "memory" };
+    // OPT-NEXT: wasm.global public @counter : mut i32 {
+    // OPT-NEXT: {{%[0-9]+}} = wasm.const 0 : i32;
+    // OPT-NEXT: } attributes { wasm.export_name = #builtin.string<"counter"> };
+    wasm.global public @counter : mut i32 {
+        %zero = wasm.const 0 : i32;
+    } attributes { wasm.export_name = "counter" };
+
+    // The two reads of the immutable `@base` are one; the read of `@counter` that nothing uses goes;
+    // the write to the counter and the call stay.
+    // OPT-LABEL: builtin.function public extern("C") @bump(
+    // OPT-SAME: [[BY:%[0-9]+]]: i32) -> i32 {
+    // OPT-NEXT: [[BASE:%[0-9]+]] = wasm.global_get @base : i32;
+    // OPT-NEXT: [[C:%[0-9]+]] = wasm.global_get @counter : i32;
+    // OPT-NEXT: [[N:%[0-9]+]] = wasm.add [[C]], [[BY]];
+    // OPT-NEXT: wasm.global_set @counter, [[N]];
+    // OPT-NEXT: builtin.call @log([[N]]) : extern("C") (i32);
+    // OPT-NEXT: [[R:%[0-9]+]] = wasm.add [[N]], [[BASE]];
+    // OPT-NEXT: builtin.ret [[R]] : (i32);
+    // OPT-NEXT: } attributes { wasm.export_name = #builtin.string<"bump"> };
+    builtin.function public extern("C") @bump(%by: i32) -> i32 {
+        %base = wasm.global_get @base : i32;
+        %base_again = wasm.global_get @base : i32;
+        %c = wasm.global_get @counter : i32;
+        %n = wasm.add %c, %by;
+        wasm.global_set @counter, %n;
+        builtin.call @log(%n) : extern("C") (i32);
+        %stale = wasm.global_get @counter : i32;
+        %r = wasm.add %n, %base_again;
+        builtin.ret %r : (i32);
+    } attributes { wasm.export_name = "bump" };
+};
+
+// -----
+
+// Program 7: floats. `@scale` reads an `i64` that may hold a boxed value: a double is stored as
+// its own bits, and anything that is a NaN as a float is a tagged value of another kind. When the
+// bits are a double, `@scale` multiplies it by an integer and gives the product as a saturated
+// integer (`trunc_sat_s`: no trap on a NaN or an overflow); otherwise 0. The comparison `ne` of
+// a value with itself is true exactly for a NaN. `@is_number` is the test alone, and `@round_trip`
+// stores the bits a float has, so that the reinterpretation back is the identity. The text it
+// corresponds to:
+//
+//   (func $scale (param $bits i64) (param $k i32) (result i64)
+//     (local $f f64)
+//     (local.set $f (f64.reinterpret_i64 (local.get $bits)))
+//     (select (i64.trunc_sat_f64_s
+//               (f64.mul (local.get $f) (f64.convert_i32_s (local.get $k))))
+//             (i64.const 0)
+//             (f64.eq (local.get $f) (local.get $f))))
+//
+// The second reinterpretation of the bits is the first; the unused square root goes.
+// CHECK-LABEL: builtin.module public @floats {
+// OPT-LABEL: builtin.module public @floats {
+builtin.module public @floats {
+    // OPT-LABEL: builtin.function public extern("C") @scale(
+    // OPT-SAME: [[BITS:%[0-9]+]]: i64, [[K:%[0-9]+]]: i32) -> i64 {
+    // OPT-NEXT: [[ZERO:%[0-9]+]] = wasm.const 0 : i64;
+    // OPT-NEXT: [[F:%[0-9]+]] = wasm.reinterpret [[BITS]] <{ ty = #builtin.type<f64> }>;
+    // OPT-NEXT: [[KF:%[0-9]+]] = wasm.convert_s [[K]] <{ ty = #builtin.type<f64> }>;
+    // OPT-NEXT: [[Y:%[0-9]+]] = wasm.mul [[F]], [[KF]];
+    // OPT-NEXT: [[FIXED:%[0-9]+]] = wasm.trunc_sat_s [[Y]] <{ ty = #builtin.type<i64> }>;
+    // OPT-NEXT: [[NAN:%[0-9]+]] = wasm.ne [[F]], [[F]];
+    // OPT-NEXT: [[NUM:%[0-9]+]] = wasm.eqz [[NAN]];
+    // OPT-NEXT: [[R:%[0-9]+]] = wasm.select [[NUM]], [[FIXED]], [[ZERO]];
+    // OPT-NEXT: builtin.ret [[R]] : (i64);
+    builtin.function public extern("C") @scale(%bits: i64, %k: i32) -> i64 {
+        %f = wasm.reinterpret %bits <{ ty = f64 }>;
+        %again = wasm.reinterpret %bits <{ ty = f64 }>;
+        %root = wasm.sqrt %again;
+        %kf = wasm.convert_s %k <{ ty = f64 }>;
+        %y = wasm.mul %f, %kf;
+        %fixed = wasm.trunc_sat_s %y <{ ty = i64 }>;
+        %nan = wasm.ne %f, %f;
+        %num = wasm.eqz %nan;
+        %zero = wasm.const 0 : i64;
+        %r = wasm.select %num, %fixed, %zero;
+        builtin.ret %r : (i64);
+    };
+
+    // The test alone.
+    // OPT-LABEL: builtin.function public extern("C") @is_number(
+    // OPT-SAME: [[BITS:%[0-9]+]]: i64) -> i32 {
+    // OPT-NEXT: [[F:%[0-9]+]] = wasm.reinterpret [[BITS]] <{ ty = #builtin.type<f64> }>;
+    // OPT-NEXT: [[NAN:%[0-9]+]] = wasm.ne [[F]], [[F]];
+    // OPT-NEXT: [[R:%[0-9]+]] = wasm.eqz [[NAN]];
+    // OPT-NEXT: builtin.ret [[R]] : (i32);
+    builtin.function public extern("C") @is_number(%bits: i64) -> i32 {
+        %f = wasm.reinterpret %bits <{ ty = f64 }>;
+        %nan = wasm.ne %f, %f;
+        %r = wasm.eqz %nan;
+        builtin.ret %r : (i32);
+    };
+
+    // Float constants: half of the largest finite double.
+    // OPT-LABEL: builtin.function public extern("C") @half_max(
+    // OPT-SAME: ) -> f64 {
+    // OPT-NEXT: [[MAX:%[0-9]+]] = wasm.constf 1.7976931348623157e308 : f64;
+    // OPT-NEXT: [[TWO:%[0-9]+]] = wasm.constf 2.0 : f64;
+    // OPT-NEXT: [[H:%[0-9]+]] = wasm.div [[MAX]], [[TWO]];
+    // OPT-NEXT: builtin.ret [[H]] : (f64);
+    builtin.function public extern("C") @half_max() -> f64 {
+        %max = wasm.constf 1.7976931348623157e308 : f64;
+        %two = wasm.constf 2.0 : f64;
+        %h = wasm.div %max, %two;
+        builtin.ret %h : (f64);
+    };
+};

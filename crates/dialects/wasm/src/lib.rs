@@ -40,6 +40,17 @@
 //! | Comparisons | [Eqz], [struct@Eq], [Ne], [LtS], [LtU], [GtS], [GtU], [LeS], [LeU], [GeS], [GeU], [Lt], [Gt], [Le], [Ge] | one or two numbers; `i32` result |
 //! | Conversions | [Wrap], [ExtendS], [ExtendU], [TruncS], [TruncU], [TruncSatS], [TruncSatU], [ConvertS], [ConvertU], [Promote], [Demote], [Reinterpret] | one number; the result type is written |
 //!
+//! The conversions are named for the Wasm instruction without the type it comes from, which the
+//! operand carries: [Wrap] is `i32.wrap_i64`, [ExtendS] and [ExtendU] are `i64.extend_i32_s` and
+//! `i64.extend_i32_u`, [TruncS] and [TruncU] are `i32.trunc_f32_s` .. `i64.trunc_f64_u` (they
+//! trap), [TruncSatS] and [TruncSatU] are the `trunc_sat` forms (they do not), [ConvertS] and
+//! [ConvertU] are `f32.convert_i32_s` .. `f64.convert_i64_u`, [Promote] is `f64.promote_f32`,
+//! [Demote] is `f32.demote_f64`, and [Reinterpret] is the four `reinterpret` instructions
+//! (`i32.reinterpret_f32`, `f32.reinterpret_i32`, `i64.reinterpret_f64`, `f64.reinterpret_i64`).
+//! The comparisons are the `eq`, `ne`, `eqz`, `lt_s`, `lt_u` .. `ge_u` of the integers and the `lt`,
+//! `gt`, `le`, `ge` of the floats (`eq` and `ne` take either); [Const] and [ConstF] are `i32.const`
+//! .. `f64.const`, and [Select] is the typed `select`.
+//!
 //! [WasmOpBuilder] builds them. [ConstantInstruction] marks the operations a Wasm constant
 //! expression may hold, and [is_constant_instruction] is the precise question to ask about one.
 //!

@@ -79,6 +79,11 @@ roundtrip/            both forms read back
 dialects/<dialect>/   a dialect's folds (fold.runic) and canonicalization patterns (canonicalize.runic),
                       and the operations added after its parse test was written (tail-call.runic,
                       float.runic, float-conv.runic), with their own folds beside them
+                      The `wasm` dialect has no folds: `dialects/wasm/` holds its effects (effects.runic),
+                      the passes on its control flow (passes.runic) and whole programs written
+                      in it (programs.runic, separated by `// -----` and read with
+                      `--split-input-file`); its parse tests are `parse/wasm-*.runic` and its
+                      verifier's rules `verify/wasm-*.runic`
 transforms/<pass>/    a pass: cse, dce, sccp, canonicalizer, control-flow-sink, sink
                       (sink-operand-defs), local2reg, cfg-to-scf
 transforms/pipeline/   several passes in a row, where what matters is what survives all of them
