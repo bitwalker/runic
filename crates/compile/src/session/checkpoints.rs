@@ -155,6 +155,18 @@ impl<'a> Checkpoints<'a> {
             )?;
             let emitted = match output.destination() {
                 Destination::File(path) => {
+                    // The output directory is the compilation's to make; the directory of a file
+                    // the request names itself is not.
+                    if let Some(dir) = self.session.request().output_dir.as_deref()
+                        && path.parent() == Some(dir)
+                    {
+                        std::fs::create_dir_all(dir).map_err(|error| {
+                            Report::msg(format!(
+                                "could not create the output directory '{}': {error}",
+                                dir.display()
+                            ))
+                        })?;
+                    }
                     write_file(path, &bytes).map_err(|error| {
                         Report::msg(format!(
                             "could not write the output of checkpoint '{checkpoint}' to '{}': \
