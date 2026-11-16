@@ -1,0 +1,99 @@
+// RUN: runic-opt %s | filecheck %s
+// RUN: runic-opt %s --verify-roundtrip | filecheck %s
+// RUN: runic-opt %s --print-generic | runic-opt - --verify-roundtrip | filecheck %s
+// RUN: runic-opt %s --print-generic | filecheck %s --check-prefix=GENERIC
+
+// The floating-point operations of `arith`: `arith.constantf` (a decimal literal before its type,
+// or the bits of the value in hexadecimal, which a NaN and an infinity are written as),
+// `arith.addf`, `subf`, `mulf`, `divf`, `negf`, and `arith.cmpf` with each of its sixteen
+// predicates. The operations are written as their integer neighbours are: no type after the
+// operands, and an attribute dictionary last. The generic form is read back by the third RUN line.
+builtin.module public @arith_float {
+    // CHECK-LABEL: @constants(
+    // CHECK-NEXT: arith.constantf 1.5 : f64;
+    // CHECK-NEXT: arith.constantf -2.5 : f32;
+    // CHECK-NEXT: arith.constantf -0.0 : f64;
+    // CHECK-NEXT: arith.constantf 0.0025 : f64;
+    // CHECK-NEXT: arith.constantf 1.0e100 : f64;
+    // CHECK-NEXT: arith.constantf 0x7ff8000000000000 : f64;
+    // CHECK-NEXT: arith.constantf 0xff800000 : f32;
+    // CHECK-NEXT: arith.constantf 1.5 : f32 attributes { note = #builtin.i32<1> };
+    // GENERIC-LABEL: "builtin.function"() <{ name = #builtin.ident<@constants>
+    // GENERIC: = "arith.constantf"() <{ value = #builtin.float<1.5 : f64> }> : () -> f64;
+    builtin.function public extern("C") @constants() {
+        %a = arith.constantf 1.5 : f64;
+        %b = arith.constantf -2.5 : f32;
+        %c = arith.constantf -0.0 : f64;
+        %d = arith.constantf 2.5e-3 : f64;
+        %e = arith.constantf 1e100 : f64;
+        %f = arith.constantf 0x7ff8000000000000 : f64;
+        %g = arith.constantf 0xff800000 : f32;
+        %h = arith.constantf 1.5 : f32 attributes { note = #builtin.i32<1> };
+        builtin.ret;
+    };
+
+    // CHECK-LABEL: @arithmetic(
+    // CHECK-SAME: [[A:%[0-9]+]]: f64, [[B:%[0-9]+]]: f64, [[X:%[0-9]+]]: f32, [[Y:%[0-9]+]]: f32) -> f64 {
+    // CHECK-NEXT: arith.addf [[A]], [[B]];
+    // CHECK-NEXT: arith.subf [[A]], [[B]];
+    // CHECK-NEXT: arith.mulf [[A]], [[B]];
+    // CHECK-NEXT: arith.divf [[A]], [[B]];
+    // CHECK-NEXT: arith.negf [[A]];
+    // CHECK-NEXT: arith.addf [[X]], [[Y]];
+    // CHECK-NEXT: arith.negf [[Y]] attributes { note = #builtin.i32<2> };
+    // CHECK-NEXT: arith.divf [[X]], [[Y]] attributes { note = #builtin.i32<3> };
+    // GENERIC: = "arith.addf"(%{{[0-9]+}}, %{{[0-9]+}}) : (f64, f64) -> f64;
+    // GENERIC: = "arith.negf"(%{{[0-9]+}}) : f64 -> f64;
+    builtin.function public extern("C") @arithmetic(%a: f64, %b: f64, %x: f32, %y: f32) -> f64 {
+        %sum = arith.addf %a, %b;
+        %difference = arith.subf %a, %b;
+        %product = arith.mulf %a, %b;
+        %quotient = arith.divf %a, %b;
+        %negation = arith.negf %a;
+        %single = arith.addf %x, %y;
+        %negated = arith.negf %y attributes { note = #builtin.i32<2> };
+        %divided = arith.divf %x, %y attributes { note = #builtin.i32<3> };
+        builtin.ret %sum : (f64);
+    };
+
+    // CHECK-LABEL: @comparisons(
+    // CHECK-SAME: [[A:%[0-9]+]]: f64, [[B:%[0-9]+]]: f64, [[X:%[0-9]+]]: f32, [[Y:%[0-9]+]]: f32) -> i1 {
+    // CHECK-NEXT: arith.cmpf false [[A]], [[B]];
+    // CHECK-NEXT: arith.cmpf oeq [[A]], [[B]];
+    // CHECK-NEXT: arith.cmpf ogt [[A]], [[B]];
+    // CHECK-NEXT: arith.cmpf oge [[A]], [[B]];
+    // CHECK-NEXT: arith.cmpf olt [[A]], [[B]];
+    // CHECK-NEXT: arith.cmpf ole [[A]], [[B]];
+    // CHECK-NEXT: arith.cmpf one [[A]], [[B]];
+    // CHECK-NEXT: arith.cmpf ord [[A]], [[B]];
+    // CHECK-NEXT: arith.cmpf ueq [[A]], [[B]];
+    // CHECK-NEXT: arith.cmpf ugt [[A]], [[B]];
+    // CHECK-NEXT: arith.cmpf uge [[A]], [[B]];
+    // CHECK-NEXT: arith.cmpf ult [[A]], [[B]];
+    // CHECK-NEXT: arith.cmpf ule [[A]], [[B]];
+    // CHECK-NEXT: arith.cmpf une [[A]], [[B]];
+    // CHECK-NEXT: arith.cmpf uno [[A]], [[B]];
+    // CHECK-NEXT: arith.cmpf true [[A]], [[B]];
+    // CHECK-NEXT: arith.cmpf olt [[X]], [[Y]] attributes { note = #builtin.i32<4> };
+    // GENERIC: = "arith.cmpf"(%{{[0-9]+}}, %{{[0-9]+}}) <{ predicate = #arith.cmp_f_predicate<false> }> : (f64, f64) -> i1;
+    builtin.function public extern("C") @comparisons(%a: f64, %b: f64, %x: f32, %y: f32) -> i1 {
+        %p0 = arith.cmpf false %a, %b;
+        %p1 = arith.cmpf oeq %a, %b;
+        %p2 = arith.cmpf ogt %a, %b;
+        %p3 = arith.cmpf oge %a, %b;
+        %p4 = arith.cmpf olt %a, %b;
+        %p5 = arith.cmpf ole %a, %b;
+        %p6 = arith.cmpf one %a, %b;
+        %p7 = arith.cmpf ord %a, %b;
+        %p8 = arith.cmpf ueq %a, %b;
+        %p9 = arith.cmpf ugt %a, %b;
+        %p10 = arith.cmpf uge %a, %b;
+        %p11 = arith.cmpf ult %a, %b;
+        %p12 = arith.cmpf ule %a, %b;
+        %p13 = arith.cmpf une %a, %b;
+        %p14 = arith.cmpf uno %a, %b;
+        %p15 = arith.cmpf true %a, %b;
+        %single = arith.cmpf olt %x, %y attributes { note = #builtin.i32<4> };
+        builtin.ret %p0 : (i1);
+    };
+};

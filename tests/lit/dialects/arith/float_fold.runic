@@ -1,0 +1,130 @@
+// RUN: runic-opt %s -p canonicalizer | filecheck %s
+// RUN: runic-opt %s -p canonicalizer | runic-opt - --verify-roundtrip | filecheck %s
+
+// The folds of the floating-point operations of `arith`: an operation whose operands are constants
+// folds to a constant computed in the width of its type, and the constants it read are erased as
+// dead. A fold never gives a NaN, since which NaN an operation gives differs between hosts and
+// engines: `0.0 / 0.0`, `inf - inf` and an operand that is a NaN stay as they are, while
+// `1.0 / 0.0` is an infinity and does not trap. A comparison folds even on NaNs. An operation
+// with one constant operand does not fold: `x + 0.0` is not `x`, it changes `-0.0`. The second RUN
+// line reads the output back.
+builtin.module public @arith_float_fold {
+    // CHECK-LABEL: @arithmetic(
+    // CHECK-NEXT: [[SUM:%[0-9]+]] = arith.constantf 3.75 : f64;
+    // CHECK-NEXT: [[DIFFERENCE:%[0-9]+]] = arith.constantf -0.75 : f64;
+    // CHECK-NEXT: [[PRODUCT:%[0-9]+]] = arith.constantf 3.0 : f64;
+    // CHECK-NEXT: [[QUOTIENT:%[0-9]+]] = arith.constantf 0.25 : f64;
+    // CHECK-NEXT: [[NEGATION:%[0-9]+]] = arith.constantf -1.5 : f64;
+    // CHECK-NEXT: builtin.ret [[SUM]], [[DIFFERENCE]], [[PRODUCT]], [[QUOTIENT]], [[NEGATION]] : (f64, f64, f64, f64, f64);
+    builtin.function public extern("C") @arithmetic() -> (f64, f64, f64, f64, f64) {
+        %a = arith.constantf 1.5 : f64;
+        %b = arith.constantf 2.25 : f64;
+        %c = arith.constantf 2.0 : f64;
+        %d = arith.constantf 1.0 : f64;
+        %e = arith.constantf 4.0 : f64;
+        %sum = arith.addf %a, %b;
+        %difference = arith.subf %a, %b;
+        %product = arith.mulf %a, %c;
+        %quotient = arith.divf %d, %e;
+        %negation = arith.negf %a;
+        builtin.ret %sum, %difference, %product, %quotient, %negation : (f64, f64, f64, f64, f64);
+    };
+
+    // An `f32` operation is computed in `f32`: 2^24 + 1 is not representable and rounds to 2^24.
+    // CHECK-LABEL: @single(
+    // CHECK-NEXT: [[R0:%[0-9]+]] = arith.constantf 16777216.0 : f32;
+    // CHECK-NEXT: builtin.ret [[R0]] : (f32);
+    builtin.function public extern("C") @single() -> f32 {
+        %a = arith.constantf 16777216.0 : f32;
+        %b = arith.constantf 1.0 : f32;
+        %sum = arith.addf %a, %b;
+        builtin.ret %sum : (f32);
+    };
+
+    // A division by zero does not trap: it is an infinity of the sign of the quotient.
+    // CHECK-LABEL: @division_by_zero(
+    // CHECK-NEXT: [[POSITIVE:%[0-9]+]] = arith.constantf 0x7ff0000000000000 : f64;
+    // CHECK-NEXT: [[NEGATIVE:%[0-9]+]] = arith.constantf 0xfff0000000000000 : f64;
+    // CHECK-NEXT: builtin.ret [[POSITIVE]], [[NEGATIVE]] : (f64, f64);
+    builtin.function public extern("C") @division_by_zero() -> (f64, f64) {
+        %one = arith.constantf 1.0 : f64;
+        %zero = arith.constantf 0.0 : f64;
+        %minus = arith.constantf -1.0 : f64;
+        %positive = arith.divf %one, %zero;
+        %negative = arith.divf %minus, %zero;
+        builtin.ret %positive, %negative : (f64, f64);
+    };
+
+    // Negation flips the sign bit: a zero keeps being a zero, an infinity an infinity.
+    // CHECK-LABEL: @negation(
+    // CHECK-NEXT: [[Z:%[0-9]+]] = arith.constantf -0.0 : f64;
+    // CHECK-NEXT: [[I:%[0-9]+]] = arith.constantf 0xff800000 : f32;
+    // CHECK-NEXT: builtin.ret [[Z]], [[I]] : (f64, f32);
+    builtin.function public extern("C") @negation() -> (f64, f32) {
+        %zero = arith.constantf 0.0 : f64;
+        %infinity = arith.constantf 0x7f800000 : f32;
+        %negated_zero = arith.negf %zero;
+        %negated_infinity = arith.negf %infinity;
+        builtin.ret %negated_zero, %negated_infinity : (f64, f32);
+    };
+
+    // What would be a NaN does not fold: `0.0 / 0.0`, `inf - inf`, `0.0 * inf`, and every
+    // operation on a NaN operand, `arith.negf` of a NaN included. The constants stay as they are.
+    // CHECK-LABEL: @nan(
+    // CHECK: arith.divf
+    // CHECK: arith.subf
+    // CHECK: arith.mulf
+    // CHECK: arith.addf
+    // CHECK: arith.negf
+    builtin.function public extern("C") @nan() -> (f64, f64, f64, f64, f64) {
+        %zero = arith.constantf 0.0 : f64;
+        %infinity = arith.constantf 0x7ff0000000000000 : f64;
+        %nan = arith.constantf 0x7ff8000000000000 : f64;
+        %one = arith.constantf 1.0 : f64;
+        %a = arith.divf %zero, %zero;
+        %b = arith.subf %infinity, %infinity;
+        %c = arith.mulf %zero, %infinity;
+        %d = arith.addf %nan, %one;
+        %e = arith.negf %nan;
+        builtin.ret %a, %b, %c, %d, %e : (f64, f64, f64, f64, f64);
+    };
+
+    // A comparison is deterministic and folds, NaNs included: a NaN is unordered with everything,
+    // zeros of either sign are equal, and `false` and `true` need no constants.
+    // CHECK-LABEL: @comparisons(
+    // CHECK-SAME: [[X:%[0-9]+]]: f64) -> (i1, i1, i1, i1, i1, i1) {
+    // CHECK-NEXT: [[TRUE:%[0-9]+]] = arith.constant 1 : i1;
+    // CHECK-NEXT: [[FALSE:%[0-9]+]] = arith.constant 0 : i1;
+    // CHECK-NEXT: builtin.ret [[TRUE]], [[FALSE]], [[TRUE]], [[TRUE]], [[FALSE]], [[TRUE]] : (i1, i1, i1, i1, i1, i1);
+    builtin.function public extern("C") @comparisons(%x: f64) -> (i1, i1, i1, i1, i1, i1) {
+        %one = arith.constantf 1.0 : f64;
+        %two = arith.constantf 2.0 : f64;
+        %nan = arith.constantf 0x7ff8000000000000 : f64;
+        %zero = arith.constantf 0.0 : f64;
+        %negative_zero = arith.constantf -0.0 : f64;
+        %a = arith.cmpf olt %one, %two;
+        %b = arith.cmpf oeq %nan, %nan;
+        %c = arith.cmpf une %nan, %nan;
+        %d = arith.cmpf oeq %zero, %negative_zero;
+        %e = arith.cmpf false %x, %x;
+        %f = arith.cmpf true %x, %one;
+        builtin.ret %a, %b, %c, %d, %e, %f : (i1, i1, i1, i1, i1, i1);
+    };
+
+    // With one operand that is not a constant nothing folds, whatever the constant is.
+    // CHECK-LABEL: @one_constant(
+    // CHECK-SAME: [[X:%[0-9]+]]: f64) -> (f64, f64, f64, i1) {
+    // CHECK: arith.addf [[X]],
+    // CHECK-NEXT: arith.mulf
+    // CHECK-NEXT: arith.negf [[X]]
+    // CHECK-NEXT: arith.cmpf oeq [[X]],
+    builtin.function public extern("C") @one_constant(%x: f64) -> (f64, f64, f64, i1) {
+        %zero = arith.constantf 0.0 : f64;
+        %one = arith.constantf 1.0 : f64;
+        %sum = arith.addf %x, %zero;
+        %product = arith.mulf %one, %x;
+        %negation = arith.negf %x;
+        %equal = arith.cmpf oeq %x, %one;
+        builtin.ret %sum, %product, %negation, %equal : (f64, f64, f64, i1);
+    };
+};

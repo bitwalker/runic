@@ -1,0 +1,112 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// The diagnostics about the floating-point operations of `arith`: the literal of a constant and
+// its type, the predicate of a comparison, and operands that are not floats of one type. The
+// parser stops at its first error, so each case holds one.
+
+builtin.function public extern("C") @integer_literal() {
+    %x = arith.constantf 1 : f64; // expected-error {{invalid float literal}}
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @integer_type() {
+    %x = arith.constantf 1.5 : i32; // expected-error {{invalid operation type}}
+    builtin.ret;
+};
+
+// -----
+
+// A hex literal is the bits of the value: a `f64` has sixteen digits.
+builtin.function public extern("C") @short_bits() {
+    %x = arith.constantf 0x3ff8 : f64; // expected-error {{invalid float literal}}
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @negative_bits() {
+    %x = arith.constantf -0x7ff8000000000000 : f64; // expected-error {{invalid float literal}}
+    builtin.ret;
+};
+
+// -----
+
+// A value too large for its type is not an infinity: that is written as bits.
+builtin.function public extern("C") @too_large() {
+    %x = arith.constantf 1e400 : f64; // expected-error {{invalid float literal}}
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @no_type() {
+    %x = arith.constantf 1.5; // expected-error {{unexpected token ';', expected :}}
+    builtin.ret;
+};
+
+// -----
+
+// The predicates are MLIR's: `lt` and `eq` are the integer ones, or are not predicates at all.
+builtin.function public extern("C") @integer_predicate(%a: f64) {
+    %x = arith.cmpf slt %a, %a; // expected-error {{unexpected token 'slt', expected one of the keywords false, oeq}}
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @unordered_less(%a: f64) {
+    %x = arith.cmpf lt %a, %a; // expected-error {{unexpected token 'lt', expected one of the keywords}}
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @integer_operands(%a: i32) {
+    %x = arith.addf %a, %a; // expected-error {{invalid operand for 'arith.addf': expected a floating-point type, got i32}}
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @integer_negation(%a: i32) {
+    %x = arith.negf %a; // expected-error {{invalid operand for 'arith.negf': expected a floating-point type, got i32}}
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @integer_comparison(%a: i32) {
+    %x = arith.cmpf oeq %a, %a; // expected-error {{invalid operand for 'arith.cmpf': expected a floating-point type, got i32}}
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @mixed_widths(%a: f64, %b: f32) {
+    %x = arith.mulf %a, %b; // expected-error {{invalid operation arith.mulf}}
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @mixed_comparison(%a: f64, %b: f32) {
+    %x = arith.cmpf olt %a, %b; // expected-error {{invalid operation arith.cmpf}}
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @one_operand(%a: f64) {
+    %x = arith.addf %a; // expected-error {{expected 2 operands in this list, but found 1}}
+    builtin.ret;
+};
+
+// -----
+
+// A constant whose result type is not the type of its value, in the generic form.
+builtin.function public extern("C") @constant_type() {
+    %x = "arith.constantf"() <{ value = #builtin.float<1.5 : f32> }> : () -> f64; // expected-error {{this result is written as 'f64', but 'arith.constantf' gives it 'f32'}}
+    builtin.ret;
+};

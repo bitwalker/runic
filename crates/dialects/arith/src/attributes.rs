@@ -1,7 +1,8 @@
 use core::{cmp::Ordering, fmt, str::FromStr};
 
 use runic_ir::{
-    AttrPrinter, Int, SmallVec, attributes::AttrParser, derive::DialectAttribute, print::AsmPrinter,
+    AttrPrinter, Float, Int, SmallVec, attributes::AttrParser, derive::DialectAttribute,
+    print::AsmPrinter,
 };
 
 use crate::ArithDialect;
@@ -191,6 +192,196 @@ pub(crate) fn parse_predicate(
     Ok(keyword.as_str().parse::<CmpPredicate>().unwrap())
 }
 
+/// The relation `arith.cmpf` tests between its operands, MLIR's sixteen predicates.
+///
+/// The first letter says what a NaN operand does: an ordered (`o`) predicate is false when either
+/// operand is a NaN, an unordered (`u`) one is true. `ord` holds when neither operand is a NaN,
+/// `uno` when at least one is, `false` and `true` ignore the operands. Zeros of either sign are
+/// equal, and no NaN is equal to anything, itself included, so `one` and `une` differ on NaNs:
+/// `one` is the ordered "not equal", `une` the unordered one.
+///
+/// Text: `false`, `oeq`, `ogt`, `oge`, `olt`, `ole`, `one`, `ord`, `ueq`, `ugt`, `uge`, `ult`,
+/// `ule`, `une`, `uno`, `true`. As an attribute, `#arith.cmp_f_predicate<olt>`; a body-less
+/// `#arith.cmp_f_predicate` is `oeq`.
+#[derive(DialectAttribute, Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[attribute(dialect = ArithDialect, default = "default_float_predicate", implements(AttrPrinter))]
+pub enum CmpFPredicate {
+    /// Always false.
+    False,
+    /// Ordered and equal.
+    Oeq,
+    /// Ordered and greater than.
+    Ogt,
+    /// Ordered and greater than or equal.
+    Oge,
+    /// Ordered and less than.
+    Olt,
+    /// Ordered and less than or equal.
+    Ole,
+    /// Ordered and not equal.
+    One,
+    /// Neither operand is a NaN.
+    Ord,
+    /// Unordered or equal.
+    Ueq,
+    /// Unordered or greater than.
+    Ugt,
+    /// Unordered or greater than or equal.
+    Uge,
+    /// Unordered or less than.
+    Ult,
+    /// Unordered or less than or equal.
+    Ule,
+    /// Unordered or not equal.
+    Une,
+    /// At least one operand is a NaN.
+    Uno,
+    /// Always true.
+    True,
+}
+
+/// The value of a body-less `#arith.cmp_f_predicate`.
+fn default_float_predicate(_context: &runic_ir::Context) -> CmpFPredicate {
+    CmpFPredicate::Oeq
+}
+
+impl CmpFPredicate {
+    /// Every predicate, in declaration order.
+    pub const ALL: [Self; 16] = [
+        Self::False,
+        Self::Oeq,
+        Self::Ogt,
+        Self::Oge,
+        Self::Olt,
+        Self::Ole,
+        Self::One,
+        Self::Ord,
+        Self::Ueq,
+        Self::Ugt,
+        Self::Uge,
+        Self::Ult,
+        Self::Ule,
+        Self::Une,
+        Self::Uno,
+        Self::True,
+    ];
+
+    /// Whether the predicate holds for `lhs` and `rhs`, by IEEE 754 comparison: a NaN is unordered
+    /// with everything, and `-0.0` equals `0.0`. Panics if the widths of the operands differ.
+    #[track_caller]
+    pub fn evaluate(self, lhs: Float, rhs: Float) -> bool {
+        assert_eq!(lhs.width(), rhs.width(), "operands of different widths");
+        // Both widths are exactly representable as an `f64`, which orders them as they order.
+        let widen = |value: Float| match (value.to_f32(), value.to_f64()) {
+            (Some(single), _) => f64::from(single),
+            (_, Some(double)) => double,
+            _ => unreachable!("a float is 32 or 64 bits wide"),
+        };
+        let (a, b) = (widen(lhs), widen(rhs));
+        let unordered = a.is_nan() || b.is_nan();
+        match self {
+            Self::False => false,
+            Self::Oeq => a == b,
+            Self::Ogt => a > b,
+            Self::Oge => a >= b,
+            Self::Olt => a < b,
+            Self::Ole => a <= b,
+            Self::One => !unordered && a != b,
+            Self::Ord => !unordered,
+            Self::Ueq => unordered || a == b,
+            Self::Ugt => unordered || a > b,
+            Self::Uge => unordered || a >= b,
+            Self::Ult => unordered || a < b,
+            Self::Ule => unordered || a <= b,
+            Self::Une => unordered || a != b,
+            Self::Uno => unordered,
+            Self::True => true,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::False => "false",
+            Self::Oeq => "oeq",
+            Self::Ogt => "ogt",
+            Self::Oge => "oge",
+            Self::Olt => "olt",
+            Self::Ole => "ole",
+            Self::One => "one",
+            Self::Ord => "ord",
+            Self::Ueq => "ueq",
+            Self::Ugt => "ugt",
+            Self::Uge => "uge",
+            Self::Ult => "ult",
+            Self::Ule => "ule",
+            Self::Une => "une",
+            Self::Uno => "uno",
+            Self::True => "true",
+        }
+    }
+}
+
+impl FromStr for CmpFPredicate {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::ALL
+            .into_iter()
+            .find(|predicate| predicate.as_str() == s)
+            .ok_or("unknown predicate")
+    }
+}
+
+impl fmt::Display for CmpFPredicate {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl runic_ir::formatter::PrettyPrint for CmpFPredicate {
+    fn render(&self) -> runic_ir::formatter::Document {
+        use runic_ir::formatter::*;
+        display(self)
+    }
+}
+
+impl AttrPrinter for CmpFPredicateAttr {
+    fn print(&self, printer: &mut AsmPrinter<'_>) {
+        printer.print_keyword(self.value.as_str());
+    }
+}
+
+impl AttrParser for CmpFPredicateAttr {
+    fn parse(
+        parser: &mut dyn runic_ir::parse::Parser<'_>,
+    ) -> runic_ir::parse::ParseResult<runic_ir::AttributeRef> {
+        let predicate = parse_float_predicate(parser)?;
+        Ok(parser
+            .context_rc()
+            .create_attribute::<CmpFPredicateAttr, _>(predicate)
+            .as_attribute_ref())
+    }
+}
+
+/// Parses one of the sixteen float predicate keywords; any other token is an error at its span.
+pub(crate) fn parse_float_predicate(
+    parser: &mut dyn runic_ir::parse::Parser<'_>,
+) -> runic_ir::parse::ParseResult<CmpFPredicate> {
+    use runic_ir::parse::Token;
+
+    // `true` and `false` are tokens of their own, not bare identifiers.
+    let keywords =
+        SmallVec::<[Token; 16]>::from_iter(CmpFPredicate::ALL.iter().map(
+            |predicate| match predicate {
+                CmpFPredicate::True => Token::True,
+                CmpFPredicate::False => Token::False,
+                predicate => Token::BareIdent(predicate.as_str()),
+            },
+        ));
+    let keyword = parser.parse_keyword_from(&keywords)?;
+    Ok(keyword.as_str().parse::<CmpFPredicate>().unwrap())
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::{rc::Rc, string::ToString};
@@ -206,11 +397,18 @@ mod tests {
         use runic_ir::testing::elements::{Row, check_every_kind};
 
         let context = Rc::new(Context::default());
-        let rows = [Row::new(
-            "predicate",
-            context.create_attribute::<CmpPredicateAttr, _>(CmpPredicate::Ult),
-            [],
-        )];
+        let rows = [
+            Row::new(
+                "predicate",
+                context.create_attribute::<CmpPredicateAttr, _>(CmpPredicate::Ult),
+                [],
+            ),
+            Row::new(
+                "float predicate",
+                context.create_attribute::<CmpFPredicateAttr, _>(CmpFPredicate::Uno),
+                [],
+            ),
+        ];
         check_every_kind(&context, &["arith"], &rows);
     }
 

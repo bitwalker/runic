@@ -1,6 +1,6 @@
 use runic_ir::{
-    Builder, BuilderExt, Int, OpBuilder, Overflow, ReadyAttr, Report, Signedness, SourceSpan, Type,
-    ValueRef, dialects::builtin::FunctionBuilder,
+    Builder, BuilderExt, Float, Int, OpBuilder, Overflow, ReadyAttr, Report, Signedness,
+    SourceSpan, Type, ValueRef, dialects::builtin::FunctionBuilder,
 };
 
 use crate::*;
@@ -58,6 +58,73 @@ pub trait ArithOpBuilder<'f, B: ?Sized + Builder> {
     fn isize(&mut self, value: i64, span: SourceSpan) -> ValueRef {
         let ty = self.builder().context().isize();
         self.int(Int::from(value), ty, span)
+    }
+
+    /// The float constant `value`, of the type its width gives: `f32` for a 32-bit value, `f64`
+    /// for a 64-bit one.
+    fn float(&mut self, value: Float, span: SourceSpan) -> ValueRef {
+        let attr = self.builder().context_rc().float_attr(value);
+        let op_builder = self.builder_mut().create::<Constantf, _>(span);
+        let constant = op_builder(ReadyAttr(attr)).unwrap();
+        constant.borrow().result().as_value_ref()
+    }
+
+    /// The `f32` constant `value`, bit for bit (a NaN keeps its payload).
+    fn f32(&mut self, value: f32, span: SourceSpan) -> ValueRef {
+        self.float(Float::from_f32(value), span)
+    }
+
+    /// The `f64` constant `value`, bit for bit (a NaN keeps its payload).
+    fn f64(&mut self, value: f64, span: SourceSpan) -> ValueRef {
+        self.float(Float::from_f64(value), span)
+    }
+
+    /// The floating-point sum, rounded to nearest, ties to even.
+    fn addf(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Addf, _>(span);
+        let op = op_builder(lhs, rhs)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// The floating-point difference, rounded to nearest, ties to even.
+    fn subf(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Subf, _>(span);
+        let op = op_builder(lhs, rhs)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// The floating-point product, rounded to nearest, ties to even.
+    fn mulf(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Mulf, _>(span);
+        let op = op_builder(lhs, rhs)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// The floating-point quotient, rounded to nearest, ties to even. It does not trap.
+    fn divf(&mut self, lhs: ValueRef, rhs: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Divf, _>(span);
+        let op = op_builder(lhs, rhs)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// The floating-point negation: the operand with its sign bit flipped.
+    fn negf(&mut self, operand: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Negf, _>(span);
+        let op = op_builder(operand)?;
+        Ok(op.borrow().result().as_value_ref())
+    }
+
+    /// The `i1` result of comparing the floats `lhs` and `rhs` with `predicate`.
+    fn cmpf(
+        &mut self,
+        predicate: CmpFPredicate,
+        lhs: ValueRef,
+        rhs: ValueRef,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Cmpf, _>(span);
+        let op = op_builder(lhs, rhs, predicate)?;
+        Ok(op.borrow().result().as_value_ref())
     }
 
     /// The wrapping two's complement sum.

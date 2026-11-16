@@ -1,5 +1,16 @@
 //! The `arith` dialect: constants, arithmetic, bitwise operations, comparisons and casts on
-//! signless integers.
+//! signless integers, and constants, arithmetic and comparison on floating-point numbers.
+//!
+//! # Floating-point operations
+//!
+//! `arith.constantf`, `addf`, `subf`, `mulf`, `divf`, `negf` and `cmpf` work on `f32` and `f64`
+//! with IEEE 754-2019 semantics, rounding to nearest, ties to even. None of them traps: a division
+//! by zero gives an infinity or a NaN. When a result is a NaN, its sign and payload are
+//! unspecified, and no fold produces one (which NaN an operation gives differs between hosts and
+//! engines), so an operation whose result would be a NaN is left in place. A comparison is
+//! deterministic and does fold, NaN operands included. No float operation has an algebraic
+//! simplification (`x + 0.0` is not `x`: it changes `-0.0`), and the dialect has no float
+//! canonicalization pattern; only folds on constant operands.
 //!
 //! # Traps
 //!
@@ -32,18 +43,22 @@ mod builders;
 mod canonicalization;
 #[macro_use]
 mod fold;
+#[macro_use]
+mod fold_float;
 mod ops;
 #[cfg(test)]
 mod tests;
 
 use runic_ir::{
-    AttributeRef, Builder, BuilderExt, Dialect, DialectInfo, Int, OperationRef, ReadyAttr,
-    SourceSpan, Type, attributes::IntegerLikeAttr, derive::DialectRegistration,
-    dialects::builtin::attributes::IntAttr,
+    AttributeRef, Builder, BuilderExt, Dialect, DialectInfo, Float, Int, OperationRef, ReadyAttr,
+    SourceSpan, Type,
+    attributes::IntegerLikeAttr,
+    derive::DialectRegistration,
+    dialects::builtin::attributes::{FloatAttr, IntAttr},
 };
 
 pub use self::{
-    attributes::{CmpPredicate, CmpPredicateAttr},
+    attributes::{CmpFPredicate, CmpFPredicateAttr, CmpPredicate, CmpPredicateAttr},
     builders::ArithOpBuilder,
     ops::*,
 };
@@ -65,7 +80,8 @@ impl Dialect for ArithDialect {
         &self.info
     }
 
-    /// Materializes an integer-like `attr` of type `ty` as an `arith.constant`.
+    /// Materializes an integer-like `attr` of type `ty` as an `arith.constant`, and a
+    /// [FloatAttr] of type `ty` as an `arith.constantf`.
     ///
     /// An `IntAttr` is installed as it is; any other integer-like attribute (a `BoolAttr`, say)
     /// gives a new `IntAttr` of its value. A signless value has no default extension, so an
@@ -78,6 +94,21 @@ impl Dialect for ArithDialect {
         span: SourceSpan,
     ) -> Option<OperationRef> {
         let mut builder = runic_ir::InsertionGuard::new(builder);
+
+        if let Ok(float) = attr.try_downcast_attr::<FloatAttr>() {
+            // An attribute whose type is not a float type of its value's width is not
+            // materialized either.
+            let borrowed = float.borrow();
+            if runic_ir::Attribute::ty(&*borrowed) != ty
+                || Float::width_for_type(ty) != Some(borrowed.as_value().width())
+            {
+                return None;
+            }
+            drop(borrowed);
+            let op_builder = builder.create::<Constantf, _>(span);
+            let op = op_builder(ReadyAttr(float)).ok()?;
+            return Some(op.as_operation_ref());
+        }
 
         let (value, value_ty, int_attr) = {
             let borrowed = attr.borrow();
