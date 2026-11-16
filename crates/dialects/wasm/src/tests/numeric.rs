@@ -326,21 +326,19 @@ fn parse_function_from(
     (context, function)
 }
 
-/// Every operation name the dialect registers is one of the tested names or a module-level
-/// operation, and each tested name is registered.
+/// Every operation name the dialect registers is a numeric operation the tables list or one of
+/// [OTHER_OPERATIONS] (the module-level, memory, variable, reference and call operations, which
+/// their own tests cover), and each is registered.
 #[test]
 fn the_dialect_has_exactly_the_numeric_operations_the_tables_list() {
     let context = context();
     let dialect = context.get_or_register_dialect::<WasmDialect>();
-    let mut registered = dialect
-        .registered_ops()
+    let mut all = dialect.registered_ops().iter().map(|name| name.to_string()).collect::<Vec<_>>();
+    all.sort();
+    let mut registered = all
         .iter()
-        .map(|name| name.to_string())
-        .filter(|name| {
-            !["memory", "table", "global", "elem", "tag"]
-                .map(|op| format!("wasm.{op}"))
-                .contains(name)
-        })
+        .filter(|name| !OTHER_OPERATIONS.map(|op| format!("wasm.{op}")).contains(name))
+        .cloned()
         .collect::<Vec<_>>();
     registered.sort();
     let mut expected = ["const", "constf", "select", "eqz"]
@@ -352,6 +350,10 @@ fn the_dialect_has_exactly_the_numeric_operations_the_tables_list() {
     expected.sort();
     assert_eq!(registered, expected);
     assert_eq!(registered.len(), 62);
+    let mut others = OTHER_OPERATIONS.map(|op| format!("wasm.{op}")).to_vec();
+    others.sort();
+    assert!(others.iter().all(|name| all.contains(name)), "{others:?}");
+    assert_eq!(all.len(), 62 + OTHER_OPERATIONS.len());
 }
 
 #[test]

@@ -1,13 +1,13 @@
 //! The builder trait of the dialect.
 
 use runic_ir::{
-    AsCallableSymbolRef, Builder, BuilderExt, Float, Ident, InsertionGuard, Int, OpBuilder,
-    OpRegistration, ReadyAttr, Report, SourceSpan, Spanned, SymbolName, SymbolTable, Type,
-    ValueRef, Visibility,
+    AsCallableSymbolRef, Builder, BuilderExt, Float, Ident, InsertionGuard, Int, Op, OpBuilder,
+    OpRegistration, OperationRef, ReadyAttr, Report, SourceSpan, Spanned, SymbolName, SymbolTable,
+    Type, Value, ValueRef, Visibility,
     attributes::AttrList,
     dialects::builtin::{
-        FunctionBuilder,
-        attributes::{Array, List, SymbolRef, SymbolRefAttr},
+        FunctionBuilder, GlobalVariableRef,
+        attributes::{Array, List, Signature, SymbolRef, SymbolRefAttr},
     },
 };
 
@@ -402,6 +402,340 @@ pub trait WasmOpBuilder<'f, B: ?Sized + Builder> {
         let mut op = op_builder(name, visibility, Array::from(params.to_vec()))?;
         op.borrow_mut().set_declaration(true);
         Ok(op)
+    }
+
+    /// Loads a value of the number type `ty` from `memory` at the `i32` address `addr` plus the
+    /// offset of `memarg`, reading its whole type: `i32.load` and the others of their own type.
+    /// The result is the value loaded.
+    fn load(
+        &mut self,
+        memory: MemoryRef,
+        addr: ValueRef,
+        ty: Type,
+        memarg: MemArg,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        self.load_narrow(memory, addr, ty, Storage::Full, Extension::Unextended, memarg, span)
+    }
+
+    /// Loads the integer `ty` from `memory`, reading only `storage` bytes and extending the value
+    /// as `extension` says: `i32.load8_s`, `i64.load32_u` and the other narrow loads.
+    #[allow(clippy::too_many_arguments)]
+    fn load_narrow(
+        &mut self,
+        memory: MemoryRef,
+        addr: ValueRef,
+        ty: Type,
+        storage: Storage,
+        extension: Extension,
+        memarg: MemArg,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<Load, (_, _, _)>(span);
+        let mut op = op_builder(memory, addr, memarg)?;
+        {
+            let mut op = op.borrow_mut();
+            op.set_storage(storage);
+            op.set_extension(extension);
+            op.result_mut().set_type(ty);
+        }
+        let result = op.borrow().result().as_value_ref();
+        Ok(result)
+    }
+
+    /// Stores `value`, a number, in `memory` at the `i32` address `addr` plus the offset of
+    /// `memarg`, writing its whole type: `i32.store` and the others of their own type.
+    fn store(
+        &mut self,
+        memory: MemoryRef,
+        addr: ValueRef,
+        value: ValueRef,
+        memarg: MemArg,
+        span: SourceSpan,
+    ) -> Result<OperationRef, Report> {
+        self.store_narrow(memory, addr, value, Storage::Full, memarg, span)
+    }
+
+    /// Stores the low `storage` bytes of the integer `value`: `i32.store8`, `i64.store32` and the
+    /// other narrow stores.
+    fn store_narrow(
+        &mut self,
+        memory: MemoryRef,
+        addr: ValueRef,
+        value: ValueRef,
+        storage: Storage,
+        memarg: MemArg,
+        span: SourceSpan,
+    ) -> Result<OperationRef, Report> {
+        let op_builder = self.builder_mut().create::<Store, (_, _, _, _)>(span);
+        let mut op = op_builder(memory, addr, value, memarg)?;
+        op.borrow_mut().set_storage(storage);
+        let op = Op::as_operation_ref(&*op.borrow());
+        Ok(op)
+    }
+
+    /// The size of `memory` in pages, an `i32`: `memory.size`.
+    fn memory_size(&mut self, memory: MemoryRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<MemorySize, _>(span);
+        let op = op_builder(memory)?;
+        let result = op.borrow().result().as_value_ref();
+        Ok(result)
+    }
+
+    /// Grows `memory` by the `i32` number of pages `delta`, giving the previous size or -1:
+    /// `memory.grow`.
+    fn memory_grow(
+        &mut self,
+        memory: MemoryRef,
+        delta: ValueRef,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<MemoryGrow, _>(span);
+        let op = op_builder(memory, delta)?;
+        let result = op.borrow().result().as_value_ref();
+        Ok(result)
+    }
+
+    /// Copies `len` bytes from the address `src_addr` of `src` to the address `dst_addr` of
+    /// `dst`: `memory.copy`.
+    fn memory_copy(
+        &mut self,
+        dst: MemoryRef,
+        src: MemoryRef,
+        dst_addr: ValueRef,
+        src_addr: ValueRef,
+        len: ValueRef,
+        span: SourceSpan,
+    ) -> Result<OperationRef, Report> {
+        let op_builder = self.builder_mut().create::<MemoryCopy, _>(span);
+        let op = op_builder(dst, src, dst_addr, src_addr, len)?;
+        let op = Op::as_operation_ref(&*op.borrow());
+        Ok(op)
+    }
+
+    /// Sets `len` bytes from the address `dst_addr` of `memory` to the low byte of `value`:
+    /// `memory.fill`.
+    fn memory_fill(
+        &mut self,
+        memory: MemoryRef,
+        dst_addr: ValueRef,
+        value: ValueRef,
+        len: ValueRef,
+        span: SourceSpan,
+    ) -> Result<OperationRef, Report> {
+        let op_builder = self.builder_mut().create::<MemoryFill, _>(span);
+        let op = op_builder(memory, dst_addr, value, len)?;
+        let op = Op::as_operation_ref(&*op.borrow());
+        Ok(op)
+    }
+
+    /// Copies `len` bytes from the offset `src_offset` of the data `data` to the address
+    /// `dst_addr` of `memory`: `memory.init`.
+    fn memory_init(
+        &mut self,
+        memory: MemoryRef,
+        data: GlobalVariableRef,
+        dst_addr: ValueRef,
+        src_offset: ValueRef,
+        len: ValueRef,
+        span: SourceSpan,
+    ) -> Result<OperationRef, Report> {
+        let op_builder = self.builder_mut().create::<MemoryInit, _>(span);
+        let op = op_builder(memory, data, dst_addr, src_offset, len)?;
+        let op = Op::as_operation_ref(&*op.borrow());
+        Ok(op)
+    }
+
+    /// Drops the data `data`: `data.drop`.
+    fn data_drop(
+        &mut self,
+        data: GlobalVariableRef,
+        span: SourceSpan,
+    ) -> Result<OperationRef, Report> {
+        let op_builder = self.builder_mut().create::<DataDrop, _>(span);
+        let op = op_builder(data)?;
+        let op = Op::as_operation_ref(&*op.borrow());
+        Ok(op)
+    }
+
+    /// The value of `global`, with the type the global has: `global.get`.
+    fn global_get(&mut self, global: GlobalRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        let ty = *global.borrow().get_ty();
+        let op_builder = self.builder_mut().create::<GlobalGet, _>(span);
+        let mut op = op_builder(global)?;
+        op.borrow_mut().result_mut().set_type(ty);
+        let result = op.borrow().result().as_value_ref();
+        Ok(result)
+    }
+
+    /// Writes `value` to the mutable `global`: `global.set`.
+    fn global_set(
+        &mut self,
+        global: GlobalRef,
+        value: ValueRef,
+        span: SourceSpan,
+    ) -> Result<OperationRef, Report> {
+        let op_builder = self.builder_mut().create::<GlobalSet, _>(span);
+        let op = op_builder(global, value)?;
+        let op = Op::as_operation_ref(&*op.borrow());
+        Ok(op)
+    }
+
+    /// The element `index`, an `i32`, of `table`, with the element type of the table:
+    /// `table.get`.
+    fn table_get(
+        &mut self,
+        table: TableRef,
+        index: ValueRef,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        let ty = *table.borrow().get_element_type();
+        let op_builder = self.builder_mut().create::<TableGet, _>(span);
+        let mut op = op_builder(table, index)?;
+        op.borrow_mut().result_mut().set_type(ty);
+        let result = op.borrow().result().as_value_ref();
+        Ok(result)
+    }
+
+    /// Sets the element `index` of `table` to `value`: `table.set`.
+    fn table_set(
+        &mut self,
+        table: TableRef,
+        index: ValueRef,
+        value: ValueRef,
+        span: SourceSpan,
+    ) -> Result<OperationRef, Report> {
+        let op_builder = self.builder_mut().create::<TableSet, _>(span);
+        let op = op_builder(table, index, value)?;
+        let op = Op::as_operation_ref(&*op.borrow());
+        Ok(op)
+    }
+
+    /// The size of `table` in elements, an `i32`: `table.size`.
+    fn table_size(&mut self, table: TableRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<TableSize, _>(span);
+        let op = op_builder(table)?;
+        let result = op.borrow().result().as_value_ref();
+        Ok(result)
+    }
+
+    /// Grows `table` by `delta` elements, each `init`, giving the previous size or -1:
+    /// `table.grow`.
+    fn table_grow(
+        &mut self,
+        table: TableRef,
+        init: ValueRef,
+        delta: ValueRef,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<TableGrow, _>(span);
+        let op = op_builder(table, init, delta)?;
+        let result = op.borrow().result().as_value_ref();
+        Ok(result)
+    }
+
+    /// Sets `len` elements of `table` from `index` to `value`: `table.fill`.
+    fn table_fill(
+        &mut self,
+        table: TableRef,
+        index: ValueRef,
+        value: ValueRef,
+        len: ValueRef,
+        span: SourceSpan,
+    ) -> Result<OperationRef, Report> {
+        let op_builder = self.builder_mut().create::<TableFill, _>(span);
+        let op = op_builder(table, index, value, len)?;
+        let op = Op::as_operation_ref(&*op.borrow());
+        Ok(op)
+    }
+
+    /// The null reference of the reference type `ty`: `ref.null`.
+    fn ref_null(&mut self, ty: Type, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<RefNull, _>(span);
+        let mut op = op_builder()?;
+        op.borrow_mut().result_mut().set_type(ty);
+        let result = op.borrow().result().as_value_ref();
+        Ok(result)
+    }
+
+    /// A `funcref` to `callee`: `ref.func`.
+    fn ref_func<C: AsCallableSymbolRef>(
+        &mut self,
+        callee: C,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<RefFunc, (C,)>(span);
+        let op = op_builder(callee)?;
+        let result = op.borrow().result().as_value_ref();
+        Ok(result)
+    }
+
+    /// 1 if the reference `reference` is null, an `i32`: `ref.is_null`.
+    fn ref_is_null(&mut self, reference: ValueRef, span: SourceSpan) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<RefIsNull, _>(span);
+        let op = op_builder(reference)?;
+        let result = op.borrow().result().as_value_ref();
+        Ok(result)
+    }
+
+    /// The address of `data`, plus `offset` bytes, as an `i32` that a layout or a linker
+    /// resolves (see [DataAddr]).
+    fn data_addr(
+        &mut self,
+        data: GlobalVariableRef,
+        offset: i32,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        let context = self.builder().context_rc();
+        let i32 = context.i32();
+        let offset = context.int_attr(Int::from(offset), i32);
+        let op_builder = self.builder_mut().create::<DataAddr, (_, _)>(span);
+        let op = op_builder(data, ReadyAttr(offset))?;
+        let result = op.borrow().result().as_value_ref();
+        Ok(result)
+    }
+
+    /// The index of `callee` in the indirect-call table, an `i32` that a layout or a linker
+    /// resolves (see [FuncIndex]).
+    fn func_index<C: AsCallableSymbolRef>(
+        &mut self,
+        callee: C,
+        span: SourceSpan,
+    ) -> Result<ValueRef, Report> {
+        let op_builder = self.builder_mut().create::<FuncIndex, (C,)>(span);
+        let op = op_builder(callee)?;
+        let result = op.borrow().result().as_value_ref();
+        Ok(result)
+    }
+
+    /// Calls the function in entry `index`, an `i32`, of `table` with `arguments` and the
+    /// signature `signature`: `call_indirect`. The call has one result per result of the
+    /// signature. (The name is not `call_indirect`, which `builtin`'s builder trait has.)
+    fn call_through_table<A: IntoIterator<Item = ValueRef>>(
+        &mut self,
+        table: TableRef,
+        index: ValueRef,
+        signature: Signature,
+        arguments: A,
+        span: SourceSpan,
+    ) -> Result<CallIndirectRef, Report> {
+        let op_builder = self.builder_mut().create::<CallIndirect, (_, _, A, _)>(span);
+        op_builder(table, index, arguments, signature)
+    }
+
+    /// Tail-calls the function in entry `index` of `table` with `arguments` and the signature
+    /// `signature`: `return_call_indirect`. (The name is not `return_call_indirect`, to go with
+    /// [Self::call_through_table].)
+    fn return_call_through_table<A: IntoIterator<Item = ValueRef>>(
+        &mut self,
+        table: TableRef,
+        index: ValueRef,
+        signature: Signature,
+        arguments: A,
+        span: SourceSpan,
+    ) -> Result<ReturnCallIndirectRef, Report> {
+        let op_builder = self.builder_mut().create::<ReturnCallIndirect, (_, _, A, _)>(span);
+        op_builder(table, index, arguments, signature)
     }
 
     /// The builder this builder wraps.

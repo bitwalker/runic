@@ -57,6 +57,50 @@
 //! | [Elem] (`elem`) | `wasm.elem private @init : @tab at 0 [@f, @g];` | an active segment of functions of a `funcref` table |
 //! | [Tag] (`tag`) | `wasm.tag private @exn : (i32, i64);` | parameter types |
 //!
+//! **Memory.** A load, a store and the bulk operations name the [Memory] they work on by symbol,
+//! before their operands (`wasm.load @mem, %p : i32`). The memory is 32-bit, so an address is an
+//! `i32`. A load writes the type it gives; an access that is not of the whole value writes
+//! `as i8`, `as i16` or `as i32`, and a narrow load how it extends (`signed` or `unsigned`); the
+//! static part is `<{ offset = N, align = N }>`, each entry optional (the offset is 0 and the
+//! alignment the width of the access when it is not written, and the printer leaves out what is
+//! so). Exactly the fourteen loads and nine stores of Wasm verify: [Storage] (`full`, `i8`, `i16`,
+//! `i32`) and [Extension] (`unextended`, `signed`, `unsigned`) are the properties that say which.
+//!
+//! | Operation | Text | Wasm |
+//! |---|---|---|
+//! | [Load] (`load`) | `%v = wasm.load @mem, %p as i8 signed <{ offset = 8 }> : i64;` | `i32.load` .. `i64.load32_u` |
+//! | [Store] (`store`) | `wasm.store @mem, %p, %v as i16;` | `i32.store` .. `i64.store32` |
+//! | [MemorySize] (`memory_size`), [MemoryGrow] (`memory_grow`) | `%n = wasm.memory_size @mem;`, `%o = wasm.memory_grow @mem, %delta;` | `memory.size`, `memory.grow` |
+//! | [MemoryCopy] (`memory_copy`), [MemoryFill] (`memory_fill`) | `wasm.memory_copy @dst, @src, %d, %s, %n;`, `wasm.memory_fill @mem, %d, %v, %n;` | `memory.copy`, `memory.fill` |
+//! | [MemoryInit] (`memory_init`), [DataDrop] (`data_drop`) | `wasm.memory_init @mem, @data, %d, %s, %n;`, `wasm.data_drop @data;` | `memory.init`, `data.drop` (passive data is a `builtin.global_variable`) |
+//!
+//! **Variables, references and calls.** A global and a table are named by symbol too.
+//!
+//! | Operation | Text | Wasm |
+//! |---|---|---|
+//! | [GlobalGet] (`global_get`), [GlobalSet] (`global_set`) | `%v = wasm.global_get @g : i32;`, `wasm.global_set @g, %v;` | `global.get`, `global.set` (the global is `mut`) |
+//! | [TableGet] (`table_get`), [TableSet] (`table_set`) | `%r = wasm.table_get @t, %i : !wasm.funcref;`, `wasm.table_set @t, %i, %r;` | `table.get`, `table.set` |
+//! | [TableSize] (`table_size`), [TableGrow] (`table_grow`), [TableFill] (`table_fill`) | `%n = wasm.table_size @t;`, `%o = wasm.table_grow @t, %init, %delta;`, `wasm.table_fill @t, %i, %r, %n;` | `table.size`, `table.grow`, `table.fill` |
+//! | [RefNull] (`ref_null`), [RefFunc] (`ref_func`), [RefIsNull] (`ref_is_null`) | `%r = wasm.ref_null : !wasm.funcref;`, `%r = wasm.ref_func @f;`, `%b = wasm.ref_is_null %r;` | `ref.null`, `ref.func`, `ref.is_null` |
+//! | [DataAddr] (`data_addr`), [FuncIndex] (`func_index`) | `%a = wasm.data_addr @data + 16;`, `%i = wasm.func_index @f;` | **not instructions**: each stands for an `i32.const` that a layout or a linker decides |
+//! | [CallIndirect] (`call_indirect`), [ReturnCallIndirect] (`return_call_indirect`) | `%r = wasm.call_indirect @t, %i(%a) : extern("C") (i32) -> i32;`, `wasm.return_call_indirect @t, %i(%a) : extern("C") (i32) -> i32;` | `call_indirect`, `return_call_indirect` |
+//!
+//! `global_get` of an immutable global, `ref_null`, `ref_func`, `data_addr` and `func_index` may
+//! appear in a constant expression ([ConstantInstruction]; ask [is_constant_instruction]).
+//!
+//! **Effects.** The operations that touch state declare memory effects on a resource of the
+//! dialect ([LinearMemoryResource], [GlobalsResource], [TablesResource]; one for all the
+//! memories, one for all the globals, one for all the tables), so that `cse`, `dce` and the other
+//! passes treat them correctly. A read (`load`, `memory_size`, `global_get`, `table_get`,
+//! `table_size`) is merged with an equal one unless an operation between them may write what it
+//! reads, and is removed when unused; a write (`store`, `memory_grow`, `memory_copy`,
+//! `memory_fill`, `memory_init`, `data_drop`, `global_set`, `table_set`, `table_grow`,
+//! `table_fill`) is never removed. [LinearMemoryResource] is a child of the `mem` dialect's memory
+//! resource, so a `wasm.store` and a `mem.load` of one function are ordered, as they touch the
+//! same bytes; globals and tables are not memory and are disjoint from it. An indirect call has
+//! unknown effects (it implements no effect interface), as `builtin.call_indirect` does. The
+//! references and the address operations have no effects.
+//!
 //! **Imports and exports.** Two entries of the attribute dictionary mark them, on a
 //! `builtin.function` or on one of the operations above: `wasm.import_module` (a non-empty string,
 //! on a declaration; `env` when absent, see [import_module]) and `wasm.export_name` (a string or
@@ -75,8 +119,9 @@
 //! result is unused. An operation has an effect only when it reads or writes a memory, a global
 //! or a table.
 //!
-//! **Control flow.** Structured control flow, branches and calls are those of `builtin`, `cf` and
-//! `scf`; the dialect does not repeat them.
+//! **Control flow.** Structured control flow, branches and direct calls are those of `builtin`,
+//! `cf` and `scf`; the dialect does not repeat them. It adds the indirect calls above, which go
+//! through a table.
 //!
 //! **What is not here.** Garbage-collected types and their instructions, exceptions, SIMD,
 //! threads and atomics, stack switching, and the Component Model.
@@ -95,6 +140,7 @@ extern crate std;
 
 mod attributes;
 mod builders;
+mod effects;
 mod linking;
 mod ops;
 mod types;
@@ -110,6 +156,7 @@ use runic_ir::{
 pub use self::{
     attributes::{Limits, LimitsAttr, MemArg, MemArgAttr, Mutability, MutabilityAttr},
     builders::WasmOpBuilder,
+    effects::{GlobalsResource, LinearMemoryResource, TablesResource},
     linking::{DEFAULT_IMPORT_MODULE, EXPORT_NAME, IMPORT_MODULE, export_names, import_module},
     ops::*,
     types::{

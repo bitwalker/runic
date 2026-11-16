@@ -1,0 +1,524 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// The rules of the `wasm` operations that touch state, one case per kind of error: loads and
+// stores (exactly the fourteen loads and nine stores of Wasm), the operations on a memory, a
+// global, a table, a reference, the address operations and the indirect calls. A name must be
+// that of the kind of operation the instruction takes. The message of an operation says what the
+// Wasm instruction takes, then what is wrong in what was written. A signature that is not of Wasm
+// value types, and an indirect tail call that is not the function's, are rejected here too.
+
+// Each family at a legal form.
+builtin.module public @valid {
+    wasm.memory public @mem : 1;
+    wasm.table private @tab : 4 x !wasm.funcref;
+    wasm.table private @refs : 4 x !wasm.externref;
+    wasm.global private @g : mut i32 { %v = wasm.const 0 : i32; };
+    wasm.global private @k : i32 { %v = wasm.const 1 : i32; };
+    builtin.global_variable private @data : array<i8; 4>;
+    builtin.function public extern("C") @callee(%x: i32) -> (i32) { builtin.ret %x : (i32); };
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        %v = wasm.load @mem, %a as i16 signed <{ offset = 4, align = 2 }> : i64;
+        wasm.store @mem, %a, %l as i32;
+        %n = wasm.memory_size @mem;
+        wasm.global_set @g, %a;
+        %e = wasm.table_get @tab, %a : !wasm.funcref;
+        %c = wasm.call_indirect @tab, %a(%b) : extern("C") (i32) -> i32;
+        builtin.ret;
+    };
+};
+
+// -----
+
+// A narrow load of a float: Wasm has no `f32.load8_s`.
+builtin.module public @narrow_float_load {
+    wasm.memory public @mem : 1;
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        %v = wasm.load @mem, %a as i8 signed : f32; // expected-error {{`wasm.load` takes an `i32` address in a memory and gives a number, `i32`, `i64`, `f32` or `f64`, read from it, but its result has type `f32` and its storage is `i8`, but only an integer is read through narrower storage (Wasm has no narrow float access)}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// The storage of a narrow load is narrower than its value: `i32.load32_s` does not exist.
+builtin.module public @wide_storage {
+    wasm.memory public @mem : 1;
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        %v = wasm.load @mem, %a as i32 signed : i32; // expected-error {{`wasm.load` takes an `i32` address in a memory and gives a number, `i32`, `i64`, `f32` or `f64`, read from it, but its result has type `i32` and its storage is `i32`, but narrow storage is narrower than the value (`i8` or `i16` for an `i32`; `i8`, `i16` or `i32` for an `i64`), and an access of the whole value names no storage}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// A narrow load says whether it extends with `signed` or `unsigned`.
+builtin.module public @narrow_without_extension {
+    wasm.memory public @mem : 1;
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        %v = wasm.load @mem, %a as i8 : i32; // expected-error {{`wasm.load` takes an `i32` address in a memory and gives a number, `i32`, `i64`, `f32` or `f64`, read from it, but its storage is `i8`, but a narrow load says whether it extends the value read with `signed` or `unsigned`, and this one says neither}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// A load of the whole value extends nothing (only the generic form can say it).
+builtin.module public @whole_value_extension {
+    wasm.memory public @mem : 1;
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        %v = "wasm.load"(%a) <{ memory = #builtin.symbol<@mem>, memarg = #wasm.memarg<offset = 0, align = 4>, storage = #wasm.storage<full>, extension = #wasm.extension<signed> }> : i32 -> i32; // expected-error {{it is `signed`, but a load of the whole value extends nothing (only a narrow load is `signed` or `unsigned`)}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// The alignment is at most the width of the access.
+builtin.module public @alignment_above_width {
+    wasm.memory public @mem : 1;
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        %v = wasm.load @mem, %a <{ align = 8 }> : i32; // expected-error {{its alignment is 8 bytes, but the access is 4 bytes wide and the alignment of a Wasm access is at most its width}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// A narrow access is as wide as its storage.
+builtin.module public @alignment_above_storage {
+    wasm.memory public @mem : 1;
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        wasm.store @mem, %a, %l as i16 <{ align = 4 }>; // expected-error {{its alignment is 4 bytes, but the access is 2 bytes wide and the alignment of a Wasm access is at most its width}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// The alignment is a power of two.
+builtin.module public @alignment_not_a_power_of_two {
+    wasm.memory public @mem : 1;
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        %v = wasm.load @mem, %a <{ align = 3 }> : i32; // expected-error {{an alignment of 3 bytes, but a Wasm memarg alignment is a power of two, at least 1}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// The offset is an unsigned 32-bit integer.
+builtin.module public @offset_too_large {
+    wasm.memory public @mem : 1;
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        %v = wasm.load @mem, %a <{ offset = 4294967296 }> : i32; // expected-error {{its offset is 4294967296, but the offset of a Wasm access is an unsigned 32-bit integer}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// A store has no signedness.
+builtin.module public @store_with_signedness {
+    wasm.memory public @mem : 1;
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        wasm.store @mem, %a, %b as i8 signed; // expected-error {{`signed` is not part of a store: it keeps the low bits of its value and has no signedness}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// An entry of the static part is given once.
+builtin.module public @memarg_given_twice {
+    wasm.memory public @mem : 1;
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        wasm.store @mem, %a, %b <{ align = 1, align = 1 }>; // expected-error {{`align` is given twice}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// A narrow store of a float.
+builtin.module public @narrow_float_store {
+    wasm.memory public @mem : 1;
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        wasm.store @mem, %a, %d as i16; // expected-error {{`wasm.store` takes an `i32` address in a memory and a number, `i32`, `i64`, `f32` or `f64`, to write there, but its value has type `f64` and its storage is `i16`, but only an integer is written through narrower storage (Wasm has no narrow float access)}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// A store of a reference.
+builtin.module public @store_of_a_reference {
+    wasm.memory public @mem : 1;
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        wasm.store @mem, %a, %r; // expected-error {{`wasm.store` takes an `i32` address in a memory and a number, `i32`, `i64`, `f32` or `f64`, to write there, but its value has type `funcref`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// The address is an `i32`: the memory is 32-bit.
+builtin.module public @address_type {
+    wasm.memory public @mem : 1;
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        %v = wasm.load @mem, %l : i32; // expected-error {{`wasm.load` takes an `i32` address in a memory and gives a number, `i32`, `i64`, `f32` or `f64`, read from it, but its address has type `i64`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// A load gives a number.
+builtin.module public @load_of_a_reference {
+    wasm.memory public @mem : 1;
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        %v = wasm.load @mem, %a : !wasm.funcref; // expected-error {{`wasm.load` takes an `i32` address in a memory and gives a number, `i32`, `i64`, `f32` or `f64`, read from it, but its result has type `funcref`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// A load names a memory.
+builtin.module public @load_names_a_table {
+    wasm.memory public @mem : 1;
+    wasm.table private @tab : 4 x !wasm.funcref;
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        %v = wasm.load @tab, %a : i32; // expected-error {{`wasm.load` names `tab`, which is a `wasm.table`, not a `wasm.memory`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// A store names a memory.
+builtin.module public @store_names_a_global {
+    wasm.memory public @mem : 1;
+    wasm.global private @g : mut i32 { %v = wasm.const 0 : i32; };
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        wasm.store @g, %a, %b; // expected-error {{`wasm.store` names `g`, which is a `wasm.global`, not a `wasm.memory`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// The delta of a growth is an `i32` number of pages.
+builtin.module public @grow_delta {
+    wasm.memory public @mem : 1;
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        %o = wasm.memory_grow @mem, %l; // expected-error {{`wasm.memory_grow` takes a memory and an `i32` number of pages and gives an `i32`, but its delta has type `i64`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// A size names a memory.
+builtin.module public @size_names_a_table {
+    wasm.memory public @mem : 1;
+    wasm.table private @tab : 4 x !wasm.funcref;
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        %n = wasm.memory_size @tab; // expected-error {{`wasm.memory_size` names `tab`, which is a `wasm.table`, not a `wasm.memory`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// A copy takes three `i32`s.
+builtin.module public @copy_length {
+    wasm.memory public @mem : 1;
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        wasm.memory_copy @mem, @mem, %a, %b, %l; // expected-error {{`wasm.memory_copy` takes two memories and three `i32`s: a destination address, a source address and a number of bytes, but its length has type `i64`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// A copy names two memories.
+builtin.module public @copy_source {
+    wasm.memory public @mem : 1;
+    wasm.table private @tab : 4 x !wasm.funcref;
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        wasm.memory_copy @mem, @tab, %a, %a, %a; // expected-error {{`wasm.memory_copy` names `tab`, which is a `wasm.table`, not a `wasm.memory`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// A fill takes three `i32`s.
+builtin.module public @fill_value {
+    wasm.memory public @mem : 1;
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        wasm.memory_fill @mem, %a, %l, %a; // expected-error {{`wasm.memory_fill` takes a memory and three `i32`s: a destination address, a byte value and a number of bytes, but its value has type `i64`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// An init names passive data, a `builtin.global_variable`.
+builtin.module public @init_data {
+    wasm.memory public @mem : 1;
+    wasm.global private @k : i32 { %v = wasm.const 1 : i32; };
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        wasm.memory_init @mem, @k, %a, %a, %a; // expected-error {{`wasm.memory_init` names `k`, which is a `wasm.global`, not a `builtin.global_variable`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// A drop names passive data.
+builtin.module public @drop_data {
+    wasm.memory public @mem : 1;
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        wasm.data_drop @mem; // expected-error {{`wasm.data_drop` names `mem`, which is a `wasm.memory`, not a `builtin.global_variable`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// A global read gives the type of the global.
+builtin.module public @global_get_type {
+    wasm.global private @g : mut i32 { %v = wasm.const 0 : i32; };
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        %v = wasm.global_get @g : i64; // expected-error {{`wasm.global_get` takes the name of a global and gives a value of its type, but its result has type `i64`, but the global `g` has type `i32`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// A global read names a global.
+builtin.module public @global_get_kind {
+    wasm.memory public @mem : 1;
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        %v = wasm.global_get @mem : i32; // expected-error {{`wasm.global_get` names `mem`, which is a `wasm.memory`, not a `wasm.global`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// Only a mutable global is written.
+builtin.module public @global_set_immutable {
+    wasm.global private @k : i32 { %v = wasm.const 1 : i32; };
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        wasm.global_set @k, %a; // expected-error {{`wasm.global_set` takes the name of a mutable global and a value of its type, but the global `k` is immutable, and `global.set` writes only a `mut` global}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// A global is written with a value of its type.
+builtin.module public @global_set_type {
+    wasm.global private @g : mut i32 { %v = wasm.const 0 : i32; };
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        wasm.global_set @g, %l; // expected-error {{`wasm.global_set` takes the name of a mutable global and a value of its type, but its value has type `i64`, but the global `g` has type `i32`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// A table read has the element type of the table.
+builtin.module public @table_get_type {
+    wasm.table private @tab : 4 x !wasm.funcref;
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        %v = wasm.table_get @tab, %a : !wasm.externref; // expected-error {{but its result has type `externref`, but the table `tab` holds `funcref`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// The index of a table is an `i32`.
+builtin.module public @table_index {
+    wasm.table private @tab : 4 x !wasm.funcref;
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        %v = wasm.table_get @tab, %l : !wasm.funcref; // expected-error {{`wasm.table_get` takes a table and an `i32` index and gives an element, a reference of the table's type, but its index has type `i64`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// A table write takes an element of the table's type.
+builtin.module public @table_set_type {
+    wasm.table private @tab : 4 x !wasm.funcref;
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        wasm.table_set @tab, %a, %x; // expected-error {{`wasm.table_set` takes a table, an `i32` index and a reference of the table's element type, but its value has type `externref`, but the table `tab` holds `funcref`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// A table is named by a table.
+builtin.module public @table_size_kind {
+    wasm.global private @g : mut i32 { %v = wasm.const 0 : i32; };
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        %n = wasm.table_size @g; // expected-error {{`wasm.table_size` names `g`, which is a `wasm.global`, not a `wasm.table`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// A table grows by a reference of its type.
+builtin.module public @table_grow_init {
+    wasm.table private @tab : 4 x !wasm.funcref;
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        %o = wasm.table_grow @tab, %x, %a; // expected-error {{but its initial value has type `externref`, but the table `tab` holds `funcref`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// A table is filled with a reference of its type.
+builtin.module public @table_fill_value {
+    wasm.table private @tab : 4 x !wasm.funcref;
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        wasm.table_fill @tab, %a, %x, %a; // expected-error {{`wasm.table_fill` takes a table, an `i32` index, a reference of the table's element type and an `i32` number of elements, but its value has type `externref`, but the table `tab` holds `funcref`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// A null reference has a reference type.
+builtin.module public @ref_null_type {
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        %v = wasm.ref_null : i32; // expected-error {{`wasm.ref_null` gives a null reference of a reference type, `funcref` or `externref`, but its result has type `i32`, not `funcref` or `externref`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// A function reference names a function.
+builtin.module public @ref_func_kind {
+    wasm.memory public @mem : 1;
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        %v = wasm.ref_func @mem; // expected-error {{`wasm.ref_func` takes the name of a function and gives a `funcref`, but `mem` does not name a function}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// A null test takes a reference.
+builtin.module public @ref_is_null_operand {
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        %v = wasm.ref_is_null %a; // expected-error {{`wasm.ref_is_null` takes a reference, `funcref` or `externref`, and gives an `i32`, but its operand has type `i32`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// A data address names data, not a memory.
+builtin.module public @data_addr_kind {
+    wasm.memory public @mem : 1;
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        %v = wasm.data_addr @mem; // expected-error {{`wasm.data_addr` names `mem`, which is a `wasm.memory`, not a `builtin.global_variable`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// A data address has a signed 32-bit offset.
+builtin.module public @data_addr_offset {
+    builtin.global_variable private @data : array<i8; 4>;
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        %v = wasm.data_addr @data + 2147483648; // expected-error {{2147483648 is not a 32-bit signed offset}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// A function index names a function.
+builtin.module public @func_index_kind {
+    builtin.global_variable private @data : array<i8; 4>;
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        %v = wasm.func_index @data; // expected-error {{`wasm.func_index` takes the name of a function and gives its index in the indirect-call table, an `i32`, but `data` does not name a function}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// An indirect call goes through a table.
+builtin.module public @call_indirect_kind {
+    wasm.memory public @mem : 1;
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        wasm.call_indirect @mem, %a() : extern("C") (); // expected-error {{`wasm.call_indirect` names `mem`, which is a `wasm.memory`, not a `wasm.table`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// An indirect call goes through a table of `funcref`.
+builtin.module public @call_indirect_externref_table {
+    wasm.table private @refs : 4 x !wasm.externref;
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        wasm.call_indirect @refs, %a() : extern("C") (); // expected-error {{`wasm.call_indirect` calls a function through a `funcref` table and an `i32` index, passes the arguments of its signature and gives its results, all of Wasm value types, but the table `refs` holds `externref`, and an indirect call goes through a table of `funcref`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// The parameters of the signature are Wasm value types.
+builtin.module public @call_indirect_parameter {
+    wasm.table private @tab : 4 x !wasm.funcref;
+    builtin.function public extern("C") @f(%a: i32, %i8: i8) {
+        wasm.call_indirect @tab, %a(%i8) : extern("C") (i8); // expected-error {{parameter 0 of its signature has type `i8`, but a Wasm value type is `i32`, `i64`, `f32`, `f64`, `funcref` or `externref`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// The results of the signature are Wasm value types.
+builtin.module public @call_indirect_result {
+    wasm.table private @tab : 4 x !wasm.funcref;
+    builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
+        %v = wasm.call_indirect @tab, %a() : extern("C") () -> i8; // expected-error {{result 0 of its signature has type `i8`, but a Wasm value type is `i32`, `i64`, `f32`, `f64`, `funcref` or `externref`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// An indirect tail call returns what its function returns.
+builtin.module public @tail_call_results {
+    wasm.table private @tab : 4 x !wasm.funcref;
+    builtin.function public extern("C") @f(%a: i32, %b: i32) -> (i32) {
+        wasm.return_call_indirect @tab, %a(%b) : extern("C") (i32) -> i64; // expected-error {{this tail call returns (i64), but the function returns (i32)}}
+    };
+};
+
+// -----
+
+// An indirect tail call is made with the calling convention of its function.
+builtin.module public @tail_call_convention {
+    wasm.table private @tab : 4 x !wasm.funcref;
+    builtin.function public extern("C") @f(%a: i32, %b: i32) -> (i32) {
+        wasm.return_call_indirect @tab, %a(%b) : extern("wasm") (i32) -> i32; // expected-error {{this tail call uses the calling convention "wasm", but the function uses "C"}}
+    };
+};

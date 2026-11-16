@@ -31,7 +31,7 @@
 // DIALECTS-NEXT: scf {{ +}}7 operations
 // DIALECTS-NEXT: test {{ +}}22 operations
 // DIALECTS-NEXT: ub {{ +}}2 operations
-// DIALECTS-NEXT: wasm {{ +}}67 operations
+// DIALECTS-NEXT: wasm {{ +}}89 operations
 // DIALECTS-NOT: {{.}}
 
 // OPERATIONS: {{^}}arith.add{{$}}

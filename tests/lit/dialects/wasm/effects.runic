@@ -1,0 +1,266 @@
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(cse))' | filecheck %s --check-prefix=CSE
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(cse))' | runic-opt - --verify-roundtrip | filecheck %s --check-prefix=CSE
+// RUN: runic-opt %s -p 'builtin.module(builtin.function(dce))' | filecheck %s --check-prefix=DCE
+
+// What `cse` and `dce` make of the `wasm` operations that touch state, which declare their
+// effects on three resources: linear memory (`wasm.memory`, a child of the `mem` dialect's
+// memory, so a `wasm.store` and a `mem.load` touch one memory), globals and tables. Two equal
+// reads merge unless an operation between them may write what they read: a write of the resource,
+// or a call, whose effects are unknown. A trap is not an effect, so an unused read is removed
+// with its trap. A write is never removed. Every function returns the sum of two reads, so that
+// nothing is unused. The passes run on the functions: `cse` and `dce` on the module would also
+// reach the initializer of a global and remove its value, which nothing uses.
+builtin.module public @wasm_effects {
+    wasm.memory public @mem : 1;
+    wasm.table private @tab : 4 x !wasm.funcref;
+    wasm.global private @g : mut i32 { %v = wasm.const 0 : i32; };
+    builtin.global_variable private @data : array<i8; 4>;
+    builtin.function public extern("C") @opaque();
+
+    // Loads of one address merge.
+    // CSE-LABEL: @loads_merge(
+    // CSE: [[L:%[0-9]+]] = wasm.load @mem, [[A:%[0-9]+]] : i32;
+    // CSE-NEXT: wasm.add [[L]], [[L]];
+    builtin.function public extern("C") @loads_merge(%a: i32) -> (i32) {
+        %x = wasm.load @mem, %a : i32;
+        %y = wasm.load @mem, %a : i32;
+        %s = wasm.add %x, %y;
+        builtin.ret %s : (i32);
+    };
+
+    // They do not merge across what may write memory: a store, a growth, a fill, a copy, an init,
+    // a drop of data, a call and an indirect call.
+    // CSE-LABEL: @store_between(
+    // CSE: [[X:%[0-9]+]] = wasm.load @mem, [[A:%[0-9]+]] : i32;
+    // CSE-NEXT: wasm.store @mem, [[A]], [[A]];
+    // CSE-NEXT: [[Y:%[0-9]+]] = wasm.load @mem, [[A]] : i32;
+    // CSE-NEXT: wasm.add [[X]], [[Y]];
+    builtin.function public extern("C") @store_between(%a: i32) -> (i32) {
+        %x = wasm.load @mem, %a : i32;
+        wasm.store @mem, %a, %a;
+        %y = wasm.load @mem, %a : i32;
+        %s = wasm.add %x, %y;
+        builtin.ret %s : (i32);
+    };
+    // CSE-LABEL: @grow_between(
+    // CSE: wasm.load @mem
+    // CSE: wasm.memory_grow @mem
+    // CSE: wasm.load @mem
+    builtin.function public extern("C") @grow_between(%a: i32) -> (i32) {
+        %x = wasm.load @mem, %a : i32;
+        %g = wasm.memory_grow @mem, %a;
+        %y = wasm.load @mem, %a : i32;
+        %s = wasm.add %x, %y;
+        builtin.ret %s : (i32);
+    };
+    // CSE-LABEL: @fill_between(
+    // CSE: wasm.load @mem
+    // CSE: wasm.memory_fill @mem
+    // CSE: wasm.load @mem
+    builtin.function public extern("C") @fill_between(%a: i32) -> (i32) {
+        %x = wasm.load @mem, %a : i32;
+        wasm.memory_fill @mem, %a, %a, %a;
+        %y = wasm.load @mem, %a : i32;
+        %s = wasm.add %x, %y;
+        builtin.ret %s : (i32);
+    };
+    // CSE-LABEL: @init_between(
+    // CSE: wasm.load @mem
+    // CSE: wasm.memory_init @mem, @data
+    // CSE: wasm.load @mem
+    builtin.function public extern("C") @init_between(%a: i32) -> (i32) {
+        %x = wasm.load @mem, %a : i32;
+        wasm.memory_init @mem, @data, %a, %a, %a;
+        %y = wasm.load @mem, %a : i32;
+        %s = wasm.add %x, %y;
+        builtin.ret %s : (i32);
+    };
+    // CSE-LABEL: @call_between(
+    // CSE: wasm.load @mem
+    // CSE: builtin.call @opaque
+    // CSE: wasm.load @mem
+    builtin.function public extern("C") @call_between(%a: i32) -> (i32) {
+        %x = wasm.load @mem, %a : i32;
+        builtin.call @opaque() : extern("C") () -> ();
+        %y = wasm.load @mem, %a : i32;
+        %s = wasm.add %x, %y;
+        builtin.ret %s : (i32);
+    };
+    // CSE-LABEL: @call_indirect_between(
+    // CSE: wasm.load @mem
+    // CSE: wasm.call_indirect @tab
+    // CSE: wasm.load @mem
+    builtin.function public extern("C") @call_indirect_between(%a: i32) -> (i32) {
+        %x = wasm.load @mem, %a : i32;
+        wasm.call_indirect @tab, %a() : extern("C") ();
+        %y = wasm.load @mem, %a : i32;
+        %s = wasm.add %x, %y;
+        builtin.ret %s : (i32);
+    };
+
+    // A write of a global or of a table is not a write of memory.
+    // CSE-LABEL: @global_set_between(
+    // CSE: [[L:%[0-9]+]] = wasm.load @mem, [[A:%[0-9]+]] : i32;
+    // CSE-NEXT: wasm.global_set @g, [[A]];
+    // CSE-NEXT: wasm.table_set @tab, [[A]], {{%[0-9]+}};
+    // CSE-NEXT: wasm.add [[L]], [[L]];
+    builtin.function public extern("C") @global_set_between(%a: i32, %r: !wasm.funcref) -> (i32) {
+        %x = wasm.load @mem, %a : i32;
+        wasm.global_set @g, %a;
+        wasm.table_set @tab, %a, %r;
+        %y = wasm.load @mem, %a : i32;
+        %s = wasm.add %x, %y;
+        builtin.ret %s : (i32);
+    };
+
+    // A `mem.store` writes the memory a `wasm.load` reads, and a `wasm.store` the memory a
+    // `mem.load` reads.
+    // CSE-LABEL: @mem_store_between(
+    // CSE: wasm.load @mem
+    // CSE: mem.store
+    // CSE: wasm.load @mem
+    builtin.function public extern("C") @mem_store_between(%a: i32, %p: ptr<i32>) -> (i32) {
+        %x = wasm.load @mem, %a : i32;
+        mem.store %a, %p;
+        %y = wasm.load @mem, %a : i32;
+        %s = wasm.add %x, %y;
+        builtin.ret %s : (i32);
+    };
+    // CSE-LABEL: @wasm_store_between(
+    // CSE: mem.load
+    // CSE: wasm.store @mem
+    // CSE: mem.load
+    builtin.function public extern("C") @wasm_store_between(%a: i32, %p: ptr<i32>) -> (i32) {
+        %x = mem.load %p;
+        wasm.store @mem, %a, %a;
+        %y = mem.load %p;
+        %s = wasm.add %x, %y;
+        builtin.ret %s : (i32);
+    };
+    // CSE-LABEL: @wasm_global_set_between_mem_loads(
+    // CSE: [[L:%[0-9]+]] = mem.load
+    // CSE-NEXT: wasm.global_set @g
+    // CSE-NEXT: wasm.add [[L]], [[L]]
+    builtin.function public extern("C") @wasm_global_set_between_mem_loads(%a: i32, %p: ptr<i32>) -> (i32) {
+        %x = mem.load %p;
+        wasm.global_set @g, %a;
+        %y = mem.load %p;
+        %s = wasm.add %x, %y;
+        builtin.ret %s : (i32);
+    };
+
+    // Two reads of a global merge, and not across a write of a global or a call; a store of memory
+    // or a write of a table is not a write of a global.
+    // CSE-LABEL: @globals_merge(
+    // CSE: [[G:%[0-9]+]] = wasm.global_get @g : i32;
+    // CSE-NEXT: wasm.store @mem, [[A:%[0-9]+]], [[A]];
+    // CSE-NEXT: wasm.add [[G]], [[G]];
+    builtin.function public extern("C") @globals_merge(%a: i32) -> (i32) {
+        %x = wasm.global_get @g : i32;
+        wasm.store @mem, %a, %a;
+        %y = wasm.global_get @g : i32;
+        %s = wasm.add %x, %y;
+        builtin.ret %s : (i32);
+    };
+    // CSE-LABEL: @global_set_splits(
+    // CSE: wasm.global_get @g
+    // CSE: wasm.global_set @g
+    // CSE: wasm.global_get @g
+    builtin.function public extern("C") @global_set_splits(%a: i32) -> (i32) {
+        %x = wasm.global_get @g : i32;
+        wasm.global_set @g, %a;
+        %y = wasm.global_get @g : i32;
+        %s = wasm.add %x, %y;
+        builtin.ret %s : (i32);
+    };
+    // CSE-LABEL: @call_splits_globals(
+    // CSE: wasm.global_get @g
+    // CSE: builtin.call @opaque
+    // CSE: wasm.global_get @g
+    builtin.function public extern("C") @call_splits_globals(%a: i32) -> (i32) {
+        %x = wasm.global_get @g : i32;
+        builtin.call @opaque() : extern("C") () -> ();
+        %y = wasm.global_get @g : i32;
+        %s = wasm.add %x, %y;
+        builtin.ret %s : (i32);
+    };
+
+    // The same for tables.
+    // CSE-LABEL: @tables_merge(
+    // CSE: [[N:%[0-9]+]] = wasm.table_size @tab;
+    // CSE-NEXT: wasm.global_set @g, [[A:%[0-9]+]];
+    // CSE-NEXT: wasm.add [[N]], [[N]];
+    builtin.function public extern("C") @tables_merge(%a: i32) -> (i32) {
+        %x = wasm.table_size @tab;
+        wasm.global_set @g, %a;
+        %y = wasm.table_size @tab;
+        %s = wasm.add %x, %y;
+        builtin.ret %s : (i32);
+    };
+    // CSE-LABEL: @grow_splits_tables(
+    // CSE: wasm.table_size @tab
+    // CSE: wasm.table_grow @tab
+    // CSE: wasm.table_size @tab
+    builtin.function public extern("C") @grow_splits_tables(%a: i32, %r: !wasm.funcref) -> (i32) {
+        %x = wasm.table_size @tab;
+        %g = wasm.table_grow @tab, %r, %a;
+        %y = wasm.table_size @tab;
+        %s = wasm.add %x, %y;
+        builtin.ret %s : (i32);
+    };
+
+    // Equal references and addresses merge: they have no effects.
+    // CSE-LABEL: @addresses_merge(
+    // CSE: [[D:%[0-9]+]] = wasm.data_addr @data + 8;
+    // CSE-NEXT: wasm.add [[D]], [[D]];
+    builtin.function public extern("C") @addresses_merge() -> (i32) {
+        %x = wasm.data_addr @data + 8;
+        %y = wasm.data_addr @data + 8;
+        %s = wasm.add %x, %y;
+        builtin.ret %s : (i32);
+    };
+
+    // An unused read is removed, with the trap it may hold; a write, a growth and a call are kept.
+    // DCE-LABEL: @unused_reads(
+    // DCE-NEXT: builtin.ret;
+    builtin.function public extern("C") @unused_reads(%a: i32, %r: !wasm.funcref) {
+        %l = wasm.load @mem, %a : i32;
+        %n = wasm.memory_size @mem;
+        %g = wasm.global_get @g : i32;
+        %t = wasm.table_get @tab, %a : !wasm.funcref;
+        %s = wasm.table_size @tab;
+        %null = wasm.ref_null : !wasm.funcref;
+        %f = wasm.ref_func @opaque;
+        %z = wasm.ref_is_null %r;
+        %d = wasm.data_addr @data;
+        %i = wasm.func_index @opaque;
+        builtin.ret;
+    };
+    // DCE-LABEL: @writes_stay(
+    // DCE-NEXT: wasm.store @mem
+    // DCE-NEXT: wasm.memory_grow @mem
+    // DCE-NEXT: wasm.memory_copy @mem
+    // DCE-NEXT: wasm.memory_fill @mem
+    // DCE-NEXT: wasm.memory_init @mem
+    // DCE-NEXT: wasm.data_drop @data
+    // DCE-NEXT: wasm.global_set @g
+    // DCE-NEXT: wasm.table_set @tab
+    // DCE-NEXT: wasm.table_grow @tab
+    // DCE-NEXT: wasm.table_fill @tab
+    // DCE-NEXT: wasm.call_indirect @tab
+    // DCE-NEXT: builtin.ret;
+    builtin.function public extern("C") @writes_stay(%a: i32, %r: !wasm.funcref) {
+        wasm.store @mem, %a, %a;
+        %g = wasm.memory_grow @mem, %a;
+        wasm.memory_copy @mem, @mem, %a, %a, %a;
+        wasm.memory_fill @mem, %a, %a, %a;
+        wasm.memory_init @mem, @data, %a, %a, %a;
+        wasm.data_drop @data;
+        wasm.global_set @g, %a;
+        wasm.table_set @tab, %a, %r;
+        %o = wasm.table_grow @tab, %r, %a;
+        wasm.table_fill @tab, %a, %r, %a;
+        %c = wasm.call_indirect @tab, %a() : extern("C") () -> i32;
+        builtin.ret;
+    };
+};

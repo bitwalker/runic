@@ -20,6 +20,7 @@ std = ["runic-ir/std"]
 
 [dependencies]
 paste.workspace = true
+runic-dialect-mem.workspace = true
 runic-ir.workspace = true
 
 [dev-dependencies]

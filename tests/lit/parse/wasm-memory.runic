@@ -1,0 +1,194 @@
+// RUN: runic-opt %s | filecheck %s
+// RUN: runic-opt %s --verify-roundtrip | filecheck %s
+// RUN: runic-opt %s --print-generic | runic-opt - --verify-roundtrip
+
+// The `wasm` operations that touch state: loads, stores and bulk operations on a named memory;
+// globals and tables; references; the two address operations; and indirect calls. A memory, a
+// table, a global and data are named by symbol (`@mem`), before the operands. A load writes the
+// type it gives; a narrow load and store write `as i8`, and a narrow load how it extends
+// (`signed` or `unsigned`). `<{ offset = N, align = N }>` is the static part of an access; the
+// printer leaves out an offset of 0 and the alignment of the whole access. The last RUN line reads
+// the generic form of each back.
+// CHECK: builtin.module public @wasm_memory {
+builtin.module public @wasm_memory {
+    wasm.memory public @mem : 1..16;
+    wasm.memory private @aux : 1;
+    builtin.global_variable public @data : array<i8; 4> {
+        %bytes = builtin.bytes "01020304" : array<i8; 4>;
+    };
+    wasm.table private @tab : 4 x !wasm.funcref;
+    wasm.table private @refs : 4 x !wasm.externref;
+
+    // Constant expressions of the new kinds in the initializer of a global: `ref.null`, `ref.func`,
+    // `global.get` of an immutable global, `data_addr` and `func_index`.
+    // CHECK: wasm.global private @counter : mut i32 {
+    wasm.global private @counter : mut i32 { %v = wasm.const 0 : i32; };
+    wasm.global private @limit : i32 { %v = wasm.const 8 : i32; };
+    // CHECK: {{%[0-9]+}} = wasm.ref_func @callee;
+    wasm.global private @entry : !wasm.funcref { %f = wasm.ref_func @callee; };
+    // CHECK: {{%[0-9]+}} = wasm.ref_null : !wasm.externref;
+    wasm.global private @empty : !wasm.externref { %n = wasm.ref_null : !wasm.externref; };
+    // CHECK: {{%[0-9]+}} = wasm.data_addr @data + 16;
+    wasm.global private @base : i32 { %a = wasm.data_addr @data + 16; };
+    // CHECK: {{%[0-9]+}} = wasm.global_get @limit : i32;
+    wasm.global private @again : i32 { %v = wasm.global_get @limit : i32; };
+    // CHECK: {{%[0-9]+}} = wasm.func_index @callee;
+    wasm.global private @slot : i32 { %i = wasm.func_index @callee; };
+
+    builtin.function public extern("C") @callee(%x: i32) -> (i32) {
+        builtin.ret %x : (i32);
+    };
+
+    // The fourteen loads and nine stores of Wasm. The alignment is the width of the access unless
+    // the text says another; `<{ offset = 0, align = 4 }>` is read and printed as nothing.
+    // CHECK-LABEL: @accesses(
+    // CHECK-SAME: [[P:%[0-9]+]]: i32, [[L:%[0-9]+]]: i64, [[F:%[0-9]+]]: f32, [[D:%[0-9]+]]: f64) -> i32 {
+    builtin.function public extern("C") @accesses(%p: i32, %l: i64, %f: f32, %d: f64) -> (i32) {
+        // CHECK-NEXT: [[A:%[0-9]+]] = wasm.load @mem, [[P]] : i32;
+        // CHECK-NEXT: {{%[0-9]+}} = wasm.load @mem, [[P]] : i64;
+        // CHECK-NEXT: {{%[0-9]+}} = wasm.load @mem, [[P]] : f32;
+        // CHECK-NEXT: {{%[0-9]+}} = wasm.load @mem, [[P]] : f64;
+        %a = wasm.load @mem, %p : i32;
+        %b = wasm.load @mem, %p <{ offset = 0, align = 8 }> : i64;
+        %c = wasm.load @mem, %p : f32;
+        %e = wasm.load @mem, %p : f64;
+        // CHECK-NEXT: {{%[0-9]+}} = wasm.load @mem, [[P]] as i8 signed : i32;
+        // CHECK-NEXT: {{%[0-9]+}} = wasm.load @mem, [[P]] as i8 unsigned : i32;
+        // CHECK-NEXT: {{%[0-9]+}} = wasm.load @mem, [[P]] as i16 signed : i32;
+        // CHECK-NEXT: {{%[0-9]+}} = wasm.load @mem, [[P]] as i16 unsigned : i32;
+        %n1 = wasm.load @mem, %p as i8 signed : i32;
+        %n2 = wasm.load @mem, %p as i8 unsigned : i32;
+        %n3 = wasm.load @mem, %p as i16 signed : i32;
+        %n4 = wasm.load @mem, %p as i16 unsigned : i32;
+        // CHECK-NEXT: {{%[0-9]+}} = wasm.load @mem, [[P]] as i8 signed : i64;
+        // CHECK-NEXT: {{%[0-9]+}} = wasm.load @mem, [[P]] as i8 unsigned : i64;
+        // CHECK-NEXT: {{%[0-9]+}} = wasm.load @mem, [[P]] as i16 signed : i64;
+        // CHECK-NEXT: {{%[0-9]+}} = wasm.load @mem, [[P]] as i16 unsigned : i64;
+        // CHECK-NEXT: {{%[0-9]+}} = wasm.load @mem, [[P]] as i32 signed : i64;
+        // CHECK-NEXT: {{%[0-9]+}} = wasm.load @mem, [[P]] as i32 unsigned : i64;
+        %w1 = wasm.load @mem, %p as i8 signed : i64;
+        %w2 = wasm.load @mem, %p as i8 unsigned : i64;
+        %w3 = wasm.load @mem, %p as i16 signed : i64;
+        %w4 = wasm.load @mem, %p as i16 unsigned : i64;
+        %w5 = wasm.load @mem, %p as i32 signed : i64;
+        %w6 = wasm.load @mem, %p as i32 unsigned : i64;
+        // An offset, an alignment below the width, both, in either order; another memory.
+        // CHECK-NEXT: {{%[0-9]+}} = wasm.load @mem, [[P]] <{ offset = 8 }> : i32;
+        // CHECK-NEXT: {{%[0-9]+}} = wasm.load @mem, [[P]] <{ align = 2 }> : i32;
+        // CHECK-NEXT: {{%[0-9]+}} = wasm.load @aux, [[P]] as i8 signed <{ offset = 3 }> : i64;
+        %o1 = wasm.load @mem, %p <{ offset = 8 }> : i32;
+        %o2 = wasm.load @mem, %p <{ align = 2 }> : i32;
+        %o3 = wasm.load @aux, %p as i8 signed <{ align = 1, offset = 3 }> : i64;
+        // CHECK-NEXT: wasm.store @mem, [[P]], [[A]];
+        // CHECK-NEXT: wasm.store @mem, [[P]], [[L]];
+        // CHECK-NEXT: wasm.store @mem, [[P]], [[F]];
+        // CHECK-NEXT: wasm.store @mem, [[P]], [[D]];
+        wasm.store @mem, %p, %a;
+        wasm.store @mem, %p, %l;
+        wasm.store @mem, %p, %f;
+        wasm.store @mem, %p, %d <{ align = 8 }>;
+        // CHECK-NEXT: wasm.store @mem, [[P]], [[A]] as i8;
+        // CHECK-NEXT: wasm.store @mem, [[P]], [[A]] as i16;
+        // CHECK-NEXT: wasm.store @mem, [[P]], [[L]] as i8;
+        // CHECK-NEXT: wasm.store @mem, [[P]], [[L]] as i16;
+        // CHECK-NEXT: wasm.store @aux, [[P]], [[L]] as i32 <{ offset = 4, align = 2 }>;
+        wasm.store @mem, %p, %a as i8;
+        wasm.store @mem, %p, %a as i16;
+        wasm.store @mem, %p, %l as i8;
+        wasm.store @mem, %p, %l as i16;
+        wasm.store @aux, %p, %l as i32 <{ offset = 4, align = 2 }>;
+        // CHECK: builtin.ret [[A]] : (i32);
+        builtin.ret %a : (i32);
+    };
+
+    // Size, growth and the bulk operations; passive data is a `builtin.global_variable`.
+    // CHECK-LABEL: @bulk(
+    builtin.function public extern("C") @bulk(%d: i32, %s: i32, %n: i32) {
+        // CHECK-NEXT: [[PAGES:%[0-9]+]] = wasm.memory_size @mem;
+        // CHECK-NEXT: {{%[0-9]+}} = wasm.memory_grow @mem, [[PAGES]];
+        // CHECK-NEXT: wasm.memory_copy @mem, @aux, {{%[0-9]+}}, {{%[0-9]+}}, {{%[0-9]+}};
+        // CHECK-NEXT: wasm.memory_fill @mem, {{%[0-9]+}}, {{%[0-9]+}}, {{%[0-9]+}};
+        // CHECK-NEXT: wasm.memory_init @mem, @data, {{%[0-9]+}}, {{%[0-9]+}}, {{%[0-9]+}};
+        // CHECK-NEXT: wasm.data_drop @data;
+        %pages = wasm.memory_size @mem;
+        %old = wasm.memory_grow @mem, %pages;
+        wasm.memory_copy @mem, @aux, %d, %s, %n;
+        wasm.memory_fill @mem, %d, %s, %n;
+        wasm.memory_init @mem, @data, %d, %s, %n;
+        wasm.data_drop @data;
+        builtin.ret;
+    };
+
+    // Globals and tables, references and addresses. A global read and a table read write the type
+    // they give.
+    // CHECK-LABEL: @variables(
+    builtin.function public extern("C") @variables(%i: i32, %r: !wasm.funcref, %x: !wasm.externref, %w: i64) {
+        // CHECK-NEXT: [[V:%[0-9]+]] = wasm.global_get @counter : i32;
+        // CHECK-NEXT: wasm.global_set @counter, [[V]];
+        // CHECK-NEXT: {{%[0-9]+}} = wasm.global_get @limit : i32;
+        %v = wasm.global_get @counter : i32;
+        wasm.global_set @counter, %v;
+        %k = wasm.global_get @limit : i32;
+        // CHECK-NEXT: {{%[0-9]+}} = wasm.table_get @tab, [[I:%[0-9]+]] : !wasm.funcref;
+        // CHECK-NEXT: wasm.table_set @tab, [[I]], {{%[0-9]+}};
+        // CHECK-NEXT: [[N:%[0-9]+]] = wasm.table_size @tab;
+        // CHECK-NEXT: {{%[0-9]+}} = wasm.table_grow @refs, {{%[0-9]+}}, [[N]];
+        // CHECK-NEXT: wasm.table_fill @refs, [[I]], {{%[0-9]+}}, [[N]];
+        %e = wasm.table_get @tab, %i : !wasm.funcref;
+        wasm.table_set @tab, %i, %r;
+        %n = wasm.table_size @tab;
+        %o = wasm.table_grow @refs, %x, %n;
+        wasm.table_fill @refs, %i, %x, %n;
+        // CHECK-NEXT: {{%[0-9]+}} = wasm.ref_null : !wasm.funcref;
+        // CHECK-NEXT: {{%[0-9]+}} = wasm.ref_null : !wasm.externref;
+        // CHECK-NEXT: {{%[0-9]+}} = wasm.ref_func @callee;
+        // CHECK-NEXT: {{%[0-9]+}} = wasm.ref_is_null {{%[0-9]+}};
+        // CHECK-NEXT: {{%[0-9]+}} = wasm.ref_is_null {{%[0-9]+}};
+        %null = wasm.ref_null : !wasm.funcref;
+        %enull = wasm.ref_null : !wasm.externref;
+        %f = wasm.ref_func @callee;
+        %z = wasm.ref_is_null %r;
+        %ez = wasm.ref_is_null %x;
+        // The offset is left out when it is 0, and read as `+ N` or `- N`.
+        // CHECK-NEXT: {{%[0-9]+}} = wasm.data_addr @data;
+        // CHECK-NEXT: {{%[0-9]+}} = wasm.data_addr @data;
+        // CHECK-NEXT: {{%[0-9]+}} = wasm.data_addr @data + 16;
+        // CHECK-NEXT: {{%[0-9]+}} = wasm.data_addr @data - 4;
+        // CHECK-NEXT: {{%[0-9]+}} = wasm.func_index @callee;
+        %d0 = wasm.data_addr @data;
+        %d1 = wasm.data_addr @data + 0;
+        %d2 = wasm.data_addr @data + 16;
+        %d3 = wasm.data_addr @data - 4;
+        %fi = wasm.func_index @callee;
+        builtin.ret;
+    };
+
+    // Indirect calls: through a table of `funcref`, by an `i32` index, with a signature; an
+    // indirect tail call is a terminator and has the results of its function.
+    // CHECK-LABEL: @calls(
+    builtin.function public extern("C") @calls(%i: i32, %v: i32) -> (i32) {
+        // CHECK-NEXT: wasm.call_indirect @tab, [[I:%[0-9]+]]() : extern("C") ();
+        // CHECK-NEXT: {{%[0-9]+}} = wasm.call_indirect @tab, [[I]]({{%[0-9]+}}) : extern("C") (i32) -> i32;
+        // CHECK-NEXT: {{%[0-9]+}}, {{%[0-9]+}} = wasm.call_indirect @tab, [[I]]({{%[0-9]+}}, {{%[0-9]+}}) : extern("C") (i32, i32) -> (i64, !wasm.funcref);
+        wasm.call_indirect @tab, %i() : extern("C") ();
+        %r = wasm.call_indirect @tab, %i(%v) : extern("C") (i32) -> i32;
+        %m, %q = wasm.call_indirect @tab, %i(%v, %v) : extern("C") (i32, i32) -> (i64, !wasm.funcref);
+        // CHECK-NEXT: wasm.return_call_indirect @tab, [[I]]({{%[0-9]+}}) : extern("C") (i32) -> i32;
+        wasm.return_call_indirect @tab, %i(%r) : extern("C") (i32) -> i32;
+    };
+
+    // The generic form of an operation, with its properties: a load of the whole value and a
+    // narrow load, a store, and an indirect call, whose operand groups are written with `|`.
+    // CHECK-LABEL: @generic_form(
+    builtin.function public extern("C") @generic_form(%p: i32) {
+        // CHECK-NEXT: {{%[0-9]+}} = wasm.load @mem, {{%[0-9]+}} : i32;
+        // CHECK-NEXT: {{%[0-9]+}} = wasm.load @mem, {{%[0-9]+}} as i16 unsigned <{ offset = 2 }> : i32;
+        // CHECK-NEXT: wasm.store @aux, {{%[0-9]+}}, {{%[0-9]+}} as i8;
+        // CHECK-NEXT: wasm.call_indirect @tab, {{%[0-9]+}}({{%[0-9]+}}) : extern("C") (i32);
+        %a = "wasm.load"(%p) <{ memory = #builtin.symbol<@mem>, memarg = #wasm.memarg<offset = 0, align = 4>, storage = #wasm.storage<full>, extension = #wasm.extension<unextended> }> : i32 -> i32;
+        %b = "wasm.load"(%p) <{ memory = #builtin.symbol<@mem>, memarg = #wasm.memarg<offset = 2, align = 2>, storage = #wasm.storage<i16>, extension = #wasm.extension<unsigned> }> : i32 -> i32;
+        "wasm.store"(%p, %a) <{ memory = #builtin.symbol<@aux>, memarg = #wasm.memarg<offset = 0, align = 1>, storage = #wasm.storage<i8> }> : (i32, i32) -> ();
+        "wasm.call_indirect"(%p, %b) <{ table = #builtin.symbol<@tab>, signature = #builtin.signature<extern("C") (i32)> }> : (i32 | i32) -> ();
+        builtin.ret;
+    };
+};

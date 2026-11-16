@@ -8,7 +8,7 @@ use alloc::{
 
 use runic_ir::{
     Context, Op, OperationRef, Report, SymbolTable,
-    dialects::builtin::{FunctionRef, Module},
+    dialects::builtin::{FunctionRef, Module, ModuleRef},
     parse::{self, ParserConfig},
     pass::{Nesting, PassManager},
     testing::{parse_function_fixpoint, text::describe},
@@ -18,11 +18,14 @@ use runic_transform::{CommonSubexpressionElimination, DeadCodeElimination};
 use crate::*;
 
 mod attributes;
+mod call;
 mod compare;
 mod convert;
+mod memory;
 mod module;
 mod numeric;
 mod types;
+mod variable;
 
 /// A context with the `wasm` dialect registered.
 fn context() -> Rc<Context> {
@@ -273,10 +276,21 @@ fn run_pass(
     results: &str,
     body: &str,
 ) -> Result<String, Report> {
+    run_pass_in(pass, "", params, results, body)
+}
+
+/// As [run_pass], with the module holding `prelude` (entities the function uses) before it.
+fn run_pass_in(
+    pass: Box<dyn runic_ir::pass::OperationPass>,
+    prelude: &str,
+    params: &str,
+    results: &str,
+    body: &str,
+) -> Result<String, Report> {
     let context = context();
     let text = format!(
-        "builtin.module public @m {{\nbuiltin.function public extern(\"C\") @f({params}) -> \
-         ({results}) {{\n{body}\n}};\n}};"
+        "builtin.module public @m {{\n{prelude}\nbuiltin.function public extern(\"C\") \
+         @f({params}) -> ({results}) {{\n{body}\n}};\n}};"
     );
     let module =
         parse::parse::<Module>(ParserConfig::new(context.clone()), "wasm", text).into_result()?;
@@ -287,6 +301,184 @@ fn run_pass(
     passes.enable_verifier(true);
     passes.run(function)?;
     Ok(function.borrow().to_string())
+}
+
+/// What the tests of the operations that touch state need beside the function under test: two
+/// memories, some data, two tables, a mutable and a constant global, and two functions.
+const STATE: &str = r#"
+    wasm.memory public @mem : 1;
+    wasm.memory public @other : 1;
+    builtin.global_variable private @data : array<i8; 4> {
+        %bytes = builtin.bytes "01020304" : array<i8; 4>;
+    };
+    wasm.table private @tab : 4 x !wasm.funcref;
+    wasm.table private @refs : 4 x !wasm.externref;
+    wasm.global private @g : mut i32 { %v = wasm.const 0 : i32; };
+    wasm.global private @k : i32 { %v = wasm.const 1 : i32; };
+    wasm.global private @wide : mut i64 { %v = wasm.const 0 : i64; };
+    builtin.function public extern("C") @callee(%x: i32) -> (i32) {
+        builtin.ret %x : (i32);
+    };
+    builtin.function public extern("C") @opaque();
+"#;
+
+/// The operations that are not numeric: the module-level ones, the memory operations, the
+/// variable, reference and address operations, and the indirect calls.
+const OTHER_OPERATIONS: [&str; 27] = [
+    "memory",
+    "table",
+    "global",
+    "elem",
+    "tag",
+    "load",
+    "store",
+    "memory_size",
+    "memory_grow",
+    "memory_copy",
+    "memory_fill",
+    "memory_init",
+    "data_drop",
+    "global_get",
+    "global_set",
+    "table_get",
+    "table_set",
+    "table_size",
+    "table_grow",
+    "table_fill",
+    "ref_null",
+    "ref_func",
+    "ref_is_null",
+    "data_addr",
+    "func_index",
+    "call_indirect",
+    "return_call_indirect",
+];
+
+/// The parameters of the function the tests of the state operations put a body in.
+const STATE_PARAMS: &str = "%a: i32, %b: i32, %p: ptr<i32>, %r: !wasm.funcref, %x: \
+                            !wasm.externref, %l: i64, %f: f32, %d: f64";
+
+/// The module of [STATE] and the function `@f(params) -> (results)` with the body `body`.
+fn state_module(params: &str, results: &str, body: &str) -> String {
+    format!(
+        "builtin.module public @m {{\n{STATE}\nbuiltin.function public extern(\"C\") @f({params}) \
+         -> ({results}) {{\n{body}\n}};\n}};"
+    )
+}
+
+/// `source`, a module, parsed and verified, or the error with its labels.
+fn parse_state(source: &str) -> Result<(Rc<Context>, ModuleRef), String> {
+    let context = context();
+    let module = parse::parse::<Module>(ParserConfig::new(context.clone()), "m", source)
+        .into_result()
+        .map_err(|report| describe(&report))?;
+    module
+        .borrow()
+        .as_operation()
+        .recursively_verify()
+        .map_err(|report| format!("does not verify: {}", describe(&report)))?;
+    Ok((context, module))
+}
+
+/// The function of [STATE_PARAMS] with the body `body` and then `builtin.ret;`, in the module of
+/// [STATE], parsed and verified.
+#[track_caller]
+fn accepted(body: &str) -> (Rc<Context>, ModuleRef) {
+    parse_state(&state_module(STATE_PARAMS, "", &format!("{body}\n builtin.ret;")))
+        .unwrap_or_else(|error| panic!("{error}\n{body}"))
+}
+
+/// The error of the function of [STATE_PARAMS] with the body `body` and then `builtin.ret;`, which
+/// must not parse or verify; it must contain `message`.
+#[track_caller]
+fn rejected(body: &str, message: &str) {
+    match parse_state(&state_module(STATE_PARAMS, "", &format!("{body}\n builtin.ret;"))) {
+        Ok(_) => panic!("accepted:\n{body}"),
+        Err(error) => {
+            // A message with a quotation mark is shown escaped inside the labels
+            let escaped = message.replace('"', "\\\"");
+            assert!(
+                error.contains(message) || error.contains(&escaped),
+                "expected `{message}` in\n{error}\nfor\n{body}"
+            );
+        }
+    }
+}
+
+/// The names of the effects of the operation `name` of the function `@f`, as `Kind resource`.
+pub(super) fn effects_of(name: &str, body: &str) -> Vec<String> {
+    use runic_ir::effects::{EffectInstance, MemoryEffect, MemoryEffectOpInterface};
+
+    let (_context, module) = accepted(body);
+    let function = module.borrow().symbol_manager().lookup_op("f").unwrap();
+    let mut found = Vec::new();
+    let _ = function.borrow().prewalk(|op: &runic_ir::Operation| {
+        if op.name().to_string() == name {
+            let interface = op.as_trait::<dyn MemoryEffectOpInterface>().unwrap();
+            assert!(interface.effects_are_known());
+            for effect in interface.effects() {
+                let effect: EffectInstance<MemoryEffect> = effect;
+                found.push(format!("{:?} {}", effect.effect(), effect.resource().name()));
+            }
+        }
+        runic_ir::WalkResult::<()>::Continue(())
+    });
+    found
+}
+
+/// The number of times `needle` occurs in `text`.
+fn count(text: &str, needle: &str) -> usize {
+    text.matches(needle).count()
+}
+
+/// The function of [STATE_PARAMS] and the results `results` with the body `body`, which ends in its
+/// own `builtin.ret`, in the module of [STATE], after `cse`.
+fn state_cse(results: &str, body: &str) -> String {
+    run_pass_in(
+        Box::<CommonSubexpressionElimination>::default(),
+        STATE,
+        STATE_PARAMS,
+        results,
+        body,
+    )
+    .unwrap_or_else(|report| panic!("{}\n{body}", describe(&report)))
+}
+
+/// `first`, `middle` and `second` (the first and the second name their results `%l1` and `%l2`,
+/// of `i32`), then the sum of the two, returned: the number of times `op` is left after `cse`.
+/// The results are used, so that nothing is removed for being unused.
+fn after_cse(first: &str, middle: &str, second: &str, op: &str) -> usize {
+    count(
+        &state_cse(
+            "i32",
+            &format!(
+                "{first}\n{middle}\n{second}\n%u = wasm.add %l1, %l2;\nbuiltin.ret %u : (i32);"
+            ),
+        ),
+        op,
+    )
+}
+
+/// As [after_cse] for two results of the type `ty`, `%l1` and `%l2`, of which `join` makes the one
+/// returned (`%u`).
+fn after_cse_of(first: &str, middle: &str, second: &str, join: &str, ty: &str, op: &str) -> usize {
+    count(
+        &state_cse(ty, &format!("{first}\n{middle}\n{second}\n{join}\nbuiltin.ret %u : ({ty});")),
+        op,
+    )
+}
+
+/// The function of [STATE_PARAMS] with the body `body` and then `builtin.ret;`, in the module of
+/// [STATE], after `dce`.
+fn state_dce(body: &str) -> String {
+    run_pass_in(
+        Box::<DeadCodeElimination>::default(),
+        STATE,
+        STATE_PARAMS,
+        "",
+        &format!("{body}\nbuiltin.ret;"),
+    )
+    .unwrap_or_else(|report| panic!("{}\n{body}", describe(&report)))
 }
 
 /// `body` after dead-code elimination.

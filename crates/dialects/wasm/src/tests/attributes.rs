@@ -139,6 +139,8 @@ fn every_attribute_kind_lists_and_replaces_what_it_holds() {
         Row::new("limits", context.create_attribute::<LimitsAttr, _>(Limits::between(1, 16)), []),
         Row::new("memarg", context.create_attribute::<MemArgAttr, _>(MemArg::new(8, 4)), []),
         Row::new("mutability", context.create_attribute::<MutabilityAttr, _>(Mutability::Mut), []),
+        Row::new("storage", context.create_attribute::<StorageAttr, _>(Storage::I16), []),
+        Row::new("extension", context.create_attribute::<ExtensionAttr, _>(Extension::Signed), []),
     ];
     check_every_kind(&context, &["wasm"], &rows);
     let _: Rc<Context> = context;
