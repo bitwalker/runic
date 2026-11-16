@@ -5,7 +5,7 @@
 //! around them: it takes a description of one compilation, decides which stages run and where
 //! their outputs go, and runs them.
 //!
-//! This crate holds the vocabulary of a compilation:
+//! What the crate holds:
 //!
 //! * a [Triple] names the target;
 //! * a [CheckpointId] names a point at which a compilation holds an artifact, and an [Observer] is
@@ -19,13 +19,16 @@
 //!   [Destination] decided by [resolve_goal] before anything runs;
 //! * a [Session] resolves a request against a compiler: which frontend reads each input, the
 //!   [Target] and its backend, the route and the goal, and the context and world the stages build
-//!   in.
+//!   in;
+//! * an [IrFrontend] reads Runic's own textual IR: each file holds a module, a component or a
+//!   world.
 #![deny(warnings)]
 
 mod backend;
 mod checkpoint;
 mod compiler;
 mod frontend;
+mod frontends;
 mod goal;
 mod request;
 mod route;
@@ -43,6 +46,7 @@ pub use self::{
     },
     compiler::{Compiler, CompilerBuilder},
     frontend::Frontend,
+    frontends::IrFrontend,
     goal::{Destination, Goal, Output, OutputNaming, resolve_goal},
     request::{
         CompilationRequest, DebugInfo, EmitRequest, EmitTo, ExtensionOptions, Extern, Input,
