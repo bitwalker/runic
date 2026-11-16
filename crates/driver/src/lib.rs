@@ -1,9 +1,9 @@
 //! The command line of a compiler built on Runic.
 //!
-//! A [Driver] is the `clap` command of a [Compiler]: the driver's own flags ([Flags]), the flags
+//! A [Driver] is the `clap` command of a [Compiler]: the driver's own flags, the flags
 //! each of the compiler's frontends and backends declares through an
 //! [OptionsDecl], and `-Z`, with which a user sets the unstable
-//! settings of the driver ([Unstable]) and of the stages.
+//! settings of the driver and of the stages.
 //!
 //! The rules the command holds its stages to:
 //!
@@ -17,9 +17,15 @@
 //!   `-Z NAME[=VALUE]`.
 //!
 //! The command is checked when it is built, and each failure names what was declared and by whom.
+//!
+//! [Driver::request] reads a command line and answers with an [Invocation] (a compilation to run,
+//! or text to print) or an [Exit] (help, or a usage error). The driver's own flags, the `-Z`
+//! settings and the stages' flags are all read there, and each fills a field of the request or of
+//! a stage's options and nothing else.
 #![deny(warnings)]
 
 mod command;
+mod request;
 mod unstable;
 
 use std::collections::HashMap;
@@ -29,7 +35,11 @@ use runic_compile::{Compiler, OptionsDecl, RUNIC_REVISION, RUNIC_VERSION};
 use runic_ir::Report;
 
 pub use self::{
-    command::{ColorChoice, Flags, PrintKind, UNSTABLE_ARG},
+    command::ColorChoice,
+    request::{Exit, Invocation, RenderOptions},
+};
+use self::{
+    command::{Flags, PrintKind, UNSTABLE_ARG},
     unstable::Unstable,
 };
 
@@ -38,7 +48,7 @@ const DEFAULT_NAME: &str = "runic";
 
 /// Whether a stage is a frontend or a backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StageKind {
+pub(crate) enum StageKind {
     /// A stage that reads inputs.
     Frontend,
     /// A stage that generates code.
@@ -56,7 +66,7 @@ impl core::fmt::Display for StageKind {
 
 /// A flag of the main command that is a stable option of a stage.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StageFlag {
+pub(crate) struct StageFlag {
     id: String,
     long: String,
     field: String,
@@ -88,7 +98,7 @@ impl StageFlag {
 /// [OptionsDecl]. The ids and long names of the scratch commands are
 /// the ones in [StageCommands::flags], without the id prefix.
 #[derive(Debug, Clone)]
-pub struct StageCommands {
+pub(crate) struct StageCommands {
     kind: StageKind,
     name: &'static str,
     decl: OptionsDecl,
@@ -99,11 +109,13 @@ pub struct StageCommands {
 
 impl StageCommands {
     /// Whether the stage is a frontend or a backend.
+    #[cfg(test)]
     pub fn kind(&self) -> StageKind {
         self.kind
     }
 
     /// The name of the stage.
+    #[cfg(test)]
     pub fn name(&self) -> &'static str {
         self.name
     }
@@ -169,18 +181,18 @@ impl<'c> Driver<'c> {
     }
 
     /// Whether the command accepts `-Z`.
-    pub fn unstable_allowed(&self) -> bool {
+    pub(crate) fn unstable_allowed(&self) -> bool {
         self.unstable_allowed
     }
 
     /// A command of the driver's own unstable settings ([Unstable]) only, with no binary name.
-    pub fn unstable_command(&self) -> &Command {
+    pub(crate) fn unstable_command(&self) -> &Command {
         &self.unstable
     }
 
     /// The frontends and backends that declare options, frontends first, each group in
     /// registration order.
-    pub fn stages(&self) -> &[StageCommands] {
+    pub(crate) fn stages(&self) -> &[StageCommands] {
         &self.stages
     }
 
@@ -583,7 +595,7 @@ impl Namespace {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use clap::{Args, error::ErrorKind};
     use runic_compile::{
         Artifact, Backend, CheckpointDecl, CheckpointId, Checkpoints, Flow, Frontend, Input,
@@ -681,7 +693,7 @@ mod tests {
     }
 
     /// A backend that declares what a test says and does nothing else.
-    struct Be(&'static str, fn() -> Option<OptionsDecl>, &'static [CheckpointDecl]);
+    pub(crate) struct Be(&'static str, fn() -> Option<OptionsDecl>, &'static [CheckpointDecl]);
 
     fn render_nothing(
         _artifact: &Artifact,
@@ -691,7 +703,7 @@ mod tests {
         Ok(())
     }
 
-    fn backend(name: &'static str, options: fn() -> Option<OptionsDecl>) -> Be {
+    pub(crate) fn backend(name: &'static str, options: fn() -> Option<OptionsDecl>) -> Be {
         let id: &'static str = Box::leak(format!("{name}.out").into_boxed_str());
         let checkpoints = Box::leak(Box::new([CheckpointDecl {
             id: CheckpointId::new(id),
@@ -745,7 +757,7 @@ mod tests {
         }
     }
 
-    fn stable<T: Args + Default + Send + Sync + 'static>() -> Option<OptionsDecl> {
+    pub(crate) fn stable<T: Args + Default + Send + Sync + 'static>() -> Option<OptionsDecl> {
         Some(OptionsDecl::of::<T>())
     }
 
@@ -753,7 +765,7 @@ mod tests {
         Some(OptionsDecl::unstable_only::<T>())
     }
 
-    fn toy() -> Compiler {
+    pub(crate) fn toy() -> Compiler {
         Compiler::builder()
             .frontend(CalcFrontend)
             .frontend(runic_compile::IrFrontend)
@@ -1189,7 +1201,10 @@ mod tests {
             ])
             .unwrap();
         let flags = <Flags as clap::FromArgMatches>::from_arg_matches(&matches).unwrap();
-        assert_eq!(flags.input, ["-", "a.calc"]);
+        assert_eq!(
+            flags.input,
+            [std::path::PathBuf::from("-"), std::path::PathBuf::from("a.calc")]
+        );
         assert_eq!(flags.debug, Some(runic_compile::DebugInfo::Full));
         assert_eq!(flags.opt_level, Some(runic_compile::OptLevel::Balanced));
         assert_eq!(

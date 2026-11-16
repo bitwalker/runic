@@ -9,7 +9,7 @@ use clap::Args;
 /// way, with the stage's name as a prefix.
 #[derive(Args, Debug, Clone, PartialEq, Eq)]
 #[command(about = None, long_about = None)]
-pub struct Unstable {
+pub(crate) struct Unstable {
     /// The pass pipeline to run in place of the default optimization, such as
     /// `builtin.module(cse)`.
     #[arg(long, value_name = "PIPELINE")]

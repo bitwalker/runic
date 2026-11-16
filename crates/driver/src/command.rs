@@ -10,7 +10,7 @@ use runic_ir::Report;
 
 /// The id of the `-Z` argument of the main command, which is on the command only when the driver
 /// allows unstable flags. Its values are the texts `NAME[=VALUE]`, in the order written.
-pub const UNSTABLE_ARG: &str = "unstable";
+pub(crate) const UNSTABLE_ARG: &str = "unstable";
 
 /// When the driver colors what it prints.
 #[derive(ValueEnum, Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -26,7 +26,7 @@ pub enum ColorChoice {
 
 /// What `--print` can ask the driver to list instead of compiling.
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PrintKind {
+pub(crate) enum PrintKind {
     /// The targets the compiler's backends generate code for.
     Targets,
     /// The names of the compiler's backends.
@@ -51,10 +51,10 @@ fn from_str_report<T: FromStr<Err = Report>>(text: &str) -> Result<T, String> {
 /// the argument [UNSTABLE_ARG], and the second are described by the driver's stages.
 #[derive(Args, Debug, Clone)]
 #[command(about = None, long_about = None)]
-pub struct Flags {
+pub(crate) struct Flags {
     /// The files to compile, or `-` for standard input.
     #[arg(value_name = "INPUT")]
-    pub input: Vec<String>,
+    pub input: Vec<PathBuf>,
 
     /// The name of the unit compiled, which also names its output files. The default is the name
     /// of the first input without its extension.
