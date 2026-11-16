@@ -533,7 +533,8 @@ impl<'input> Lexer<'input> {
         }
 
         // A `.` makes a float only if a digit follows it, and an `e` only if an exponent follows
-        // it, so that `1.`, `1..2`, `1...` and `1else` lex as they did before floats existed.
+        // it: `1.` with no digit after it is an `Int` and a `.`, and `1else` is an `Int` and an
+        // identifier.
         let mut is_float = false;
         if self.read() == '.' && self.peek().is_ascii_digit() {
             self.skip();

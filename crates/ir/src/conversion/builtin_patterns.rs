@@ -1248,26 +1248,15 @@ fn check_tail_call_results_are_the_functions(
             let signature = function.get_signature();
             let converted = &converted.signature;
             let name = format!("@{}", Symbol::name(function));
-            let reason = if converted.declared_results() != signature.declared_results() {
-                let list = |results: &[crate::dialects::builtin::attributes::AbiParam]| {
-                    results.iter().map(|result| format!("{result}")).collect::<Vec<_>>().join(", ")
-                };
-                format!(
-                    "the conversion makes this tail call return ({}), but the function {name} \
-                     returns ({}): a tail call returns what the function returns",
-                    list(converted.declared_results()),
-                    list(signature.declared_results()),
-                )
-            } else if converted.calling_convention() != signature.calling_convention() {
-                format!(
-                    "the conversion makes this tail call use the calling convention \"{}\", but \
-                     the function {name} uses \"{}\"",
-                    converted.calling_convention().as_str(),
-                    signature.calling_convention().as_str(),
-                )
-            } else {
+            let Some(mismatch) =
+                crate::dialects::builtin::tail_call_mismatch(&signature, converted)
+            else {
                 return Ok(());
             };
+            let reason = format!(
+                "after the conversion, {mismatch}: a tail call returns what the function {name} \
+                 returns"
+            );
             return Err(crate::diagnostics::report!(
                 message: (format!("cannot convert {}", describe_op(tail_call))),
                 labels: [primary(tail_call.borrow().span(), reason)],

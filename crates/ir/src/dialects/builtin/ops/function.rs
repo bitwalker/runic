@@ -1,9 +1,9 @@
 use alloc::{format, string::String, vec::Vec};
 
 use crate::{
-    AsValueRange, BlockRef, CallConv, CallableOpInterface, CallableSymbol, IdentAttr, Op, OpParser,
-    OpPrinter, Operation, RegionKind, RegionKindInterface, RegionRef, SmallVec, Symbol, SymbolUse,
-    SymbolUseList, Type, UnsafeIntrusiveEntityRef, Usable, Visibility,
+    AsValueRange, BlockRef, CallConv, CallableOpInterface, CallableSymbol, IdentAttr, LinkedSymbol,
+    Op, OpParser, OpPrinter, Operation, RegionKind, RegionKindInterface, RegionRef, SmallVec,
+    Symbol, SymbolUse, SymbolUseList, Type, UnsafeIntrusiveEntityRef, Usable, Visibility,
     derive::{EffectOpInterface, operation},
     dialects::builtin::{
         BuiltinDialect, TailCall, TailCallIndirect,
@@ -39,6 +39,7 @@ pub type FunctionRef = UnsafeIntrusiveEntityRef<Function>;
         Symbol,
         CallableOpInterface,
         CallableSymbol,
+        LinkedSymbol,
         RegionKindInterface,
         MemoryEffectOpInterface,
         OpPrinter
@@ -511,6 +512,16 @@ impl CallableOpInterface for Function {
 
 impl CallableSymbol for Function {}
 
+impl LinkedSymbol for Function {}
+
+/// The `link_name` entry of the dictionary is well formed, and there is no `section` entry (see
+/// [verify_link_attributes](crate::verify_link_attributes)).
+impl crate::Verify<dyn crate::LinkedSymbol> for Function {
+    fn verify(&self, _context: &crate::Context) -> Result<(), crate::Report> {
+        crate::verify_link_attributes(self.as_operation())
+    }
+}
+
 /// A function verifies its body against its signature: the entry block of a definition has one
 /// argument per parameter, of the parameter's type, and every `builtin.ret` and `builtin.ret_imm`
 /// in the body, outside nested callables, returns exactly the results of the signature (none may
@@ -536,8 +547,6 @@ impl CallableSymbol for Function {}
 impl crate::Verify<dyn CallableSymbol> for Function {
     fn verify(&self, _context: &crate::Context) -> Result<(), crate::Report> {
         use crate::{Spanned, ValueRef, WalkResult, diagnostics::report};
-
-        crate::verify_link_attributes(self.as_operation())?;
 
         let span = self.as_operation().span();
         let invalid = |label: String| {
@@ -631,20 +640,7 @@ impl crate::Verify<dyn CallableSymbol> for Function {
         // A tail call returns what its callee returns, and the function returns that: the callee's
         // declared results are the function's, and the callee is called as the function is.
         let check_tail_call = |op: &Operation, called: &Signature| -> Result<(), crate::Report> {
-            let reason = if called.declared_results() != signature.declared_results() {
-                format!(
-                    "this tail call returns {}, but the function returns {}",
-                    abi_list(called.declared_results()),
-                    abi_list(signature.declared_results())
-                )
-            } else if called.calling_convention() != signature.calling_convention() {
-                format!(
-                    "this tail call uses the calling convention \"{}\", but the function uses \
-                     \"{}\"",
-                    called.calling_convention().as_str(),
-                    signature.calling_convention().as_str()
-                )
-            } else {
+            let Some(reason) = super::call::tail_call_mismatch(&signature, called) else {
                 return Ok(());
             };
             Err(report!(
@@ -717,12 +713,6 @@ impl crate::Verify<dyn CallableSymbol> for Function {
             })
             .into_result()
     }
-}
-
-/// `results` as a parenthesised list, `(i32, i64)`; a result with attributes is written with them.
-fn abi_list(results: &[AbiParam]) -> String {
-    let results = results.iter().map(|result| format!("{result}")).collect::<Vec<_>>();
-    format!("({})", results.join(", "))
 }
 
 /// `types` as a parenthesised list, `(i32, i64)`.

@@ -883,6 +883,20 @@ pub trait ParserExt<'input>: Parser<'input> {
             None => 0,
         };
         let negative = self.token_stream_mut().next_if_eq(Token::Minus)?;
+        // A float literal is not an integer: it is reported as it was written, with its minus.
+        if let Some(float) =
+            self.token_stream_mut().next_if(|tok| matches!(tok, Token::Float(_)))?
+        {
+            let span = span!(self.source_id(), start, self.token_stream().previous_end());
+            return Err(ParserError::InvalidIntegerLiteral {
+                span,
+                reason: format!(
+                    "`{}{}` is a float literal, but an integer is expected here",
+                    if negative { "-" } else { "" },
+                    float.into_inner()
+                ),
+            });
+        }
         let token = self
             .token_stream_mut()
             .expect_if("integer", |tok| {

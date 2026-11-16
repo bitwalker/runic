@@ -8313,4 +8313,38 @@ mod floats {
             assert!(format!("{err:?}").contains(message), "{text}: {err:?}");
         }
     }
+
+    /// A float literal where an integer is expected is reported as what the user wrote: its
+    /// reason names it a float literal, shows it with its minus sign, and its label covers the
+    /// minus.
+    #[test]
+    fn a_float_literal_where_an_integer_is_expected_is_reported_with_its_minus_sign() {
+        let context = Rc::new(Context::default());
+        for text in ["-1.5", "-2.5e-3", "1.5"] {
+            let mut parser = parser_for(&context, text);
+            match parser.parse_integer_literal() {
+                Err(ParserError::InvalidIntegerLiteral { span, reason }) => {
+                    let range = span.range();
+                    assert_eq!((range.start() as usize, range.end() as usize), (0, text.len()));
+                    assert!(
+                        reason.contains(&format!("`{text}` is a float literal")),
+                        "{text}: {reason}"
+                    );
+                    assert!(reason.contains("expected here"), "{text}: {reason}");
+                }
+                other => panic!("`{text}`: {other:?}"),
+            }
+        }
+    }
+
+    /// The same for an attribute written `x = -1.5`, which reads an integer with its type.
+    #[test]
+    fn a_float_literal_as_the_value_of_an_attribute_is_reported_with_its_minus_sign() {
+        let context = Rc::new(Context::default());
+        let unknown = context.unknown_type();
+        let err = super::parse_attribute_text(&context, "-1.5", unknown)
+            .map(|_| ())
+            .expect_err("-1.5");
+        assert!(format!("{err:?}").contains("`-1.5` is a float literal"), "{err:?}");
+    }
 }

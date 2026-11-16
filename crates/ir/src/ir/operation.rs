@@ -1845,6 +1845,25 @@ impl Operation {
         true
     }
 
+    /// Returns true if this operation, when executed, leaves the callable that encloses it.
+    ///
+    /// That is the case for an operation that implements [TailCallLike], and for one that
+    /// implements [ReturnLike] and is not a terminator of region control flow, i.e. implements
+    /// neither [RegionBranchTerminatorOpInterface] nor [RegionExitTerminatorOpInterface]: an
+    /// `scf.yield` or `scf.condition` hands values to its parent operation, and an `scf.break`
+    /// leaves a loop, but none of them leaves the function.
+    ///
+    /// [TailCallLike]: crate::traits::TailCallLike
+    /// [ReturnLike]: crate::traits::ReturnLike
+    /// [RegionBranchTerminatorOpInterface]: crate::RegionBranchTerminatorOpInterface
+    /// [RegionExitTerminatorOpInterface]: crate::RegionExitTerminatorOpInterface
+    pub fn leaves_callable(&self) -> bool {
+        self.implements::<dyn crate::traits::TailCallLike>()
+            || (self.implements::<dyn crate::traits::ReturnLike>()
+                && !self.implements::<dyn RegionBranchTerminatorOpInterface>()
+                && !self.implements::<dyn RegionExitTerminatorOpInterface>())
+    }
+
     /// Returns true if the given operation is free of memory effects.
     ///
     /// An operation is free of memory effects if its implementation of `MemoryEffectOpInterface`

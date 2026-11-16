@@ -110,3 +110,18 @@ builtin.function public extern("C") @constant_type() {
     %x = "arith.constantf"() <{ value = #builtin.float<1.5 : f32> }> : () -> f64; // expected-error {{this result is written as 'f64', but 'arith.constantf' gives it 'f32'}}
     builtin.ret;
 };
+
+// -----
+
+// A float literal where an integer is expected is reported as it was written, with its minus sign:
+// the label covers the `-` and the literal.
+builtin.function public extern("C") @float_for_an_integer_constant() {
+    %x = arith.constant -1.5 : i32; // expected-error {{`-1.5` is a float literal, but an integer is expected here}}
+    builtin.ret;
+};
+
+// -----
+
+builtin.function public extern("C") @float_for_an_integer_attribute() {
+    builtin.ret;
+} attributes { x = -1.5 }; // expected-error {{`-1.5` is a float literal, but an integer is expected here}}

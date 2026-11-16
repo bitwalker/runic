@@ -1,6 +1,6 @@
 //! The guaranteed tail calls: `builtin.tail_call` and `builtin.tail_call_indirect`.
 
-use alloc::{format, rc::Rc, string::String};
+use alloc::{format, rc::Rc, string::String, vec::Vec};
 
 use super::{
     ArgumentsAndSignature, function_type_of, parse_arguments_and_signature, print_attributes,
@@ -13,7 +13,7 @@ use crate::{
     diagnostics::report,
     dialects::builtin::{
         BuiltinDialect, Function,
-        attributes::{Signature, SignatureAttr},
+        attributes::{AbiParam, Signature, SignatureAttr},
     },
     parse::ParseResult,
     patterns::RewritePatternSet,
@@ -221,6 +221,35 @@ impl OpParser for TailCallIndirect {
         state.operands.push(values);
         Ok(())
     }
+}
+
+/// Compares a tail call with the function that holds it. A tail call returns what its callee
+/// returns, and the function returns that: `called`, the signature of the tail call, must declare
+/// the results of `function`, the signature of the function, and call with its calling
+/// convention. Returns `None` when they agree, and otherwise the reason they do not, as text for
+/// the label of a diagnostic.
+pub(crate) fn tail_call_mismatch(function: &Signature, called: &Signature) -> Option<String> {
+    if called.declared_results() != function.declared_results() {
+        Some(format!(
+            "this tail call returns {}, but the function returns {}",
+            abi_list(called.declared_results()),
+            abi_list(function.declared_results())
+        ))
+    } else if called.calling_convention() != function.calling_convention() {
+        Some(format!(
+            "this tail call uses the calling convention \"{}\", but the function uses \"{}\"",
+            called.calling_convention().as_str(),
+            function.calling_convention().as_str()
+        ))
+    } else {
+        None
+    }
+}
+
+/// `results` as a parenthesised list, `(i32, i64)`; a result with attributes is written with them.
+fn abi_list(results: &[AbiParam]) -> String {
+    let results = results.iter().map(|result| format!("{result}")).collect::<Vec<_>>();
+    format!("({})", results.join(", "))
 }
 
 /// The rules the two tail calls share: one argument per parameter of `signature`, of the

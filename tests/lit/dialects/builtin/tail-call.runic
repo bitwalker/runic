@@ -60,4 +60,49 @@ builtin.module public @builtin_tail_call {
         } : (i1) -> ();
         builtin.ret %a : (i32);
     };
+
+    // A tail call ends the body of a loop, as a `builtin.ret` may: the loop has no yield, and
+    // keeps the condition.
+    // CHECK-LABEL: @ends_a_loop_body(
+    // CHECK-SAME: [[C:%[0-9]+]]: i1, [[A:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[R:%[0-9]+]] = scf.while [[A]] before {
+    // CHECK-NEXT: ^block{{[0-9]+}}([[I:%[0-9]+]]: i32):
+    // CHECK-NEXT: scf.condition [[C]], [[I]] : (i1, i32);
+    // CHECK-NEXT: } after {
+    // CHECK-NEXT: ^block{{[0-9]+}}([[J:%[0-9]+]]: i32):
+    // CHECK-NEXT: builtin.tail_call @callee([[J]], [[J]]) : extern("C") (i32, i32) -> i32;
+    // CHECK-NEXT: } : (i32) -> (i32);
+    // CHECK-NEXT: builtin.ret [[R]] : (i32);
+    builtin.function public extern("C") @ends_a_loop_body(%c: i1, %a: i32) -> i32 {
+        %r = scf.while %a before {
+        ^head(%i: i32):
+            scf.condition %c, %i : (i1, i32);
+        } after {
+        ^body(%j: i32):
+            builtin.tail_call @callee(%j, %j) : extern("C") (i32, i32) -> i32;
+        } : (i32) -> (i32);
+        builtin.ret %r : (i32);
+    };
+
+    // A tail call ends the condition block of a loop: the loop has no condition and no yield.
+    // CHECK-LABEL: @ends_a_loop_condition(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[R:%[0-9]+]] = scf.while [[A]] before {
+    // CHECK-NEXT: ^block{{[0-9]+}}([[I:%[0-9]+]]: i32):
+    // CHECK-NEXT: builtin.tail_call @callee([[I]], [[I]]) : extern("C") (i32, i32) -> i32;
+    // CHECK-NEXT: } after {
+    // CHECK-NEXT: ^block{{[0-9]+}}([[J:%[0-9]+]]: i32):
+    // CHECK-NEXT: scf.yield [[J]] : (i32);
+    // CHECK-NEXT: } : (i32) -> (i32);
+    // CHECK-NEXT: builtin.ret [[R]] : (i32);
+    builtin.function public extern("C") @ends_a_loop_condition(%a: i32) -> i32 {
+        %r = scf.while %a before {
+        ^head(%i: i32):
+            builtin.tail_call @callee(%i, %i) : extern("C") (i32, i32) -> i32;
+        } after {
+        ^body(%j: i32):
+            scf.yield %j : (i32);
+        } : (i32) -> (i32);
+        builtin.ret %r : (i32);
+    };
 };

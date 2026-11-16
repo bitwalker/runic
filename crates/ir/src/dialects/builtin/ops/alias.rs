@@ -1,8 +1,8 @@
 use alloc::format;
 
 use crate::{
-    CallableSymbol, Op, OpParser, OpPrinter, Operation, Symbol, SymbolName, SymbolRef,
-    SymbolUseList, Usable, Visibility,
+    CallableSymbol, LinkedSymbol, Op, OpParser, OpPrinter, Operation, Symbol, SymbolName,
+    SymbolRef, SymbolUseList, Usable, Visibility,
     derive::operation,
     dialects::builtin::{
         BuiltinDialect, FunctionRef,
@@ -25,7 +25,7 @@ pub type FunctionAliasRef = crate::UnsafeIntrusiveEntityRef<FunctionAlias>;
 /// to it.
 #[operation(
     dialect = BuiltinDialect,
-    implements(Symbol, CallableSymbol, OpPrinter)
+    implements(Symbol, CallableSymbol, LinkedSymbol, OpPrinter)
 )]
 pub struct FunctionAlias {
     #[attr]
@@ -171,11 +171,19 @@ impl OpPrinter for FunctionAlias {
     }
 }
 
+impl LinkedSymbol for FunctionAlias {}
+
+/// The `link_name` entry of the dictionary is well formed, and there is no `section` entry (see
+/// [verify_link_attributes](crate::verify_link_attributes)).
+impl crate::Verify<dyn crate::LinkedSymbol> for FunctionAlias {
+    fn verify(&self, _context: &crate::Context) -> Result<(), crate::Report> {
+        crate::verify_link_attributes(self.as_operation())
+    }
+}
+
 impl crate::Verify<dyn CallableSymbol> for FunctionAlias {
     fn verify(&self, _context: &crate::Context) -> Result<(), crate::Report> {
         use crate::Spanned;
-
-        crate::verify_link_attributes(self.as_operation())?;
 
         let span = self.as_operation().span();
         let callee = self

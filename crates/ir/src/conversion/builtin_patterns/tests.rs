@@ -1682,8 +1682,8 @@ fn a_tail_call_that_would_return_other_than_its_function_is_an_error() {
     assert!(err.contains("cannot convert 'builtin.tail_call'"), "{err}");
     assert!(
         err.contains(
-            "the conversion makes this tail call return (i64, i64), but the function @caller \
-             returns (i128): a tail call returns what the function returns"
+            "after the conversion, this tail call returns (i64, i64), but the function returns \
+             (i128): a tail call returns what the function @caller returns"
         ),
         "{err}"
     );
@@ -1703,5 +1703,34 @@ fn an_indirect_tail_call_that_would_return_other_than_its_function_is_an_error()
     target.add_dynamically_legal_op::<Function, _>(|_: &Operation| DynamicLegalityResult::Legal);
     let err = describe(&convert_full(module, target, &converter).unwrap_err());
     assert!(err.contains("cannot convert 'builtin.tail_call_indirect'"), "{err}");
-    assert!(err.contains("returns what the function returns"), "{err}");
+    assert!(err.contains("a tail call returns what the function @caller returns"), "{err}");
+}
+
+/// A tail call whose converted signature calls with another calling convention than its function
+/// is an error that says so. A converter keeps the convention, and the verifier checks that the
+/// function and the tail call agree, so the case needs IR that was parsed without verification:
+/// a function that the target leaves alone and a tail call whose arguments the conversion changes.
+#[test]
+fn a_tail_call_that_would_use_another_calling_convention_than_its_function_is_an_error() {
+    let (context, module) = parse_module_verified(
+        "    builtin.function public extern(\"C\") @f(i128) -> i32;
+    builtin.function public extern(\"fast\") @caller(%0: i128) -> i32 {
+        builtin.tail_call @f(%0) : extern(\"C\") (i128) -> i32;
+    };",
+        false,
+    );
+    let converter = wide_converter(&context);
+    let mut target = by_type_target(&context, &converter);
+    target.add_dynamically_legal_op::<Function, _>(|_: &Operation| DynamicLegalityResult::Legal);
+    // The description writes the text of a label as a debug string, with its quotes escaped.
+    let err =
+        describe(&convert_full(module, target, &converter).unwrap_err()).replace("\\\"", "\"");
+    assert!(err.contains("cannot convert 'builtin.tail_call'"), "{err}");
+    assert!(
+        err.contains(
+            "after the conversion, this tail call uses the calling convention \"C\", but the \
+             function uses \"fast\": a tail call returns what the function @caller returns"
+        ),
+        "{err}"
+    );
 }

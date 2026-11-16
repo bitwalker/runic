@@ -24,6 +24,7 @@ use crate::{
 
 mod tail_call;
 
+pub(crate) use self::tail_call::tail_call_mismatch;
 pub use self::tail_call::{TailCall, TailCallIndirect, TailCallIndirectRef, TailCallRef};
 
 pub type CallRef = UnsafeIntrusiveEntityRef<Call>;

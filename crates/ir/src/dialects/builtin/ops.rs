@@ -29,7 +29,7 @@ pub use self::{
     world::{World, WorldRef},
 };
 pub(crate) use self::{
-    call::{CopiedAttributes, function_type_of, parse_signature},
+    call::{CopiedAttributes, function_type_of, parse_signature, tail_call_mismatch},
     world::shadowing_error,
 };
 

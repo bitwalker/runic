@@ -9,7 +9,10 @@
 //!
 //! Only the shape of the entries is verified (see [verify_link_attributes]): a link name is a
 //! non-empty string, and only a global variable has a section. That link names are unique is a
-//! property of a link, not of one module, and is for a backend to check.
+//! property of a link, not of one module, and is for a backend to check. This holds for the default
+//! name too: it is the symbol's absolute path with its components joined by `::` and not quoted, so
+//! two different symbols can have one default name (see [default_link_name]), and a backend checks
+//! the uniqueness of the effective names of what it exports.
 //!
 //! This module also links symbol references that were built apart (see [link_symbol_refs]).
 
@@ -49,11 +52,12 @@ fn string_entry(op: &Operation, name: &str) -> Option<CompactString> {
 }
 
 /// A symbol whose dictionary may hold the `link_name` entry, and the `section` entry if it is a
-/// global variable.
+/// global variable: `builtin.function`, `builtin.function_alias` and `builtin.global_variable`
+/// implement it, and a backend that collects what it links finds those operations with
+/// `as_trait::<dyn LinkedSymbol>()`.
 ///
-/// It is a marker that makes an operation's verifier check those entries (see
-/// [verify_link_attributes]); a function and an alias, which have a verifier of their own, call
-/// that function from it instead.
+/// It is a marker that makes an operation's verifier check those entries, once, through
+/// `Verify<dyn LinkedSymbol>` (see [verify_link_attributes]).
 pub trait LinkedSymbol: super::Symbol {}
 
 /// The value of the `link_name` entry of the dictionary of `op`: the name the symbol has for a
@@ -76,6 +80,11 @@ pub fn section(op: &Operation) -> Option<CompactString> {
 /// The name `op` has for a linker or a host when it has no `link_name`: its absolute path, the
 /// names of the symbol tables that enclose it and its own joined by `::`, with no leading `::` and
 /// no quoting (`lib::math::add` for `::@lib::@math::@add`).
+///
+/// The default is a convenience, and it is not unique: the components are joined without quoting,
+/// so two different symbols can have the same default (`::@a::@"b::c"` and `::@a::@b::@c` are both
+/// `a::b::c`). A backend checks that the effective names (see [effective_link_name]) of what it
+/// exports are unique, and does not assume the default makes them so.
 ///
 /// It is `None` when `op` is not a symbol, and when it is a symbol that is neither a symbol table
 /// nor in one: a symbol that is not attached to a root has no path to name it by.
@@ -542,6 +551,43 @@ mod tests {
             default_of(&context, source, "builtin.component", 0).as_deref(),
             Some("acme::a")
         );
+    }
+
+    /// Two different symbols can have one default name, because the components are joined without
+    /// quoting: the function `::@a::@"b::c"` and the function `::@a::@b::@c` are both `a::b::c`.
+    /// The default is a convenience, and a backend checks the uniqueness of the effective names it
+    /// exports.
+    #[test]
+    fn two_different_symbols_can_have_the_same_default_link_name() {
+        let context = Rc::new(Context::default());
+        let source = "builtin.world { builtin.module public @a { builtin.function public \
+                      extern(\"C\") @\"b::c\"(); builtin.module public @b { builtin.function \
+                      public extern(\"C\") @c(); }; }; };";
+        let first = default_of(&context, source, "builtin.function", 0);
+        let second = default_of(&context, source, "builtin.function", 1);
+        assert_eq!(first.as_deref(), Some("a::b::c"));
+        assert_eq!(first, second);
+        let functions = ops_named(&context, source, "builtin.function");
+        let paths = functions
+            .iter()
+            .map(|function| function.borrow().as_symbol().unwrap().path().to_string())
+            .collect::<Vec<_>>();
+        assert_ne!(paths[0], paths[1]);
+    }
+
+    /// The function, the alias and the global variable are linked symbols; a module is not.
+    #[test]
+    fn a_function_an_alias_and_a_global_are_linked_symbols_and_a_module_is_not() {
+        let context = Rc::new(Context::default());
+        let linked = |name: &str| {
+            let ops = ops_named(&context, THREE, name);
+            ops.iter().all(|op| op.borrow().as_trait::<dyn LinkedSymbol>().is_some())
+        };
+        assert!(linked("builtin.function"));
+        assert!(linked("builtin.function_alias"));
+        assert!(linked("builtin.global_variable"));
+        let modules = ops_named(&context, THREE, "builtin.module");
+        assert!(modules.iter().all(|op| op.borrow().as_trait::<dyn LinkedSymbol>().is_none()));
     }
 
     #[test]
