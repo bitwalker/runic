@@ -208,6 +208,27 @@ impl<'c> StageFlags<'c> {
         self.store_resolved(matches, &settings, request)
     }
 
+    /// Whether the command line the matches were read from wrote a flag of a stage or a `-Z`
+    /// entry, as a command line that decides by it whether the stages take part in a compilation
+    /// asks. Matches of a command that was not [augment](Self::augment)ed answer `false`.
+    pub fn written(&self, matches: &ArgMatches) -> bool {
+        let command_line = |id: &str| {
+            matches.try_contains_id(id).unwrap_or(false)
+                && matches.value_source(id) == Some(ValueSource::CommandLine)
+        };
+        let unstable = self.unstable_allowed
+            && matches
+                .try_get_many::<String>(UNSTABLE_ARG)
+                .ok()
+                .flatten()
+                .is_some_and(|mut entries| entries.next().is_some());
+        unstable
+            || self
+                .stages
+                .iter()
+                .any(|stage| stage.flags.iter().any(|flag| command_line(&flag.id)))
+    }
+
     /// The text `-Z help` prints: the owner's settings first, then each stage's. Empty when
     /// unstable settings are not allowed.
     pub fn unstable_help(&self) -> String {
@@ -1016,6 +1037,18 @@ mod tests {
             error.to_string(),
             "the flag '--version' is declared by mytool and by the frontend 'v'"
         );
+    }
+
+    #[test]
+    fn a_stage_flag_or_an_unstable_entry_written_is_told_from_the_matches() {
+        let compiler = toy();
+        let flags = flags(&compiler);
+        let command = flags.augment(own_command(), "mytool").unwrap();
+        assert!(!flags.written(&matches_of(&command, &["--pass-pipeline", "cse", "x"])));
+        assert!(flags.written(&matches_of(&command, &["--wrap-on-overflow"])));
+        assert!(flags.written(&matches_of(&command, &["--stackvm-comments"])));
+        assert!(flags.written(&matches_of(&command, &["-Z", "stackvm-keep-subtractions"])));
+        assert!(!flags.written(&matches_of(&own_command(), &["x"])));
     }
 
     #[test]
