@@ -7,12 +7,12 @@ use super::{
     verify_callee_signature, verify_callee_type,
 };
 use crate::{
-    CallableOpInterface, Context, Op, OpOperandRange, OpParser, OpPrinter, Operation,
-    OperationState, Report, SmallVec, Spanned, UnsafeIntrusiveEntityRef,
+    Context, Op, OpOperandRange, OpParser, OpPrinter, Operation, OperationState, Report, SmallVec,
+    Spanned, TailCallOpInterface, UnsafeIntrusiveEntityRef,
     derive::operation,
     diagnostics::report,
     dialects::builtin::{
-        BuiltinDialect, Function,
+        BuiltinDialect,
         attributes::{AbiParam, Signature, SignatureAttr},
     },
     parse::ParseResult,
@@ -30,6 +30,18 @@ impl TailCallVerification for TailCall {}
 impl TailCallVerification for TailCallIndirect {}
 
 pub type TailCallRef = UnsafeIntrusiveEntityRef<TailCall>;
+
+impl TailCallOpInterface for TailCall {
+    fn tail_signature(&self) -> Signature {
+        self.get_signature().clone()
+    }
+}
+
+impl TailCallOpInterface for TailCallIndirect {
+    fn tail_signature(&self) -> Signature {
+        self.get_signature().clone()
+    }
+}
 
 /// A guaranteed tail call of the callable named by `callee`, with the signature the call is made
 /// with: `builtin.tail_call @callee(%a, %b) : extern("C") (i32, i32) -> i32;`.
@@ -65,7 +77,7 @@ pub type TailCallRef = UnsafeIntrusiveEntityRef<TailCall>;
     dialect = BuiltinDialect,
     name = "tail_call",
     traits(Terminator, TailCallLike),
-    implements(TailCallVerification, OpPrinter)
+    implements(TailCallVerification, TailCallOpInterface, OpPrinter)
 )]
 pub struct TailCall {
     /// The callable called: a function, or an alias of one
@@ -148,7 +160,7 @@ pub type TailCallIndirectRef = UnsafeIntrusiveEntityRef<TailCallIndirect>;
     dialect = BuiltinDialect,
     name = "tail_call_indirect",
     traits(Terminator, TailCallLike),
-    implements(TailCallVerification, OpPrinter)
+    implements(TailCallVerification, TailCallOpInterface, OpPrinter)
 )]
 pub struct TailCallIndirect {
     /// The function value called
@@ -279,20 +291,7 @@ fn verify_tail_call(
         )));
     }
 
-    let mut parent = op.parent_op();
-    while let Some(enclosing) = parent {
-        if enclosing.borrow().implements::<dyn CallableOpInterface>() {
-            if enclosing.borrow().is::<Function>() {
-                return Ok(());
-            }
-            return Err(invalid(format!(
-                "a tail call can only appear in a function, but this one is in `{}`",
-                enclosing.borrow().name()
-            )));
-        }
-        parent = enclosing.parent_op();
-    }
-    Err(invalid(String::from("a tail call can only appear in a function")))
+    crate::verify_tail_call_is_in_function(op)
 }
 
 #[cfg(test)]
@@ -354,6 +353,7 @@ mod tests {
         let op = call.as_operation();
         assert!(op.implements::<dyn Terminator>());
         assert!(op.implements::<dyn TailCallLike>());
+        assert!(op.implements::<dyn TailCallOpInterface>());
         assert!(!op.implements::<dyn ReturnLike>());
         assert!(!op.implements::<dyn CallOpInterface>());
         assert!(!op.is_memory_effect_free());
@@ -384,6 +384,7 @@ mod tests {
         assert_eq!(call.as_operation().num_results(), 0);
         assert_eq!(call.callee().as_value_ref(), f);
         assert!(call.as_operation().implements::<dyn TailCallLike>());
+        assert!(call.as_operation().implements::<dyn TailCallOpInterface>());
         assert!(!call.as_operation().implements::<dyn CallOpInterface>());
     }
 

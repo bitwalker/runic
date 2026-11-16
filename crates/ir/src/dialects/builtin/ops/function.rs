@@ -3,10 +3,11 @@ use alloc::{format, string::String, vec::Vec};
 use crate::{
     AsValueRange, BlockRef, CallConv, CallableOpInterface, CallableSymbol, IdentAttr, LinkedSymbol,
     Op, OpParser, OpPrinter, Operation, RegionKind, RegionKindInterface, RegionRef, SmallVec,
-    Symbol, SymbolUse, SymbolUseList, Type, UnsafeIntrusiveEntityRef, Usable, Visibility,
+    Symbol, SymbolUse, SymbolUseList, TailCallOpInterface, Type, UnsafeIntrusiveEntityRef, Usable,
+    Visibility,
     derive::{EffectOpInterface, operation},
     dialects::builtin::{
-        BuiltinDialect, TailCall, TailCallIndirect,
+        BuiltinDialect,
         attributes::{
             AbiParam, DeclaredEffects, DeclaredEffectsAttr, IntAttr, LocalVariable,
             LocalVariableAttr, Signature, SignatureAttr, TypeArrayAttr, VisibilityAttr,
@@ -704,10 +705,21 @@ impl crate::Verify<dyn CallableSymbol> for Function {
                     check_return(op, &returned)
                 } else if let Some(ret_imm) = op.downcast_ref::<RetImm>() {
                     check_return(op, &[crate::Attribute::ty(&*ret_imm.value())])
-                } else if let Some(tail_call) = op.downcast_ref::<TailCall>() {
-                    check_tail_call(op, &tail_call.get_signature())
-                } else if let Some(tail_call) = op.downcast_ref::<TailCallIndirect>() {
-                    check_tail_call(op, &tail_call.get_signature())
+                } else if let Some(tail_call) = op.as_trait::<dyn TailCallOpInterface>() {
+                    check_tail_call(op, &tail_call.tail_signature())
+                } else if op.implements::<dyn crate::traits::TailCallLike>() {
+                    let reason = format!(
+                        "`{}` is a tail call, but it does not implement `TailCallOpInterface`, \
+                         which gives the signature the function holds it to",
+                        op.name()
+                    );
+                    Err(report!(
+                        message: "invalid operation builtin.function",
+                        labels: [
+                            primary(op.span(), reason),
+                            context(span, "in this function"),
+                        ],
+                    ))
                 } else {
                     Ok(())
                 };
@@ -908,12 +920,14 @@ mod tests {
     use super::*;
     use crate::{
         Builder, BuilderExt, OperationRef, Overflow, SourceSpan, ValueRef,
+        derive::{OpParser, OpPrinter},
         dialects::{
             builtin::attributes::MemoryEffectDescriptor,
-            test::{self as test_dialect, Add, Load, Store},
+            test::{self as test_dialect, Add, Load, Store, TestDialect},
         },
         effects::RecursiveEffectIterator,
         testing::Test,
+        traits::{TailCallLike, Terminator},
     };
 
     fn effects_of(function: &Function) -> Vec<MemoryEffect> {
@@ -1149,5 +1163,45 @@ mod tests {
         let ret = ret.borrow();
         assert!(ret.as_operation().is_memory_effect_free());
         assert_eq!(walk(ret.as_operation().as_operation_ref()), []);
+    }
+    /// A tail call that has no signature to give: a terminator that is [TailCallLike] and does not
+    /// implement [TailCallOpInterface]. It exists in this test binary only.
+    #[derive(OpPrinter, OpParser)]
+    #[operation(
+        dialect = TestDialect,
+        name = "tail_call_without_interface",
+        traits(Terminator, TailCallLike),
+        implements(OpPrinter)
+    )]
+    pub struct TailCallWithoutInterface {}
+
+    /// The function verifier rejects a `TailCallLike` operation that does not implement
+    /// `TailCallOpInterface`, naming the operation and the interface.
+    #[test]
+    fn a_tail_call_without_the_interface_is_rejected_by_the_function_verifier() {
+        let source = "builtin.module public @m {
+    builtin.function public extern(\"C\") @f() {
+        \"test.tail_call_without_interface\"() : () -> ();
+    };
+};";
+        let context = alloc::rc::Rc::new(crate::Context::default());
+        let result = crate::parse::parse_any(
+            crate::parse::ParserConfig::new(context.clone()),
+            "tail_call",
+            source,
+        )
+        .into_result();
+        let error = match result {
+            Ok(_) => panic!("a tail call without the interface was accepted"),
+            Err(report) => crate::testing::text::describe(&report),
+        };
+        assert!(error.contains("invalid operation builtin.function"), "{error}");
+        assert!(
+            error.contains(
+                "`test.tail_call_without_interface` is a tail call, but it does not implement \
+                 `TailCallOpInterface`"
+            ),
+            "{error}"
+        );
     }
 }

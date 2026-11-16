@@ -290,6 +290,7 @@ fn an_indirect_tail_call_is_a_terminator_the_function_verifier_checks_for_exits(
         if op.name().to_string() == "wasm.return_call_indirect" {
             found = true;
             assert!(op.implements::<dyn runic_ir::traits::TailCallLike>());
+            assert!(op.implements::<dyn runic_ir::TailCallOpInterface>());
             assert!(op.implements::<dyn runic_ir::traits::Terminator>());
             assert!(op.leaves_callable());
         }

@@ -74,6 +74,54 @@ pub fn verify_exit_crosses_only_forwarding_ops(
     Ok(())
 }
 
+/// The interface of a tail call: an operation that leaves its function by calling another
+/// callable, and returns what that callable returns.
+///
+/// Every operation that is [TailCallLike](crate::traits::TailCallLike) implements it; the
+/// function verifier finds the tail calls of a function through it and holds each to the
+/// function's declared results and calling convention, so a dialect's own tail call needs no check
+/// of that rule. A tail call that is `TailCallLike` and does not implement the interface is
+/// rejected by the function verifier.
+///
+/// The function verifier sees only the tail calls inside a function, so an implementor's own
+/// verifier calls [verify_tail_call_is_in_function], which rejects one anywhere else.
+pub trait TailCallOpInterface: Op {
+    /// The signature the tail call is made with: its parameters, and the declared results and the
+    /// calling convention that must be those of the function that holds the tail call.
+    fn tail_signature(&self) -> Signature;
+}
+
+/// Checks that the tail call `op` is in a `builtin.function`: its nearest enclosing callable is
+/// one. A tail call directly in a module, or in a callable of another kind, has no function whose
+/// results it could return, and the function verifier, which holds a tail call to its function's
+/// signature, never sees it.
+pub fn verify_tail_call_is_in_function(op: &Operation) -> Result<(), Report> {
+    use alloc::{format, string::String};
+
+    use crate::{diagnostics::report, dialects::builtin::Function};
+
+    let invalid = |label: String| {
+        report!(
+            message: (format!("invalid operation {}", op.name())),
+            labels: [primary(op.span(), label)],
+        )
+    };
+    let mut parent = op.parent_op();
+    while let Some(enclosing) = parent {
+        if enclosing.borrow().implements::<dyn CallableOpInterface>() {
+            if enclosing.borrow().is::<Function>() {
+                return Ok(());
+            }
+            return Err(invalid(format!(
+                "a tail call can only appear in a function, but this one is in `{}`",
+                enclosing.borrow().name()
+            )));
+        }
+        parent = enclosing.parent_op();
+    }
+    Err(invalid(String::from("a tail call can only appear in a function")))
+}
+
 /// A call-like operation is one that transfers control from one function to another.
 ///
 /// These operations may be traditional static calls, e.g. `call @foo`, or indirect calls, e.g.

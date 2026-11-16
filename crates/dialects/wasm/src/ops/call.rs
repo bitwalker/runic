@@ -5,18 +5,14 @@
 //! `builtin.call_indirect`, it has unknown effects: it implements no effect interface, so it is
 //! never removed, merged or moved, and no effect-aware pass moves anything across it.
 
-use alloc::{format, string::String, vec::Vec};
+use alloc::{format, string::String};
 
 use runic_ir::{
     AttrPrinter, Context, Op, OpAsmParser, OpParser, OpPrinter, Operation, OperationState,
-    ParseResult, Report, SmallVec, Spanned, Type, Value, Verify,
+    ParseResult, Report, SmallVec, Spanned, TailCallOpInterface, Type, Value, Verify,
     attributes::AttrParser,
     derive::operation,
-    diagnostics::report,
-    dialects::builtin::{
-        Function,
-        attributes::{AbiParam, Signature, SignatureAttr},
-    },
+    dialects::builtin::attributes::{Signature, SignatureAttr},
     formatter::const_text,
     parse::{Delimiter, ParserError, UnresolvedOperand},
     print::AsmPrinter,
@@ -293,17 +289,15 @@ impl Verify<dyn IndirectCall> for CallIndirect {
 /// no results of its own. It obeys the rule `builtin.tail_call` obeys: the declared results of its
 /// signature are the results of the enclosing `builtin.function`, and its calling convention is
 /// the function's. The function verifier applies the rule about the operations an exit may
-/// cross (only those that forward exits) to it, since it is [TailCallLike]; the rule about the
-/// results and the calling convention it applies to `builtin.tail_call` and
-/// `builtin.tail_call_indirect` only, by their types, so this operation's own verifier makes it,
-/// with the same words.
+/// cross (only those that forward exits) to it, since it is [TailCallLike], and the rule about the
+/// results and the calling convention, through [TailCallOpInterface], which it implements.
 ///
 /// Its effects are unknown, as those of [CallIndirect] are.
 #[operation(
     dialect = WasmDialect,
     name = "return_call_indirect",
     traits(Terminator, TailCallLike),
-    implements(IndirectCall, OpPrinter)
+    implements(IndirectCall, TailCallOpInterface, OpPrinter)
 )]
 pub struct ReturnCallIndirect {
     /// The table called through
@@ -339,72 +333,20 @@ impl OpParser for ReturnCallIndirect {
     }
 }
 
-/// `results` as a parenthesised list, `(i32, i64)`; a result with attributes is written with them.
-fn abi_list(results: &[AbiParam]) -> String {
-    let results = results.iter().map(|result| format!("{result}")).collect::<Vec<_>>();
-    format!("({})", results.join(", "))
-}
-
-/// Compares a tail call with the function that holds it, as `builtin.function`'s verifier does
-/// (its `tail_call_mismatch` is not public): the declared results of `called` are those of
-/// `function`, and its calling convention is the function's. Returns the reason they do not agree.
-fn tail_call_mismatch(function: &Signature, called: &Signature) -> Option<String> {
-    if called.declared_results() != function.declared_results() {
-        Some(format!(
-            "this tail call returns {}, but the function returns {}",
-            abi_list(called.declared_results()),
-            abi_list(function.declared_results())
-        ))
-    } else if called.calling_convention() != function.calling_convention() {
-        Some(format!(
-            "this tail call uses the calling convention \"{}\", but the function uses \"{}\"",
-            called.calling_convention().as_str(),
-            function.calling_convention().as_str()
-        ))
-    } else {
-        None
+/// The checks of [CallIndirect]. That the declared results and the calling convention of the
+/// signature are those of the enclosing function is the function verifier's, which finds this
+/// operation through [TailCallOpInterface].
+impl Verify<dyn IndirectCall> for ReturnCallIndirect {
+    fn verify(&self, _context: &Context) -> Result<(), Report> {
+        verify_indirect_call(self.as_operation(), &self.table(), &self.get_signature())?;
+        runic_ir::verify_tail_call_is_in_function(self.as_operation())
     }
 }
 
-/// The checks of [CallIndirect], and that the operation is in a `builtin.function` whose declared
-/// results and calling convention are those of its signature.
-impl Verify<dyn IndirectCall> for ReturnCallIndirect {
-    fn verify(&self, _context: &Context) -> Result<(), Report> {
-        let op = self.as_operation();
-        let signature = self.get_signature();
-        verify_indirect_call(op, &self.table(), &signature)?;
-
-        let mut parent = op.parent_op();
-        while let Some(enclosing) = parent {
-            if enclosing.borrow().implements::<dyn runic_ir::CallableOpInterface>() {
-                let enclosing = enclosing.borrow();
-                let Some(function) = enclosing.downcast_ref::<Function>() else {
-                    return Err(rule_error(
-                        op,
-                        "is a tail call",
-                        format!(
-                            "a tail call can only appear in a function, but this one is in `{}`",
-                            enclosing.name()
-                        ),
-                    ));
-                };
-                let Some(reason) = tail_call_mismatch(&function.get_signature(), &signature) else {
-                    return Ok(());
-                };
-                return Err(report!(
-                    message: "invalid operation builtin.function",
-                    labels: [
-                        primary(op.span(), reason),
-                        context(enclosing.span(), "in this function"),
-                    ],
-                ));
-            }
-            parent = enclosing.borrow().parent_op();
-        }
-        Err(rule_error(
-            op,
-            "is a tail call",
-            String::from("a tail call can only appear in a function"),
-        ))
+/// The signature the call is made with, which the function verifier holds to the function's
+/// declared results and calling convention.
+impl TailCallOpInterface for ReturnCallIndirect {
+    fn tail_signature(&self) -> Signature {
+        self.get_signature().clone()
     }
 }
