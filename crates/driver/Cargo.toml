@@ -1,0 +1,26 @@
+[package]
+name = "runic-driver"
+description = "The command line of a compiler built on Runic"
+version.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+categories.workspace = true
+keywords.workspace = true
+license.workspace = true
+readme.workspace = true
+edition.workspace = true
+
+[lib]
+doctest = false
+
+[dependencies]
+# `string`: owned strings for the names of generated flags.
+clap = { workspace = true, features = ["string"] }
+runic-compile.workspace = true
+runic-ir.workspace = true
+
+[dev-dependencies]
+runic-compile = { workspace = true, features = ["testing"] }

@@ -15,6 +15,7 @@ members = [
     "crates/dialects/mem",
     "crates/dialects/scf",
     "crates/dialects/ub",
+    "crates/driver",
     "crates/log",
     "crates/macros",
     "crates/symbol",
@@ -96,6 +97,7 @@ toml = { version = "^1.1.2", features = ["preserve_order"] }
 
 # Workspace crates
 runic-analysis = { version = "0.1.0", path = "crates/analysis" }
+runic-compile = { version = "0.1.0", path = "crates/compile" }
 runic-ir = { version = "0.1.0", path = "crates/ir" }
 runic-diagnostics = { version = "0.1.0", path = "crates/diagnostics", default-features = false }
 runic-diagnostics-macros = { version = "0.1.0", path = "crates/diagnostics-macros" }

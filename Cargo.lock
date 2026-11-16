@@ -1390,6 +1390,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "runic-driver"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "runic-compile",
+ "runic-ir",
+]
+
+[[package]]
 name = "runic-expect-test"
 version = "0.1.0"
 dependencies = [

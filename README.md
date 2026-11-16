@@ -28,6 +28,7 @@ The workspace has sixteen members:
 | `runic-analysis` | `crates/analysis` | the data-flow analysis framework and its analyses |
 | `runic-transform` | `crates/transform` | transformation passes and utilities |
 | `runic-compile` | `crates/compile` | the compiler harness: what a compilation is asked to do and the stages it runs through (being built; no tool uses it yet) |
+| `runic-driver` | `crates/driver` | the command line of a compiler built on Runic: the driver's flags and those its frontends and backends declare (being built; no tool uses it yet) |
 | `runic-diagnostics` | `crates/diagnostics` | structured diagnostics: describing, collecting and rendering them with their source |
 | `runic-diagnostics-macros` | `crates/diagnostics-macros` | derive macros for `runic-diagnostics` |
 | `runic-macros` | `crates/macros` | derive and attribute macros for defining dialects, operations, types, attributes and operation traits |
