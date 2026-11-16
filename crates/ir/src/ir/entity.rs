@@ -834,7 +834,7 @@ impl<'b, T: ?Sized> EntityMut<'b, T> {
     /// # Examples
     ///
     /// ```rust
-    /// use runic_core::*;
+    /// use runic_ir::*;
     /// use blink_alloc::Blink;
     ///
     /// let alloc = Blink::default();

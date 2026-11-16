@@ -3,7 +3,7 @@
 //! It identifies call sites and flags callables that may be called
 //! indirectly or from outside the scope.
 
-use runic_core::{
+use runic_ir::{
     CallOpInterface, CanonicalCallableRef, FxHashMap, FxHashSet, Operation, OperationRef, SmallVec,
     SymbolRef, WalkResult, adt::SmallSet, dialects::builtin::FunctionAlias,
 };
@@ -192,7 +192,7 @@ impl CallableUseSnapshot {
 mod tests {
     use alloc::{format, vec::Vec};
 
-    use runic_core::{
+    use runic_ir::{
         Op, SymbolName,
         dialects::{
             builtin::{Call, Module, ModuleBuilder, ModuleRef, attributes::SymbolRefAttr},
@@ -257,7 +257,7 @@ builtin.module public @test {{
     fn attach_extra_symbol_attribute(
         mut owner: OperationRef,
         referenced: SymbolRef,
-        path: runic_core::SymbolPath,
+        path: runic_ir::SymbolPath,
     ) {
         owner.borrow_mut().set_symbol_attribute("extra_address", referenced);
 

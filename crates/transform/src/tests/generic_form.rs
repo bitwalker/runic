@@ -1,6 +1,6 @@
 //! The generic form reads back what the printer writes, over every corpus of the workspace this
 //! crate can reach: the corpora of `corpora.rs` (the fixtures, the golden files, the random
-//! programs of `cse_model.rs` and `local2reg_model.rs`), the corpus of `runic_core::testing::calls`,
+//! programs of `cse_model.rs` and `local2reg_model.rs`), the corpus of `runic_ir::testing::calls`,
 //! the random modules of the conversion tests, and one module per dialect that uses each of the
 //! dialect's operations.
 
@@ -12,7 +12,7 @@ use alloc::{
     vec::Vec,
 };
 
-use runic_core::{
+use runic_ir::{
     Context, OpPrinter, OpPrintingFlags, Operation, OperationRef,
     parse::{self, ParserConfig},
     print::{AsmPrinter, same_program},
@@ -34,7 +34,7 @@ fn print(op: &Operation, generic: bool) -> String {
 
 fn new_context() -> Rc<Context> {
     let context = corpora::new_context();
-    context.get_or_register_dialect::<runic_core::dialects::test::TestDialect>();
+    context.get_or_register_dialect::<runic_ir::dialects::test::TestDialect>();
     context.get_or_register_dialect::<runic_dialect_ub::UndefinedBehaviorDialect>();
     context
 }
@@ -54,7 +54,7 @@ fn sources() -> Vec<(String, String)> {
         .into_iter()
         .map(|case| (case.name, case.text))
         .collect::<Vec<_>>();
-    for (index, text) in runic_core::testing::calls::CORPUS.iter().enumerate() {
+    for (index, text) in runic_ir::testing::calls::CORPUS.iter().enumerate() {
         sources.push((format!("calls corpus {index}"), text.to_string()));
     }
     for (index, text) in super::conversion::sample_modules(super::seed(0x6e6e_0001), 40)
@@ -256,7 +256,7 @@ builtin.function public extern(\"C\") @f(%a: i32) -> i32 {
 /// operation's custom form holds its dictionary.
 #[test]
 fn every_custom_form_holds_the_attribute_dictionary() {
-    use runic_core::dialects::builtin::attributes::I32Attr;
+    use runic_ir::dialects::builtin::attributes::I32Attr;
 
     for (name, text) in DIALECT_MODULES {
         let (context, module) = parse(text).unwrap_or_else(|err| panic!("{name}: {err}"));
@@ -266,7 +266,7 @@ fn every_custom_form_holds_the_attribute_dictionary() {
             let note = context.create_attribute::<I32Attr, _>(index as i32).as_attribute_ref();
             // Not `note`: the lit files the modules are read from already hold `note` entries, so a
             // key of its own is what lets the count below see that each added entry survives.
-            let key = runic_core::interner::Symbol::intern(format!("added{index}").as_str());
+            let key = runic_ir::interner::Symbol::intern(format!("added{index}").as_str());
             op.borrow_mut().set_attribute(key, note);
         }
         let generic = print(&module.borrow(), true);

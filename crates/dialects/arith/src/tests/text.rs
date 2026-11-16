@@ -160,7 +160,7 @@ fn every_operation_round_trips_at_every_kind_of_type() {
         for (a, b) in built.iter().zip(&reparsed) {
             let (a, b) = (a.borrow(), b.borrow());
             assert_eq!(a.name(), b.name());
-            let tys = |op: &runic_core::Operation| {
+            let tys = |op: &runic_ir::Operation| {
                 op.results().iter().map(|r| format!("{}", r.borrow().ty())).collect::<Vec<_>>()
             };
             assert_eq!(tys(&a), tys(&b), "{}", a.name());
@@ -220,10 +220,7 @@ fn overflow_defaults_to_wrapping_and_signedness_is_required() {
     let (function, _) = parse_function_fixpoint(&context, "f", text).expect("parses");
     let op = ops_of(function)[0];
     let op = op.borrow();
-    assert_eq!(
-        *op.downcast_ref::<Add>().unwrap().get_overflow(),
-        runic_core::Overflow::Wrapping
-    );
+    assert_eq!(*op.downcast_ref::<Add>().unwrap().get_overflow(), runic_ir::Overflow::Wrapping);
 
     for op in ["min", "max", "add_overflowing"] {
         let err = parse_body("%0: i32, %1: i32", &format!("    %2 = arith.{op} %0, %1;"))
@@ -237,7 +234,7 @@ fn overflow_defaults_to_wrapping_and_signedness_is_required() {
 /// dictionary, and the generic form prints the default.
 #[test]
 fn the_three_forms_of_the_default_agree() {
-    use runic_core::{
+    use runic_ir::{
         BuilderExt, Overflow,
         testing::text::{print_custom, print_generic},
     };
@@ -264,12 +261,11 @@ fn the_three_forms_of_the_default_agree() {
          i32;"
     );
 
-    let (_cx, parsed) =
-        runic_core::testing::text::parse::<runic_core::dialects::builtin::Function>(
-            "builtin.function public extern(\"C\") @f(%0: i32, %1: i32) {\n    %2 = arith.mul %0, \
-             %1;\n    builtin.ret;\n};",
-        )
-        .unwrap();
+    let (_cx, parsed) = runic_ir::testing::text::parse::<runic_ir::dialects::builtin::Function>(
+        "builtin.function public extern(\"C\") @f(%0: i32, %1: i32) {\n    %2 = arith.mul %0, \
+         %1;\n    builtin.ret;\n};",
+    )
+    .unwrap();
     let parsed = parsed.borrow();
     let entry = parsed.entry_block();
     let op = entry.borrow().front().unwrap();

@@ -1296,10 +1296,10 @@ dependencies = [
  "bitvec",
  "blink-alloc",
  "log",
- "runic-core",
  "runic-dialect-arith",
  "runic-dialect-cf",
  "runic-dialect-scf",
+ "runic-ir",
 ]
 
 [[package]]
@@ -1307,37 +1307,10 @@ name = "runic-compile"
 version = "0.1.0"
 dependencies = [
  "runic-compile",
- "runic-core",
  "runic-dialect-arith",
+ "runic-ir",
  "runic-transform",
  "tempfile",
-]
-
-[[package]]
-name = "runic-core"
-version = "0.1.0"
-dependencies = [
- "base64",
- "bitflags",
- "blink-alloc",
- "compact_str",
- "hashbrown 0.17.1",
- "intrusive-collections",
- "inventory",
- "litcheck-filecheck",
- "log",
- "miden-formatting",
- "paste",
- "pretty_assertions",
- "runic-diagnostics",
- "runic-expect-test",
- "runic-log",
- "runic-macros",
- "runic-symbol",
- "rustc-demangle",
- "rustc-hash",
- "smallvec",
- "thiserror",
 ]
 
 [[package]]
@@ -1369,8 +1342,8 @@ name = "runic-dialect-arith"
 version = "0.1.0"
 dependencies = [
  "paste",
- "runic-core",
  "runic-dialect-ub",
+ "runic-ir",
 ]
 
 [[package]]
@@ -1378,20 +1351,20 @@ name = "runic-dialect-cf"
 version = "0.1.0"
 dependencies = [
  "log",
- "runic-core",
  "runic-dialect-arith",
  "runic-dialect-ub",
  "runic-expect-test",
+ "runic-ir",
 ]
 
 [[package]]
 name = "runic-dialect-mem"
 version = "0.1.0"
 dependencies = [
- "runic-core",
  "runic-dialect-arith",
  "runic-dialect-cf",
  "runic-expect-test",
+ "runic-ir",
  "runic-transform",
 ]
 
@@ -1400,11 +1373,11 @@ name = "runic-dialect-scf"
 version = "0.1.0"
 dependencies = [
  "log",
- "runic-core",
  "runic-dialect-arith",
  "runic-dialect-cf",
  "runic-dialect-ub",
  "runic-expect-test",
+ "runic-ir",
  "runic-transform",
 ]
 
@@ -1412,7 +1385,7 @@ dependencies = [
 name = "runic-dialect-ub"
 version = "0.1.0"
 dependencies = [
- "runic-core",
+ "runic-ir",
 ]
 
 [[package]]
@@ -1421,6 +1394,33 @@ version = "0.1.0"
 dependencies = [
  "once_cell",
  "similar",
+]
+
+[[package]]
+name = "runic-ir"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "bitflags",
+ "blink-alloc",
+ "compact_str",
+ "hashbrown 0.17.1",
+ "intrusive-collections",
+ "inventory",
+ "litcheck-filecheck",
+ "log",
+ "miden-formatting",
+ "paste",
+ "pretty_assertions",
+ "runic-diagnostics",
+ "runic-expect-test",
+ "runic-log",
+ "runic-macros",
+ "runic-symbol",
+ "rustc-demangle",
+ "rustc-hash",
+ "smallvec",
+ "thiserror",
 ]
 
 [[package]]
@@ -1454,12 +1454,12 @@ dependencies = [
  "log",
  "regex",
  "runic-analysis",
- "runic-core",
  "runic-dialect-arith",
  "runic-dialect-cf",
  "runic-dialect-mem",
  "runic-dialect-scf",
  "runic-dialect-ub",
+ "runic-ir",
  "runic-log",
  "runic-transform",
  "tempfile",
@@ -1487,13 +1487,13 @@ dependencies = [
  "litcheck-filecheck",
  "log",
  "runic-analysis",
- "runic-core",
  "runic-dialect-arith",
  "runic-dialect-cf",
  "runic-dialect-mem",
  "runic-dialect-scf",
  "runic-dialect-ub",
  "runic-expect-test",
+ "runic-ir",
 ]
 
 [[package]]

@@ -1,7 +1,7 @@
 //! The pipeline named on the command line: how its text is read, what an error in it reports,
 //! and the warning for a pass that ran on nothing.
 
-use runic_core::{
+use runic_ir::{
     EntityMut, Op, OperationName, Report,
     diagnostics::diagnostic,
     dialects::builtin::Function,
@@ -274,7 +274,7 @@ fn dump_pass_pipeline_prints_the_loaded_pipeline_to_stderr_before_running_it() {
 fn dump_pass_pipeline_without_a_pipeline_prints_the_empty_one_as_the_pass_manager_does() {
     use std::rc::Rc;
 
-    use runic_core::{
+    use runic_ir::{
         Context,
         parse::{ParserConfig, parse_any},
         pass::{Nesting, PassPipeline},
@@ -288,7 +288,7 @@ fn dump_pass_pipeline_without_a_pipeline_prints_the_empty_one_as_the_pass_manage
         .unwrap()
         .load(context.clone(), Nesting::Implicit)
         .unwrap();
-    struct Textual<'a>(&'a runic_core::pass::PassManager);
+    struct Textual<'a>(&'a runic_ir::pass::PassManager);
     impl core::fmt::Display for Textual<'_> {
         fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
             self.0.print_as_textual_pipeline(f)

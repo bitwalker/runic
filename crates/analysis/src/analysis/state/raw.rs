@@ -1,6 +1,6 @@
 use core::{any::TypeId, ptr::NonNull};
 
-use runic_core::{
+use runic_ir::{
     FxHashMap,
     entity::{BorrowRef, BorrowRefMut, EntityRef, RawEntity},
 };

@@ -3,7 +3,7 @@
 
 use alloc::{format, string::String, vec::Vec};
 
-use runic_core::{
+use runic_ir::{
     Attribute, Context, ElementRewrite, Int, Operation, OperationRef, Report, Type, TypeMapper,
     Value,
     dialects::builtin::{Function, attributes::TypeAttr},

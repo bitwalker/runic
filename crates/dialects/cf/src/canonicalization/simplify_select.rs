@@ -1,12 +1,12 @@
 use alloc::rc::Rc;
 
-use runic_core::{
+use runic_dialect_arith::ArithOpBuilder;
+use runic_ir::{
     attributes::IntegerLikeAttr,
     matchers::Matcher,
     patterns::{Pattern, PatternBenefit, PatternInfo, PatternKind, RewritePattern},
     *,
 };
-use runic_dialect_arith::ArithOpBuilder;
 
 use crate::*;
 
@@ -93,8 +93,8 @@ impl RewritePattern for SimplifySelectOfBools {
 mod tests {
     use alloc::{boxed::Box, format};
 
-    use runic_core::testing::parse_function_fixpoint;
     use runic_expect_test::expect;
+    use runic_ir::testing::parse_function_fixpoint;
 
     use super::*;
     use crate::canonicalization::testing::apply_with_borrowing_listener;

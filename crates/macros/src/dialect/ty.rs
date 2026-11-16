@@ -76,38 +76,38 @@ impl quote::ToTokens for DialectType {
         let implements = &self.implements;
         let Fieldwise { visit, map } = Fieldwise::new(&self.data);
         tokens.extend(quote! {
-            impl ::runic_core::types::TypeImpl for #ident {
-                fn visit_subtypes(&self, visit: &mut dyn FnMut(::runic_core::types::Type)) {
+            impl ::runic_ir::types::TypeImpl for #ident {
+                fn visit_subtypes(&self, visit: &mut dyn FnMut(::runic_ir::types::Type)) {
                     #visit
                 }
 
                 fn replace_subtypes(
                     &self,
-                    map: &mut dyn FnMut(::runic_core::types::Type) -> ::runic_core::types::Type,
+                    map: &mut dyn FnMut(::runic_ir::types::Type) -> ::runic_ir::types::Type,
                 ) -> Self {
                     #map
                 }
             }
 
-            impl ::runic_core::types::TypeRegistration for #ident {
+            impl ::runic_ir::types::TypeRegistration for #ident {
                 type Dialect = #dialect;
 
-                fn name() -> ::runic_core::interner::Symbol {
-                    ::runic_core::interner::Symbol::intern(#name)
+                fn name() -> ::runic_ir::interner::Symbol {
+                    ::runic_ir::interner::Symbol::intern(#name)
                 }
 
-                fn traits() -> ::runic_core::derive::__private::Box<[::runic_core::traits::TraitInfo]> {
-                    ::runic_core::derive::__private::Box::from([
-                        ::runic_core::traits::TraitInfo::new::<Self, dyn ::core::any::Any>(),
+                fn traits() -> ::runic_ir::derive::__private::Box<[::runic_ir::traits::TraitInfo]> {
+                    ::runic_ir::derive::__private::Box::from([
+                        ::runic_ir::traits::TraitInfo::new::<Self, dyn ::core::any::Any>(),
                         #(
-                            ::runic_core::traits::TraitInfo::new::<Self, dyn #implements>(),
+                            ::runic_ir::traits::TraitInfo::new::<Self, dyn #implements>(),
                         )*
                     ])
                 }
             }
 
-            ::runic_core::inventory::submit!(
-                ::runic_core::types::DialectTypeRegistrationInfo::new::<#ident>()
+            ::runic_ir::inventory::submit!(
+                ::runic_ir::types::DialectTypeRegistrationInfo::new::<#ident>()
             );
         });
     }
@@ -184,20 +184,17 @@ mod tests {
             "the derive must not define a wrapper struct"
         );
         let output = file.into_token_stream().to_string();
-        assert!(
-            output.contains(
-                &quote!(::runic_core::types::DialectTypeRegistrationInfo::new::<PairType>())
-                    .to_string()
-            )
-        );
+        assert!(output.contains(
+            &quote!(::runic_ir::types::DialectTypeRegistrationInfo::new::<PairType>()).to_string()
+        ));
     }
 
     #[test]
-    fn generated_paths_go_through_runic_core() {
+    fn generated_paths_go_through_runic_ir() {
         let file = derive(quote! { #[ty(dialect = D)] struct XType; }).unwrap();
         let output = file.into_token_stream().to_string();
         assert!(!output.contains(":: alloc ::"), "a consumer need not declare `alloc`: {output}");
-        assert!(output.contains(&quote!(::runic_core::derive::__private::Box).to_string()));
+        assert!(output.contains(&quote!(::runic_ir::derive::__private::Box).to_string()));
     }
 
     #[test]
@@ -244,7 +241,7 @@ mod tests {
                 let field = syn::Ident::new(field, proc_macro2::Span::call_site());
                 let method = syn::Ident::new(method, proc_macro2::Span::call_site());
                 let closure = syn::Ident::new(closure, proc_macro2::Span::call_site());
-                quote!(::runic_core::types::TypeComponent::#method(&self.#field, #closure))
+                quote!(::runic_ir::types::TypeComponent::#method(&self.#field, #closure))
                     .to_string()
             });
             let lanes = output.find(&lanes).unwrap_or_else(|| panic!("{lanes} in {output}"));

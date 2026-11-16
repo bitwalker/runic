@@ -39,8 +39,8 @@
 //!   function becomes and run through every pass of the crate after the conversion; and fixed
 //!   probes of what holds.
 //!
-//! [populate_builtin_conversion_patterns]: runic_core::conversion::populate_builtin_conversion_patterns
-//! [add_builtin_legality_by_type]: runic_core::conversion::add_builtin_legality_by_type
+//! [populate_builtin_conversion_patterns]: runic_ir::conversion::populate_builtin_conversion_patterns
+//! [add_builtin_legality_by_type]: runic_ir::conversion::add_builtin_legality_by_type
 
 use alloc::{
     format,
@@ -49,7 +49,7 @@ use alloc::{
     vec::Vec,
 };
 
-use runic_core::{
+use runic_ir::{
     Context, Operation, OperationRef, Report, Type, WalkResult,
     conversion::{ConversionResult, TypeConverter},
     dialects::builtin::{

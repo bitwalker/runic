@@ -1,4 +1,4 @@
-use runic_core::{
+use runic_ir::{
     BlockRef, Builder, BuilderExt, CompactString, OpBuilder, Report, SourceSpan,
     UnsafeIntrusiveEntityRef, ValueRef, dialects::builtin::FunctionBuilder,
 };
@@ -46,7 +46,7 @@ pub trait ControlFlowOpBuilder<'f, B: ?Sized + Builder> {
     ) -> Result<UnsafeIntrusiveEntityRef<crate::ops::Switch>, Report>
     where
         TCases: IntoIterator<Item = SwitchCase>,
-        TFallbackArgs: IntoIterator<Item = ::runic_core::ValueRef>,
+        TFallbackArgs: IntoIterator<Item = ::runic_ir::ValueRef>,
     {
         let op_builder = self
             .builder_mut()

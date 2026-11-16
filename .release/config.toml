@@ -42,7 +42,7 @@ name = "runic-compile"
 unit = "compiler"
 
 [[packages]]
-name = "runic-core"
+name = "runic-ir"
 unit = "compiler"
 
 [[packages]]

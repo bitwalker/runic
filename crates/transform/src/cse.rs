@@ -1,6 +1,6 @@
 use alloc::{rc::Rc, vec::Vec};
 
-use runic_core::{
+use runic_ir::{
     AsValueRange, BlockRef, EntityMut, FxHashMap, FxHashSet, Operation, OperationName,
     OperationRef, RegionRef, Report, Rewriter, RewriterExt, SmallVec, ValueRef,
     adt::SmallDenseMap,
@@ -17,7 +17,7 @@ use runic_core::{
 #[derive(Default)]
 pub struct CommonSubexpressionElimination;
 
-runic_core::inventory::submit!(::runic_core::pass::registry::PassInfo::new::<
+runic_ir::inventory::submit!(::runic_ir::pass::registry::PassInfo::new::<
     CommonSubexpressionElimination,
 >("cse", DESCRIPTION));
 
@@ -404,7 +404,7 @@ impl CSEDriver<'_> {
         } else {
             // When the region does not have SSA dominance, we need to check if we have visited a
             // use before replacing any use.
-            let can_replace_use = |operand: &runic_core::OpOperandImpl| {
+            let can_replace_use = |operand: &runic_ir::OpOperandImpl| {
                 !Self::has_visited_owner_or_ancestor(visited_ops, operand.owner)
             };
 
@@ -437,7 +437,7 @@ impl CSEDriver<'_> {
             }
         }
 
-        runic_core::dialects::debuginfo::transform::merge_inline_call_locations(existing, op);
+        runic_ir::dialects::debuginfo::transform::merge_inline_call_locations(existing, op);
 
         // If the existing operation has an unknown location and the current operation doesn't,
         // then set the existing op's location to that of the current op.
@@ -571,7 +571,7 @@ struct OpKey(OperationRef);
 
 impl core::hash::Hash for OpKey {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-        use runic_core::equivalence::{
+        use runic_ir::equivalence::{
             DefaultValueHasher, IgnoreValueHasher, OperationEquivalenceFlags,
         };
         self.0.borrow().hash_with_options(
@@ -587,7 +587,7 @@ impl Eq for OpKey {}
 
 impl PartialEq for OpKey {
     fn eq(&self, other: &Self) -> bool {
-        use runic_core::equivalence::{DefaultValueEquivalence, OperationEquivalenceFlags};
+        use runic_ir::equivalence::{DefaultValueEquivalence, OperationEquivalenceFlags};
 
         if self.0 == other.0 {
             return true;
@@ -613,23 +613,23 @@ mod tests {
     };
 
     use litcheck_filecheck::{filecheck, litcheck};
-    use runic_core::{
+    use runic_dialect_arith::ArithOpBuilder;
+    use runic_dialect_cf::ControlFlowOpBuilder;
+    use runic_ir::{
         Builder, SourceSpan,
         dialects::builtin::{BuiltinOpBuilder, Module},
         pass::{Nesting, PassManager},
         print::AsmPrinter,
         testing::Test,
     };
-    use runic_dialect_arith::ArithOpBuilder;
-    use runic_dialect_cf::ControlFlowOpBuilder;
 
     use super::*;
 
     pub(super) fn inline_chain(
-        context: &Rc<runic_core::Context>,
+        context: &Rc<runic_ir::Context>,
         call_line: u32,
-    ) -> runic_core::AttributeRef {
-        use runic_core::dialects::debuginfo::attributes::{
+    ) -> runic_ir::AttributeRef {
+        use runic_ir::dialects::debuginfo::attributes::{
             InlineCallChain, InlineCallChainAttr, InlineCallFrame,
         };
 
@@ -653,7 +653,7 @@ mod tests {
     fn operation_equivalence_ignores_only_inline_locations_when_requested() {
         use core::hash::Hash;
 
-        use runic_core::{
+        use runic_ir::{
             dialects::debuginfo::attributes::INLINE_CALL_CHAIN_ATTR_NAME,
             equivalence::{IgnoreValueEquivalence, OperationEquivalenceFlags},
         };
@@ -675,7 +675,7 @@ mod tests {
         second.borrow_mut().set_attribute(INLINE_CALL_CHAIN_ATTR_NAME, second_chain);
 
         let hash = |op| {
-            let mut hasher = runic_core::FxHasher::default();
+            let mut hasher = runic_ir::FxHasher::default();
             OpKey(op).hash(&mut hasher);
             core::hash::Hasher::finish(&hasher)
         };
@@ -699,7 +699,7 @@ mod tests {
 
     #[test]
     fn cse_merges_inline_sites_and_retains_only_unambiguous_chains() {
-        use runic_core::dialects::debuginfo::attributes::INLINE_CALL_CHAIN_ATTR_NAME;
+        use runic_ir::dialects::debuginfo::attributes::INLINE_CALL_CHAIN_ATTR_NAME;
 
         for second_line in [None, Some(10), Some(20)] {
             let mut test = Test::new("inline_constants", |cx| ([], [cx.i32(), cx.i32()]));
@@ -739,7 +739,7 @@ mod tests {
     /// them.
     #[test]
     fn cse_merges_loads_of_a_local_however_the_local_was_made() {
-        use runic_core::dialects::builtin::attributes::LocalVariable;
+        use runic_ir::dialects::builtin::attributes::LocalVariable;
 
         let mut test = Test::new("loads_of_a_local", |cx| ([cx.i32()], [cx.i32(), cx.i32()]));
         let i32 = test.context().i32();
@@ -843,7 +843,7 @@ mod tests {
     fn default_value_hasher_hashes_thin_address_only() {
         use core::hash::Hash;
 
-        use runic_core::equivalence::{DefaultValueHasher, ValueHasher};
+        use runic_ir::equivalence::{DefaultValueHasher, ValueHasher};
 
         let mut test = Test::new("value_hasher", |cx| ([cx.i32()], [cx.i32()]));
         let value = {
@@ -870,7 +870,7 @@ mod tests {
     /// reordered by dead-code elimination, CSE, control-flow sinking or operand sinking.
     #[test]
     fn generic_effect_order_survives_dce_cse_and_sinking() {
-        use runic_core::dialects::test::TestOpBuilder;
+        use runic_ir::dialects::test::TestOpBuilder;
 
         let mut test =
             Test::new("generic_barriers", |cx| ([cx.i1(), cx.ptr_type(cx.i32()), cx.i32()], []));
@@ -962,7 +962,7 @@ mod tests {
 
     /// The function `@f(%p: ptr<i32>, %v: i32) -> (i32, i32)` with the body `body`, in a module
     /// that also holds [CALLEES], after CSE ran on it, as text.
-    fn cse_in_module(body: &str) -> Result<alloc::string::String, runic_core::Report> {
+    fn cse_in_module(body: &str) -> Result<alloc::string::String, runic_ir::Report> {
         cse_in_module_with_locals("", body)
     }
 
@@ -971,14 +971,14 @@ mod tests {
     fn cse_in_module_with_locals(
         locals: &str,
         body: &str,
-    ) -> Result<alloc::string::String, runic_core::Report> {
-        use runic_core::{
+    ) -> Result<alloc::string::String, runic_ir::Report> {
+        use runic_ir::{
             SymbolTable,
             dialects::builtin::Function,
             parse::{self, ParserConfig},
         };
 
-        let context = Rc::new(runic_core::Context::default());
+        let context = Rc::new(runic_ir::Context::default());
         let text = format!(
             "builtin.module public @m {{\n{CALLEES}\nbuiltin.function public extern(\"C\") @f(%p: \
              ptr<i32>, %v: i32) -> (i32, i32){locals} {{\n{body}\n}};\n}};",
@@ -1002,7 +1002,7 @@ mod tests {
     /// their callees differ; calls with unknown effects are never merged.
     #[test]
     fn calls_are_not_merged_across_writes_unknown_effects_or_other_callees()
-    -> Result<(), runic_core::Report> {
+    -> Result<(), runic_ir::Report> {
         let read = r#"builtin.call @reads(%p) : extern("C") (ptr<i32>) -> i32"#;
         let unknown = r#"builtin.call @unknown(%p) : extern("C") (ptr<i32>) -> i32"#;
         let read_too = r#"builtin.call @reads_too(%p) : extern("C") (ptr<i32>) -> i32"#;
@@ -1032,7 +1032,7 @@ mod tests {
 
     /// Two equal `test.load`s of one address with `between` between them, after CSE: the number of
     /// `test.load`s left.
-    fn loads_left_with_between(between: &str) -> Result<usize, runic_core::Report> {
+    fn loads_left_with_between(between: &str) -> Result<usize, runic_ir::Report> {
         let body = format!(
             "%1 = test.load %p;\n{between}\n%2 = test.load %p;\nbuiltin.ret %1, %2 : (i32, i32);"
         );
@@ -1048,8 +1048,7 @@ mod tests {
 
     /// A `cf.assert` writes a resource of its own, so two loads on either side of one merge.
     #[test]
-    fn an_assert_between_two_loads_does_not_block_their_merging() -> Result<(), runic_core::Report>
-    {
+    fn an_assert_between_two_loads_does_not_block_their_merging() -> Result<(), runic_ir::Report> {
         let assert = r#"%c = arith.cmpi eq %v, %v;
 cf.assert %c, "between";"#;
         assert_eq!(loads_left_with_between(assert)?, 1);
@@ -1063,8 +1062,8 @@ cf.assert %c, "between";"#;
     /// Two loads do not merge across a store, an operation with unknown effects, a call that
     /// writes the default resource, or a call that frees.
     #[test]
-    fn loads_are_not_merged_across_writes_frees_or_unknown_effects()
-    -> Result<(), runic_core::Report> {
+    fn loads_are_not_merged_across_writes_frees_or_unknown_effects() -> Result<(), runic_ir::Report>
+    {
         for between in [
             "test.store %p, %v : (ptr<i32>, i32);",
             "%3 = test.effects <{ known = #builtin.bool<false> }>;",
@@ -1079,8 +1078,8 @@ cf.assert %c, "between";"#;
     /// One resource holds every local: two loads of one local do not merge across a store of
     /// another local, nor across a store of the same one.
     #[test]
-    fn loads_of_a_local_are_not_merged_across_a_store_of_any_local()
-    -> Result<(), runic_core::Report> {
+    fn loads_of_a_local_are_not_merged_across_a_store_of_any_local() -> Result<(), runic_ir::Report>
+    {
         for stored in [0, 1] {
             let text = cse_in_module_with_locals(
                 "i32, i32",
@@ -1098,8 +1097,8 @@ cf.assert %c, "between";"#;
     }
 
     /// Two `test.reads_locals_and_holds`, each holding `test.store %p, %v`, in a new function.
-    fn two_region_reads() -> (Test, [runic_core::OperationRef; 2]) {
-        use runic_core::{BuilderExt, Op, OpBuilder, ValueRef, dialects::test};
+    fn two_region_reads() -> (Test, [runic_ir::OperationRef; 2]) {
+        use runic_ir::{BuilderExt, Op, OpBuilder, ValueRef, dialects::test};
 
         let mut test = Test::new("region_reads", |cx| ([cx.ptr_type(cx.i32()), cx.i32()], []));
         let ops = {
@@ -1150,7 +1149,7 @@ cf.assert %c, "between";"#;
     /// resource is a child of the default resource, so it is not disjoint from it.
     #[test]
     fn calls_that_read_the_default_resource_are_not_merged_across_an_assert()
-    -> Result<(), runic_core::Report> {
+    -> Result<(), runic_ir::Report> {
         let text = cse_in_module(
             r#"
     %1 = builtin.call @reads_any(%v) : extern("C") (i32) -> i32;
@@ -1193,7 +1192,7 @@ cf.assert %c, "between";"#;
     /// asked of each nested operation again used to double the work with each level).
     #[test]
     fn a_tower_of_nested_ifs_is_simplified_in_time_linear_in_its_depth() {
-        use runic_core::{
+        use runic_ir::{
             dialects::builtin::Function,
             parse::{self, ParserConfig},
         };
@@ -1201,7 +1200,7 @@ cf.assert %c, "between";"#;
         std::thread::Builder::new()
             .stack_size(64 << 20)
             .spawn(|| {
-                let context = Rc::new(runic_core::Context::default());
+                let context = Rc::new(runic_ir::Context::default());
                 let config = ParserConfig::new(context.clone()).with_max_region_depth(250);
                 let function = parse::parse::<Function>(config, "tower", if_tower(200))
                     .into_result()

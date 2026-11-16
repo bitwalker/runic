@@ -13,7 +13,7 @@ mod evaluator;
 mod tests;
 mod value;
 
-use runic_core::{
+use runic_ir::{
     dialects::{builtin, debuginfo},
     inventory,
 };
@@ -30,37 +30,37 @@ pub use self::{
     value::Value,
 };
 
-inventory::submit!(::runic_core::DialectRegistrationHookInfo::new::<builtin::BuiltinDialect>(
+inventory::submit!(::runic_ir::DialectRegistrationHookInfo::new::<builtin::BuiltinDialect>(
     eval_builtin_dialect
 ));
-inventory::submit!(::runic_core::DialectRegistrationHookInfo::new::<arith::ArithDialect>(
+inventory::submit!(::runic_ir::DialectRegistrationHookInfo::new::<arith::ArithDialect>(
     eval_arith_dialect
 ));
-inventory::submit!(::runic_core::DialectRegistrationHookInfo::new::<cf::ControlFlowDialect>(
+inventory::submit!(::runic_ir::DialectRegistrationHookInfo::new::<cf::ControlFlowDialect>(
     eval_cf_dialect
 ));
-inventory::submit!(::runic_core::DialectRegistrationHookInfo::new::<scf::ScfDialect>(
+inventory::submit!(::runic_ir::DialectRegistrationHookInfo::new::<scf::ScfDialect>(
     eval_scf_dialect
 ));
-inventory::submit!(::runic_core::DialectRegistrationHookInfo::new::<ub::UndefinedBehaviorDialect>(
+inventory::submit!(::runic_ir::DialectRegistrationHookInfo::new::<ub::UndefinedBehaviorDialect>(
     eval_ub_dialect
 ));
-inventory::submit!(::runic_core::DialectRegistrationHookInfo::new::<hir::HirDialect>(
+inventory::submit!(::runic_ir::DialectRegistrationHookInfo::new::<hir::HirDialect>(
     eval_hir_dialect
 ));
-inventory::submit!(::runic_core::DialectRegistrationHookInfo::new::<wasm::WasmDialect>(
+inventory::submit!(::runic_ir::DialectRegistrationHookInfo::new::<wasm::WasmDialect>(
     eval_wasm_dialect
 ));
-inventory::submit!(::runic_core::DialectRegistrationHookInfo::new::<debuginfo::DebugInfoDialect>(
+inventory::submit!(::runic_ir::DialectRegistrationHookInfo::new::<debuginfo::DebugInfoDialect>(
     eval_debuginfo_dialect
 ));
 
-fn eval_builtin_dialect(info: &mut ::runic_core::DialectInfo) {
+fn eval_builtin_dialect(info: &mut ::runic_ir::DialectInfo) {
     info.register_operation_trait::<builtin::Ret, dyn Eval>();
     info.register_operation_trait::<builtin::RetImm, dyn Eval>();
 }
 
-fn eval_arith_dialect(info: &mut ::runic_core::DialectInfo) {
+fn eval_arith_dialect(info: &mut ::runic_ir::DialectInfo) {
     info.register_operation_trait::<arith::Constant, dyn Eval>();
     info.register_operation_trait::<arith::Add, dyn Eval>();
     info.register_operation_trait::<arith::AddOverflowing, dyn Eval>();
@@ -114,14 +114,14 @@ fn eval_arith_dialect(info: &mut ::runic_core::DialectInfo) {
     info.register_operation_trait::<arith::Cto, dyn Eval>();
 }
 
-fn eval_cf_dialect(info: &mut ::runic_core::DialectInfo) {
+fn eval_cf_dialect(info: &mut ::runic_ir::DialectInfo) {
     info.register_operation_trait::<cf::Select, dyn Eval>();
     info.register_operation_trait::<cf::Br, dyn Eval>();
     info.register_operation_trait::<cf::CondBr, dyn Eval>();
     info.register_operation_trait::<cf::Switch, dyn Eval>();
 }
 
-fn eval_scf_dialect(info: &mut ::runic_core::DialectInfo) {
+fn eval_scf_dialect(info: &mut ::runic_ir::DialectInfo) {
     info.register_operation_trait::<scf::If, dyn Eval>();
     info.register_operation_trait::<scf::While, dyn Eval>();
     info.register_operation_trait::<scf::IndexSwitch, dyn Eval>();
@@ -131,12 +131,12 @@ fn eval_scf_dialect(info: &mut ::runic_core::DialectInfo) {
     info.register_operation_trait::<scf::Continue, dyn Eval>();
 }
 
-fn eval_ub_dialect(info: &mut ::runic_core::DialectInfo) {
+fn eval_ub_dialect(info: &mut ::runic_ir::DialectInfo) {
     info.register_operation_trait::<ub::Unreachable, dyn Eval>();
     info.register_operation_trait::<ub::Poison, dyn Eval>();
 }
 
-fn eval_hir_dialect(info: &mut ::runic_core::DialectInfo) {
+fn eval_hir_dialect(info: &mut ::runic_ir::DialectInfo) {
     info.register_operation_trait::<hir::Assert, dyn Eval>();
     info.register_operation_trait::<hir::Assertz, dyn Eval>();
     info.register_operation_trait::<hir::AssertEq, dyn Eval>();
@@ -158,7 +158,7 @@ fn eval_hir_dialect(info: &mut ::runic_core::DialectInfo) {
     info.register_operation_trait::<hir::PrintLn, dyn Eval>();
 }
 
-fn eval_wasm_dialect(info: &mut ::runic_core::DialectInfo) {
+fn eval_wasm_dialect(info: &mut ::runic_ir::DialectInfo) {
     info.register_operation_trait::<wasm::SignExtend, dyn Eval>();
     info.register_operation_trait::<wasm::I32Load8S, dyn Eval>();
     info.register_operation_trait::<wasm::I32Load16S, dyn Eval>();
@@ -169,6 +169,6 @@ fn eval_wasm_dialect(info: &mut ::runic_core::DialectInfo) {
     info.register_operation_trait::<wasm::I64RemS, dyn Eval>();
 }
 
-fn eval_debuginfo_dialect(info: &mut ::runic_core::DialectInfo) {
+fn eval_debuginfo_dialect(info: &mut ::runic_ir::DialectInfo) {
     info.register_operation_trait::<debuginfo::DebugValue, dyn Eval>();
 }

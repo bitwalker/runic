@@ -2,7 +2,7 @@
 
 use core::ops::ControlFlow;
 
-use runic_core::{Report, link_symbol_refs};
+use runic_ir::{Report, link_symbol_refs};
 
 use super::{
     Session,
@@ -103,7 +103,7 @@ impl Session<'_> {
 mod tests {
     use core::ops::ControlFlow;
 
-    use runic_core::{
+    use runic_ir::{
         DataLayout, Ident, Report, Visibility,
         dialects::builtin::{
             FunctionBuilder, ModuleBuilder, WorldBuilder, WorldRef, attributes::Signature,

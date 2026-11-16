@@ -129,7 +129,7 @@ impl SymbolPath {
     /// # Example
     ///
     /// ```rust
-    /// use runic_core::{SymbolPath, SymbolNameComponent, FunctionIdent};
+    /// use runic_ir::{SymbolPath, SymbolNameComponent, FunctionIdent};
     ///
     /// let id = FunctionIdent {
     ///     module: "intrinsics::mem".into(),
@@ -168,7 +168,7 @@ impl SymbolPath {
     /// # Example
     ///
     /// ```rust
-    /// use runic_core::{SymbolPath, SymbolNameComponent};
+    /// use runic_ir::{SymbolPath, SymbolNameComponent};
     ///
     /// assert_eq!(
     ///     SymbolPath::from_module_name("intrinsics::mem"),

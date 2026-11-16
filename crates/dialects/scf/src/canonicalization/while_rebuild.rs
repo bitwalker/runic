@@ -5,7 +5,7 @@
 //! which keeps the operands, block arguments, terminators and results of the loop consistent
 //! with each other at every step. [rebuild_while] is the single implementation of that rewrite.
 
-use runic_core::{dialects::debuginfo::transform::erase_debug_info_with, patterns::Rewriter, *};
+use runic_ir::{dialects::debuginfo::transform::erase_debug_info_with, patterns::Rewriter, *};
 
 use crate::*;
 

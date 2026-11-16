@@ -1,4 +1,4 @@
-use runic_core::{Report, pass::OpPassManager};
+use runic_ir::{Report, pass::OpPassManager};
 
 use crate::{Backend, Declarer, Frontend, Route, Session, Triple, session::default_optimization};
 

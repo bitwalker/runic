@@ -11,7 +11,10 @@ use alloc::{
     vec::Vec,
 };
 
-use runic_core::{
+use runic_dialect_arith as arith;
+use runic_dialect_cf as cf;
+use runic_dialect_mem as mem;
+use runic_ir::{
     BlockRef, CallOpInterface, Callable, Context, FxHashMap, Int, Operation, OperationRef,
     Overflow, Symbol, Type, Value, ValueRef,
     dialects::builtin::{
@@ -19,9 +22,6 @@ use runic_core::{
         StoreLocal,
     },
 };
-use runic_dialect_arith as arith;
-use runic_dialect_cf as cf;
-use runic_dialect_mem as mem;
 
 /// A value: the bits of an integer, a function by the name it was referenced with, or a pointer
 /// to a memory cell.

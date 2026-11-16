@@ -57,7 +57,7 @@ impl quote::ToTokens for DeriveOpParser {
 
         let mut gather_operands = quote! {
             #[allow(unused_variables, unused_mut)]
-            let mut gathered_operands = ::runic_core::SmallVec::<[::runic_core::SmallVec<[::runic_core::parse::UnresolvedOperand; 2]>; 2]>::new_const();
+            let mut gathered_operands = ::runic_ir::SmallVec::<[::runic_ir::SmallVec<[::runic_ir::parse::UnresolvedOperand; 2]>; 2]>::new_const();
             #[allow(unused_variables, unused_mut, unused_assignments)]
             let mut next_operand_group = 0usize;
         };
@@ -121,8 +121,8 @@ impl quote::ToTokens for DeriveOpParser {
             }
 
             gather_operands.extend(quote! {
-                gathered_operands.resize(#total_operand_groups_lit, ::runic_core::SmallVec::default());
-                state.operands.resize(#total_operand_groups_lit, ::runic_core::SmallVec::default());
+                gathered_operands.resize(#total_operand_groups_lit, ::runic_ir::SmallVec::default());
+                state.operands.resize(#total_operand_groups_lit, ::runic_ir::SmallVec::default());
 
                 #operand_group_parsers
             });
@@ -132,7 +132,7 @@ impl quote::ToTokens for DeriveOpParser {
         if format.has_properties {
             properties.extend(quote! {
                 if parser.token_stream_mut().next_if_eq(Token::Langle)? {
-                    let mut props = ::runic_core::SmallVec::default();
+                    let mut props = ::runic_ir::SmallVec::default();
                     parser.parse_attribute_dict(&mut props)?;
                     parser.parse_rangle()?;
                     state.attrs.extend(props);
@@ -166,9 +166,9 @@ impl quote::ToTokens for DeriveOpParser {
                             // of `#key -> ^block(...)` entries (`#delimiter` is `Bracket` here);
                             // the delimiter lets a fallback successor follow unambiguously.
                             parser.parse_comma_separated_list(#delimiter, Some(#field_name_str), |parser| {
-                                let key_ty = <<#key_ty as ::runic_core::KeyedSuccessor>::KeyStorage as ::runic_core::attributes::MaybeInferAttributeType>::maybe_infer_type(parser.context())
+                                let key_ty = <<#key_ty as ::runic_ir::KeyedSuccessor>::KeyStorage as ::runic_ir::attributes::MaybeInferAttributeType>::maybe_infer_type(parser.context())
                                     .unwrap_or_else(|| parser.context().unknown_type());
-                                let key = parser.parse_typed_attribute::<<#key_ty as ::runic_core::KeyedSuccessor>::KeyStorage>(key_ty)?.into_inner();
+                                let key = parser.parse_typed_attribute::<<#key_ty as ::runic_ir::KeyedSuccessor>::KeyStorage>(key_ty)?.into_inner();
                                 parser.parse_arrow()?;
                                 // The first successor uses the operand group reserved for this
                                 // field; additional ones append new groups at the end, since
@@ -183,7 +183,7 @@ impl quote::ToTokens for DeriveOpParser {
                                 next_operand_group += 1;
                                 let block_ref = parser.parse_successor_and_use_list(&mut state.operands[operand_group])?;
                                 let operand_group = u16::try_from(operand_group).map_err(|_| ParserError::TooManyOperandGroups {
-                                    span: ::runic_core::Spanned::span(&block_ref),
+                                    span: ::runic_ir::Spanned::span(&block_ref),
                                     limit: u16::MAX as usize,
                                 })?;
                                 state.add_keyed_successor(key, block_ref.into_inner(), operand_group, #succ_group_index_lit);
@@ -208,7 +208,7 @@ impl quote::ToTokens for DeriveOpParser {
                                 next_operand_group += 1;
                                 let block_ref = parser.parse_successor_and_use_list(&mut state.operands[operand_group])?;
                                 let operand_group = u16::try_from(operand_group).map_err(|_| ParserError::TooManyOperandGroups {
-                                    span: ::runic_core::Spanned::span(&block_ref),
+                                    span: ::runic_ir::Spanned::span(&block_ref),
                                     limit: u16::MAX as usize,
                                 })?;
                                 state.add_successor(block_ref.into_inner(), operand_group, #succ_group_index_lit);
@@ -238,7 +238,7 @@ impl quote::ToTokens for DeriveOpParser {
                                 }
                                 let block_ref = parser.parse_successor_and_use_list(&mut state.operands[operand_group])?;
                                 let operand_group = u16::try_from(operand_group).map_err(|_| ParserError::TooManyOperandGroups {
-                                    span: ::runic_core::Spanned::span(&block_ref),
+                                    span: ::runic_ir::Spanned::span(&block_ref),
                                     limit: u16::MAX as usize,
                                 })?;
                                 state.add_successor(block_ref.into_inner(), operand_group, #succ_group_index_lit);
@@ -254,9 +254,9 @@ impl quote::ToTokens for DeriveOpParser {
         let mut signature = proc_macro2::TokenStream::new();
         signature.extend(quote! {
             #[allow(unused_mut)]
-            let mut sig_params = ::runic_core::SmallVec::<[::runic_core::Type; 4]>::default();
+            let mut sig_params = ::runic_ir::SmallVec::<[::runic_ir::Type; 4]>::default();
             #[allow(unused_mut)]
-            let mut sig_results = ::runic_core::SmallVec::<[::runic_core::Type; 4]>::default();
+            let mut sig_results = ::runic_ir::SmallVec::<[::runic_ir::Type; 4]>::default();
         });
         if format.signature.can_infer {
             match &format.signature.results {
@@ -352,14 +352,14 @@ impl quote::ToTokens for DeriveOpParser {
         let op_type = &self.ident;
         let (impl_generics, ty_generics, where_clause) = self.generics.split_for_impl();
         tokens.extend(quote! {
-            impl #impl_generics ::runic_core::OpParser for #op_type #ty_generics #where_clause {
-                fn parse(state: &mut ::runic_core::OperationState, parser: &mut dyn ::runic_core::parse::OpAsmParser<'_>) -> ::runic_core::parse::ParseResult {
-                    use ::runic_core::parse::*;
+            impl #impl_generics ::runic_ir::OpParser for #op_type #ty_generics #where_clause {
+                fn parse(state: &mut ::runic_ir::OperationState, parser: &mut dyn ::runic_ir::parse::OpAsmParser<'_>) -> ::runic_ir::parse::ParseResult {
+                    use ::runic_ir::parse::*;
                     #gather_operands
                     #properties
                     #successors
                     #regions
-                    let mut attrs = ::runic_core::SmallVec::default();
+                    let mut attrs = ::runic_ir::SmallVec::default();
                     parser.parse_optional_attribute_dict_with_keyword(&mut attrs)?;
                     state.attrs.extend(attrs);
                     #signature
@@ -389,7 +389,7 @@ impl quote::ToTokens for RegionParser<'_> {
         // true binding syntaxes such as function signatures.
         let args = quote! {
             #[allow(unused_variables, unused_mut)]
-            let mut args = ::runic_core::SmallVec::<[::runic_core::parse::Argument; 1]>::new_const();
+            let mut args = ::runic_ir::SmallVec::<[::runic_ir::parse::Argument; 1]>::new_const();
         };
         let elide_entry_region_name = self.format.regions.len() == 1;
         for (

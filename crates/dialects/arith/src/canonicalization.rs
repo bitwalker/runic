@@ -10,7 +10,7 @@
 
 use alloc::rc::Rc;
 
-use runic_core::{
+use runic_ir::{
     attributes::IntegerLikeAttr,
     matchers::Matcher,
     patterns::{Pattern, PatternBenefit, PatternInfo, PatternKind, RewritePattern, RewriterExt},
@@ -311,7 +311,7 @@ impl RewritePattern for SimplifyTruncToBool {
 mod tests {
     use alloc::{format, rc::Rc};
 
-    use runic_core::{
+    use runic_ir::{
         Context, Int, Op, OperationRef, Report, SourceSpan, Type, Value, ValueRef,
         dialects::builtin::{BuiltinOpBuilder, Ret},
         patterns::{
@@ -350,14 +350,11 @@ mod tests {
     /// The operand of the `builtin.ret` of `test`'s function.
     fn returned(test: &Test) -> ValueRef {
         let mut value = None;
-        test.function()
-            .borrow()
-            .as_operation()
-            .prewalk_all(|op: &runic_core::Operation| {
-                if op.is::<Ret>() {
-                    value = Some(op.operands().all()[0].borrow().as_value_ref());
-                }
-            });
+        test.function().borrow().as_operation().prewalk_all(|op: &runic_ir::Operation| {
+            if op.is::<Ret>() {
+                value = Some(op.operands().all()[0].borrow().as_value_ref());
+            }
+        });
         value.expect("a builtin.ret")
     }
 
@@ -582,8 +579,8 @@ mod tests {
     }
 
     /// An inline call chain attribute of one frame named `name`.
-    fn chain(test: &Test, name: &'static str) -> runic_core::AttributeRef {
-        use runic_core::dialects::debuginfo::attributes::{
+    fn chain(test: &Test, name: &'static str) -> runic_ir::AttributeRef {
+        use runic_ir::dialects::debuginfo::attributes::{
             InlineCallChain, InlineCallChainAttr, InlineCallFrame,
         };
         test.context_rc()
@@ -605,14 +602,11 @@ mod tests {
     /// The first `T` in `test`'s function.
     fn find_op<T: Op>(test: &Test) -> Option<OperationRef> {
         let mut found = None;
-        test.function()
-            .borrow()
-            .as_operation()
-            .prewalk_all(|op: &runic_core::Operation| {
-                if found.is_none() && op.is::<T>() {
-                    found = Some(op.as_operation_ref());
-                }
-            });
+        test.function().borrow().as_operation().prewalk_all(|op: &runic_ir::Operation| {
+            if found.is_none() && op.is::<T>() {
+                found = Some(op.as_operation_ref());
+            }
+        });
         found
     }
 
@@ -630,7 +624,7 @@ mod tests {
     /// of the comparison it replaces, whether the rewrite runs in the greedy driver or in a
     /// standalone `PatternApplicator`.
     fn check_inline_metadata_on_created_operation(standalone: bool) -> Result<(), Report> {
-        use runic_core::dialects::debuginfo::attributes::INLINE_CALL_CHAIN_ATTR_NAME;
+        use runic_ir::dialects::debuginfo::attributes::INLINE_CALL_CHAIN_ATTR_NAME;
         let mut test = Test::new("f", |cx| ([cx.i1()], [cx.i1()]));
         test.context().get_or_register_dialect::<ArithDialect>();
         let flag = test.entry_block().borrow().arguments()[0].borrow().as_value_ref();
@@ -646,7 +640,7 @@ mod tests {
         let mut compare = find_op::<Cmpi>(&test).unwrap();
         compare.borrow_mut().set_attribute(INLINE_CALL_CHAIN_ATTR_NAME, attr);
         if standalone {
-            use runic_core::patterns::{NoopRewriterListener, PatternApplicator, RewriterImpl};
+            use runic_ir::patterns::{NoopRewriterListener, PatternApplicator, RewriterImpl};
             let context = test.context_rc();
             let mut patterns = RewritePatternSet::new(context.clone());
             Cmpi::get_canonicalization_patterns(&mut patterns, context.clone());
@@ -663,15 +657,12 @@ mod tests {
             assert!(canonicalize(&test, Cmpi::get_canonicalization_patterns));
         }
         let mut created = 0;
-        test.function()
-            .borrow()
-            .as_operation()
-            .prewalk_all(|op: &runic_core::Operation| {
-                if op.is::<Bnot>() {
-                    assert_eq!(op.get_attribute(INLINE_CALL_CHAIN_ATTR_NAME), Some(attr));
-                    created += 1;
-                }
-            });
+        test.function().borrow().as_operation().prewalk_all(|op: &runic_ir::Operation| {
+            if op.is::<Bnot>() {
+                assert_eq!(op.get_attribute(INLINE_CALL_CHAIN_ATTR_NAME), Some(attr));
+                created += 1;
+            }
+        });
         assert_eq!(created, 1, "the rewrite must create a bnot with the comparison's frame");
         Ok(())
     }
@@ -681,7 +672,7 @@ mod tests {
     #[test]
     fn simplify_not_compare_creates_the_comparison_in_the_comparisons_frame() -> Result<(), Report>
     {
-        use runic_core::dialects::debuginfo::attributes::INLINE_CALL_CHAIN_ATTR_NAME;
+        use runic_ir::dialects::debuginfo::attributes::INLINE_CALL_CHAIN_ATTR_NAME;
         let mut test = Test::new("f", |cx| ([cx.i32(), cx.i32()], [cx.i1()]));
         test.context().get_or_register_dialect::<ArithDialect>();
         let args = test.entry_block().borrow().arguments().to_vec();
@@ -709,7 +700,7 @@ mod tests {
 
     #[test]
     fn inline_metadata_survives_constant_folding() -> Result<(), Report> {
-        use runic_core::dialects::debuginfo::attributes::{
+        use runic_ir::dialects::debuginfo::attributes::{
             INLINE_CALL_CHAIN_ATTR_NAME, InlineCallChain, InlineCallChainAttr,
         };
         let mut test =

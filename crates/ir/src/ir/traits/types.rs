@@ -351,7 +351,7 @@ pub type Int128 = SizedInt<128>;
 /// using the constraint with any other `N` does not compile.
 ///
 /// ```compile_fail
-/// use runic_core::traits::{SizedInt, TypeConstraint};
+/// use runic_ir::traits::{SizedInt, TypeConstraint};
 ///
 /// let _ = SizedInt::<0>::get();
 /// ```

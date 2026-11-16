@@ -8,7 +8,7 @@ use runic_compile::{
     OptLevel, OutputFile,
     testing::{AltVmBackend, CalcFrontend, CalcOptions, StackVmBackend},
 };
-use runic_core::diagnostics::{Label, LayeredSourceProvider, SourceKey, VisitDiagnostic};
+use runic_ir::diagnostics::{Label, LayeredSourceProvider, SourceKey, VisitDiagnostic};
 
 const TINY: &str = "stackvm-unknown-tiny";
 const UNKNOWN: &str = "stackvm-unknown-unknown";
@@ -438,7 +438,7 @@ fn no_target_and_no_stop_point_is_an_error_that_asks_for_a_target() {
 
 /// The labels of `report`, each with the name of the source and the text it covers.
 fn labelled(compilation: &Compilation) -> Vec<(String, String, String)> {
-    struct Collect(Vec<(runic_core::diagnostics::SourceSpan, String)>);
+    struct Collect(Vec<(runic_ir::diagnostics::SourceSpan, String)>);
     impl VisitDiagnostic for Collect {
         fn label(&mut self, label: Label<'_>) {
             self.0

@@ -1,6 +1,6 @@
 use core::{fmt, str::FromStr};
 
-use runic_core::Report;
+use runic_ir::Report;
 
 /// The name of a target, in triple form: `wasm32-unknown-unknown`, `aarch64-apple-darwin`,
 /// `x86_64-unknown-linux-gnu`.

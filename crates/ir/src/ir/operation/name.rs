@@ -531,8 +531,8 @@ mod tests {
     /// operation it is registered with: its vtable is used with that operation.
     #[test]
     #[should_panic(expected = "in the trait table of operation \
-                               `runic_core::dialects::test::ops::constants::Constant` was built \
-                               for another type, `runic_core::dialects::test::ops::binary::Add`")]
+                               `runic_ir::dialects::test::ops::constants::Constant` was built \
+                               for another type, `runic_ir::dialects::test::ops::binary::Add`")]
     fn a_trait_table_entry_built_for_another_operation_is_rejected() {
         let extra = vec![TraitInfo::new::<Add, dyn core::any::Any>()];
         let _ = OperationName::new::<Constant>(interner::Symbol::intern("test"), extra);

@@ -11,7 +11,7 @@
 //!
 //! An operation that is defined only for some values of an operand (a divisor that is not zero, a
 //! shift amount below the width) says so through
-//! [runic_core::traits::OperandRangeRequirementOpInterface]; one whose requirement relates two
+//! [runic_ir::traits::OperandRangeRequirementOpInterface]; one whose requirement relates two
 //! operands (a signed division, a checked or unchecked `add`/`sub`/`mul`) reports it there as
 //! unexpressed.
 
@@ -36,7 +36,7 @@ mod ops;
 #[cfg(test)]
 mod tests;
 
-use runic_core::{
+use runic_ir::{
     AttributeRef, Builder, BuilderExt, Dialect, DialectInfo, Int, OperationRef, ReadyAttr,
     SourceSpan, Type, attributes::IntegerLikeAttr, derive::DialectRegistration,
     dialects::builtin::attributes::IntAttr,
@@ -77,7 +77,7 @@ impl Dialect for ArithDialect {
         ty: Type,
         span: SourceSpan,
     ) -> Option<OperationRef> {
-        let mut builder = runic_core::InsertionGuard::new(builder);
+        let mut builder = runic_ir::InsertionGuard::new(builder);
 
         let (value, value_ty, int_attr) = {
             let borrowed = attr.borrow();

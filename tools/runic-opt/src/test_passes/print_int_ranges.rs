@@ -4,7 +4,7 @@ use runic_analysis::{
     DataFlowConfig, DataFlowSolver,
     analyses::{DeadCodeAnalysis, IntegerRangeAnalysis, integer_range::value_range},
 };
-use runic_core::{
+use runic_ir::{
     EntityMut, Op, Operation, OperationName, Report,
     diagnostics::diagnostic,
     dialects::builtin::Function,
@@ -22,7 +22,7 @@ const NAME: &str = "test-print-int-ranges";
 const DESCRIPTION: &str =
     "Emits a hint with the range the integer range analysis gives each integer result";
 
-runic_core::inventory::submit!(PassInfo::new::<PrintIntRanges>(NAME, DESCRIPTION));
+runic_ir::inventory::submit!(PassInfo::new::<PrintIntRanges>(NAME, DESCRIPTION));
 
 impl Pass for PrintIntRanges {
     type Target = Function;

@@ -2,7 +2,7 @@
 
 use std::{borrow::Cow, path::PathBuf};
 
-use runic_core::{
+use runic_ir::{
     Report,
     diagnostics::{Diagnostic, PushResult, SourceId},
 };
@@ -82,7 +82,7 @@ impl Session<'_> {
 
 #[cfg(test)]
 mod tests {
-    use runic_core::diagnostics::SourceProvider;
+    use runic_ir::diagnostics::SourceProvider;
 
     use crate::{CompilationRequest, Compiler, Input, Session, testing::TestFrontend};
 

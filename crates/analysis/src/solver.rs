@@ -3,7 +3,7 @@ mod allocator;
 use alloc::{collections::VecDeque, format, rc::Rc, string::ToString, vec::Vec};
 use core::{any::TypeId, cell::RefCell, ptr::NonNull};
 
-use runic_core::{
+use runic_ir::{
     EntityRef, FxHashMap, Operation, ProgramPoint, Report, SmallVec, dialects::builtin, hashbrown,
     pass::AnalysisManager,
 };

@@ -1,12 +1,12 @@
 use alloc::rc::Rc;
 
-use runic_core::{
+use runic_dialect_cf::ControlFlowOpBuilder;
+use runic_ir::{
     adt::SmallDenseMap,
     patterns::{Pattern, PatternBenefit, PatternInfo, PatternKind, RewritePattern},
     traits::{AnyInteger, TypeConstraint},
     *,
 };
-use runic_dialect_cf::ControlFlowOpBuilder;
 
 use crate::*;
 
@@ -199,10 +199,8 @@ impl RewritePattern for ConvertTrivialIfToSelect {
 
 #[cfg(test)]
 mod terminal_region_tests {
-    use runic_core::{
-        dialects::builtin::BuiltinOpBuilder, patterns::PatternRewriter, testing::Test,
-    };
     use runic_dialect_ub::UndefinedBehaviorOpBuilder;
+    use runic_ir::{dialects::builtin::BuiltinOpBuilder, patterns::PatternRewriter, testing::Test};
 
     use super::*;
 
@@ -343,7 +341,7 @@ mod terminal_region_tests {
                         function.borrow().recursively_verify()?;
                         test.apply_boxed_pass(
                             alloc::boxed::Box::new(runic_transform::Canonicalizer::new(
-                                runic_core::patterns::GreedyRewriteConfig::default(),
+                                runic_ir::patterns::GreedyRewriteConfig::default(),
                                 true,
                             )),
                             true,
@@ -360,7 +358,7 @@ mod terminal_region_tests {
 mod tests {
     use alloc::{boxed::Box, format, rc::Rc, string::String};
 
-    use runic_core::{
+    use runic_ir::{
         patterns::{self, FrozenRewritePatternSet, GreedyRewriteConfig, RewritePatternSet},
         testing::parse_function_fixpoint,
     };

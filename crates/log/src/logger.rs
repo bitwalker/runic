@@ -1148,7 +1148,7 @@ mod tests {
         assert!(!keeps(&mut trailing, "sub"));
     }
 
-    /// The default environment, which `runic_logger` and the tests' logger of `runic-core` read,
+    /// The default environment, which `runic_logger` and the tests' logger of `runic-ir` read,
     /// takes its directives from `RUNIC_TRACE`. The only test of this crate that sets it.
     #[test]
     fn the_default_environment_reads_runic_trace() {

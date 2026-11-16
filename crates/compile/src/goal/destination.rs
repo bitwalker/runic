@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use runic_core::Report;
+use runic_ir::Report;
 
 use crate::{CheckpointDecl, EmitTo, OutputFile};
 

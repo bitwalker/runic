@@ -2,7 +2,7 @@ mod backward;
 mod forward;
 mod lattice;
 
-use runic_core::{
+use runic_ir::{
     Backward, CallOpInterface, Forward, OpOperandImpl, Operation, ProgramPoint, RegionSuccessor,
     Report, pass::AnalysisManager,
 };
@@ -56,7 +56,7 @@ use super::{AnalysisStrategy, DataFlowAnalysis, DataFlowSolver, Sparse};
 /// directly as a [DataFlowAnalysis] implementation, as shown below:
 ///
 /// ```rust,ignore
-/// use runic_core::dataflow::*;
+/// use runic_ir::dataflow::*;
 ///
 /// #[derive(Default)]
 /// pub struct MyAnalysis;

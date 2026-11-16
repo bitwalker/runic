@@ -32,7 +32,7 @@ pub fn derive_effect_op_interface(input: &syn::DeriveInput) -> darling::Result<E
         }
     }
     if effects.is_empty() {
-        let kind: syn::Path = parse_quote!(::runic_core::effects::MemoryEffect);
+        let kind: syn::Path = parse_quote!(::runic_ir::effects::MemoryEffect);
         effects.insert(
             kind.to_token_stream().to_string(),
             EffectGroup {
@@ -137,18 +137,18 @@ impl ToTokens for EffectOpInterface {
                         Some(resource) => quote! {
                             <#resource as ::core::default::Default>::default()
                         },
-                        None => quote! { ::runic_core::effects::DefaultResource },
+                        None => quote! { ::runic_ir::effects::DefaultResource },
                     };
                     match field {
                         Some(field) => quote! {
-                            ::runic_core::effects::EffectInstance::new_for_value_with_resource(
+                            ::runic_ir::effects::EffectInstance::new_for_value_with_resource(
                                 #value,
                                 self.#field(),
                                 #resource,
                             )
                         },
                         None => quote! {
-                            ::runic_core::effects::EffectInstance::new_with_resource(
+                            ::runic_ir::effects::EffectInstance::new_with_resource(
                                 #value,
                                 #resource,
                             )
@@ -157,15 +157,15 @@ impl ToTokens for EffectOpInterface {
                 },
             );
             tokens.extend(quote! {
-                impl #impl_generics ::runic_core::effects::EffectOpInterface<#kind> for #op_type #ty_generics #where_clause {
+                impl #impl_generics ::runic_ir::effects::EffectOpInterface<#kind> for #op_type #ty_generics #where_clause {
                     #[inline(always)]
                     fn has_no_effect(&self) -> bool {
                         #no_effects
                     }
 
-                    fn effects(&self) -> ::runic_core::effects::EffectIterator<#kind> {
-                        ::runic_core::effects::EffectIterator::from_smallvec(
-                            ::runic_core::smallvec![#(#values),*]
+                    fn effects(&self) -> ::runic_ir::effects::EffectIterator<#kind> {
+                        ::runic_ir::effects::EffectIterator::from_smallvec(
+                            ::runic_ir::smallvec![#(#values),*]
                         )
                     }
                 }

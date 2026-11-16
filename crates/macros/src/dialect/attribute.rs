@@ -104,26 +104,26 @@ impl Attribute {
             let clause = where_clause.get_or_insert_with(|| parse_quote!(where));
             for ty in fields {
                 clause.predicates.push(parse_quote! {
-                    #ty: ::runic_core::attributes::AttributeComponent + ::core::clone::Clone
+                    #ty: ::runic_ir::attributes::AttributeComponent + ::core::clone::Clone
                 });
             }
         }
         let ElementsFieldwise { visit, replace } = ElementsFieldwise::new(&self.data);
         quote! {
             #[automatically_derived]
-            impl #impl_generics ::runic_core::attributes::AttributeElements for #ident #ty_generics
+            impl #impl_generics ::runic_ir::attributes::AttributeElements for #ident #ty_generics
                 #where_clause
             {
                 fn visit_elements(
                     &self,
-                    visitor: &mut dyn ::runic_core::attributes::ElementVisitor,
+                    visitor: &mut dyn ::runic_ir::attributes::ElementVisitor,
                 ) {
                     #visit
                 }
 
                 fn replace_elements(
                     &self,
-                    replacer: &mut dyn ::runic_core::attributes::ElementReplacer,
+                    replacer: &mut dyn ::runic_ir::attributes::ElementReplacer,
                 ) -> ::core::option::Option<Self> {
                     #replace
                 }
@@ -181,7 +181,7 @@ impl quote::ToTokens for Attribute {
             // Replacing an attribute's elements builds a new value, cloning what did not change.
             let where_clause = attr_impl_generics.make_where_clause();
             where_clause.predicates.push(parse_quote! {
-                #value_type_name #ty_generics: ::runic_core::attributes::AttributeElements
+                #value_type_name #ty_generics: ::runic_ir::attributes::AttributeElements
                     + ::core::clone::Clone
             });
         }
@@ -193,11 +193,11 @@ impl quote::ToTokens for Attribute {
             #[doc = #struct_doc]
             ///
             /// It is not possible to construct values of this type directly, instead you must
-            /// allocate them using a [`::runic_core::Context`] via `Self::create`.
+            /// allocate them using a [`::runic_ir::Context`] via `Self::create`.
             #[derive(Clone, PartialEq, Eq, Hash)]
             #[repr(C)]
             pub struct #attr_struct_name #ty_generics {
-                _attr: ::runic_core::attributes::Attr,
+                _attr: ::runic_ir::attributes::Attr,
                 value: #value_type_name #ty_generics,
             }
 
@@ -244,16 +244,16 @@ impl quote::ToTokens for Attribute {
                 }
             }
 
-            impl #impl_generics AsRef<::runic_core::attributes::Attr> for #attr_struct_name #ty_generics #where_clause {
+            impl #impl_generics AsRef<::runic_ir::attributes::Attr> for #attr_struct_name #ty_generics #where_clause {
                 #[inline(always)]
-                fn as_ref(&self) -> &::runic_core::attributes::Attr {
+                fn as_ref(&self) -> &::runic_ir::attributes::Attr {
                     &self._attr
                 }
             }
 
-            impl #impl_generics AsMut<::runic_core::attributes::Attr> for #attr_struct_name #ty_generics #where_clause {
+            impl #impl_generics AsMut<::runic_ir::attributes::Attr> for #attr_struct_name #ty_generics #where_clause {
                 #[inline(always)]
-                fn as_mut(&mut self) -> &mut ::runic_core::attributes::Attr {
+                fn as_mut(&mut self) -> &mut ::runic_ir::attributes::Attr {
                     &mut self._attr
                 }
             }
@@ -264,25 +264,25 @@ impl quote::ToTokens for Attribute {
 
         let create_default_impl: syn::ImplItemFn = if self.no_default {
             parse_quote_spanned! { attr_name.span() =>
-                fn create_default(_context: &::alloc::rc::Rc<::runic_core::Context>) -> ::runic_core::UnsafeIntrusiveEntityRef<Self> {
-                    panic!("the attribute `{}` has no default value", <Self as ::runic_core::AttributeRegistration>::full_name())
+                fn create_default(_context: &::alloc::rc::Rc<::runic_ir::Context>) -> ::runic_ir::UnsafeIntrusiveEntityRef<Self> {
+                    panic!("the attribute `{}` has no default value", <Self as ::runic_ir::AttributeRegistration>::full_name())
                 }
             }
         } else if let Some(default_ctor) = self.default.as_ref() {
             parse_quote_spanned! { default_ctor.span() =>
                 #[allow(clippy::let_unit_value)]
-                fn create_default(context: &::alloc::rc::Rc<::runic_core::Context>) -> ::runic_core::UnsafeIntrusiveEntityRef<Self> {
-                    let value: <Self as ::runic_core::AttributeRegistration>::Value = #default_ctor(context);
-                    let ty = <Self as ::runic_core::attributes::MaybeInferAttributeType>::maybe_infer_type_from_value(context, &value);
+                fn create_default(context: &::alloc::rc::Rc<::runic_ir::Context>) -> ::runic_ir::UnsafeIntrusiveEntityRef<Self> {
+                    let value: <Self as ::runic_ir::AttributeRegistration>::Value = #default_ctor(context);
+                    let ty = <Self as ::runic_ir::attributes::MaybeInferAttributeType>::maybe_infer_type_from_value(context, &value);
                     Self::create(context, value, ty.unwrap_or_else(|| context.unknown_type()))
                 }
             }
         } else {
             parse_quote_spanned! { attr_name.span() =>
                 #[allow(clippy::let_unit_value)]
-                fn create_default(context: &::alloc::rc::Rc<::runic_core::Context>) -> ::runic_core::UnsafeIntrusiveEntityRef<Self> {
-                    let value = <<Self as ::runic_core::AttributeRegistration>::Value>::default();
-                    let ty = <Self as ::runic_core::attributes::MaybeInferAttributeType>::maybe_infer_type_from_value(context, &value);
+                fn create_default(context: &::alloc::rc::Rc<::runic_ir::Context>) -> ::runic_ir::UnsafeIntrusiveEntityRef<Self> {
+                    let value = <<Self as ::runic_ir::AttributeRegistration>::Value>::default();
+                    let ty = <Self as ::runic_ir::attributes::MaybeInferAttributeType>::maybe_infer_type_from_value(context, &value);
                     Self::create(context, value, ty.unwrap_or_else(|| context.unknown_type()))
                 }
             }
@@ -292,9 +292,9 @@ impl quote::ToTokens for Attribute {
             parse_quote_spanned! { verify.span() =>
                 fn verify(
                     value: &Self::Value,
-                    ty: ::runic_core::Type,
-                    context: &::runic_core::Context,
-                ) -> ::core::result::Result<(), ::runic_core::Report> {
+                    ty: ::runic_ir::Type,
+                    context: &::runic_ir::Context,
+                ) -> ::core::result::Result<(), ::runic_ir::Report> {
                     #verify(value, ty, context)
                 }
             }
@@ -307,7 +307,7 @@ impl quote::ToTokens for Attribute {
         let traits = &self.traits;
         let implements = &self.implements;
         tokens.extend(quote! {
-            impl #attr_impl_generics ::runic_core::Attribute for #attr_struct_name #attr_ty_generics #attr_where_clause {
+            impl #attr_impl_generics ::runic_ir::Attribute for #attr_struct_name #attr_ty_generics #attr_where_clause {
                 #[inline(always)]
                 fn type_name(&self) -> &'static str {
                     ::core::any::type_name::<Self>()
@@ -324,60 +324,60 @@ impl quote::ToTokens for Attribute {
                 }
 
                 #[inline]
-                fn context(&self) -> &::runic_core::Context {
+                fn context(&self) -> &::runic_ir::Context {
                     self._attr.context()
                 }
 
                 #[inline]
-                fn context_rc(&self) -> ::alloc::rc::Rc<::runic_core::Context> {
+                fn context_rc(&self) -> ::alloc::rc::Rc<::runic_ir::Context> {
                     self._attr.context_rc()
                 }
 
                 #[inline]
-                fn name(&self) -> &::runic_core::AttributeName {
+                fn name(&self) -> &::runic_ir::AttributeName {
                     self._attr.name()
                 }
 
                 #[inline(always)]
-                fn as_attr(&self) -> &::runic_core::attributes::Attr {
+                fn as_attr(&self) -> &::runic_ir::attributes::Attr {
                     &self._attr
                 }
 
                 #[inline(always)]
-                fn as_attr_mut(&mut self) -> &mut ::runic_core::attributes::Attr {
+                fn as_attr_mut(&mut self) -> &mut ::runic_ir::attributes::Attr {
                     &mut self._attr
                 }
                 #[inline(always)]
-                fn value(&self) -> &dyn ::runic_core::attributes::AttributeValue {
+                fn value(&self) -> &dyn ::runic_ir::attributes::AttributeValue {
                     &self.value
                 }
                 #[inline(always)]
-                fn value_mut(&mut self) -> &mut dyn ::runic_core::attributes::AttributeValue {
+                fn value_mut(&mut self) -> &mut dyn ::runic_ir::attributes::AttributeValue {
                     &mut self.value
                 }
-                fn ty(&self) -> ::runic_core::Type {
+                fn ty(&self) -> ::runic_ir::Type {
                     self._attr.ty()
                 }
-                fn set_type(&mut self, ty: ::runic_core::Type) {
+                fn set_type(&mut self, ty: ::runic_ir::Type) {
                     self._attr.set_type(ty);
                 }
                 fn visit_elements(
                     &self,
-                    visitor: &mut dyn ::runic_core::attributes::ElementVisitor,
+                    visitor: &mut dyn ::runic_ir::attributes::ElementVisitor,
                 ) {
-                    ::runic_core::attributes::visit_attribute_elements(self, visitor)
+                    ::runic_ir::attributes::visit_attribute_elements(self, visitor)
                 }
                 fn replace_elements(
                     &self,
-                    replacer: &mut dyn ::runic_core::attributes::ElementReplacer,
-                ) -> ::core::option::Option<::runic_core::AttributeRef> {
-                    ::runic_core::attributes::replace_attribute_elements(self, replacer)
+                    replacer: &mut dyn ::runic_ir::attributes::ElementReplacer,
+                ) -> ::core::option::Option<::runic_ir::AttributeRef> {
+                    ::runic_ir::attributes::replace_attribute_elements(self, replacer)
                 }
                 fn verify(
                     &self,
-                    context: &::runic_core::Context,
-                ) -> ::core::result::Result<(), ::runic_core::Report> {
-                    <Self as ::runic_core::AttributeRegistration>::verify(
+                    context: &::runic_ir::Context,
+                ) -> ::core::result::Result<(), ::runic_ir::Report> {
+                    <Self as ::runic_ir::AttributeRegistration>::verify(
                         &self.value,
                         self._attr.ty(),
                         context,
@@ -397,51 +397,51 @@ impl quote::ToTokens for Attribute {
                 }
             }
 
-            impl #attr_impl_generics ::runic_core::AttributeRegistration for #attr_struct_name #attr_ty_generics #attr_where_clause {
+            impl #attr_impl_generics ::runic_ir::AttributeRegistration for #attr_struct_name #attr_ty_generics #attr_where_clause {
                 type Dialect = #dialect;
                 type Value = #value_type_name #ty_generics;
                 const HAS_DEFAULT: bool = !#no_default;
 
-                fn name() -> ::runic_core::interner::Symbol {
-                    ::runic_core::interner::Symbol::intern(#attr_name_str)
+                fn name() -> ::runic_ir::interner::Symbol {
+                    ::runic_ir::interner::Symbol::intern(#attr_name_str)
                 }
 
-                fn traits() -> ::alloc::boxed::Box<[::runic_core::traits::TraitInfo]> {
+                fn traits() -> ::alloc::boxed::Box<[::runic_ir::traits::TraitInfo]> {
                     ::alloc::boxed::Box::from([
-                        ::runic_core::traits::TraitInfo::new::<Self, dyn core::any::Any>(),
-                        ::runic_core::traits::TraitInfo::new::<Self, dyn ::runic_core::Attribute>(),
+                        ::runic_ir::traits::TraitInfo::new::<Self, dyn core::any::Any>(),
+                        ::runic_ir::traits::TraitInfo::new::<Self, dyn ::runic_ir::Attribute>(),
                         #(
-                            ::runic_core::traits::TraitInfo::new::<Self, dyn #traits>(),
+                            ::runic_ir::traits::TraitInfo::new::<Self, dyn #traits>(),
                         )*
                         #(
-                            ::runic_core::traits::TraitInfo::new::<Self, dyn #implements>(),
+                            ::runic_ir::traits::TraitInfo::new::<Self, dyn #implements>(),
                         )*
                     ])
                 }
 
                 #[allow(clippy::let_unit_value)]
                 fn create<AttrValue>(
-                    context: &::alloc::rc::Rc<::runic_core::Context>,
+                    context: &::alloc::rc::Rc<::runic_ir::Context>,
                     value: AttrValue,
-                    ty: ::runic_core::Type
-                ) -> ::runic_core::UnsafeIntrusiveEntityRef<Self>
+                    ty: ::runic_ir::Type
+                ) -> ::runic_ir::UnsafeIntrusiveEntityRef<Self>
                 where
                     #value_type_name #ty_generics: From<AttrValue>,
                 {
                     let name = context.get_registered_attribute_name::<#attr_struct_name #ty_generics>();
                     let value = <#value_type_name #ty_generics>::from(value);
-                    <#value_type_name #ty_generics as ::runic_core::attributes::DebugAssertIrValue>::debug_assert_ir_value(&value, context);
+                    <#value_type_name #ty_generics as ::runic_ir::attributes::DebugAssertIrValue>::debug_assert_ir_value(&value, context);
                     // `Attr::as_attr_ref` relies on this layout to find the entity header
                     const {
                         assert!(
                             ::core::mem::offset_of!(Self, _attr) == 0
                                 && ::core::mem::align_of::<Self>()
-                                    == ::core::mem::align_of::<::runic_core::attributes::Attr>()
+                                    == ::core::mem::align_of::<::runic_ir::attributes::Attr>()
                         )
                     }
                     unsafe {
                         let offset = ::core::mem::offset_of!(#attr_struct_name #ty_generics, _attr);
-                        let _attr = ::runic_core::attributes::Attr::uninit::<Self>(context, name, ty, offset);
+                        let _attr = ::runic_ir::attributes::Attr::uninit::<Self>(context, name, ty, offset);
                         context.alloc_tracked(Self {
                             _attr,
                             value,
@@ -464,7 +464,7 @@ impl quote::ToTokens for Attribute {
                 }
             }
 
-            ::runic_core::inventory::submit!(::runic_core::DialectAttributeRegistrationInfo::new::<#attr_struct_name #attr_ty_generics>());
+            ::runic_ir::inventory::submit!(::runic_ir::DialectAttributeRegistrationInfo::new::<#attr_struct_name #attr_ty_generics>());
         });
 
         // impl AttributeElements, for a value defined here
@@ -521,7 +521,7 @@ mod naming_tests {
         };
         assert_eq!(
             call.func.to_token_stream().to_string(),
-            quote!(::runic_core::interner::Symbol::intern).to_string()
+            quote!(::runic_ir::interner::Symbol::intern).to_string()
         );
         let [
             syn::Expr::Lit(syn::ExprLit {

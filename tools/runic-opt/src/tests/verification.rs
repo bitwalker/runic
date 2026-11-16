@@ -1,7 +1,7 @@
 //! The three verification states, each with input the verifier rejects and with a pass that
 //! breaks the IR, and how a failed pass is reported.
 
-use runic_core::{
+use runic_ir::{
     EntityMut, Op, Operation, OperationName, Report,
     dialects::builtin::Function,
     pass::{Pass, PassExecutionState, PostPassStatus, registry::register_pass},

@@ -1,6 +1,6 @@
 use alloc::{collections::BTreeMap, vec::Vec};
 
-use runic_core::{AddressSpace, Felt, Report, SourceSpan, SymbolName, Type};
+use runic_ir::{AddressSpace, Felt, Report, SourceSpan, SymbolName, Type};
 use runic_session::diagnostics::WrapErr;
 
 use super::memory::{self, Cells, MemoryAddress, ReadFailed, WriteFailed};
@@ -236,7 +236,7 @@ mod tests {
         let mut context = ExecutionContext::default();
         context.memory_grow(2);
         context
-            .write_memory(0, runic_core::Immediate::U8(17), SourceSpan::UNKNOWN)
+            .write_memory(0, runic_ir::Immediate::U8(17), SourceSpan::UNKNOWN)
             .unwrap();
         context.memory_grow(0);
         assert_eq!(context.memory_size(), 2);
@@ -252,7 +252,7 @@ mod tests {
         context
             .write_memory(
                 (2 * PAGE_SIZE) as u32,
-                runic_core::Immediate::U8(17),
+                runic_ir::Immediate::U8(17),
                 SourceSpan::UNKNOWN,
             )
             .unwrap();
@@ -264,7 +264,7 @@ mod tests {
         let mut context = ExecutionContext::default();
         assert!(context.memory_grow(1));
         context
-            .write_memory(0, runic_core::Immediate::U8(17), SourceSpan::UNKNOWN)
+            .write_memory(0, runic_ir::Immediate::U8(17), SourceSpan::UNKNOWN)
             .unwrap();
         assert!(!context.memory_grow(usize::MAX));
         assert!(!context.memory_grow(MAX_ADDRESSABLE_HEAP / PAGE_SIZE));
@@ -294,7 +294,7 @@ mod tests {
         for addr in [1u32 << 30, 0xffff_fff8] {
             assert_eq!(
                 context.read_memory(addr, &Type::U32, SourceSpan::UNKNOWN).unwrap(),
-                Value::Immediate(runic_core::Immediate::U32(0))
+                Value::Immediate(runic_ir::Immediate::U32(0))
             );
             assert_eq!(context.read_memory_bytes(addr, 4, SourceSpan::UNKNOWN).unwrap(), [0; 4]);
         }

@@ -5,7 +5,7 @@
 //! `fn add(a, b) = a + b;`. The machines are `stackvm` ([StackVmBackend]), which lists each
 //! function as instructions of a stack machine, and `altvm` ([AltVmBackend]), which lists the
 //! functions and their arities and shares one of the stack machine's targets. They use only what
-//! the crate and `runic-core` export, as the stages of any other compiler would.
+//! the crate and `runic-ir` export, as the stages of any other compiler would.
 
 pub mod calc;
 pub mod stackvm;

@@ -1,6 +1,6 @@
 use core::{fmt, hash::Hash, ptr::NonNull};
 
-use runic_core::{
+use runic_ir::{
     Block, BlockArgument, BlockArgumentRef, BlockRef, DynHash, DynPartialEq, FxHashMap, FxHasher,
     OpResult, OpResultRef, Operation, OperationRef, PartialEqable, ProgramPoint, RawEntityRef,
     SmallVec, SourceSpan, Spanned, Value, ValueRef, any::AsAny,
@@ -430,7 +430,7 @@ mod tests {
     use alloc::rc::Rc;
     use core::hash::Hasher;
 
-    use runic_core::Context;
+    use runic_ir::Context;
 
     use super::*;
     use crate::{DataFlowSolver, Lattice};

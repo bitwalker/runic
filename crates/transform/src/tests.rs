@@ -9,15 +9,15 @@ use alloc::{
     vec::Vec,
 };
 
-use runic_core::{
+use runic_dialect_cf::Assert;
+use runic_dialect_scf::transforms::LiftControlFlowToSCF;
+use runic_ir::{
     Context, Operation, Report,
     dialects::builtin::{Function, FunctionRef},
     parse::{self, ParserConfig},
     pass::{Nesting, OperationPass, PassManager},
     testing::text::describe,
 };
-use runic_dialect_cf::Assert;
-use runic_dialect_scf::transforms::LiftControlFlowToSCF;
 
 use crate::{
     Canonicalizer, CommonSubexpressionElimination, ControlFlowSink, DeadCodeElimination,
@@ -323,7 +323,7 @@ fn a_switch_with_extreme_keys_lifts_and_folds_as_32_bit_patterns() {
                 DataFlowSolver,
                 analyses::{DeadCodeAnalysis, SparseConstantPropagation, dce::Executable},
             };
-            use runic_core::{ProgramPoint, pass::AnalysisManager};
+            use runic_ir::{ProgramPoint, pass::AnalysisManager};
 
             let context = Rc::new(Context::default());
             let function =

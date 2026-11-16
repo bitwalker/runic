@@ -2,7 +2,7 @@
 
 use core::fmt;
 
-use runic_core::{
+use runic_ir::{
     EntityMut, Operation, OperationName, Report,
     diagnostics::report,
     pass::{Pass, PassExecutionState, PassInfo, PassOptions, PostPassStatus, write_pass_option},
@@ -19,7 +19,7 @@ pub struct Fail {
 const NAME: &str = "test-fail";
 const DEFAULT_MESSAGE: &str = "test-fail";
 
-runic_core::inventory::submit!(PassInfo::new::<Fail>(
+runic_ir::inventory::submit!(PassInfo::new::<Fail>(
     NAME,
     "Fails at the operation it runs on, with the message of its option `message`"
 ));

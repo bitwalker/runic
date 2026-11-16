@@ -1,6 +1,6 @@
 use alloc::{format, rc::Rc, string::String, vec::Vec};
 
-use runic_core::{
+use runic_ir::{
     derive::{EffectOpInterface, OpParser, OpPrinter, operation},
     dialects::builtin::attributes::{I32ArrayAttr, I32Attr},
     effects::*,
@@ -21,7 +21,7 @@ use crate::ScfDialect;
 ///
 /// Neither region allows any arguments, and both regions must be terminated with one of:
 ///
-/// * [runic_core::dialects::builtin::Ret] to return from the enclosing function directly
+/// * [runic_ir::dialects::builtin::Ret] to return from the enclosing function directly
 /// * `runic_dialect_ub::Unreachable` to abort execution
 /// * [Yield] to return from the enclosing [If]
 ///
@@ -322,7 +322,7 @@ impl Verify<dyn LoopLikeOpInterface> for While {
     fn verify(&self, _context: &Context) -> Result<(), Report> {
         let op = self.as_operation();
         let invalid = |label: String| {
-            runic_core::diagnostics::report!(
+            runic_ir::diagnostics::report!(
                 message: (format!("invalid operation {}", op.name())),
                 labels: [primary(op.span(), label)],
             )
@@ -557,7 +557,7 @@ impl Verify<dyn RegionBranchOpInterface> for IndexSwitch {
     fn verify(&self, _context: &Context) -> Result<(), Report> {
         let op = self.as_operation();
         let invalid = |label: String| {
-            runic_core::diagnostics::report!(
+            runic_ir::diagnostics::report!(
                 message: (format!("invalid operation {}", op.name())),
                 labels: [primary(op.span(), label)],
             )
@@ -613,7 +613,7 @@ impl OpPrinter for IndexSwitch {
 
 impl OpParser for IndexSwitch {
     fn parse(state: &mut OperationState, parser: &mut dyn OpAsmParser<'_>) -> ParseResult {
-        use runic_core::{dialects::builtin::attributes::Array, parse::ParserError};
+        use runic_ir::{dialects::builtin::attributes::Array, parse::ParserError};
 
         let selector = parser.parse_operand(/*allow_result_number=*/ true)?;
         let selector = parser.resolve_operand(selector, parser.context().i32())?;
@@ -624,7 +624,7 @@ impl OpParser for IndexSwitch {
         while parser.parse_optional_custom_keyword("case")?.is_some() {
             let (span, case_value) = parse_i32(parser)?;
             if cases.contains(&case_value) {
-                return Err(ParserError::from(runic_core::diagnostics::report!(
+                return Err(ParserError::from(runic_ir::diagnostics::report!(
                     message: "invalid scf.index_switch operation",
                     labels: [primary(span, "this case selector has already been used")],
                 )));
@@ -711,7 +711,7 @@ pub(crate) fn constant_selector(attr: &AttributeRef) -> Option<i32> {
 /// hex or binary literal standing for its 32-bit pattern.
 fn parse_i32(
     parser: &mut dyn OpAsmParser<'_>,
-) -> Result<(SourceSpan, i32), runic_core::parse::ParserError> {
+) -> Result<(SourceSpan, i32), runic_ir::parse::ParserError> {
     let (span, literal) = parser.parse_integer_literal()?.into_parts();
     let value = literal.to_int(parser.context().i32(), span)?;
     Ok((span, value.signed() as i32))
@@ -1201,9 +1201,9 @@ fn parse_exit(state: &mut OperationState, parser: &mut dyn OpAsmParser<'_>) -> P
     // The operands and the types are as many: one that has no partner is an error, not dropped.
     // ..to the end of the last token of the types.
     let end = parser.token_stream().previous_end();
-    let span = runic_core::diagnostics::SourceSpan::session(
+    let span = runic_ir::diagnostics::SourceSpan::session(
         parser.token_stream().source_id(),
-        runic_core::diagnostics::TextRange::new(start, end).expect("valid range"),
+        runic_ir::diagnostics::TextRange::new(start, end).expect("valid range"),
     );
     let mut values = SmallVec::default();
     parser.resolve_operands(span, &operands, &types, &mut values)?;
@@ -1376,7 +1376,8 @@ impl RegionBranchTerminatorOpInterface for Continue {
 
 #[cfg(test)]
 mod tests {
-    use runic_core::{
+    use runic_expect_test::expect;
+    use runic_ir::{
         diagnostics::Report,
         dialects::{
             builtin::{Function, attributes::Signature},
@@ -1384,7 +1385,6 @@ mod tests {
         },
         testing::parse_function_fixpoint,
     };
-    use runic_expect_test::expect;
 
     use super::*;
 
@@ -1415,7 +1415,7 @@ builtin.function public extern("C") @exit(%flag: i1, %value: i32) -> i32 {
     /// at the operands, the attribute dictionary if there is one, and the types.
     #[test]
     fn an_exit_whose_operands_and_types_differ_in_number_is_a_diagnostic() {
-        use runic_core::diagnostics::{Label, VisitDiagnostic};
+        use runic_ir::diagnostics::{Label, VisitDiagnostic};
 
         struct Labels(Vec<core::ops::Range<usize>>);
         impl VisitDiagnostic for Labels {
@@ -1448,7 +1448,7 @@ builtin.function public extern("C") @exit(%flag: i1, %v: i32) {{
             let Err(err) = parse_function_fixpoint(&context, "exit_mismatch.runic", &source) else {
                 panic!("{exit} must not parse");
             };
-            let text = runic_core::testing::text::describe(&err);
+            let text = runic_ir::testing::text::describe(&err);
             assert!(text.contains("operands, but"), "{exit}: {text}");
             let mut labels = Labels(Vec::new());
             err.as_diagnostic().visit(&mut labels);
@@ -2119,7 +2119,7 @@ builtin.function public extern(\"C\") @wide(%c: i1, %a: i32) -> i32 {{
     /// switch prints its default region last).
     #[test]
     fn the_generic_form_prints_regions_in_their_stored_order() -> Result<(), Report> {
-        use runic_core::{
+        use runic_ir::{
             parse::{ParserConfig, parse},
             print::same_program,
             testing::text::print_all_generic,
@@ -2985,7 +2985,7 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
     /// rejected by the verifier, with a diagnostic that names the repeated value or the counts.
     #[test]
     fn index_switch_verifies_its_cases_in_the_generic_form() {
-        use runic_core::testing::text::{parse, print_generic};
+        use runic_ir::testing::text::{parse, print_generic};
 
         let (_cx, function) = parse::<Function>(&switch_text(&["-1", "5"])).unwrap();
         let switch = find_op::<IndexSwitch>(&function.borrow());
@@ -3025,7 +3025,7 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
     /// the 32-bit range is rejected in either direction.
     #[test]
     fn a_case_spelled_two_ways_is_a_duplicate() {
-        use runic_core::testing::text::parse;
+        use runic_ir::testing::text::parse;
 
         for pair in [
             ["-1", "0xffffffff"],
@@ -3081,7 +3081,7 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
     /// 1, beyond the nesting, out of range or missing is rejected, in both forms.
     #[test]
     fn exit_levels_round_trip_in_every_spelling_and_both_forms() {
-        use runic_core::testing::text::{parse, round_trip};
+        use runic_ir::testing::text::{parse, round_trip};
 
         for (first, second, expected) in [
             ("scf.break 2", "scf.continue 1", [2, 1]),
@@ -3138,7 +3138,7 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
     fn memory_effect_answers_of_scf_operations() {
         use alloc::string::ToString;
 
-        use runic_core::testing::text::parse;
+        use runic_ir::testing::text::parse;
 
         let text = "builtin.function public extern(\"C\") @f(%c: i1, %n: i32, %p: ptr<i32>) -> \
                     i32 {
@@ -3419,26 +3419,26 @@ builtin.function public extern("C") @f() {
     /// A conversion pattern for `scf.while` that converts the types of the arguments of its
     /// `before` region, and nothing else.
     struct ConvertBeforeRegion {
-        info: runic_core::patterns::PatternInfo,
-        converter: runic_core::conversion::TypeConverter,
+        info: runic_ir::patterns::PatternInfo,
+        converter: runic_ir::conversion::TypeConverter,
     }
 
-    impl runic_core::patterns::Pattern for ConvertBeforeRegion {
-        fn info(&self) -> &runic_core::patterns::PatternInfo {
+    impl runic_ir::patterns::Pattern for ConvertBeforeRegion {
+        fn info(&self) -> &runic_ir::patterns::PatternInfo {
             &self.info
         }
     }
 
-    impl runic_core::conversion::ConversionPattern for ConvertBeforeRegion {
-        fn type_converter(&self) -> Option<&runic_core::conversion::TypeConverter> {
+    impl runic_ir::conversion::ConversionPattern for ConvertBeforeRegion {
+        fn type_converter(&self) -> Option<&runic_ir::conversion::TypeConverter> {
             Some(&self.converter)
         }
 
         fn match_and_rewrite(
             &self,
             op: OperationRef,
-            _operands: runic_core::conversion::ConvertedOperands<'_>,
-            rewriter: &mut runic_core::conversion::ConversionPatternRewriter,
+            _operands: runic_ir::conversion::ConvertedOperands<'_>,
+            rewriter: &mut runic_ir::conversion::ConversionPatternRewriter,
         ) -> Result<bool, Report> {
             let before = op.borrow().regions().front().as_pointer().unwrap();
             rewriter.convert_region_types(before)
@@ -3459,7 +3459,7 @@ builtin.function public extern("C") @f() {
     /// which now takes an `i64` (and so does `scf.while` itself, on entry).
     #[test]
     fn a_converted_region_whose_entry_operands_are_not_converted_fails_verification() {
-        use runic_core::{
+        use runic_ir::{
             conversion::{
                 ConversionConfig, ConversionPatternSet, ConversionTarget, DynamicLegalityResult,
                 TypeConversion, TypeConverter, UnknownOpPolicy, apply_full_conversion,

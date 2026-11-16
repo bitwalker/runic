@@ -1,6 +1,6 @@
 use alloc::{format, string::String};
 
-use runic_core::{
+use runic_ir::{
     derive::{EffectOpInterface, operation},
     dialects::builtin::attributes::{I32ArrayAttr, TypeAttr},
     effects::*,

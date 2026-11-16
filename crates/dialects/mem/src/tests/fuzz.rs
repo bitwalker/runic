@@ -9,7 +9,7 @@ use alloc::{
     vec::Vec,
 };
 
-use runic_core::{
+use runic_ir::{
     Context, SymbolTable,
     dialects::builtin::{Function, Module},
     parse::{self, ParserConfig},

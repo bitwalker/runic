@@ -114,7 +114,7 @@ impl quote::ToTokens for Dialect {
 
         // impl Dialect
         tokens.extend(quote_spanned! { dialect_name.span() =>
-            impl #impl_generics ::runic_core::Dialect for #dialect_struct_name #ty_generics #where_clause {
+            impl #impl_generics ::runic_ir::Dialect for #dialect_struct_name #ty_generics #where_clause {
                 #[inline(always)]
                 fn info(&self) -> &DialectInfo {
                     &self.#dialect_info_field
@@ -125,9 +125,9 @@ impl quote::ToTokens for Dialect {
         // impl From<DialectInfo>
         if !has_non_info_fields {
             tokens.extend(quote_spanned! { dialect_name.span() =>
-                impl #impl_generics From<::runic_core::DialectInfo> for #dialect_struct_name #ty_generics #where_clause {
+                impl #impl_generics From<::runic_ir::DialectInfo> for #dialect_struct_name #ty_generics #where_clause {
                     #[allow(clippy::redundant_field_names)]
-                    fn from(info: ::runic_core::DialectInfo) -> Self {
+                    fn from(info: ::runic_ir::DialectInfo) -> Self {
                         Self {
                             #dialect_info_field: info,
                         }
@@ -160,22 +160,22 @@ impl quote::ToTokens for DialectRegistration {
 
         // impl DialectRegistration
         tokens.extend(quote_spanned! { dialect_name.span() =>
-            impl #impl_generics ::runic_core::DialectRegistration for #dialect_struct_name #ty_generics #where_clause {
+            impl #impl_generics ::runic_ir::DialectRegistration for #dialect_struct_name #ty_generics #where_clause {
                 const NAMESPACE: &'static str = #dialect_namespace;
 
                 #[inline]
-                fn init(info: ::runic_core::DialectInfo) -> Self {
+                fn init(info: ::runic_ir::DialectInfo) -> Self {
                     Self::from(info)
                 }
 
-                fn register_operations(_info: &mut ::runic_core::DialectInfo) {
+                fn register_operations(_info: &mut ::runic_ir::DialectInfo) {
                 }
 
-                fn register_attributes(_info: &mut ::runic_core::DialectInfo) {
+                fn register_attributes(_info: &mut ::runic_ir::DialectInfo) {
                 }
             }
 
-            ::runic_core::inventory::submit!(::runic_core::DialectRegistrationInfo::new::<#dialect_struct_name #ty_generics>());
+            ::runic_ir::inventory::submit!(::runic_ir::DialectRegistrationInfo::new::<#dialect_struct_name #ty_generics>());
         });
     }
 }

@@ -1,5 +1,5 @@
 [package]
-name = "runic-core"
+name = "runic-ir"
 description = "Fundamental Runic intermediate representation types and APIs"
 version.workspace = true
 rust-version.workspace = true

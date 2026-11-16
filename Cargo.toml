@@ -7,7 +7,7 @@ resolver = "3"
 members = [
     "crates/analysis",
     "crates/compile",
-    "crates/core",
+    "crates/ir",
     "crates/diagnostics",
     "crates/diagnostics-macros",
     "crates/dialects/arith",
@@ -96,7 +96,7 @@ toml = { version = "^1.1.2", features = ["preserve_order"] }
 
 # Workspace crates
 runic-analysis = { version = "0.1.0", path = "crates/analysis" }
-runic-core = { version = "0.1.0", path = "crates/core" }
+runic-ir = { version = "0.1.0", path = "crates/ir" }
 runic-diagnostics = { version = "0.1.0", path = "crates/diagnostics", default-features = false }
 runic-diagnostics-macros = { version = "0.1.0", path = "crates/diagnostics-macros" }
 runic-dialect-arith = { version = "0.1.0", path = "crates/dialects/arith" }

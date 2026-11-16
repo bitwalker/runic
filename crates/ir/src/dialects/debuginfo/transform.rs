@@ -40,7 +40,7 @@
 //! ```
 use alloc::vec::Vec;
 
-use runic_core::{
+use runic_ir::{
     Builder, DialectRegistration, OpBuilder, Operation, OperationRef, ProgramPoint, SmallVec,
     Spanned, ValueRef,
     dialects::debuginfo::attributes::ExpressionOp,
@@ -357,7 +357,7 @@ pub fn collect_debug_ops(op: &OperationRef) -> Vec<OperationRef> {
 }
 
 fn collect_debug_ops_recursive(op: &OperationRef, debug_ops: &mut Vec<OperationRef>) {
-    use runic_core::{Forward, RawWalk};
+    use runic_ir::{Forward, RawWalk};
 
     op.raw_prewalk_all::<Forward, _>(|op: OperationRef| {
         if is_debug_info_op(&op.borrow()) {

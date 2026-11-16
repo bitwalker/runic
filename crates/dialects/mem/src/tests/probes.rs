@@ -8,7 +8,7 @@ use alloc::{
     string::{String, ToString},
 };
 
-use runic_core::{
+use runic_ir::{
     Context, SourceSpan, SymbolTable, ValueRef,
     dialects::builtin::{Function, Module},
     parse::{self, ParserConfig},

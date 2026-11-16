@@ -13,8 +13,8 @@ use alloc::{
     vec::Vec,
 };
 
-use runic_core::{pass::OperationPass, testing::text::Rng};
 use runic_dialect_scf::transforms::LiftControlFlowToSCF;
+use runic_ir::{pass::OperationPass, testing::text::Rng};
 
 use super::{cse_model::run_passes, interp};
 use crate::{

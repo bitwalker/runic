@@ -16,7 +16,7 @@ doctest = false
 
 [dependencies]
 log.workspace = true
-runic-core.workspace = true
+runic-ir.workspace = true
 runic-analysis.workspace = true
 
 [dev-dependencies]
@@ -28,4 +28,4 @@ runic-dialect-mem = { path = "../dialects/mem" }
 runic-dialect-scf = { path = "../dialects/scf" }
 runic-dialect-ub = { path = "../dialects/ub" }
 runic-expect-test = { path = "../../tools/expect-test" }
-runic-core = { path = "../core", features = ["logging"] }
+runic-ir = { path = "../ir", features = ["logging"] }

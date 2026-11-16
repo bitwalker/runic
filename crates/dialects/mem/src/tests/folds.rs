@@ -10,7 +10,7 @@ use alloc::{
     vec::Vec,
 };
 
-use runic_core::{
+use runic_ir::{
     Context, DataLayout, OperationRef, SymbolTable, Type, Value, ValueRef,
     dialects::builtin::{Function, Module},
     parse::{self, ParserConfig},

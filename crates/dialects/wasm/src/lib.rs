@@ -13,7 +13,7 @@ mod builders;
 mod mem;
 mod ops;
 
-use runic_core::{
+use runic_ir::{
     AttributeRef, Builder, Dialect, DialectInfo, OperationRef, SourceSpan, Type,
     derive::DialectRegistration,
 };
@@ -50,7 +50,7 @@ impl Dialect for WasmDialect {
         span: SourceSpan,
     ) -> Option<OperationRef> {
         // Save the current insertion point
-        let mut builder = runic_core::InsertionGuard::new(builder);
+        let mut builder = runic_ir::InsertionGuard::new(builder);
 
         // For now only integer constants are supported. Delegate them to the arith dialect
         if ty.is_integer() {

@@ -1,7 +1,7 @@
 use alloc::rc::Rc;
 use core::{cell::RefCell, ptr::NonNull};
 
-use runic_core::{
+use runic_ir::{
     EntityRef,
     entity::{BorrowRef, BorrowRefMut},
 };
@@ -156,7 +156,7 @@ impl<'a, T: AnalysisState + 'static> AnalysisStateGuardMut<'a, T> {
     /// Consume the guard and convert the underlying mutable borrow of the state into an immutable
     /// borrow, after propagating any changes made to the state while mutating it. When this
     /// function returns, the state can be safely aliased by immutable references, while the caller
-    /// retains the ability to interact with the state via the returned [runic_core::EntityRef].
+    /// retains the ability to interact with the state via the returned [runic_ir::EntityRef].
     pub fn into_entity_ref(mut guard: Self) -> EntityRef<'a, T> {
         guard.notify_if_changed();
 

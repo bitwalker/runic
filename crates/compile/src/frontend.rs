@@ -1,4 +1,4 @@
-use runic_core::{Report, dialects::builtin::WorldRef, pass::OpPassManager};
+use runic_ir::{Report, dialects::builtin::WorldRef, pass::OpPassManager};
 
 use crate::{CheckpointDecl, Checkpoints, Flow, Input, Session};
 

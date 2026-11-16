@@ -16,13 +16,13 @@ doctest = false
 
 [features]
 default = ["std"]
-std = ["runic-core/std"]
+std = ["runic-ir/std"]
 
 [dependencies]
-runic-core.workspace = true
+runic-ir.workspace = true
 paste.workspace = true
 
 [dev-dependencies]
 # Use local paths for dev-only dependency to avoid relying on crates.io during packaging
-runic-core = { path = "../../core", features = ["logging"] }
+runic-ir = { path = "../../ir", features = ["logging"] }
 runic-dialect-ub = { path = "../ub" }

@@ -131,7 +131,7 @@ fn visit_calls(fields: &[syn::Field], places: &[TokenStream], visit: &Ident) -> 
         .zip(places)
         .map(|(field, place)| {
             quote_spanned! { field.ty.span() =>
-                ::runic_core::types::TypeComponent::visit_types(#place, #visit);
+                ::runic_ir::types::TypeComponent::visit_types(#place, #visit);
             }
         })
         .collect()
@@ -144,7 +144,7 @@ fn map_calls(fields: &[syn::Field], places: &[TokenStream], map: &Ident) -> Vec<
         .zip(places)
         .map(|(field, place)| {
             quote_spanned! { field.ty.span() =>
-                ::runic_core::types::TypeComponent::map_types(#place, #map)
+                ::runic_ir::types::TypeComponent::map_types(#place, #map)
             }
         })
         .collect()
@@ -185,14 +185,14 @@ pub fn derive_type_component(input: &syn::DeriveInput) -> syn::Result<TokenStrea
     let ident = &input.ident;
     Ok(quote! {
         #[automatically_derived]
-        impl ::runic_core::types::TypeComponent for #ident {
-            fn visit_types(&self, visit: &mut dyn FnMut(::runic_core::types::Type)) {
+        impl ::runic_ir::types::TypeComponent for #ident {
+            fn visit_types(&self, visit: &mut dyn FnMut(::runic_ir::types::Type)) {
                 #visit
             }
 
             fn map_types(
                 &self,
-                map: &mut dyn FnMut(::runic_core::types::Type) -> ::runic_core::types::Type,
+                map: &mut dyn FnMut(::runic_ir::types::Type) -> ::runic_ir::types::Type,
             ) -> Self {
                 #map
             }
@@ -215,7 +215,7 @@ mod tests {
     fn call(method: &str, place: proc_macro2::TokenStream, closure: &str) -> String {
         let method = syn::Ident::new(method, proc_macro2::Span::call_site());
         let closure = syn::Ident::new(closure, proc_macro2::Span::call_site());
-        quote!(::runic_core::types::TypeComponent::#method(#place, #closure)).to_string()
+        quote!(::runic_ir::types::TypeComponent::#method(#place, #closure)).to_string()
     }
 
     /// The positions of `needles` in `haystack`, which must all occur.
@@ -273,11 +273,11 @@ mod tests {
         for arm in [
             quote!(Self::Unit => Self::Unit),
             quote!(Self::Tuple(__field_0, __field_1) => Self::Tuple(
-                ::runic_core::types::TypeComponent::map_types(__field_0, map),
-                ::runic_core::types::TypeComponent::map_types(__field_1, map)
+                ::runic_ir::types::TypeComponent::map_types(__field_0, map),
+                ::runic_ir::types::TypeComponent::map_types(__field_1, map)
             )),
             quote!(Self::Named { visit: __field_0 } => Self::Named {
-                visit: ::runic_core::types::TypeComponent::map_types(__field_0, map)
+                visit: ::runic_ir::types::TypeComponent::map_types(__field_0, map)
             }),
         ] {
             assert!(output.contains(&arm.to_string()), "{arm} in {output}");

@@ -1,6 +1,6 @@
 use alloc::rc::Rc;
 
-use runic_core::{
+use runic_ir::{
     AsValueRange, Block, BlockRef, Builder, Context, EntityWithId, FxHashMap, OpBuilder,
     OperationRef, ProgramPoint, Region, RegionRef, Report, SmallVec, SourceSpan, Spanned, Type,
     Usable, Value, ValueRange, ValueRef,
@@ -101,7 +101,7 @@ impl<'a> TransformationContext<'a> {
     }
 
     pub fn get_undef_value(&mut self, ty: Type) -> ValueRef {
-        use runic_core::hashbrown::hash_map::Entry;
+        use runic_ir::hashbrown::hash_map::Entry;
 
         match self.typed_undef_cache.entry(ty) {
             Entry::Vacant(entry) => {
@@ -212,7 +212,7 @@ impl<'a> TransformationContext<'a> {
     /// Transforms `returnLikeOp` to a branch to the only block in the region with an instance of
     /// `return_like_op`s kind.
     fn combine_exit(&mut self, mut return_like_op_ref: OperationRef) -> Result<(), Report> {
-        use runic_core::hashbrown::hash_map::Entry;
+        use runic_ir::hashbrown::hash_map::Entry;
 
         log::trace!(target: "cfg-to-scf", "combining exit for {}", return_like_op_ref.borrow());
         let key = ReturnLikeOpKey(return_like_op_ref);
@@ -243,7 +243,7 @@ impl<'a> TransformationContext<'a> {
                     operands,
                 )?;
 
-                runic_core::dialects::debuginfo::transform::merge_inline_call_locations(
+                runic_ir::dialects::debuginfo::transform::merge_inline_call_locations(
                     retained,
                     return_like_op_ref,
                 );
@@ -295,7 +295,7 @@ impl<'a> TransformationContext<'a> {
         &mut self,
         region_entry: BlockRef,
     ) -> Result<SmallVec<[BlockRef; 4]>, Report> {
-        use runic_core::cfg::StronglyConnectedComponents;
+        use runic_ir::cfg::StronglyConnectedComponents;
 
         log::trace!(
             target: "cfg-to-scf",
@@ -943,7 +943,7 @@ impl<'a> TransformationContext<'a> {
             let mut dominance_cache = SmallDenseMap::<BlockRef, bool>::default();
             // Returns true if `loop_block_ref` dominates `block`.
             let mut loop_block_dominates = |block: BlockRef, dominance_info: &DominanceInfo| {
-                use runic_core::adt::smallmap::Entry;
+                use runic_ir::adt::smallmap::Entry;
                 match dominance_cache.entry(block) {
                     Entry::Occupied(entry) => {
                         let dominates = *entry.get();
@@ -1320,14 +1320,14 @@ impl<'a> TransformationContext<'a> {
 /// Hence the [ValueTypeEquivalence]/[ValueTypeHasher] pair below.
 ///
 /// [Self::combine_exit]: TransformationContext::combine_exit
-/// [ValueTypeEquivalence]: runic_core::equivalence::ValueTypeEquivalence
-/// [ValueTypeHasher]: runic_core::equivalence::ValueTypeHasher
+/// [ValueTypeEquivalence]: runic_ir::equivalence::ValueTypeEquivalence
+/// [ValueTypeHasher]: runic_ir::equivalence::ValueTypeHasher
 #[derive(Copy, Clone)]
 struct ReturnLikeOpKey(OperationRef);
 impl Eq for ReturnLikeOpKey {}
 impl PartialEq for ReturnLikeOpKey {
     fn eq(&self, other: &Self) -> bool {
-        use runic_core::equivalence::{OperationEquivalenceFlags, ValueTypeEquivalence};
+        use runic_ir::equivalence::{OperationEquivalenceFlags, ValueTypeEquivalence};
         let a = self.0.borrow();
         a.is_equivalent_with_options(
             &other.0.borrow(),
@@ -1338,7 +1338,7 @@ impl PartialEq for ReturnLikeOpKey {
 }
 impl core::hash::Hash for ReturnLikeOpKey {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-        use runic_core::equivalence::{
+        use runic_ir::equivalence::{
             IgnoreValueHasher, OperationEquivalenceFlags, ValueTypeHasher,
         };
 
@@ -1389,7 +1389,7 @@ fn is_region_exit_block(block: &Block) -> bool {
 mod tests {
     use alloc::vec::Vec;
 
-    use runic_core::{
+    use runic_ir::{
         Builder, SourceSpan, Type, ValueRef, dialects::builtin::BuiltinOpBuilder, testing::Test,
     };
 

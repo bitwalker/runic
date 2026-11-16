@@ -91,7 +91,7 @@ impl OpDefinition {
             mutability: syn::FieldMutability::None,
             ident: Some(format_ident!("op")),
             colon_token: Some(syn::token::Colon(span)),
-            ty: make_type("::runic_core::Operation"),
+            ty: make_type("::runic_ir::Operation"),
         });
 
         // The `op` field must be at offset 0: `UnsafeIntrusiveEntityRef::as_operation_ref` casts a
@@ -212,10 +212,10 @@ impl OpDefinition {
                 }
                 Some(OperationFieldType::Attr(kind)) => {
                     let value_ty = parse_quote_spanned! { field_span =>
-                        <#field_ty as ::runic_core::AttributeRegistration>::Value
+                        <#field_ty as ::runic_ir::AttributeRegistration>::Value
                     };
                     let ty = parse_quote_spanned! { field_span =>
-                        ::runic_core::UnsafeIntrusiveEntityRef<#field_ty>
+                        ::runic_ir::UnsafeIntrusiveEntityRef<#field_ty>
                     };
                     let attr = OpAttribute {
                         name: field_name.clone(),
@@ -373,10 +373,10 @@ impl OpDefinition {
                 }
                 Some(OperationFieldType::Symbol(None)) => {
                     let symbol_path_attr_path: syn::Path = parse_quote_spanned! { field_span =>
-                        ::runic_core::dialects::builtin::attributes::SymbolRefAttr
+                        ::runic_ir::dialects::builtin::attributes::SymbolRefAttr
                     };
                     let ty = parse_quote_spanned! { field_span =>
-                        ::runic_core::UnsafeIntrusiveEntityRef<#symbol_path_attr_path>
+                        ::runic_ir::UnsafeIntrusiveEntityRef<#symbol_path_attr_path>
                     };
                     let symbol = Symbol {
                         name: field_name.clone(),
@@ -398,10 +398,10 @@ impl OpDefinition {
                 }
                 Some(OperationFieldType::Symbol(Some(symbol_ty))) => {
                     let symbol_path_attr_path: syn::Path = parse_quote_spanned! { field_span =>
-                        ::runic_core::dialects::builtin::attributes::SymbolRefAttr
+                        ::runic_ir::dialects::builtin::attributes::SymbolRefAttr
                     };
                     let ty = parse_quote_spanned! { field_span =>
-                        ::runic_core::UnsafeIntrusiveEntityRef<#symbol_path_attr_path>
+                        ::runic_ir::UnsafeIntrusiveEntityRef<#symbol_path_attr_path>
                     };
                     let symbol = Symbol {
                         name: field_name.clone(),
@@ -447,7 +447,7 @@ impl<'a> OpCreateFn<'a> {
         let mut generics = syn::Generics {
             lt_token: Some(syn::token::Lt(op.span)),
             params: syn::punctuated::Punctuated::from_iter(
-                [syn::parse_str("B: ?Sized + ::runic_core::Builder").unwrap()]
+                [syn::parse_str("B: ?Sized + ::runic_ir::Builder").unwrap()]
                     .into_iter()
                     .chain(op.op.generics.params.iter().cloned())
                     .chain(
@@ -478,13 +478,13 @@ impl quote::ToTokens for WithAttrs<'_> {
                 let field_name = syn::Lit::Str(syn::LitStr::new(&format!("{name}"), span));
                 tokens.extend(quote_spanned! { span =>
                     {
-                        let __attr = ::runic_core::IntoAttribute::<#ty>::into_attribute(
+                        let __attr = ::runic_ir::IntoAttribute::<#ty>::into_attribute(
                             #name,
                             &op_builder.context_rc(),
                         );
                         op_builder.with_property_boxed(
                             #field_name,
-                            ::runic_core::attributes::IntoAttributeRef::into_attribute_ref(__attr),
+                            ::runic_ir::attributes::IntoAttributeRef::into_attribute_ref(__attr),
                         )?;
                     }
                 });
@@ -508,7 +508,7 @@ impl quote::ToTokens for WithAttrInfos<'_> {
                     let has_default = syn::Lit::Bool(syn::LitBool::new(param.default, span));
                     tokens.extend(quote_spanned! { span =>
                         unsafe {
-                            ::runic_core::AttrInfo::new::<#ty>(
+                            ::runic_ir::AttrInfo::new::<#ty>(
                                 #field_name.into(),
                                 ::core::mem::offset_of!(#op_ty, #name) as u16,
                                 #hidden,
@@ -523,7 +523,7 @@ impl quote::ToTokens for WithAttrInfos<'_> {
                         syn::Lit::Str(syn::LitStr::new(&format!("{name}"), name.span()));
                     tokens.extend(quote_spanned! { span =>
                         unsafe {
-                            ::runic_core::AttrInfo::new::<::runic_core::dialects::builtin::attributes::SymbolRefAttr>(
+                            ::runic_ir::AttrInfo::new::<::runic_ir::dialects::builtin::attributes::SymbolRefAttr>(
                                 #field_name.into(),
                                 ::core::mem::offset_of!(#op_ty, #name) as u16,
                                 false,
@@ -608,13 +608,13 @@ impl quote::ToTokens for VerifyOperandTypes<'_> {
                                 let operand = self.op.operands().group(#group_index)[#operand_index].borrow();
                                 let value = operand.value();
                                 let value_ty = value.ty();
-                                let constraint = <#constraint as ::runic_core::traits::TypeConstraint>::get();
-                                if !<#constraint as ::runic_core::traits::TypeConstraint>::matches(&constraint, value_ty) {
-                                    let expected = <#constraint as ::runic_core::traits::TypeConstraint>::description(&constraint);
-                                    return Err(::runic_core::diagnostics::report!(
+                                let constraint = <#constraint as ::runic_ir::traits::TypeConstraint>::get();
+                                if !<#constraint as ::runic_ir::traits::TypeConstraint>::matches(&constraint, value_ty) {
+                                    let expected = <#constraint as ::runic_ir::traits::TypeConstraint>::description(&constraint);
+                                    return Err(::runic_ir::diagnostics::report!(
                                         message: (::alloc::format!("invalid operand for '{}': expected {expected}, got {value_ty}", self.op.name())),
                                         labels: [
-                                            primary(::runic_core::diagnostics::Spanned::span(&self.op), #label),
+                                            primary(::runic_ir::diagnostics::Spanned::span(&self.op), #label),
                                             context(value.span(), ::alloc::format!("this value has type '{value_ty}', but expected '{expected}'")),
                                         ],
                                     ));
@@ -634,13 +634,13 @@ impl quote::ToTokens for VerifyOperandTypes<'_> {
                             let operand = operand.borrow();
                             let value = operand.value();
                             let value_ty = value.ty();
-                            let constraint = <#constraint as ::runic_core::traits::TypeConstraint>::get();
-                            if !<#constraint as ::runic_core::traits::TypeConstraint>::matches(&constraint, value_ty) {
-                                let expected = <#constraint as ::runic_core::traits::TypeConstraint>::description(&constraint);
-                                return Err(::runic_core::diagnostics::report!(
+                            let constraint = <#constraint as ::runic_ir::traits::TypeConstraint>::get();
+                            if !<#constraint as ::runic_ir::traits::TypeConstraint>::matches(&constraint, value_ty) {
+                                let expected = <#constraint as ::runic_ir::traits::TypeConstraint>::description(&constraint);
+                                return Err(::runic_ir::diagnostics::report!(
                                     message: (::alloc::format!("invalid operand for '{}': expected {expected}, got {value_ty}", self.op.name())),
                                     labels: [
-                                        primary(::runic_core::diagnostics::Spanned::span(&self.op), #label),
+                                        primary(::runic_ir::diagnostics::Spanned::span(&self.op), #label),
                                         context(value.span(), ::alloc::format!("this value has type '{value_ty}', but expected '{expected}'")),
                                     ],
                                 ));
@@ -668,7 +668,7 @@ impl quote::ToTokens for InitializeCustomFields<'_> {
                     let span = name.span();
                     tokens.extend(quote_spanned! { span =>
                         core::ptr::addr_of_mut!((*__ptr).#name).write(
-                            ::runic_core::UnsafeIntrusiveEntityRef::<#ty>::dangling()
+                            ::runic_ir::UnsafeIntrusiveEntityRef::<#ty>::dangling()
                         );
                     });
                 }
@@ -677,7 +677,7 @@ impl quote::ToTokens for InitializeCustomFields<'_> {
                     let id = &sym.name;
                     tokens.extend(quote_spanned! { span =>
                         core::ptr::addr_of_mut!((*__ptr).#id).write(
-                            ::runic_core::UnsafeIntrusiveEntityRef::<::runic_core::dialects::builtin::attributes::SymbolRefAttr>::dangling()
+                            ::runic_ir::UnsafeIntrusiveEntityRef::<::runic_ir::dialects::builtin::attributes::SymbolRefAttr>::dangling()
                         );
                     });
                 }
@@ -705,7 +705,7 @@ impl quote::ToTokens for DefaultInitializeCustomFields<'_> {
                     tokens.extend(quote_spanned! { span =>
                         {
                             core::ptr::addr_of_mut!((*__ptr).#id).write(
-                                ::runic_core::UnsafeIntrusiveEntityRef::<#attr_type>::dangling()
+                                ::runic_ir::UnsafeIntrusiveEntityRef::<#attr_type>::dangling()
                             );
                         }
                     });
@@ -715,7 +715,7 @@ impl quote::ToTokens for DefaultInitializeCustomFields<'_> {
                     let id = &sym.name;
                     tokens.extend(quote_spanned! { span =>
                         core::ptr::addr_of_mut!((*__ptr).#id).write(
-                            ::runic_core::UnsafeIntrusiveEntityRef::<::runic_core::dialects::builtin::attributes::SymbolRefAttr>::dangling()
+                            ::runic_ir::UnsafeIntrusiveEntityRef::<::runic_ir::dialects::builtin::attributes::SymbolRefAttr>::dangling()
                         );
                     });
                 }
@@ -796,7 +796,7 @@ impl quote::ToTokens for BuildOp<'_> {
                 // and are checked against their constraints as the verifier does.
                 tokens.extend(quote! {
                     let op = op_builder.build()?;
-                    <Self as ::runic_core::Op>::verify_result_types(&*op.borrow())?;
+                    <Self as ::runic_ir::Op>::verify_result_types(&*op.borrow())?;
                     Ok(op)
                 })
             }
@@ -825,19 +825,19 @@ impl quote::ToTokens for VerifyResultTypes<'_> {
                     tokens.extend(quote_spanned! { result_span =>
                         {
                             let op_result = self.#result_name();
-                            let value_ty = ::runic_core::Value::ty(&*op_result);
-                            let constraint = <#result_constraint as ::runic_core::traits::TypeConstraint>::get();
-                            if !<#result_constraint as ::runic_core::traits::TypeConstraint>::matches(&constraint, value_ty) {
-                                let expected = <#result_constraint as ::runic_core::traits::TypeConstraint>::description(&constraint);
-                                return Err(::runic_core::diagnostics::report!(
+                            let value_ty = ::runic_ir::Value::ty(&*op_result);
+                            let constraint = <#result_constraint as ::runic_ir::traits::TypeConstraint>::get();
+                            if !<#result_constraint as ::runic_ir::traits::TypeConstraint>::matches(&constraint, value_ty) {
+                                let expected = <#result_constraint as ::runic_ir::traits::TypeConstraint>::description(&constraint);
+                                return Err(::runic_ir::diagnostics::report!(
                                     message: (::alloc::format!(
                                         "invalid result '{}' of '{}': expected {expected}, got {value_ty}",
                                         #name,
                                         self.op.name(),
                                     )),
                                     labels: [
-                                        primary(::runic_core::diagnostics::Spanned::span(&self.op), #label),
-                                        context(::runic_core::diagnostics::Spanned::span(&*op_result), ::alloc::format!("this value has type '{value_ty}', but expected '{expected}'")),
+                                        primary(::runic_ir::diagnostics::Spanned::span(&self.op), #label),
+                                        context(::runic_ir::diagnostics::Spanned::span(&*op_result), ::alloc::format!("this value has type '{value_ty}', but expected '{expected}'")),
                                     ],
                                 ));
                             }
@@ -855,19 +855,19 @@ impl quote::ToTokens for VerifyResultTypes<'_> {
                 tokens.extend(quote_spanned! { span =>
                     for result in self.#name().iter() {
                         let value = result.borrow();
-                        let value_ty = ::runic_core::Value::ty(&*value);
-                        let constraint = <#constraint as ::runic_core::traits::TypeConstraint>::get();
-                        if !<#constraint as ::runic_core::traits::TypeConstraint>::matches(&constraint, value_ty) {
-                            let expected = <#constraint as ::runic_core::traits::TypeConstraint>::description(&constraint);
-                            return Err(::runic_core::diagnostics::report!(
+                        let value_ty = ::runic_ir::Value::ty(&*value);
+                        let constraint = <#constraint as ::runic_ir::traits::TypeConstraint>::get();
+                        if !<#constraint as ::runic_ir::traits::TypeConstraint>::matches(&constraint, value_ty) {
+                            let expected = <#constraint as ::runic_ir::traits::TypeConstraint>::description(&constraint);
+                            return Err(::runic_ir::diagnostics::report!(
                                 message: (::alloc::format!(
                                     "invalid result in '{}' of '{}': expected {expected}, got {value_ty}",
                                     #group_name,
                                     self.op.name(),
                                 )),
                                 labels: [
-                                    primary(::runic_core::diagnostics::Spanned::span(&self.op), #label),
-                                    context(::runic_core::diagnostics::Spanned::span(&*value), ::alloc::format!("this value has type '{value_ty}', but expected '{expected}'")),
+                                    primary(::runic_ir::diagnostics::Spanned::span(&self.op), #label),
+                                    context(::runic_ir::diagnostics::Spanned::span(&*value), ::alloc::format!("this value has type '{value_ty}', but expected '{expected}'")),
                                 ],
                             ));
                         }
@@ -923,19 +923,19 @@ impl quote::ToTokens for OpCreateFn<'_> {
         tokens.extend(quote_spanned! { op_span =>
             #[doc = #create_doc]
             ///
-            /// It is generally preferable to use [`::runic_core::BuilderExt::create`] instead.
+            /// It is generally preferable to use [`::runic_ir::BuilderExt::create`] instead.
             #[allow(clippy::too_many_arguments)]
             pub fn create #impl_generics_all(
                 builder: &mut B,
-                span: ::runic_core::diagnostics::SourceSpan,
+                span: ::runic_ir::diagnostics::SourceSpan,
                 #(
                     #all_param_names: #all_param_types,
                 )*
-            ) -> Result<::runic_core::UnsafeIntrusiveEntityRef<Self>, ::runic_core::diagnostics::Report>
+            ) -> Result<::runic_ir::UnsafeIntrusiveEntityRef<Self>, ::runic_ir::diagnostics::Report>
             #where_clause_all
             {
                 #![allow(clippy::all)]
-                use ::runic_core::{Builder, Op};
+                use ::runic_ir::{Builder, Op};
                 let mut __this = {
                     let __operation_name = {
                         let context = builder.context();
@@ -945,7 +945,7 @@ impl quote::ToTokens for OpCreateFn<'_> {
                     let __context = builder.context_rc();
                     let mut __op = __context.alloc_uninit_tracked::<Self>();
                     unsafe {
-                        let __assumed_init = ::runic_core::RawEntityRef::assume_init(__op);
+                        let __assumed_init = ::runic_ir::RawEntityRef::assume_init(__op);
                         {
                             let mut __uninit = __op.borrow_mut();
                             let __ptr = (*__uninit).as_mut_ptr();
@@ -954,12 +954,12 @@ impl quote::ToTokens for OpCreateFn<'_> {
                                 assert!(
                                     ::core::mem::offset_of!(Self, op) == 0
                                         && ::core::mem::align_of::<Self>()
-                                            == ::core::mem::align_of::<::runic_core::Operation>()
+                                            == ::core::mem::align_of::<::runic_ir::Operation>()
                                 )
                             }
                             let __offset = core::mem::offset_of!(Self, op);
                             let __op_ptr = core::ptr::addr_of_mut!((*__ptr).op);
-                            __op_ptr.write(::runic_core::Operation::uninit::<Self>(__context, __operation_name, __offset));
+                            __op_ptr.write(::runic_ir::Operation::uninit::<Self>(__context, __operation_name, __offset));
                             #initialize_custom_fields
                         }
                         let mut __assumed_init = __assumed_init;
@@ -968,7 +968,7 @@ impl quote::ToTokens for OpCreateFn<'_> {
                     }
                 };
 
-                let mut op_builder = ::runic_core::OperationBuilder::new(builder, __this);
+                let mut op_builder = ::runic_ir::OperationBuilder::new(builder, __this);
                 #with_attrs
                 #with_symbols
                 #with_operands
@@ -986,11 +986,11 @@ impl quote::ToTokens for OpCreateFn<'_> {
             ///
             /// # Safety
             ///
-            /// As for [`::runic_core::OpRegistration::alloc_uninit`], which is its only caller:
+            /// As for [`::runic_ir::OpRegistration::alloc_uninit`], which is its only caller:
             /// every property is given its first value through the builders' initialisation
             /// path. Until every property holds a value, the operation may be named and its traits
             /// queried, but it may not be read, set, verified, printed or inserted.
-            unsafe fn alloc_default(context: ::alloc::rc::Rc<::runic_core::Context>) -> ::runic_core::UnsafeIntrusiveEntityRef<Self> {
+            unsafe fn alloc_default(context: ::alloc::rc::Rc<::runic_ir::Context>) -> ::runic_ir::UnsafeIntrusiveEntityRef<Self> {
                 #![allow(clippy::all)]
                 let __operation_name = {
                     let dialect = context.get_or_register_dialect::<#dialect>();
@@ -998,7 +998,7 @@ impl quote::ToTokens for OpCreateFn<'_> {
                 };
                 let mut __op = context.alloc_uninit_tracked::<Self>();
                 unsafe {
-                    let __assumed_init = ::runic_core::RawEntityRef::assume_init(__op);
+                    let __assumed_init = ::runic_ir::RawEntityRef::assume_init(__op);
                     {
                         let mut __uninit = __op.borrow_mut();
                         let __ptr = (*__uninit).as_mut_ptr();
@@ -1007,12 +1007,12 @@ impl quote::ToTokens for OpCreateFn<'_> {
                             assert!(
                                 ::core::mem::offset_of!(Self, op) == 0
                                     && ::core::mem::align_of::<Self>()
-                                        == ::core::mem::align_of::<::runic_core::Operation>()
+                                        == ::core::mem::align_of::<::runic_ir::Operation>()
                             )
                         }
                         let __offset = core::mem::offset_of!(Self, op);
                         let __op_ptr = core::ptr::addr_of_mut!((*__ptr).op);
-                        __op_ptr.write(::runic_core::Operation::uninit::<Self>(context.clone(), __operation_name, __offset));
+                        __op_ptr.write(::runic_ir::Operation::uninit::<Self>(context.clone(), __operation_name, __offset));
                         #default_initialize_custom_fields
                     }
                     __assumed_init
@@ -1034,25 +1034,25 @@ impl quote::ToTokens for OpDefinition {
 
         // impl Spanned
         tokens.extend(quote_spanned! { op_span =>
-            impl #impl_generics ::runic_core::diagnostics::Spanned for #op_ident #ty_generics #where_clause {
-                fn span(&self) -> ::runic_core::diagnostics::SourceSpan {
-                    ::runic_core::diagnostics::Spanned::span(&self.op)
+            impl #impl_generics ::runic_ir::diagnostics::Spanned for #op_ident #ty_generics #where_clause {
+                fn span(&self) -> ::runic_ir::diagnostics::SourceSpan {
+                    ::runic_ir::diagnostics::Spanned::span(&self.op)
                 }
             }
         });
 
         // impl AsRef<Operation>/AsMut<Operation>
         tokens.extend(quote_spanned! { op_span =>
-            impl #impl_generics AsRef<::runic_core::Operation> for #op_ident #ty_generics #where_clause {
+            impl #impl_generics AsRef<::runic_ir::Operation> for #op_ident #ty_generics #where_clause {
                 #[inline(always)]
-                fn as_ref(&self) -> &::runic_core::Operation {
+                fn as_ref(&self) -> &::runic_ir::Operation {
                     &self.op
                 }
             }
 
-            impl #impl_generics AsMut<::runic_core::Operation> for #op_ident #ty_generics #where_clause {
+            impl #impl_generics AsMut<::runic_ir::Operation> for #op_ident #ty_generics #where_clause {
                 #[inline(always)]
-                fn as_mut(&mut self) -> &mut ::runic_core::Operation {
+                fn as_mut(&mut self) -> &mut ::runic_ir::Operation {
                     &mut self.op
                 }
             }
@@ -1079,23 +1079,23 @@ impl quote::ToTokens for OpDefinition {
             SuccessorGroup::Unnamed(successors) => {
                 let count = successors.len();
                 quote! {
-                    ::runic_core::SuccessorGroupShape {
+                    ::runic_ir::SuccessorGroupShape {
                         size: ::core::option::Option::Some(#count),
                         key: ::core::option::Option::None,
                     }
                 }
             }
             SuccessorGroup::Named(_) => quote! {
-                ::runic_core::SuccessorGroupShape {
+                ::runic_ir::SuccessorGroupShape {
                     size: ::core::option::Option::None,
                     key: ::core::option::Option::None,
                 }
             },
             SuccessorGroup::Keyed(_, group_ty) => quote! {
-                ::runic_core::SuccessorGroupShape {
+                ::runic_ir::SuccessorGroupShape {
                     size: ::core::option::Option::None,
                     key: ::core::option::Option::Some(
-                        ::runic_core::is_successor_key_of::<#group_ty>,
+                        ::runic_ir::is_successor_key_of::<#group_ty>,
                     ),
                 }
             },
@@ -1112,41 +1112,41 @@ impl quote::ToTokens for OpDefinition {
             Some(OpResultGroup::Named(..)) => quote! { ::core::option::Option::None },
         };
         tokens.extend(quote_spanned! { op_span =>
-            impl #impl_generics ::runic_core::Op for #op_ident #ty_generics #where_clause {
+            impl #impl_generics ::runic_ir::Op for #op_ident #ty_generics #where_clause {
                 #[inline]
-                fn name(&self) -> ::runic_core::OperationName {
+                fn name(&self) -> ::runic_ir::OperationName {
                     self.op.name()
                 }
 
                 #[inline(always)]
-                fn as_operation(&self) -> &::runic_core::Operation {
+                fn as_operation(&self) -> &::runic_ir::Operation {
                     &self.op
                 }
 
                 #[inline(always)]
-                fn as_operation_mut(&mut self) -> &mut ::runic_core::Operation {
+                fn as_operation_mut(&mut self) -> &mut ::runic_ir::Operation {
                     &mut self.op
                 }
 
-                fn verify_operand_types(&self) -> Result<(), ::runic_core::diagnostics::Report> {
+                fn verify_operand_types(&self) -> Result<(), ::runic_ir::diagnostics::Report> {
                     #verify_operand_types
                     Ok(())
                 }
 
-                fn verify_result_types(&self) -> Result<(), ::runic_core::diagnostics::Report> {
+                fn verify_result_types(&self) -> Result<(), ::runic_ir::diagnostics::Report> {
                     #verify_result_types
                     Ok(())
                 }
             }
 
-            impl #impl_generics ::runic_core::OpRegistration for #op_ident #ty_generics #where_clause {
+            impl #impl_generics ::runic_ir::OpRegistration for #op_ident #ty_generics #where_clause {
                 type Dialect = #dialect;
 
-                fn name() -> ::runic_core::interner::Symbol {
-                    ::runic_core::interner::Symbol::intern(#opcode_str)
+                fn name() -> ::runic_ir::interner::Symbol {
+                    ::runic_ir::interner::Symbol::intern(#opcode_str)
                 }
 
-                fn attrs() -> ::alloc::boxed::Box<[::runic_core::AttrInfo]> {
+                fn attrs() -> ::alloc::boxed::Box<[::runic_ir::AttrInfo]> {
                     ::alloc::boxed::Box::from([
                         #attrs
                     ])
@@ -1160,7 +1160,7 @@ impl quote::ToTokens for OpDefinition {
                     #result_count
                 }
 
-                fn successor_groups() -> ::alloc::boxed::Box<[::runic_core::SuccessorGroupShape]> {
+                fn successor_groups() -> ::alloc::boxed::Box<[::runic_ir::SuccessorGroupShape]> {
                     ::alloc::boxed::Box::from([
                         #(#successor_groups),*
                     ])
@@ -1170,26 +1170,26 @@ impl quote::ToTokens for OpDefinition {
                     &[#(#operand_group_sizes),*]
                 }
 
-                fn traits() -> ::alloc::boxed::Box<[::runic_core::traits::TraitInfo]> {
+                fn traits() -> ::alloc::boxed::Box<[::runic_ir::traits::TraitInfo]> {
                     ::alloc::boxed::Box::from([
-                        ::runic_core::traits::TraitInfo::new::<Self, dyn core::any::Any>(),
-                        ::runic_core::traits::TraitInfo::new::<Self, dyn ::runic_core::Op>(),
+                        ::runic_ir::traits::TraitInfo::new::<Self, dyn core::any::Any>(),
+                        ::runic_ir::traits::TraitInfo::new::<Self, dyn ::runic_ir::Op>(),
                         #(
-                            ::runic_core::traits::TraitInfo::new::<Self, dyn #traits>(),
+                            ::runic_ir::traits::TraitInfo::new::<Self, dyn #traits>(),
                         )*
                         #(
-                            ::runic_core::traits::TraitInfo::new::<Self, dyn #implements>(),
+                            ::runic_ir::traits::TraitInfo::new::<Self, dyn #implements>(),
                         )*
                     ])
                 }
 
-                unsafe fn alloc_uninit(context: ::alloc::rc::Rc<::runic_core::Context>) -> ::runic_core::OperationRef {
+                unsafe fn alloc_uninit(context: ::alloc::rc::Rc<::runic_ir::Context>) -> ::runic_ir::OperationRef {
                     // SAFETY: the caller upholds the contract of `alloc_uninit`, which is this one's
                     unsafe { Self::alloc_default(context) }.as_operation_ref()
                 }
             }
 
-            ::runic_core::inventory::submit!(::runic_core::DialectOpRegistrationInfo::new::<#op_ident #ty_generics>());
+            ::runic_ir::inventory::submit!(::runic_ir::DialectOpRegistrationInfo::new::<#op_ident #ty_generics>());
         });
 
         // impl $OpBuilder
@@ -1359,12 +1359,12 @@ impl quote::ToTokens for OpSymbolFns<'_> {
 
             tokens.extend(quote_spanned! { span =>
                 #[doc = #symbol_doc]
-                pub fn #symbol(&self) -> ::runic_core::EntityRef<'_, ::runic_core::dialects::builtin::attributes::SymbolRefAttr> {
+                pub fn #symbol(&self) -> ::runic_ir::EntityRef<'_, ::runic_ir::dialects::builtin::attributes::SymbolRefAttr> {
                     self.#symbol.borrow()
                 }
 
                 #[doc = #symbol_mut_doc]
-                pub fn #symbol_mut(&mut self) -> ::runic_core::EntityMut<'_, ::runic_core::dialects::builtin::attributes::SymbolRefAttr> {
+                pub fn #symbol_mut(&mut self) -> ::runic_ir::EntityMut<'_, ::runic_ir::dialects::builtin::attributes::SymbolRefAttr> {
                     self.#symbol.borrow_mut()
                 }
             });
@@ -1372,10 +1372,10 @@ impl quote::ToTokens for OpSymbolFns<'_> {
             let is_concrete_ty = match symbol_kind {
                 SymbolType::Concrete(ty) => [quote_spanned! { span =>
                     // The way we check the type depends on whether `symbol` is a reference to `self`
-                    let (data_ptr, _) = ::runic_core::SymbolRef::as_ptr(&symbol).to_raw_parts();
+                    let (data_ptr, _) = ::runic_ir::SymbolRef::as_ptr(&symbol).to_raw_parts();
                     if core::ptr::addr_eq(data_ptr, (self as *const Self as *const ())) {
                         if !self.op.is::<#ty>() {
-                            return Err(::runic_core::InvalidSymbolRefError::InvalidType {
+                            return Err(::runic_ir::InvalidSymbolRefError::InvalidType {
                                 symbol: self.op.span(),
                                 expected: stringify!(#ty),
                                 got: self.op.name(),
@@ -1384,7 +1384,7 @@ impl quote::ToTokens for OpSymbolFns<'_> {
                     } else if !symbol.borrow().is::<#ty>() {
                         let symbol = symbol.borrow();
                         let symbol_op = symbol.as_symbol_operation();
-                        return Err(::runic_core::InvalidSymbolRefError::InvalidType {
+                        return Err(::runic_ir::InvalidSymbolRefError::InvalidType {
                             symbol: symbol_op.span(),
                             expected: stringify!(#ty),
                             got: symbol_op.name(),
@@ -1398,14 +1398,14 @@ impl quote::ToTokens for OpSymbolFns<'_> {
                 SymbolType::Any | SymbolType::Trait(_) | SymbolType::Concrete(_) => {
                     tokens.extend(quote_spanned! { span =>
                         #[doc = #get_symbol_doc]
-                        pub fn #get_symbol(&self) -> ::runic_core::EntityRef<'_, ::runic_core::dialects::builtin::attributes::SymbolRef> {
-                            ::runic_core::EntityRef::map(self.#symbol.borrow(), ::runic_core::AttributeRegistration::underlying_value)
+                        pub fn #get_symbol(&self) -> ::runic_ir::EntityRef<'_, ::runic_ir::dialects::builtin::attributes::SymbolRef> {
+                            ::runic_ir::EntityRef::map(self.#symbol.borrow(), ::runic_ir::AttributeRegistration::underlying_value)
                         }
 
                         #(
                             #[doc = #set_symbol_doc_lines]
                         )*
-                        pub fn #set_symbol(&mut self, symbol: impl ::runic_core::AsSymbolRef) -> Result<(), ::runic_core::InvalidSymbolRefError> {
+                        pub fn #set_symbol(&mut self, symbol: impl ::runic_ir::AsSymbolRef) -> Result<(), ::runic_ir::InvalidSymbolRefError> {
                             let symbol = symbol.as_symbol_ref();
                             #(#is_concrete_ty)*
                             self.op.set_symbol_attribute(#symbol_name, symbol);
@@ -1419,21 +1419,21 @@ impl quote::ToTokens for OpSymbolFns<'_> {
                         #(
                             #[doc = #set_symbol_doc_lines]
                         )*
-                        pub fn #set_symbol(&mut self, symbol: impl ::runic_core::AsCallableSymbolRef) -> Result<(), ::runic_core::InvalidSymbolRefError> {
-                            use ::runic_core::Spanned;
+                        pub fn #set_symbol(&mut self, symbol: impl ::runic_ir::AsCallableSymbolRef) -> Result<(), ::runic_ir::InvalidSymbolRefError> {
+                            use ::runic_ir::Spanned;
                             let symbol = symbol.as_callable_symbol_ref();
-                            let (data_ptr, _) = ::runic_core::SymbolRef::as_ptr(&symbol).to_raw_parts();
+                            let (data_ptr, _) = ::runic_ir::SymbolRef::as_ptr(&symbol).to_raw_parts();
                             if core::ptr::addr_eq(data_ptr, (self as *const Self as *const ())) {
-                                if !self.op.implements::<dyn ::runic_core::CallableSymbol>() {
-                                    return Err(::runic_core::InvalidSymbolRefError::NotCallable {
+                                if !self.op.implements::<dyn ::runic_ir::CallableSymbol>() {
+                                    return Err(::runic_ir::InvalidSymbolRefError::NotCallable {
                                         symbol: self.span(),
                                     });
                                 }
                             } else {
                                 let symbol = symbol.borrow();
                                 let symbol_op = symbol.as_symbol_operation();
-                                if !symbol_op.implements::<dyn ::runic_core::CallableSymbol>() {
-                                    return Err(::runic_core::InvalidSymbolRefError::NotCallable {
+                                if !symbol_op.implements::<dyn ::runic_ir::CallableSymbol>() {
+                                    return Err(::runic_ir::InvalidSymbolRefError::NotCallable {
                                         symbol: symbol_op.span(),
                                     });
                                 }
@@ -1474,8 +1474,8 @@ impl quote::ToTokens for OpAttrFns<'_> {
                     " Get a mutable reference to the `{attr}` attribute.\n\n An edit through it \
                      edits the attribute for every holder of its handle, not only this operation. \
                      Use it only on an attribute this operation created from a value; an \
-                     attribute installed with [::runic_core::ReadyAttr], or one used as a \
-                     constant, is changed by replacing it with `set_{attr}`."
+                     attribute installed with [::runic_ir::ReadyAttr], or one used as a constant, \
+                     is changed by replacing it with `set_{attr}`."
                 ),
                 attr.span(),
             ));
@@ -1488,7 +1488,7 @@ impl quote::ToTokens for OpAttrFns<'_> {
                     " Get a mutable reference to the value of the `{attr}` attribute.\n\n An edit \
                      through it edits the attribute for every holder of its handle, not only this \
                      operation. Use it only on an attribute this operation created from a value; \
-                     an attribute installed with [::runic_core::ReadyAttr], or one used as a \
+                     an attribute installed with [::runic_ir::ReadyAttr], or one used as a \
                      constant, is changed by replacing it with `set_{attr}`."
                 ),
                 attr.span(),
@@ -1496,8 +1496,8 @@ impl quote::ToTokens for OpAttrFns<'_> {
             let set_attr_doc = syn::Lit::Str(syn::LitStr::new(
                 &format!(
                     " Set the `{attr}` attribute to a value, or to an attribute that already \
-                     exists ([::runic_core::ReadyAttr]).\n\n The value is replaced as \
-                     [::runic_core::Operation::set_property] replaces it: every symbol reference \
+                     exists ([::runic_ir::ReadyAttr]).\n\n The value is replaced as \
+                     [::runic_ir::Operation::set_property] replaces it: every symbol reference \
                      the old value held, at any depth, that the operation no longer holds is \
                      unlinked from its symbol."
                 ),
@@ -1507,40 +1507,40 @@ impl quote::ToTokens for OpAttrFns<'_> {
             tokens.extend(quote_spanned! { span =>
                 #[doc = #attr_doc]
                 #[inline]
-                pub fn #attr(&self) -> ::runic_core::EntityRef<'_, #attr_ty> {
+                pub fn #attr(&self) -> ::runic_ir::EntityRef<'_, #attr_ty> {
                     self.#attr.borrow()
                 }
 
                 #[doc = #get_attr_doc]
                 #[inline]
-                pub fn #get_attr(&self) -> ::runic_core::EntityRef<'_, #attr_value_ty> {
-                    ::runic_core::EntityRef::map(self.#attr.borrow(), ::runic_core::AttributeRegistration::underlying_value)
+                pub fn #get_attr(&self) -> ::runic_ir::EntityRef<'_, #attr_value_ty> {
+                    ::runic_ir::EntityRef::map(self.#attr.borrow(), ::runic_ir::AttributeRegistration::underlying_value)
                 }
 
                 #[doc = #attr_mut_doc]
                 #[inline]
-                pub fn #attr_mut(&mut self) -> ::runic_core::EntityMut<'_, #attr_ty> {
+                pub fn #attr_mut(&mut self) -> ::runic_ir::EntityMut<'_, #attr_ty> {
                     self.#attr.borrow_mut()
                 }
 
                 #[doc = #get_attr_mut_doc]
                 #[inline]
-                pub fn #get_attr_mut(&mut self) -> ::runic_core::EntityMut<'_, #attr_value_ty> {
-                    ::runic_core::EntityMut::map(self.#attr.borrow_mut(), ::runic_core::AttributeRegistration::underlying_value_mut)
+                pub fn #get_attr_mut(&mut self) -> ::runic_ir::EntityMut<'_, #attr_value_ty> {
+                    ::runic_ir::EntityMut::map(self.#attr.borrow_mut(), ::runic_ir::AttributeRegistration::underlying_value_mut)
                 }
 
                 #[doc = #set_attr_doc]
                 #[inline]
-                pub fn #set_attr(&mut self, value: impl ::runic_core::IntoAttribute<#attr_ty>)
+                pub fn #set_attr(&mut self, value: impl ::runic_ir::IntoAttribute<#attr_ty>)
                 {
-                    let attr = ::runic_core::IntoAttribute::<#attr_ty>::into_attribute(
+                    let attr = ::runic_ir::IntoAttribute::<#attr_ty>::into_attribute(
                         value,
                         &self.op.context_rc(),
                     );
                     self.op
                         .set_property(
                             #attr_name,
-                            ::runic_core::attributes::IntoAttributeRef::into_attribute_ref(attr),
+                            ::runic_ir::attributes::IntoAttributeRef::into_attribute_ref(attr),
                         )
                         .expect("an attribute of the property's own kind is accepted");
                 }
@@ -1580,13 +1580,13 @@ impl quote::ToTokens for OpOperandFns<'_> {
                         tokens.extend(quote_spanned! { span =>
                             #[doc = #operand_doc]
                             #[inline]
-                            pub fn #operand(&self) -> ::runic_core::EntityRef<'_, ::runic_core::OpOperandImpl> {
+                            pub fn #operand(&self) -> ::runic_ir::EntityRef<'_, ::runic_ir::OpOperandImpl> {
                                 self.op.operands().group(#group_index)[#operand_index].borrow()
                             }
 
                             #[doc = #operand_mut_doc]
                             #[inline]
-                            pub fn #operand_mut(&mut self) -> ::runic_core::EntityMut<'_, ::runic_core::OpOperandImpl> {
+                            pub fn #operand_mut(&mut self) -> ::runic_ir::EntityMut<'_, ::runic_ir::OpOperandImpl> {
                                 self.op.operands_mut().group_mut(#group_index)[#operand_index].borrow_mut()
                             }
                         });
@@ -1607,13 +1607,13 @@ impl quote::ToTokens for OpOperandFns<'_> {
                     tokens.extend(quote_spanned! { span =>
                         #[doc = #group_doc]
                         #[inline]
-                        pub fn #group_name(&self) -> ::runic_core::OpOperandRange<'_> {
+                        pub fn #group_name(&self) -> ::runic_ir::OpOperandRange<'_> {
                             self.op.operands().group(#group_index)
                         }
 
                         #[doc = #group_mut_doc]
                         #[inline]
-                        pub fn #group_name_mut(&mut self) -> ::runic_core::OpOperandRangeMut<'_> {
+                        pub fn #group_name_mut(&mut self) -> ::runic_ir::OpOperandRangeMut<'_> {
                             self.op.operands_mut().group_mut(#group_index)
                         }
                     });
@@ -1647,13 +1647,13 @@ impl quote::ToTokens for OpResultFns<'_> {
                         tokens.extend(quote_spanned! { span =>
                             #[doc = #result_doc]
                             #[inline]
-                            pub fn #result(&self) -> ::runic_core::EntityRef<'_, ::runic_core::OpResult> {
+                            pub fn #result(&self) -> ::runic_ir::EntityRef<'_, ::runic_ir::OpResult> {
                                 self.op.results()[#index].borrow()
                             }
 
                             #[doc = #result_mut_doc]
                             #[inline]
-                            pub fn #result_mut(&mut self) -> ::runic_core::EntityMut<'_, ::runic_core::OpResult> {
+                            pub fn #result_mut(&mut self) -> ::runic_ir::EntityMut<'_, ::runic_ir::OpResult> {
                                 self.op.results_mut()[#index].borrow_mut()
                             }
                         });
@@ -1673,13 +1673,13 @@ impl quote::ToTokens for OpResultFns<'_> {
                     tokens.extend(quote_spanned! { span =>
                         #[doc = #group_doc]
                         #[inline]
-                        pub fn #group(&self) -> ::runic_core::OpResultRange<'_> {
+                        pub fn #group(&self) -> ::runic_ir::OpResultRange<'_> {
                             self.results().group(0)
                         }
 
                         #[doc = #group_mut_doc]
                         #[inline]
-                        pub fn #group_mut(&mut self) -> ::runic_core::OpResultRangeMut<'_> {
+                        pub fn #group_mut(&mut self) -> ::runic_ir::OpResultRangeMut<'_> {
                             self.op.results_mut().group_mut(0)
                         }
                     });
@@ -1708,13 +1708,13 @@ impl quote::ToTokens for OpRegionFns<'_> {
             tokens.extend(quote_spanned! { span =>
                 #[doc = #region_doc]
                 #[inline]
-                pub fn #region(&self) -> ::runic_core::EntityRef<'_, ::runic_core::Region> {
+                pub fn #region(&self) -> ::runic_ir::EntityRef<'_, ::runic_ir::Region> {
                     self.op.region(#index)
                 }
 
                 #[doc = #region_mut_doc]
                 #[inline]
-                pub fn #region_mut(&mut self) -> ::runic_core::EntityMut<'_, ::runic_core::Region> {
+                pub fn #region_mut(&mut self) -> ::runic_ir::EntityMut<'_, ::runic_ir::Region> {
                     self.op.region_mut(#index)
                 }
             });
@@ -1751,13 +1751,13 @@ impl quote::ToTokens for OpSuccessorFns<'_> {
                         tokens.extend(quote_spanned! { span =>
                             #[doc = #successor_doc]
                             #[inline]
-                            pub fn #successor(&self) -> ::runic_core::OpSuccessor<'_> {
+                            pub fn #successor(&self) -> ::runic_ir::OpSuccessor<'_> {
                                 self.op.successor_in_group(#group_index, #index)
                             }
 
                             #[doc = #successor_mut_doc]
                             #[inline]
-                            pub fn #successor_mut(&mut self) -> ::runic_core::OpSuccessorMut<'_> {
+                            pub fn #successor_mut(&mut self) -> ::runic_ir::OpSuccessorMut<'_> {
                                 self.op.successor_in_group_mut(#group_index, #index)
                             }
                         });
@@ -1778,13 +1778,13 @@ impl quote::ToTokens for OpSuccessorFns<'_> {
                     tokens.extend(quote_spanned! { span =>
                         #[doc = #group_doc]
                         #[inline]
-                        pub fn #group(&self) -> ::runic_core::OpSuccessorRange<'_> {
+                        pub fn #group(&self) -> ::runic_ir::OpSuccessorRange<'_> {
                             self.op.successor_group(#group_index)
                         }
 
                         #[doc = #group_mut_doc]
                         #[inline]
-                        pub fn #group_mut(&mut self) -> ::runic_core::OpSuccessorRangeMut<'_> {
+                        pub fn #group_mut(&mut self) -> ::runic_ir::OpSuccessorRangeMut<'_> {
                             self.op.successor_group_mut(#group_index)
                         }
                     });
@@ -1804,13 +1804,13 @@ impl quote::ToTokens for OpSuccessorFns<'_> {
                     tokens.extend(quote_spanned! { span =>
                         #[doc = #group_doc]
                         #[inline]
-                        pub fn #group(&self) -> ::runic_core::KeyedSuccessorRange<'_, #group_ty> {
+                        pub fn #group(&self) -> ::runic_ir::KeyedSuccessorRange<'_, #group_ty> {
                             self.op.keyed_successor_group::<#group_ty>(#group_index)
                         }
 
                         #[doc = #group_mut_doc]
                         #[inline]
-                        pub fn #group_mut(&mut self) -> ::runic_core::KeyedSuccessorRangeMut<'_, #group_ty> {
+                        pub fn #group_mut(&mut self) -> ::runic_ir::KeyedSuccessorRangeMut<'_, #group_ty> {
                             self.op.keyed_successor_group_mut::<#group_ty>(#group_index)
                         }
                     });
@@ -1925,8 +1925,7 @@ impl OpBuilderImpl {
         let new_doc = DocString::new(
             op.span(),
             format!(
-                " Get a new [struct@{name}] from the provided [::runic_core::Builder] impl and \
-                 span."
+                " Get a new [struct@{name}] from the provided [::runic_ir::Builder] impl and span."
             ),
         );
         let create_params = Rc::<[OpCreateParam]>::from([]);
@@ -2023,7 +2022,7 @@ impl OpBuilderImpl {
                             colon_token: None,
                             bounds: Default::default(),
                         }),
-                        syn::parse_str("B: ?Sized + ::runic_core::Builder").unwrap(),
+                        syn::parse_str("B: ?Sized + ::runic_ir::Builder").unwrap(),
                     ]
                     .into_iter()
                     .chain(op_generics.params.iter().cloned())
@@ -2053,7 +2052,7 @@ impl OpBuilderImpl {
                         colon_token: None,
                         bounds: Default::default(),
                     }),
-                    syn::parse_str("B: ?Sized + ::runic_core::Builder").unwrap(),
+                    syn::parse_str("B: ?Sized + ::runic_ir::Builder").unwrap(),
                 ]
                 .into_iter()
                 .chain(op_generics.params.iter().cloned())
@@ -2088,17 +2087,17 @@ impl quote::ToTokens for OpBuilderImpl {
                 #op_builder_doc
                 pub struct #op_builder <'a, B: ?Sized> {
                     builder: &'a mut B,
-                    span: ::runic_core::diagnostics::SourceSpan,
+                    span: ::runic_ir::diagnostics::SourceSpan,
                 }
 
                 impl<'a, B> #op_builder <'a, B>
                 where
-                    B: ?Sized + ::runic_core::Builder,
+                    B: ?Sized + ::runic_ir::Builder,
                 {
                     #op_builder_new_doc
                     #[inline(always)]
                     #[allow(unused)]
-                    pub fn new(builder: &'a mut B, span: ::runic_core::diagnostics::SourceSpan) -> Self {
+                    pub fn new(builder: &'a mut B, span: ::runic_ir::diagnostics::SourceSpan) -> Self {
                         Self {
                             builder,
                             span,
@@ -2142,13 +2141,13 @@ impl quote::ToTokens for BuildableOpImpl {
                 elems: syn::punctuated::Punctuated::from_iter(required_params),
             };
             let quoted = quote_spanned! { op_span =>
-                impl #required_impl_generics ::runic_core::BuildableOp<#required_params_ty> for #op #required_ty_generics #required_where_clause {
-                    type Builder<'a, T: ?Sized + ::runic_core::Builder + 'a> = #op_builder <'a, T>;
+                impl #required_impl_generics ::runic_ir::BuildableOp<#required_params_ty> for #op #required_ty_generics #required_where_clause {
+                    type Builder<'a, T: ?Sized + ::runic_ir::Builder + 'a> = #op_builder <'a, T>;
 
                     #[inline(always)]
-                    fn builder<'b, B>(builder: &'b mut B, span: ::runic_core::diagnostics::SourceSpan) -> Self::Builder<'b, B>
+                    fn builder<'b, B>(builder: &'b mut B, span: ::runic_ir::diagnostics::SourceSpan) -> Self::Builder<'b, B>
                     where
-                        B: ?Sized + ::runic_core::Builder + 'b,
+                        B: ?Sized + ::runic_ir::Builder + 'b,
                     {
                         #op_builder {
                             builder,
@@ -2169,13 +2168,13 @@ impl quote::ToTokens for BuildableOpImpl {
             elems: syn::punctuated::Punctuated::from_iter(params),
         };
         let quoted = quote_spanned! { op_span =>
-            impl #impl_generics ::runic_core::BuildableOp<#params_ty> for #op #ty_generics #where_clause {
-                type Builder<'a, T: ?Sized + ::runic_core::Builder + 'a> = #op_builder <'a, T>;
+            impl #impl_generics ::runic_ir::BuildableOp<#params_ty> for #op #ty_generics #where_clause {
+                type Builder<'a, T: ?Sized + ::runic_ir::Builder + 'a> = #op_builder <'a, T>;
 
                 #[inline(always)]
-                fn builder<'b, B>(builder: &'b mut B, span: ::runic_core::diagnostics::SourceSpan) -> Self::Builder<'b, B>
+                fn builder<'b, B>(builder: &'b mut B, span: ::runic_ir::diagnostics::SourceSpan) -> Self::Builder<'b, B>
                 where
-                    B: ?Sized + ::runic_core::Builder + 'b,
+                    B: ?Sized + ::runic_ir::Builder + 'b,
                 {
                     #op_builder {
                         builder,
@@ -2233,14 +2232,14 @@ impl quote::ToTokens for OpBuilderFnOnceImpl {
                             );
                             let check: syn::Stmt = parse_quote_spanned! { ty.span() =>
                                 const _: () = assert!(
-                                    <#ty as ::runic_core::AttributeRegistration>::HAS_DEFAULT,
+                                    <#ty as ::runic_ir::AttributeRegistration>::HAS_DEFAULT,
                                     #message
                                 );
                             };
                             let stmt: syn::Stmt = parse_quote_spanned! { name.span() =>
-                                let #name = ::runic_core::ReadyAttr(
-                                    <#ty as ::runic_core::AttributeRegistration>::create_default(
-                                        &::runic_core::Builder::context_rc(&*self.builder),
+                                let #name = ::runic_ir::ReadyAttr(
+                                    <#ty as ::runic_ir::AttributeRegistration>::create_default(
+                                        &::runic_ir::Builder::context_rc(&*self.builder),
                                     ),
                                 );
                             };
@@ -2282,7 +2281,7 @@ impl quote::ToTokens for OpBuilderFnOnceImpl {
             tokens.extend(quote_spanned! { op_span =>
                 #[allow(clippy::type_complexity)]
                 impl #min_impl_generics ::core::ops::FnOnce<#required_params_ty> for #op_builder<'a, B> #min_where_clause {
-                    type Output = Result<::runic_core::UnsafeIntrusiveEntityRef<#op #op_ty_generics>, ::runic_core::diagnostics::Report>;
+                    type Output = Result<::runic_ir::UnsafeIntrusiveEntityRef<#op #op_ty_generics>, ::runic_ir::diagnostics::Report>;
 
                     #[inline]
                     extern "rust-call" fn call_once(self, args: #required_params_ty) -> Self::Output {
@@ -2319,7 +2318,7 @@ impl quote::ToTokens for OpBuilderFnOnceImpl {
         tokens.extend(quote_spanned! { op_span =>
             #[allow(clippy::type_complexity)]
             impl #impl_generics ::core::ops::FnOnce<#params_ty> for #op_builder<'a, B> #where_clause {
-                type Output = Result<::runic_core::UnsafeIntrusiveEntityRef<#op #op_ty_generics>, ::runic_core::diagnostics::Report>;
+                type Output = Result<::runic_ir::UnsafeIntrusiveEntityRef<#op #op_ty_generics>, ::runic_ir::diagnostics::Report>;
 
                 #[inline]
                 extern "rust-call" fn call_once(self, args: #params_ty) -> Self::Output {
@@ -2358,12 +2357,12 @@ impl quote::ToTokens for OpVerifierImpl {
                 /// Structural verifier implementation generated via `#[operation]` derive
                 ///
                 /// No additional trait verifiers are required by this operation.
-                impl ::runic_core::OpVerifier for #op {
+                impl ::runic_ir::OpVerifier for #op {
                     #[inline(always)]
-                    fn verify(&self, _context: &::runic_core::Context) -> Result<(), ::runic_core::diagnostics::Report> {
+                    fn verify(&self, _context: &::runic_ir::Context) -> Result<(), ::runic_ir::diagnostics::Report> {
                         self.op.verify_operand_cardinality()?;
-                        <Self as ::runic_core::Op>::verify_operand_types(self)?;
-                        <Self as ::runic_core::Op>::verify_result_types(self)
+                        <Self as ::runic_ir::Op>::verify_operand_types(self)?;
+                        <Self as ::runic_ir::Op>::verify_result_types(self)
                     }
                 }
             });
@@ -2407,28 +2406,28 @@ impl quote::ToTokens for OpVerifierImpl {
             #(
                 #[doc = #op_verifier_doc_lines]
             )*
-            impl ::runic_core::OpVerifier for #op {
-                fn verify(&self, context: &::runic_core::Context) -> Result<(), ::runic_core::diagnostics::Report> {
+            impl ::runic_ir::OpVerifier for #op {
+                fn verify(&self, context: &::runic_ir::Context) -> Result<(), ::runic_ir::diagnostics::Report> {
                     self.op.verify_operand_cardinality()?;
-                    <Self as ::runic_core::Op>::verify_operand_types(self)?;
-                    <Self as ::runic_core::Op>::verify_result_types(self)?;
+                    <Self as ::runic_ir::Op>::verify_operand_types(self)?;
+                    <Self as ::runic_ir::Op>::verify_result_types(self)?;
                     /// This type represents the concrete set of derived traits for some op `T`, paired with a
-                    /// type-erased [::runic_core::Operation] reference for an instance of that op.
+                    /// type-erased [::runic_ir::Operation] reference for an instance of that op.
                     ///
                     /// This is used for two purposes:
                     ///
-                    /// 1. To generate a specialized [::runic_core::OpVerifier] for `T` which contains all of the type and
+                    /// 1. To generate a specialized [::runic_ir::OpVerifier] for `T` which contains all of the type and
                     ///    trait-specific validation logic for that `T`.
-                    /// 2. To apply the specialized verifier for `T` using the wrapped [::runic_core::Operation] reference.
+                    /// 2. To apply the specialized verifier for `T` using the wrapped [::runic_ir::Operation] reference.
                     struct OpVerifierImpl<'a, T> {
-                        op: &'a ::runic_core::Operation,
+                        op: &'a ::runic_ir::Operation,
                         _t: ::core::marker::PhantomData<T>,
                         #[allow(unused_parens, clippy::type_complexity)]
                         _derived: ::core::marker::PhantomData<(#(&'a dyn #derived_traits,)* #(&'a dyn #implemented_traits),*)>,
                     }
                     impl<'a, T> OpVerifierImpl<'a, T> {
                         #[allow(unused)]
-                        const fn new(op: &'a ::runic_core::Operation) -> Self {
+                        const fn new(op: &'a ::runic_ir::Operation) -> Self {
                             Self {
                                 op,
                                 _t: ::core::marker::PhantomData,
@@ -2437,7 +2436,7 @@ impl quote::ToTokens for OpVerifierImpl {
                         }
                     }
                     impl<'a, T> ::core::ops::Deref for OpVerifierImpl<'a, T> {
-                        type Target = ::runic_core::Operation;
+                        type Target = ::runic_ir::Operation;
 
                         fn deref(&self) -> &Self::Target {
                             self.op
@@ -2445,26 +2444,26 @@ impl quote::ToTokens for OpVerifierImpl {
                     }
 
                     #[allow(unused_parens, clippy::type_complexity)]
-                    impl<'a> ::runic_core::OpVerifier for OpVerifierImpl<'a, #op>
+                    impl<'a> ::runic_ir::OpVerifier for OpVerifierImpl<'a, #op>
                     where
                         #(
-                            #op: ::runic_core::verifier::Verifier<dyn #derived_traits>,
+                            #op: ::runic_ir::verifier::Verifier<dyn #derived_traits>,
                         )*
                         #(
-                            #op: ::runic_core::verifier::Verifier<dyn #implemented_traits>,
+                            #op: ::runic_ir::verifier::Verifier<dyn #implemented_traits>,
                         )*
                     {
                         #[inline]
-                        fn verify(&self, context: &::runic_core::Context) -> Result<(), ::runic_core::diagnostics::Report> {
+                        fn verify(&self, context: &::runic_ir::Context) -> Result<(), ::runic_ir::diagnostics::Report> {
                             let op = self.downcast_ref::<#op>().unwrap();
                             #(
-                                if const { !<#op as ::runic_core::verifier::Verifier<dyn #derived_traits>>::VACUOUS } {
-                                    <#op as ::runic_core::verifier::Verifier<dyn #derived_traits>>::maybe_verify(op, context)?;
+                                if const { !<#op as ::runic_ir::verifier::Verifier<dyn #derived_traits>>::VACUOUS } {
+                                    <#op as ::runic_ir::verifier::Verifier<dyn #derived_traits>>::maybe_verify(op, context)?;
                                 }
                             )*
                             #(
-                                if const { !<#op as ::runic_core::verifier::Verifier<dyn #implemented_traits>>::VACUOUS } {
-                                    <#op as ::runic_core::verifier::Verifier<dyn #implemented_traits>>::maybe_verify(op, context)?;
+                                if const { !<#op as ::runic_ir::verifier::Verifier<dyn #implemented_traits>>::VACUOUS } {
+                                    <#op as ::runic_ir::verifier::Verifier<dyn #implemented_traits>>::maybe_verify(op, context)?;
                                 }
                             )*
 
@@ -2935,14 +2934,14 @@ impl OpCreateParam {
             OpCreateParamType::CustomField(_, ty) => {
                 vec![ty.clone()]
             }
-            OpCreateParamType::Operand(_) => vec![make_type("::runic_core::ValueRef")],
+            OpCreateParamType::Operand(_) => vec![make_type("::runic_ir::ValueRef")],
             OpCreateParamType::OperandGroup(group_name, _)
             | OpCreateParamType::SuccessorGroupNamed(group_name)
             | OpCreateParamType::SuccessorGroupKeyed(group_name, _) => {
                 vec![make_type(format!("T{}", group_name.to_string().to_upper_camel_case()))]
             }
             OpCreateParamType::Successor(name) => vec![
-                make_type("::runic_core::BlockRef"),
+                make_type("::runic_ir::BlockRef"),
                 make_type(format!("T{}Args", name.to_string().to_upper_camel_case())),
             ],
             OpCreateParamType::Symbol(Symbol { name, ty }) => match ty {
@@ -2950,7 +2949,7 @@ impl OpCreateParam {
                     vec![make_type(format!("T{}", name.to_string().to_upper_camel_case()))]
                 }
                 SymbolType::Concrete(ty) => {
-                    vec![parse_quote! { ::runic_core::UnsafeIntrusiveEntityRef<#ty> }]
+                    vec![parse_quote! { ::runic_ir::UnsafeIntrusiveEntityRef<#ty> }]
                 }
             },
         }
@@ -2989,7 +2988,7 @@ impl OpCreateParam {
                     span = name.span()
                 );
                 where_clause.predicates.push(parse_quote_spanned! { name.span() =>
-                    #param_ty: ::runic_core::IntoAttribute<#ty>
+                    #param_ty: ::runic_ir::IntoAttribute<#ty>
                 });
             }
             _ => (),
@@ -3015,7 +3014,7 @@ impl OpCreateParam {
             }
             OpCreateParamType::OperandGroup(name, _) => {
                 let value_iter_bound: syn::TypeParamBound =
-                    syn::parse_str("IntoIterator<Item = ::runic_core::ValueRef>").unwrap();
+                    syn::parse_str("IntoIterator<Item = ::runic_ir::ValueRef>").unwrap();
                 vec![syn::GenericParam::Type(syn::TypeParam {
                     attrs: vec![],
                     ident: format_ident!(
@@ -3031,7 +3030,7 @@ impl OpCreateParam {
             }
             OpCreateParamType::Successor(name) => {
                 let value_iter_bound: syn::TypeParamBound =
-                    syn::parse_str("IntoIterator<Item = ::runic_core::ValueRef>").unwrap();
+                    syn::parse_str("IntoIterator<Item = ::runic_ir::ValueRef>").unwrap();
                 vec![syn::GenericParam::Type(syn::TypeParam {
                     attrs: vec![],
                     ident: format_ident!(
@@ -3047,8 +3046,8 @@ impl OpCreateParam {
             }
             OpCreateParamType::SuccessorGroupNamed(name) => {
                 let value_iter_bound: syn::TypeParamBound = syn::parse_str(
-                    "IntoIterator<Item = (::runic_core::BlockRef, \
-                     ::alloc::vec::Vec<::runic_core::ValueRef>)>",
+                    "IntoIterator<Item = (::runic_ir::BlockRef, \
+                     ::alloc::vec::Vec<::runic_ir::ValueRef>)>",
                 )
                 .unwrap();
                 vec![syn::GenericParam::Type(syn::TypeParam {
@@ -3074,7 +3073,7 @@ impl OpCreateParam {
             OpCreateParamType::Symbol(Symbol { name, ty }) => match ty {
                 SymbolType::Any => {
                     let as_symbol_ref_bound =
-                        syn::parse_str::<syn::TypeParamBound>("::runic_core::AsSymbolRef").unwrap();
+                        syn::parse_str::<syn::TypeParamBound>("::runic_ir::AsSymbolRef").unwrap();
                     vec![syn::GenericParam::Type(syn::TypeParam {
                         attrs: vec![],
                         ident: format_ident!("T{}", name.to_string().to_upper_camel_case()),
@@ -3086,7 +3085,7 @@ impl OpCreateParam {
                 }
                 SymbolType::Callable => {
                     let as_callable_symbol_ref_bound =
-                        syn::parse_str::<syn::TypeParamBound>("::runic_core::AsCallableSymbolRef")
+                        syn::parse_str::<syn::TypeParamBound>("::runic_ir::AsCallableSymbolRef")
                             .unwrap();
                     vec![syn::GenericParam::Type(syn::TypeParam {
                         attrs: vec![],
@@ -3101,7 +3100,7 @@ impl OpCreateParam {
                 }
                 SymbolType::Concrete(_) => vec![],
                 SymbolType::Trait(bounds) => {
-                    let as_symbol_ref_bound = syn::parse_str("::runic_core::AsSymbolRef").unwrap();
+                    let as_symbol_ref_bound = syn::parse_str("::runic_ir::AsSymbolRef").unwrap();
                     vec![syn::GenericParam::Type(syn::TypeParam {
                         attrs: vec![],
                         ident: format_ident!("T{}", name.to_string().to_upper_camel_case()),

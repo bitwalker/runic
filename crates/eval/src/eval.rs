@@ -3,7 +3,7 @@ use alloc::{
     string::{String, ToString},
 };
 
-use runic_core::{
+use runic_ir::{
     AttributeRef, CallOpInterface, Felt, Immediate, ImmediateAttr, Op, OperationRef, Overflow,
     RegionBranchPoint, RegionBranchTerminatorOpInterface, Report, SmallVec, SourceSpan, Spanned,
     SuccessorInfo, Type, Value as _, ValueRange, ValueRef,
@@ -19,14 +19,14 @@ use runic_session::diagnostics::Severity;
 
 use crate::*;
 
-/// This trait is intended to be implemented by any [runic_core::Op] that we wish to be able to
+/// This trait is intended to be implemented by any [runic_ir::Op] that we wish to be able to
 /// evaluate via the [HirEvaluator].
 pub trait Eval {
     /// Evaluate this operation, using the provided evaluator for any side effects/results, etc.
     fn eval(&self, evaluator: &mut HirEvaluator) -> Result<ControlFlowEffect, Report>;
 }
 
-/// This trait is intended to be implemented by any [runic_core::Op] that has associated one-time
+/// This trait is intended to be implemented by any [runic_ir::Op] that has associated one-time
 /// initialization that it needs to perform prior to starting evaluation.
 ///
 /// Initialization is only performed when calling [HirEvaluator::eval] or one of its variants, on
@@ -62,7 +62,7 @@ pub enum ControlFlowEffect {
     /// Control is leaving the enclosing operation AND every intermediate ancestor op, up to
     /// `target`, which receives it.
     ///
-    /// This is the interpreter's twin of [runic_core::RegionSuccessorInfo::Exiting], and it exists
+    /// This is the interpreter's twin of [runic_ir::RegionSuccessorInfo::Exiting], and it exists
     /// for the same reason: a [RegionBranchPoint] is relative to the *immediate* parent, so it
     /// cannot name the ancestor an early exit addresses. `to` says where control resumes at
     /// `target` — [RegionBranchPoint::Parent] for a break (leaving the target, its results taking
@@ -326,7 +326,7 @@ fn eval_structured_exit(
 
     let successors = op.get_successor_regions(&operands);
     match successors.as_slice() {
-        [runic_core::RegionSuccessorInfo::Exiting { target, to, .. }] => {
+        [runic_ir::RegionSuccessorInfo::Exiting { target, to, .. }] => {
             Ok(ControlFlowEffect::Exit {
                 target: *target,
                 to: *to,

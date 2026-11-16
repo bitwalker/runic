@@ -1,6 +1,6 @@
 use alloc::rc::Rc;
 
-use runic_core::{
+use runic_ir::{
     patterns::{Pattern, PatternBenefit, PatternInfo, PatternKind, RewritePattern},
     *,
 };
@@ -145,7 +145,8 @@ impl RewritePattern for IfRemoveUnusedResults {
 mod tests {
     use alloc::{boxed::Box, format, rc::Rc, string::String};
 
-    use runic_core::{
+    use runic_expect_test::expect_file;
+    use runic_ir::{
         Listener, ListenerType, Op, OperationRef, ProgramPoint, Report, SourceSpan,
         dialects::{builtin::BuiltinOpBuilder, test::TestOpBuilder},
         patterns::{
@@ -153,7 +154,6 @@ mod tests {
         },
         testing::{Test, parse_function_fixpoint},
     };
-    use runic_expect_test::expect_file;
 
     use super::*;
     use crate::canonicalization::normalize_ir;
@@ -363,12 +363,12 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
 
 #[cfg(test)]
 mod terminal_region_tests {
-    use runic_core::{
+    use runic_dialect_ub::UndefinedBehaviorOpBuilder;
+    use runic_ir::{
         dialects::builtin::BuiltinOpBuilder,
         patterns::{PatternRewriter, RewriterListener},
         testing::Test,
     };
-    use runic_dialect_ub::UndefinedBehaviorOpBuilder;
 
     use super::*;
 
@@ -602,7 +602,7 @@ mod terminal_region_tests {
                         function.borrow().recursively_verify()?;
                         test.apply_boxed_pass(
                             alloc::boxed::Box::new(runic_transform::Canonicalizer::new(
-                                runic_core::patterns::GreedyRewriteConfig::default(),
+                                runic_ir::patterns::GreedyRewriteConfig::default(),
                                 true,
                             )),
                             true,

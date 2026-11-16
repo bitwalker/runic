@@ -3,7 +3,7 @@
 
 use core::fmt;
 
-use runic_core::{
+use runic_ir::{
     DataLayoutSpec, Endianness, EntityMut, Ident, Operation, OperationName, PointerSpec, Report,
     Visibility,
     dialects::builtin::{
@@ -276,7 +276,7 @@ impl Mark {
     const NAME: &'static str = "test-mark";
 }
 
-runic_core::inventory::submit!(PassInfo::new::<Mark>(
+runic_ir::inventory::submit!(PassInfo::new::<Mark>(
     "test-mark",
     "Adds an empty module named by its option `name` to the world"
 ));
@@ -346,7 +346,7 @@ impl Fail {
     const NAME: &'static str = "test-fail";
 }
 
-runic_core::inventory::submit!(PassInfo::new::<Fail>("test-fail", "Fails"));
+runic_ir::inventory::submit!(PassInfo::new::<Fail>("test-fail", "Fails"));
 
 impl Pass for Fail {
     type Target = Operation;
@@ -381,7 +381,7 @@ impl Pass for Fail {
 #[derive(Default)]
 struct Break;
 
-runic_core::inventory::submit!(PassInfo::new::<Break>("test-break", "Leaves the world invalid"));
+runic_ir::inventory::submit!(PassInfo::new::<Break>("test-break", "Leaves the world invalid"));
 
 impl Pass for Break {
     type Target = Operation;

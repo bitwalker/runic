@@ -1,6 +1,6 @@
 use alloc::rc::Rc;
 
-use runic_core::{
+use runic_ir::{
     patterns::{Pattern, PatternBenefit, PatternInfo, PatternKind, RewritePattern},
     *,
 };
@@ -76,7 +76,7 @@ impl RewritePattern for SimplifyBrToBlockWithSinglePred {
 mod tests {
     use alloc::vec::Vec;
 
-    use runic_core::{
+    use runic_ir::{
         dialects::builtin::Function,
         parse::{self, ParserConfig},
         patterns::RewriterImpl,
@@ -209,7 +209,7 @@ mod tests {
             args
         );
         let ret = parent.borrow().terminator().unwrap();
-        assert!(ret.borrow().is::<runic_core::dialects::builtin::Ret>());
+        assert!(ret.borrow().is::<runic_ir::dialects::builtin::Ret>());
         assert_eq!(
             ret.borrow().operands().all().as_value_range().into_iter().collect::<Vec<_>>(),
             incoming
@@ -303,7 +303,7 @@ mod tests {
     }
 
     /// `function` fails to verify because its entry block is branched to.
-    fn assert_entry_has_predecessors(function: &runic_core::UnsafeIntrusiveEntityRef<Function>) {
+    fn assert_entry_has_predecessors(function: &runic_ir::UnsafeIntrusiveEntityRef<Function>) {
         let error = function.as_operation_ref().borrow().recursively_verify().unwrap_err();
         let error = alloc::format!("{error}");
         assert!(
@@ -340,7 +340,7 @@ mod tests {
             assert!(changed);
             assert_eq!(function.borrow().body().body().iter().count(), 1);
             let ret = entry.borrow().terminator().unwrap();
-            assert!(ret.borrow().is::<runic_core::dialects::builtin::Ret>());
+            assert!(ret.borrow().is::<runic_ir::dialects::builtin::Ret>());
             assert_eq!(
                 ret.borrow().operands().all().as_value_range().into_iter().collect::<Vec<_>>(),
                 args

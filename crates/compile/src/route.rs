@@ -1,4 +1,4 @@
-use runic_core::Report;
+use runic_ir::Report;
 
 use crate::{CheckpointDecl, CheckpointId, IR_CHECKPOINTS};
 

@@ -1,7 +1,7 @@
 use alloc::rc::Rc;
 use core::any::TypeId;
 
-use runic_core::{
+use runic_ir::{
     patterns::{Pattern, PatternBenefit, PatternInfo, PatternKind, RewritePattern},
     traits::BranchOpInterface,
     *,
@@ -158,8 +158,8 @@ impl RewritePattern for SplitCriticalEdges {
 mod tests {
     use alloc::{boxed::Box, format};
 
-    use runic_core::testing::parse_function_fixpoint;
     use runic_expect_test::expect;
+    use runic_ir::testing::parse_function_fixpoint;
 
     use super::*;
     use crate::canonicalization::testing::apply_with_borrowing_listener;

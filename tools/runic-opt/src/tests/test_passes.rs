@@ -279,7 +279,7 @@ fn a_message_may_hold_commas_equals_braces_and_quotes() {
         "message=other, after-change",
     ] {
         let mut quoted = String::new();
-        runic_core::pass::write_pass_option(&mut quoted, "message", Some(message)).unwrap();
+        runic_ir::pass::write_pass_option(&mut quoted, "message", Some(message)).unwrap();
         let pipeline = format!("builtin.module(test-fail{{{quoted}}})");
         let output = opt(&["-p", &pipeline, "--dump-pass-pipeline"], super::LOCALS);
         output.failed();

@@ -1,6 +1,6 @@
 use core::borrow::Borrow;
 
-use runic_core::{SmallVec, ValueRef};
+use runic_ir::{SmallVec, ValueRef};
 
 use crate::{ChangeResult, LatticeLike};
 

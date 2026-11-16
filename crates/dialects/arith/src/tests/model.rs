@@ -8,7 +8,7 @@
 
 use alloc::vec::Vec;
 
-use runic_core::Int;
+use runic_ir::Int;
 
 /// A `w`-bit pattern, `1 <= w <= 128`; the bits at or above `w` are zero.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]

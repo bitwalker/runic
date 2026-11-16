@@ -5,7 +5,7 @@ record of the run to a JSONL file. No `cargo make` task runs it.
 
 ```sh
 python3 tools/time-command.py --label warm-unchanged-1 \
-  --output target/timings.jsonl -- cargo nextest run --profile ci -p runic-core
+  --output target/timings.jsonl -- cargo nextest run --profile ci -p runic-ir
 ```
 
 `--label` names the run (for example the state of the caches, or the edit measured) and

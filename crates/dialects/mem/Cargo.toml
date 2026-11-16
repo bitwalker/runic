@@ -16,15 +16,15 @@ doctest = false
 
 [features]
 default = ["std"]
-std = ["runic-core/std"]
+std = ["runic-ir/std"]
 
 [dependencies]
 runic-dialect-arith.workspace = true
-runic-core.workspace = true
+runic-ir.workspace = true
 
 [dev-dependencies]
 # Use local paths for dev-only dependency to avoid relying on crates.io during packaging
 runic-expect-test = { path = "../../../tools/expect-test" }
-runic-core = { path = "../../core", features = ["logging"] }
+runic-ir = { path = "../../ir", features = ["logging"] }
 runic-dialect-cf = { path = "../cf" }
 runic-transform = { path = "../../transform" }

@@ -13,7 +13,8 @@ use alloc::{
     vec::Vec,
 };
 
-use runic_core::{
+use runic_dialect_scf::transforms::LiftControlFlowToSCF;
+use runic_ir::{
     BlockRef, Context, Operation, OperationRef, Report, Symbol, SymbolTable,
     dialects::builtin::{Function, Module},
     effects::MemoryEffect,
@@ -25,7 +26,6 @@ use runic_core::{
     },
     traits::Terminator,
 };
-use runic_dialect_scf::transforms::LiftControlFlowToSCF;
 
 use crate::{
     Canonicalizer, CommonSubexpressionElimination, ControlFlowSink, DeadCodeElimination,
@@ -584,7 +584,7 @@ fn dce_of_unused_calls_in_each_effect_state() {
 /// the callee of its own module.
 #[test]
 fn equal_calls_in_two_modules_are_not_confused() {
-    use runic_core::dialects::builtin::World;
+    use runic_ir::dialects::builtin::World;
 
     let source = r#"
 builtin.world {
@@ -636,7 +636,7 @@ struct Rng(u64);
 
 impl Rng {
     fn next(&mut self) -> u64 {
-        // xorshift64*, as `runic_core::testing::text::Rng`
+        // xorshift64*, as `runic_ir::testing::text::Rng`
         self.0 ^= self.0 >> 12;
         self.0 ^= self.0 << 25;
         self.0 ^= self.0 >> 27;
@@ -907,7 +907,7 @@ struct CalleeUses {
 /// of the caller.
 fn uses_of_callee_after(pass: MakePass, body: &str) -> (CalleeUses, String) {
     use runic_analysis::analyses::callable_uses::CallableUseSnapshot;
-    use runic_core::{Usable, dialects::builtin::ModuleBuilder};
+    use runic_ir::{Usable, dialects::builtin::ModuleBuilder};
 
     let context = Rc::new(Context::default());
     let source = format!(
@@ -977,7 +977,7 @@ fn an_erased_operation_leaves_the_use_list_of_its_symbol() {
 #[test]
 fn a_canonicalized_indirect_call_leaves_its_callee_with_one_known_caller() {
     use runic_analysis::analyses::callable_uses::CallableUseSnapshot;
-    use runic_core::{CallOpInterface, dialects::builtin::ModuleBuilder};
+    use runic_ir::{CallOpInterface, dialects::builtin::ModuleBuilder};
 
     let context = Rc::new(Context::default());
     let source = format!(
@@ -1002,7 +1002,7 @@ fn a_canonicalized_indirect_call_leaves_its_callee_with_one_known_caller() {
     );
 
     let mut call = None;
-    caller.borrow().prewalk_all(|op: &runic_core::Operation| {
+    caller.borrow().prewalk_all(|op: &runic_ir::Operation| {
         if op.implements::<dyn CallOpInterface>() {
             call = Some(op.as_operation_ref());
         }

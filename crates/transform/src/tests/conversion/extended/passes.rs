@@ -2,7 +2,7 @@
 
 use alloc::{boxed::Box, rc::Rc, vec::Vec};
 
-use runic_core::{
+use runic_ir::{
     Context, OperationRef, Report,
     dialects::builtin::Module,
     pass::{Nesting, OperationPass, PassManager},

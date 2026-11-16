@@ -9,15 +9,15 @@ use alloc::{
 };
 use core::fmt;
 
-use runic_core::{
+// `cfg-to-scf` is registered by the `scf` crate, which the test links by naming its pass.
+use runic_dialect_scf::transforms::LiftControlFlowToSCF;
+use runic_ir::{
     Context,
     pass::{
         Nesting, OpPassManager, OperationPass, PassOptions,
         registry::{PassInfo, PassPipelineInfo, RegistryEntry, register_pass_pipeline},
     },
 };
-// `cfg-to-scf` is registered by the `scf` crate, which the test links by naming its pass.
-use runic_dialect_scf::transforms::LiftControlFlowToSCF;
 
 use crate::{
     Canonicalizer, CommonSubexpressionElimination, ControlFlowSink, DeadCodeElimination, Local2Reg,
@@ -132,14 +132,14 @@ fn invalid_options_leave_the_pass_manager_unchanged() {
 /// in any order, spaced, with empty entries and with names that need escaping.
 #[test]
 fn loaded_pipelines_print_their_canonical_text() {
-    use runic_core::pass::PassPipeline;
+    use runic_ir::pass::PassPipeline;
 
     fn load_and_print(text: &str) -> String {
         let pipeline = PassPipeline::parse(text).unwrap_or_else(|error| panic!("{text}: {error}"));
         let pm = pipeline
             .load(Rc::new(Context::default()), Nesting::Implicit)
             .unwrap_or_else(|error| panic!("{text}: {error}"));
-        struct Printed<'a>(&'a runic_core::pass::PassManager);
+        struct Printed<'a>(&'a runic_ir::pass::PassManager);
         impl fmt::Display for Printed<'_> {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 self.0.print_as_textual_pipeline(f)

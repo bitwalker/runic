@@ -3,7 +3,7 @@
 use alloc::{boxed::Box, rc::Rc, string::String, vec, vec::Vec};
 use core::cell::RefCell;
 
-use runic_core::{
+use runic_ir::{
     Context,
     parse::{ParserConfig, parse_any},
     pass::{IRPrintingConfig, Nesting, PassPipeline, PassSelection},

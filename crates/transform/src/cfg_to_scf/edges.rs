@@ -1,4 +1,4 @@
-use runic_core::{
+use runic_ir::{
     AsValueRange, BlockRef, OpBuilder, Report, SmallVec, SourceSpan, Type, ValueRef,
     adt::SmallDenseMap,
 };

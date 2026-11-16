@@ -1,7 +1,7 @@
 use alloc::rc::Rc;
 use core::fmt;
 
-use runic_core::{
+use runic_ir::{
     AttributeRef, Dialect, FoldResult, Forward, OpFoldResult, Operation, Report, SmallVec,
     traits::Foldable,
 };

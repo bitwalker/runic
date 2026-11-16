@@ -31,7 +31,7 @@
 use std::{fmt::Write as _, ops::Range};
 
 use regex::Regex;
-use runic_core::diagnostics::{
+use runic_ir::diagnostics::{
     ContextFrame, Diagnostic, DiagnosticSet, Label, LabelStyle, Note, NoteKind, OwnedDiagnostic,
     Report, Severity, SourceId, SourceMap, SourceProvider, SourceSpan, TextRange, VisitDiagnostic,
     diagnostic,

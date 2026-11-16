@@ -1,6 +1,6 @@
 use alloc::rc::Rc;
 
-use runic_core::{
+use runic_ir::{
     attributes::IntegerLikeAttr,
     matchers::Matcher,
     patterns::{Pattern, PatternBenefit, PatternInfo, PatternKind, RewritePattern},

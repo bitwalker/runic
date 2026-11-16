@@ -2,7 +2,7 @@
 
 use alloc::rc::Rc;
 
-use runic_core::{
+use runic_ir::{
     attributes::IntegerLikeAttr,
     dialects::builtin::attributes::Array,
     matchers::Matcher,

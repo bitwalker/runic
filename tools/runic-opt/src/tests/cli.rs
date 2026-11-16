@@ -155,7 +155,7 @@ fn list_passes_holds_every_pass_with_its_description_sorted() {
         assert!(!description.is_empty(), "{pass} has a description");
         assert_eq!(
             description,
-            runic_core::pass::PassInfo::lookup(pass).unwrap().description(),
+            runic_ir::pass::PassInfo::lookup(pass).unwrap().description(),
             "{pass}"
         );
     }

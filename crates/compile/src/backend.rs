@@ -1,4 +1,4 @@
-use runic_core::{DataLayoutSpec, Report, dialects::builtin::WorldRef, pass::OpPassManager};
+use runic_ir::{DataLayoutSpec, Report, dialects::builtin::WorldRef, pass::OpPassManager};
 
 use crate::{CheckpointDecl, Checkpoints, Flow, Session, Triple};
 

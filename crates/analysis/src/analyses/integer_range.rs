@@ -1,13 +1,13 @@
 mod lattice;
 
-use runic_core::{
+use runic_ir::{
     AttributeRef, Forward, Operation, ProgramPoint, Report, SmallVec, ValueRef,
     attributes::IntegerLikeAttr,
     traits::{
         InferIntRangeInterface, OperandRangeRequirement, operation_operand_range_requirement,
     },
 };
-pub use runic_core::{ConstantIntRange, IntegerValueRange};
+pub use runic_ir::{ConstantIntRange, IntegerValueRange};
 
 pub use self::lattice::IntegerRangeLattice;
 use super::{DeadCodeAnalysis, SparseConstantPropagation, constant_propagation::ConstantValue};
@@ -176,7 +176,7 @@ pub fn value_range(solver: &DataFlowSolver, value: ValueRef) -> Option<IntegerVa
 
 /// Return true if no operand of `op` has a requirement that is
 /// [OperandRangeRequirement::Unexpressed] and the range analysis proves every one that is a
-/// [OperandRangeRequirement::Range] ([runic_core::traits::OperandRangeRequirementOpInterface]):
+/// [OperandRangeRequirement::Range] ([runic_ir::traits::OperandRangeRequirementOpInterface]):
 /// `solver` has an initialized range for the operand that [ConstantIntRange::is_within] the
 /// requirement. An operation that states no requirement trivially has them all proven.
 ///
@@ -235,7 +235,10 @@ fn integer_constant_range(attr: AttributeRef) -> Option<IntegerValueRange> {
 mod tests {
     use alloc::{format, vec::Vec};
 
-    use runic_core::{
+    use runic_dialect_arith::ArithOpBuilder;
+    use runic_dialect_cf::ControlFlowOpBuilder;
+    use runic_dialect_scf::StructuredControlFlowOpBuilder;
+    use runic_ir::{
         Context, Int, Op, OpBuilder, OpFoldResult, Signedness, SourceSpan, Type,
         dialects::{
             builtin::{BuiltinOpBuilder, FunctionBuilder},
@@ -245,9 +248,6 @@ mod tests {
         testing::{Test, text::Rng},
         traits::Foldable,
     };
-    use runic_dialect_arith::ArithOpBuilder;
-    use runic_dialect_cf::ControlFlowOpBuilder;
-    use runic_dialect_scf::StructuredControlFlowOpBuilder;
 
     use super::*;
     use crate::{DataFlowConfig, analyses::dce::DeadCodeAnalysis};

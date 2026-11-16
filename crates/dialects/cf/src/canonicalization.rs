@@ -26,7 +26,7 @@ pub use self::{
 pub(crate) mod testing {
     use alloc::{boxed::Box, rc::Rc};
 
-    use runic_core::{
+    use runic_ir::{
         Context, Listener, ListenerType, OperationRef, ProgramPoint, Report,
         dialects::builtin::FunctionRef,
         patterns::{

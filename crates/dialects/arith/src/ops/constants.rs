@@ -1,4 +1,4 @@
-use runic_core::{
+use runic_ir::{
     derive::{EffectOpInterface, operation},
     dialects::builtin::attributes::IntAttr,
     effects::MemoryEffectOpInterface,
@@ -47,7 +47,7 @@ impl Verify<dyn InferTypeOpInterface> for Constant {
         if attr_ty == result_ty {
             return Ok(());
         }
-        Err(runic_core::diagnostics::report!(
+        Err(runic_ir::diagnostics::report!(
             message: "invalid operation",
             labels: [
                 primary(
@@ -116,7 +116,7 @@ impl OpParser for Constant {
     fn parse(state: &mut OperationState, parser: &mut dyn OpAsmParser<'_>) -> ParseResult {
         use alloc::format;
 
-        use runic_core::parse::{ParserError, ParserExt};
+        use runic_ir::parse::{ParserError, ParserExt};
 
         let (literal_span, literal) = parser.parse_integer_literal()?.into_parts();
         let (ty_span, ty) = parser.parse_colon_type()?.into_parts();
@@ -124,7 +124,7 @@ impl OpParser for Constant {
         parser.parse_optional_attribute_dict_with_keyword(&mut attrs)?;
         let span = SourceSpan::session(
             literal_span.source().id(),
-            runic_core::diagnostics::TextRange::new(
+            runic_ir::diagnostics::TextRange::new(
                 literal_span.range().start(),
                 ty_span.range().end(),
             )

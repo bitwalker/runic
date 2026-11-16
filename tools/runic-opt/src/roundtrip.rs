@@ -4,7 +4,7 @@
 //! context of its own (with the parser configured as for the input: verification as the options
 //! say, the same region depth and list nesting limits), and the result is printed in the same form.
 //! The two texts are the same program when they are equal after value and block names are
-//! renumbered in order of first appearance (see [`runic_core::print::same_program`]). For the
+//! renumbered in order of first appearance (see [`runic_ir::print::same_program`]). For the
 //! custom form, what the text read back to is also printed in the generic form, which holds every
 //! part of an operation, and compared with the generic print of the input: a custom form that
 //! leaves a part out prints the same text twice, and only this comparison sees it. A difference is
@@ -13,7 +13,7 @@
 
 use std::rc::Rc;
 
-use runic_core::{
+use runic_ir::{
     Context, OpPrintingFlags, OperationRef,
     diagnostics::{NoteKind, OwnedDiagnostic, diagnostic},
     parse::{ParserConfig, parse_any},

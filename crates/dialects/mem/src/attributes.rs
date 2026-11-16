@@ -1,6 +1,6 @@
 use core::fmt;
 
-use runic_core::{
+use runic_ir::{
     Align, AttrPrinter, attributes::AttrParser, derive::DialectAttribute, parse::ParserError,
     print::AsmPrinter,
 };
@@ -55,9 +55,9 @@ impl fmt::Display for Alignment {
     }
 }
 
-impl runic_core::formatter::PrettyPrint for Alignment {
-    fn render(&self) -> runic_core::formatter::Document {
-        use runic_core::formatter::*;
+impl runic_ir::formatter::PrettyPrint for Alignment {
+    fn render(&self) -> runic_ir::formatter::Document {
+        use runic_ir::formatter::*;
         display(self)
     }
 }
@@ -73,8 +73,8 @@ impl AttrPrinter for AlignmentAttr {
 
 impl AttrParser for AlignmentAttr {
     fn parse(
-        parser: &mut dyn runic_core::parse::Parser<'_>,
-    ) -> runic_core::parse::ParseResult<runic_core::AttributeRef> {
+        parser: &mut dyn runic_ir::parse::Parser<'_>,
+    ) -> runic_ir::parse::ParseResult<runic_ir::AttributeRef> {
         let alignment = if parser.parse_optional_custom_keyword("natural")?.is_some() {
             Alignment::Natural
         } else {
@@ -89,11 +89,11 @@ impl AttrParser for AlignmentAttr {
 
 /// Parses a number of bytes that is a power of two from 1 to 32768; anything else is an error at
 /// its span.
-pub(crate) fn parse_align_bytes<'input, P>(parser: &mut P) -> runic_core::parse::ParseResult<Align>
+pub(crate) fn parse_align_bytes<'input, P>(parser: &mut P) -> runic_ir::parse::ParseResult<Align>
 where
-    P: ?Sized + runic_core::parse::Parser<'input>,
+    P: ?Sized + runic_ir::parse::Parser<'input>,
 {
-    use runic_core::parse::ParserExt;
+    use runic_ir::parse::ParserExt;
 
     let (span, bytes) = parser.parse_decimal_integer::<u64>()?.into_parts();
     Align::from_bytes(bytes).ok_or_else(|| ParserError::InvalidAttributeValue {
@@ -109,7 +109,7 @@ where
 mod tests {
     use alloc::{rc::Rc, vec};
 
-    use runic_core::{
+    use runic_ir::{
         Context,
         testing::elements::{Row, check_every_kind},
     };

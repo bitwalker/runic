@@ -2,7 +2,7 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use runic_core::{
+use runic_ir::{
     AttrPrinter, AttributeRef, Context, OpAsmParser, OpParser, OpPrinter, OperationState, Report,
     Value,
     attributes::AttrParser,
@@ -107,7 +107,7 @@ pub struct RoundtripUnreadableCustomForm {}
 impl OpPrinter for RoundtripUnreadableCustomForm {
     fn print(&self, printer: &mut AsmPrinter<'_>) {
         printer.print_space();
-        *printer += runic_core::formatter::const_text("<<unreadable>>");
+        *printer += runic_ir::formatter::const_text("<<unreadable>>");
     }
 }
 
@@ -534,7 +534,7 @@ fn lists_in_a_property_and_a_dictionary_read_back() {
 fn symbol_references_read_in_a_list_are_linked() {
     use std::rc::Rc;
 
-    use runic_core::{
+    use runic_ir::{
         Operation,
         parse::{ParserConfig, parse_any},
     };
@@ -546,7 +546,7 @@ fn symbol_references_read_in_a_list_are_linked() {
         let symbols = module.as_symbol_table().unwrap().symbol_manager();
         (symbols.lookup_op("f").unwrap(), symbols.lookup_op("g").unwrap())
     };
-    let uses = |symbol: runic_core::OperationRef| -> usize {
+    let uses = |symbol: runic_ir::OperationRef| -> usize {
         symbol.borrow().as_symbol().unwrap().iter_uses().count()
     };
     let mut holder = {
@@ -556,7 +556,7 @@ fn symbol_references_read_in_a_list_are_linked() {
         assert!(holder.borrow().is::<RoundtripListProperty>());
         holder
     };
-    let owners = |symbol: runic_core::OperationRef| {
+    let owners = |symbol: runic_ir::OperationRef| {
         symbol
             .borrow()
             .as_symbol()

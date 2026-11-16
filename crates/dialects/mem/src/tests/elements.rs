@@ -3,7 +3,7 @@
 
 use alloc::{format, string::String};
 
-use runic_core::{
+use runic_ir::{
     Context, ElementRewrite, Operation, OperationRef, Type, TypeMapper, Value,
     dialects::builtin::attributes::TypeAttr, interner::Symbol, recursively_replace_elements_in,
 };

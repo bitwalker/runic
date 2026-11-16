@@ -134,7 +134,7 @@ pub trait Verifier<Trait: ?Sized> {
     /// have more optimizations applied as a result.
     ///
     /// ```rust
-    /// use runic_core::{Context, Report, Verify, verifier::Verifier};
+    /// use runic_ir::{Context, Report, Verify, verifier::Verifier};
     ///
     /// /// This trait is a marker for a type that should never validate, i.e. verifying it always
     /// /// returns an error.
@@ -145,7 +145,7 @@ pub trait Verifier<Trait: ?Sized> {
     ///     }
     /// }
     ///
-    /// /// We can't impl the `Verify` trait for all T outside of `runic_core`, so we newtype all T
+    /// /// We can't impl the `Verify` trait for all T outside of `runic_ir`, so we newtype all T
     /// /// to do so, in effect, we can mimic the effect of implementing for all T using this type.
     /// struct Any<T>(core::marker::PhantomData<T>);
     /// impl<T> Any<T> {

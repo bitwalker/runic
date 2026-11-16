@@ -1,4 +1,4 @@
-use runic_core::{AddressSpace, BuilderExt, Felt};
+use runic_ir::{AddressSpace, BuilderExt, Felt};
 
 use super::*;
 

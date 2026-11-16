@@ -109,7 +109,7 @@ mod transform;
 
 use alloc::collections::BTreeSet;
 
-use runic_core::{
+use runic_ir::{
     AsValueRange, BlockRef, Builder, OpBuilder, Operation, OperationRef, Region, RegionRef, Report,
     SmallVec, SourceSpan, Spanned, Type, Value, ValueRange, ValueRef, WalkResult, adt::SmallSet,
     dominance::DominanceInfo, traits::BranchOpInterface,
@@ -296,7 +296,7 @@ pub trait CFGToSCFInterface {
 /// branching to one block per return-like operation kind remains.
 ///
 /// The transformation currently requires that all control flow graph operations have no side
-/// effects, implement the [runic_core::traits::BranchOpInterface], and do not have any operation-
+/// effects, implement the [runic_ir::traits::BranchOpInterface], and do not have any operation-
 /// produced successor operands.
 ///
 /// Returns `Err` if any of the preconditions are violated or if any of the methods of `interface`
@@ -410,7 +410,7 @@ pub fn check_all_blocks_reachable(region: &Region) -> Result<(), Report> {
 ///
 /// Returns failure if any precondition is violated.
 fn check_transformation_preconditions(region: &Region) -> Result<(), Report> {
-    use runic_core::SuccessorOperands;
+    use runic_ir::SuccessorOperands;
 
     check_all_blocks_reachable(region)?;
 
@@ -468,7 +468,7 @@ fn check_transformation_preconditions(region: &Region) -> Result<(), Report> {
 mod unreachable_block_tests {
     use alloc::{boxed::Box, format, rc::Rc, string::String};
 
-    use runic_core::{
+    use runic_ir::{
         Context, Report,
         dialects::builtin::Module,
         parse::{self, ParserConfig},
@@ -690,7 +690,7 @@ builtin.function public extern("C") @f(%a: i32, %b: i32, %c: i1, %d: i1, %p: ptr
 mod entry_cycle_tests {
     use alloc::{boxed::Box, format, rc::Rc, string::String};
 
-    use runic_core::{
+    use runic_ir::{
         Context, Forward, OperationRef, RawWalk, Report,
         dialects::builtin::Function,
         parse::{self, ParserConfig},
@@ -839,7 +839,7 @@ mod entry_cycle_tests {
 mod canonical_entry_tests {
     use alloc::rc::Rc;
 
-    use runic_core::{
+    use runic_ir::{
         AsValueRange, Context, Region, Report, Spanned, Value,
         dialects::builtin::Function,
         parse::{self, ParserConfig},
@@ -939,7 +939,7 @@ mod canonical_entry_tests {
     ) -> Result<(), Report> {
         use alloc::{boxed::Box, vec::Vec};
 
-        use runic_core::{
+        use runic_ir::{
             pass::{Nesting, PassManager},
             patterns::GreedyRewriteConfig,
         };
@@ -1098,7 +1098,7 @@ mod canonical_entry_tests {
     #[test]
     fn canonical_entry_aggressive_visits_nested_regions() -> Result<(), Report> {
         let context = Rc::new(Context::default());
-        let module = parse::parse::<runic_core::dialects::builtin::Module>(
+        let module = parse::parse::<runic_ir::dialects::builtin::Module>(
             ParserConfig::new(context.clone()),
             "nested.runic",
             r#"builtin.module public @outer {

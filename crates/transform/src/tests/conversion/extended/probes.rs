@@ -15,7 +15,9 @@ use alloc::{
 use core::cell::Cell;
 use std::println;
 
-use runic_core::{
+use runic_dialect_arith::ArithDialect;
+use runic_dialect_scf::ScfDialect;
+use runic_ir::{
     Context, Operation, OperationRef, Report, Symbol,
     conversion::{
         ConversionConfig, ConversionPatternSet, ConversionResult, ConversionTarget,
@@ -26,8 +28,6 @@ use runic_core::{
     parse::{self, ParserConfig},
     testing::text::describe,
 };
-use runic_dialect_arith::ArithDialect;
-use runic_dialect_scf::ScfDialect;
 
 use super::{
     Bounds, Opts, Rng, mix_convert, mix_converter, mix_patterns, mix_target,
@@ -678,7 +678,7 @@ fn wanted_canonicalizing_a_module_with_a_dead_call_of_the_enclosing_function() {
 /// every function, and the module itself is not given to it.
 #[test]
 fn a_function_pass_on_a_module_is_nested_implicitly() {
-    use runic_core::pass::{Nesting, PassManager};
+    use runic_ir::pass::{Nesting, PassManager};
     let (context, module) = module(
         r#"builtin.function public extern("C") @f(%0: i32) -> i32 locals(i32) {
     builtin.store_local 0, %0;
@@ -691,7 +691,7 @@ builtin.function public extern("C") @g(%0: i64) -> i64 locals(i64) {
     builtin.ret %1 : (i64);
 };"#,
     );
-    use runic_core::pass::Pass;
+    use runic_ir::pass::Pass;
     let local2reg = crate::Local2Reg;
     assert!(local2reg.can_schedule_on(&context.get_registered_name::<Function>()));
     assert!(!local2reg.can_schedule_on(&context.get_registered_name::<Module>()));
@@ -791,7 +791,7 @@ fn costs_of_conversion_and_verification() {
                 }
                 let started = std::time::Instant::now();
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    use runic_core::pass::{Nesting, PassManager};
+                    use runic_ir::pass::{Nesting, PassManager};
                     let mut manager = PassManager::on::<Module>(context.clone(), Nesting::Implicit);
                     manager.add_pass(make()).unwrap();
                     manager.enable_verifier(false);

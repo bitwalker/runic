@@ -1,6 +1,7 @@
 use alloc::{rc::Rc, vec::Vec};
 
-use runic_core::{
+use runic_dialect_ub::PoisonAttr;
+use runic_ir::{
     attributes::IntegerLikeAttr,
     derive::{EffectOpInterface, OpParser, OpPrinter, operation},
     dialects::builtin::attributes::{I32Attr, StringAttr},
@@ -10,7 +11,6 @@ use runic_core::{
     traits::*,
     *,
 };
-use runic_dialect_ub::PoisonAttr;
 
 use crate::ControlFlowDialect;
 
@@ -277,7 +277,7 @@ impl Verify<dyn InferTypeOpInterface> for Select {
         if first == second && first == result {
             return Ok(());
         }
-        Err(runic_core::diagnostics::report!(
+        Err(runic_ir::diagnostics::report!(
             message: "invalid operation",
             labels: [
                 primary(
@@ -451,7 +451,7 @@ impl OpPrinter for Assert {
         let op = self.as_operation();
         printer.print_space();
         printer.print_value_uses(op.operands().group(0).as_value_range());
-        *printer += runic_core::formatter::const_text(", ");
+        *printer += runic_ir::formatter::const_text(", ");
         printer.print_string(self.get_message().as_str());
         if op.has_attributes() {
             printer.print_space();
@@ -491,13 +491,13 @@ impl OpParser for Assert {
 mod tests {
     use alloc::{format, string::String, vec, vec::Vec};
 
-    use runic_core::{
+    use runic_expect_test::expect;
+    use runic_ir::{
         diagnostics::Report,
         dialects::builtin::{BuiltinOpBuilder, Ret, attributes::BoolAttr},
         print::AsmPrinter,
         testing::{Test, parse_function_fixpoint},
     };
-    use runic_expect_test::expect;
 
     use super::*;
     use crate::ControlFlowOpBuilder;
@@ -613,13 +613,12 @@ builtin.function public extern(\"C\") @wide(%s: i32) -> i32 {{
     fn parse_wide_switch(
         name: &str,
         source: &str,
-    ) -> Result<(Rc<Context>, runic_core::dialects::builtin::FunctionRef), Report> {
+    ) -> Result<(Rc<Context>, runic_ir::dialects::builtin::FunctionRef), Report> {
         let context = Rc::new(Context::default());
-        let config = runic_core::parse::ParserConfig::new(context.clone());
-        let function = runic_core::parse::parse::<runic_core::dialects::builtin::Function>(
-            config, name, source,
-        )
-        .into_result()?;
+        let config = runic_ir::parse::ParserConfig::new(context.clone());
+        let function =
+            runic_ir::parse::parse::<runic_ir::dialects::builtin::Function>(config, name, source)
+                .into_result()?;
         Ok((context, function))
     }
 
@@ -743,7 +742,7 @@ builtin.function public extern("C") @branch(%c: i1, %a: i32, %b: i32) -> i32 {
 
     #[test]
     fn parse_generic_branches_reject_incorrect_successor_counts() {
-        use runic_core::{
+        use runic_ir::{
             dialects::builtin::Function,
             parse::{ParserConfig, parse},
         };
@@ -780,7 +779,7 @@ builtin.function public extern("C") @branch(%c: i1, %a: i32, %b: i32) -> i32 {
 
     #[test]
     fn parse_generic_cond_br_rejects_incorrect_operand_counts() {
-        use runic_core::{
+        use runic_ir::{
             dialects::builtin::Function,
             parse::{ParserConfig, parse},
         };
@@ -812,7 +811,7 @@ builtin.function public extern("C") @branch(%c: i1, %a: i32, %b: i32) -> i32 {
 
     #[test]
     fn parse_cond_br_rejects_non_boolean_condition() {
-        use runic_core::{
+        use runic_ir::{
             dialects::builtin::Function,
             parse::{ParserConfig, parse},
         };
@@ -851,7 +850,7 @@ builtin.function public extern("C") @branch(%c: i1, %a: i32, %b: i32) -> i32 {
     /// fallback, separated by `|`, each case with its key; anything else is rejected.
     #[test]
     fn parse_generic_switch_checks_its_successor_groups() {
-        use runic_core::{
+        use runic_ir::{
             dialects::builtin::Function,
             parse::{ParserConfig, parse},
         };
@@ -883,7 +882,7 @@ builtin.function public extern("C") @branch(%c: i1, %a: i32, %b: i32) -> i32 {
             .into_result() else {
                 panic!("expected generic cf.switch with successors '{successors}' to be rejected");
             };
-            let message = runic_core::testing::text::describe(&error);
+            let message = runic_ir::testing::text::describe(&error);
             assert!(message.contains(expected), "{successors}: {message}");
         }
     }
@@ -892,7 +891,7 @@ builtin.function public extern("C") @branch(%c: i1, %a: i32, %b: i32) -> i32 {
     /// fallback and forwarded arguments included, and prints the same generic text again.
     #[test]
     fn a_generic_switch_reads_back() -> Result<(), Report> {
-        use runic_core::{
+        use runic_ir::{
             dialects::builtin::Function,
             parse::{ParserConfig, parse},
             print::same_program,
@@ -935,7 +934,7 @@ builtin.function public extern(\"C\") @branch(%s: i32, %a: i32) -> i32 {
     /// back.
     #[test]
     fn a_generic_branch_states_the_types_of_its_arguments() -> Result<(), Report> {
-        use runic_core::{
+        use runic_ir::{
             dialects::builtin::Function,
             parse::{ParserConfig, parse},
             print::same_program,
@@ -1225,7 +1224,7 @@ builtin.function public extern(\"C\") @select(%sel: i32, %a: i32, %b: i32) -> i3
                 .verify()
                 .expect_err("a switch with two cases of one value verifies"),
         };
-        let message = runic_core::testing::text::describe(&error);
+        let message = runic_ir::testing::text::describe(&error);
         assert!(
             message.starts_with(
                 "invalid operation cf.switch: successor 2 has the key #builtin.i32<7>, which \
@@ -1380,7 +1379,7 @@ builtin.function public extern(\"C\") @select(%sel: i32, %a: i32, %b: i32) -> i3
     }
 
     /// The message of the first `cf.assert` in the entry block of `function`.
-    fn assert_message(function: runic_core::dialects::builtin::FunctionRef) -> String {
+    fn assert_message(function: runic_ir::dialects::builtin::FunctionRef) -> String {
         let entry = function.borrow().entry_block();
         let op = entry
             .borrow()
@@ -1502,7 +1501,7 @@ builtin.function public extern(\"C\") @check(%c: i32) {
     fn assert_of_true_is_erased() -> Result<(), Report> {
         use alloc::boxed::Box;
 
-        use runic_core::patterns::RewritePattern;
+        use runic_ir::patterns::RewritePattern;
 
         use crate::canonicalization::{EraseTrueAssert, testing::apply_with_borrowing_listener};
 
@@ -1584,7 +1583,7 @@ builtin.function public extern(\"C\") @check(%c: i1, %sel: i32, %a: i32, %b: i32
     /// is a child of the default resource, disjoint from another child.
     #[test]
     fn an_assert_writes_its_own_resource() {
-        use runic_core::{dialects::builtin::Function, testing::text::parse};
+        use runic_ir::{dialects::builtin::Function, testing::text::parse};
 
         let text = "builtin.function public extern(\"C\") @f(%c: i1) {
     cf.assert %c, \"m\";
@@ -1610,7 +1609,7 @@ builtin.function public extern(\"C\") @check(%c: i1, %sel: i32, %a: i32, %b: i32
     /// types. (A fold that chose the second arm would hand an `i64` to an `i32` result.)
     #[test]
     fn a_select_of_two_types_does_not_verify() {
-        use runic_core::{dialects::builtin::Function, testing::text::parse};
+        use runic_ir::{dialects::builtin::Function, testing::text::parse};
 
         let text = "builtin.function public extern(\"C\") @f(%c: i1, %a: i32, %b: i64) -> i32 {
     %s = cf.select %c, %a, %b;
@@ -1696,7 +1695,7 @@ builtin.function public extern(\"C\") @check(%c: i1, %sel: i32, %a: i32, %b: i32
     /// form, and the parsed assert has the message built.
     #[test]
     fn assert_messages_round_trip_in_both_forms() {
-        use runic_core::{
+        use runic_ir::{
             dialects::builtin::Function,
             testing::text::{Rng, parse, round_trip},
         };
@@ -1757,7 +1756,7 @@ builtin.function public extern(\"C\") @check(%c: i1, %sel: i32, %a: i32, %b: i32
     /// generic form's property dictionary, the assert prints in the hand-written form.
     #[test]
     fn assert_requires_its_message_in_both_forms() {
-        use runic_core::{dialects::builtin::Function, testing::text::parse};
+        use runic_ir::{dialects::builtin::Function, testing::text::parse};
 
         let wrap = |body: &str| {
             format!(

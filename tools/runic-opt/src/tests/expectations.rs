@@ -1,7 +1,7 @@
 //! `--verify-diagnostics`: the diagnostics of each case are checked against the `expected-<kind>`
 //! comments in it.
 
-use runic_core::{
+use runic_ir::{
     EntityMut, Op, OperationName, Report,
     diagnostics::diagnostic,
     dialects::builtin::Function,

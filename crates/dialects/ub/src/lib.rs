@@ -13,7 +13,7 @@ mod attributes;
 mod builders;
 mod ops;
 
-use runic_core::{
+use runic_ir::{
     AttributeRef, Builder, BuilderExt, Dialect, DialectInfo, OperationRef, SourceSpan, Type,
     derive::DialectRegistration,
 };
@@ -62,7 +62,7 @@ mod tests {
         vec::Vec,
     };
 
-    use runic_core::{
+    use runic_ir::{
         Context, Int, Op, OpFoldResult, OperationRef, SmallVec, SourceSpan, Type, Value,
         diagnostics::{Diagnostic, Label, VisitDiagnostic},
         dialects::builtin::BuiltinOpBuilder,
@@ -274,11 +274,11 @@ mod tests {
         let context = test.context_rc();
         let i64 = context.i64();
         let i32 = context.i32();
-        let mut rewrite = runic_core::ElementRewrite::types(runic_core::TypeMapper::new(
-            &context,
-            move |_, ty| if ty == i64 { i32 } else { ty },
-        ));
-        let changed = runic_core::recursively_replace_elements_in(
+        let mut rewrite =
+            runic_ir::ElementRewrite::types(runic_ir::TypeMapper::new(&context, move |_, ty| {
+                if ty == i64 { i32 } else { ty }
+            }));
+        let changed = runic_ir::recursively_replace_elements_in(
             test.function().as_operation_ref(),
             &mut rewrite,
         )

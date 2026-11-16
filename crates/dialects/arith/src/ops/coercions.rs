@@ -1,6 +1,6 @@
 use alloc::{format, rc::Rc, string::String};
 
-use runic_core::{
+use runic_ir::{
     derive::{EffectOpInterface, OpParser, OpPrinter, operation},
     dialects::builtin::attributes::TypeAttr,
     effects::MemoryEffectOpInterface,
@@ -141,7 +141,7 @@ fn verify_cast(op: &Operation, rule: CastRule, ty: Type) -> Result<(), Report> {
     let Some(problem) = problem else {
         return Ok(());
     };
-    Err(runic_core::diagnostics::report!(
+    Err(runic_ir::diagnostics::report!(
         message: "invalid operation",
         labels: [
             primary(op.span(), format!("invalid '{}' from `{from}` to `{to}`: {problem}", op.name())),

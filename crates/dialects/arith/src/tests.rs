@@ -9,7 +9,7 @@ use alloc::{
     vec::Vec,
 };
 
-use runic_core::{
+use runic_ir::{
     Attribute, AttributeRef, Builder as _, Context, Int, Op, OpBuilder, OpFoldResult, OperationRef,
     Report, Signedness, SmallVec, SourceSpan, Type, Value, ValueRef,
     diagnostics::{Diagnostic, Label, VisitDiagnostic},
@@ -78,7 +78,7 @@ fn text_of(test: &Test) -> String {
 /// Canonicalizes `test`'s function with every `arith` canonicalization pattern and folding.
 /// Returns whether anything changed.
 fn canonicalize(test: &Test) -> bool {
-    use runic_core::{
+    use runic_ir::{
         patterns::{
             FrozenRewritePatternSet, GreedyRewriteConfig, RegionSimplificationLevel,
             RewritePatternSet, apply_patterns_and_fold_greedily,
@@ -767,7 +767,7 @@ fn constants_parse_print_and_parse_again() {
 
 #[test]
 fn constant_text_keeps_non_property_attributes() {
-    use runic_core::dialects::builtin::attributes::TypeAttr;
+    use runic_ir::dialects::builtin::attributes::TypeAttr;
 
     let mut test = test_with(&[]);
     let context = test.context_rc();
@@ -897,7 +897,7 @@ fn fold_values(
             let folded = folded.borrow();
             let int = folded
                 .as_attr()
-                .as_trait::<dyn runic_core::attributes::IntegerLikeAttr>()
+                .as_trait::<dyn runic_ir::attributes::IntegerLikeAttr>()
                 .unwrap();
             (int.as_int(), int.ty())
         })
@@ -942,7 +942,7 @@ fn coercion_folds_preserve_shared_constants() {
             let attribute = attribute.borrow();
             let int = attribute
                 .as_attr()
-                .as_trait::<dyn runic_core::attributes::IntegerLikeAttr>()
+                .as_trait::<dyn runic_ir::attributes::IntegerLikeAttr>()
                 .unwrap();
             assert_eq!(int.as_int(), input, "source constant changed");
             assert_eq!(source.borrow().ty(), input_ty);
@@ -1227,7 +1227,7 @@ fn a_double_negation_folds_at_i1_and_isize() {
 
 #[test]
 fn the_range_of_an_isize_constant_is_untracked() {
-    use runic_core::{ConstantIntRange, IntegerValueRange, traits::InferIntRangeInterface};
+    use runic_ir::{ConstantIntRange, IntegerValueRange, traits::InferIntRangeInterface};
     let mut test = test_with(&[]);
     let context = test.context_rc();
     let (wide, narrow) = {
@@ -1268,7 +1268,7 @@ fn operand_requirements(
     ty: TypeFn,
     build: fn(Builder<'_, '_>, ValueRef, ValueRef) -> ValueRef,
 ) -> [OperandRangeRequirement; 3] {
-    use runic_core::traits::operation_operand_range_requirement;
+    use runic_ir::traits::operation_operand_range_requirement;
     let mut test = test_with(&[ty, ty]);
     let [lhs, rhs] = params(&test)[..] else {
         unreachable!()
@@ -1289,7 +1289,7 @@ fn i200(context: &Context) -> Type {
 #[test]
 fn a_shift_requires_an_amount_below_the_width() {
     use OperandRangeRequirement::{None as Any, Range, Unexpressed};
-    use runic_core::ConstantIntRange;
+    use runic_ir::ConstantIntRange;
     type BuildFn = fn(Builder<'_, '_>, ValueRef, ValueRef) -> ValueRef;
     let shifts: [(&str, BuildFn); 3] = [
         ("shl", |b, l, r| b.shl(l, r, SPAN).unwrap()),
@@ -1333,7 +1333,7 @@ fn a_shift_requires_an_amount_below_the_width() {
 #[test]
 fn a_division_requires_a_nonzero_divisor() {
     use OperandRangeRequirement::{None as Any, Range, Unexpressed};
-    use runic_core::ConstantIntRange;
+    use runic_ir::ConstantIntRange;
     type BuildFn = fn(Builder<'_, '_>, ValueRef, ValueRef) -> ValueRef;
     let divisions: [(&str, BuildFn, OperandRangeRequirement); 6] = [
         ("udiv", |b, l, r| b.udiv(l, r, SPAN).unwrap(), Any),
@@ -1379,7 +1379,7 @@ fn a_division_requires_a_nonzero_divisor() {
 #[test]
 fn an_overflowing_operation_has_an_unexpressed_requirement_unless_it_wraps() {
     use OperandRangeRequirement::{None as Any, Unexpressed};
-    use runic_core::{BuilderExt, Overflow};
+    use runic_ir::{BuilderExt, Overflow};
     type BuildFn = fn(Builder<'_, '_>, ValueRef, ValueRef, Overflow) -> ValueRef;
     let operations: [(&str, BuildFn); 3] = [
         ("add", |b, l, r, o| {
@@ -1421,9 +1421,8 @@ fn an_overflowing_operation_has_an_unexpressed_requirement_unless_it_wraps() {
                 let result = build(&mut test.function_builder(), lhs, rhs, overflow);
                 let op = result.borrow().get_defining_op().unwrap();
                 let op = op.borrow();
-                let requirements = [0, 1, 2].map(|index| {
-                    runic_core::traits::operation_operand_range_requirement(&op, index)
-                });
+                let requirements = [0, 1, 2]
+                    .map(|index| runic_ir::traits::operation_operand_range_requirement(&op, index));
                 assert_eq!(requirements, [expected, expected, Any], "{name} {overflow}");
             }
         }

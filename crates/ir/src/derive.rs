@@ -3,7 +3,7 @@ pub use runic_macros::{
     EffectOpInterface, OpParser, OpPrinter, TypeComponent, operation, operation_trait,
 };
 
-/// What derived code names through `::runic_core`, so that a crate using a derive need not
+/// What derived code names through `::runic_ir`, so that a crate using a derive need not
 /// declare these crates itself.
 #[doc(hidden)]
 pub mod __private {

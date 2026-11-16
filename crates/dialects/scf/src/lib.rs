@@ -15,7 +15,7 @@ mod canonicalization;
 mod ops;
 pub mod transforms;
 
-use runic_core::{
+use runic_ir::{
     DialectInfo,
     derive::{Dialect, DialectRegistration},
 };

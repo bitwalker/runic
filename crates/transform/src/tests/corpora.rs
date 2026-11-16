@@ -14,7 +14,7 @@ use alloc::{
     vec::Vec,
 };
 
-use runic_core::{
+use runic_ir::{
     AttributeRef, Context, ElementRewrite, Int, Operation, OperationRef, Report, SymbolTable, Type,
     TypeMapper, Value, WalkResult,
     dialects::builtin::{Function, Module},
@@ -620,7 +620,7 @@ fn count_mutations_are_rejected() {
 /// a region-branch operation makes a terminator that returns to it fail.
 #[test]
 fn type_mutations_are_rejected() {
-    use runic_core::RegionBranchOpInterface;
+    use runic_ir::RegionBranchOpInterface;
 
     let (mut block_edges, mut result_edges, mut entry_edges) = (0, 0, 0);
     let mut accepted = Vec::new();
@@ -797,10 +797,10 @@ fn every_pass_over_the_golden_functions_verifies() {
 /// operations on a line of its own in the generic form, and its default print is unchanged by it.
 /// A case that does not parse fails the test, unless the test lists it as known not to parse.
 ///
-/// [OpPrintingFlags::generic]: runic_core::print::OpPrintingFlags::generic
+/// [OpPrintingFlags::generic]: runic_ir::print::OpPrintingFlags::generic
 #[test]
 fn every_case_prints_in_the_generic_form() {
-    use runic_core::print::{AsmPrinter, OpPrinter, OpPrintingFlags};
+    use runic_ir::print::{AsmPrinter, OpPrinter, OpPrintingFlags};
 
     let flags = OpPrintingFlags {
         generic: true,
@@ -852,10 +852,10 @@ fn every_case_prints_in_the_generic_form() {
 /// In the generic form with [OpPrintingFlags::print_source_locations], as in the custom form, a
 /// space separates each operation's location from the type before it.
 ///
-/// [OpPrintingFlags::print_source_locations]: runic_core::print::OpPrintingFlags::print_source_locations
+/// [OpPrintingFlags::print_source_locations]: runic_ir::print::OpPrintingFlags::print_source_locations
 #[test]
 fn the_generic_form_separates_the_location() {
-    use runic_core::print::{AsmPrinter, OpPrinter, OpPrintingFlags};
+    use runic_ir::print::{AsmPrinter, OpPrinter, OpPrintingFlags};
 
     let flags = OpPrintingFlags {
         generic: true,

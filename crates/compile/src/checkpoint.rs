@@ -1,7 +1,7 @@
 use core::{any::Any, fmt, ops::ControlFlow};
 use std::io;
 
-use runic_core::{
+use runic_ir::{
     OpPrinter, OpPrintingFlags, Report, dialects::builtin::WorldRef, print::AsmPrinter,
 };
 

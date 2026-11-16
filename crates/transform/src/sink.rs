@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use runic_core::{
+use runic_ir::{
     Backward, BlockRef, Builder, EntityMut, Forward, FxHashSet, OpBuilder, Operation,
     OperationName, OperationRef, ProgramPoint, RawWalk, Region, RegionBranchOpInterface,
     RegionExitTerminatorOpInterface, RegionRef, Report, SmallVec, Usable, Value, ValueRef,
@@ -104,7 +104,7 @@ fn erase_transparent_users(value: ValueRef) {
     // Handle debug value users first: erasing them must leave a `di.debug_kill` marker behind,
     // so debuggers report the affected variables as optimized out instead of showing a stale
     // earlier location.
-    runic_core::dialects::debuginfo::transform::erase_debug_info(&value);
+    runic_ir::dialects::debuginfo::transform::erase_debug_info(&value);
     let transparent_ops: SmallVec<[OperationRef; 2]> = {
         let v = value.borrow();
         v.iter_uses()
@@ -175,7 +175,7 @@ fn erase_transparent_users(value: ValueRef) {
 #[derive(Default)]
 pub struct ControlFlowSink;
 
-runic_core::inventory::submit!(::runic_core::pass::registry::PassInfo::new::<ControlFlowSink>(
+runic_ir::inventory::submit!(::runic_ir::pass::registry::PassInfo::new::<ControlFlowSink>(
     "control-flow-sink",
     CONTROL_FLOW_SINK_DESCRIPTION
 ));
@@ -289,7 +289,7 @@ impl SinkOperandDefs {
     const NAME: &str = "sink-operand-defs";
 }
 
-runic_core::inventory::submit!(::runic_core::pass::registry::PassInfo::new::<SinkOperandDefs>(
+runic_ir::inventory::submit!(::runic_ir::pass::registry::PassInfo::new::<SinkOperandDefs>(
     "sink-operand-defs",
     SinkOperandDefs::DESCRIPTION
 ));
@@ -589,7 +589,7 @@ fn place_of(op: OperationRef) -> (Option<BlockRef>, Option<OperationRef>, Option
 }
 
 fn move_transparent_users_to(op: &Operation, exclude: &[OperationRef]) {
-    use runic_core::adt::SmallSet;
+    use runic_ir::adt::SmallSet;
 
     let ip = ProgramPoint::after(op.as_operation_ref());
     let mut visited = SmallSet::<_, 4>::from_iter(exclude.iter().copied());
@@ -798,7 +798,7 @@ fn get_singly_executed_regions_to_sink(
     branch: &dyn RegionBranchOpInterface,
     regions: &mut SmallVec<[RegionRef; 4]>,
 ) {
-    use runic_core::matchers::Matcher;
+    use runic_ir::matchers::Matcher;
 
     // Collect constant operands.
     let mut operands = SmallVec::<[_; 4]>::with_capacity(branch.num_operands());
@@ -830,7 +830,7 @@ fn get_singly_executed_regions_to_sink(
 mod tests {
     use alloc::{boxed::Box, rc::Rc, string::ToString};
 
-    use runic_core::{
+    use runic_ir::{
         Context, Report,
         dialects::builtin::Function,
         parse::{self, ParserConfig},
@@ -841,7 +841,7 @@ mod tests {
 
     /// `f` with the body `body`, after `pass` ran on it, as text.
     fn run(
-        pass: Box<dyn runic_core::pass::OperationPass>,
+        pass: Box<dyn runic_ir::pass::OperationPass>,
         body: &str,
     ) -> Result<alloc::string::String, Report> {
         let context = Rc::new(Context::default());
@@ -862,10 +862,10 @@ mod tests {
     /// `@pure(i32) -> i32 effects()`, `@unknown(i32) -> i32` and
     /// `@writes(ptr<i32>, i32) -> i32 effects(write(arg 0))`; the text is that of `@f`.
     fn run_with_callees(
-        pass: Box<dyn runic_core::pass::OperationPass>,
+        pass: Box<dyn runic_ir::pass::OperationPass>,
         body: &str,
     ) -> Result<alloc::string::String, Report> {
-        use runic_core::{SymbolTable, dialects::builtin::Module};
+        use runic_ir::{SymbolTable, dialects::builtin::Module};
 
         let context = Rc::new(Context::default());
         let text = alloc::format!(
@@ -911,7 +911,7 @@ mod tests {
     builtin.ret %x : (i32);"#
             );
             for pass in [
-                Box::<SinkOperandDefs>::default() as Box<dyn runic_core::pass::OperationPass>,
+                Box::<SinkOperandDefs>::default() as Box<dyn runic_ir::pass::OperationPass>,
                 Box::<ControlFlowSink>::default(),
             ] {
                 let name = pass.name();
@@ -938,7 +938,7 @@ mod tests {
     } : (i1) -> (i32);
     builtin.ret %x : (i32);"#;
         for pass in [
-            Box::<SinkOperandDefs>::default() as Box<dyn runic_core::pass::OperationPass>,
+            Box::<SinkOperandDefs>::default() as Box<dyn runic_ir::pass::OperationPass>,
             Box::<ControlFlowSink>::default(),
         ] {
             let name = pass.name();
@@ -968,7 +968,7 @@ mod tests {
     } : (i32) -> i32;
     builtin.ret %count : (i32);"#;
         for pass in [
-            Box::<SinkOperandDefs>::default() as Box<dyn runic_core::pass::OperationPass>,
+            Box::<SinkOperandDefs>::default() as Box<dyn runic_ir::pass::OperationPass>,
             Box::<ControlFlowSink>::default(),
         ] {
             let text = run(pass, body)?;
@@ -1007,7 +1007,7 @@ mod tests {
     #[test]
     fn sinking_does_not_move_a_division_into_an_if_inside_a_loop() -> Result<(), Report> {
         for pass in [
-            Box::<SinkOperandDefs>::default() as Box<dyn runic_core::pass::OperationPass>,
+            Box::<SinkOperandDefs>::default() as Box<dyn runic_ir::pass::OperationPass>,
             Box::<ControlFlowSink>::default(),
         ] {
             let name = pass.name();
@@ -1034,7 +1034,7 @@ mod tests {
     } : (i1) -> (i32);
     builtin.ret %x : (i32);"#;
         for pass in [
-            Box::<SinkOperandDefs>::default() as Box<dyn runic_core::pass::OperationPass>,
+            Box::<SinkOperandDefs>::default() as Box<dyn runic_ir::pass::OperationPass>,
             Box::<ControlFlowSink>::default(),
         ] {
             let name = pass.name();
@@ -1071,7 +1071,7 @@ mod tests {
     } : (i32) -> i32;
     builtin.ret %count : (i32);"#;
         for pass in [
-            Box::<SinkOperandDefs>::default() as Box<dyn runic_core::pass::OperationPass>,
+            Box::<SinkOperandDefs>::default() as Box<dyn runic_ir::pass::OperationPass>,
             Box::<ControlFlowSink>::default(),
         ] {
             let name = pass.name();

@@ -3,7 +3,7 @@
 
 use core::fmt;
 
-use runic_core::{
+use runic_ir::{
     EntityMut, Operation, OperationName, Report,
     pass::{Pass, PassExecutionState, PassInfo, PassOptions, write_pass_option},
 };
@@ -24,7 +24,7 @@ pub const MESSAGE: &str = "the test-panic pass panicked";
 /// The message of the panic in a destructor, with `destructor`.
 pub const DESTRUCTOR_MESSAGE: &str = "a destructor of the test-panic pass panicked";
 
-runic_core::inventory::submit!(PassInfo::new::<Panic>(NAME, DESCRIPTION));
+runic_ir::inventory::submit!(PassInfo::new::<Panic>(NAME, DESCRIPTION));
 
 impl Pass for Panic {
     type Target = Operation;

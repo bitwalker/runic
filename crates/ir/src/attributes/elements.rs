@@ -56,7 +56,7 @@ pub trait ElementReplacer {
 /// ```compile_fail
 /// extern crate alloc;
 ///
-/// use runic_core::{derive::DialectAttribute, dialects::test::TestDialect};
+/// use runic_ir::{derive::DialectAttribute, dialects::test::TestDialect};
 ///
 /// /// Not an `AttributeComponent`.
 /// #[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]

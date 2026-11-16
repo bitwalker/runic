@@ -6,7 +6,7 @@ pub use self::poison::PoisonAttr;
 mod tests {
     use alloc::{rc::Rc, vec};
 
-    use runic_core::{
+    use runic_ir::{
         Context,
         testing::elements::{Element, Row, check_every_kind},
     };

@@ -1,10 +1,10 @@
 use alloc::rc::Rc;
 
-use runic_core::{
+use runic_dialect_arith::ArithOpBuilder;
+use runic_ir::{
     patterns::{Pattern, PatternBenefit, PatternInfo, PatternKind, RewritePattern},
     *,
 };
-use runic_dialect_arith::ArithOpBuilder;
 
 use crate::*;
 
@@ -116,7 +116,7 @@ impl RewritePattern for WhileConditionTruth {
 mod tests {
     use alloc::{rc::Rc, string::String};
 
-    use runic_core::{
+    use runic_ir::{
         Context,
         patterns::{self, FrozenRewritePatternSet, GreedyRewriteConfig, RewritePatternSet},
         testing::parse_function_fixpoint,

@@ -10,7 +10,7 @@ use alloc::{
     vec::Vec,
 };
 
-use runic_core::{
+use runic_ir::{
     CallableOpInterface, Context, Felt, Immediate, Operation, OperationRef, RegionBranchPoint,
     RegionRef, Report, SmallVec, SourceSpan, Spanned, SymbolName, SymbolPath, Type, Value as _,
     ValueRange, ValueRef,

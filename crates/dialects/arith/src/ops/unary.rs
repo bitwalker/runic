@@ -1,6 +1,6 @@
 use alloc::rc::Rc;
 
-use runic_core::{
+use runic_ir::{
     derive::{EffectOpInterface, OpParser, OpPrinter, operation},
     effects::MemoryEffectOpInterface,
     traits::*,

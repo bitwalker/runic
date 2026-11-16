@@ -1,7 +1,7 @@
 use core::any::Any;
 use std::path::PathBuf;
 
-use runic_core::Report;
+use runic_ir::Report;
 
 use crate::Triple;
 

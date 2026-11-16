@@ -3,7 +3,7 @@
 
 use std::rc::Rc;
 
-use runic_core::{
+use runic_ir::{
     Context, OpPrinter, OpPrintingFlags,
     parse::{ParserConfig, parse_any},
     pass::{Nesting, PassPipeline},

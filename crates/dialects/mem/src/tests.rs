@@ -6,7 +6,9 @@ use alloc::{
     vec::Vec,
 };
 
-use runic_core::{
+use runic_dialect_arith::Constant;
+use runic_expect_test::expect;
+use runic_ir::{
     Align, Context, Int, Op, OperationRef, Report, SmallVec, SourceSpan, SymbolTable, ValueRef,
     dialects::builtin::{BuiltinOpBuilder, Function, Module, attributes::StringAttr},
     effects::{
@@ -21,8 +23,6 @@ use runic_core::{
     },
     traits::{OperandRangeRequirement, operation_operand_range_requirement},
 };
-use runic_dialect_arith::Constant;
-use runic_expect_test::expect;
 use runic_transform::{Canonicalizer, CommonSubexpressionElimination, DeadCodeElimination};
 
 use crate::*;
@@ -55,12 +55,12 @@ fn function(params: &str, body: &str) -> String {
 /// `text`, a function, parsed and verified; the error is described with its labels.
 fn parse_function(
     text: &str,
-) -> Result<(Rc<Context>, runic_core::dialects::builtin::FunctionRef), String> {
+) -> Result<(Rc<Context>, runic_ir::dialects::builtin::FunctionRef), String> {
     parse::<Function>(text)
 }
 
 /// The operations of the entry block of `function`, without its terminator.
-fn body_ops(function: runic_core::dialects::builtin::FunctionRef) -> Vec<OperationRef> {
+fn body_ops(function: runic_ir::dialects::builtin::FunctionRef) -> Vec<OperationRef> {
     let entry = function.borrow().entry_block();
     let entry = entry.borrow();
     entry
@@ -121,7 +121,7 @@ fn the_generic_forms_carry_the_properties() {
     let (_context, function) = parse_function(EVERY_FORM).expect("valid ir");
     let generic = body_ops(function)
         .into_iter()
-        .map(|op| runic_core::testing::text::print_generic(&op.borrow()))
+        .map(|op| runic_ir::testing::text::print_generic(&op.borrow()))
         .collect::<Vec<_>>()
         .join("\n");
     expect![[r#"
@@ -449,7 +449,7 @@ fn the_effects_name_their_resources() {
     assert_eq!(MemoryResource.parent().unwrap().name(), DefaultResource.name());
     let memory: &dyn Resource = &MemoryResource;
     assert!(!memory.is_disjoint_from(&DefaultResource));
-    assert!(memory.is_disjoint_from(&runic_core::dialects::test::TestMemoryResource));
+    assert!(memory.is_disjoint_from(&runic_ir::dialects::test::TestMemoryResource));
 
     assert!(ops[0].borrow().would_be_trivially_dead());
     assert!(!ops[1].borrow().would_be_trivially_dead());
@@ -505,7 +505,7 @@ const CALLEES: &str = r#"
 
 /// The function `@f(%p: ptr<i32>, %v: i32) -> (i32, i32)` with the body `body`, in a module that
 /// also holds [CALLEES], after `pass` ran on it with verification, as text.
-fn run_pass(pass: Box<dyn runic_core::pass::OperationPass>, body: &str) -> Result<String, Report> {
+fn run_pass(pass: Box<dyn runic_ir::pass::OperationPass>, body: &str) -> Result<String, Report> {
     let context = Rc::new(Context::default());
     context.get_or_register_dialect::<runic_dialect_cf::ControlFlowDialect>();
     let text = format!(
@@ -702,7 +702,7 @@ fn the_generic_forms_of_address_and_size_operations() {
     let (_context, parsed) = parse_function(ADDRESS_FORMS).expect("valid ir");
     let generic = body_ops(parsed)
         .into_iter()
-        .map(|op| runic_core::testing::text::print_generic(&op.borrow()))
+        .map(|op| runic_ir::testing::text::print_generic(&op.borrow()))
         .collect::<Vec<_>>()
         .join("\n");
     expect![[r#"
@@ -746,7 +746,7 @@ fn the_generic_forms_of_address_and_size_operations() {
 /// not the array the property holds, so it is a diagnostic.
 #[test]
 fn a_path_is_never_read_as_a_list_attribute() {
-    use runic_core::dialects::builtin::attributes::I32ArrayAttr;
+    use runic_ir::dialects::builtin::attributes::I32ArrayAttr;
 
     let (_context, parsed) = parse_function(ADDRESS_FORMS).expect("valid ir");
     let paths = body_ops(parsed)
@@ -781,7 +781,7 @@ fn a_path_is_never_read_as_a_list_attribute() {
 /// `#builtin.type<?>` and reads back; a load through an opaque pointer writes the type it reads.
 #[test]
 fn the_generic_form_of_a_load_reads_back_its_type() {
-    use runic_core::{print::same_program, testing::text::print_all_generic};
+    use runic_ir::{print::same_program, testing::text::print_all_generic};
 
     let text =
         function("%p: ptr<i32>, %o: ptr", "    %0 = mem.load %p;\n    %1 = mem.load %o : i64;");
@@ -832,7 +832,7 @@ fn a_gep_points_to_the_element_its_path_selects() {
         .join("\n");
     let (_context, parsed) = parse_function(&function(GEP_PARAMS, &body)).expect("valid ir");
     for (op, (operands, expected)) in body_ops(parsed).into_iter().zip(cases) {
-        let ty = runic_core::Value::ty(&*op.borrow().results()[0].borrow());
+        let ty = runic_ir::Value::ty(&*op.borrow().results()[0].borrow());
         assert_eq!(ty.to_string(), expected, "mem.gep {operands}");
     }
 }
@@ -853,9 +853,9 @@ builtin.module public @m {
 };";
     let (_context, module) = parse::<Module>(source).unwrap_or_else(|err| panic!("{err}"));
     let mut types = Vec::new();
-    module.borrow().as_operation().prewalk_all(|op: &runic_core::Operation| {
+    module.borrow().as_operation().prewalk_all(|op: &runic_ir::Operation| {
         if op.num_results() == 1 {
-            types.push((op.name().to_string(), runic_core::Value::ty(&*op.results()[0].borrow())));
+            types.push((op.name().to_string(), runic_ir::Value::ty(&*op.results()[0].borrow())));
         }
     });
     let types = types.into_iter().map(|(name, ty)| format!("{name}: {ty}")).collect::<Vec<_>>();
@@ -1097,7 +1097,7 @@ fn a_size_folds_only_when_it_fits_in_an_isize() -> Result<(), Report> {
 /// fold: the verifier reports it.
 #[test]
 fn an_unmeasurable_type_does_not_fold() {
-    use runic_core::{OpFoldResult, traits::Foldable};
+    use runic_ir::{OpFoldResult, traits::Foldable};
 
     let context = Rc::new(Context::default());
     let body = "    %1 = mem.sizeof (i32) -> i32;
@@ -1163,7 +1163,7 @@ fn geps_canonicalize() -> Result<(), Report> {
 #[test]
 fn the_builder_makes_address_and_size_operations() -> Result<(), Report> {
     let mut test = Test::new("f", |cx| {
-        let inner = cx.struct_type(runic_core::dialects::builtin::types::StructType::new([
+        let inner = cx.struct_type(runic_ir::dialects::builtin::types::StructType::new([
             cx.i16().into(),
             cx.i32().into(),
         ]));
@@ -1222,17 +1222,17 @@ fn a_gep_has_at_most_one_index() {
         [0, 1].map(|n| entry.arguments()[n] as ValueRef)
     };
     let built = {
-        let op_builder = runic_core::BuilderExt::create::<Gep, (_, [ValueRef; 2], _)>(
+        let op_builder = runic_ir::BuilderExt::create::<Gep, (_, [ValueRef; 2], _)>(
             test.builder_mut(),
             SourceSpan::UNKNOWN,
         );
-        op_builder(p, [i, i], runic_core::dialects::builtin::attributes::Array::default())
+        op_builder(p, [i, i], runic_ir::dialects::builtin::attributes::Array::default())
     };
     let err = match built {
         Ok(gep) => gep.borrow().as_operation().verify().expect_err("two indices verified"),
         Err(err) => err,
     };
-    let err = runic_core::testing::text::describe(&err);
+    let err = runic_ir::testing::text::describe(&err);
     assert!(err.contains("a gep has at most one index, but this one has 2"), "{err}");
 }
 
@@ -1297,7 +1297,7 @@ fn the_generic_forms_of_bulk_and_cast_operations() {
     let (_context, parsed) = parse_function(BULK_AND_CAST_FORMS).expect("valid ir");
     let generic = body_ops(parsed)
         .into_iter()
-        .map(|op| runic_core::testing::text::print_generic(&op.borrow()))
+        .map(|op| runic_ir::testing::text::print_generic(&op.borrow()))
         .collect::<Vec<_>>()
         .join("\n");
     expect![[r#"
@@ -1453,7 +1453,7 @@ fn bulk_operations_write_memory_and_casts_are_pure() {
 /// The function `@f(params) -> (results)` with `body`, after `pass` ran on it with verification,
 /// as text.
 fn run_pass_on(
-    pass: Box<dyn runic_core::pass::OperationPass>,
+    pass: Box<dyn runic_ir::pass::OperationPass>,
     params: &str,
     results: &str,
     body: &str,
@@ -1490,7 +1490,7 @@ const KEPT_BULK_OPERATIONS: &str = r#"    %k = arith.constant 4 : isize;
 fn bulk_operations_are_kept_unless_their_length_is_zero() -> Result<(), Report> {
     let params = "%p: ptr<i32>, %q: ptr, %n: isize";
     for pass in [
-        Box::<DeadCodeElimination>::default() as Box<dyn runic_core::pass::OperationPass>,
+        Box::<DeadCodeElimination>::default() as Box<dyn runic_ir::pass::OperationPass>,
         Box::<Canonicalizer>::default(),
     ] {
         let text = run_pass_on(pass, params, "", KEPT_BULK_OPERATIONS)?;
@@ -1698,7 +1698,7 @@ fn the_width_free_cast_folds() -> Result<(), Report> {
     ] {
         let err = canonicalize(None, "%p: ptr<i32, 1>", "", &format!("{body}\n    builtin.ret;"))
             .unwrap_err();
-        let err = runic_core::testing::text::describe(&err);
+        let err = runic_ir::testing::text::describe(&err);
         assert!(err.contains("a cast keeps the address space"), "{err}");
     }
     Ok(())

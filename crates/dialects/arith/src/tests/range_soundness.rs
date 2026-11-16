@@ -10,7 +10,7 @@
 //!
 //! See [super::random] for the seeds; each failure message names its seed.
 
-use runic_core::{ConstantIntRange, IntegerValueRange, Overflow, traits::InferIntRangeInterface};
+use runic_ir::{ConstantIntRange, IntegerValueRange, Overflow, traits::InferIntRangeInterface};
 
 use super::{
     model::mask,

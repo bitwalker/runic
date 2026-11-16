@@ -68,7 +68,7 @@ use crate::dialects::builtin::types::{
 /// field of a derived type must be a [TypeComponent]; a field that is not does not compile:
 ///
 /// ```compile_fail
-/// use runic_core::{derive::DialectType, dialects::test::TestDialect};
+/// use runic_ir::{derive::DialectType, dialects::test::TestDialect};
 ///
 /// /// Not a `TypeComponent`.
 /// #[derive(Debug, Default, PartialEq, Eq, Hash)]
@@ -726,7 +726,7 @@ mod tests {
 
     #[test]
     #[should_panic(
-        expected = "builtin type `runic_core::types::tests::PrinterlessType` must implement \
+        expected = "builtin type `runic_ir::types::tests::PrinterlessType` must implement \
                     `TypePrinter`"
     )]
     fn naming_a_printerless_type_in_the_builtin_dialect_panics() {
@@ -749,7 +749,7 @@ mod tests {
     struct FieldsOnlyType(u8);
 
     #[test]
-    #[should_panic(expected = "type `runic_core::types::tests::FieldsOnlyType` has no \
+    #[should_panic(expected = "type `runic_ir::types::tests::FieldsOnlyType` has no \
                                `TypePrinter`, so it must implement `Default`")]
     fn a_dialect_type_with_neither_a_printer_nor_a_default_is_rejected() {
         Context::default().get_or_register_dialect::<FieldsOnlyDialect>();
@@ -768,10 +768,8 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(
-        expected = "type `runic_core::types::tests::PrintOnlyType` implements `TypePrinter` but \
-                    not `TypeParser`"
-    )]
+    #[should_panic(expected = "type `runic_ir::types::tests::PrintOnlyType` implements \
+                               `TypePrinter` but not `TypeParser`")]
     fn a_dialect_type_with_a_printer_but_no_parser_is_rejected() {
         Context::default().get_or_register_dialect::<PrintOnlyDialect>();
     }
@@ -789,10 +787,8 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(
-        expected = "type `runic_core::types::tests::ParseOnlyType` implements `TypeParser` but \
-                    not `TypePrinter`"
-    )]
+    #[should_panic(expected = "type `runic_ir::types::tests::ParseOnlyType` implements \
+                               `TypeParser` but not `TypePrinter`")]
     fn a_dialect_type_with_a_parser_but_no_printer_is_rejected() {
         Context::default().get_or_register_dialect::<ParseOnlyDialect>();
     }
@@ -827,8 +823,8 @@ mod tests {
 
     #[test]
     #[should_panic(
-        expected = "trait table of type `runic_core::types::tests::MislabelledTraits` was built \
-                    for another type, `runic_core::types::tests::WideType`"
+        expected = "trait table of type `runic_ir::types::tests::MislabelledTraits` was built for \
+                    another type, `runic_ir::types::tests::WideType`"
     )]
     fn a_trait_table_entry_built_for_another_type_is_rejected() {
         let context = Context::default();

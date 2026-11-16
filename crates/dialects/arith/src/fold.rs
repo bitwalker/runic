@@ -5,14 +5,14 @@
 //! the operand type, an `i1`, or a cast's target), and the helpers decline unless the operation's
 //! result types are those: an operation that does not verify does not fold. They read the operand
 //! constants, compute the result with a closure over [Int]s, and create a new
-//! [IntAttr](runic_core::dialects::builtin::attributes::IntAttr) for it. For `isize` operands the
+//! [IntAttr](runic_ir::dialects::builtin::attributes::IntAttr) for it. For `isize` operands the
 //! computation goes through [fold_isize], with the result kind that the result type gives, so no
 //! fold chooses it for itself and no fold computes on the 64-bit value of an `isize` constant
 //! directly.
 
 use alloc::rc::Rc;
 
-use runic_core::{
+use runic_ir::{
     AttributeRef, Context, FoldResult, Int, IsizeFold, OpFoldResult, Operation, SmallVec, Type,
     Value,
     attributes::IntegerLikeAttr,
@@ -33,7 +33,7 @@ pub(crate) fn constant_operand(operand: &Option<AttributeRef>, ty: Type) -> Opti
 }
 
 /// The constant attribute of each operand of `op`, `None` for an operand that is not a constant:
-/// the operands [Foldable::fold](runic_core::traits::Foldable::fold) hands to `fold_with`.
+/// the operands [Foldable::fold](runic_ir::traits::Foldable::fold) hands to `fold_with`.
 pub(crate) fn operand_constants(op: &Operation) -> SmallVec<[Option<AttributeRef>; 2]> {
     op.operands()
         .iter()
@@ -192,7 +192,7 @@ pub(crate) fn push_folded<const K: usize>(
     }
 }
 
-/// Implements [Foldable](runic_core::traits::Foldable) for an operation of one result, which is
+/// Implements [Foldable](runic_ir::traits::Foldable) for an operation of one result, which is
 /// what the [FoldsTo] variant `$to` says.
 ///
 /// `$f` is an expression, which may read the operation through `$op`, giving the closure
@@ -200,20 +200,20 @@ pub(crate) fn push_folded<const K: usize>(
 /// with the operands' constants.
 macro_rules! fold_one {
     ($Op:ty, $to:ident, |$op:ident| $f:expr) => {
-        impl runic_core::traits::Foldable for $Op {
+        impl runic_ir::traits::Foldable for $Op {
             fn fold(
                 &self,
-                results: &mut runic_core::SmallVec<[runic_core::OpFoldResult; 1]>,
-            ) -> runic_core::FoldResult {
+                results: &mut runic_ir::SmallVec<[runic_ir::OpFoldResult; 1]>,
+            ) -> runic_ir::FoldResult {
                 let operands = $crate::fold::operand_constants(self.as_operation());
                 self.fold_with(&operands, results)
             }
 
             fn fold_with(
                 &self,
-                operands: &[Option<runic_core::AttributeRef>],
-                results: &mut runic_core::SmallVec<[runic_core::OpFoldResult; 1]>,
-            ) -> runic_core::FoldResult {
+                operands: &[Option<runic_ir::AttributeRef>],
+                results: &mut runic_ir::SmallVec<[runic_ir::OpFoldResult; 1]>,
+            ) -> runic_ir::FoldResult {
                 let $op = self;
                 let op = self.as_operation();
                 let folded = $crate::fold::fold_ints(
@@ -235,20 +235,20 @@ macro_rules! fold_one {
 /// at all (see [fold_int_pair]).
 macro_rules! fold_two {
     ($Op:ty, [$first:ident, $second:ident], |$op:ident| $f:expr) => {
-        impl runic_core::traits::Foldable for $Op {
+        impl runic_ir::traits::Foldable for $Op {
             fn fold(
                 &self,
-                results: &mut runic_core::SmallVec<[runic_core::OpFoldResult; 1]>,
-            ) -> runic_core::FoldResult {
+                results: &mut runic_ir::SmallVec<[runic_ir::OpFoldResult; 1]>,
+            ) -> runic_ir::FoldResult {
                 let operands = $crate::fold::operand_constants(self.as_operation());
                 self.fold_with(&operands, results)
             }
 
             fn fold_with(
                 &self,
-                operands: &[Option<runic_core::AttributeRef>],
-                results: &mut runic_core::SmallVec<[runic_core::OpFoldResult; 1]>,
-            ) -> runic_core::FoldResult {
+                operands: &[Option<runic_ir::AttributeRef>],
+                results: &mut runic_ir::SmallVec<[runic_ir::OpFoldResult; 1]>,
+            ) -> runic_ir::FoldResult {
                 let $op = self;
                 let op = self.as_operation();
                 let (first, second) = $f;
@@ -269,7 +269,7 @@ macro_rules! fold_two {
 
 #[cfg(test)]
 mod tests {
-    use runic_core::dialects::builtin::attributes::TypeAttr;
+    use runic_ir::dialects::builtin::attributes::TypeAttr;
 
     use super::*;
 

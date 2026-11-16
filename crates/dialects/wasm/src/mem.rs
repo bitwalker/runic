@@ -1,4 +1,4 @@
-use runic_core::{
+use runic_ir::{
     AddressSpace, Builder, Immediate, PointerType, Report, SourceSpan, Type, ValueRef,
 };
 use runic_dialect_arith::ArithOpBuilder;

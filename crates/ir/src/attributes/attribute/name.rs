@@ -296,9 +296,9 @@ mod tests {
     /// attribute it is registered with: its vtable is used with that attribute's values.
     #[test]
     #[should_panic(expected = "in the trait table of attribute \
-                               `runic_core::dialects::builtin::attributes::boolean::BoolAttr` \
-                               was built for another type, \
-                               `runic_core::dialects::builtin::attributes::integer::I32Attr`")]
+                               `runic_ir::dialects::builtin::attributes::boolean::BoolAttr` was \
+                               built for another type, \
+                               `runic_ir::dialects::builtin::attributes::integer::I32Attr`")]
     fn a_trait_table_entry_built_for_another_attribute_is_rejected() {
         let extra = vec![TraitInfo::new::<I32Attr, dyn core::fmt::Debug>()];
         let _ = AttributeName::new::<BoolAttr>(interner::Symbol::intern("builtin"), extra);

@@ -1,6 +1,6 @@
 use alloc::format;
 
-use runic_core::{
+use runic_ir::{
     attributes::IntegerLikeAttr,
     derive::{EffectOpInterface, OpParser, OpPrinter, operation},
     dialects::builtin::attributes::TypeAttr,

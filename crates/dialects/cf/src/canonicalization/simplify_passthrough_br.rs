@@ -1,6 +1,6 @@
 use alloc::rc::Rc;
 
-use runic_core::{
+use runic_ir::{
     patterns::{Pattern, PatternBenefit, PatternInfo, PatternKind, RewritePattern},
     *,
 };
@@ -184,7 +184,7 @@ mod tests {
     use alloc::{format, vec::Vec};
     use core::cell::Cell;
 
-    use runic_core::{
+    use runic_ir::{
         dialects::builtin::{Function, FunctionRef},
         parse::{self, ParserConfig},
         patterns::{RegionSimplificationLevel, RewriterImpl, RewriterListener},

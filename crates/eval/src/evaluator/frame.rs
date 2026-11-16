@@ -1,6 +1,6 @@
 use alloc::{format, vec};
 
-use runic_core::{
+use runic_ir::{
     AddressSpace, BlockRef, Context, EntityRef, Felt, FxHashMap, Immediate, Operation,
     OperationRef, Report, SmallVec, SourceSpan, SymbolPath, ValueId, ValueRef,
     dialects::builtin::{self, attributes::LocalVariable},
@@ -238,7 +238,7 @@ impl core::fmt::Display for CallFrame {
 
 #[cfg(test)]
 mod tests {
-    use runic_core::{Type, testing::Test};
+    use runic_ir::{Type, testing::Test};
 
     use super::*;
 

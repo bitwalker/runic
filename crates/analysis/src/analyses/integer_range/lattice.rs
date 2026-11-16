@@ -1,6 +1,6 @@
 use core::any::Any;
 
-use runic_core::IntegerValueRange;
+use runic_ir::IntegerValueRange;
 
 use crate::{
     AnalysisState, BuildableAnalysisState, ChangeResult, Lattice, LatticeAnchor, LatticeAnchorRef,

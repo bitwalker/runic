@@ -22,7 +22,7 @@ doctest = false
 testing = ["dep:runic-dialect-arith"]
 
 [dependencies]
-runic-core.workspace = true
+runic-ir.workspace = true
 runic-transform.workspace = true
 runic-dialect-arith = { workspace = true, optional = true }
 

@@ -1,4 +1,4 @@
-use runic_core::{
+use runic_ir::{
     Context, OpPrinter, Report, UnsafeIntrusiveEntityRef, Verify,
     derive::{EffectOpInterface, OpParser, OpPrinter, operation},
     dialects::debuginfo::attributes::{ExpressionAttr, VariableAttr},
@@ -55,8 +55,8 @@ pub struct DebugValue {
 }
 
 impl EffectOpInterface<MemoryEffect> for DebugValue {
-    fn effects(&self) -> runic_core::effects::EffectIterator<MemoryEffect> {
-        runic_core::effects::EffectIterator::from_smallvec(smallvec![])
+    fn effects(&self) -> runic_ir::effects::EffectIterator<MemoryEffect> {
+        runic_ir::effects::EffectIterator::from_smallvec(smallvec![])
     }
 }
 
@@ -102,8 +102,8 @@ pub struct DebugDeclare {
 }
 
 impl EffectOpInterface<MemoryEffect> for DebugDeclare {
-    fn effects(&self) -> runic_core::effects::EffectIterator<MemoryEffect> {
-        runic_core::effects::EffectIterator::from_smallvec(smallvec![])
+    fn effects(&self) -> runic_ir::effects::EffectIterator<MemoryEffect> {
+        runic_ir::effects::EffectIterator::from_smallvec(smallvec![])
     }
 }
 
@@ -134,8 +134,8 @@ pub struct DebugKill {
 }
 
 impl EffectOpInterface<MemoryEffect> for DebugKill {
-    fn effects(&self) -> runic_core::effects::EffectIterator<MemoryEffect> {
-        runic_core::effects::EffectIterator::from_smallvec(smallvec![])
+    fn effects(&self) -> runic_ir::effects::EffectIterator<MemoryEffect> {
+        runic_ir::effects::EffectIterator::from_smallvec(smallvec![])
     }
 }
 
@@ -143,7 +143,7 @@ impl EffectOpInterface<MemoryEffect> for DebugKill {
 mod tests {
     use alloc::string::ToString;
 
-    use runic_core::{
+    use runic_ir::{
         Builder, RawWalk, Report, SourceSpan, ValueRef,
         dialects::{
             builtin::BuiltinOpBuilder,
@@ -233,8 +233,8 @@ mod tests {
 
         // Erasing a debug value must leave an explicit end-of-lifetime marker behind
         let mut found_kill = false;
-        test.function().as_operation_ref().raw_prewalk_all::<runic_core::Forward, _>(
-            |op: runic_core::OperationRef| {
+        test.function().as_operation_ref().raw_prewalk_all::<runic_ir::Forward, _>(
+            |op: runic_ir::OperationRef| {
                 if op.borrow().is::<super::DebugKill>() {
                     found_kill = true;
                 }
@@ -249,7 +249,7 @@ mod tests {
 
     #[test]
     fn salvage_debug_info_prepends_inverse_expression_ops() -> Result<(), Report> {
-        use runic_core::dialects::debuginfo::{
+        use runic_ir::dialects::debuginfo::{
             attributes::{Expression, ExpressionOp},
             transform::debug_value_users,
         };

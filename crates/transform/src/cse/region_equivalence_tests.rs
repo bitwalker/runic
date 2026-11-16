@@ -1,12 +1,12 @@
 use alloc::{boxed::Box, rc::Rc};
 
-use runic_core::{
+use runic_dialect_scf::If;
+use runic_ir::{
     Context, Report,
     dialects::builtin::{Function, FunctionRef},
     parse::{self, ParserConfig},
     pass::{Nesting, PassManager},
 };
-use runic_dialect_scf::If;
 
 use super::CommonSubexpressionElimination;
 
@@ -17,7 +17,7 @@ fn parse_function(context: &Rc<Context>, source: &str) -> Result<FunctionRef, Re
 
 #[test]
 fn cse_reconciles_inline_locations_in_merged_regions() -> Result<(), Report> {
-    use runic_core::{
+    use runic_ir::{
         Forward, OperationRef, RawWalk,
         dialects::debuginfo::attributes::INLINE_CALL_CHAIN_ATTR_NAME,
     };
@@ -120,7 +120,7 @@ builtin.function public extern("C") @regions(%c: i1, %a: i32, %b: i32) -> (i32, 
 
 #[test]
 fn region_equivalence_maps_nested_values_and_preserves_captures() -> Result<(), Report> {
-    use runic_core::equivalence::OperationEquivalenceFlags;
+    use runic_ir::equivalence::OperationEquivalenceFlags;
 
     let context = Rc::new(Context::default());
     let source = r#"
@@ -157,7 +157,7 @@ builtin.function public extern("C") @nested(%c: i1, %a: i32, %b: i32) -> i32 {
 
 #[test]
 fn region_equivalence_preserves_branch_targets_and_case_keys() -> Result<(), Report> {
-    use runic_core::equivalence::OperationEquivalenceFlags;
+    use runic_ir::equivalence::OperationEquivalenceFlags;
 
     let context = Rc::new(Context::default());
     let source = r#"
@@ -186,11 +186,11 @@ builtin.function public extern("C") @select(%sel: i32, %a: i32, %b: i32) -> i32 
 
 #[test]
 fn region_equivalence_handles_graph_forward_references() {
-    use runic_core::{
+    use runic_dialect_arith::ArithOpBuilder;
+    use runic_ir::{
         Builder, Ident, Signedness, SourceSpan, dialects::builtin::BuiltinOpBuilder,
         equivalence::OperationEquivalenceFlags, testing::Test,
     };
-    use runic_dialect_arith::ArithOpBuilder;
 
     // Both modules are built in one context: types and attributes are compared by their handles,
     // which are unique only within a context.

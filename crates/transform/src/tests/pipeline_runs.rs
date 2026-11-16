@@ -12,7 +12,7 @@ use alloc::{
 };
 use core::cell::Cell;
 
-use runic_core::{
+use runic_ir::{
     Context, EntityMut, Op, Operation, OperationName, OperationRef, Report,
     diagnostics::{Diagnostic, Label, LabelStyle, RenderConfig, SourceProvider, VisitDiagnostic},
     dialects::builtin::Function,
@@ -31,7 +31,7 @@ fn new_context() -> Rc<Context> {
 
 /// The line of the first primary label of `diagnostic`, if it has one with a known span.
 fn primary_line(diagnostic: &dyn Diagnostic, context: &Context) -> Option<usize> {
-    struct Primary(Option<runic_core::SourceSpan>);
+    struct Primary(Option<runic_ir::SourceSpan>);
     impl VisitDiagnostic for Primary {
         fn label(&mut self, label: Label<'_>) {
             if self.0.is_none() && label.style == LabelStyle::Primary {
@@ -143,7 +143,7 @@ fn what_each_pass_does_at_each_level_of_a_module() {
         let mut found = Vec::new();
         module.prewalk_all(|op: &Operation| {
             if let Some(function) = op.downcast_ref::<Function>() {
-                found.push((runic_core::Symbol::name(function).as_str().into(), op.to_string()));
+                found.push((runic_ir::Symbol::name(function).as_str().into(), op.to_string()));
             }
         });
         found
@@ -323,7 +323,7 @@ builtin.module public @m {
     let module = parse_any(ParserConfig::new(context.clone()), "break.runic", MODULE)
         .into_result()
         .unwrap();
-    let mut pm = runic_core::pass::PassManager::on::<runic_core::dialects::builtin::Module>(
+    let mut pm = runic_ir::pass::PassManager::on::<runic_ir::dialects::builtin::Module>(
         context.clone(),
         Nesting::Implicit,
     );

@@ -4,7 +4,7 @@
 
 use alloc::{format, rc::Rc, string::String, vec::Vec};
 
-use runic_core::{
+use runic_ir::{
     Context,
     parse::{ParserConfig, parse_any},
     testing::text::describe,
@@ -209,8 +209,8 @@ fn the_diagnostic_is_labelled_at_the_brace_that_opens_the_region() {
     let error = outcome.into_result().expect_err("three modules are over a limit of two");
     let diagnostic = error.as_diagnostic();
     struct Primary(Option<core::ops::Range<usize>>);
-    impl runic_core::diagnostics::VisitDiagnostic for Primary {
-        fn label(&mut self, label: runic_core::diagnostics::Label<'_>) {
+    impl runic_ir::diagnostics::VisitDiagnostic for Primary {
+        fn label(&mut self, label: runic_ir::diagnostics::Label<'_>) {
             self.0.get_or_insert_with(|| {
                 let range = label.span.range();
                 range.start() as usize..range.end() as usize

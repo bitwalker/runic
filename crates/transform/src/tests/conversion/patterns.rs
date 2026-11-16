@@ -4,7 +4,8 @@
 
 use alloc::{boxed::Box, rc::Rc, vec, vec::Vec};
 
-use runic_core::{
+use runic_dialect_arith::{self as arith, ArithDialect, CmpPredicate};
+use runic_ir::{
     Context, ElementRewrite, Int, Op, OpRegistration, Operation, OperationName, OperationRef,
     Overflow, Report, SourceSpan, Spanned, Type, Value, ValueRef,
     conversion::{
@@ -18,7 +19,6 @@ use runic_core::{
     replace_elements_in,
     types::TypeMapper,
 };
-use runic_dialect_arith::{self as arith, ArithDialect, CmpPredicate};
 
 use super::{Family, Mode, Setup};
 
@@ -130,7 +130,7 @@ fn wide_converter(context: &Context, materialize: bool) -> TypeConverter {
             let amount = sixty_four(rewriter, span, i128)?;
             let high = result(&rewriter.create_op::<arith::Shr, _>(span, (input, amount))?);
             let high = result(&rewriter.create_op::<arith::Trunc, _>(span, (high, i64))?);
-            Ok(Some(runic_core::smallvec![low, high]))
+            Ok(Some(runic_ir::smallvec![low, high]))
         });
     }
     converter.with_function_types()
@@ -168,7 +168,7 @@ fn size_converter(context: &Context, materialize: bool) -> TypeConverter {
                 return Ok(None);
             }
             let value = rewriter.create_op::<arith::SextOrTrunc, _>(span, (input, i32))?;
-            Ok(Some(runic_core::smallvec![result(&value)]))
+            Ok(Some(runic_ir::smallvec![result(&value)]))
         });
     }
     converter.with_function_types()
@@ -291,7 +291,7 @@ impl ConversionPattern for Rule {
 }
 
 /// The one result of a new operation.
-pub(super) fn result<T: Op>(op: &runic_core::UnsafeIntrusiveEntityRef<T>) -> ValueRef {
+pub(super) fn result<T: Op>(op: &runic_ir::UnsafeIntrusiveEntityRef<T>) -> ValueRef {
     op.borrow().as_operation().results()[0].borrow().as_value_ref()
 }
 
@@ -443,7 +443,7 @@ pub(super) fn wide_patterns(
                 (ret.get_value().unsigned(), op.span())
             };
             let i128 = rw.context().i128();
-            if runic_core::Attribute::ty(&*op.borrow().downcast_ref::<RetImm>().unwrap().value())
+            if runic_ir::Attribute::ty(&*op.borrow().downcast_ref::<RetImm>().unwrap().value())
                 != i128
             {
                 return Ok(false);
@@ -462,7 +462,7 @@ pub(super) fn wide_patterns(
 /// A bitwise operation over `i128`, as the same operation over each half.
 fn bitwise<T>(context: &Rc<Context>, name: &'static str, converter: &TypeConverter) -> Rule
 where
-    T: OpRegistration + runic_core::BuildableOp<(ValueRef, ValueRef)>,
+    T: OpRegistration + runic_ir::BuildableOp<(ValueRef, ValueRef)>,
 {
     let root = registered::<T>(context);
     Rule::new(

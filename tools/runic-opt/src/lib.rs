@@ -52,7 +52,13 @@ use std::{
 };
 
 use clap::Parser;
-use runic_core::{
+// The dialects and passes the tool links: naming each crate keeps its registrations.
+use runic_dialect_arith as _;
+use runic_dialect_cf as _;
+use runic_dialect_mem as _;
+use runic_dialect_scf as _;
+use runic_dialect_ub as _;
+use runic_ir::{
     Context, OpPrinter, OpPrintingFlags, OperationRef, Report,
     diagnostics::{
         DiagnosticDisplay, DiagnosticSet, NoteKind, OwnedDiagnostic, RenderConfig, SourceId,
@@ -66,12 +72,6 @@ use runic_core::{
     },
     print::AsmPrinter,
 };
-// The dialects and passes the tool links: naming each crate keeps its registrations.
-use runic_dialect_arith as _;
-use runic_dialect_cf as _;
-use runic_dialect_mem as _;
-use runic_dialect_scf as _;
-use runic_dialect_ub as _;
 use runic_transform as _;
 
 use self::options::{Options, Verification};
@@ -982,8 +982,8 @@ fn read_pipeline(op: OperationRef, text: &str) -> Result<PassPipeline, Report> {
     let name = op.borrow().name();
     match PassPipeline::parse(text) {
         Ok(pipeline) => match pipeline.anchor() {
-            runic_core::pass::Anchor::Any => Ok(pipeline),
-            runic_core::pass::Anchor::Operation { dialect, opcode }
+            runic_ir::pass::Anchor::Any => Ok(pipeline),
+            runic_ir::pass::Anchor::Operation { dialect, opcode }
                 if *dialect == name.dialect() && *opcode == name.name() =>
             {
                 Ok(pipeline)
@@ -1010,7 +1010,7 @@ fn pass_names<'a>(elements: &'a [PipelineElement], names: &mut Vec<&'a str>) {
 }
 
 /// The operation the registered pass `name` runs on, or `None` when it runs on any.
-fn target_of(context: &Rc<Context>, name: &str) -> Option<runic_core::OperationName> {
+fn target_of(context: &Rc<Context>, name: &str) -> Option<runic_ir::OperationName> {
     // A manager for `any` takes a pass as it is, so the pass it holds is the one asked about.
     let mut pm = OpPassManager::any(Nesting::Explicit, context.clone());
     PassInfo::lookup(name)?.add_to_pipeline(&mut pm, &PassOptions::new()).ok()?;

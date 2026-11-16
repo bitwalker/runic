@@ -5,7 +5,7 @@
 //! These tables check which method, type and `isize` kind each fold uses; `super::differential`
 //! checks the arithmetic itself against a model that shares none of it.
 
-use runic_core::{IsizeFold, fold_isize};
+use runic_ir::{IsizeFold, fold_isize};
 
 use super::*;
 

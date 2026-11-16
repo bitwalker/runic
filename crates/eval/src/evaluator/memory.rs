@@ -1,6 +1,6 @@
 use alloc::{collections::BTreeMap, vec};
 
-use runic_core::{AddressSpace, Felt, Immediate, SmallVec, SourceSpan, Type};
+use runic_ir::{AddressSpace, Felt, Immediate, SmallVec, SourceSpan, Type};
 use runic_session::diagnostics::{Diagnostic, miette};
 
 use crate::Value;

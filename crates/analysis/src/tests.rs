@@ -1,9 +1,9 @@
-//! The analyses of this crate over the corpus of `runic_core::testing::calls`, and over IR that
+//! The analyses of this crate over the corpus of `runic_ir::testing::calls`, and over IR that
 //! holds symbol references that do not resolve, parsed with verification off.
 
 use alloc::{format, rc::Rc, string::String, vec::Vec};
 
-use runic_core::{
+use runic_ir::{
     Context, Operation, OperationRef, Symbol,
     dialects::builtin::Function,
     parse::{self, ParserConfig},
@@ -140,7 +140,7 @@ fn fuzz_no_analysis_panics_on_a_dangling_symbol() {
 /// constant too.
 #[test]
 fn constants_propagate_through_operations_whose_operands_are_not_constants() {
-    use runic_core::ValueRef;
+    use runic_ir::ValueRef;
 
     use crate::{Lattice, analyses::constant_propagation::ConstantValue};
 

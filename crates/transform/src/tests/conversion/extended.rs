@@ -34,7 +34,9 @@ use alloc::{
 };
 use std::println;
 
-use runic_core::{
+use runic_dialect_arith::{self as arith, ArithDialect};
+use runic_dialect_mem::MemDialect;
+use runic_ir::{
     Context, Int, OperationRef, Report, Type, Value,
     conversion::{
         ConversionConfig, ConversionPatternSet, ConversionResult, ConversionTarget,
@@ -45,8 +47,6 @@ use runic_core::{
     patterns::PatternKind,
     testing::text::describe,
 };
-use runic_dialect_arith::{self as arith, ArithDialect};
-use runic_dialect_mem::MemDialect;
 
 use self::{
     model::{check_model, check_symbol_uses},
@@ -150,7 +150,7 @@ fn mix_converter(context: &Context, materialize: bool) -> TypeConverter {
             let high =
                 patterns::result(&rewriter.create_op::<arith::Shr, _>(span, (input, amount))?);
             let high = patterns::result(&rewriter.create_op::<arith::Trunc, _>(span, (high, i64))?);
-            Ok(Some(runic_core::smallvec![low, high]))
+            Ok(Some(runic_ir::smallvec![low, high]))
         });
     }
     converter.with_function_types()

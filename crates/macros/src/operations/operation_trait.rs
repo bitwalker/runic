@@ -125,7 +125,7 @@ pub fn derive_operation_trait(
 
     let mut tokens = proc_macro2::TokenStream::new();
 
-    // Define generic type: TOp: ::runic_core::Op + #trait_name
+    // Define generic type: TOp: ::runic_ir::Op + #trait_name
     let mut verify_generics = input.generics.clone();
     verify_generics.params.push(syn::GenericParam::Type(syn::TypeParam {
         attrs: Default::default(),
@@ -140,7 +140,7 @@ pub fn derive_operation_trait(
                     leading_colon: Some(syn::token::PathSep(span)),
                     segments: syn::punctuated::Punctuated::from_iter([
                         syn::PathSegment {
-                            ident: syn::Ident::new("runic_core", span),
+                            ident: syn::Ident::new("runic_ir", span),
                             arguments: syn::PathArguments::None,
                         },
                         syn::PathSegment {
@@ -198,16 +198,16 @@ pub fn derive_operation_trait(
         tokens.extend(quote! {
             #input
 
-            impl #impl_verify_generics ::runic_core::Verify<dyn #trait_name #ty_generics> for TOp #verify_where_clause {
+            impl #impl_verify_generics ::runic_ir::Verify<dyn #trait_name #ty_generics> for TOp #verify_where_clause {
                 #[inline(always)]
-                fn verify(&self, _context: &::runic_core::Context) -> Result<(), ::runic_core::diagnostics::Report> { Ok(()) }
+                fn verify(&self, _context: &::runic_ir::Context) -> Result<(), ::runic_ir::diagnostics::Report> { Ok(()) }
             }
 
-            impl #impl_generics ::runic_core::Verify<dyn #trait_name #ty_generics> for ::runic_core::Operation #where_clause {
+            impl #impl_generics ::runic_ir::Verify<dyn #trait_name #ty_generics> for ::runic_ir::Operation #where_clause {
                 #[inline(always)]
-                fn should_verify(&self, _context: &::runic_core::Context) -> bool { false }
+                fn should_verify(&self, _context: &::runic_ir::Context) -> bool { false }
                 #[inline(always)]
-                fn verify(&self, _context: &::runic_core::Context) -> Result<(), ::runic_core::diagnostics::Report> { Ok(()) }
+                fn verify(&self, _context: &::runic_ir::Context) -> Result<(), ::runic_ir::diagnostics::Report> { Ok(()) }
             }
         });
     } else {
@@ -215,20 +215,20 @@ pub fn derive_operation_trait(
         tokens.extend(quote! {
             #input
 
-            impl #impl_verify_generics ::runic_core::Verify<dyn #trait_name #ty_generics> for TOp #verify_where_clause {
+            impl #impl_verify_generics ::runic_ir::Verify<dyn #trait_name #ty_generics> for TOp #verify_where_clause {
                 #[allow(unused_variables)]
-                fn verify(&self, context: &::runic_core::Context) -> Result<(), ::runic_core::diagnostics::Report> {
-                    let op = <Self as ::runic_core::Op>::as_operation(self);
+                fn verify(&self, context: &::runic_ir::Context) -> Result<(), ::runic_ir::diagnostics::Report> {
+                    let op = <Self as ::runic_ir::Op>::as_operation(self);
                     #(
-                        <::runic_core::Operation as ::runic_core::Verify<dyn #verifiable_supertraits>>::verify(op, context)?;
+                        <::runic_ir::Operation as ::runic_ir::Verify<dyn #verifiable_supertraits>>::verify(op, context)?;
                     )*
-                    <::runic_core::Operation as ::runic_core::Verify<dyn #trait_name #ty_generics>>::verify(op, context)
+                    <::runic_ir::Operation as ::runic_ir::Verify<dyn #trait_name #ty_generics>>::verify(op, context)
                 }
             }
 
-            impl #impl_generics ::runic_core::Verify<dyn #trait_name #ty_generics> for ::runic_core::Operation #where_clause {
+            impl #impl_generics ::runic_ir::Verify<dyn #trait_name #ty_generics> for ::runic_ir::Operation #where_clause {
                 #[allow(unused_variables)]
-                fn should_verify(&self, _context: &::runic_core::Context) -> bool {
+                fn should_verify(&self, _context: &::runic_ir::Context) -> bool {
                     #(
                         self.implements::<dyn #verifiable_supertraits>() &&
                     )*
@@ -236,7 +236,7 @@ pub fn derive_operation_trait(
                 }
 
                 #[allow(unused_variables)]
-                fn verify(&self, context: &::runic_core::Context) -> Result<(), ::runic_core::diagnostics::Report> {
+                fn verify(&self, context: &::runic_ir::Context) -> Result<(), ::runic_ir::diagnostics::Report> {
                     #(
                         #verifiers
                     )*

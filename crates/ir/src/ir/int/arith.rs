@@ -392,7 +392,7 @@ pub enum IsizeFold {
 /// width calls for, with the extension the operation means (`sext` or `zext`):
 ///
 /// ```
-/// # use runic_core::{Int, IsizeFold, fold_isize};
+/// # use runic_ir::{Int, IsizeFold, fold_isize};
 /// let to_i48 = |[a]: [Int; 1]| Some(if a.width() >= 48 { a.trunc(48) } else { a.sext(48) });
 /// assert_eq!(fold_isize([Int::from(-1i64)], IsizeFold::Fixed(48), to_i48), Some(Int::all_ones(48)));
 /// // Bit 40 is kept by a 64-bit target and was never there on a 32-bit one

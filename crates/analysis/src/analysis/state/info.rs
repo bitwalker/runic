@@ -5,7 +5,7 @@ use core::{
     ptr::NonNull,
 };
 
-use runic_core::{EntityRef, SmallVec, adt::SmallSet, entity::RawEntity};
+use runic_ir::{EntityRef, SmallVec, adt::SmallSet, entity::RawEntity};
 
 use super::*;
 use crate::{AnalysisQueue, LatticeAnchor, LatticeAnchorRef, solver::QueuedAnalysis};

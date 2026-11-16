@@ -1,5 +1,5 @@
 use bitvec::bitvec;
-use runic_core::{
+use runic_ir::{
     AttributeRef, Backward, CallOpInterface, CallableOpInterface, EntityWithId, OpOperandImpl,
     OpOperandRange, OpResultRange, Operation, OperationRef, ProgramPoint, RegionBranchOpInterface,
     RegionBranchTerminatorOpInterface, RegionSuccessorIter, Report, SmallVec, StorableEntity,

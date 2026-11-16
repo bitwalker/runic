@@ -4,7 +4,7 @@
 use core::{cell::RefCell, fmt, ops::ControlFlow};
 use std::rc::Rc;
 
-use runic_core::{
+use runic_ir::{
     OpPrintingFlags, Report,
     pass::{
         Anchor, IRPrintingConfig, Nesting, OpPassManager, PassInfo, PassManager, PassPipeline,
@@ -319,7 +319,7 @@ mod tests {
     use core::ops::ControlFlow;
     use std::sync::LazyLock;
 
-    use runic_core::{
+    use runic_ir::{
         OpPrinter, OpPrintingFlags, Report,
         dialects::builtin::{Module, WorldRef},
         pass::{Nesting, PassInfo, PassOptions, PassPipeline, registry::RegistryEntry},
@@ -1003,7 +1003,7 @@ mod tests {
         session
     }
 
-    fn add_named(passes: &mut runic_core::pass::OpPassManager, name: &str) -> Result<(), Report> {
+    fn add_named(passes: &mut runic_ir::pass::OpPassManager, name: &str) -> Result<(), Report> {
         PassInfo::lookup(name)
             .expect("the test pass is registered")
             .add_to_pipeline(passes, &PassOptions::new())

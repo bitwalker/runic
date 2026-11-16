@@ -5,7 +5,7 @@
 //! interpreted with [super::model] on every input, canonicalized with the patterns and the folds,
 //! and interpreted again: the results must be the same, and the patterns must have fired.
 
-use runic_core::{Operation, dialects::builtin::Ret};
+use runic_ir::{Operation, dialects::builtin::Ret};
 
 use super::{
     model::{self, M},

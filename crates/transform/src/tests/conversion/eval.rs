@@ -13,7 +13,9 @@ use alloc::{
     vec::Vec,
 };
 
-use runic_core::{
+use runic_dialect_arith as arith;
+use runic_dialect_cf as cf;
+use runic_ir::{
     BlockRef, CallOpInterface, Callable, Context, FxHashMap, Int, Operation, OperationRef,
     Overflow, Type, Value, ValueRef,
     dialects::builtin::{
@@ -21,8 +23,6 @@ use runic_core::{
         StoreLocal,
     },
 };
-use runic_dialect_arith as arith;
-use runic_dialect_cf as cf;
 
 /// The deepest call the evaluator makes.
 const MAX_DEPTH: usize = 32;
@@ -274,7 +274,7 @@ impl Evaluator {
         } else if op.is::<Ret>() {
             return Ok(Flow::Return(operands.into_iter().map(|(_, value)| value).collect()));
         } else if let Some(ret) = op.downcast_ref::<RetImm>() {
-            let ty = runic_core::Attribute::ty(&*ret.value());
+            let ty = runic_ir::Attribute::ty(&*ret.value());
             let width = width(context, ty).ok_or_else(|| format!("'{name}' is not an integer"))?;
             return Ok(Flow::Return(vec![Val::Int(mask(ret.get_value().unsigned(), width))]));
         } else if let Some(reference) = op.downcast_ref::<FunctionReference>() {

@@ -117,7 +117,7 @@ fn visit_calls(fields: &[syn::Field], places: &[TokenStream]) -> Vec<TokenStream
         .zip(places)
         .map(|(field, place)| {
             quote_spanned! { field.ty.span() =>
-                ::runic_core::attributes::AttributeComponent::visit_elements(#place, visitor);
+                ::runic_ir::attributes::AttributeComponent::visit_elements(#place, visitor);
             }
         })
         .collect()
@@ -138,7 +138,7 @@ fn rebuild(
         .zip(places)
         .map(|(field, place)| {
             quote_spanned! { field.ty.span() =>
-                ::runic_core::attributes::AttributeComponent::replace_elements(#place, replacer)
+                ::runic_ir::attributes::AttributeComponent::replace_elements(#place, replacer)
             }
         })
         .collect();
@@ -210,17 +210,17 @@ pub fn derive_attribute_component(input: &syn::DeriveInput) -> syn::Result<Token
     let ident = &input.ident;
     Ok(quote! {
         #[automatically_derived]
-        impl ::runic_core::attributes::AttributeComponent for #ident {
+        impl ::runic_ir::attributes::AttributeComponent for #ident {
             fn visit_elements(
                 &self,
-                visitor: &mut dyn ::runic_core::attributes::ElementVisitor,
+                visitor: &mut dyn ::runic_ir::attributes::ElementVisitor,
             ) {
                 #visit
             }
 
             fn replace_elements(
                 &self,
-                replacer: &mut dyn ::runic_core::attributes::ElementReplacer,
+                replacer: &mut dyn ::runic_ir::attributes::ElementReplacer,
             ) -> ::core::option::Option<Self> {
                 #replace
             }
@@ -243,8 +243,7 @@ mod tests {
     fn call(method: &str, place: proc_macro2::TokenStream, parameter: &str) -> String {
         let method = syn::Ident::new(method, proc_macro2::Span::call_site());
         let parameter = syn::Ident::new(parameter, proc_macro2::Span::call_site());
-        quote!(::runic_core::attributes::AttributeComponent::#method(#place, #parameter))
-            .to_string()
+        quote!(::runic_ir::attributes::AttributeComponent::#method(#place, #parameter)).to_string()
     }
 
     /// The positions of `needles` in `haystack`, which must all occur.
@@ -312,7 +311,7 @@ mod tests {
             quote!(Self::Unit => { ::core::option::Option::None }),
             quote!(Self::Named { visitor: __field_0 } => {
                 ::core::option::Option::Some(Self::Named {
-                    visitor: ::runic_core::attributes::AttributeComponent::replace_elements(
+                    visitor: ::runic_ir::attributes::AttributeComponent::replace_elements(
                         __field_0, replacer
                     )?
                 })

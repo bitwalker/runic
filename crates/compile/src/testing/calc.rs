@@ -15,7 +15,8 @@
 use core::{fmt, ops::Range};
 use std::collections::HashMap;
 
-use runic_core::{
+use runic_dialect_arith::ArithOpBuilder;
+use runic_ir::{
     Builder, Ident, Op, Report, Signedness, SourceSpan, Type, ValueRef, Visibility,
     diagnostics::{SourceId, SourceKey, SourceProvider, report},
     dialects::builtin::{
@@ -24,7 +25,6 @@ use runic_core::{
     },
     interner::Symbol,
 };
-use runic_dialect_arith::ArithOpBuilder;
 
 use crate::{
     Artifact, CheckpointDecl, CheckpointId, Checkpoints, Flow, Frontend, Input, Render, Session,
@@ -641,7 +641,7 @@ fn build(
 }
 
 fn emit(
-    builder: &mut FunctionBuilder<'_, runic_core::OpBuilder>,
+    builder: &mut FunctionBuilder<'_, runic_ir::OpBuilder>,
     expr: &Expr,
     arguments: &[ValueRef],
     defined: &HashMap<&str, FunctionRef>,

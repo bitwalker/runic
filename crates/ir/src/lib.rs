@@ -45,7 +45,7 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
-extern crate self as runic_core;
+extern crate self as runic_ir;
 
 pub use compact_str::{CompactString, CompactStringExt, ToCompactString};
 pub use hashbrown;

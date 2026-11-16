@@ -1,6 +1,6 @@
 use alloc::format;
 
-use runic_core::{
+use runic_ir::{
     derive::{EffectOpInterface, OpParser, OpPrinter, operation},
     dialects::builtin::attributes::{OverflowAttr, SignednessAttr},
     effects::*,
@@ -43,7 +43,7 @@ macro_rules! infer_return_ty_for_binary_op {
                     let expected = self.lhs().ty();
                     let actual = self.result().ty();
                     if actual != expected {
-                        return Err(runic_core::diagnostics::report!(
+                        return Err(runic_ir::diagnostics::report!(
                             message: "invalid operation",
                             labels: [
                                 primary(

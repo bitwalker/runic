@@ -1,4 +1,4 @@
-use runic_core::{
+use runic_ir::{
     derive::{EffectOpInterface, OpParser, OpPrinter, operation},
     effects::*,
     traits::*,
@@ -62,7 +62,7 @@ impl Verify<dyn InferTypeOpInterface> for Poison {
         if attr_ty == result_ty {
             return Ok(());
         }
-        Err(runic_core::diagnostics::report!(
+        Err(runic_ir::diagnostics::report!(
             message: "invalid operation",
             labels: [
                 primary(

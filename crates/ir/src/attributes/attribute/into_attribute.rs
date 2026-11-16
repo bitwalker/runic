@@ -46,8 +46,8 @@ pub trait IntoAttribute<A: AttributeRegistration>: Sized {
 /// `IntAttr`, so a `BoolAttr` is not accepted.
 ///
 /// ```compile_fail,E0277
-/// use runic_core::{ReadyAttr, UnsafeIntrusiveEntityRef};
-/// use runic_core::dialects::{builtin::attributes::BoolAttr, test::Constant};
+/// use runic_ir::{ReadyAttr, UnsafeIntrusiveEntityRef};
+/// use runic_ir::dialects::{builtin::attributes::BoolAttr, test::Constant};
 ///
 /// fn set(constant: &mut Constant, flag: UnsafeIntrusiveEntityRef<BoolAttr>) {
 ///     constant.set_value(ReadyAttr(flag));
@@ -68,12 +68,12 @@ pub struct ReadyAttr<A>(pub UnsafeIntrusiveEntityRef<A>);
 /// (no feature flag is needed):
 ///
 /// ```ignore
-/// impl runic_core::AttributeValueArg for MyValue {}
+/// impl runic_ir::AttributeValueArg for MyValue {}
 /// ```
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot be used as an attribute value argument",
     label = "not an attribute value argument",
-    note = "if `{Self}` is a value type, add `impl runic_core::AttributeValueArg for {Self} {{}}` \
+    note = "if `{Self}` is a value type, add `impl runic_ir::AttributeValueArg for {Self} {{}}` \
             in the crate that defines it"
 )]
 pub auto trait AttributeValueArg {}

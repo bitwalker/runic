@@ -2,7 +2,7 @@ mod backward;
 mod forward;
 mod lattice;
 
-use runic_core::{
+use runic_ir::{
     Backward, Block, BlockRef, CallOpInterface, EntityWithId, Forward, Operation, ProgramPoint,
     RegionBranchOpInterface, RegionKindInterface, RegionRef, Report, Spanned, SymbolTable,
     cfg::Graph, dominance::DominanceInfo, loops::LoopForest, pass::AnalysisManager,
@@ -56,7 +56,7 @@ use crate::analyses::{LoopAction, LoopState, dce::CfgEdge};
 /// directly as a [DataFlowAnalysis] implementation, as shown below:
 ///
 /// ```rust,ignore
-/// use runic_core::dataflow::*;
+/// use runic_ir::dataflow::*;
 ///
 /// #[derive(Default)]
 /// pub struct MyAnalysis;

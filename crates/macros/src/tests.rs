@@ -35,7 +35,7 @@ fn operation_names_with_digits_support_explicit_registration_spelling() {
             })
             .unwrap();
         let expected: syn::Block = syn::parse_quote! {
-            { ::runic_core::interner::Symbol::intern(#expected) }
+            { ::runic_ir::interner::Symbol::intern(#expected) }
         };
         assert_eq!(name, &expected);
     }
@@ -166,12 +166,12 @@ fn operation_trait_with_verifiers_test() {
         #[operation_trait]
         pub trait SameOperandsAndResultType : SameTypeOperands {
             #[verifier]
-            fn has_same_operands_and_result_type(_op: &::runic_core::Operation, _context: &::runic_core::Context) -> Result<(), ::runic_core::diagnostics::Report> {
+            fn has_same_operands_and_result_type(_op: &::runic_ir::Operation, _context: &::runic_ir::Context) -> Result<(), ::runic_ir::diagnostics::Report> {
                 true
             }
 
             #[verifier]
-            fn additional_check(_op: &::runic_core::Operation, _context: &::runic_core::Context) -> Result<(), ::runic_core::diagnostics::Report> {
+            fn additional_check(_op: &::runic_ir::Operation, _context: &::runic_ir::Context) -> Result<(), ::runic_ir::diagnostics::Report> {
                 true
             }
         }
@@ -196,7 +196,7 @@ fn operation_trait_with_generics_test() {
         #[operation_trait]
         pub trait SameOperandsAndResultType<T: AttributeRegistration> : SameTypeOperands<T> + UnusedGenerics {
             #[verifier]
-            fn verify_it<T: AttributeRegistration>(_op: &::runic_core::Operation, _context: &::runic_core::Context) -> Result<(), ::runic_core::diagnostics::Report> {
+            fn verify_it<T: AttributeRegistration>(_op: &::runic_ir::Operation, _context: &::runic_ir::Context) -> Result<(), ::runic_ir::diagnostics::Report> {
                 true
             }
         }
@@ -318,14 +318,14 @@ fn attribute_parameters_are_bounded_by_into_attribute() {
     assert_eq!(fn_once.len(), 1);
     let where_clause = fn_once[0].generics.where_clause.to_token_stream().to_string();
     assert!(
-        where_clause.contains("TValueValue : :: runic_core :: IntoAttribute < IntAttr >"),
+        where_clause.contains("TValueValue : :: runic_ir :: IntoAttribute < IntAttr >"),
         "{where_clause}"
     );
 
     let create = inherent_method(&file, "create");
     let where_clause = create.sig.generics.where_clause.to_token_stream().to_string();
     assert!(
-        where_clause.contains("TValueValue : :: runic_core :: IntoAttribute < IntAttr >"),
+        where_clause.contains("TValueValue : :: runic_ir :: IntoAttribute < IntAttr >"),
         "{where_clause}"
     );
 
@@ -333,13 +333,13 @@ fn attribute_parameters_are_bounded_by_into_attribute() {
     assert_eq!(buildable.len(), 1);
     assert_eq!(
         trait_argument(buildable[0]),
-        "(< IntAttr as :: runic_core :: AttributeRegistration > :: Value ,)"
+        "(< IntAttr as :: runic_ir :: AttributeRegistration > :: Value ,)"
     );
 
     let setter = inherent_method(&file, "set_value");
     assert!(setter.sig.generics.params.is_empty(), "{}", setter.sig.to_token_stream());
     let input = setter.sig.inputs.iter().nth(1).unwrap().to_token_stream().to_string();
-    assert_eq!(input, "value : impl :: runic_core :: IntoAttribute < IntAttr >");
+    assert_eq!(input, "value : impl :: runic_ir :: IntoAttribute < IntAttr >");
 }
 
 /// An op with a `#[default]` attribute still has a minimal builder, which takes only the
@@ -366,9 +366,9 @@ fn a_defaulted_attribute_keeps_the_minimal_builder() {
     assert_eq!(
         buildable,
         [
-            "(:: runic_core :: ValueRef , < I32Attr as :: runic_core :: AttributeRegistration > \
-             :: Value)",
-            "(:: runic_core :: ValueRef ,)",
+            "(:: runic_ir :: ValueRef , < I32Attr as :: runic_ir :: AttributeRegistration > :: \
+             Value)",
+            "(:: runic_ir :: ValueRef ,)",
         ]
     );
 
@@ -377,7 +377,7 @@ fn a_defaulted_attribute_keeps_the_minimal_builder() {
     fn_once.sort();
     assert_eq!(
         fn_once,
-        ["(:: runic_core :: ValueRef , TOffsetValue)", "(:: runic_core :: ValueRef ,)"]
+        ["(:: runic_ir :: ValueRef , TOffsetValue)", "(:: runic_ir :: ValueRef ,)"]
     );
     let text = file.to_token_stream().to_string();
     assert!(!text.contains("From <"), "{text}");
@@ -482,7 +482,7 @@ fn a_defaulted_property_asserts_that_its_attribute_has_a_default() {
     let output = crate::operation::derive_operation(input).unwrap().to_string();
     // One check, for the defaulted property, as an item so that it is always evaluated
     let condition = quote::quote! {
-        <OverflowAttr as ::runic_core::AttributeRegistration>::HAS_DEFAULT
+        <OverflowAttr as ::runic_ir::AttributeRegistration>::HAS_DEFAULT
     };
     let check = format!("{} ({condition} ,", quote::quote! { const _: () = assert! });
     assert_eq!(output.matches("HAS_DEFAULT").count(), 1, "{output}");

@@ -2,7 +2,7 @@
 
 use core::ops::ControlFlow;
 
-use runic_core::Report;
+use runic_ir::Report;
 
 use super::{
     Session,
@@ -102,7 +102,7 @@ mod tests {
     use core::ops::ControlFlow;
     use std::fs;
 
-    use runic_core::{Report, dialects::builtin::WorldRef};
+    use runic_ir::{Report, dialects::builtin::WorldRef};
 
     use crate::{
         CheckpointDecl, CheckpointId, Checkpoints, CompilationRequest, Compiler, EmitRequest,

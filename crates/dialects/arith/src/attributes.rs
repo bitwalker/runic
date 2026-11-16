@@ -1,6 +1,6 @@
 use core::{cmp::Ordering, fmt, str::FromStr};
 
-use runic_core::{
+use runic_ir::{
     AttrPrinter, Int, SmallVec, attributes::AttrParser, derive::DialectAttribute, print::AsmPrinter,
 };
 
@@ -40,7 +40,7 @@ pub enum CmpPredicate {
 }
 
 /// The value of a body-less `#arith.cmp_predicate`.
-fn default_predicate(_context: &runic_core::Context) -> CmpPredicate {
+fn default_predicate(_context: &runic_ir::Context) -> CmpPredicate {
     CmpPredicate::Eq
 }
 
@@ -153,9 +153,9 @@ impl fmt::Display for CmpPredicate {
     }
 }
 
-impl runic_core::formatter::PrettyPrint for CmpPredicate {
-    fn render(&self) -> runic_core::formatter::Document {
-        use runic_core::formatter::*;
+impl runic_ir::formatter::PrettyPrint for CmpPredicate {
+    fn render(&self) -> runic_ir::formatter::Document {
+        use runic_ir::formatter::*;
         display(self)
     }
 }
@@ -168,8 +168,8 @@ impl AttrPrinter for CmpPredicateAttr {
 
 impl AttrParser for CmpPredicateAttr {
     fn parse(
-        parser: &mut dyn runic_core::parse::Parser<'_>,
-    ) -> runic_core::parse::ParseResult<runic_core::AttributeRef> {
+        parser: &mut dyn runic_ir::parse::Parser<'_>,
+    ) -> runic_ir::parse::ParseResult<runic_ir::AttributeRef> {
         let predicate = parse_predicate(parser)?;
         Ok(parser
             .context_rc()
@@ -180,9 +180,9 @@ impl AttrParser for CmpPredicateAttr {
 
 /// Parses one of the ten predicate keywords; any other token is an error at its span.
 pub(crate) fn parse_predicate(
-    parser: &mut dyn runic_core::parse::Parser<'_>,
-) -> runic_core::parse::ParseResult<CmpPredicate> {
-    use runic_core::parse::Token;
+    parser: &mut dyn runic_ir::parse::Parser<'_>,
+) -> runic_ir::parse::ParseResult<CmpPredicate> {
+    use runic_ir::parse::Token;
 
     let keywords = SmallVec::<[Token; 10]>::from_iter(
         CmpPredicate::ALL.iter().map(|predicate| Token::BareIdent(predicate.as_str())),
@@ -195,7 +195,7 @@ pub(crate) fn parse_predicate(
 mod tests {
     use alloc::{rc::Rc, string::ToString};
 
-    use runic_core::Context;
+    use runic_ir::Context;
 
     use super::*;
 
@@ -203,7 +203,7 @@ mod tests {
     /// nothing.
     #[test]
     fn every_attribute_kind_lists_and_replaces_what_it_holds() {
-        use runic_core::testing::elements::{Row, check_every_kind};
+        use runic_ir::testing::elements::{Row, check_every_kind};
 
         let context = Rc::new(Context::default());
         let rows = [Row::new(

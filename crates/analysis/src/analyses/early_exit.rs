@@ -2,7 +2,7 @@
 
 use alloc::{rc::Rc, string::String};
 
-use runic_core::{
+use runic_ir::{
     Context, Op, Operation, OperationRef, ProgramPoint, RegionBranchPoint, RegionSuccessorInfo,
     Report, Value as _, ValueRef, dialects::builtin::FunctionRef, pass::AnalysisManager,
     testing::parse_function_fixpoint,
@@ -183,7 +183,7 @@ fn n6_the_loop_body_reports_an_exit_when_a_nested_break_targets_it() -> Result<(
         let loop_op = program.loop_op();
         let loop_op = loop_op.borrow();
         let branch = loop_op
-            .as_trait::<dyn runic_core::RegionBranchOpInterface>()
+            .as_trait::<dyn runic_ir::RegionBranchOpInterface>()
             .expect("scf.while implements RegionBranchOpInterface");
         let body = loop_op.region(1).as_region_ref();
         branch

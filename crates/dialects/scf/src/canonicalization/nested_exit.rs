@@ -21,7 +21,7 @@
 //! but the rebuild does not do that work, and a rewrite that cannot maintain an invariant must
 //! not be the one to break it.
 
-use runic_core::HasBreakingControlFlowOpInterface;
+use runic_ir::HasBreakingControlFlowOpInterface;
 
 use crate::While;
 
@@ -44,7 +44,7 @@ pub(super) fn addressed_by_a_nested_exit(while_op: &While) -> bool {
 mod tests {
     use alloc::{boxed::Box, format, rc::Rc, string::String};
 
-    use runic_core::{
+    use runic_ir::{
         Context,
         patterns::{
             self, FrozenRewritePatternSet, GreedyRewriteConfig, RewritePattern, RewritePatternSet,

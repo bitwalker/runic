@@ -18,11 +18,11 @@ doctest = false
 blink-alloc.workspace = true
 bitvec.workspace = true
 log.workspace = true
-runic-core.workspace = true
+runic-ir.workspace = true
 
 [dev-dependencies]
 # Use local paths for dev-only dependency to avoid relying on crates.io during packaging
 runic-dialect-arith = { path = "../dialects/arith" }
 runic-dialect-cf = { path = "../dialects/cf" }
 runic-dialect-scf = { path = "../dialects/scf" }
-runic-core = { path = "../core", features = ["logging"] }
+runic-ir = { path = "../ir", features = ["logging"] }

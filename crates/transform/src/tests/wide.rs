@@ -5,7 +5,7 @@
 
 use alloc::{format, rc::Rc, string::String, vec::Vec};
 
-use runic_core::{
+use runic_ir::{
     Context, OperationRef,
     dialects::builtin::attributes::{Array, I32ArrayAttr},
     formatter::PrettyPrint,

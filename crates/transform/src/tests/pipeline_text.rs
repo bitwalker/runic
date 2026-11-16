@@ -13,7 +13,7 @@ use alloc::{
 };
 use core::fmt;
 
-use runic_core::{
+use runic_ir::{
     Context,
     pass::{Nesting, PassManager, PassPipeline},
     testing::text::Rng,
@@ -386,7 +386,7 @@ fn mutate(rng: &mut Rng, text: &str) -> String {
 fn exercise(text: &str) -> bool {
     guarded(text, || {
         let function =
-            Context::default().get_registered_name::<runic_core::dialects::builtin::Function>();
+            Context::default().get_registered_name::<runic_ir::dialects::builtin::Function>();
         if let Ok(pipeline) = PassPipeline::parse_elements(&function, text) {
             check_parsed(text, &pipeline);
         }
@@ -493,7 +493,7 @@ fn deep_and_long_text_is_an_error_or_parses() {
 #[test]
 fn text_that_starts_with_an_anchor_may_be_a_list_of_elements() {
     let context = Rc::new(Context::default());
-    let module = context.get_registered_name::<runic_core::dialects::builtin::Module>();
+    let module = context.get_registered_name::<runic_ir::dialects::builtin::Module>();
     let error = PassPipeline::parse("builtin.function(dce),cse").unwrap_err().to_string();
     assert!(error.contains("expected the end of the pipeline, found ','"), "{error}");
     let elements = PassPipeline::parse_elements(&module, "builtin.function(dce),cse").unwrap();

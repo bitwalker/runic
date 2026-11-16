@@ -4,7 +4,7 @@ mod raw;
 
 use core::any::Any;
 
-use runic_core::ProgramPoint;
+use runic_ir::ProgramPoint;
 
 pub(crate) use self::raw::{
     AnalysisStateDescriptor, RawAnalysisStateInfo, RawAnalysisStateInfoHandle,

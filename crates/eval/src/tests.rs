@@ -1,7 +1,7 @@
 use alloc::format;
 use core::ops::{Deref, DerefMut};
 
-use runic_core::{
+use runic_ir::{
     Builder, Immediate, Op, PointerType, Report, SourceSpan, SymbolName, SymbolTable, Type,
     UnsafeIntrusiveEntityRef, ValueRef,
     diagnostics::Uri,
@@ -304,7 +304,7 @@ fn inv_zero_reports_error() -> Result<(), Report> {
 
     {
         let mut builder = test.function_builder();
-        let zero = builder.felt(runic_core::Felt::ZERO, SourceSpan::default());
+        let zero = builder.felt(runic_ir::Felt::ZERO, SourceSpan::default());
         let inverse = builder.inv(zero, SourceSpan::default())?;
         builder.ret(Some(inverse), SourceSpan::default())?;
     }
@@ -413,7 +413,7 @@ fn eval_limb_fn(
     param: Type,
     result: Type,
     arg: Immediate,
-    build: impl FnOnce(&mut FunctionBuilder<'_, runic_core::OpBuilder>, ValueRef) -> ValueRef,
+    build: impl FnOnce(&mut FunctionBuilder<'_, runic_ir::OpBuilder>, ValueRef) -> ValueRef,
 ) -> Result<Value, Report> {
     let mut test = EvalTest::named("limbs");
     test.with_function(&[param], &[result]);
@@ -440,14 +440,14 @@ fn split_join_limb_order() -> Result<(), Report> {
 
     let shr = eval_limb_fn(Type::U64, Type::U64, x.into(), |b, value| {
         let (high, _) = b.split2(value, Type::Felt, span).unwrap();
-        let zero = b.felt(runic_core::Felt::ZERO, span);
+        let zero = b.felt(runic_ir::Felt::ZERO, span);
         b.join2(zero, high, Type::U64, span).unwrap()
     })?;
     assert_eq!(shr, Value::Immediate((x >> 32).into()));
 
     let shl = eval_limb_fn(Type::U64, Type::U64, x.into(), |b, value| {
         let (_, low) = b.split2(value, Type::Felt, span).unwrap();
-        let zero = b.felt(runic_core::Felt::ZERO, span);
+        let zero = b.felt(runic_ir::Felt::ZERO, span);
         b.join2(low, zero, Type::U64, span).unwrap()
     })?;
     assert_eq!(shl, Value::Immediate((x << 32).into()));
@@ -477,7 +477,7 @@ fn split_join_limb_order() -> Result<(), Report> {
 #[test]
 fn join_of_wide_felt_limb_is_an_error() {
     let span = SourceSpan::default();
-    let wide = runic_core::Felt::new_unchecked(1 << 40);
+    let wide = runic_ir::Felt::new_unchecked(1 << 40);
     let result = eval_limb_fn(Type::Felt, Type::U64, Immediate::Felt(wide), |b, value| {
         b.join2(value, value, Type::U64, span).unwrap()
     });
@@ -892,7 +892,7 @@ fn mem_cpy_out_of_bounds_source_is_an_error() {
 /// `target` with the immediate parent region's owner yields 3 here.
 #[test]
 fn eval_nested_structured_break() -> Result<(), Report> {
-    use runic_core::{Context, testing::parse_function_fixpoint};
+    use runic_ir::{Context, testing::parse_function_fixpoint};
 
     let context = alloc::rc::Rc::new(Context::default());
     let source = "\

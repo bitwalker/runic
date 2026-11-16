@@ -36,7 +36,7 @@
 //! which the assert's resource is a child.
 //!
 //! **Layouts.** No operation needs a data layout to be built, printed, parsed or type-checked. A
-//! layout is read only through [DataLayout::closest](runic_core::DataLayout::closest), and only by
+//! layout is read only through [DataLayout::closest](runic_ir::DataLayout::closest), and only by
 //! verifiers and folds: when one is in scope, the verifiers check that the accessed or measured
 //! type has a layout under it, and a size, alignment or offset folds to a constant; when none is,
 //! the checks are skipped and nothing folds.
@@ -69,11 +69,11 @@ mod ops;
 #[cfg(test)]
 mod tests;
 
-use runic_core::{
+use runic_dialect_arith::ArithDialect;
+use runic_ir::{
     AttributeRef, Builder, Dialect, DialectInfo, OperationRef, SourceSpan, Type,
     attributes::IntegerLikeAttr, derive::DialectRegistration,
 };
-use runic_dialect_arith::ArithDialect;
 
 pub use self::{
     attributes::{Alignment, AlignmentAttr},

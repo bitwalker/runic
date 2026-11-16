@@ -1,4 +1,4 @@
-use runic_core::{
+use runic_ir::{
     Builder, BuilderExt, OpBuilder, Report, SourceSpan, Type, ValueRef,
     dialects::builtin::FunctionBuilder,
 };

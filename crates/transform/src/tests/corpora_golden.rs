@@ -1,7 +1,7 @@
 /// The golden files of `scf` and of the core region transforms, each one function.
 pub const GOLDEN: [(&str, &str); 32] = [
-    ("transparent_ops_do_not_interfere_with_dce_after.runic", include_str!("../../../core/src/ir/region/transforms/expected/transparent_ops_do_not_interfere_with_dce_after.runic")),
-    ("transparent_ops_do_not_interfere_with_dce_before.runic", include_str!("../../../core/src/ir/region/transforms/expected/transparent_ops_do_not_interfere_with_dce_before.runic")),
+    ("transparent_ops_do_not_interfere_with_dce_after.runic", include_str!("../../../ir/src/ir/region/transforms/expected/transparent_ops_do_not_interfere_with_dce_after.runic")),
+    ("transparent_ops_do_not_interfere_with_dce_before.runic", include_str!("../../../ir/src/ir/region/transforms/expected/transparent_ops_do_not_interfere_with_dce_before.runic")),
     ("fold_redundant_yields_all_but_one_switch_after.runic", include_str!("../../../dialects/scf/src/canonicalization/expected/fold_redundant_yields_all_but_one_switch_after.runic")),
     ("fold_redundant_yields_all_but_one_switch_before.runic", include_str!("../../../dialects/scf/src/canonicalization/expected/fold_redundant_yields_all_but_one_switch_before.runic")),
     ("fold_redundant_yields_all_if_switch_after.runic", include_str!("../../../dialects/scf/src/canonicalization/expected/fold_redundant_yields_all_if_switch_after.runic")),

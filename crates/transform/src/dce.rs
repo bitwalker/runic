@@ -1,6 +1,6 @@
 use alloc::{rc::Rc, vec::Vec};
 
-use runic_core::{
+use runic_ir::{
     Backward, Context, EntityMut, Operation, OperationName, OperationRef, RawWalk, Report,
     Rewriter, Value,
     pass::{Pass, PassExecutionState, PostPassStatus},
@@ -18,7 +18,7 @@ use runic_analysis::{
 #[derive(Default)]
 pub struct DeadCodeElimination;
 
-runic_core::inventory::submit!(::runic_core::pass::registry::PassInfo::new::<DeadCodeElimination>(
+runic_ir::inventory::submit!(::runic_ir::pass::registry::PassInfo::new::<DeadCodeElimination>(
     "dce",
     DESCRIPTION
 ));
@@ -85,7 +85,7 @@ impl DeadCodeElimination {
             // its debug-value users with kills before erasing it.
             let dead_results = {
                 let op = op.borrow();
-                if op.implements::<dyn runic_core::traits::Transparent>()
+                if op.implements::<dyn runic_ir::traits::Transparent>()
                     || !op.would_be_trivially_dead()
                     || op.results().iter().any(|result| result.borrow().has_real_uses())
                 {
@@ -102,7 +102,7 @@ impl DeadCodeElimination {
             if let Some(results) = dead_results {
                 changed = PostPassStatus::Changed;
                 for result in results {
-                    runic_core::dialects::debuginfo::transform::erase_debug_info(&result);
+                    runic_ir::dialects::debuginfo::transform::erase_debug_info(&result);
                 }
                 rewriter.erase_op(op);
             }
@@ -128,15 +128,15 @@ mod tests {
         vec::Vec,
     };
 
-    use runic_core::{
+    use runic_dialect_arith::ArithOpBuilder;
+    use runic_dialect_cf::{Assert, ControlFlowOpBuilder};
+    use runic_ir::{
         Context, Report, SourceSpan, SymbolTable, ValueRef,
         dialects::builtin::{BuiltinOpBuilder, Function, Module},
         parse::{self, ParserConfig},
         pass::{Nesting, PassManager},
         testing::Test,
     };
-    use runic_dialect_arith::ArithOpBuilder;
-    use runic_dialect_cf::{Assert, ControlFlowOpBuilder};
 
     use super::DeadCodeElimination;
 

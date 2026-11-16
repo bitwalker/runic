@@ -1,6 +1,6 @@
 use alloc::{format, string::String};
 
-use runic_core::{
+use runic_ir::{
     derive::{EffectOpInterface, operation},
     diagnostics::report,
     dialects::builtin::attributes::TypeAttr,

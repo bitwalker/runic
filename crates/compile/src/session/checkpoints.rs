@@ -2,7 +2,7 @@
 
 use core::any::Any;
 
-use runic_core::Report;
+use runic_ir::Report;
 
 use super::Session;
 use crate::{
@@ -188,7 +188,7 @@ mod tests {
     use core::ops::ControlFlow;
     use std::{fs, path::PathBuf};
 
-    use runic_core::{
+    use runic_ir::{
         Ident, Op, Report, Visibility,
         dialects::builtin::{ModuleBuilder, WorldBuilder, attributes::Signature},
     };
@@ -228,7 +228,7 @@ mod tests {
     fn translate_two(
         _: &Session<'_>,
         _: &[Input],
-        _: runic_core::dialects::builtin::WorldRef,
+        _: runic_ir::dialects::builtin::WorldRef,
         c: &mut Checkpoints<'_>,
     ) -> Result<Flow<()>, Report> {
         if let ControlFlow::Break(stopped) = reach_text(c, MY_TEXT, "first")? {
@@ -426,7 +426,7 @@ mod tests {
         fn reach_bad(
             _: &Session<'_>,
             _: &[Input],
-            _: runic_core::dialects::builtin::WorldRef,
+            _: runic_ir::dialects::builtin::WorldRef,
             c: &mut Checkpoints<'_>,
         ) -> Result<Flow<()>, Report> {
             reach_text(c, MY_BAD, "x")
@@ -470,7 +470,7 @@ mod tests {
         fn fail(
             _: &Session<'_>,
             _: &[Input],
-            _: runic_core::dialects::builtin::WorldRef,
+            _: runic_ir::dialects::builtin::WorldRef,
             _: &mut Checkpoints<'_>,
         ) -> Result<Flow<()>, Report> {
             Err(Report::msg("frontend failed"))
@@ -512,7 +512,7 @@ mod tests {
         fn reach_all(
             _: &Session<'_>,
             _: &[Input],
-            _: runic_core::dialects::builtin::WorldRef,
+            _: runic_ir::dialects::builtin::WorldRef,
             c: &mut Checkpoints<'_>,
         ) -> Result<Flow<()>, Report> {
             let _ = reach_text(c, MY_TEXT, "t")?;
@@ -536,7 +536,7 @@ mod tests {
         fn reach_number(
             _: &Session<'_>,
             _: &[Input],
-            _: runic_core::dialects::builtin::WorldRef,
+            _: runic_ir::dialects::builtin::WorldRef,
             c: &mut Checkpoints<'_>,
         ) -> Result<Flow<()>, Report> {
             Ok(match c.reach(MY_TEXT, 7u32)? {

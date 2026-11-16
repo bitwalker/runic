@@ -3,7 +3,7 @@
 use core::{fmt, ops::ControlFlow};
 use std::{path::PathBuf, rc::Rc};
 
-use runic_core::{Context, Report, diagnostics::DiagnosticSet};
+use runic_ir::{Context, Report, diagnostics::DiagnosticSet};
 
 use crate::{Artifact, CheckpointId, CompilationRequest, Compiler, Emitted, Observer};
 
@@ -179,7 +179,7 @@ mod tests {
     use core::ops::ControlFlow;
     use std::fs;
 
-    use runic_core::{Report, diagnostics::diagnostic};
+    use runic_ir::{Report, diagnostics::diagnostic};
 
     use crate::{
         CheckpointDecl, CheckpointId, Compilation, CompilationRequest, Compiler, EmitRequest,

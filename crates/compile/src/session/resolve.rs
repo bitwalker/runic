@@ -1,7 +1,7 @@
 //! The decisions a session makes before any IR exists: which frontend reads each input, and which
 //! target and backend the compilation is for.
 
-use runic_core::Report;
+use runic_ir::Report;
 
 use super::{Participant, Target};
 use crate::{Compiler, Frontend, Input, Triple};

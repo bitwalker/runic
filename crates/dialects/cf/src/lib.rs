@@ -17,12 +17,12 @@ mod builders;
 mod canonicalization;
 mod ops;
 
-use runic_core::{
+use runic_dialect_arith::ArithDialect;
+use runic_dialect_ub::{PoisonAttr, UndefinedBehaviorDialect};
+use runic_ir::{
     AttributeRef, Builder, Dialect, DialectInfo, OperationRef, SourceSpan, Type,
     attributes::IntegerLikeAttr, derive::DialectRegistration,
 };
-use runic_dialect_arith::ArithDialect;
-use runic_dialect_ub::{PoisonAttr, UndefinedBehaviorDialect};
 
 pub use self::{builders::ControlFlowOpBuilder, ops::*};
 
@@ -72,15 +72,15 @@ impl Dialect for ControlFlowDialect {
 mod tests {
     use alloc::{boxed::Box, format};
 
-    use runic_core::{
+    use runic_dialect_arith::{ArithOpBuilder, Constant};
+    use runic_dialect_ub::{Poison, UndefinedBehaviorOpBuilder};
+    use runic_expect_test::{Expect, expect};
+    use runic_ir::{
         Int, Op, SourceSpan, Value, ValueRef,
         dialects::builtin::{BuiltinOpBuilder, attributes::StringAttr},
         patterns::RewritePattern,
         testing::Test,
     };
-    use runic_dialect_arith::{ArithOpBuilder, Constant};
-    use runic_dialect_ub::{Poison, UndefinedBehaviorOpBuilder};
-    use runic_expect_test::{Expect, expect};
 
     use super::*;
     use crate::canonicalization::{SimplifySelectOfBools, testing::apply_with_borrowing_listener};

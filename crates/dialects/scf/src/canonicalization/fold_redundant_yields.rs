@@ -1,7 +1,7 @@
 use alloc::rc::Rc;
 use core::{any::TypeId, ops::Index};
 
-use runic_core::{
+use runic_ir::{
     patterns::{Pattern, PatternBenefit, PatternInfo, PatternKind, RewritePattern},
     *,
 };
@@ -186,7 +186,9 @@ impl RewritePattern for FoldRedundantYields {
 mod tests {
     use alloc::{boxed::Box, format, rc::Rc, vec::Vec};
 
-    use runic_core::{
+    use runic_dialect_cf::{ControlFlowOpBuilder, SwitchCase};
+    use runic_expect_test::expect_file;
+    use runic_ir::{
         Context, Report, SourceSpan,
         dialects::{builtin::BuiltinOpBuilder, test::TestOpBuilder},
         pass::{Pass, PassExecutionState},
@@ -195,8 +197,6 @@ mod tests {
         },
         testing::Test,
     };
-    use runic_dialect_cf::{ControlFlowOpBuilder, SwitchCase};
-    use runic_expect_test::expect_file;
 
     use super::*;
 
@@ -786,7 +786,7 @@ mod tests {
     /// nested case (`scf.if { scf.break }`) is what the direct-terminator guard already catches.
     #[track_caller]
     fn run_one(name: &str, source: &str) -> (bool, usize, usize) {
-        use runic_core::{
+        use runic_ir::{
             patterns::{FrozenRewritePatternSet, GreedyRewriteConfig, RewritePatternSet},
             testing::parse_function_fixpoint,
         };
@@ -895,10 +895,8 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
 
 #[cfg(test)]
 mod terminal_region_tests {
-    use runic_core::{
-        dialects::builtin::BuiltinOpBuilder, patterns::PatternRewriter, testing::Test,
-    };
     use runic_dialect_ub::UndefinedBehaviorOpBuilder;
+    use runic_ir::{dialects::builtin::BuiltinOpBuilder, patterns::PatternRewriter, testing::Test};
 
     use super::*;
 
@@ -1039,7 +1037,7 @@ mod terminal_region_tests {
                         function.borrow().recursively_verify()?;
                         test.apply_boxed_pass(
                             alloc::boxed::Box::new(runic_transform::Canonicalizer::new(
-                                runic_core::patterns::GreedyRewriteConfig::default(),
+                                runic_ir::patterns::GreedyRewriteConfig::default(),
                                 true,
                             )),
                             true,

@@ -1,4 +1,4 @@
-use runic_core::{
+use runic_ir::{
     AttrPrinter, Context, Type, attributes::AttrParser, derive::DialectAttribute, print::AsmPrinter,
 };
 
@@ -30,8 +30,8 @@ impl AttrPrinter for PoisonAttr {
 
 impl AttrParser for PoisonAttr {
     fn parse(
-        parser: &mut dyn runic_core::parse::Parser<'_>,
-    ) -> runic_core::parse::ParseResult<runic_core::AttributeRef> {
+        parser: &mut dyn runic_ir::parse::Parser<'_>,
+    ) -> runic_ir::parse::ParseResult<runic_ir::AttributeRef> {
         let ty = parser.parse_type()?.into_inner();
         Ok(parser.context_rc().create_attribute::<PoisonAttr, _>(ty))
     }

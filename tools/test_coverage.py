@@ -107,10 +107,10 @@ class CoverageTests(unittest.TestCase):
         self.assertIn("report", calls[-1][0])
 
     def test_package_selection_and_single_suite_collection(self):
-        status, calls = self.collect(skip_lit=True, package=["runic-core"])
+        status, calls = self.collect(skip_lit=True, package=["runic-ir"])
         self.assertEqual(status, 0)
         test_command = next(command for command, _ in calls if "nextest" in command)
-        self.assertIn("runic-core", test_command)
+        self.assertIn("runic-ir", test_command)
         self.assertNotIn("--workspace", test_command)
         self.assertFalse(any(command[0] == "litcheck" for command, _ in calls))
         status, calls = self.collect(skip_rust=True)

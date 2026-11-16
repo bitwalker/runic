@@ -1,6 +1,6 @@
 use alloc::rc::Rc;
 
-use runic_core::{
+use runic_ir::{
     patterns::{Pattern, PatternBenefit, PatternInfo, PatternKind, RewritePattern},
     *,
 };
@@ -33,7 +33,7 @@ impl FoldConstantIndexSwitch {
 impl FoldConstantIndexSwitch {
     /// The selector's constant value, read as a 32-bit pattern (see `constant_selector`).
     fn match_constant_selector(&self, op: OperationRef) -> Option<i32> {
-        use runic_core::matchers::{self, Matcher};
+        use runic_ir::matchers::{self, Matcher};
 
         let op = op.borrow();
         if let Some(op) = op.downcast_ref::<IndexSwitch>() {
@@ -102,11 +102,9 @@ impl RewritePattern for FoldConstantIndexSwitch {
 
 #[cfg(test)]
 mod terminal_region_tests {
-    use runic_core::{
-        dialects::builtin::BuiltinOpBuilder, patterns::PatternRewriter, testing::Test,
-    };
     use runic_dialect_arith::ArithOpBuilder;
     use runic_dialect_ub::UndefinedBehaviorOpBuilder;
+    use runic_ir::{dialects::builtin::BuiltinOpBuilder, patterns::PatternRewriter, testing::Test};
 
     use super::*;
 
@@ -279,7 +277,7 @@ mod terminal_region_tests {
                         function.borrow().recursively_verify()?;
                         test.apply_boxed_pass(
                             alloc::boxed::Box::new(runic_transform::Canonicalizer::new(
-                                runic_core::patterns::GreedyRewriteConfig::default(),
+                                runic_ir::patterns::GreedyRewriteConfig::default(),
                                 true,
                             )),
                             true,
@@ -296,7 +294,7 @@ mod terminal_region_tests {
 mod selector_tests {
     use alloc::{boxed::Box, format, rc::Rc};
 
-    use runic_core::{
+    use runic_ir::{
         patterns::{self, FrozenRewritePatternSet, GreedyRewriteConfig, RewritePatternSet},
         testing::parse_function_fixpoint,
     };

@@ -1,15 +1,15 @@
 use alloc::rc::Rc;
 
-use runic_core::{
+use runic_dialect_arith::ArithOpBuilder;
+use runic_dialect_cf::{self as cf, ControlFlowOpBuilder};
+use runic_dialect_ub::UndefinedBehaviorOpBuilder;
+use runic_ir::{
     Builder, EntityMut, Forward, Op, Operation, OperationName, OperationRef, RawWalk, Report,
     SmallVec, Spanned, ValueRange, ValueRef, WalkResult,
     dialects::builtin,
     dominance::DominanceInfo,
     pass::{Pass, PassExecutionState, PostPassStatus},
 };
-use runic_dialect_arith::ArithOpBuilder;
-use runic_dialect_cf::{self as cf, ControlFlowOpBuilder};
-use runic_dialect_ub::UndefinedBehaviorOpBuilder;
 use runic_transform::{self as transforms, CFGToSCFInterface};
 
 use crate::*;
@@ -28,9 +28,10 @@ use crate::*;
 #[derive(Default)]
 pub struct LiftControlFlowToSCF;
 
-runic_core::inventory::submit!(
-    ::runic_core::pass::registry::PassInfo::new::<LiftControlFlowToSCF>("cfg-to-scf", DESCRIPTION)
-);
+runic_ir::inventory::submit!(::runic_ir::pass::registry::PassInfo::new::<LiftControlFlowToSCF>(
+    "cfg-to-scf",
+    DESCRIPTION
+));
 
 const DESCRIPTION: &str =
     "Replaces unstructured control flow (cf) by structured control flow (scf) where it can";
@@ -54,7 +55,7 @@ impl Pass for LiftControlFlowToSCF {
         true
     }
 
-    fn initialize(&mut self, context: Rc<runic_core::Context>) -> Result<(), Report> {
+    fn initialize(&mut self, context: Rc<runic_ir::Context>) -> Result<(), Report> {
         // Ensure that when this pass is initialized, that the SCF dialect is registered
         context.get_or_register_dialect::<crate::ScfDialect>();
 
@@ -205,11 +206,11 @@ impl CFGToSCFInterface for ControlFlowToSCFTransformation {
     /// `scf.index_switch` if it is a `cf.switch`. Otherwise, returns an error.
     fn create_structured_branch_region_op(
         &self,
-        builder: &mut runic_core::OpBuilder,
-        control_flow_cond_op: runic_core::OperationRef,
-        result_types: &[runic_core::Type],
-        regions: &mut runic_core::SmallVec<[runic_core::RegionRef; 2]>,
-    ) -> Result<runic_core::OperationRef, runic_core::Report> {
+        builder: &mut runic_ir::OpBuilder,
+        control_flow_cond_op: runic_ir::OperationRef,
+        result_types: &[runic_ir::Type],
+        regions: &mut runic_ir::SmallVec<[runic_ir::RegionRef; 2]>,
+    ) -> Result<runic_ir::OperationRef, runic_ir::Report> {
         let cf_op = control_flow_cond_op.borrow();
         if let Some(cond_br) = cf_op.downcast_ref::<cf::CondBr>() {
             assert_eq!(regions.len(), 2);
@@ -254,7 +255,7 @@ impl CFGToSCFInterface for ControlFlowToSCFTransformation {
             return Ok(operation);
         }
 
-        Err(runic_core::diagnostics::report!(
+        Err(runic_ir::diagnostics::report!(
             message: "control flow transformation failed",
             labels: [primary(
                 cf_op.span(),
@@ -266,12 +267,12 @@ impl CFGToSCFInterface for ControlFlowToSCFTransformation {
     /// Creates an `scf.yield` op returning the given results.
     fn create_structured_branch_region_terminator_op(
         &self,
-        span: runic_core::SourceSpan,
-        builder: &mut runic_core::OpBuilder,
-        _branch_region_op: runic_core::OperationRef,
-        _replaced_control_flow_op: Option<runic_core::OperationRef>,
+        span: runic_ir::SourceSpan,
+        builder: &mut runic_ir::OpBuilder,
+        _branch_region_op: runic_ir::OperationRef,
+        _replaced_control_flow_op: Option<runic_ir::OperationRef>,
         results: ValueRange<'_, 2>,
-    ) -> Result<(), runic_core::Report> {
+    ) -> Result<(), runic_ir::Report> {
         builder.r#yield(results, span)?;
 
         Ok(())
@@ -282,13 +283,13 @@ impl CFGToSCFInterface for ControlFlowToSCFTransformation {
     /// nothing but forward the iteration variables.
     fn create_structured_do_while_loop_op(
         &self,
-        builder: &mut runic_core::OpBuilder,
-        replaced_op: runic_core::OperationRef,
+        builder: &mut runic_ir::OpBuilder,
+        replaced_op: runic_ir::OperationRef,
         loop_values_init: ValueRange<'_, 2>,
-        condition: runic_core::ValueRef,
+        condition: runic_ir::ValueRef,
         loop_values_next_iter: ValueRange<'_, 2>,
-        loop_body: runic_core::RegionRef,
-    ) -> Result<runic_core::OperationRef, runic_core::Report> {
+        loop_body: runic_ir::RegionRef,
+    ) -> Result<runic_ir::OperationRef, runic_ir::Report> {
         let span = replaced_op.span();
 
         // Results are derived from the forwarded values given to `scf.condition`
@@ -324,33 +325,33 @@ impl CFGToSCFInterface for ControlFlowToSCFTransformation {
     /// Creates an `arith.constant` with an i1 attribute of the given value.
     fn get_cfg_bool_value(
         &self,
-        span: runic_core::SourceSpan,
-        builder: &mut runic_core::OpBuilder,
+        span: runic_ir::SourceSpan,
+        builder: &mut runic_ir::OpBuilder,
         value: bool,
-    ) -> runic_core::ValueRef {
+    ) -> runic_ir::ValueRef {
         builder.i1(value, span)
     }
 
     /// Creates an `arith.constant` with an i32 attribute of the given value.
     fn get_cfg_switch_value(
         &self,
-        span: runic_core::SourceSpan,
-        builder: &mut runic_core::OpBuilder,
+        span: runic_ir::SourceSpan,
+        builder: &mut runic_ir::OpBuilder,
         value: i32,
-    ) -> runic_core::ValueRef {
+    ) -> runic_ir::ValueRef {
         builder.i32(value, span)
     }
 
     /// Creates a `cf.switch` op with the given cases and flag.
     fn create_cfg_switch_op(
         &self,
-        span: runic_core::SourceSpan,
-        builder: &mut runic_core::OpBuilder,
-        flag: runic_core::ValueRef,
+        span: runic_ir::SourceSpan,
+        builder: &mut runic_ir::OpBuilder,
+        flag: runic_ir::ValueRef,
         case_values: &[i32],
-        case_destinations: &[runic_core::BlockRef],
+        case_destinations: &[runic_ir::BlockRef],
         case_arguments: &[ValueRange<'_, 2>],
-        default_dest: runic_core::BlockRef,
+        default_dest: runic_ir::BlockRef,
         default_args: ValueRange<'_, 2>,
     ) -> Result<(), Report> {
         let cases = case_values
@@ -369,10 +370,10 @@ impl CFGToSCFInterface for ControlFlowToSCFTransformation {
 
     fn create_single_destination_branch(
         &self,
-        span: runic_core::SourceSpan,
-        builder: &mut runic_core::OpBuilder,
-        _dummy_flag: runic_core::ValueRef,
-        destination: runic_core::BlockRef,
+        span: runic_ir::SourceSpan,
+        builder: &mut runic_ir::OpBuilder,
+        _dummy_flag: runic_ir::ValueRef,
+        destination: runic_ir::BlockRef,
         arguments: ValueRange<'_, 2>,
     ) -> Result<(), Report> {
         builder.br(destination, arguments, span)?;
@@ -382,12 +383,12 @@ impl CFGToSCFInterface for ControlFlowToSCFTransformation {
     /// Branches on the `i1` produced by [Self::get_cfg_bool_value] with `cf.cond_br`.
     fn create_conditional_branch(
         &self,
-        span: runic_core::SourceSpan,
-        builder: &mut runic_core::OpBuilder,
-        condition: runic_core::ValueRef,
-        true_dest: runic_core::BlockRef,
+        span: runic_ir::SourceSpan,
+        builder: &mut runic_ir::OpBuilder,
+        condition: runic_ir::ValueRef,
+        true_dest: runic_ir::BlockRef,
         true_args: ValueRange<'_, 2>,
-        false_dest: runic_core::BlockRef,
+        false_dest: runic_ir::BlockRef,
         false_args: ValueRange<'_, 2>,
     ) -> Result<(), Report> {
         builder.cond_br(condition, true_dest, true_args, false_dest, false_args, span)?;
@@ -397,19 +398,19 @@ impl CFGToSCFInterface for ControlFlowToSCFTransformation {
     /// Creates a `ub.poison` op of the given type.
     fn get_undef_value(
         &self,
-        span: runic_core::SourceSpan,
-        builder: &mut runic_core::OpBuilder,
-        ty: runic_core::Type,
-    ) -> runic_core::ValueRef {
+        span: runic_ir::SourceSpan,
+        builder: &mut runic_ir::OpBuilder,
+        ty: runic_ir::Type,
+    ) -> runic_ir::ValueRef {
         builder.poison(ty, span)
     }
 
     fn create_unreachable_terminator(
         &self,
-        span: runic_core::SourceSpan,
-        builder: &mut runic_core::OpBuilder,
-        _region: runic_core::RegionRef,
-    ) -> Result<runic_core::OperationRef, runic_core::Report> {
+        span: runic_ir::SourceSpan,
+        builder: &mut runic_ir::OpBuilder,
+        _region: runic_ir::RegionRef,
+    ) -> Result<runic_ir::OperationRef, runic_ir::Report> {
         log::trace!(target: "cfg-to-scf", "creating unreachable terminator at {}", builder.insertion_point());
         let op = builder.unreachable(span);
         Ok(op.as_operation_ref())
@@ -421,20 +422,20 @@ mod tests {
     use alloc::{boxed::Box, format};
 
     use builtin::BuiltinOpBuilder;
-    use runic_core::{
+    use runic_expect_test::expect_file;
+    use runic_ir::{
         Report, Signedness, SourceSpan,
         dialects::builtin::{self},
         testing::Test,
     };
-    use runic_expect_test::expect_file;
 
     use super::*;
 
     /// The result of a `builtin.unrealized_conversion_cast` of `value` to `ty`.
     fn cast(
-        builder: &mut builtin::FunctionBuilder<'_, runic_core::OpBuilder>,
+        builder: &mut builtin::FunctionBuilder<'_, runic_ir::OpBuilder>,
         value: ValueRef,
-        ty: runic_core::Type,
+        ty: runic_ir::Type,
         span: SourceSpan,
     ) -> Result<ValueRef, Report> {
         let cast = builder.unrealized_conversion_cast([value], [ty], span)?;
@@ -443,7 +444,7 @@ mod tests {
 
     #[test]
     fn cfg_to_scf_combines_returns_from_distinct_inline_sites() -> Result<(), Report> {
-        use runic_core::dialects::debuginfo::attributes::{
+        use runic_ir::dialects::debuginfo::attributes::{
             INLINE_CALL_CHAIN_ATTR_NAME, InlineCallChain, InlineCallChainAttr, InlineCallFrame,
         };
 
@@ -625,9 +626,9 @@ mod tests {
         let (v325, v326, v327, v328) = {
             let block32 = block32.borrow();
             let args = block32.arguments();
-            let arg0: runic_core::ValueRef = args[0].upcast();
-            let arg2: runic_core::ValueRef = args[2].upcast();
-            let arg3: runic_core::ValueRef = args[3].upcast();
+            let arg0: runic_ir::ValueRef = args[0].upcast();
+            let arg2: runic_ir::ValueRef = args[2].upcast();
+            let arg3: runic_ir::ValueRef = args[3].upcast();
             (arg0, args[1].upcast(), arg2, arg3)
         };
 
@@ -939,7 +940,7 @@ mod tests {
         )?;
 
         builder.switch_to_block(has_overflowed);
-        builder.ret_imm(runic_core::Int::from(-1i32), span)?;
+        builder.ret_imm(runic_ir::Int::from(-1i32), span)?;
 
         let operation = test.function().as_operation_ref();
 
@@ -969,7 +970,7 @@ mod tests {
     /// automatically updates the SSA operands of debug value ops.
     #[test]
     fn cfg_to_scf_debug_value_preservation() -> Result<(), Report> {
-        use runic_core::{
+        use runic_ir::{
             dialects::debuginfo::{DIBuilder, DebugInfoDialect, attributes::Variable},
             interner::Symbol,
         };

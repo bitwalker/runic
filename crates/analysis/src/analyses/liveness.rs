@@ -3,7 +3,7 @@ mod next_use_set;
 use alloc::rc::Rc;
 use core::borrow::Borrow;
 
-use runic_core::{
+use runic_ir::{
     Backward, Block, BlockRef, CallOpInterface, EntityRef, Operation, ProgramPoint,
     RegionBranchOpInterface, RegionBranchPoint, RegionRef, Report, Spanned, SymbolTable, ValueRef,
     dominance::DominanceInfo,
@@ -84,7 +84,7 @@ pub struct Liveness;
 ///
 /// Internally, it instantiates a [DataFlowSolver] with [DeadCodeAnalysis],
 /// [SparseConstantPropagation], and [LivenessAnalysis], and runs them to fixpint. It additionally
-/// relies on the [DominanceInfo] and [runic_core::loops::LoopForest] analyses to provide us with
+/// relies on the [DominanceInfo] and [runic_ir::loops::LoopForest] analyses to provide us with
 /// details about the CFG structure that we then use both to optimize the work done by the solver,
 /// as well as feed into the actual liveness information itself (i.e. by specifying how much
 /// distance a given control flow edge adds).

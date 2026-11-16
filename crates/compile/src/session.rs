@@ -3,7 +3,7 @@
 use core::{any::Any, cell::RefCell};
 use std::{path::PathBuf, rc::Rc};
 
-use runic_core::{
+use runic_ir::{
     BuilderExt, Context, DataLayoutSpec, Report, SourceSpan,
     dialects::builtin::{World, WorldRef},
     set_data_layout_spec,
@@ -317,7 +317,7 @@ impl<'c> Session<'c> {
 
 #[cfg(test)]
 mod tests {
-    use runic_core::{DataLayout, Endianness, PointerSpec};
+    use runic_ir::{DataLayout, Endianness, PointerSpec};
 
     use super::*;
     use crate::{

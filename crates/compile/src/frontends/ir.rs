@@ -1,6 +1,6 @@
 //! The frontend for Runic's own textual IR.
 
-use runic_core::{
+use runic_ir::{
     DATA_LAYOUT_ATTR, DataLayoutOpInterface, DataLayoutSpec, Op, OpPrintingFlags, Operation,
     OperationRef, Report, Symbol, SymbolTable,
     diagnostics::DefaultFailurePolicy,
@@ -65,7 +65,7 @@ fn parse(session: &Session<'_>, input: &Input) -> Result<OperationRef, Report> {
             Ok(_) => Report::msg(format!("input '{}' could not be parsed", input.name())),
         });
     }
-    let runic_core::diagnostics::Outcome {
+    let runic_ir::diagnostics::Outcome {
         result,
         diagnostics,
     } = outcome;
@@ -229,7 +229,7 @@ fn check_definable(input: &str, unit: OperationRef, world: WorldRef) -> Result<(
 
 #[cfg(test)]
 mod tests {
-    use runic_core::Op;
+    use runic_ir::Op;
 
     use crate::{
         CheckpointDecl, CompilationRequest, Compiler, Input, Session,

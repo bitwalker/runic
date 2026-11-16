@@ -1,4 +1,4 @@
-use runic_core::{
+use runic_ir::{
     Block, BlockArgument, BlockArgumentRange, CallOpInterface, CallableOpInterface, EntityWithId,
     Forward, OpOperandRange, OpResult, OpResultRange, Operation, ProgramPoint,
     RegionBranchOpInterface, RegionBranchPoint, RegionBranchTerminatorOpInterface, RegionSuccessor,

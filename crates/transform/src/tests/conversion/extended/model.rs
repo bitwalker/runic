@@ -11,7 +11,7 @@ use alloc::{
     vec::Vec,
 };
 
-use runic_core::{
+use runic_ir::{
     Context, OperationRef, Symbol, Type,
     dialects::builtin::{Function, FunctionAlias},
 };
@@ -192,7 +192,7 @@ pub(super) fn check_model(
 /// Every use in the use list of a function or an alias is held by an operation of the module,
 /// and every call, function reference and alias of the module is one use.
 pub(super) fn check_symbol_uses(module: OperationRef) -> Result<(), String> {
-    use runic_core::dialects::builtin::{Call, FunctionReference};
+    use runic_ir::dialects::builtin::{Call, FunctionReference};
     let mut uses = 0;
     let mut users = 0;
     for op in all_operations(module) {

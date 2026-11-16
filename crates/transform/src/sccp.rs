@@ -4,7 +4,7 @@ use runic_analysis::{
     DataFlowSolver, Lattice,
     analyses::{DeadCodeAnalysis, SparseConstantPropagation, constant_propagation::ConstantValue},
 };
-use runic_core::{
+use runic_ir::{
     BlockRef, Builder, Context, EntityMut, OpBuilder, Operation, OperationFolder, OperationName,
     OperationRef, RegionList, Report, SmallVec, ValueRef,
     pass::{Pass, PassExecutionState},
@@ -22,7 +22,7 @@ use runic_core::{
 #[derive(Default)]
 pub struct SparseConditionalConstantPropagation;
 
-runic_core::inventory::submit!(::runic_core::pass::registry::PassInfo::new::<
+runic_ir::inventory::submit!(::runic_ir::pass::registry::PassInfo::new::<
     SparseConditionalConstantPropagation,
 >("sccp", DESCRIPTION));
 

@@ -1,6 +1,6 @@
 use core::{fmt, str::FromStr};
 
-use runic_core::Report;
+use runic_ir::Report;
 
 fn unknown(what: &str, text: &str, known: &[&str]) -> Report {
     Report::msg(format!(

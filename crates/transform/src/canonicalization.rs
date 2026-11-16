@@ -1,7 +1,7 @@
 use alloc::{boxed::Box, format, rc::Rc, string::String, vec::Vec};
 use core::fmt;
 
-use runic_core::{
+use runic_ir::{
     Context, EntityMut, Operation, OperationName, Report, Spanned,
     pass::{
         OperationPass, Pass, PassExecutionState, PassOptions, PostPassStatus, write_pass_option,
@@ -14,7 +14,7 @@ use runic_core::{
 /// or the maximum number of iterations/rewrites is exhausted. Canonicalization is best-effort and
 /// does not guarantee that the entire IR is in a canonical form after running this pass.
 ///
-/// See the docs for [runic_core::traits::Canonicalizable] for more details.
+/// See the docs for [runic_ir::traits::Canonicalizable] for more details.
 ///
 /// # Options
 ///
@@ -30,7 +30,7 @@ use runic_core::{
 /// The pass prints its options in a canonical form: `enable-patterns` before `disable-patterns`
 /// whatever order they were written in, each list as its trimmed, non-empty names joined by `;`,
 /// and each value quoted and escaped as pipeline text quotes it
-/// ([runic_core::pass::write_pass_option]).
+/// ([runic_ir::pass::write_pass_option]).
 pub struct Canonicalizer {
     config: GreedyRewriteConfig,
     rewrites: Option<Rc<FrozenRewritePatternSet>>,
@@ -41,7 +41,7 @@ pub struct Canonicalizer {
     disabled_patterns: Vec<String>,
 }
 
-runic_core::inventory::submit!(::runic_core::pass::registry::PassInfo::new::<Canonicalizer>(
+runic_ir::inventory::submit!(::runic_ir::pass::registry::PassInfo::new::<Canonicalizer>(
     Canonicalizer::NAME,
     Canonicalizer::DESCRIPTION
 ));
@@ -241,7 +241,7 @@ impl Pass for Canonicalizer {
         if self.require_convergence && converged.is_err() {
             log::debug!(target: Self::NAME, "canonicalization could not converge");
             let span = op.borrow().span();
-            return Err(runic_core::diagnostics::report!(
+            return Err(runic_ir::diagnostics::report!(
                 message: "canonicalization failed",
                 labels: [
                     primary(
@@ -339,7 +339,7 @@ mod tests {
     fn canonicalizer_erases_only_asserts_of_true() -> Result<(), Report> {
         use alloc::{boxed::Box, vec::Vec};
 
-        use runic_core::{
+        use runic_ir::{
             dialects::builtin::Function,
             parse::{self, ParserConfig},
             pass::{Nesting, PassManager},
@@ -382,7 +382,7 @@ mod tests {
     /// `@caller` after the canonicalizer ran on it, in a module that also holds `declaration` of
     /// `@callee`; the caller calls `@callee` through a reference with `signature`.
     fn canonicalize_indirect_call(declaration: &str, signature: &str) -> Result<String, Report> {
-        use runic_core::{
+        use runic_ir::{
             SymbolTable,
             dialects::builtin::{Function, Module},
             parse::{self, ParserConfig},

@@ -1,6 +1,6 @@
 pub(super) mod state;
 
-use runic_core::{Direction, Operation, ProgramPoint, Report, pass::AnalysisManager};
+use runic_ir::{Direction, Operation, ProgramPoint, Report, pass::AnalysisManager};
 
 pub use self::state::{
     AnalysisState, AnalysisStateGuard, AnalysisStateGuardMut, AnalysisStateInfo,
@@ -24,7 +24,7 @@ pub enum CallControlFlowAction {
 /// A call whose possible callees are statically known participates in interprocedural
 /// propagation even without a single resolvable callee (e.g. a call of one of a fixed set of
 /// callables, chosen at runtime).
-pub(crate) fn is_external_call(call: &dyn runic_core::CallOpInterface) -> bool {
+pub(crate) fn is_external_call(call: &dyn runic_ir::CallOpInterface) -> bool {
     call.possible_callees()
         .is_none_or(|targets| targets.iter().any(|target| target.callable_region().is_none()))
 }

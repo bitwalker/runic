@@ -8,7 +8,7 @@ mod fail;
 pub(crate) mod panic;
 mod print_int_ranges;
 
-use runic_core::Report;
+use runic_ir::Report;
 
 /// A switch given as `key`, `key=true` or `key=false`.
 fn switch(pass: &str, key: &str, value: Option<&str>) -> Result<bool, Report> {

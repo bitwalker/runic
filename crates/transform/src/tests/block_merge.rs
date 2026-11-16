@@ -14,7 +14,7 @@ use alloc::{
     string::{String, ToString},
 };
 
-use runic_core::{
+use runic_ir::{
     Context, Op,
     dialects::builtin::{Function, FunctionRef},
     parse::{self, ParserConfig},

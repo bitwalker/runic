@@ -1,6 +1,6 @@
 use alloc::{rc::Rc, vec::Vec};
 
-use runic_core::{
+use runic_ir::{
     patterns::{Pattern, PatternBenefit, PatternInfo, PatternKind, RewritePattern},
     *,
 };
@@ -151,14 +151,14 @@ impl RewritePattern for IndexSwitchRemoveUnusedResults {
 mod tests {
     use alloc::{boxed::Box, format, rc::Rc};
 
-    use runic_core::{
+    use runic_dialect_ub::UndefinedBehaviorOpBuilder;
+    use runic_expect_test::expect_file;
+    use runic_ir::{
         Op, Report, SourceSpan,
         dialects::{builtin::BuiltinOpBuilder, test::TestOpBuilder},
         patterns::{self, FrozenRewritePatternSet, GreedyRewriteConfig, RewritePatternSet},
         testing::Test,
     };
-    use runic_dialect_ub::UndefinedBehaviorOpBuilder;
-    use runic_expect_test::expect_file;
 
     use super::*;
     use crate::canonicalization::normalize_ir;
@@ -287,12 +287,12 @@ mod tests {
 
 #[cfg(test)]
 mod terminal_region_tests {
-    use runic_core::{
+    use runic_dialect_ub::UndefinedBehaviorOpBuilder;
+    use runic_ir::{
         dialects::builtin::BuiltinOpBuilder,
         patterns::{PatternRewriter, RewriterListener},
         testing::Test,
     };
-    use runic_dialect_ub::UndefinedBehaviorOpBuilder;
 
     use super::*;
 
@@ -528,7 +528,7 @@ mod terminal_region_tests {
                         function.borrow().recursively_verify()?;
                         test.apply_boxed_pass(
                             alloc::boxed::Box::new(runic_transform::Canonicalizer::new(
-                                runic_core::patterns::GreedyRewriteConfig::default(),
+                                runic_ir::patterns::GreedyRewriteConfig::default(),
                                 true,
                             )),
                             true,

@@ -5,7 +5,7 @@ use core::{
     ptr::NonNull,
 };
 
-use runic_core::{
+use runic_ir::{
     AsValueRange, AttributeRef, Block, BlockRef, CallOpInterface, CallableOpInterface,
     EntityWithId, Forward, Operation, OperationRef, ProgramPoint, RegionBranchOpInterface,
     RegionBranchPoint, RegionBranchTerminatorOpInterface, RegionRef, RegionSuccessorIter,
@@ -337,7 +337,7 @@ impl core::hash::Hash for CfgEdge {
 }
 impl fmt::Display for CfgEdge {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        use runic_core::EntityWithId;
+        use runic_ir::EntityWithId;
         let from = self.from.borrow().id();
         let to = self.to.borrow().id();
         write!(f, "{from} -> {to}")
@@ -990,7 +990,8 @@ where
 mod tests {
     use alloc::{format, string::ToString, vec::Vec};
 
-    use runic_core::{
+    use runic_dialect_arith::ArithOpBuilder;
+    use runic_ir::{
         Op, ProgramPoint, Signedness, SourceSpan, Symbol, Usable, ValueRef,
         attributes::IntegerLikeAttr,
         dialects::{
@@ -1000,7 +1001,6 @@ mod tests {
         parse::{self, ParserConfig},
         testing::Test,
     };
-    use runic_dialect_arith::ArithOpBuilder;
 
     use super::*;
     use crate::{DataFlowConfig, DataFlowSolver, analyses::SparseConstantPropagation};

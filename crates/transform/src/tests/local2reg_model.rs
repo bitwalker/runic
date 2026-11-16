@@ -14,7 +14,7 @@ use alloc::{
     vec::Vec,
 };
 
-use runic_core::testing::text::Rng;
+use runic_ir::testing::text::Rng;
 
 use super::{cse_model::run_passes, interp};
 use crate::Local2Reg;

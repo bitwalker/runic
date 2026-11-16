@@ -1,10 +1,10 @@
 //! Folding through the real drivers: the greedy pattern driver and `OperationFolder`.
 
-use runic_core::{
+use runic_dialect_ub::UndefinedBehaviorOpBuilder;
+use runic_ir::{
     OperationFolder, attributes::IntegerLikeAttr, dialects::builtin::Ret,
     patterns::NoopRewriterListener,
 };
-use runic_dialect_ub::UndefinedBehaviorOpBuilder;
 
 use super::{model::M, *};
 

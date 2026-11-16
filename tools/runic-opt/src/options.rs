@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use runic_core::{
+use runic_ir::{
     OpPrintingFlags, Report,
     pass::{IRPrintingConfig, PassInfo, PassSelection},
 };

@@ -1,4 +1,4 @@
-use runic_core::{
+use runic_ir::{
     AttributeRef, Backward, CallOpInterface, EntityMut, Forward, FxHashMap, FxHashSet, Op,
     Operation, OperationName, OperationRef, ProgramPoint, RawWalk, RegionBranchOpInterface, Report,
     Rewriter, SmallVec, Spanned, Symbol, ValueRef, WalkResult,
@@ -193,7 +193,7 @@ fn convert_debug_references_for_local<R: Rewriter>(
 #[derive(Default)]
 pub struct Local2Reg;
 
-runic_core::inventory::submit!(::runic_core::pass::registry::PassInfo::new::<Local2Reg>(
+runic_ir::inventory::submit!(::runic_ir::pass::registry::PassInfo::new::<Local2Reg>(
     "local2reg",
     DESCRIPTION
 ));
@@ -417,10 +417,10 @@ mod tests {
     };
 
     use litcheck_filecheck::{filecheck, litcheck};
-    use runic_core::{
+    use runic_dialect_arith::ArithOpBuilder;
+    use runic_ir::{
         BuilderExt, Op, SourceSpan, ValueRef, dialects::builtin::BuiltinOpBuilder, testing::Test,
     };
-    use runic_dialect_arith::ArithOpBuilder;
 
     use super::Local2Reg;
 
@@ -443,7 +443,7 @@ mod tests {
             let input = builder.entry_block().borrow().arguments()[0] as ValueRef;
             store = builder.store_local(local, input, SourceSpan::UNKNOWN).unwrap();
             BuiltinOpBuilder::builder_mut(&mut builder)
-                .create::<runic_core::dialects::test::TouchLocal, _>(SourceSpan::UNKNOWN)(
+                .create::<runic_ir::dialects::test::TouchLocal, _>(SourceSpan::UNKNOWN)(
                 local
             )
             .unwrap();
@@ -463,7 +463,7 @@ mod tests {
     /// in the dictionary of the `builtin.ret`) is pinned as if the operation named it directly.
     #[test]
     fn preserves_stores_of_a_local_named_inside_another_attribute() {
-        use runic_core::{
+        use runic_ir::{
             attributes::AttrList,
             dialects::builtin::attributes::{List, ListAttr, LocalVariableAttr},
         };
@@ -484,7 +484,7 @@ mod tests {
 
             let local = context.create_attribute::<LocalVariableAttr, _>(local);
             let mut entries = AttrList::new();
-            entries.push_back(runic_core::Attribute::as_attr(&*local.borrow()).as_attr_ref());
+            entries.push_back(runic_ir::Attribute::as_attr(&*local.borrow()).as_attr_ref());
             let list = context.create_attribute::<ListAttr, _>(List::from(entries));
             ret.borrow_mut().as_operation_mut().set_attribute("locals", list);
         }
@@ -500,7 +500,7 @@ mod tests {
 
     /// `source` (a function) parsed, `Local2Reg` run on it, printed.
     fn promote_parsed(source: &str) -> String {
-        use runic_core::{
+        use runic_ir::{
             dialects::builtin::Function,
             pass::{Nesting, PassManager},
             testing::text::parse,

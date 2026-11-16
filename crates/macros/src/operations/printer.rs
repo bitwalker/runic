@@ -57,7 +57,7 @@ impl quote::ToTokens for DeriveOpPrinter {
                     syn::Lit::Int(syn::LitInt::new(&operand_group.to_string(), self.ident.span()));
                 operands.extend(quote! {
                     {
-                        use ::runic_core::AsValueRange;
+                        use ::runic_ir::AsValueRange;
                         printer.print_space();
                         printer.print_value_uses(op.operands().group(#operand_group_index).as_value_range());
                     }
@@ -70,12 +70,12 @@ impl quote::ToTokens for DeriveOpPrinter {
                     syn::Lit::Int(syn::LitInt::new(&varargs.to_string(), self.ident.span()));
                 operands.extend(quote! {
                     {
-                        use ::runic_core::AsValueRange;
+                        use ::runic_ir::AsValueRange;
                         printer.print_space();
                         printer.print_value_uses(op.operands().group(#fixed_group_index).as_value_range());
 
                         if !op.operands().group(#varargs_group_index).is_empty() {
-                            *printer += ::runic_core::formatter::const_text(", ");
+                            *printer += ::runic_ir::formatter::const_text(", ");
                             printer.print_value_uses(op.operands().group(#varargs_group_index).as_value_range());
                         }
                     }
@@ -91,7 +91,7 @@ impl quote::ToTokens for DeriveOpPrinter {
                 operands.extend(if operand_group.requires_delimiter {
                     quote! {
                         if !op.operands().group(#operand_group_index_lit).is_empty() {
-                            use ::runic_core::AsValueRange;
+                            use ::runic_ir::AsValueRange;
                             printer.print_space();
                             printer.print_operand_list(op.operands().group(#operand_group_index_lit));
                         }
@@ -99,7 +99,7 @@ impl quote::ToTokens for DeriveOpPrinter {
                 } else {
                     quote! {
                         if !op.operands().group(#operand_group_index_lit).is_empty() {
-                            use ::runic_core::AsValueRange;
+                            use ::runic_ir::AsValueRange;
                             printer.print_space();
                             printer.print_value_uses(op.operands().group(#operand_group_index_lit).as_value_range());
                         }
@@ -116,9 +116,9 @@ impl quote::ToTokens for DeriveOpPrinter {
                 {
                     let mut properties = op.non_default_properties().peekable();
                     if properties.peek().is_some() {
-                        *printer += ::runic_core::formatter::const_text(" <");
+                        *printer += ::runic_ir::formatter::const_text(" <");
                         printer.print_attribute_dictionary(properties);
-                        *printer += ::runic_core::formatter::const_text(">");
+                        *printer += ::runic_ir::formatter::const_text(">");
                     }
                 }
             });
@@ -134,24 +134,24 @@ impl quote::ToTokens for DeriveOpPrinter {
                     // list cannot be followed by the fallback successor without ambiguity.
                     successors.extend(quote! {
                         printer.print_space();
-                        *printer += ::runic_core::formatter::const_text("[");
+                        *printer += ::runic_ir::formatter::const_text("[");
                         let mut p = printer.nested();
                         for (i, keyed_succ) in self.#field_name().iter().enumerate() {
-                            use ::runic_core::AsValueRange;
+                            use ::runic_ir::AsValueRange;
                             if i > 0 {
-                                p += ::runic_core::formatter::const_text(", ");
-                                p += ::runic_core::formatter::nl();
+                                p += ::runic_ir::formatter::const_text(", ");
+                                p += ::runic_ir::formatter::nl();
                             }
                             let dest = keyed_succ.block();
                             let operands = keyed_succ.arguments();
                             let key_attr_ref = keyed_succ.key_storage();
                             p.print_attribute_value(&*key_attr_ref.borrow());
-                            p += ::runic_core::formatter::const_text(" -> ");
-                            p += ::runic_core::formatter::display(dest.borrow().id());
+                            p += ::runic_ir::formatter::const_text(" -> ");
+                            p += ::runic_ir::formatter::display(dest.borrow().id());
                             p.print_successor_arguments(operands.as_value_range());
                         }
-                        *printer += ::runic_core::formatter::indent(4, p.finish());
-                        *printer += ::runic_core::formatter::const_text("]");
+                        *printer += ::runic_ir::formatter::indent(4, p.finish());
+                        *printer += ::runic_ir::formatter::const_text("]");
                     });
                 } else if succ_group.successors.is_empty() && succ_group.requires_delimiter {
                     successors.extend(quote! {
@@ -159,11 +159,11 @@ impl quote::ToTokens for DeriveOpPrinter {
                         printer.print_lbracket();
                         for (i, succ) in self.#field_name().iter().enumerate() {
                             if i > 0 {
-                                *printer += ::runic_core::formatter::const_text(", ");
+                                *printer += ::runic_ir::formatter::const_text(", ");
                             }
                             let target = succ.successor();
                             let target_operands = succ.successor_operands();
-                            *printer += ::runic_core::formatter::display(target.borrow().id());
+                            *printer += ::runic_ir::formatter::display(target.borrow().id());
                             printer.print_successor_arguments(target_operands);
                         }
                         printer.print_rbracket();
@@ -173,18 +173,18 @@ impl quote::ToTokens for DeriveOpPrinter {
                         printer.print_space();
                         for (i, succ) in self.#field_name().iter().enumerate() {
                             if i > 0 {
-                                *printer += ::runic_core::formatter::const_text(", ");
+                                *printer += ::runic_ir::formatter::const_text(", ");
                             }
                             let target = succ.successor();
                             let target_operands = succ.successor_operands();
-                            *printer += ::runic_core::formatter::display(target.borrow().id());
+                            *printer += ::runic_ir::formatter::display(target.borrow().id());
                             printer.print_successor_arguments(target_operands);
                         }
                     });
                 } else {
                     if succ_group_index > 0 || succ_group.index > 0 {
                         successors.extend(quote! {
-                            *printer += ::runic_core::formatter::const_text(", ");
+                            *printer += ::runic_ir::formatter::const_text(", ");
                         });
                     } else {
                         successors.extend(quote! {
@@ -195,16 +195,16 @@ impl quote::ToTokens for DeriveOpPrinter {
                         let field_name = &succ.field;
                         if i > 0 {
                             successors.extend(quote! {
-                                *printer += ::runic_core::formatter::const_text(", ");
+                                *printer += ::runic_ir::formatter::const_text(", ");
                             });
                         }
                         successors.extend(quote! {
                             {
-                                use ::runic_core::AsValueRange;
+                                use ::runic_ir::AsValueRange;
                                 let succ = self.#field_name();
                                 let target = succ.successor();
                                 let target_operands = &succ.arguments;
-                                *printer += ::runic_core::formatter::display(target.borrow().id());
+                                *printer += ::runic_ir::formatter::display(target.borrow().id());
                                 printer.print_successor_arguments(target_operands.as_value_range());
                             }
                         });
@@ -296,11 +296,11 @@ impl quote::ToTokens for DeriveOpPrinter {
         let op_type = &self.ident;
         let (impl_generics, ty_generics, where_clause) = self.generics.split_for_impl();
         tokens.extend(quote! {
-            impl #impl_generics ::runic_core::OpPrinter for #op_type #ty_generics #where_clause {
+            impl #impl_generics ::runic_ir::OpPrinter for #op_type #ty_generics #where_clause {
                 #states_operand_types
 
-                fn print(&self, printer: &mut ::runic_core::print::AsmPrinter<'_>) {
-                    let op = <Self as ::runic_core::Op>::as_operation(self);
+                fn print(&self, printer: &mut ::runic_ir::print::AsmPrinter<'_>) {
+                    let op = <Self as ::runic_ir::Op>::as_operation(self);
                     #operands
                     #properties
                     #successors

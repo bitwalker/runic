@@ -1,4 +1,4 @@
-use runic_core::{Immediate, SourceSpan, Type, ValueRef};
+use runic_ir::{Immediate, SourceSpan, Type, ValueRef};
 use runic_session::diagnostics::{Diagnostic, miette};
 
 #[derive(Debug, thiserror::Error, Diagnostic)]

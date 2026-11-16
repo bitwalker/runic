@@ -8,7 +8,8 @@
 use core::fmt;
 use std::{io, rc::Rc};
 
-use runic_core::{
+use runic_dialect_arith::{Add, ArithOpBuilder, Constant, Mul, Sub};
+use runic_ir::{
     Builder, BuilderExt, Context, DataLayoutSpec, Endianness, EntityMut, Op, OpBuilder, Operation,
     OperationName, OperationRef, Overflow, PointerSpec, Report, Signedness, Symbol, Usable, Value,
     ValueRef,
@@ -20,7 +21,6 @@ use runic_core::{
         registry::RegistryEntry,
     },
 };
-use runic_dialect_arith::{Add, ArithOpBuilder, Constant, Mul, Sub};
 
 use crate::{
     Artifact, Backend, CheckpointDecl, CheckpointId, Checkpoints, Flow, Render, Session, Triple,
@@ -255,7 +255,7 @@ fn instructions(function: &str, value: ValueRef, listing: &mut String) -> Result
         // A block argument is a parameter.
         let index = value
             .borrow()
-            .downcast_ref::<runic_core::BlockArgument>()
+            .downcast_ref::<runic_ir::BlockArgument>()
             .map(|argument| argument.index())
             .ok_or_else(|| {
                 Report::msg(format!(
@@ -319,7 +319,7 @@ fn constant_value(op: &Operation) -> Option<i128> {
 #[derive(Default)]
 struct Legalize;
 
-runic_core::inventory::submit!(PassInfo::new::<Legalize>(
+runic_ir::inventory::submit!(PassInfo::new::<Legalize>(
     LEGALIZE,
     "Rejects what the stack machine cannot run and subtracts constants by adding their negations"
 ));

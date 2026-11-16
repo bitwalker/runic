@@ -3,7 +3,8 @@
 use core::fmt;
 use std::rc::Rc;
 
-use runic_core::{
+use runic_dialect_arith as arith;
+use runic_ir::{
     Context, EntityMut, Int, Op, OpRegistration, Operation, OperationName, OperationRef, Report,
     SourceSpan, Type, UnsafeIntrusiveEntityRef, ValueRef,
     conversion::{
@@ -18,7 +19,6 @@ use runic_core::{
     pass::{Pass, PassExecutionState, PassInfo, PassOptions, PostPassStatus, write_pass_option},
     patterns::{Pattern, PatternBenefit, PatternInfo, PatternKind},
 };
-use runic_dialect_arith as arith;
 
 /// Converts `i128` to `(i64, i64)`, low half first, under the operation it runs on, the root of
 /// the conversion (a module or a world: the root must hold every user of a function whose
@@ -42,7 +42,7 @@ const NAME: &str = "test-convert-wide-ints";
 const DESCRIPTION: &str =
     "Converts i128 to (i64, i64) under the operation it runs on; `full` for a full conversion";
 
-runic_core::inventory::submit!(PassInfo::new::<ConvertWideInts>(NAME, DESCRIPTION));
+runic_ir::inventory::submit!(PassInfo::new::<ConvertWideInts>(NAME, DESCRIPTION));
 
 impl Pass for ConvertWideInts {
     type Target = Operation;
@@ -162,7 +162,7 @@ fn converter(context: &Rc<Context>, materialize: bool) -> TypeConverter {
             let amount = sixty_four(rewriter, span, i128)?;
             let high = result(&rewriter.create_op::<arith::Shr, _>(span, (input, amount))?);
             let high = result(&rewriter.create_op::<arith::Trunc, _>(span, (high, i64))?);
-            Ok(Some(runic_core::smallvec![low, high]))
+            Ok(Some(runic_ir::smallvec![low, high]))
         });
     }
     converter.with_function_types()
@@ -215,7 +215,7 @@ impl ConversionPattern for RetImmPattern {
             let op = op.borrow();
             let ret = op.downcast_ref::<RetImm>().expect("a builtin.ret_imm");
             let value = ret.value();
-            (ret.get_value().unsigned(), runic_core::Attribute::ty(&*value), op.span)
+            (ret.get_value().unsigned(), runic_ir::Attribute::ty(&*value), op.span)
         };
         if ty != rewriter.context().i128() {
             return Ok(false);

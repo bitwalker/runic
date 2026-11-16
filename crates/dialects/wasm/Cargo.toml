@@ -16,9 +16,9 @@ doctest = false
 
 [features]
 default = ["std"]
-std = ["runic-core/std"]
+std = ["runic-ir/std"]
 
 [dependencies]
 runic-dialect-arith.workspace = true
 runic-dialect-hir.workspace = true
-runic-core.workspace = true
+runic-ir.workspace = true
