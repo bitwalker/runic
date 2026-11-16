@@ -797,7 +797,11 @@ impl fmt::Display for DisplayTypes<'_> {
 /// Marks an operation that forwards exits to enclosing receivers.
 ///
 /// Every operation between an exit and its target must carry this marker; otherwise the exit
-/// verifier rejects the operation.
+/// verifier rejects the operation. An exit is a breaking or continuing operation such as
+/// `scf.break`, whose target is a loop, and also an operation that leaves its callable (see
+/// [Operation::leaves_callable](crate::Operation::leaves_callable)): a return or a tail call, whose
+/// target is the callable, which verifies that every operation it crosses carries the marker (see
+/// [verify_exit_crosses_only_forwarding_ops](crate::verify_exit_crosses_only_forwarding_ops)).
 #[operation_trait]
 pub trait PropagateControlFlowBreak {}
 

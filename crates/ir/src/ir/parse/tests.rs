@@ -6450,6 +6450,60 @@ fn a_return_that_disagrees_with_the_results_does_not_verify() {
     }
 }
 
+/// The module of the exits tests: `@f` returns an `i32`, and has `body` as its body.
+fn exits_module(body: &str) -> String {
+    format!(
+        "builtin.module public @m {{\n  builtin.function public extern(\"C\") @callee() -> i32;\n  \
+         builtin.function public extern(\"C\") @f(%a: i32, %fn: () -> i32) -> i32 {{\n{body}\n  \
+         }};\n}};"
+    )
+}
+
+/// The four exits, each as text with the text its label starts at.
+const EXITS: [(&str, &str); 4] = [
+    ("builtin.ret %a : (i32)", "builtin.ret"),
+    ("builtin.ret_imm 1 : i32", "builtin.ret_imm"),
+    ("builtin.tail_call @callee() : extern(\"C\") () -> i32", "builtin.tail_call"),
+    (
+        "builtin.tail_call_indirect %fn() : extern(\"C\") () -> i32",
+        "builtin.tail_call_indirect",
+    ),
+];
+
+/// A return and a tail call directly in the body of the function are accepted.
+#[test]
+fn an_exit_directly_in_the_function_verifies() {
+    let test = ParserTest::default();
+    test.context().get_or_register_dialect::<TestDialect>();
+    for (exit, _) in EXITS {
+        let source = exits_module(&format!("    {exit};"));
+        test.parse_any("exits.runic", &source)
+            .unwrap_or_else(|err| panic!("{source}: {err:?}"));
+    }
+}
+
+/// A return or a tail call under an operation that has not declared that it forwards exits is
+/// rejected, whichever of the four exits it is, and the label names the exit and the operation it
+/// crosses.
+#[test]
+fn an_exit_under_an_operation_that_does_not_forward_exits_does_not_verify() {
+    let holder = "test.reads_locals_and_holds";
+    for (exit, labelled) in EXITS {
+        let source = exits_module(&format!(
+            "    \"{holder}\"() ({{\n      {exit};\n    }}) : () -> ();\n    builtin.ret_imm 1 : \
+             i32;"
+        ));
+        assert_verification_error(
+            &source,
+            labelled,
+            &format!(
+                "this `{labelled}` leaves the function through `{holder}`, which has not declared \
+                 that it forwards breaking control flow"
+            ),
+        );
+    }
+}
+
 /// A `builtin.ret` in a region of an operation in the body is checked like one in the body.
 #[test]
 fn a_return_in_a_nested_region_is_checked() {

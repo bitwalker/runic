@@ -42,6 +42,11 @@ pub trait ReturnLike {}
 /// tail-call-like operation are the arguments of the call it makes. An analysis that reads the
 /// operands of a [ReturnLike] operation as returned values must not read those of a tail call
 /// that way, which is why a tail call is never [ReturnLike].
+///
+/// Like a return, a tail call is nested in its callable only under operations that implement
+/// [PropagateControlFlowBreak](crate::PropagateControlFlowBreak); the callable's verifier rejects
+/// one that is not (see
+/// [verify_exit_crosses_only_forwarding_ops](crate::verify_exit_crosses_only_forwarding_ops)).
 #[operation_trait]
 pub trait TailCallLike {}
 

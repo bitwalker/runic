@@ -47,7 +47,10 @@ pub type TailCallRef = UnsafeIntrusiveEntityRef<TailCall>;
 /// to a callable whose signature equals the operation's, as for [Call](super::Call). A callee
 /// that names nothing is reported by the check every symbol use gets
 /// ([Operation::verify_symbol_refs](crate::Operation::verify_symbol_refs)). The operation can
-/// only appear in a [Function](crate::dialects::builtin::Function).
+/// only appear in a [Function](crate::dialects::builtin::Function), directly or nested in its
+/// body under operations that forward exits (see
+/// [PropagateControlFlowBreak](crate::PropagateControlFlowBreak)): the function verifier rejects
+/// one under an operation that has not declared that it forwards them.
 ///
 /// The operation implements neither [CallOpInterface](crate::CallOpInterface), nor
 /// [InferTypeOpInterface](crate::traits::InferTypeOpInterface), nor a memory effect interface, and

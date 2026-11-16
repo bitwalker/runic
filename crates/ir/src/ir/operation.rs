@@ -1854,6 +1854,10 @@ impl Operation {
     /// leaves a loop, but none of them leaves the function.
     ///
     /// [TailCallLike]: crate::traits::TailCallLike
+    /// A callable's verifier requires every operation between such an operation and the callable to
+    /// implement [PropagateControlFlowBreak](crate::PropagateControlFlowBreak) (see
+    /// [verify_exit_crosses_only_forwarding_ops](crate::verify_exit_crosses_only_forwarding_ops)).
+    ///
     /// [ReturnLike]: crate::traits::ReturnLike
     /// [RegionBranchTerminatorOpInterface]: crate::RegionBranchTerminatorOpInterface
     /// [RegionExitTerminatorOpInterface]: crate::RegionExitTerminatorOpInterface

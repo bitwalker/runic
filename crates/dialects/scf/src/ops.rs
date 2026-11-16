@@ -2605,6 +2605,107 @@ builtin.function public extern(\"C\") @f(%n: i32) -> i32 {
         .expect("an exit crossing an op that declares PropagateControlFlowBreak must be accepted");
     }
 
+    /// The messages of the labels of a diagnostic.
+    struct LabelMessages(Vec<alloc::string::String>);
+
+    impl runic_ir::diagnostics::VisitDiagnostic for LabelMessages {
+        fn label(&mut self, label: runic_ir::diagnostics::Label<'_>) {
+            self.0.push(label.message.map(alloc::fmt::format).unwrap_or_default());
+        }
+    }
+
+    /// A function that has `body` as its body, `@f(%c: i1, %a: i32, %fn: () -> i32) -> i32`.
+    fn exits_function(body: &str) -> alloc::string::String {
+        alloc::format!(
+            "builtin.function public extern(\"C\") @f(%c: i1, %a: i32, %fn: () -> i32) -> i32 \
+             {{\n{body}\n}};"
+        )
+    }
+
+    /// The exits a function body may use that need no other symbol: each with the name of its
+    /// operation.
+    const FUNCTION_EXITS: [(&str, &str); 3] = [
+        ("builtin.ret %a : (i32)", "builtin.ret"),
+        ("builtin.ret_imm 1 : i32", "builtin.ret_imm"),
+        (
+            "builtin.tail_call_indirect %fn() : extern(\"C\") () -> i32",
+            "builtin.tail_call_indirect",
+        ),
+    ];
+
+    /// A return and a tail call are accepted directly in the function, in an `scf.if` arm, in an
+    /// `scf.if` in the body of an `scf.while`, and in a case of an `scf.index_switch`: `scf.if`,
+    /// `scf.while` and `scf.index_switch` forward exits.
+    #[test]
+    fn a_function_exit_is_accepted_under_operations_that_forward_exits() {
+        for (exit, _) in FUNCTION_EXITS {
+            let bodies = [
+                alloc::format!("    {exit};"),
+                alloc::format!(
+                    "    scf.if %c then {{ {exit}; }} else {{ scf.yield : (); }} : (i1) -> ();\n    \
+                     builtin.ret_imm 2 : i32;"
+                ),
+                alloc::format!(
+                    "    %r = scf.while %a before {{\n    ^head(%i: i32):\n        \
+                     scf.condition %c, %i : (i1, i32);\n    }} after {{\n    ^body(%j: i32):\n        \
+                     scf.if %c then {{ {exit}; }} else {{ scf.yield : (); }} : (i1) -> ();\n        \
+                     scf.yield %j : (i32);\n    }} : (i32) -> i32;\n    builtin.ret %r : (i32);"
+                ),
+                alloc::format!(
+                    "    %r = scf.index_switch %a\n    case 1 {{ {exit}; }}\n    default {{\n        \
+                     scf.yield %a : (i32);\n    }} : (i32);\n    builtin.ret %r : (i32);"
+                ),
+            ];
+            for body in bodies {
+                let source = exits_function(&body);
+                let context = Rc::new(Context::default());
+                parse_function_fixpoint(&context, "exits_accepted.runic", &source)
+                    .unwrap_or_else(|err| panic!("{source} is accepted: {err}"));
+            }
+        }
+    }
+
+    /// An exit under an operation that has not declared that it forwards exits is rejected, in the
+    /// operation directly and with a forwarding operation (`scf.if`, `test.transparent_region`)
+    /// between: the error names the operation that does not forward.
+    #[test]
+    fn a_function_exit_is_rejected_under_an_operation_that_does_not_forward_exits() {
+        for (exit, name) in FUNCTION_EXITS {
+            let expected = alloc::format!(
+                "this `{name}` leaves the function through `test.opaque_region`, which has not \
+                 declared that it forwards breaking control flow"
+            );
+            for body in [
+                alloc::format!(
+                    "    test.opaque_region {{ {exit}; }};\n    builtin.ret_imm 2 : i32;"
+                ),
+                alloc::format!(
+                    "    scf.if %c then {{\n        test.opaque_region {{ {exit}; }};\n        \
+                     scf.yield : ();\n    }} else {{ scf.yield : (); }} : (i1) -> ();\n    \
+                     builtin.ret_imm 2 : i32;"
+                ),
+                alloc::format!(
+                        "    test.transparent_region {{\n        test.opaque_region {{ {exit}; \
+                         }};\n        \"test.ret\"() : () -> ();\n    }};\n    builtin.ret_imm 2 \
+                         : i32;"
+                    ),
+            ] {
+                let source = exits_function(&body);
+                let context = Rc::new(Context::default());
+                let Err(err) = parse_function_fixpoint(&context, "exits_rejected.runic", &source)
+                else {
+                    panic!("{source} is rejected");
+                };
+                let mut labels = LabelMessages(Vec::new());
+                err.as_diagnostic().visit(&mut labels);
+                let err = alloc::format!("{err} {}", labels.0.join(" | "));
+                let err = err.split_whitespace().collect::<Vec<_>>().join(" ");
+                assert!(err.contains("invalid operation builtin.function"), "{err}");
+                assert!(err.contains(&expected), "{err}");
+            }
+        }
+    }
+
     /// **V-4** — rule 4: a break's operands become the target loop's results.
     #[test]
     fn v4_rejects_break_operands_that_do_not_match_the_targets_results() {

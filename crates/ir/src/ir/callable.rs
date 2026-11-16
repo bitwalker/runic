@@ -4,10 +4,75 @@ use core::fmt;
 
 pub use self::resolution::{CanonicalCallableRef, ResolvedSymbolCallee, SymbolResolutionError};
 use crate::{
-    EntityRef, Op, OpOperandRange, OpOperandRangeMut, RegionRef, Symbol, SymbolPath, SymbolRef,
-    UnsafeIntrusiveEntityRef, Value, ValueRef,
+    EntityRef, Op, OpOperandRange, OpOperandRangeMut, Operation, RegionRef, Report, Spanned,
+    Symbol, SymbolPath, SymbolRef, UnsafeIntrusiveEntityRef, Value, ValueRef,
     dialects::builtin::attributes::{DeclaredEffects, Signature, SymbolRefAttr},
 };
+
+/// Checks that the operation `exit`, which leaves its callable (see
+/// [Operation::leaves_callable]), reaches `callable` only through operations that forward exits.
+///
+/// Every operation strictly between `exit` and `callable` (the parent of `exit`, its parent, and so
+/// on up to, and not including, `callable`) must implement [PropagateControlFlowBreak]. The first
+/// one, from the innermost out, that does not is the error: an `invalid operation` report on
+/// `callable`'s name whose primary label is on `exit` and names the operation it crosses, with a
+/// second label on that operation and a context label on `callable`.
+///
+/// The rule is that of `scf.break`, extended to the exits of a callable. An operation that does not
+/// forward exits is one whose regions are not known to be left this way, and the analyses that
+/// follow control flow through regions (the dead code analysis, the tail call analysis) rely on
+/// the declaration to know which operations an exit may cross: an exit under an operation that has
+/// not declared it is invalid IR rather than something an analysis must guess at. An operation
+/// that is not an exit, or is one that is not nested in `callable`, is accepted: there is nothing
+/// between them to check.
+///
+/// A callable operation with a body, such as `builtin.function`, calls this for each exit its
+/// verifier finds in its body.
+///
+/// [PropagateControlFlowBreak]: crate::PropagateControlFlowBreak
+pub fn verify_exit_crosses_only_forwarding_ops(
+    exit: &Operation,
+    callable: &Operation,
+) -> Result<(), Report> {
+    use alloc::format;
+
+    use crate::diagnostics::report;
+
+    if !exit.leaves_callable() {
+        return Ok(());
+    }
+    let callable_ref = callable.as_operation_ref();
+    let mut parent = exit.parent_op();
+    while let Some(crossed_ref) = parent {
+        if crossed_ref == callable_ref {
+            return Ok(());
+        }
+        let crossed = crossed_ref.borrow();
+        if !crossed.implements::<dyn crate::PropagateControlFlowBreak>() {
+            let name = callable.name();
+            let kind = name.name();
+            let reason = format!(
+                "this `{}` leaves the {kind} through `{}`, which has not declared that it \
+                 forwards breaking control flow",
+                exit.name(),
+                crossed.name()
+            );
+            let crossed_label =
+                format!("`{}` does not forward exits of the {kind}", crossed.name());
+            let callable_label = format!("in this {kind}");
+            return Err(report!(
+                message: (format!("invalid operation {name}")),
+                labels: [
+                    primary(exit.span(), reason),
+                    context(crossed.span(), crossed_label),
+                    context(callable.span(), callable_label),
+                ],
+            ));
+        }
+        parent = crossed.parent_op();
+    }
+    Ok(())
+}
 
 /// A call-like operation is one that transfers control from one function to another.
 ///

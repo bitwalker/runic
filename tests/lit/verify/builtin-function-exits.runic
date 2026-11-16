@@ -1,0 +1,88 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// A `builtin.ret` or `builtin.ret_imm` nested in a function is accepted under operations that
+// forward exits (`scf.if`, `scf.while`, `scf.index_switch`) and rejected under one that has not
+// declared that it does (`test.reads_locals_and_holds`, which has no custom form), directly or with
+// a forwarding operation in between. The error names the operation that does not forward.
+
+builtin.function public extern("C") @valid(%c: i1, %s: i32, %a: i32) -> i32 {
+    scf.if %c then {
+        builtin.ret %a : (i32);
+    } else {
+        scf.yield : ();
+    } : (i1) -> ();
+    %r = scf.while %a before {
+    ^head(%i: i32):
+        scf.condition %c, %i : (i1, i32);
+    } after {
+    ^body(%j: i32):
+        scf.if %c then {
+            builtin.ret_imm 1 : i32;
+        } else {
+            scf.yield : ();
+        } : (i1) -> ();
+        scf.yield %j : (i32);
+    } : (i32) -> i32;
+    %k = scf.index_switch %s
+    case 1 {
+        builtin.ret %r : (i32);
+    }
+    default {
+        scf.yield %a : (i32);
+    } : (i32);
+    builtin.ret %k : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @ret_under_a_holder(%a: i32) -> i32 {
+    "test.reads_locals_and_holds"() ({
+        // expected-error@+1 {{this `builtin.ret` leaves the function through `test.reads_locals_and_holds`, which has not declared that it forwards breaking control flow}}
+        builtin.ret %a : (i32);
+    }) : () -> ();
+    builtin.ret %a : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @ret_imm_under_a_holder(%a: i32) -> i32 {
+    "test.reads_locals_and_holds"() ({
+        // expected-error@+1 {{this `builtin.ret_imm` leaves the function through `test.reads_locals_and_holds`, which has not declared that it forwards breaking control flow}}
+        builtin.ret_imm 1 : i32;
+    }) : () -> ();
+    builtin.ret %a : (i32);
+};
+
+// -----
+
+// The operation named is the one that does not forward, not the `scf.if` around it.
+
+builtin.function public extern("C") @ret_under_a_holder_in_an_if(%c: i1, %a: i32) -> i32 {
+    scf.if %c then {
+        "test.reads_locals_and_holds"() ({
+            // expected-error@+1 {{this `builtin.ret` leaves the function through `test.reads_locals_and_holds`, which has not declared that it forwards breaking control flow}}
+            builtin.ret %a : (i32);
+        }) : () -> ();
+        scf.yield : ();
+    } else {
+        scf.yield : ();
+    } : (i1) -> ();
+    builtin.ret %a : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @ret_under_a_holder_in_a_case(%s: i32, %a: i32) -> i32 {
+    %k = scf.index_switch %s
+    case 1 {
+        "test.reads_locals_and_holds"() ({
+            // expected-error@+1 {{this `builtin.ret_imm` leaves the function through `test.reads_locals_and_holds`, which has not declared that it forwards breaking control flow}}
+            builtin.ret_imm 1 : i32;
+        }) : () -> ();
+        scf.yield %a : (i32);
+    }
+    default {
+        scf.yield %a : (i32);
+    } : (i32);
+    builtin.ret %k : (i32);
+};

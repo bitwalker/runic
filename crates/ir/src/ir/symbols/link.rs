@@ -9,10 +9,12 @@
 //!
 //! Only the shape of the entries is verified (see [verify_link_attributes]): a link name is a
 //! non-empty string, and only a global variable has a section. That link names are unique is a
-//! property of a link, not of one module, and is for a backend to check. This holds for the default
-//! name too: it is the symbol's absolute path with its components joined by `::` and not quoted, so
-//! two different symbols can have one default name (see [default_link_name]), and a backend checks
-//! the uniqueness of the effective names of what it exports.
+//! property of a link, not of one module, and is for a backend to check. The default name is the
+//! symbol's absolute path spelled as a symbol path is, a component that needs quoting written
+//! quoted, so two different symbols of one root never have the same default name (see
+//! [default_link_name]). A declared `link_name` is not so constrained: it can equal another
+//! symbol's name, declared or default, and a backend checks the uniqueness of the effective names
+//! of what it exports.
 //!
 //! This module also links symbol references that were built apart (see [link_symbol_refs]).
 
@@ -32,7 +34,8 @@ use crate::{
 /// The name of the attribute that gives a symbol the name it has for a linker or a host.
 ///
 /// When present on a function, a function alias or a global variable, its value is a non-empty
-/// string that replaces the default name, the symbol's absolute path (see [default_link_name]).
+/// string that replaces the default name, the symbol's absolute path (see [default_link_name]). It
+/// can equal the name of another symbol, which a backend checks.
 pub const LINK_NAME: &str = "link_name";
 
 /// The name of the attribute that gives a global variable the data section its storage is placed in.
@@ -78,13 +81,26 @@ pub fn section(op: &Operation) -> Option<CompactString> {
 }
 
 /// The name `op` has for a linker or a host when it has no `link_name`: its absolute path, the
-/// names of the symbol tables that enclose it and its own joined by `::`, with no leading `::` and
-/// no quoting (`lib::math::add` for `::@lib::@math::@add`).
+/// names of the symbol tables that enclose it and its own, spelled as a symbol path is (see
+/// [SymbolPath](super::SymbolPath)) with no leading `::` and none of the `@` sigils of the IR text
+/// (`lib::math::add` for `::@lib::@math::@add`).
 ///
-/// The default is a convenience, and it is not unique: the components are joined without quoting,
-/// so two different symbols can have the same default (`::@a::@"b::c"` and `::@a::@b::@c` are both
-/// `a::b::c`). A backend checks that the effective names (see [effective_link_name]) of what it
-/// exports are unique, and does not assume the default makes them so.
+/// A component that needs quoting (it is not a bare identifier: it is empty, starts with a digit,
+/// or has a character other than a letter, a digit or `_`) is written quoted, and one that does not
+/// is written bare, whether or not the source text quoted it: `a::"b::c"` for `::@a::@"b::c"`, and
+/// `a::b::c` for both `::@a::@b::@c` and `::@a::@"b"::@c`. So two different symbols of one root
+/// never have the same default name, and a backend can rely on that among the default names it
+/// exports.
+///
+/// The spelling has no escape for a `"` inside a component, so a symbol with such a name cannot be
+/// spelled without it being the spelling of another path (the function named `p-1"::"q-1` would
+/// read as the function `q-1` of the module `p-1`). It has no default name: this is `None` for it,
+/// and its link name must be declared with [LINK_NAME]. A name that is empty has none either, as
+/// the spelling drops an empty component.
+///
+/// A declared `link_name` is not constrained by this, and can equal the name of another symbol or
+/// the default name of one: a backend still checks that the effective names (see
+/// [effective_link_name]) of what it exports are unique.
 ///
 /// It is `None` when `op` is not a symbol, and when it is a symbol that is neither a symbol table
 /// nor in one: a symbol that is not attached to a root has no path to name it by.
@@ -95,22 +111,27 @@ pub fn default_link_name(op: &Operation) -> Option<String> {
     if op.parent_op().is_none() && !op.implements::<dyn super::SymbolTable>() {
         return None;
     }
-    let mut name = String::new();
-    for component in symbol.path().components() {
+    let path = symbol.path();
+    let mut segments = Vec::new();
+    for component in path.components() {
         let segment = match component {
             SymbolNameComponent::Root => continue,
             SymbolNameComponent::Component(segment) | SymbolNameComponent::Leaf(segment) => segment,
         };
-        if !name.is_empty() {
-            name.push_str("::");
+        let segment = segment.as_str();
+        if segment.is_empty() || segment.contains('"') {
+            return None;
         }
-        name.push_str(segment.as_str());
+        segments.push(segment);
     }
-    Some(name)
+    Some(super::spelling::join(false, segments))
 }
 
 /// The name a symbol has for a linker or a host, as [effective_link_name] finds it: the value of
 /// the `link_name` entry, or the default, which is built. It dereferences to the string.
+///
+/// The default is unique among the symbols of one root, and a declared name is not constrained to
+/// be (see [default_link_name]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EffectiveLinkName {
     /// The value of the `link_name` entry.
@@ -132,6 +153,10 @@ impl core::ops::Deref for EffectiveLinkName {
 
 /// The name `op` has for a linker or a host: its `link_name` when it has one, else its
 /// [default_link_name].
+///
+/// The default is unique among the symbols of one root, but a declared `link_name` can equal
+/// another symbol's declared or default name, so a backend still checks the effective names of what
+/// it exports.
 pub fn effective_link_name(op: &Operation) -> Option<EffectiveLinkName> {
     match link_name(op) {
         Some(name) => Some(EffectiveLinkName::Declared(name)),
@@ -529,7 +554,7 @@ mod tests {
     }
 
     #[test]
-    fn the_default_link_name_is_the_absolute_path_without_quoting() {
+    fn the_default_link_name_is_the_absolute_path_spelled_with_quoting() {
         let context = Rc::new(Context::default());
         let source = "builtin.world { builtin.module public @lib { builtin.module public @math { \
                       builtin.function public extern(\"C\") @add(); builtin.function public \
@@ -541,7 +566,7 @@ mod tests {
         );
         assert_eq!(
             default_of(&context, source, "builtin.function", 1).as_deref(),
-            Some("lib::math::a b::c")
+            Some("lib::math::\"a b::c\"")
         );
         assert_eq!(
             default_of(&context, source, "builtin.function", 2).as_deref(),
@@ -553,26 +578,54 @@ mod tests {
         );
     }
 
-    /// Two different symbols can have one default name, because the components are joined without
-    /// quoting: the function `::@a::@"b::c"` and the function `::@a::@b::@c` are both `a::b::c`.
-    /// The default is a convenience, and a backend checks the uniqueness of the effective names it
-    /// exports.
+    /// Two different symbols never have the same default name, because a component that needs
+    /// quoting is quoted: the function `::@a::@"b::c"` is `a::"b::c"` and the function
+    /// `::@a::@b::@c` is `a::b::c`.
     #[test]
-    fn two_different_symbols_can_have_the_same_default_link_name() {
+    fn two_different_symbols_have_different_default_link_names() {
         let context = Rc::new(Context::default());
         let source = "builtin.world { builtin.module public @a { builtin.function public \
                       extern(\"C\") @\"b::c\"(); builtin.module public @b { builtin.function \
                       public extern(\"C\") @c(); }; }; };";
         let first = default_of(&context, source, "builtin.function", 0);
         let second = default_of(&context, source, "builtin.function", 1);
-        assert_eq!(first.as_deref(), Some("a::b::c"));
-        assert_eq!(first, second);
+        assert_eq!(first.as_deref(), Some("a::\"b::c\""));
+        assert_eq!(second.as_deref(), Some("a::b::c"));
+        assert_ne!(first, second);
+    }
+
+    /// A name written quoted that does not need it is stored, and spelled, bare: `@"abc"` and
+    /// `@abc` are one name with one default.
+    #[test]
+    fn a_name_written_quoted_without_needing_it_has_the_bare_default_link_name() {
+        let context = Rc::new(Context::default());
+        let source = "builtin.world { builtin.module public @\"m\" { builtin.function public \
+                      extern(\"C\") @\"abc\"(); builtin.function public extern(\"C\") @\"1st\"(); \
+                      }; };";
+        assert_eq!(default_of(&context, source, "builtin.function", 0).as_deref(), Some("m::abc"));
+        assert_eq!(
+            default_of(&context, source, "builtin.function", 1).as_deref(),
+            Some("m::\"1st\"")
+        );
+    }
+
+    /// A name with a `"` in it has no spelling (the spelling has no escape), so it has no default
+    /// name rather than one another symbol can share: written without an escape, the function
+    /// named `p-1"::"q-1` in `@m` would be `m::"p-1"::"q-1"`, which is also the function `@q-1` in
+    /// the module `@p-1` in `@m`.
+    #[test]
+    fn a_name_that_cannot_be_spelled_has_no_default_link_name() {
+        let context = Rc::new(Context::default());
+        let source = "builtin.world { builtin.module public @m { builtin.function public \
+                      extern(\"C\") @\"p-1\\\"::\\\"q-1\"(); builtin.module public @\"p-1\" { \
+                      builtin.function public extern(\"C\") @\"q-1\"(); }; }; };";
+        assert_eq!(default_of(&context, source, "builtin.function", 0), None);
+        assert_eq!(
+            default_of(&context, source, "builtin.function", 1).as_deref(),
+            Some("m::\"p-1\"::\"q-1\"")
+        );
         let functions = ops_named(&context, source, "builtin.function");
-        let paths = functions
-            .iter()
-            .map(|function| function.borrow().as_symbol().unwrap().path().to_string())
-            .collect::<Vec<_>>();
-        assert_ne!(paths[0], paths[1]);
+        assert!(effective_link_name(&functions[0].borrow()).is_none());
     }
 
     /// The function, the alias and the global variable are linked symbols; a module is not.

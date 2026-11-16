@@ -145,3 +145,65 @@ builtin.module public @tail_call_indirect_calling_convention {
         builtin.tail_call_indirect %fn(%a) : extern("fast") (i32) -> i32;
     };
 };
+
+// -----
+
+// A tail call is nested in the function only under operations that forward exits:
+// `test.reads_locals_and_holds` does not, so it is rejected, directly and with an `scf.if`, which
+// does, in between. The error names the operation that does not forward.
+
+builtin.module public @tail_call_under_an_operation_that_does_not_forward_exits {
+    builtin.function public extern("C") @callee(i32) -> i32;
+    builtin.function public extern("C") @f(%a: i32) -> i32 {
+        "test.reads_locals_and_holds"() ({
+            // expected-error@+1 {{this `builtin.tail_call` leaves the function through `test.reads_locals_and_holds`, which has not declared that it forwards breaking control flow}}
+            builtin.tail_call @callee(%a) : extern("C") (i32) -> i32;
+        }) : () -> ();
+        builtin.ret %a : (i32);
+    };
+};
+
+// -----
+
+builtin.module public @tail_call_indirect_under_an_operation_that_does_not_forward_exits {
+    builtin.function public extern("C") @f(%c: i1, %fn: (i32) -> i32, %a: i32) -> i32 {
+        scf.if %c then {
+            "test.reads_locals_and_holds"() ({
+                // expected-error@+1 {{this `builtin.tail_call_indirect` leaves the function through `test.reads_locals_and_holds`, which has not declared that it forwards breaking control flow}}
+                builtin.tail_call_indirect %fn(%a) : extern("C") (i32) -> i32;
+            }) : () -> ();
+            scf.yield : ();
+        } else {
+            scf.yield : ();
+        } : (i1) -> ();
+        builtin.ret %a : (i32);
+    };
+};
+
+// -----
+
+// A tail call in an `scf.if` arm, and in an `scf.if` in the body of an `scf.while`, is accepted.
+
+builtin.module public @tail_call_under_forwarding_operations {
+    builtin.function public extern("C") @callee(i32) -> i32;
+    builtin.function public extern("C") @f(%c: i1, %a: i32) -> i32 {
+        scf.if %c then {
+            builtin.tail_call @callee(%a) : extern("C") (i32) -> i32;
+        } else {
+            scf.yield : ();
+        } : (i1) -> ();
+        %r = scf.while %a before {
+        ^head(%i: i32):
+            scf.condition %c, %i : (i1, i32);
+        } after {
+        ^body(%j: i32):
+            scf.if %c then {
+                builtin.tail_call @callee(%j) : extern("C") (i32) -> i32;
+            } else {
+                scf.yield : ();
+            } : (i1) -> ();
+            scf.yield %j : (i32);
+        } : (i32) -> i32;
+        builtin.ret %r : (i32);
+    };
+};

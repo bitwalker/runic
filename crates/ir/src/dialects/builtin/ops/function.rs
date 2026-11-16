@@ -530,6 +530,12 @@ impl crate::Verify<dyn crate::LinkedSymbol> for Function {
 /// that never returns tail-calls only a callee that never returns, and one that returns only a
 /// callee that returns) and has the function's calling convention.
 ///
+/// A return (`builtin.ret`, `builtin.ret_imm`) or a tail call may be nested in the body, but only
+/// under operations that forward exits (that implement [PropagateControlFlowBreak](crate::PropagateControlFlowBreak), as
+/// `scf.if`, `scf.while` and `scf.index_switch` do): one under an operation that has not declared
+/// that is rejected, as `scf.break` is (see
+/// [verify_exit_crosses_only_forwarding_ops](crate::verify_exit_crosses_only_forwarding_ops)).
+///
 /// The argument or result each effect in the function's declared effects names exists in the
 /// signature. A declaration has no locals: its `locals(..)` is empty.
 ///
@@ -705,7 +711,21 @@ impl crate::Verify<dyn CallableSymbol> for Function {
                 } else {
                     Ok(())
                 };
-                let checked = checked.and_then(|()| check_locals(op));
+                // The function's own exits: its returns and its tail calls. A return-like
+                // terminator of another dialect that ends a region of an operation of that dialect
+                // hands its values to that operation, and is that dialect's to check.
+                let is_function_exit = op.is::<Ret>()
+                    || op.is::<RetImm>()
+                    || op.implements::<dyn crate::traits::TailCallLike>();
+                let checked = checked
+                    .and_then(|()| {
+                        if is_function_exit {
+                            crate::verify_exit_crosses_only_forwarding_ops(op, self.as_operation())
+                        } else {
+                            Ok(())
+                        }
+                    })
+                    .and_then(|()| check_locals(op));
                 match checked {
                     Ok(()) => WalkResult::Continue(()),
                     Err(err) => WalkResult::Break(err),
@@ -722,6 +742,10 @@ fn type_list(types: &[Type]) -> String {
 }
 
 /// Returns from the enclosing function with the provided operands as its results.
+///
+/// It appears directly in the function, or nested in it under operations that forward exits (see
+/// [PropagateControlFlowBreak](crate::PropagateControlFlowBreak)), such as `scf.if`: the function
+/// verifier rejects one under an operation that has not declared that it forwards them.
 ///
 /// Returning touches no memory: the operation declares that it has no memory effects.
 #[derive(EffectOpInterface)]
@@ -814,6 +838,9 @@ impl OpParser for Ret {
 }
 
 /// Returns from the enclosing function with the provided integer constant as its result.
+///
+/// Where it may appear is as for [Ret]: directly in the function, or under operations that forward
+/// exits.
 ///
 /// Returning touches no memory: the operation declares that it has no memory effects.
 #[derive(EffectOpInterface)]

@@ -45,7 +45,17 @@ impl Program {
     /// Parses `source`, a module, and runs the dead-code and constant analyses over the whole
     /// module, across calls.
     fn solve(source: &str) -> Self {
-        let (context, module) = parse_any(source, true).unwrap_or_else(|err| panic!("{err}"));
+        Self::solve_verified(source, true)
+    }
+
+    /// As [Program::solve] for IR that the verifier rejects: the source is not verified. An
+    /// analysis may run on IR nobody verified, and must not panic on it.
+    fn solve_unverified(source: &str) -> Self {
+        Self::solve_verified(source, false)
+    }
+
+    fn solve_verified(source: &str, verify: bool) -> Self {
+        let (context, module) = parse_any(source, verify).unwrap_or_else(|err| panic!("{err}"));
         let mut config = DataFlowConfig::default();
         config.set_interprocedural(true);
         let mut solver = DataFlowSolver::new(config);
@@ -539,7 +549,17 @@ fn a_return_in_the_arm_of_an_if_is_an_exit_of_the_function() {
 /// A module whose private function `@k` runs `body` and then returns 4, and whose `@main` calls
 /// it. `@g` is a function the body may tail call.
 fn k_with_body(body: &str) -> Program {
-    Program::solve(&alloc::format!(
+    Program::solve(&k_source(body))
+}
+
+/// As [k_with_body] for a body the verifier rejects: the program is not verified.
+fn k_with_invalid_body(body: &str) -> Program {
+    Program::solve_unverified(&k_source(body))
+}
+
+/// The text of the module of [k_with_body].
+fn k_source(body: &str) -> alloc::string::String {
+    alloc::format!(
         r#"builtin.module public @m {{
     builtin.function public extern("C") @g() -> i32;
     builtin.function private extern("C") @k(%c: i1, %s: i32) -> i32 {{
@@ -552,7 +572,7 @@ fn k_with_body(body: &str) -> Program {
         builtin.ret %r : (i32);
     }};
 }};"#
-    ))
+    )
 }
 
 /// What a call of `@k` is to constant propagation, and which operations the dead-code analysis
@@ -568,11 +588,15 @@ const TAIL_CALL_G: &str = r#"builtin.tail_call @g() : extern("C") () -> i32;"#;
 
 /// A return that is a direct child of an operation with a region that does not forward control
 /// flow is an exit of the function: the call is not 4. The control with no exit is 4.
+///
+/// The IR of the program with the holder is deliberately invalid: the function verifier rejects an
+/// exit under an operation that has not declared that it forwards exits, and the analysis must
+/// still register it, so the program is not verified.
 #[test]
 fn a_return_directly_in_an_opaque_region_operation_is_an_exit_of_the_function() {
     let control = k_with_body("");
     assert_eq!(call_of_k(&control).0, Fact::Constant(4));
-    let program = k_with_body(&alloc::format!(
+    let program = k_with_invalid_body(&alloc::format!(
         r#""test.reads_locals_and_holds"() ({{ {RET_NINE} }}) : () -> ();"#
     ));
     let (fact, known, _) = call_of_k(&program);
@@ -584,9 +608,11 @@ fn a_return_directly_in_an_opaque_region_operation_is_an_exit_of_the_function() 
 }
 
 /// The same for a tail call: its returned values are unknown, so the call is unknown.
+///
+/// The IR is deliberately invalid, as in the test above: it is not verified.
 #[test]
 fn a_tail_call_directly_in_an_opaque_region_operation_is_an_exit_of_the_function() {
-    let program = k_with_body(&alloc::format!(
+    let program = k_with_invalid_body(&alloc::format!(
         r#""test.reads_locals_and_holds"() ({{ {TAIL_CALL_G} }}) : () -> ();"#
     ));
     let (fact, _, all_known) = call_of_k(&program);
@@ -610,9 +636,11 @@ fn a_return_two_ifs_down_is_an_exit_of_the_function_registered_once() {
 }
 
 /// A tail call two region operations down, one of them an opaque one, is an exit of the function.
+///
+/// The IR is deliberately invalid, as in the tests above: it is not verified.
 #[test]
 fn a_tail_call_in_an_if_in_an_opaque_region_operation_is_an_exit_of_the_function() {
-    let program = k_with_body(&alloc::format!(
+    let program = k_with_invalid_body(&alloc::format!(
         r#""test.reads_locals_and_holds"() ({{
             scf.if %c then {{ {TAIL_CALL_G} }} else {{ scf.yield : (); }} : (i1) -> ();
             "test.ret"() : () -> ();
