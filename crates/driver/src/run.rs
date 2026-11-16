@@ -120,12 +120,13 @@ fn install_panic_hook() {
                 },
             };
             let mut recorded = slot.panics.lock().unwrap_or_else(PoisonError::into_inner);
-            if info.can_unwind() {
+            if info.can_unwind() && !cfg!(panic = "abort") {
                 // The first panic is the one that says what went wrong; a later one (a destructor
                 // that panics while the first unwinds) is kept after it.
                 recorded.push(panic);
             } else {
-                // The process aborts after the hook, and nothing would write what the worker had
+                // The process aborts after the hook (the panic cannot unwind, or the program is
+                // built with `panic = "abort"`), and nothing would write what the worker had
                 // rendered or the report.
                 recorded.push(panic);
                 let mut stderr = io::stderr();
@@ -150,18 +151,29 @@ struct WorkerResult {
     code: u8,
 }
 
+/// What a caller of [Driver::run_with] says about the run.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RunOptions {
+    /// Whether a color of `auto` is on: a caller that writes to a terminal sets it.
+    pub auto_color: bool,
+}
+
 impl Driver<'_> {
-    /// Runs one command line and returns the process's exit code. `args` excludes the program's
-    /// name.
+    /// Runs one command line and returns the exit code (`ExitCode::from` turns it into a
+    /// process's). `args` excludes the program's name.
     ///
     /// The run touches nothing of the process but what it is given: the streams, and, once in the
     /// process, the panic hook. The hook acts only on the thread a compilation runs on (it records
     /// the panic for the driver to report) and hands every other panic to the hook installed
     /// before it. A host that replaces the hook after the first run loses the location and
-    /// backtrace of a panic in a stage, and the hook it installed sees that panic too. When
-    /// logging is enabled, the logger writes to the process's standard error from the thread of
-    /// the compilation while `run` waits for it: `stdout` and `stderr` must then not be locked
-    /// standard streams, or the run deadlocks.
+    /// backtrace of a panic in a stage, and the hook it installed sees that panic too. The first
+    /// panic recorded is what the report says went wrong, and it may be one a stage caught itself.
+    /// When the process cannot unwind (it is built with `panic = "abort"`), the process aborts
+    /// after the panic, and the report, with what had been rendered, goes to the process's
+    /// standard error and not to the stream given. When logging is enabled, the logger writes to
+    /// the process's standard error from the thread of the compilation while `run` waits for it:
+    /// `stdout` and `stderr` must then not be locked standard streams, or the run deadlocks.
     ///
     /// The exit code is 0 when the compilation succeeded, and for help, the version and `--print`;
     /// [EXIT_FAILURE] when it failed, or when standard output could not be written; [EXIT_USAGE]
@@ -169,24 +181,26 @@ impl Driver<'_> {
     /// [EXIT_INTERNAL] when a stage panicked. After a panic the files the compilation had already
     /// written stay written, and standard error holds what was rendered before it, then
     /// the report of the panic; what the passes printed is lost with the session the panic
-    /// unwound. A color of `auto` is off here: the process's [main] turns it on when
-    /// standard error is a terminal.
+    /// unwound. A color of `auto` is off here, as [RunOptions::default] has it: [run_with]
+    /// turns it on, and the process's [main] turns it on when standard error is a terminal.
     ///
     /// Everything standard output holds is written when the compilation has ended, after what
     /// standard error holds.
+    ///
+    /// [run_with]: Driver::run_with
     pub fn run(
         &self,
         args: impl IntoIterator<Item = OsString>,
         stdin: &mut dyn Read,
         stdout: &mut dyn Write,
         stderr: &mut dyn Write,
-    ) -> ExitCode {
-        self.run_with(args, stdin, stdout, stderr, || Ok(()))
+    ) -> u8 {
+        self.run_with(args, stdin, stdout, stderr, RunOptions::default(), || Ok(()))
     }
 
-    /// [run](Driver::run), with `setup` called once the arguments are read and a compilation is
-    /// asked for, and before it starts: the place for what a process sets up for a run, such as
-    /// its logger.
+    /// [run](Driver::run), with `options` and with `setup` called once the arguments are read and
+    /// a compilation is asked for, and before it starts: the place for what a process sets up for
+    /// a run, such as its logger.
     ///
     /// `setup` is not called for help, the version, `--print` or a usage error: asking for help
     /// does not depend on it. An error it returns is written to `stderr` as `error: ..`, and the
@@ -197,25 +211,12 @@ impl Driver<'_> {
         stdin: &mut dyn Read,
         stdout: &mut dyn Write,
         stderr: &mut dyn Write,
+        options: RunOptions,
         setup: impl FnOnce() -> Result<(), String>,
-    ) -> ExitCode {
-        ExitCode::from(self.run_code(args, stdin, stdout, stderr, setup, false))
-    }
-
-    /// The run behind [Driver::run_with] and [main_with]: `auto_color` says whether a color of
-    /// `auto` is on.
-    fn run_code(
-        &self,
-        args: impl IntoIterator<Item = OsString>,
-        stdin: &mut dyn Read,
-        stdout: &mut dyn Write,
-        stderr: &mut dyn Write,
-        setup: impl FnOnce() -> Result<(), String>,
-        auto_color: bool,
     ) -> u8 {
         install_panic_hook();
-        let (request, options) = match self.request(args, stdin) {
-            Ok(Invocation::Compile(request, options)) => (request, options),
+        let (request, render) = match self.request(args, stdin) {
+            Ok(Invocation::Compile { request, render }) => (request, render),
             Ok(Invocation::Print(text)) | Err(Exit::Help(text)) => {
                 return finish(stdout, stderr, text.as_bytes(), &[], 0);
             }
@@ -232,10 +233,10 @@ impl Driver<'_> {
                 EXIT_FAILURE,
             );
         }
-        let styled = match options.color {
+        let styled = match render.color {
             ColorChoice::Always => true,
             ColorChoice::Never => false,
-            ColorChoice::Auto => auto_color,
+            ColorChoice::Auto => options.auto_color,
         };
 
         let name = self.command().get_name();
@@ -348,13 +349,13 @@ pub fn main_with(driver: &Driver<'_>) -> ExitCode {
     let mut stdout = io::BufWriter::new(io::stdout());
     let mut stderr = io::stderr();
     let auto_color = stderr.is_terminal();
-    ExitCode::from(driver.run_code(
+    ExitCode::from(driver.run_with(
         std::env::args_os().skip(1),
         &mut stdin,
         &mut stdout,
         &mut stderr,
+        RunOptions { auto_color },
         install_logger,
-        auto_color,
     ))
 }
 
@@ -462,6 +463,11 @@ mod tests {
                     ));
                 }
                 ("panic", _) => panic!("the probe panics on purpose"),
+                ("stray", _) => {
+                    // The thread's panic goes to the previous hook (the test process's standard
+                    // error), not to the run.
+                    let _ = std::thread::spawn(|| panic!("a stray thread panics")).join();
+                }
                 ("deep", depth) => deep(depth.parse().unwrap()),
                 ("emit-panic", _) => {
                     let _ = checkpoints.reach(PROBE_X, String::from("reached probe.x\n"))?;
@@ -555,13 +561,13 @@ mod tests {
         }
         let mut stdin = stdin.as_bytes();
         let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
-        let code = driver.run_code(
+        let code = driver.run_with(
             args.iter().map(OsString::from),
             &mut stdin,
             &mut stdout,
             &mut stderr,
+            RunOptions { auto_color },
             || Ok(()),
-            auto_color,
         );
         Run {
             code,
@@ -639,7 +645,7 @@ mod tests {
     }
 
     #[test]
-    fn run_answers_the_exit_code_as_a_process_exit_code() {
+    fn run_answers_the_exit_code_as_a_number() {
         let compiler = compiler();
         let driver = Driver::new(&compiler).build().unwrap();
         let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
@@ -649,7 +655,7 @@ mod tests {
             &mut stdout,
             &mut stderr,
         );
-        assert_eq!(format!("{code:?}"), format!("{:?}", ExitCode::from(EXIT_USAGE)));
+        assert_eq!(code, EXIT_USAGE);
     }
 
     #[test]
@@ -831,18 +837,13 @@ mod tests {
     }
 
     #[test]
-    fn a_panic_on_another_thread_does_not_reach_a_runs_report() {
+    fn a_panic_on_another_thread_while_a_run_is_going_does_not_reach_its_report() {
         let dir = tempfile::tempdir().unwrap();
-        let boom = file(dir.path(), "boom.probe", "panic\n");
-        let other = std::thread::spawn(|| {
-            panic!("a panic on a thread that is not a worker");
-        });
-        assert!(other.join().is_err());
-        let run = drive(&[&boom]);
-        assert_eq!(run.code, EXIT_INTERNAL);
-        assert!(run.stderr.contains("the probe panics on purpose"), "{}", run.stderr);
-        assert!(!run.stderr.contains("not a worker"), "{}", run.stderr);
-        WORKER.with(|slot| assert!(slot.borrow().is_none()));
+        let input = file(dir.path(), "stray.probe", "stray\n");
+        let run = drive(&[&input]);
+        assert_eq!(run.code, 0, "{run:?}");
+        assert!(!run.stderr.contains("internal compiler error"), "{}", run.stderr);
+        assert!(!run.stderr.contains("a stray thread"), "{}", run.stderr);
     }
 
     #[test]
@@ -863,16 +864,16 @@ mod tests {
         let calls = Cell::new(0);
         let run = |args: &[&str]| {
             let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
-            driver.run_code(
+            driver.run_with(
                 args.iter().map(OsString::from),
                 &mut io::empty(),
                 &mut stdout,
                 &mut stderr,
+                RunOptions::default(),
                 || {
                     calls.set(calls.get() + 1);
                     Ok(())
                 },
-                false,
             )
         };
         for args in [&["--help"][..], &["--version"], &["--print", "targets"], &["--bogus"]] {
@@ -901,13 +902,13 @@ mod tests {
         let driver = Driver::new(&compiler).build().unwrap();
         let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
         let args = [&input[..], "-o", out.to_str().unwrap()];
-        let code = driver.run_code(
+        let code = driver.run_with(
             args.iter().map(OsString::from),
             &mut io::empty(),
             &mut stdout,
             &mut stderr,
+            RunOptions::default(),
             || Err(String::from("the logger is not configured")),
-            false,
         );
         assert_eq!(code, EXIT_FAILURE);
         assert_eq!(String::from_utf8(stderr).unwrap(), "error: the logger is not configured\n");
@@ -936,13 +937,13 @@ mod tests {
         let compiler = compiler();
         let driver = Driver::new(&compiler).build().unwrap();
         let mut stderr = Vec::new();
-        let code = driver.run_code(
+        let code = driver.run_with(
             ["--print", "targets"].map(OsString::from),
             &mut io::empty(),
             &mut Broken,
             &mut stderr,
+            RunOptions::default(),
             || Ok(()),
-            false,
         );
         assert_eq!(code, EXIT_FAILURE);
         let stderr = String::from_utf8(stderr).unwrap();

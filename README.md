@@ -177,10 +177,14 @@ toyc f.calc --target stackvm-unknown-unknown --backend altvm --output-dir out
 the compiler has. `toyc --help` groups the flags of each stage under its own heading, such as
 `stackvm backend options`.
 
-A stage declares its options with a struct that derives `clap::Args`, and returns it from
-`Frontend::options` or `Backend::options` as an `OptionsDecl`. Each field is a long flag. A stage
-cannot declare a short flag, a positional argument or a required argument. A flag only fills a
-field of the struct, so everything the command line says can be said in code. The driver prefixes
+A stage declares its options with a struct that derives `clap::Args` (`clap` 4), and returns it
+from `Frontend::options` or `Backend::options` as an `OptionsDecl`. Each field is a long flag. A
+stage cannot declare a short flag, a positional argument, a required argument or an `env`, since
+nothing in a compilation reads the process's environment except through the request, and each
+stage needs a struct of its own: a request holds one value of a type. A flag only fills a field of
+the struct, so everything the command line says can be said in code, and an option nobody wrote
+has the value `clap` gives it (its `default_value`) whether it is set on the command line or in
+code. The driver prefixes
 the flags of a backend with the backend's name: the field `comments` of the backend `stackvm` is
 `--stackvm-comments`. The flags of a frontend have no prefix, unless the driver is built with
 `DriverBuilder::prefix_frontend`.

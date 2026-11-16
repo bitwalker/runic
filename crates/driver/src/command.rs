@@ -14,6 +14,7 @@ pub(crate) const UNSTABLE_ARG: &str = "unstable";
 
 /// When the driver colors what it prints.
 #[derive(ValueEnum, Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ColorChoice {
     /// Color when the output is a terminal.
     #[default]

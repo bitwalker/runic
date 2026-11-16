@@ -11,7 +11,11 @@
 //!   backend `wasm-cm` is `--wasm-cm-allow-undefined`; a frontend's are not, unless the builder is
 //!   asked to prefix it ([DriverBuilder::prefix_frontend]);
 //! * a stage's options are long flags that take at most one value each: no short flag, no
-//!   positional argument, no required argument, no alias;
+//!   positional argument, no required argument (nor a required group, nor a subcommand), no alias,
+//!   and no `env`: nothing in a compilation reads the process's environment except through the
+//!   request;
+//! * a stage's options are a `clap` 4 `Args` type of its own: a request holds one value of a
+//!   type, so two declarers cannot share one;
 //! * no two flags have one spelling, and no two unstable settings do;
 //! * a stage's unstable settings are never flags of the main command: they are reachable only as
 //!   `-Z NAME[=VALUE]`.
@@ -38,7 +42,7 @@ mod request;
 mod run;
 mod unstable;
 
-use std::collections::HashMap;
+use std::{any::TypeId, collections::HashMap};
 
 use clap::{Arg, ArgAction, Args as _, Command};
 use runic_compile::{Compiler, OptionsDecl, RUNIC_REVISION, RUNIC_VERSION};
@@ -47,7 +51,7 @@ use runic_ir::Report;
 pub use self::{
     command::ColorChoice,
     request::{Exit, Invocation, RenderOptions},
-    run::{EXIT_FAILURE, EXIT_INTERNAL, EXIT_USAGE, main, main_with},
+    run::{EXIT_FAILURE, EXIT_INTERNAL, EXIT_USAGE, RunOptions, main, main_with},
 };
 use self::{
     command::{Flags, PrintKind, UNSTABLE_ARG},
@@ -329,7 +333,10 @@ impl<'c> DriverBuilder<'c> {
     /// * [prefix_frontend](Self::prefix_frontend) names a frontend the compiler does not have;
     /// * a stage declares an option, stable or unstable, that has a short flag, is positional or
     ///   required, has an action other than setting a value, appending one, a switch or a count,
-    ///   takes more than one value per occurrence or has an alias;
+    ///   takes more than one value per occurrence, has an alias or reads the environment, or when
+    ///   its options have a required group or subcommands;
+    /// * two declarers use one options type, or one stage uses a type as both its stable and its
+    ///   unstable options;
     /// * two declarers give one spelling to a flag, or to an unstable setting. The driver is a
     ///   declarer, and `help` and `version` are its flags.
     pub fn build(self) -> Result<Driver<'c>, Report> {
@@ -403,6 +410,7 @@ impl<'c> DriverBuilder<'c> {
         }
         unstable_names.claim("help", "the driver")?;
 
+        let mut types: HashMap<TypeId, String> = HashMap::new();
         let mut stages = Vec::new();
         let stage_decls = compiler
             .frontends()
@@ -425,6 +433,29 @@ impl<'c> DriverBuilder<'c> {
             }
             for name in unstable_scratch.get_arguments().filter_map(Arg::get_long) {
                 unstable_names.claim(name, &declarer)?;
+            }
+            for (type_id, type_name) in
+                [decl.stable_type(), decl.unstable_type()].into_iter().flatten()
+            {
+                match types.get(&type_id) {
+                    Some(first) if *first == declarer => {
+                        return Err(Report::msg(format!(
+                            "the options type '{type_name}' is declared by {declarer} as both its \
+                             stable and its unstable options: each needs a type of its own, since \
+                             a request holds one value of a type"
+                        )));
+                    }
+                    Some(first) => {
+                        return Err(Report::msg(format!(
+                            "the options type '{type_name}' is declared by {first} and by \
+                             {declarer}: each declarer needs a type of its own, since a request \
+                             holds one value of a type"
+                        )));
+                    }
+                    None => {
+                        types.insert(type_id, declarer.clone());
+                    }
+                }
             }
 
             let heading = format!("{stage_name} {kind} options");
@@ -497,16 +528,27 @@ fn declared(
     for arg in command.get_arguments() {
         check(arg, kind, name, what)?;
     }
+    let by = format!("the {kind} '{name}' declares {what}s");
+    if let Some(group) = command.get_groups().find(|group| group.is_required_set()) {
+        return Err(Report::msg(format!(
+            "{by} with the required group '{}'; options of a stage are never required",
+            group.get_id()
+        )));
+    }
+    if command.has_subcommands() {
+        return Err(Report::msg(format!("{by} with subcommands; options of a stage are flags")));
+    }
     Ok(command)
 }
 
 /// The argument of the main command that stands for `arg`, a stable option of a stage: its
 /// spelling, what it takes and how that is parsed, and its help, under `heading`.
 ///
-/// It carries neither the option's default nor its relations to the stage's other options
-/// (conflicts, requirements): those name ids of the stage's own command, where they are applied
-/// when the stage is handed its values. An argument of the main command therefore holds a value
-/// only when the command line wrote one.
+/// It carries the option's default of a value-taking option, so that help shows it, but not its
+/// relations to the stage's other options (conflicts, requirements): those name ids of the stage's
+/// own command, where they are applied when the stage is handed its values. A default is not a
+/// value the command line wrote (its source is `DefaultValue`), so the stage is handed only what
+/// was written, and its own command applies the defaults.
 fn carried(arg: &Arg, id: &str, long: &str, heading: &str) -> Arg {
     let mut carried = Arg::new(id.to_owned())
         .long(long.to_owned())
@@ -514,6 +556,8 @@ fn carried(arg: &Arg, id: &str, long: &str, heading: &str) -> Arg {
         .value_parser(arg.get_value_parser().clone())
         .require_equals(arg.is_require_equals_set())
         .allow_hyphen_values(arg.is_allow_hyphen_values_set())
+        .allow_negative_numbers(arg.is_allow_negative_numbers_set())
+        .ignore_case(arg.is_ignore_case_set())
         .hide(arg.is_hide_set())
         .help_heading(heading.to_owned());
     if let Some(range) = arg.get_num_args() {
@@ -524,6 +568,11 @@ fn carried(arg: &Arg, id: &str, long: &str, heading: &str) -> Arg {
     }
     if let Some(delimiter) = arg.get_value_delimiter() {
         carried = carried.value_delimiter(delimiter);
+    }
+    if matches!(arg.get_action(), ArgAction::Set | ArgAction::Append)
+        && !arg.get_default_values().is_empty()
+    {
+        carried = carried.default_values(arg.get_default_values().iter().cloned());
     }
     if let Some(help) = arg.get_help() {
         carried = carried.help(help.clone());
@@ -562,6 +611,13 @@ fn check(arg: &Arg, kind: StageKind, name: &str, what: &str) -> Result<(), Repor
             "has an action the driver cannot carry; it must set a value, append one, be a switch \
              or count",
         );
+    }
+    if let Some(variable) = arg.get_env() {
+        return fail(&format!(
+            "reads the environment variable '{}'; options of a stage never read the environment, \
+             since nothing in a compilation reads it except through the request",
+            variable.to_string_lossy()
+        ));
     }
     if arg.get_num_args().is_some_and(|range| range.max_values() > 1) {
         return fail("takes more than one value per occurrence; it takes at most one");
@@ -607,7 +663,7 @@ impl Namespace {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use clap::{Args, error::ErrorKind};
+    use clap::{Args, error::ErrorKind, parser::ValueSource};
     use runic_compile::{
         Artifact, Backend, CheckpointDecl, CheckpointId, Checkpoints, Flow, Frontend, Input,
         Session, Triple,
@@ -622,6 +678,14 @@ pub(crate) mod tests {
     #[derive(Args, Default, Debug, Clone)]
     struct Loud {
         /// Be loud.
+        #[arg(long)]
+        loud: bool,
+    }
+
+    /// Another type of one flag, `--loud`.
+    #[derive(Args, Default, Debug, Clone)]
+    struct LoudToo {
+        /// Be loud, too.
         #[arg(long)]
         loud: bool,
     }
@@ -672,6 +736,32 @@ pub(crate) mod tests {
     struct Aliased {
         #[arg(long, alias = "other")]
         aliased: bool,
+    }
+
+    #[derive(Args, Default, Debug, Clone)]
+    struct FromEnvironment {
+        #[arg(long, env = "RUNIC_DRIVER_TEST_UNSET")]
+        home: Option<String>,
+    }
+
+    #[derive(Args, Default, Debug, Clone)]
+    #[group(required = true)]
+    struct Grouped {
+        #[arg(long)]
+        left: bool,
+        #[arg(long)]
+        right: bool,
+    }
+
+    #[derive(clap::Subcommand, Debug, Clone)]
+    enum Go {
+        Now,
+    }
+
+    #[derive(Args, Default, Debug, Clone)]
+    struct WithSubcommand {
+        #[command(subcommand)]
+        go: Option<Go>,
     }
 
     type Declare = fn() -> Option<OptionsDecl>;
@@ -902,8 +992,10 @@ pub(crate) mod tests {
 
     #[test]
     fn two_backends_that_declare_one_field_get_two_flags() {
-        let compiler =
-            with(Vec::new(), vec![backend("one", stable::<Loud>), backend("two", stable::<Loud>)]);
+        let compiler = with(
+            Vec::new(),
+            vec![backend("one", stable::<Loud>), backend("two", stable::<LoudToo>)],
+        );
         let driver = Driver::new(&compiler).build().unwrap();
         let command = built(&driver);
         assert!(command.get_arguments().any(|a| a.get_long() == Some("one-loud")));
@@ -990,9 +1082,72 @@ pub(crate) mod tests {
 
     #[test]
     fn a_stable_and_an_unstable_setting_may_share_a_spelling() {
+        let compiler = with(
+            vec![Fe("a", || Some(OptionsDecl::of::<Loud>().unstable::<LoudToo>()))],
+            Vec::new(),
+        );
+        Driver::new(&compiler).build().unwrap();
+    }
+
+    #[test]
+    fn two_backends_that_declare_one_options_type_are_an_error_naming_the_type_and_both() {
+        let compiler =
+            with(Vec::new(), vec![backend("one", stable::<Loud>), backend("two", stable::<Loud>)]);
+        assert_eq!(
+            error_of(Driver::new(&compiler).build()),
+            "the options type 'runic_driver::tests::Loud' is declared by the backend 'one' and by \
+             the backend 'two': each declarer needs a type of its own, since a request holds one \
+             value of a type"
+        );
+    }
+
+    #[test]
+    fn a_frontend_and_a_backend_that_declare_one_options_type_are_an_error_naming_both() {
+        let compiler = with(vec![Fe("f", stable::<Loud>)], vec![backend("b", stable::<Loud>)]);
+        assert_eq!(
+            error_of(Driver::new(&compiler).build()),
+            "the options type 'runic_driver::tests::Loud' is declared by the frontend 'f' and by \
+             the backend 'b': each declarer needs a type of its own, since a request holds one \
+             value of a type"
+        );
+    }
+
+    #[test]
+    fn a_stage_that_declares_one_type_as_stable_and_unstable_is_an_error_naming_the_type() {
         let compiler =
             with(vec![Fe("a", || Some(OptionsDecl::of::<Loud>().unstable::<Loud>()))], Vec::new());
-        Driver::new(&compiler).build().unwrap();
+        assert_eq!(
+            error_of(Driver::new(&compiler).build()),
+            "the options type 'runic_driver::tests::Loud' is declared by the frontend 'a' as both \
+             its stable and its unstable options: each needs a type of its own, since a request \
+             holds one value of a type"
+        );
+    }
+
+    #[test]
+    fn a_stage_option_that_reads_the_environment_is_an_error_naming_the_stage_and_the_field() {
+        let compiler = with(vec![Fe("a", stable::<FromEnvironment>)], Vec::new());
+        assert_eq!(
+            error_of(Driver::new(&compiler).build()),
+            "the frontend 'a' declares the option 'home', which reads the environment variable \
+             'RUNIC_DRIVER_TEST_UNSET'; options of a stage never read the environment, since \
+             nothing in a compilation reads it except through the request"
+        );
+    }
+
+    #[test]
+    fn a_stage_whose_options_have_a_required_group_or_subcommands_is_an_error_naming_the_stage() {
+        let compiler = with(vec![Fe("a", stable::<Grouped>)], Vec::new());
+        assert_eq!(
+            error_of(Driver::new(&compiler).build()),
+            "the frontend 'a' declares options with the required group 'Grouped'; options of a \
+             stage are never required"
+        );
+        let compiler = with(Vec::new(), vec![backend("b", stable::<WithSubcommand>)]);
+        assert_eq!(
+            error_of(Driver::new(&compiler).build()),
+            "the backend 'b' declares options with subcommands; options of a stage are flags"
+        );
     }
 
     #[test]
@@ -1145,7 +1300,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_stage_flag_on_the_main_command_carries_no_default_and_no_relation() {
+    fn a_stage_flag_on_the_main_command_carries_its_default_and_no_relation() {
         let compiler = Compiler::builder()
             .backend(backend("rel", || Some(OptionsDecl::of::<Related>())))
             .build()
@@ -1154,9 +1309,15 @@ pub(crate) mod tests {
         // The relation names an id of the stage's own command; the main command stays consistent.
         driver.command().clone().debug_assert();
 
+        // A default is not a value the command line wrote: its source says so, and the driver
+        // hands the stage only what was written.
         let matches = driver.command().clone().try_get_matches_from(["x"]).unwrap();
-        assert_eq!(matches.value_source("backend:rel:level"), None);
+        assert_eq!(matches.value_source("backend:rel:level"), Some(ValueSource::DefaultValue));
+        assert_eq!(matches.get_one::<u8>("backend:rel:level"), Some(&3));
         assert_eq!(matches.value_source("backend:rel:trace"), None);
+        let mut command = driver.command().clone();
+        let help = command.render_long_help().to_string();
+        assert!(help.contains("[default: 3]"), "{help}");
 
         // What the flag takes and how it is parsed is carried.
         let matches = driver
@@ -1165,6 +1326,7 @@ pub(crate) mod tests {
             .try_get_matches_from(["x", "--rel-level", "7", "--rel-trace", "in.x"])
             .unwrap();
         assert_eq!(matches.get_one::<u8>("backend:rel:level"), Some(&7));
+        assert_eq!(matches.value_source("backend:rel:level"), Some(ValueSource::CommandLine));
         // `--rel-trace` takes its value with `=` only, so `in.x` is an input.
         assert_eq!(matches.get_raw("backend:rel:trace").map(|values| values.count()), Some(0));
         let error = driver

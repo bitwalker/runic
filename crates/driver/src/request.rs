@@ -14,15 +14,22 @@ use crate::{ColorChoice, Driver, Flags, PrintKind, StageCommands, UNSTABLE_ARG, 
 
 /// What a command line asks for.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Invocation {
     /// A compilation, and how its diagnostics are rendered.
-    Compile(Box<CompilationRequest>, RenderOptions),
+    Compile {
+        /// What the command line asked the compiler to do.
+        request: Box<CompilationRequest>,
+        /// How the compilation's diagnostics are rendered.
+        render: RenderOptions,
+    },
     /// Text to write to standard output (`--print`).
     Print(String),
 }
 
 /// How a compilation's diagnostics are rendered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct RenderOptions {
     /// When to color them (`--color`).
     pub color: ColorChoice,
@@ -30,6 +37,7 @@ pub struct RenderOptions {
 
 /// A command line that asks for no compilation.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Exit {
     /// Help, the version, or `-Z help`: text for standard output, and success.
     Help(String),
@@ -125,7 +133,10 @@ impl Driver<'_> {
     /// only when an input is `-`.
     ///
     /// Everything a user can get wrong is an [Exit::Usage]; help, the version and `-Z help` are
-    /// [Exit::Help]. `--print` is [Invocation::Print] whatever else was written. The request that
+    /// [Exit::Help]. Every `-Z` entry is checked, and `-Z help` answered, before `--print`
+    /// is read: a bad `-Z` entry is a usage error and `-Z help` is help even beside `--print`.
+    /// A command line that passes those checks and has `--print` is [Invocation::Print], whatever
+    /// else was written: `--print` wins over a compilation. The request that
     /// comes back holds what the flags said and nothing else: what a flag leaves unsaid is left to
     /// the session, which stores the defaults of the stages that take part.
     pub fn request(
@@ -170,7 +181,10 @@ impl Driver<'_> {
         }
         self.store_unstable(&settings, &mut request)?;
 
-        Ok(Invocation::Compile(Box::new(request), RenderOptions { color: flags.color }))
+        Ok(Invocation::Compile {
+            request: Box::new(request),
+            render: RenderOptions { color: flags.color },
+        })
     }
 
     /// The inputs of the command line, each with the nearest `--language` written before it, and
@@ -187,15 +201,23 @@ impl Driver<'_> {
         let input_at = indices("input");
         let language_at = indices("language");
 
-        let last_input = input_at.last().copied();
-        if let Some((_, language)) = language_at
-            .iter()
-            .zip(&flags.language)
-            .find(|(at, _)| last_input.is_none_or(|last| **at > last))
-        {
-            return Err(usage(format!(
-                "'--language {language}' applies to the inputs after it, and none follows"
-            )));
+        for (index, (at, language)) in language_at.iter().zip(&flags.language).enumerate() {
+            let Some(next_input) = input_at.iter().find(|input| *input > at) else {
+                return Err(usage(format!(
+                    "'--language {language}' applies to the inputs after it, and none follows"
+                )));
+            };
+            if let Some((_, next)) = language_at
+                .iter()
+                .zip(&flags.language)
+                .nth(index + 1)
+                .filter(|(next_at, _)| *next_at < next_input)
+            {
+                return Err(usage(format!(
+                    "'--language {language}' applies to the inputs after it, and none follows \
+                     before '--language {next}'"
+                )));
+            }
         }
 
         if flags.input.iter().filter(|input| input.as_os_str() == "-").count() > 1 {
@@ -251,6 +273,11 @@ impl Driver<'_> {
                 Some((name, value)) => (name, Some(value)),
                 None => (entry.as_str(), None),
             };
+            if name.is_empty() {
+                return Err(usage(
+                    "'-Z' needs the name of an unstable option; '-Z help' lists them",
+                ));
+            }
             if name == "help" {
                 return match value {
                     None => Err(Exit::Help(self.unstable_help())),
@@ -302,11 +329,15 @@ impl Driver<'_> {
         })
     }
 
-    /// The names of every unstable setting, the driver's first.
+    /// The names of every unstable setting that is not hidden, the driver's first.
     fn setting_names(&self) -> Vec<&str> {
         let driver = self.unstable_command().get_arguments();
         let stages = self.stages().iter().flat_map(|stage| stage.unstable().get_arguments());
-        driver.chain(stages).filter_map(Arg::get_long).collect()
+        driver
+            .chain(stages)
+            .filter(|arg| !arg.is_hide_set())
+            .filter_map(Arg::get_long)
+            .collect()
     }
 
     /// Parses the entries each owner has and stores what they say in `request`.
@@ -370,12 +401,24 @@ impl Driver<'_> {
 /// Hands a stage the stable flags the command line gave it: rebuilds them as the arguments of the
 /// stage's own command, which applies the stage's defaults and relations, and stores the result in
 /// `request`. A stage none of whose flags was written stores nothing.
+///
+/// The arguments are rebuilt in the order the command line wrote them, so that a stage's own
+/// relations that depend on order (`overrides_with`: `--color --no-color`) resolve as the user
+/// wrote them. `clap` reports one index for each value of a flag (and one for a switch, and one,
+/// the last, for a count), so:
+///
+/// * a switch is placed at its index, and a count's arguments all at the count's index;
+/// * an occurrence of a flag that takes a value is one argument, `--LONG=VALUE` (a value-delimited
+///   occurrence is rejoined with the delimiter), placed at the index of its first value;
+/// * when the indices of a flag cannot be matched to its occurrences (an occurrence with no value
+///   at all: an optional value left out where the argument has no `default_missing_value`), all of
+///   the flag's arguments are placed at the flag's first index, or at the start when it has none.
 fn store_stable(
     stage: &StageCommands,
     matches: &ArgMatches,
     request: &mut CompilationRequest,
 ) -> Result<(), Exit> {
-    let mut args: Vec<OsString> = Vec::new();
+    let mut args: Vec<(usize, OsString)> = Vec::new();
     let mut given = false;
     for flag in stage.flags() {
         if matches.value_source(flag.id()) != Some(ValueSource::CommandLine) {
@@ -387,22 +430,46 @@ fn store_stable(
             continue;
         };
         let long = format!("--{}", flag.long());
+        let indices: Vec<usize> =
+            matches.indices_of(flag.id()).map(Iterator::collect).unwrap_or_default();
+        let first = indices.first().copied().unwrap_or(0);
         match arg.get_action() {
-            ArgAction::SetTrue | ArgAction::SetFalse => args.push(long.into()),
+            ArgAction::SetTrue | ArgAction::SetFalse => args.push((first, long.into())),
             ArgAction::Count => {
                 for _ in 0..matches.get_count(flag.id()) {
-                    args.push(long.clone().into());
+                    args.push((first, long.clone().into()));
                 }
             }
             _ => {
-                for occurrence in matches.get_raw_occurrences(flag.id()).into_iter().flatten() {
-                    let mut empty = true;
-                    for value in occurrence {
-                        empty = false;
-                        args.push(with_value(&long, value));
-                    }
-                    if empty {
-                        args.push(long.clone().into());
+                let occurrences: Vec<Vec<&OsStr>> = matches
+                    .get_raw_occurrences(flag.id())
+                    .into_iter()
+                    .flatten()
+                    .map(Iterator::collect)
+                    .collect();
+                let values: usize = occurrences.iter().map(Vec::len).sum();
+                let placed = values == indices.len() && occurrences.iter().all(|o| !o.is_empty());
+                let mut next = 0;
+                for occurrence in occurrences {
+                    let at = if placed { indices[next] } else { first };
+                    next += occurrence.len();
+                    match (occurrence.as_slice(), arg.get_value_delimiter()) {
+                        ([], _) => args.push((at, long.clone().into())),
+                        (values, Some(delimiter)) => {
+                            let mut joined = OsString::new();
+                            for (position, value) in values.iter().enumerate() {
+                                if position > 0 {
+                                    joined.push(delimiter.to_string());
+                                }
+                                joined.push(value);
+                            }
+                            args.push((at, with_value(&long, &joined)));
+                        }
+                        (values, None) => {
+                            for value in values {
+                                args.push((at, with_value(&long, value)));
+                            }
+                        }
                     }
                 }
             }
@@ -411,10 +478,11 @@ fn store_stable(
     if !given {
         return Ok(());
     }
+    args.sort_by_key(|(at, _)| *at);
     let scratch = stage
         .stable()
         .clone()
-        .try_get_matches_from(args)
+        .try_get_matches_from(args.into_iter().map(|(_, arg)| arg))
         .map_err(|error| Exit::Usage(scratch_text(&error)))?;
     stage
         .decl()
@@ -483,10 +551,12 @@ mod tests {
 
     use clap::{ArgAction, Args};
     use runic_compile::{
-        DebugInfo, EmitRequest, EmitTo, Extern, IrOptions, OptLevel, OutputFile, RemapPathPrefix,
-        Triple,
-        testing::{CalcOptions, StackVmOptions, StackVmUnstable},
+        Artifact, Backend, CheckpointDecl, CheckpointId, Checkpoints, DebugInfo, EmitRequest,
+        EmitTo, Extern, Flow, IrOptions, OptLevel, OptionsDecl, OutputFile, RemapPathPrefix,
+        Session, Triple,
+        testing::{CalcFrontend, CalcOptions, StackVmBackend, StackVmOptions, StackVmUnstable},
     };
+    use runic_ir::{DataLayoutSpec, Report, dialects::builtin::WorldRef, pass::OpPassManager};
 
     use super::*;
     use crate::tests::{backend, stable, toy};
@@ -503,7 +573,7 @@ mod tests {
 
     fn compile_on(compiler: &Compiler, args: &[&str]) -> (CompilationRequest, RenderOptions) {
         match run_on(compiler, args, b"") {
-            Ok(Invocation::Compile(request, render)) => (*request, render),
+            Ok(Invocation::Compile { request, render }) => (*request, render),
             other => panic!("{args:?} is not a compilation: {other:?}"),
         }
     }
@@ -544,7 +614,7 @@ mod tests {
         let name = OsString::from_vec(b"caf\xe9.calc".to_vec());
         let driver_compiler = toy();
         let driver = Driver::new(&driver_compiler).build().unwrap();
-        let Ok(Invocation::Compile(request, _)) =
+        let Ok(Invocation::Compile { request, .. }) =
             driver.request([name.clone()], &mut std::io::empty())
         else {
             panic!("the input is not accepted");
@@ -747,12 +817,24 @@ mod tests {
     }
 
     #[test]
+    fn a_language_with_no_input_before_the_next_language_is_a_usage_error_naming_both() {
+        let text = usage_text(&["--language", "calc", "--language", "runic", "a.calc"]);
+        assert!(
+            text.contains(
+                "'--language calc' applies to the inputs after it, and none follows before \
+                 '--language runic'"
+            ),
+            "{text}"
+        );
+    }
+
+    #[test]
     fn a_dash_reads_standard_input_into_a_memory_input_in_the_language_before_it() {
         let (actual, _) = {
             let invocation =
                 run_on(&toy(), &["--language", "calc", "-", "b.calc"], b"def f(x) = x\n");
             match invocation {
-                Ok(Invocation::Compile(request, render)) => (*request, render),
+                Ok(Invocation::Compile { request, render }) => (*request, render),
                 other => panic!("{other:?}"),
             }
         };
@@ -930,6 +1012,35 @@ mod tests {
     }
 
     #[test]
+    fn the_unknown_name_error_lists_only_settings_that_are_not_hidden() {
+        let text = usage_text(&["-Z", "nonesuch"]);
+        let compiler = toy();
+        let driver = Driver::new(&compiler).build().unwrap();
+        let hidden: Vec<&str> = driver
+            .unstable_command()
+            .get_arguments()
+            .chain(driver.stages().iter().flat_map(|stage| stage.unstable().get_arguments()))
+            .filter(|arg| arg.is_hide_set())
+            .filter_map(Arg::get_long)
+            .collect();
+        for name in &hidden {
+            assert!(!text.contains(&format!("'{name}'")), "{name} is listed in {text}");
+        }
+        assert!(text.contains("'pass-pipeline'"), "{text}");
+    }
+
+    #[test]
+    fn an_empty_unstable_name_is_its_own_usage_error() {
+        for args in [vec!["-Z", "=x"], vec!["-Z", ""], vec!["-Z="]] {
+            let text = usage_text(&args);
+            assert_eq!(
+                text, "error: '-Z' needs the name of an unstable option; '-Z help' lists them\n",
+                "{args:?}"
+            );
+        }
+    }
+
+    #[test]
     fn a_value_for_a_switch_and_no_value_for_a_required_one_are_usage_errors_naming_the_setting() {
         let text = usage_text(&["-Z", "print-generic=1"]);
         assert!(text.contains("-Z print-generic") && text.contains("takes none"), "{text}");
@@ -1013,7 +1124,7 @@ mod tests {
     fn kinds(args: &[&str]) -> Result<Option<Kinds>, Exit> {
         let compiler = Compiler::builder().backend(backend("x", stable::<Kinds>)).build().unwrap();
         match run_on(&compiler, args, b"")? {
-            Invocation::Compile(request, _) => Ok(request.options::<Kinds>().cloned()),
+            Invocation::Compile { request, .. } => Ok(request.options::<Kinds>().cloned()),
             other => panic!("{other:?}"),
         }
     }
@@ -1121,5 +1232,208 @@ mod tests {
             panic!()
         };
         assert!(text.contains("-Z"), "{text}");
+    }
+
+    #[derive(Args, Default, Debug, Clone, PartialEq)]
+    struct Ordered {
+        #[arg(long, overrides_with = "no_color")]
+        color: bool,
+        #[arg(long, overrides_with = "color")]
+        no_color: bool,
+        #[arg(long)]
+        other: bool,
+        #[arg(long, value_delimiter = ',')]
+        list: Vec<String>,
+        #[arg(long, value_delimiter = ',', action = ArgAction::Set)]
+        pair: Option<Vec<String>>,
+        #[arg(long, action = ArgAction::Count)]
+        verbose: u8,
+        #[arg(long, num_args = 0..=1, require_equals = true)]
+        maybe: Option<String>,
+    }
+
+    fn ordered(args: &[&str]) -> Ordered {
+        let compiler =
+            Compiler::builder().backend(backend("x", stable::<Ordered>)).build().unwrap();
+        match run_on(&compiler, args, b"") {
+            Ok(Invocation::Compile { request, .. }) => {
+                request.options::<Ordered>().cloned().expect("a flag of the stage was written")
+            }
+            other => panic!("{args:?}: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_stage_is_handed_its_flags_in_the_order_they_were_written() {
+        let color = |o: &Ordered| (o.color, o.no_color);
+        assert_eq!(color(&ordered(&["--x-no-color", "--x-color"])), (true, false));
+        assert_eq!(color(&ordered(&["--x-color", "--x-no-color"])), (false, true));
+        assert_eq!(
+            color(&ordered(&["--x-no-color", "--x-other", "-O2", "--x-color", "-g", "a.calc"])),
+            (true, false)
+        );
+        assert_eq!(
+            color(&ordered(&["--x-color", "--x-other", "-O2", "--x-no-color", "-g", "a.calc"])),
+            (false, true)
+        );
+        // A flag of the driver between them changes nothing.
+        let both = ordered(&["--x-color", "--name", "u", "--x-no-color", "--x-other"]);
+        assert_eq!((color(&both), both.other), ((false, true), true));
+    }
+
+    #[test]
+    fn a_delimited_occurrence_reaches_the_stage_as_one_argument() {
+        let kinds = ordered(&["--x-list=a,b", "--x-list=c", "--x-pair=d,e"]);
+        assert_eq!(kinds.list, ["a", "b", "c"]);
+        assert_eq!(kinds.pair, Some(vec!["d".to_owned(), "e".to_owned()]));
+        let kinds = ordered(&["--x-list", "a,b", "--x-pair", "d,e"]);
+        assert_eq!(kinds.list, ["a", "b"]);
+        assert_eq!(kinds.pair, Some(vec!["d".to_owned(), "e".to_owned()]));
+    }
+
+    #[test]
+    fn a_count_and_an_optional_value_left_out_keep_their_meaning_beside_other_flags() {
+        let kinds =
+            ordered(&["--x-verbose", "--x-other", "--x-verbose", "--x-maybe", "--x-verbose"]);
+        assert_eq!(kinds.verbose, 3);
+        assert!(kinds.other);
+        assert_eq!(kinds.maybe, None);
+    }
+
+    #[derive(Args, Debug, Clone, PartialEq, Default)]
+    struct Leveled {
+        #[arg(long, default_value_t = 3)]
+        level: u8,
+        #[arg(long)]
+        loud: bool,
+    }
+
+    fn render_nothing(
+        _artifact: &Artifact,
+        _session: &Session<'_>,
+        _out: &mut dyn std::io::Write,
+    ) -> Result<(), Report> {
+        Ok(())
+    }
+
+    const LEVELED_CHECKPOINTS: &[CheckpointDecl] = &[CheckpointDecl {
+        id: CheckpointId::new("lvl.out"),
+        aliases: &[],
+        extension: "out",
+        render: render_nothing,
+    }];
+
+    /// A backend for the `stackvm` target that declares `Leveled` and does nothing else.
+    struct LeveledBackend;
+
+    impl Backend for LeveledBackend {
+        fn name(&self) -> &'static str {
+            "lvl"
+        }
+
+        fn supports(&self, triple: &Triple) -> bool {
+            StackVmBackend.supports(triple)
+        }
+
+        fn targets(&self) -> Vec<Triple> {
+            StackVmBackend.targets()
+        }
+
+        fn data_layout(&self, triple: &Triple) -> Result<DataLayoutSpec, Report> {
+            StackVmBackend.data_layout(triple)
+        }
+
+        fn checkpoints(&self) -> &'static [CheckpointDecl] {
+            LEVELED_CHECKPOINTS
+        }
+
+        fn add_passes(
+            &self,
+            _session: &Session<'_>,
+            _passes: &mut OpPassManager,
+        ) -> Result<(), Report> {
+            Ok(())
+        }
+
+        fn emit(
+            &self,
+            _session: &Session<'_>,
+            _world: WorldRef,
+            _checkpoints: &mut Checkpoints<'_>,
+        ) -> Result<Flow<()>, Report> {
+            Ok(Flow::Continue(()))
+        }
+
+        fn options(&self) -> Option<OptionsDecl> {
+            Some(OptionsDecl::of::<Leveled>())
+        }
+    }
+
+    /// What a stage reads of `Leveled` for the command line `args`, through a session.
+    fn level_read_by_the_stage(args: &[&str]) -> Leveled {
+        let compiler = Compiler::builder()
+            .frontend(CalcFrontend)
+            .backend(LeveledBackend)
+            .build()
+            .unwrap();
+        let mut line = vec!["--target", "stackvm-unknown-unknown", "a.calc"];
+        line.extend(args);
+        let (request, _) = compile_on(&compiler, &line);
+        let session = compiler.session(request).unwrap();
+        session.options::<Leveled>().cloned().expect("the session stores a value")
+    }
+
+    #[test]
+    fn a_stage_reads_the_clap_default_whether_or_not_another_of_its_flags_was_written() {
+        let nothing = level_read_by_the_stage(&[]);
+        assert_eq!(
+            nothing,
+            Leveled {
+                level: 3,
+                loud: false
+            }
+        );
+        assert_ne!(Leveled::default().level, 3);
+        assert_eq!(
+            level_read_by_the_stage(&["--lvl-loud"]),
+            Leveled {
+                level: 3,
+                loud: true
+            }
+        );
+        assert_eq!(level_read_by_the_stage(&["--lvl-level", "5"]).level, 5);
+    }
+
+    #[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+    enum Mode {
+        Fast,
+        #[allow(dead_code, reason = "the second value of the enum")]
+        Slow,
+    }
+
+    #[derive(Args, Default, Debug, Clone, PartialEq)]
+    struct Parsing {
+        #[arg(long, allow_negative_numbers = true)]
+        offset: Option<i32>,
+        #[arg(long, value_enum, ignore_case = true)]
+        mode: Option<Mode>,
+    }
+
+    #[test]
+    fn a_stage_flag_that_allows_negative_numbers_or_any_case_is_parsed_so_by_the_main_command() {
+        let compiler =
+            Compiler::builder().backend(backend("x", stable::<Parsing>)).build().unwrap();
+        let Ok(Invocation::Compile { request, .. }) =
+            run_on(&compiler, &["--x-offset", "-1", "--x-mode", "FAST"], b"")
+        else {
+            panic!("the flags are not accepted")
+        };
+        assert_eq!(
+            request.options::<Parsing>(),
+            Some(&Parsing {
+                offset: Some(-1),
+                mode: Some(Mode::Fast)
+            })
+        );
     }
 }

@@ -1,11 +1,10 @@
 //! `toyc`, the toy compiler of `examples/toyc.rs`, driven through [Driver::run] the way its
-//! `main` drives it. The compiler built here must match the example's.
+//! `main` drives it. The compiler and the driver built here are the example's, written the same.
 
 use std::{
     ffi::OsString,
     fs,
     path::{Path, PathBuf},
-    process::ExitCode,
 };
 
 use runic_compile::{
@@ -14,7 +13,7 @@ use runic_compile::{
 };
 use runic_driver::{Driver, EXIT_FAILURE, EXIT_USAGE};
 
-/// The compiler of `examples/toyc.rs`: the example must match it.
+/// The compiler of `examples/toyc.rs`, with the same stages and default target.
 fn compiler() -> Compiler {
     Compiler::builder()
         .frontend(CalcFrontend)
@@ -28,19 +27,19 @@ fn compiler() -> Compiler {
 
 /// What a run of `toyc` did.
 struct Run {
-    code: ExitCode,
+    code: u8,
     stdout: String,
     stderr: String,
 }
 
 impl Run {
     fn exited_with(&self, code: u8) -> bool {
-        format!("{:?}", self.code) == format!("{:?}", ExitCode::from(code))
+        self.code == code
     }
 
     /// Asserts that the run succeeded and wrote nothing to either stream.
     fn assert_silent_success(&self) {
-        assert!(self.exited_with(0), "{:?}: {}", self.code, self.stderr);
+        assert!(self.exited_with(0), "{}: {}", self.code, self.stderr);
         assert_eq!((self.stdout.as_str(), self.stderr.as_str()), ("", ""));
     }
 }
@@ -49,7 +48,7 @@ fn toyc_with_input(args: &[&str], stdin: &str) -> Run {
     let compiler = compiler();
     let driver = Driver::new(&compiler)
         .name("toyc")
-        .version("1.2.3")
+        .version(env!("CARGO_PKG_VERSION"))
         .about("Compiles calc, a toy language, for two toy stack machines")
         .build()
         .expect("the toy driver builds");
@@ -150,6 +149,22 @@ fn an_output_directory_that_is_not_there_is_created_and_the_directory_of_an_outp
     assert!(run.exited_with(1), "{}", run.stderr);
     assert!(run.stderr.contains("could not write the output"), "{}", run.stderr);
     assert!(!dir.path().join("absent").exists());
+}
+
+#[test]
+fn an_output_directory_that_is_a_file_is_reported_as_not_a_directory() {
+    let (dir, input, _out) = workspace();
+    let file = write(dir.path(), "afile", "not a directory");
+
+    let run = toyc(&[&input, "--output-dir", &file]);
+
+    assert!(run.exited_with(1), "{}", run.stderr);
+    assert!(
+        run.stderr
+            .contains(&format!("the output directory '{file}' is not a directory")),
+        "{}",
+        run.stderr
+    );
 }
 
 #[test]
@@ -344,10 +359,11 @@ fn the_version_flags_name_the_compiler_and_runic() {
     let short = toyc(&["-V"]);
 
     assert!(long.exited_with(0) && short.exited_with(0));
-    assert_eq!(short.stdout, "toyc 1.2.3\n");
+    let version = env!("CARGO_PKG_VERSION");
+    assert_eq!(short.stdout, format!("toyc {version}\n"));
     let lines: Vec<_> = long.stdout.lines().collect();
     assert_eq!(lines.len(), 2, "{}", long.stdout);
-    assert_eq!(lines[0], "toyc 1.2.3");
+    assert_eq!(lines[0], format!("toyc {version}"));
     assert!(lines[1].starts_with("runic "), "{}", lines[1]);
 }
 
