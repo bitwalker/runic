@@ -143,16 +143,20 @@ mod tests {
         assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o640);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_write_that_fails_leaves_the_old_file_as_it_was() {
+        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("out.runic");
         fs::write(&path, b"old").unwrap();
-        // The temporary's name is taken by a directory, so the file cannot be created.
-        let temporary = dir.path().join(format!("out.runic.runic-{}.tmp", std::process::id()));
-        fs::create_dir(&temporary).unwrap();
-        assert!(write_file(&path, b"new").is_err());
+        // Nothing can be created in the directory, so the temporary file cannot be.
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o555)).unwrap();
+        let outcome = write_file(&path, b"new");
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(outcome.is_err());
         assert_eq!(fs::read(&path).unwrap(), b"old");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1, "no temporary file is left");
     }
 
     #[test]
