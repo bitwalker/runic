@@ -15,7 +15,7 @@ use crate::{
     print::AsmPrinter,
     traits::{
         AnyPointer, InferTypeOpInterface, IsolatedFromAbove, NoRegionArguments, NoTerminator,
-        SingleBlock, SingleRegion,
+        RegionOperationsAreLive, SingleBlock, SingleRegion,
     },
 };
 
@@ -39,6 +39,7 @@ pub type GlobalVariableRef = UnsafeIntrusiveEntityRef<GlobalVariable>;
         NoRegionArguments,
         NoTerminator,
         IsolatedFromAbove,
+        RegionOperationsAreLive,
     ),
     implements(Symbol, OpPrinter, LinkedSymbol)
 )]
@@ -393,6 +394,35 @@ mod tests {
             Ok(op) => Ok((context, op)),
             Err(report) => Err(describe(&report)),
         }
+    }
+
+    /// An operation of a global's initializer is not trivially dead, whatever the uses of its
+    /// results; the same operation outside one is, when unused.
+    #[test]
+    fn an_operation_in_a_global_initializer_is_never_trivially_dead() {
+        let source = "builtin.module public @m {
+    builtin.global_variable public @g : array<i8; 2> {
+        %b = builtin.bytes \"0a0b\" : array<i8; 2>;
+    };
+    builtin.function public extern(\"C\") @f() {
+        %b = builtin.bytes \"0a0b\" : array<i8; 2>;
+        builtin.ret;
+    };
+};";
+        let (_context, module) = parse_text(source).unwrap_or_else(|err| panic!("{err}"));
+        let mut inside = Vec::new();
+        let mut outside = Vec::new();
+        module.borrow().prewalk_all(|op: &Operation| {
+            if op.is::<crate::dialects::builtin::Bytes>() {
+                if op.is_in_live_region() {
+                    inside.push((op.is_trivially_dead(), op.would_be_trivially_dead()));
+                } else {
+                    outside.push((op.is_trivially_dead(), op.would_be_trivially_dead()));
+                }
+            }
+        });
+        assert_eq!(inside, [(false, false)]);
+        assert_eq!(outside, [(true, true)]);
     }
 
     /// The pointer to a global has the global's type, in the address space written; the module

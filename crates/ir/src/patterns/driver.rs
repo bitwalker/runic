@@ -493,6 +493,13 @@ impl GreedyPatternRewriteDriver {
         let rewriter = &mut *scope;
         let op = op_ref.borrow();
 
+        // An operation of an initializer (a region that describes what its parent stands for) is
+        // left as it is: it is not erased, folded, or rewritten, and the folder neither moves nor
+        // merges it, as its position is part of what it means.
+        if op.is_in_live_region() {
+            return false;
+        }
+
         // If the operation is trivially dead - remove it.
         //
         // Transparent ops represent metadata uses, such as debug info. They must remain available
@@ -898,6 +905,9 @@ impl RegionPatternRewriteDriver {
                 // Check for existing constants when populating the worklist. This avoids
                 // accidentally reversing the constant order during processing.
                 let operation = op.borrow();
+                if operation.is_in_live_region() {
+                    return true;
+                }
                 if let Some(const_value) = crate::matchers::constant().matches(&operation) {
                     drop(operation);
                     if !folder.insert_known_constant(op, Some(const_value)) {

@@ -130,8 +130,12 @@ impl SparseConditionalConstantPropagation {
                     continue;
                 }
 
-                // Add any of the regions of this operation to the worklist
-                add_to_worklist(op.regions(), &mut worklist);
+                // Add any of the regions of this operation to the worklist, unless they describe
+                // what the operation stands for (the initializer of a global): its operations are
+                // used by it, and a constant created there would only be a copy of one that stays.
+                if !op.implements::<dyn runic_ir::traits::RegionOperationsAreLive>() {
+                    add_to_worklist(op.regions(), &mut worklist);
+                }
             }
 
             // Replace any block arguments with constants

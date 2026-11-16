@@ -419,6 +419,7 @@ mod cse_model;
 mod dialect_modules;
 mod drive;
 mod generic_form;
+mod global_initializers;
 mod interp;
 mod local2reg_model;
 mod nesting;

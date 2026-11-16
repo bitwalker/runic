@@ -1,0 +1,36 @@
+// RUN: runic-opt %s | filecheck %s
+// RUN: runic-opt %s -p dce | filecheck %s
+// RUN: runic-opt %s -p cse | filecheck %s
+// RUN: runic-opt %s -p sccp | filecheck %s
+// RUN: runic-opt %s -p canonicalizer | filecheck %s
+// RUN: runic-opt %s -p control-flow-sink | filecheck %s
+// RUN: runic-opt %s -p sink-operand-defs | filecheck %s
+// RUN: runic-opt %s -p "recursive(builtin.function(local2reg))" | filecheck %s
+// RUN: runic-opt %s -p cfg-to-scf | filecheck %s
+// RUN: runic-opt %s -p 'canonicalizer,cse,sccp,canonicalizer,dce' | filecheck %s
+// RUN: runic-opt %s -p 'canonicalizer,cse,sccp,canonicalizer,dce' | runic-opt - --verify-roundtrip | filecheck %s
+
+// The initializer of a global is not code that runs but the value the global holds: its last
+// operation is the value, and no operation uses that result. No pass removes, merges, folds or
+// moves an operation of an initializer, so a definition stays a definition and every operation
+// of the initializer stays, even an intermediate that nothing else uses. Every RUN line checks
+// the same output.
+builtin.module public @global_initializers {
+    // CHECK: builtin.global_variable public @data : array<i8; 2> {
+    // CHECK-NEXT: builtin.bytes "0a0b" : array<i8; 2>;
+    // CHECK-NEXT: };
+    builtin.global_variable public @data : array<i8; 2> {
+        %b = builtin.bytes "0a0b" : array<i8; 2>;
+    };
+
+    // CHECK: wasm.global public @g : i32 {
+    // CHECK-NEXT: [[A:%[0-9]+]] = wasm.const 6 : i32;
+    // CHECK-NEXT: [[B:%[0-9]+]] = wasm.const 7 : i32;
+    // CHECK-NEXT: wasm.mul [[A]], [[B]];
+    // CHECK-NEXT: };
+    wasm.global public @g : i32 {
+        %a = wasm.const 6 : i32;
+        %b = wasm.const 7 : i32;
+        %p = wasm.mul %a, %b;
+    };
+};

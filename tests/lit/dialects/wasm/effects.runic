@@ -1,6 +1,6 @@
-// RUN: runic-opt %s -p 'builtin.module(builtin.function(cse))' | filecheck %s --check-prefix=CSE
-// RUN: runic-opt %s -p 'builtin.module(builtin.function(cse))' | runic-opt - --verify-roundtrip | filecheck %s --check-prefix=CSE
-// RUN: runic-opt %s -p 'builtin.module(builtin.function(dce))' | filecheck %s --check-prefix=DCE
+// RUN: runic-opt %s -p cse | filecheck %s --check-prefix=CSE
+// RUN: runic-opt %s -p cse | runic-opt - --verify-roundtrip | filecheck %s --check-prefix=CSE
+// RUN: runic-opt %s -p dce | filecheck %s --check-prefix=DCE
 
 // What `cse` and `dce` make of the `wasm` operations that touch state, which declare their
 // effects on three resources: linear memory (`wasm.memory`, a child of the `mem` dialect's
@@ -8,8 +8,8 @@
 // reads merge unless an operation between them may write what they read: a write of the resource,
 // or a call, whose effects are unknown. A trap is not an effect, so an unused read is removed
 // with its trap. A write is never removed. Every function returns the sum of two reads, so that
-// nothing is unused. The passes run on the functions: `cse` and `dce` on the module would also
-// reach the initializer of a global and remove its value, which nothing uses.
+// nothing is unused. The passes run on the module and reach the initializer of the global, which
+// they leave as it is: it is the value of the global, though nothing uses its result.
 builtin.module public @wasm_effects {
     wasm.memory public @mem : 1;
     wasm.table private @tab : 4 x !wasm.funcref;

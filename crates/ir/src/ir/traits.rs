@@ -50,6 +50,20 @@ pub trait ReturnLike {}
 #[operation_trait]
 pub trait TailCallLike {}
 
+/// Marker trait for operations whose regions are not code that runs but a description the
+/// operation stands for, such as the initializer of a global.
+///
+/// An operation directly in a block of one of those regions is used by its parent, even when none
+/// of its results has a use: the last operation of an initializer has no terminator, and its
+/// result is the value of the region. Such an operation is never trivially dead
+/// ([Operation::would_be_trivially_dead](crate::Operation::would_be_trivially_dead) answers false
+/// for it), so no pass erases it. The values such an operation uses are live through it as usual.
+///
+/// The marker is conservative on purpose: it does not tell the value of the region from the
+/// operations that compute it, so an unused intermediate operation in an initializer is kept too.
+#[operation_trait]
+pub trait RegionOperationsAreLive {}
+
 /// Op is a terminator (i.e. it can be used to terminate a block)
 #[operation_trait]
 pub trait Terminator {}

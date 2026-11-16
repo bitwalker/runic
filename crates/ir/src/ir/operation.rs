@@ -1729,6 +1729,16 @@ impl Operation {
             .any(|result| result.borrow().is_used_outside_of_block(block))
     }
 
+    /// Returns true if this operation is directly in a region of an operation that carries
+    /// [RegionOperationsAreLive](crate::traits::RegionOperationsAreLive): the region describes
+    /// what its parent stands for, so the parent uses this operation, and no pass erases, moves,
+    /// merges or folds it.
+    pub fn is_in_live_region(&self) -> bool {
+        self.parent_op().is_some_and(|parent| {
+            parent.borrow().implements::<dyn crate::traits::RegionOperationsAreLive>()
+        })
+    }
+
     /// Returns true if this operation is unused and has no side effects that prevent it being erased
     pub fn is_trivially_dead(&self) -> bool {
         !self.is_used() && self.would_be_trivially_dead()
@@ -1811,6 +1821,11 @@ impl Operation {
     ///
     /// NOTE: Terminators and symbols are never considered to be trivially dead by this function.
     pub fn would_be_trivially_dead(&self) -> bool {
+        // An operation in the region of one that stands for a description (a global's
+        // initializer) is used by that parent, whatever the uses of its results.
+        if self.is_in_live_region() {
+            return false;
+        }
         if self.implements::<dyn crate::traits::Terminator>() || self.implements::<dyn Symbol>() {
             false
         } else {
@@ -1823,6 +1838,10 @@ impl Operation {
     /// dead without always being conservative about terminators.
     pub fn would_be_trivially_dead_even_if_terminator(&self) -> bool {
         use crate::effects::RecursiveEffectIterator;
+
+        if self.is_in_live_region() {
+            return false;
+        }
 
         // Control that leaves this operation, and a loop that may not end, are not memory effects:
         // the effects below do not show them.

@@ -22,8 +22,8 @@ use runic_ir::{
     parse::{Delimiter, ParserError, ParserExt, Token},
     print::AsmPrinter,
     traits::{
-        IsolatedFromAbove, NoRegionArguments, NoTerminator, SingleBlock, SingleRegion,
-        TypeConstraint,
+        IsolatedFromAbove, NoRegionArguments, NoTerminator, RegionOperationsAreLive, SingleBlock,
+        SingleRegion, TypeConstraint,
     },
 };
 
@@ -427,7 +427,7 @@ impl runic_ir::Verify<dyn ModuleEntity> for Table {
 /// `wasm.const` is not abbreviated.
 #[operation(
     dialect = WasmDialect,
-    traits(SingleRegion, SingleBlock, NoRegionArguments, NoTerminator, IsolatedFromAbove),
+    traits(SingleRegion, SingleBlock, NoRegionArguments, NoTerminator, IsolatedFromAbove, RegionOperationsAreLive),
     implements(Symbol, OpPrinter, ModuleEntity)
 )]
 pub struct Global {

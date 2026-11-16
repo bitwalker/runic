@@ -1,0 +1,19 @@
+// RUN: runic-opt %s --target stackvm-unknown-tiny --stop-after ir.optimized | filecheck %s
+// RUN: runic-opt %s --stop-after ir.optimized -p 'canonicalizer,cse,sccp,canonicalizer,dce' | filecheck %s
+
+// A global's initializer goes through the optimization pipeline of the compiler with the
+// functions around it: the passes leave it as it is, so the global stays a definition.
+
+// CHECK: builtin.global_variable public @data : array<i8; 2> {
+// CHECK-NEXT: builtin.bytes "0a0b" : array<i8; 2>;
+// CHECK-NEXT: };
+// CHECK: builtin.function public extern("C") @twice(
+builtin.module public @user {
+    builtin.global_variable public @data : array<i8; 2> {
+        %b = builtin.bytes "0a0b" : array<i8; 2>;
+    };
+    builtin.function public extern("C") @twice(%x: i32) -> i32 {
+        %r = arith.add %x, %x;
+        builtin.ret %r : (i32);
+    };
+};
