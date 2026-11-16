@@ -1,0 +1,29 @@
+// RUN: runic-opt %s | filecheck %s
+// RUN: runic-opt %s --verify-roundtrip | filecheck %s
+// RUN: runic-opt %s --print-generic | runic-opt - --verify-roundtrip
+
+// The two reference types of `wasm` in function signatures, and its three attributes in an
+// attribute dictionary. The printer writes a dictionary sorted by key; a body-less attribute is
+// written with its default value, and limits without a maximum without `..`.
+// CHECK: builtin.module public @wasm_types {
+builtin.module public @wasm_types {
+    // CHECK-LABEL: builtin.function public extern("C") @refs(
+    // CHECK-SAME: [[F:%[0-9]+]]: !wasm.funcref, [[E:%[0-9]+]]: !wasm.externref) -> !wasm.funcref {
+    // CHECK-NEXT: builtin.ret [[F]] : (!wasm.funcref);
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @refs(%f: !wasm.funcref, %e: !wasm.externref) -> !wasm.funcref {
+        builtin.ret %f : (!wasm.funcref);
+    };
+
+    // CHECK-LABEL: builtin.function public extern("C") @declared(
+    // CHECK-SAME: !wasm.funcref, !wasm.externref, i32) -> !wasm.externref;
+    builtin.function public extern("C") @declared(!wasm.funcref, !wasm.externref, i32) -> !wasm.externref;
+
+    // CHECK-LABEL: builtin.function public extern("C") @attrs(
+    // CHECK-SAME: ) {
+    // CHECK-NEXT: builtin.ret;
+    // CHECK-NEXT: } attributes { bounded = #wasm.limits<1..16>, constant = #wasm.mutability<const>, default_limits = #wasm.limits<0>, default_memarg = #wasm.memarg<offset = 0, align = 1>, default_mutability = #wasm.mutability<const>, mem = #wasm.memarg<offset = 8, align = 4>, mutable = #wasm.mutability<mut>, unbounded = #wasm.limits<1> };
+    builtin.function public extern("C") @attrs() {
+        builtin.ret;
+    } attributes { unbounded = #wasm.limits<1>, bounded = #wasm.limits<1..16>, mem = #wasm.memarg<offset = 8, align = 4>, constant = #wasm.mutability<const>, mutable = #wasm.mutability<mut>, default_limits = #wasm.limits, default_memarg = #wasm.memarg, default_mutability = #wasm.mutability };
+};

@@ -36,7 +36,7 @@
 //! an input with no operation is; with `--split-input-file` only a case of whitespace is skipped.
 //! `-Z` is accepted only when a registered stage declares unstable options. `--list-stages` lists the registered frontends and backends. With the cargo
 //! feature `toy`, the toy language `calc` and the toy machines `stackvm` and `altvm` are
-//! registered.
+//! registered; with the cargo feature `wasm`, the `wasm` dialect is linked and registered.
 //!
 //! [`run`] is the whole tool, given its arguments and streams; the binary calls it with the
 //! process's.
@@ -72,6 +72,8 @@ use runic_dialect_cf as _;
 use runic_dialect_mem as _;
 use runic_dialect_scf as _;
 use runic_dialect_ub as _;
+#[cfg(feature = "wasm")]
+use runic_dialect_wasm as _;
 use runic_driver::{
     StageFlags,
     worker::{self, SharedBuffer, WorkerError, WorkerPanic},

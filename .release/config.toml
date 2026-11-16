@@ -78,6 +78,10 @@ name = "runic-dialect-ub"
 unit = "compiler"
 
 [[packages]]
+name = "runic-dialect-wasm"
+unit = "compiler"
+
+[[packages]]
 name = "runic-log"
 unit = "compiler"
 

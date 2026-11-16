@@ -6,7 +6,10 @@
 // What runic-opt registers, each list on standard output: the passes, each with its description;
 // the dialects, each with the number of its operations; the operations, one name per line, sorted.
 // A list does not read the input: given a file, the tool still only lists. The counts are those of
-// this build, and change when an operation is added.
+// this build (with the `wasm` dialect, which `cargo make runic-opt` links), and change when an
+// operation is added. The last operation listed anchors the end of the operations: it is the last
+// name in sort order, `ub.unreachable` while `wasm` has no operations, and the last `wasm.*`
+// operation after.
 
 // PASSES: canonicalizer {{ +}}Applies the canonicalization patterns of all loaded dialects
 // PASSES-NEXT: cfg-to-scf
@@ -29,6 +32,7 @@
 // DIALECTS-NEXT: scf {{ +}}7 operations
 // DIALECTS-NEXT: test {{ +}}22 operations
 // DIALECTS-NEXT: ub {{ +}}2 operations
+// DIALECTS-NEXT: wasm {{ +}}0 operations
 // DIALECTS-NOT: {{.}}
 
 // OPERATIONS: {{^}}arith.add{{$}}

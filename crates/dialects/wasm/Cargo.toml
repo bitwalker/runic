@@ -19,6 +19,8 @@ default = ["std"]
 std = ["runic-ir/std"]
 
 [dependencies]
-runic-dialect-arith.workspace = true
-runic-dialect-hir.workspace = true
 runic-ir.workspace = true
+
+[dev-dependencies]
+# Use local paths for dev-only dependency to avoid relying on crates.io during packaging
+runic-ir = { path = "../../ir", features = ["logging"] }

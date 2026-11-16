@@ -14,6 +14,7 @@ members = [
     "crates/dialects/mem",
     "crates/dialects/scf",
     "crates/dialects/ub",
+    "crates/dialects/wasm",
     "crates/driver",
     "crates/ir",
     "crates/log",
@@ -23,7 +24,6 @@ members = [
     "tools/expect-test",
     "tools/runic-opt",
     # Parked: kept in the tree, not members, and not built.
-    #"crates/dialects/wasm",
     #"crates/eval",
 ]
 exclude = [
@@ -105,6 +105,7 @@ runic-dialect-cf = { version = "0.1.0", path = "crates/dialects/cf" }
 runic-dialect-mem = { version = "0.1.0", path = "crates/dialects/mem" }
 runic-dialect-scf = { version = "0.1.0", path = "crates/dialects/scf" }
 runic-dialect-ub = { version = "0.1.0", path = "crates/dialects/ub" }
+runic-dialect-wasm = { version = "0.1.0", path = "crates/dialects/wasm" }
 runic-driver = { version = "0.1.0", path = "crates/driver" }
 runic-ir = { version = "0.1.0", path = "crates/ir" }
 runic-log = { version = "0.1.0", path = "crates/log", features = ["kv"] }

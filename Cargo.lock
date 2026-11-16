@@ -1390,6 +1390,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "runic-dialect-wasm"
+version = "0.1.0"
+dependencies = [
+ "runic-ir",
+]
+
+[[package]]
 name = "runic-driver"
 version = "0.1.0"
 dependencies = [
@@ -1473,6 +1480,7 @@ dependencies = [
  "runic-dialect-mem",
  "runic-dialect-scf",
  "runic-dialect-ub",
+ "runic-dialect-wasm",
  "runic-driver",
  "runic-ir",
  "runic-log",
