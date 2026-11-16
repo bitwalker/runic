@@ -1,3 +1,4 @@
+mod link;
 mod name;
 mod path;
 mod quoting;
@@ -15,6 +16,7 @@ use smallvec::SmallVec;
 
 pub(crate) use self::quoting::push_quoted;
 pub use self::{
+    link::link_symbol_refs,
     name::*,
     path::*,
     quoting::unescape_quoted,
