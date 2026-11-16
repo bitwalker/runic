@@ -619,6 +619,20 @@ fn visit_region_successors<A>(
             }
         }
 
+        // An operand that is itself one of the inputs (a continue that carries an entry argument of
+        // a loop with one region back to that loop: to the same argument, or to another one, as
+        // `br 0 %b, %a` does in a loop of `%a, %b`) has a lattice that is borrowed mutably here. It
+        // is read from the lattice that is held, before any of them changes: the edge assigns all
+        // its inputs at once.
+        let held = operands
+            .forwarded()
+            .iter()
+            .map(|operand| {
+                let operand = operand.borrow().as_value_ref();
+                let position = inputs.iter().position(|input| *input == operand)?;
+                lattices.get(first_index + position).map(|held| held.lattice().clone())
+            })
+            .collect::<SmallVec<[_; 4]>>();
         for (index, (operand, lattice)) in operands
             .forwarded()
             .iter()
@@ -626,15 +640,14 @@ fn visit_region_successors<A>(
             .enumerate()
         {
             let operand = operand.borrow().as_value_ref();
-            // A value forwarded to itself (a continue that carries an entry argument of a loop
-            // with one region back to it) is joined with itself, which changes nothing, and its
-            // lattice is borrowed mutably here
-            if inputs[index] == operand {
-                continue;
-            }
             log::trace!(target: analysis.debug_name(), "joining lattice for {} with {operand}", lattice.anchor());
-            let operand_lattice = get_lattice_element_for::<A>(point, operand, solver);
-            let change_result = lattice.join(operand_lattice.lattice());
+            let change_result = match &held[index] {
+                Some(value) => lattice.join(value),
+                None => {
+                    let operand_lattice = get_lattice_element_for::<A>(point, operand, solver);
+                    lattice.join(operand_lattice.lattice())
+                }
+            };
             log::debug!(target: analysis.debug_name(), "updated lattice for {} to {:#?}: {change_result}", lattice.anchor(), lattice);
         }
     }
