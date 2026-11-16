@@ -535,3 +535,111 @@ fn a_return_in_the_arm_of_an_if_is_an_exit_of_the_function() {
     let result = program.result("use_ret_in_arm", "builtin.call", 0);
     assert_eq!(program.fact(result), Fact::Unknown);
 }
+
+/// A module whose private function `@k` runs `body` and then returns 4, and whose `@main` calls
+/// it. `@g` is a function the body may tail call.
+fn k_with_body(body: &str) -> Program {
+    Program::solve(&alloc::format!(
+        r#"builtin.module public @m {{
+    builtin.function public extern("C") @g() -> i32;
+    builtin.function private extern("C") @k(%c: i1, %s: i32) -> i32 {{
+{body}
+        %four = arith.constant 4 : i32;
+        builtin.ret %four : (i32);
+    }};
+    builtin.function public extern("C") @main(%c: i1, %s: i32) -> i32 {{
+        %r = builtin.call @k(%c, %s) : extern("C") (i1, i32) -> i32;
+        builtin.ret %r : (i32);
+    }};
+}};"#
+    ))
+}
+
+/// What a call of `@k` is to constant propagation, and which operations the dead-code analysis
+/// registers as its return points, in the order it lists them.
+fn call_of_k(program: &Program) -> (Fact, Vec<OperationRef>, bool) {
+    let fact = program.fact(program.result("main", "builtin.call", 0));
+    let (known, all_known) = program.predecessors(program.op("main", "builtin.call", 0));
+    (fact, known, all_known)
+}
+
+const RET_NINE: &str = "%n = arith.constant 9 : i32; builtin.ret %n : (i32);";
+const TAIL_CALL_G: &str = r#"builtin.tail_call @g() : extern("C") () -> i32;"#;
+
+/// A return that is a direct child of an operation with a region that does not forward control
+/// flow is an exit of the function: the call is not 4. The control with no exit is 4.
+#[test]
+fn a_return_directly_in_an_opaque_region_operation_is_an_exit_of_the_function() {
+    let control = k_with_body("");
+    assert_eq!(call_of_k(&control).0, Fact::Constant(4));
+    let program = k_with_body(&alloc::format!(
+        r#""test.reads_locals_and_holds"() ({{ {RET_NINE} }}) : () -> ();"#
+    ));
+    let (fact, known, _) = call_of_k(&program);
+    assert_eq!(fact, Fact::Unknown);
+    // The exit is registered once, with the return after it.
+    assert_eq!(known.len(), 2, "{known:?}");
+    assert!(known.contains(&program.op("k", "builtin.ret", 0)));
+    assert!(known.contains(&program.op("k", "builtin.ret", 1)));
+}
+
+/// The same for a tail call: its returned values are unknown, so the call is unknown.
+#[test]
+fn a_tail_call_directly_in_an_opaque_region_operation_is_an_exit_of_the_function() {
+    let program = k_with_body(&alloc::format!(
+        r#""test.reads_locals_and_holds"() ({{ {TAIL_CALL_G} }}) : () -> ();"#
+    ));
+    let (fact, _, all_known) = call_of_k(&program);
+    assert_eq!(fact, Fact::Unknown);
+    assert!(!all_known);
+}
+
+/// An exit two region operations down, in an `scf.if` in an `scf.if`, is an exit of the function,
+/// registered once however deep it sits.
+#[test]
+fn a_return_two_ifs_down_is_an_exit_of_the_function_registered_once() {
+    let program = k_with_body(&alloc::format!(
+        r#"scf.if %c then {{
+            scf.if %c then {{ {RET_NINE} }} else {{ scf.yield : (); }} : (i1) -> ();
+            scf.yield : ();
+        }} else {{ scf.yield : (); }} : (i1) -> ();"#
+    ));
+    let (fact, known, _) = call_of_k(&program);
+    assert_eq!(fact, Fact::Unknown);
+    assert_eq!(known.len(), 2, "{known:?}");
+}
+
+/// A tail call two region operations down, one of them an opaque one, is an exit of the function.
+#[test]
+fn a_tail_call_in_an_if_in_an_opaque_region_operation_is_an_exit_of_the_function() {
+    let program = k_with_body(&alloc::format!(
+        r#""test.reads_locals_and_holds"() ({{
+            scf.if %c then {{ {TAIL_CALL_G} }} else {{ scf.yield : (); }} : (i1) -> ();
+            "test.ret"() : () -> ();
+        }}) : () -> ();"#
+    ));
+    let (fact, _, all_known) = call_of_k(&program);
+    assert_eq!(fact, Fact::Unknown);
+    assert!(!all_known);
+}
+
+/// A return in the body of an `scf.while` is an exit of the function.
+#[test]
+fn a_return_in_the_body_of_a_while_is_an_exit_of_the_function() {
+    let program = k_with_body(&alloc::format!(
+        r#"scf.while before {{ scf.condition %c : (i1); }} after {{
+            scf.if %c then {{ {RET_NINE} }} else {{ scf.yield : (); }} : (i1) -> ();
+            scf.yield : ();
+        }} : () -> ();"#
+    ));
+    assert_eq!(call_of_k(&program).0, Fact::Unknown);
+}
+
+/// A return in a case of an `scf.index_switch` is an exit of the function.
+#[test]
+fn a_return_in_a_case_of_an_index_switch_is_an_exit_of_the_function() {
+    let program = k_with_body(&alloc::format!(
+        r#"scf.index_switch %s case 1 {{ {RET_NINE} }} default {{ scf.yield : (); }} : ();"#
+    ));
+    assert_eq!(call_of_k(&program).0, Fact::Unknown);
+}

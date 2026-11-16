@@ -8,12 +8,11 @@ use core::{
 use runic_ir::{
     AsValueRange, AttributeRef, Block, BlockRef, CallOpInterface, CallableOpInterface,
     EntityWithId, Forward, Operation, OperationRef, ProgramPoint, RegionBranchOpInterface,
-    RegionBranchPoint, RegionBranchTerminatorOpInterface, RegionExitTerminatorOpInterface,
-    RegionRef, RegionSuccessorIter, RegionSuccessorKind, Report, SmallVec, SourceSpan, Spanned,
-    SymbolMap, ValueRef,
+    RegionBranchPoint, RegionBranchTerminatorOpInterface, RegionRef, RegionSuccessorIter,
+    RegionSuccessorKind, Report, SmallVec, SourceSpan, Spanned, SymbolMap, ValueRef,
     adt::{SmallDenseMap, SmallSet},
     pass::AnalysisManager,
-    traits::{BranchOpInterface, ReturnLike, TailCallLike},
+    traits::{BranchOpInterface, ReturnLike},
 };
 
 use super::{CallableUseSnapshot, constant_propagation::ConstantValue};
@@ -593,6 +592,7 @@ impl DeadCodeAnalysis {
         if op.has_regions()
             || op.has_successors()
             || is_region_or_callable_return(op)
+            || leaves_callable_through_regions(op)
             || op.implements::<dyn CallOpInterface>()
         {
             // When the liveness of the parent block changes, make sure to re-invoke the analysis on
@@ -986,19 +986,19 @@ fn is_region_or_callable_return(op: &Operation) -> bool {
         })
 }
 
-/// Returns true if `op` leaves its enclosing callable and sits in a region of an operation with
-/// region control flow, not directly in the callable: a return-like operation that is no
-/// terminator of region control flow, or a tail call.
+/// Returns true if `op` leaves its enclosing callable and does not sit directly in it: an exit
+/// ([Operation::leaves_callable]) whose parent operation is any operation but the callable, of
+/// whatever kind and however many operations lie between. It is a return point of the nearest
+/// enclosing callable.
+///
+/// An exit that is the terminator of the callable's own body is handled as the return of the
+/// callable, so it is not counted here: each exit is registered once.
 fn leaves_callable_through_regions(op: &Operation) -> bool {
-    let exits_callable = op.implements::<dyn TailCallLike>()
-        || (op.implements::<dyn ReturnLike>()
-            && !op.implements::<dyn RegionBranchTerminatorOpInterface>()
-            && !op.implements::<dyn RegionExitTerminatorOpInterface>());
-    exits_callable
+    op.leaves_callable()
         && !op.has_successors()
         && op
             .parent_op()
-            .is_some_and(|parent| parent.borrow().implements::<dyn RegionBranchOpInterface>())
+            .is_some_and(|parent| !parent.borrow().implements::<dyn CallableOpInterface>())
 }
 
 /// Get the constant values of the operands of an operation.
