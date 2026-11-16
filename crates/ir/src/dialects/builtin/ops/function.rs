@@ -6,7 +6,7 @@ use crate::{
     SymbolUseList, Type, UnsafeIntrusiveEntityRef, Usable, Visibility,
     derive::{EffectOpInterface, operation},
     dialects::builtin::{
-        BuiltinDialect,
+        BuiltinDialect, TailCall, TailCallIndirect,
         attributes::{
             AbiParam, DeclaredEffects, DeclaredEffectsAttr, IntAttr, LocalVariable,
             LocalVariableAttr, Signature, SignatureAttr, TypeArrayAttr, VisibilityAttr,
@@ -514,7 +514,10 @@ impl CallableSymbol for Function {}
 /// A function verifies its body against its signature: the entry block of a definition has one
 /// argument per parameter, of the parameter's type, and every `builtin.ret` and `builtin.ret_imm`
 /// in the body, outside nested callables, returns exactly the results of the signature (none may
-/// appear in a function that never returns).
+/// appear in a function that never returns). Every `builtin.tail_call` and
+/// `builtin.tail_call_indirect` there declares the results the function declares (so a function
+/// that never returns tail-calls only a callee that never returns, and one that returns only a
+/// callee that returns) and has the function's calling convention.
 ///
 /// The argument or result each effect in the function's declared effects names exists in the
 /// signature. A declaration has no locals: its `locals(..)` is empty.
@@ -623,6 +626,34 @@ impl crate::Verify<dyn CallableSymbol> for Function {
             ))
         };
 
+        // A tail call returns what its callee returns, and the function returns that: the callee's
+        // declared results are the function's, and the callee is called as the function is.
+        let check_tail_call = |op: &Operation, called: &Signature| -> Result<(), crate::Report> {
+            let reason = if called.declared_results() != signature.declared_results() {
+                format!(
+                    "this tail call returns {}, but the function returns {}",
+                    abi_list(called.declared_results()),
+                    abi_list(signature.declared_results())
+                )
+            } else if called.calling_convention() != signature.calling_convention() {
+                format!(
+                    "this tail call uses the calling convention \"{}\", but the function uses \
+                     \"{}\"",
+                    called.calling_convention().as_str(),
+                    signature.calling_convention().as_str()
+                )
+            } else {
+                return Ok(());
+            };
+            Err(report!(
+                message: "invalid operation builtin.function",
+                labels: [
+                    primary(op.span(), reason),
+                    context(span, "in this function"),
+                ],
+            ))
+        };
+
         let locals = self.get_locals().iter().copied().collect::<Vec<_>>();
         let check_locals = |op: &Operation| -> Result<(), crate::Report> {
             op.walk_attributes(&mut |_, attr| {
@@ -669,6 +700,10 @@ impl crate::Verify<dyn CallableSymbol> for Function {
                     check_return(op, &returned)
                 } else if let Some(ret_imm) = op.downcast_ref::<RetImm>() {
                     check_return(op, &[crate::Attribute::ty(&*ret_imm.value())])
+                } else if let Some(tail_call) = op.downcast_ref::<TailCall>() {
+                    check_tail_call(op, &tail_call.get_signature())
+                } else if let Some(tail_call) = op.downcast_ref::<TailCallIndirect>() {
+                    check_tail_call(op, &tail_call.get_signature())
                 } else {
                     Ok(())
                 };
@@ -680,6 +715,12 @@ impl crate::Verify<dyn CallableSymbol> for Function {
             })
             .into_result()
     }
+}
+
+/// `results` as a parenthesised list, `(i32, i64)`; a result with attributes is written with them.
+fn abi_list(results: &[AbiParam]) -> String {
+    let results = results.iter().map(|result| format!("{result}")).collect::<Vec<_>>();
+    format!("({})", results.join(", "))
 }
 
 /// `types` as a parenthesised list, `(i32, i64)`.

@@ -2,8 +2,8 @@ use alloc::{format, rc::Rc, string::String};
 
 use crate::{
     CallOpInterface, Callable, CallableSymbol, Context, Op, OpOperandRange, OpOperandRangeMut,
-    OpParser, OpPrinter, OperationState, Report, SmallVec, Spanned, Type, UnsafeIntrusiveEntityRef,
-    Value,
+    OpParser, OpPrinter, Operation, OperationState, Report, SmallVec, Spanned, Type,
+    UnsafeIntrusiveEntityRef, Value,
     derive::{EffectOpInterface, operation},
     diagnostics::report,
     dialects::builtin::{
@@ -21,6 +21,10 @@ use crate::{
     print::AsmPrinter,
     traits::{AnyFunction, AnyType, Canonicalizable, InferTypeOpInterface},
 };
+
+mod tail_call;
+
+pub use self::tail_call::{TailCall, TailCallIndirect, TailCallIndirectRef, TailCallRef};
 
 pub type CallRef = UnsafeIntrusiveEntityRef<Call>;
 
@@ -185,34 +189,119 @@ impl crate::Verify<dyn CallOpInterface> for Call {
             &signature,
         )?;
 
-        let callee = self.callee();
-        let span = self.as_operation().span();
-        let resolved = callee.resolve_callable().map_err(|err| {
-            report!(
-                message: "invalid operation builtin.call",
-                labels: [primary(span, format!("the callee does not resolve to a callable: {err}"))],
-            )
-        })?;
-
-        let target = resolved.target();
-        let target_signature = target.signature();
-        if let Some(difference) = signature_difference(&signature, &target_signature) {
-            let target_span = target.as_operation_ref().borrow().span();
-            return Err(report!(
-                message: "invalid operation builtin.call",
-                labels: [
-                    primary(
-                        span,
-                        format!(
-                            "the call's signature differs from its callee's: {difference}"
-                        )
-                    ),
-                    context(target_span, format!("the callee is declared `{target_signature}`")),
-                ],
-            ));
-        }
-        Ok(())
+        verify_callee_signature(
+            self.as_operation(),
+            "call",
+            self.callee().resolve_callable(),
+            &signature,
+        )
     }
+}
+
+/// Checks that `callee`, the resolution of the symbol a direct call (`noun` is the word for the
+/// operation in messages: "call" or "tail call") names, is a callable whose signature equals
+/// `signature`, the one the operation is made with.
+pub(super) fn verify_callee_signature(
+    op: &Operation,
+    noun: &str,
+    callee: Result<crate::ResolvedSymbolCallee, crate::SymbolResolutionError>,
+    signature: &Signature,
+) -> Result<(), Report> {
+    let span = op.span();
+    let resolved = callee.map_err(|err| {
+        report!(
+            message: (format!("invalid operation {}", op.name())),
+            labels: [primary(span, format!("the callee does not resolve to a callable: {err}"))],
+        )
+    })?;
+    let target = resolved.target();
+    let target_signature = target.signature();
+    if let Some(difference) = signature_difference(signature, &target_signature) {
+        let target_span = target.as_operation_ref().borrow().span();
+        return Err(report!(
+            message: (format!("invalid operation {}", op.name())),
+            labels: [
+                primary(
+                    span,
+                    format!("the {noun}'s signature differs from its callee's: {difference}")
+                ),
+                context(target_span, format!("the callee is declared `{target_signature}`")),
+            ],
+        ));
+    }
+    Ok(())
+}
+
+/// Checks that `callee_ty`, the type of the function value an indirect call (`noun` as for
+/// [verify_callee_signature]) calls, is the function type of `signature`.
+pub(super) fn verify_callee_type(
+    op: &Operation,
+    noun: &str,
+    context: &Context,
+    callee_ty: Type,
+    signature: &Signature,
+) -> Result<(), Report> {
+    let expected = function_type_of(context, signature);
+    if callee_ty != expected {
+        return Err(report!(
+            message: (format!("invalid operation {}", op.name())),
+            labels: [primary(
+                op.span(),
+                format!(
+                    "the callee has type `{callee_ty}`, but the {noun}'s signature gives \
+                     `{expected}`"
+                )
+            )],
+        ));
+    }
+    Ok(())
+}
+
+/// Prints ` attributes {..}` if `op` has attributes, as every call operation does last.
+pub(super) fn print_attributes(printer: &mut AsmPrinter<'_>, op: &Operation) {
+    if op.has_attributes() {
+        printer.print_space();
+        printer.print_keyword("attributes");
+        printer.print_space();
+        printer.print_attribute_dictionary(
+            op.attributes().iter().map(|attr| *attr.as_named_attribute()),
+        );
+    }
+}
+
+/// What the call operations write after their callee: the argument list, `: signature` and an
+/// optional `attributes {..}`.
+pub(super) struct ArgumentsAndSignature {
+    /// The arguments as written, not yet resolved
+    pub arguments: SmallVec<[parse::UnresolvedOperand; 2]>,
+    /// The signature written, which the operation also holds as its `signature` property
+    pub signature: Signature,
+    /// The types of the parameters of the signature, which the arguments take
+    pub params: SmallVec<[Type; 2]>,
+}
+
+/// Reads `(%a, ..) : signature`, then an optional `attributes {..}`, adds the `signature`
+/// property and the attributes to `state`.
+pub(super) fn parse_arguments_and_signature(
+    state: &mut OperationState,
+    parser: &mut dyn crate::OpAsmParser<'_>,
+) -> ParseResult<ArgumentsAndSignature> {
+    let mut arguments = SmallVec::<[parse::UnresolvedOperand; 2]>::default();
+    parser.parse_operand_list(&mut arguments, Delimiter::Paren, true, None)?;
+
+    parser.parse_colon()?;
+    let (signature, params) = parse_signature(parser)?;
+    state.add_attribute(
+        "signature",
+        parser.context_rc().create_attribute::<SignatureAttr, _>(signature.clone()),
+    );
+
+    parser.parse_optional_attribute_dict_with_keyword(&mut state.attrs)?;
+    Ok(ArgumentsAndSignature {
+        arguments,
+        signature,
+        params,
+    })
 }
 
 /// How the signature of a call, `call`, differs from that of its callee, `callee`: the first
@@ -271,15 +360,7 @@ impl OpPrinter for Call {
         printer.print_operand_list(self.operands().group(0));
         *printer += const_text(" : ");
         self.signature().print(printer);
-        let op = self.as_operation();
-        if op.has_attributes() {
-            printer.print_space();
-            printer.print_keyword("attributes");
-            printer.print_space();
-            printer.print_attribute_dictionary(
-                op.attributes().iter().map(|attr| *attr.as_named_attribute()),
-            );
-        }
+        print_attributes(printer, self.as_operation());
     }
 }
 
@@ -290,18 +371,9 @@ impl OpParser for Call {
         let callee = parser.parse_symbol_ref()?.into_inner();
         state.add_attribute("callee", callee);
 
-        let mut arguments = SmallVec::<[parse::UnresolvedOperand; 2]>::default();
-        parser.parse_operand_list(&mut arguments, Delimiter::Paren, true, None)?;
-
-        parser.parse_colon()?;
-        let (signature, params) = parse_signature(parser)?;
-        state.add_attribute(
-            "signature",
-            parser.context_rc().create_attribute::<SignatureAttr, _>(signature),
-        );
-
-        parser.parse_optional_attribute_dict_with_keyword(&mut state.attrs)?;
-
+        let ArgumentsAndSignature {
+            arguments, params, ..
+        } = parse_arguments_and_signature(state, parser)?;
         let mut values = SmallVec::default();
         parser.resolve_operands(state.span, &arguments, &params, &mut values)?;
         state.operands.push(values);
@@ -674,19 +746,7 @@ impl Canonicalizable for CallIndirect {
 impl crate::Verify<dyn CallOpInterface> for CallIndirect {
     fn verify(&self, context: &Context) -> Result<(), Report> {
         let signature = self.get_signature();
-        let expected = function_type_of(context, &signature);
-        let ty = self.callee().ty();
-        if ty != expected {
-            return Err(report!(
-                message: "invalid operation builtin.call_indirect",
-                labels: [primary(
-                    self.as_operation().span(),
-                    format!(
-                        "the callee has type `{ty}`, but the call's signature gives `{expected}`"
-                    )
-                )],
-            ));
-        }
+        verify_callee_type(self.as_operation(), "call", context, self.callee().ty(), &signature)?;
         crate::conversion::verify_call_signature_operands_and_results(
             self.as_operation(),
             &signature,
@@ -709,15 +769,7 @@ impl OpPrinter for CallIndirect {
         printer.print_operand_list(self.operands().group(1));
         *printer += const_text(" : ");
         self.signature().print(printer);
-        let op = self.as_operation();
-        if op.has_attributes() {
-            printer.print_space();
-            printer.print_keyword("attributes");
-            printer.print_space();
-            printer.print_attribute_dictionary(
-                op.attributes().iter().map(|attr| *attr.as_named_attribute()),
-            );
-        }
+        print_attributes(printer, self.as_operation());
     }
 }
 
@@ -726,18 +778,12 @@ impl OpPrinter for CallIndirect {
 impl OpParser for CallIndirect {
     fn parse(state: &mut OperationState, parser: &mut dyn crate::OpAsmParser<'_>) -> ParseResult {
         let callee = parser.parse_operand(false)?;
-        let mut arguments = SmallVec::<[parse::UnresolvedOperand; 2]>::default();
-        parser.parse_operand_list(&mut arguments, Delimiter::Paren, true, None)?;
-
-        parser.parse_colon()?;
-        let (signature, params) = parse_signature(parser)?;
+        let ArgumentsAndSignature {
+            arguments,
+            signature,
+            params,
+        } = parse_arguments_and_signature(state, parser)?;
         let callee_ty = function_type_of(parser.context(), &signature);
-        state.add_attribute(
-            "signature",
-            parser.context_rc().create_attribute::<SignatureAttr, _>(signature),
-        );
-
-        parser.parse_optional_attribute_dict_with_keyword(&mut state.attrs)?;
 
         let callee = parser.resolve_operand(callee, callee_ty)?;
         state.operands.push(SmallVec::from_iter([callee]));

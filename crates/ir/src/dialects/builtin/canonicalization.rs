@@ -2,9 +2,12 @@
 
 use alloc::rc::Rc;
 
-use super::{BuiltinDialect, BuiltinOpBuilder, CallIndirect, FunctionReference};
+use super::{
+    BuiltinDialect, BuiltinOpBuilder, CallIndirect, FunctionReference, TailCallIndirect,
+    attributes::Signature,
+};
 use crate::{
-    Context, OperationRef, Report, SmallVec, Spanned, ValueRef,
+    Context, OperationRef, Report, ResolvedSymbolCallee, SmallVec, Spanned, SymbolPath, ValueRef,
     patterns::{Pattern, PatternBenefit, PatternInfo, PatternKind, RewritePattern, Rewriter},
 };
 
@@ -53,26 +56,17 @@ impl RewritePattern for CallIndirectOfFunctionRef {
             let Some(call) = op.downcast_ref::<CallIndirect>() else {
                 return Ok(false);
             };
-            let Some(defining_op) = call.callee().as_value_ref().borrow().get_defining_op() else {
-                return Ok(false);
-            };
-            let defining_op = defining_op.borrow();
-            let Some(reference) = defining_op.downcast_ref::<FunctionReference>() else {
-                return Ok(false);
-            };
-            let Ok(resolved) = reference.callee().resolve_callable() else {
-                return Ok(false);
-            };
             let signature = call.get_signature().clone();
-            if resolved.signature() != signature {
+            let Some((resolved, path)) =
+                function_ref_callee(call.callee().as_value_ref(), &signature)
+            else {
                 return Ok(false);
-            }
+            };
             let arguments = call
                 .arguments()
                 .iter()
                 .map(|operand| operand.borrow().as_value_ref())
                 .collect::<SmallVec<[ValueRef; 4]>>();
-            let path = reference.callee().path().clone();
             // A symbol reference in the dictionary gets an attribute and a use of its own on the
             // new call; the indirect call's attribute and use go with it when it is erased
             let attributes = super::CopiedAttributes::of(&op);
@@ -84,6 +78,89 @@ impl RewritePattern for CallIndirectOfFunctionRef {
         // The builder names the callee by its absolute path. The reference and the call are in one
         // function, so the path the reference was written with names the same symbol from the
         // call; keeping it keeps the text, and calls that CSE compares by path, as written.
+        call.borrow_mut().callee_mut().set_path(path);
+        attributes.install(crate::Op::as_operation_mut(&mut *call.borrow_mut()));
+        rewriter.replace_op(operation, call.as_operation_ref());
+        Ok(true)
+    }
+}
+
+/// The callable a `builtin.function_ref` that defines `callee` names, and the path the reference
+/// names it with, when the callable's signature equals `signature`; `None` when `callee` is not
+/// defined by a reference, the reference names no callable, or the signatures differ in anything,
+/// calling convention and parameter attributes included.
+fn function_ref_callee(
+    callee: ValueRef,
+    signature: &Signature,
+) -> Option<(ResolvedSymbolCallee, SymbolPath)> {
+    let defining_op = callee.borrow().get_defining_op()?;
+    let defining_op = defining_op.borrow();
+    let reference = defining_op.downcast_ref::<FunctionReference>()?;
+    let resolved = reference.callee().resolve_callable().ok()?;
+    if resolved.signature() != *signature {
+        return None;
+    }
+    Some((resolved, reference.callee().path().clone()))
+}
+
+/// Turns a `builtin.tail_call_indirect` whose callee is defined by a `builtin.function_ref` into a
+/// `builtin.tail_call` of the symbol the reference names, under the conditions, and with what is
+/// kept, of [CallIndirectOfFunctionRef].
+pub struct TailCallIndirectOfFunctionRef {
+    info: PatternInfo,
+}
+
+impl TailCallIndirectOfFunctionRef {
+    /// Creates the pattern, matching `builtin.tail_call_indirect`.
+    pub fn new(context: Rc<Context>) -> Self {
+        let tail_call_indirect = context
+            .get_or_register_dialect::<BuiltinDialect>()
+            .expect_registered_name::<TailCallIndirect>();
+        Self {
+            info: PatternInfo::new(
+                context,
+                "tail-call-indirect-of-function-ref",
+                PatternKind::Operation(tail_call_indirect),
+                PatternBenefit::MAX,
+            ),
+        }
+    }
+}
+
+impl Pattern for TailCallIndirectOfFunctionRef {
+    fn info(&self) -> &PatternInfo {
+        &self.info
+    }
+}
+
+impl RewritePattern for TailCallIndirectOfFunctionRef {
+    fn match_and_rewrite(
+        &self,
+        operation: OperationRef,
+        rewriter: &mut dyn Rewriter,
+    ) -> Result<bool, Report> {
+        let (callee, path, signature, arguments, span, attributes) = {
+            let op = operation.borrow();
+            let Some(call) = op.downcast_ref::<TailCallIndirect>() else {
+                return Ok(false);
+            };
+            let signature = call.get_signature().clone();
+            let Some((resolved, path)) =
+                function_ref_callee(call.callee().as_value_ref(), &signature)
+            else {
+                return Ok(false);
+            };
+            let arguments = call
+                .arguments()
+                .iter()
+                .map(|operand| operand.borrow().as_value_ref())
+                .collect::<SmallVec<[ValueRef; 4]>>();
+            let attributes = super::CopiedAttributes::of(&op);
+            (resolved.named_symbol(), path, signature, arguments, op.span(), attributes)
+        };
+
+        rewriter.set_insertion_point_before(operation);
+        let mut call = rewriter.tail_call(callee, signature, arguments, span)?;
         call.borrow_mut().callee_mut().set_path(path);
         attributes.install(crate::Op::as_operation_mut(&mut *call.borrow_mut()));
         rewriter.replace_op(operation, call.as_operation_ref());
@@ -292,6 +369,80 @@ mod tests {
         assert_eq!(new.borrow().path(), old.borrow().path());
         let err = call.borrow().verify().expect_err("the reference still names nothing");
         assert!(format!("{err}").contains("symbol '@missing' does not resolve"), "{err}");
+        Ok(())
+    }
+
+    /// Parses a module holding `@callee` as declared by `callee`, and `@caller(%a: i32, %b: i32)
+    /// -> i32`, which tail-calls it through a `builtin.function_ref` with `signature`; applies the
+    /// pattern to the tail call, and returns whether it applied, with the module.
+    fn rewrite_tail_call(
+        callee: &str,
+        signature: &str,
+    ) -> Result<(bool, OperationRef, Rc<Context>), Report> {
+        let context = Rc::new(Context::default());
+        let source = format!(
+            "builtin.module public @m {{
+    {callee}
+    builtin.function public extern(\"C\") @caller(%a: i32, %b: i32) -> i32 {{
+        %f = builtin.function_ref @callee : (i32, i32) -> i32;
+        builtin.tail_call_indirect %f(%a, %b) : {signature};
+    }};
+}};"
+        );
+        let module = parse::parse::<Module>(ParserConfig::new(context.clone()), "tail", source)
+            .into_result()?;
+        let module = module.as_operation_ref();
+        let mut call = None;
+        module.borrow().prewalk_all(|op: &Operation| {
+            if op.is::<TailCallIndirect>() {
+                call = Some(op.as_operation_ref());
+            }
+        });
+        let mut rewriter: RewriterImpl = RewriterImpl::new(context.clone());
+        let applied = TailCallIndirectOfFunctionRef::new(context.clone())
+            .match_and_rewrite(call.unwrap(), &mut rewriter)?;
+        module.borrow().recursively_verify()?;
+        Ok((applied, module, context))
+    }
+
+    /// The indirect tail call becomes a tail call of the symbol the reference names, with its
+    /// arguments, signature and attribute dictionary; the reference, now unused, is left in place.
+    #[test]
+    fn an_indirect_tail_call_of_a_function_ref_becomes_a_direct_tail_call() -> Result<(), Report> {
+        let (applied, module, _context) = rewrite_tail_call(
+            r#"builtin.function public extern("C") @callee(i32, i32) -> i32;"#,
+            r#"extern("C") (i32, i32) -> i32 attributes { note = #builtin.i32<7> }"#,
+        )?;
+        assert!(applied);
+        let text = caller_text(module);
+        assert!(!text.contains("builtin.tail_call_indirect"), "{text}");
+        assert!(text.contains("builtin.function_ref @callee : (i32, i32) -> i32;"), "{text}");
+        assert!(
+            text.contains(
+                r#"builtin.tail_call @callee(%0, %1) : extern("C") (i32, i32) -> i32 attributes { note = #builtin.i32<7> };"#
+            ),
+            "{text}"
+        );
+        Ok(())
+    }
+
+    /// A callee whose calling convention differs from the tail call's keeps the indirect form.
+    #[test]
+    fn an_indirect_tail_call_whose_signature_differs_from_the_callees_is_kept() -> Result<(), Report>
+    {
+        let (applied, module, _context) = rewrite_tail_call(
+            r#"builtin.function public extern("fast") @callee(i32, i32) -> i32;"#,
+            r#"extern("C") (i32, i32) -> i32"#,
+        )?;
+        assert!(!applied);
+        let text = caller_text(module);
+        assert!(
+            text.contains(
+                r#"builtin.tail_call_indirect %2(%0, %1) : extern("C") (i32, i32) -> i32;"#
+            ),
+            "{text}"
+        );
+        assert!(!text.contains("builtin.tail_call @"), "{text}");
         Ok(())
     }
 }

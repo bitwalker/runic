@@ -14,7 +14,10 @@ mod world;
 // with names that skip the spelling and the checks of the builtin builders
 pub use self::{
     alias::{FunctionAlias, FunctionAliasRef},
-    call::{Call, CallIndirect, CallIndirectRef, CallRef, FunctionReference, FunctionReferenceRef},
+    call::{
+        Call, CallIndirect, CallIndirectRef, CallRef, FunctionReference, FunctionReferenceRef,
+        TailCall, TailCallIndirect, TailCallIndirectRef, TailCallRef,
+    },
     cast::UnrealizedConversionCast,
     component::{Component, ComponentRef},
     constants::{Bytes, BytesRef},

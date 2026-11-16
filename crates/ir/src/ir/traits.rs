@@ -33,6 +33,18 @@ pub trait ConstantLike {}
 #[operation_trait]
 pub trait ReturnLike {}
 
+/// Marker trait for tail-call-like ops: a terminator without successors that leaves the enclosing
+/// callable by calling another one.
+///
+/// The caller's frame does not exist while the callee runs, and what the callee returns is what
+/// the enclosing callable returns. This is the contrast with [ReturnLike]: the operands of a
+/// return-like operation are the values the enclosing callable returns, whereas the operands of a
+/// tail-call-like operation are the arguments of the call it makes. An analysis that reads the
+/// operands of a [ReturnLike] operation as returned values must not read those of a tail call
+/// that way, which is why a tail call is never [ReturnLike].
+#[operation_trait]
+pub trait TailCallLike {}
+
 /// Op is a terminator (i.e. it can be used to terminate a block)
 #[operation_trait]
 pub trait Terminator {}

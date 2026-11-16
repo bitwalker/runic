@@ -1,0 +1,147 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// The rules of `builtin.tail_call` and `builtin.tail_call_indirect`: the arguments agree with the
+// signature, the operation has no results, a direct callee resolves to a callable whose signature
+// is the operation's, an indirect callee has the function type of the signature, and the
+// operation is in a function whose declared results and calling convention are the signature's.
+// The custom forms take the argument types from the signature, so the generic form writes others.
+
+builtin.module public @valid {
+    builtin.function public extern("C") @callee(i32) -> i32;
+    builtin.function public extern("C") @abort(i32) -> never;
+    builtin.function public extern("C") @f(%a: i32, %fn: (i32) -> i32) -> i32 {
+        builtin.tail_call_indirect %fn(%a) : extern("C") (i32) -> i32;
+    };
+    builtin.function public extern("C") @g(%a: i32) -> i32 {
+        builtin.tail_call @callee(%a) : extern("C") (i32) -> i32;
+    };
+    builtin.function public extern("C") @h(%a: i32) -> never {
+        builtin.tail_call @abort(%a) : extern("C") (i32) -> never;
+    };
+};
+
+// -----
+
+builtin.module public @tail_call_argument_count {
+    builtin.function public extern("C") @callee(i32) -> i32;
+    builtin.function public extern("C") @f(%a: i32) -> i32 {
+        "builtin.tail_call"() <{ callee = #builtin.symbol<@callee>, signature = #builtin.signature<extern("C") (i32) -> i32> }> : () -> (); // expected-error {{the tail call passes 0 argument(s), but its signature has 1 parameter(s)}}
+    };
+};
+
+// -----
+
+builtin.module public @tail_call_argument_type {
+    builtin.function public extern("C") @callee(i32) -> i32;
+    builtin.function public extern("C") @f(%a: i32, %w: i64) -> i32 {
+        "builtin.tail_call"(%w) <{ callee = #builtin.symbol<@callee>, signature = #builtin.signature<extern("C") (i32) -> i32> }> : (i64) -> (); // expected-error {{argument 0 has type `i64`, but parameter 0 of the signature has type `i32`}}
+    };
+};
+
+// -----
+
+builtin.module public @tail_call_signature_differs {
+    builtin.function public extern("C") @callee(i32) -> i32;
+    builtin.function public extern("C") @f(%a: i32) -> i64 {
+        builtin.tail_call @callee(%a) : extern("C") (i32) -> i64; // expected-error {{the tail call's signature differs from its callee's: result 0 has type `i64` in the call, `i32` in the callee}}
+    };
+};
+
+// -----
+
+builtin.module public @tail_call_callee_missing {
+    builtin.function public extern("C") @f(%a: i32) -> i32 {
+        builtin.tail_call @missing(%a) : extern("C") (i32) -> i32; // expected-error {{symbol '@missing' does not resolve}}
+    };
+};
+
+// -----
+
+builtin.module public @tail_call_result {
+    builtin.function public extern("C") @callee(i32) -> i32;
+    builtin.function public extern("C") @f(%a: i32) -> i32 {
+        %r = "builtin.tail_call"(%a) <{ callee = #builtin.symbol<@callee>, signature = #builtin.signature<extern("C") (i32) -> i32> }> : (i32) -> i32; // expected-error {{'builtin.tail_call' has 0 result(s), but this has 1}}
+    };
+};
+
+// -----
+
+builtin.module public @tail_call_indirect_callee_type {
+    builtin.function public extern("C") @f(%fn: (i32) -> i64, %a: i32) -> i32 {
+        "builtin.tail_call_indirect"(%fn, %a) <{ signature = #builtin.signature<extern("C") (i32) -> i32> }> : ((i32) -> i64 | i32) -> (); // expected-error {{the callee has type `(i32) -> i64`, but the tail call's signature gives `(i32) -> i32`}}
+    };
+};
+
+// -----
+
+builtin.module public @tail_call_indirect_argument_type {
+    builtin.function public extern("C") @f(%fn: (i32) -> i32, %w: i64) -> i32 {
+        "builtin.tail_call_indirect"(%fn, %w) <{ signature = #builtin.signature<extern("C") (i32) -> i32> }> : ((i32) -> i32 | i64) -> (); // expected-error {{argument 0 has type `i64`, but parameter 0 of the signature has type `i32`}}
+    };
+};
+
+// -----
+
+builtin.module public @tail_call_outside_a_function {
+    builtin.function public extern("C") @callee();
+    "builtin.tail_call"() <{ callee = #builtin.symbol<@callee>, signature = #builtin.signature<extern("C") () -> ()> }> : () -> (); // expected-error {{a tail call can only appear in a function}}
+};
+
+// -----
+
+builtin.module public @tail_call_returns_more {
+    builtin.function public extern("C") @callee(i32) -> (i32, i64);
+    builtin.function public extern("C") @f(%a: i32) -> i32 {
+        // expected-error@+1 {{this tail call returns (i32, i64), but the function returns (i32)}}
+        builtin.tail_call @callee(%a) : extern("C") (i32) -> (i32, i64);
+    };
+};
+
+// -----
+
+builtin.module public @tail_call_returns_less {
+    builtin.function public extern("C") @callee(i32) -> i64;
+    builtin.function public extern("C") @f(%a: i32) -> (i1, i64) {
+        // expected-error@+1 {{this tail call returns (i64), but the function returns (i1, i64)}}
+        builtin.tail_call @callee(%a) : extern("C") (i32) -> i64;
+    };
+};
+
+// -----
+
+builtin.module public @tail_call_to_never_from_returning {
+    builtin.function public extern("C") @abort(i32) -> never;
+    builtin.function public extern("C") @f(%a: i32) -> i32 {
+        // expected-error@+1 {{this tail call returns (never), but the function returns (i32)}}
+        builtin.tail_call @abort(%a) : extern("C") (i32) -> never;
+    };
+};
+
+// -----
+
+builtin.module public @tail_call_from_never_to_returning {
+    builtin.function public extern("C") @callee(i32) -> i32;
+    builtin.function public extern("C") @f(%a: i32) -> never {
+        // expected-error@+1 {{this tail call returns (i32), but the function returns (never)}}
+        builtin.tail_call @callee(%a) : extern("C") (i32) -> i32;
+    };
+};
+
+// -----
+
+builtin.module public @tail_call_calling_convention {
+    builtin.function public extern("fast") @callee(i32) -> i32;
+    builtin.function public extern("C") @f(%a: i32) -> i32 {
+        // expected-error@+1 {{this tail call uses the calling convention "fast", but the function uses "C"}}
+        builtin.tail_call @callee(%a) : extern("fast") (i32) -> i32;
+    };
+};
+
+// -----
+
+builtin.module public @tail_call_indirect_calling_convention {
+    builtin.function public extern("C") @f(%fn: (i32) -> i32, %a: i32) -> i32 {
+        // expected-error@+1 {{this tail call uses the calling convention "fast", but the function uses "C"}}
+        builtin.tail_call_indirect %fn(%a) : extern("fast") (i32) -> i32;
+    };
+};

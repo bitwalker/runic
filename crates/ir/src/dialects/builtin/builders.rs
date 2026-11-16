@@ -196,6 +196,46 @@ pub trait BuiltinOpBuilder<'f, B: ?Sized + Builder> {
         op_builder(callee, args, signature)
     }
 
+    /// Create a [TailCall] of `callee` with `signature`, passing `args`.
+    ///
+    /// The operation has no results: it leaves the function. Nothing checks here that `args`
+    /// agree with `signature`, that `signature` is the callee's, or that it returns what the
+    /// function does: the verifiers do.
+    fn tail_call<C, A>(
+        &mut self,
+        callee: C,
+        signature: Signature,
+        args: A,
+        span: SourceSpan,
+    ) -> Result<TailCallRef, Report>
+    where
+        C: AsCallableSymbolRef,
+        A: IntoIterator<Item = ValueRef>,
+    {
+        let op_builder = self.builder_mut().create::<TailCall, (C, _, A)>(span);
+        op_builder(callee, signature, args)
+    }
+
+    /// Create a [TailCallIndirect] of the function value `callee` with `signature`, passing
+    /// `args`.
+    ///
+    /// The operation has no results: it leaves the function. Nothing checks here that `callee`
+    /// and `args` agree with `signature`, or that it returns what the function does: the
+    /// verifiers do.
+    fn tail_call_indirect<A>(
+        &mut self,
+        callee: ValueRef,
+        signature: Signature,
+        args: A,
+        span: SourceSpan,
+    ) -> Result<TailCallIndirectRef, Report>
+    where
+        A: IntoIterator<Item = ValueRef>,
+    {
+        let op_builder = self.builder_mut().create::<TailCallIndirect, (_, A, _)>(span);
+        op_builder(callee, args, signature)
+    }
+
     fn ret<I>(
         &mut self,
         returning: I,

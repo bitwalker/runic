@@ -1,0 +1,63 @@
+// RUN: runic-opt %s | filecheck %s
+// RUN: runic-opt %s --verify-roundtrip | filecheck %s
+// RUN: runic-opt %s --print-generic | runic-opt - --verify-roundtrip | filecheck %s
+// RUN: runic-opt %s --print-generic | filecheck %s --check-prefix=GENERIC
+
+// `builtin.tail_call` and `builtin.tail_call_indirect`: terminators that leave a function by
+// calling another one. They print as a call does, without the result list; the operands are the
+// arguments, in the types of the signature's parameters. Both read back in the custom and the
+// generic form. A `builtin.ret` is accepted in the arm of an `scf.if`, so a tail call is too.
+builtin.module public @builtin_tail_call {
+    builtin.function public extern("C") @callee(i32, i32) -> i32;
+    builtin.function_alias public @alias -> @callee;
+    builtin.function public extern("C") @abort(i32) -> never;
+
+    // CHECK-LABEL: @direct(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: builtin.tail_call @callee([[A]], [[B]]) : extern("C") (i32, i32) -> i32;
+    // GENERIC-LABEL: "builtin.function"() <{ name = #builtin.ident<@direct>
+    // GENERIC: "builtin.tail_call"(%{{[0-9]+}}, %{{[0-9]+}}) <{ callee = #builtin.symbol<@callee>, signature = #builtin.signature<extern("C") (i32, i32) -> i32> }> : (i32, i32) -> ();
+    builtin.function public extern("C") @direct(%a: i32, %b: i32) -> i32 {
+        builtin.tail_call @callee(%a, %b) : extern("C") (i32, i32) -> i32;
+    };
+
+    // CHECK-LABEL: @through_alias(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: builtin.tail_call @alias([[A]], [[A]]) : extern("C") (i32, i32) -> i32 attributes { note = #builtin.i32<7> };
+    builtin.function public extern("C") @through_alias(%a: i32) -> i32 {
+        builtin.tail_call @alias(%a, %a) : extern("C") (i32, i32) -> i32 attributes { note = #builtin.i32<7> };
+    };
+
+    // CHECK-LABEL: @indirect(
+    // CHECK-SAME: [[F:%[0-9]+]]: (i32, i32) -> i32, [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: builtin.tail_call_indirect [[F]]([[A]], [[B]]) : extern("C") (i32, i32) -> i32;
+    // GENERIC-LABEL: "builtin.function"() <{ name = #builtin.ident<@indirect>
+    // GENERIC: "builtin.tail_call_indirect"(%{{[0-9]+}}, %{{[0-9]+}}, %{{[0-9]+}}) <{ signature = #builtin.signature<extern("C") (i32, i32) -> i32> }> : ((i32, i32) -> i32 | i32, i32) -> ();
+    builtin.function public extern("C") @indirect(%f: (i32, i32) -> i32, %a: i32, %b: i32) -> i32 {
+        builtin.tail_call_indirect %f(%a, %b) : extern("C") (i32, i32) -> i32;
+    };
+
+    // CHECK-LABEL: @diverges(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32) -> never {
+    // CHECK-NEXT: builtin.tail_call @abort([[A]]) : extern("C") (i32) -> never;
+    builtin.function public extern("C") @diverges(%a: i32) -> never {
+        builtin.tail_call @abort(%a) : extern("C") (i32) -> never;
+    };
+
+    // CHECK-LABEL: @in_a_region(
+    // CHECK-SAME: [[C:%[0-9]+]]: i1, [[A:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: scf.if [[C]] then {
+    // CHECK-NEXT: builtin.tail_call @callee([[A]], [[A]]) : extern("C") (i32, i32) -> i32;
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: scf.yield : ();
+    // CHECK-NEXT: } : (i1) -> ();
+    // CHECK-NEXT: builtin.ret [[A]] : (i32);
+    builtin.function public extern("C") @in_a_region(%c: i1, %a: i32) -> i32 {
+        scf.if %c then {
+            builtin.tail_call @callee(%a, %a) : extern("C") (i32, i32) -> i32;
+        } else {
+            scf.yield : ();
+        } : (i1) -> ();
+        builtin.ret %a : (i32);
+    };
+};
