@@ -4,9 +4,13 @@
 //!
 //! ```text
 //! # a comment runs to the end of the line
+//! // so does a comment that begins with two slashes
 //! fn add(a, b) = a + b;
 //! fn twice(x) = add(x, x) * 2;
 //! ```
+//!
+//! A comment begins with `#` or with `//`, so that a file can hold the `// RUN:` lines and the
+//! `// expected-error` comments of a test.
 //!
 //! An expression is made of integer literals, the parameters of the function, calls of functions
 //! defined earlier in the same file, parentheses and `+`, `-` and `*`, which associate to the left
@@ -284,7 +288,7 @@ fn lex(source: &Source, text: &str) -> Result<Vec<Spanned>, Report> {
         if c.is_whitespace() {
             continue;
         }
-        if c == '#' {
+        if c == '#' || (c == '/' && chars.next_if(|&(_, next)| next == '/').is_some()) {
             while chars.next_if(|&(_, c)| c != '\n').is_some() {}
             continue;
         }
@@ -690,5 +694,48 @@ fn emit(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        CompilationRequest, Compiler, EmitRequest, EmitTo, Emitted, Input, RecordingObserver,
+        testing::CalcFrontend,
+    };
+
+    /// The text of the AST of `source`, or the error of reading it.
+    fn ast(source: &str) -> Result<String, String> {
+        let compiler = Compiler::builder().frontend(CalcFrontend).build().unwrap();
+        let mut request = CompilationRequest::new();
+        request.inputs.push(Input::memory("c.calc", source));
+        request.stop_after = Some("ast".into());
+        request.emit = vec![EmitRequest {
+            checkpoint: "ast".into(),
+            to: EmitTo::Memory,
+        }];
+        let compilation = compiler.compile(request, &mut RecordingObserver::default());
+        if let Some(error) = compilation.error() {
+            return Err(error.to_string());
+        }
+        match compilation.emitted() {
+            [Emitted::Memory { bytes, .. }] => Ok(String::from_utf8(bytes.clone()).unwrap()),
+            other => panic!("one output was expected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_comment_may_begin_with_two_slashes_or_with_a_hash_and_runs_to_the_end_of_the_line() {
+        let with_slashes = "// RUN: nothing\nfn f(x) = x + 1; // trailing\n";
+        let with_hash = "# RUN: nothing\nfn f(x) = x + 1; # trailing\n";
+        let plain = "fn f(x) = x + 1;\n";
+        assert_eq!(ast(with_slashes).unwrap(), ast(plain).unwrap());
+        assert_eq!(ast(with_hash).unwrap(), ast(plain).unwrap());
+    }
+
+    #[test]
+    fn a_single_slash_is_still_not_a_character_of_the_language() {
+        let message = ast("fn f(x) = x / 2;").unwrap_err();
+        assert!(message.contains("unexpected character '/'"), "{message}");
     }
 }
