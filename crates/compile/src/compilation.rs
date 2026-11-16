@@ -25,6 +25,7 @@ pub(crate) struct Finished {
 /// into the source map of [Compilation::context].
 pub struct Compilation {
     error: Option<Report>,
+    started: bool,
     reached: Vec<CheckpointId>,
     stopped: Option<Artifact>,
     emitted: Vec<Emitted>,
@@ -44,6 +45,7 @@ impl Compilation {
     ) -> Self {
         Self {
             error,
+            started: true,
             reached: finished.reached,
             stopped: finished.stopped,
             emitted: finished.emitted,
@@ -57,7 +59,7 @@ impl Compilation {
     /// A compilation that failed before it started: nothing was reached, and the context is a
     /// new empty one.
     fn failed_to_start(error: Report) -> Self {
-        Self::new(
+        let mut compilation = Self::new(
             Some(error),
             Finished {
                 reached: Vec::new(),
@@ -68,7 +70,9 @@ impl Compilation {
             },
             DiagnosticSet::default(),
             Rc::new(Context::default()),
-        )
+        );
+        compilation.started = false;
+        compilation
     }
 
     /// Why the compilation failed, or `None` when it succeeded.
@@ -79,6 +83,14 @@ impl Compilation {
     /// Whether the compilation succeeded: it has no error.
     pub fn succeeded(&self) -> bool {
         self.error.is_none()
+    }
+
+    /// Whether the request was resolved and a session ran. When it is `false`, the error says
+    /// what in the request could not be resolved (an unknown target, an input no frontend claims,
+    /// a checkpoint that is not on the route): a mistake in how the compiler was asked, not in
+    /// what it was given to compile.
+    pub fn started(&self) -> bool {
+        self.started
     }
 
     /// Every checkpoint the compilation reached, in the order it reached them.
@@ -157,12 +169,6 @@ impl Compiler {
         }
         if matches!(outcome, Ok(ControlFlow::Continue(()))) && session.target().is_some() {
             outcome = session.emit_code(observer);
-        }
-        if matches!(outcome, Ok(ControlFlow::Continue(()))) {
-            outcome = Err(Report::msg(format!(
-                "the compilation ended without reaching its stop point '{}'",
-                session.goal().stop_after()
-            )));
         }
         session.finish(outcome)
     }
@@ -461,10 +467,42 @@ mod tests {
         let (compilation, _) = run(&compiler, alpha_request());
 
         assert!(!compilation.succeeded());
+        assert!(compilation.started());
         assert!(message(&compilation).contains("reported 1 error"), "{}", message(&compilation));
         assert!(compilation.diagnostics().has_errors());
         assert_eq!(compilation.diagnostics().len(), 1);
         assert!(compilation.context().take_diagnostics().is_empty());
+        // Nothing is reached, and so nothing is delivered, after the error was reported.
+        assert!(compilation.reached().is_empty(), "{:?}", compilation.reached());
+        assert!(compilation.emitted().is_empty(), "{:?}", compilation.emitted());
+    }
+
+    #[test]
+    fn a_session_finished_part_of_the_way_is_a_failed_compilation() {
+        let compiler = plain();
+        let mut session = compiler.session(stop_after("ir.optimized")).unwrap();
+        let outcome = session.translate(&mut ());
+        assert!(matches!(outcome, Ok(ControlFlow::Continue(()))));
+        let compilation = session.finish(outcome);
+        assert!(!compilation.succeeded());
+        assert_eq!(
+            message(&compilation),
+            "the compilation was ended before it reached its stop point 'ir.optimized'"
+        );
+
+        // A stop that names the stop point without it having been reached is no better.
+        let session = compiler.session(stop_after("ir.optimized")).unwrap();
+        let forged = Ok(ControlFlow::Break(crate::Stopped::new(CheckpointId::IR_OPTIMIZED)));
+        assert!(!session.finish(forged).succeeded());
+    }
+
+    #[test]
+    fn a_request_that_does_not_resolve_did_not_start() {
+        let mut request = stop_after("ir.optimized");
+        request.stop_after = Some("no.such".into());
+        let (compilation, _) = run(&plain(), request);
+        assert!(!compilation.succeeded());
+        assert!(!compilation.started());
     }
 
     #[test]

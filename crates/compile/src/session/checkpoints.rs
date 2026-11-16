@@ -87,7 +87,8 @@ impl<'a> Checkpoints<'a> {
 
     /// Reaches `checkpoint` holding `value`.
     ///
-    /// It is an error to reach a checkpoint after the stop point was reached, one the running
+    /// It is an error to reach a checkpoint after the stop point was reached, when an error has
+    /// been reported on the context (so no output is delivered after one), one the running
     /// stage did not declare, or one that does not come later on the route than the last one
     /// reached (so a checkpoint cannot be reached twice). Otherwise the observer is told and, when
     /// an output was requested at `checkpoint`, the artifact is rendered as it is now with the
@@ -103,6 +104,15 @@ impl<'a> Checkpoints<'a> {
             return Err(Report::msg(format!(
                 "{stage} reached checkpoint '{checkpoint}' after the compilation had stopped at \
                  '{stop}'"
+            )));
+        }
+        // A stage may report an error on the context and carry on: nothing is reached, and so
+        // nothing is delivered, once the compilation has an error.
+        let errors = self.session.context().diagnostic_counts().errors();
+        if errors > 0 {
+            return Err(Report::msg(format!(
+                "the compilation reported {errors} error(s) before checkpoint '{checkpoint}' and \
+                 goes no further"
             )));
         }
         let declared = self.stage.declared();

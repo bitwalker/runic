@@ -10,8 +10,8 @@ use runic_core::{
 };
 
 use crate::{
-    Backend, Compilation, CompilationRequest, Compiler, Emitted, Flow, Frontend, Goal, Input,
-    OutputNaming, Route, Triple, compilation::Finished,
+    Backend, Compilation, CompilationRequest, Compiler, Destination, Emitted, Flow, Frontend, Goal,
+    Input, InputSource, OutputNaming, Route, Triple, compilation::Finished,
 };
 
 mod checkpoints;
@@ -142,6 +142,24 @@ impl Compiler {
             },
         )?;
 
+        // An output written over an input would destroy what is being compiled.
+        for output in goal.outputs() {
+            let Destination::File(path) = output.destination() else {
+                continue;
+            };
+            let overwritten = request
+                .inputs
+                .iter()
+                .any(|input| matches!(&input.source, InputSource::Path(source) if source == path));
+            if overwritten {
+                return Err(Report::msg(format!(
+                    "the output of checkpoint '{}' would be written to '{}', which is an input",
+                    output.checkpoint(),
+                    path.display()
+                )));
+            }
+        }
+
         let context = Rc::new(Context::default());
         let world = context.clone().builder().create::<World, ()>(SourceSpan::UNKNOWN)()?;
         if let Some(target) = &target {
@@ -169,19 +187,29 @@ impl Compiler {
 impl<'c> Session<'c> {
     /// Ends the session: moves what it did into a [Compilation].
     ///
-    /// `outcome` is what the last step answered. The error of the compilation is the outcome's
-    /// error; otherwise, when the diagnostics pending on the context hold errors that stages
-    /// reported without failing, an error that says so (the diagnostics stay in the result); and
-    /// otherwise none. The pending diagnostics are taken from the context.
+    /// `outcome` is what the last step that ran answered. A compilation succeeded when that is the
+    /// `Break` of its stop point. The error of the compilation is otherwise: the outcome's error;
+    /// when the diagnostics pending on the context hold errors that a stage reported without
+    /// failing, an error that says so (the diagnostics stay in the result); and when the outcome
+    /// is not the stop at the stop point (the session is finished part of the way), an error that
+    /// names the stop point. The pending diagnostics are taken from the context.
     pub fn finish(self, outcome: Result<Flow<()>, Report>) -> Compilation {
         let diagnostics = self.context.take_diagnostics();
+        let stop = self.goal.stop_after();
         let error = match outcome {
             Err(report) => Some(report),
             Ok(_) if diagnostics.has_errors() => Some(Report::msg(format!(
                 "the compilation reported {} error(s)",
                 diagnostics.counts().errors()
             ))),
-            Ok(_) => None,
+            Ok(Flow::Break(stopped))
+                if stopped.checkpoint() == stop && self.progress.stopped.is_some() =>
+            {
+                None
+            }
+            Ok(_) => Some(Report::msg(format!(
+                "the compilation was ended before it reached its stop point '{stop}'"
+            ))),
         };
         let Session {
             progress,
@@ -466,6 +494,20 @@ mod tests {
         assert!(session.target().is_none());
         assert_eq!(route_ids(&session), ["alpha.ast", "ir.translated", "ir.optimized"]);
         assert_eq!(session.goal().stop_after().as_str(), "ir.optimized");
+    }
+
+    #[test]
+    fn an_output_that_would_overwrite_an_input_is_an_error() {
+        let mut request = CompilationRequest::new();
+        request.inputs = vec![Input::path("unit.a")];
+        request.target = Some("wasm32-wasip2".parse().unwrap());
+        request.emit.push("ir.translated=unit.a".parse::<EmitRequest>().unwrap());
+        let message = error(&compiler(), request);
+        assert_eq!(
+            message,
+            "the output of checkpoint 'ir.translated' would be written to 'unit.a', which is an \
+             input"
+        );
     }
 
     #[test]
