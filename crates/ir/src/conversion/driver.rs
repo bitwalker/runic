@@ -9,8 +9,8 @@ use super::{
     rewriter::{CastKind, ConversionState, type_list, types_of},
 };
 use crate::{
-    FxHashSet, OperationName, OperationRef, Report, Spanned, Usable, ValueRef, WalkResult,
-    dialects::builtin::UnrealizedConversionCast,
+    FxHashMap, FxHashSet, OperationName, OperationRef, Report, Spanned, Usable, ValueRef,
+    WalkResult, dialects::builtin::UnrealizedConversionCast,
 };
 
 /// Configuration for the dialect conversion driver.
@@ -213,6 +213,8 @@ fn run_conversion(
             converted_ops: 0,
         },
         unvisited: FxHashSet::default(),
+        visited: FxHashSet::default(),
+        deferred: FxHashMap::default(),
     };
 
     driver.run()?;
@@ -229,9 +231,17 @@ struct ConversionDriver<'a> {
     state: ConversionState,
     config: ConversionConfig,
     result: ConversionResult,
-    /// The operations of the collected order the walk has not reached yet. A moved operation that
-    /// is here is converted when the walk reaches it, not where it was moved.
+    /// The operations of the collected order that have not been offered yet. A moved operation that
+    /// is here is converted when the walk reaches it, not where it was moved; one that is offered
+    /// before the walk reaches it (it was changed in place) leaves it then.
     unvisited: FxHashSet<OperationRef>,
+    /// The operations offered to the patterns so far. A moved operation that is here is not offered
+    /// again, and the walk does not offer it again either.
+    visited: FxHashSet<OperationRef>,
+    /// The moved operations the walk does not reach (moved out of a recursively legal operation)
+    /// that now sit under an operation of `unvisited`, by the nearest such operation: each is
+    /// offered after that operation, when the walk reaches it.
+    deferred: FxHashMap<OperationRef, Vec<OperationRef>>,
 }
 
 impl ConversionDriver<'_> {
@@ -239,8 +249,14 @@ impl ConversionDriver<'_> {
         let ops = self.collect_conversion_order()?;
         self.unvisited = ops.iter().copied().collect();
         for op in ops {
-            self.unvisited.remove(&op);
-            self.legalize_from(op)?;
+            if self.unvisited.remove(&op) && !self.visited.contains(&op) {
+                self.legalize_from(op)?;
+            }
+            for moved in self.deferred.remove(&op).unwrap_or_default() {
+                if let Some(moved) = self.place_moved_op(moved) {
+                    self.legalize_from(moved)?;
+                }
+            }
         }
 
         if self.config.reconcile_unrealized_casts() {
@@ -302,6 +318,8 @@ impl ConversionDriver<'_> {
             if !self.is_live(op) {
                 continue;
             }
+            self.unvisited.remove(&op);
+            self.visited.insert(op);
             let Some(mutations) = self.apply_one_pattern(op, &mut budget)? else {
                 continue;
             };
@@ -316,19 +334,45 @@ impl ConversionDriver<'_> {
     }
 
     /// The operations a pattern moved ([TrackedMutations::moved_ops]), and those nested in them,
-    /// that nothing else legalizes: each that is not still to be reached by the walk of the
-    /// collected order and is not waiting in `pending`, in pre-order, without entering a
-    /// recursively legal operation. A moved operation that the walk still reaches is legalized
-    /// there, after the operation that holds it (which is before it in the walk, or which the
-    /// pattern created and is legalized first).
+    /// that are to be legalized now, in pre-order, without entering a recursively legal operation.
+    ///
+    /// A moved operation that was already offered is not offered again. One that is under a
+    /// recursively legal operation now is never offered, and leaves `unvisited` with what it
+    /// holds. One that the walk of the collected order still reaches (it is in `unvisited`) is
+    /// legalized there, after the operation that holds it, which is before it in the walk or which
+    /// the pattern created and is legalized first. One that is waiting in `pending` is legalized
+    /// from there. Any other (moved out of a recursively legal operation, so never collected) is
+    /// legalized now, unless an operation around it has not been offered yet: then it waits for
+    /// that operation ([Self::place_moved_op]).
     fn moved_ops_to_legalize(
-        &self,
+        &mut self,
         mutations: &TrackedMutations,
         pending: &[OperationRef],
     ) -> Vec<OperationRef> {
-        let mut ops = vec![];
+        let mut candidates = vec![];
         for moved in mutations.moved_ops() {
             if !self.is_live(*moved) {
+                continue;
+            }
+            let under_recursively_legal = {
+                let mut current = moved.parent_op();
+                let mut found = false;
+                while let Some(op) = current {
+                    if self.target.is_recursively_legal(&op.borrow()) {
+                        found = true;
+                        break;
+                    }
+                    if op == self.root {
+                        break;
+                    }
+                    current = op.parent_op();
+                }
+                found
+            };
+            if under_recursively_legal {
+                moved.borrow().prewalk_all(|op: &crate::Operation| {
+                    self.unvisited.remove(&op.as_operation_ref());
+                });
                 continue;
             }
             let _ = moved.borrow().prewalk(|op: &crate::Operation| {
@@ -336,13 +380,38 @@ impl ConversionDriver<'_> {
                     return WalkResult::<()>::Skip;
                 }
                 let op = op.as_operation_ref();
-                if !self.unvisited.contains(&op) && !pending.contains(&op) {
-                    ops.push(op);
+                if !self.unvisited.contains(&op)
+                    && !self.visited.contains(&op)
+                    && !pending.contains(&op)
+                {
+                    candidates.push(op);
                 }
                 WalkResult::<()>::Continue(())
             });
         }
-        ops
+        candidates.into_iter().filter_map(|op| self.place_moved_op(op)).collect()
+    }
+
+    /// Where `moved`, a moved operation the walk does not reach, is legalized: `Some(moved)` when
+    /// it is to be legalized now; `None` when it was offered already or is no longer in the IR, or
+    /// when an operation around it has not been offered yet, in which case it is deferred to the
+    /// nearest such operation and placed again after the walk reaches that operation.
+    fn place_moved_op(&mut self, moved: OperationRef) -> Option<OperationRef> {
+        if !self.is_live(moved) || self.visited.contains(&moved) {
+            return None;
+        }
+        let mut current = moved.parent_op();
+        while let Some(op) = current {
+            if op == self.root {
+                break;
+            }
+            if self.unvisited.contains(&op) {
+                self.deferred.entry(op).or_default().push(moved);
+                return None;
+            }
+            current = op.parent_op();
+        }
+        Some(moved)
     }
 
     /// Offers `op` to its candidate patterns, in order, until one applies. Returns what the
@@ -431,6 +500,7 @@ impl ConversionDriver<'_> {
                     let mutations = rewriter.take_tracked_mutations();
                     self.note_pattern_application(pattern.as_ref(), op, budget)?;
                     self.validate_generated_ops(pattern.as_ref(), &mutations)?;
+                    self.check_emptied_ops(pattern.as_ref(), &mutations)?;
                     self.result.changed = true;
                     return Ok(Some(mutations));
                 }
@@ -503,6 +573,38 @@ impl ConversionDriver<'_> {
                     pattern.name(),
                     name
                 )));
+            }
+        }
+        Ok(())
+    }
+
+    /// An error, naming the pattern and the operation, when the pattern inlined a block of an
+    /// operation and left that operation in the IR with the region it emptied: a pattern that
+    /// moves every block out of an operation's region erases the operation (or replaces it).
+    fn check_emptied_ops(
+        &self,
+        pattern: &dyn ConversionPattern,
+        mutations: &TrackedMutations,
+    ) -> Result<(), Report> {
+        for op in mutations.emptied_ops() {
+            if !self.is_live(*op) {
+                continue;
+            }
+            let op = op.borrow();
+            if op.regions().iter().any(|region| region.is_empty()) {
+                return Err(crate::diagnostics::report!(
+                    message: (format!(
+                        "conversion pattern '{}' moved every block out of a region of '{}' and \
+                         left it in the IR",
+                        pattern.name(),
+                        op.name()
+                    )),
+                    labels: [primary(
+                        op.span(),
+                        "a pattern that moves every block out of an operation's region erases \
+                         the operation"
+                    )],
+                ));
             }
         }
         Ok(())

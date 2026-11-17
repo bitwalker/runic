@@ -1735,3 +1735,119 @@ fn a_tail_call_that_would_use_another_calling_convention_than_its_function_is_an
         "{err}"
     );
 }
+
+/// [wide_converter], with a conversion added after its function-type rule that gives every value
+/// of a function type one `i32` (a table index): a function value is no longer a function value.
+fn function_values_to_i32(context: &Context) -> TypeConverter {
+    let i32 = context.i32();
+    let mut converter = wide_converter(context);
+    converter.add_conversion(move |_, ty| ty.is_function().then_some(TypeConversion::one(i32)));
+    converter
+}
+
+/// The function type a debug-info subprogram holds is a signature, not a value: it becomes the
+/// function type of its converted parameters and results, under a converter that gives a function
+/// value another type as under one that does not, and the function is legal after one
+/// application. A function type a `TypeAttr` in the dictionary holds is the type of a value, and
+/// becomes what the converter gives a function value.
+#[test]
+fn a_function_type_an_attribute_of_the_function_holds_converts_as_a_signature() {
+    for values_to_i32 in [false, true] {
+        let (context, module) = parse_module("    builtin.function public extern(\"C\") @f(i128);");
+        let converter = if values_to_i32 {
+            function_values_to_i32(&context)
+        } else {
+            wide_converter(&context)
+        };
+        let (i64, i128) = (context.i64(), context.i128());
+        let mut function = function_of(module);
+        let subprogram = Subprogram::new(
+            crate::interner::Symbol::intern("f"),
+            crate::interner::Symbol::intern("a.rs"),
+            1,
+            None,
+        )
+        .with_function_type(context.function_type([i128], []));
+        let subprogram =
+            context.create_attribute::<SubprogramAttr, _>(subprogram).as_attribute_ref();
+        let callback = context
+            .create_attribute::<TypeAttr, _>(context.function_type([i128], [i128]))
+            .as_attribute_ref();
+        function.borrow_mut().set_attribute("di.subprogram", subprogram);
+        function.borrow_mut().set_attribute("callback", callback);
+        assert!(!converter.is_legal_op(&function.borrow()), "values to i32: {values_to_i32}");
+
+        let result = convert_full(module, by_type_target(&context, &converter), &converter)
+            .unwrap_or_else(|err| panic!("values to i32: {values_to_i32}: {}", describe(&err)));
+
+        assert_eq!(result.converted_ops(), 1, "values to i32: {values_to_i32}");
+        assert!(converter.is_legal_op(&function.borrow()), "values to i32: {values_to_i32}");
+        let held = function.borrow().get_attribute("di.subprogram").unwrap();
+        let held = held.borrow();
+        let held = held.downcast_ref::<SubprogramAttr>().unwrap();
+        assert_eq!(
+            held.as_value().ty,
+            Some(context.function_type([i64, i64], [])),
+            "values to i32: {values_to_i32}"
+        );
+        let held = function.borrow().get_attribute("callback").unwrap();
+        let held = held.borrow();
+        let held = held.downcast_ref::<TypeAttr>().unwrap();
+        let value = if values_to_i32 {
+            context.i32()
+        } else {
+            context.function_type([i64, i64], [i64, i64])
+        };
+        assert_eq!(*held.as_value(), value, "values to i32: {values_to_i32}");
+    }
+}
+
+/// Under a converter that gives a function value an `i32`, the builtin patterns of
+/// `builtin.function_ref`, `builtin.call_indirect` and `builtin.tail_call_indirect` would build
+/// operations that do not verify: each is an error that names the operation and the answer.
+#[test]
+fn the_indirect_patterns_refuse_a_function_value_that_is_not_a_function_value() {
+    let cases = [
+        (
+            "builtin.function_ref",
+            "builtin-function-ref-by-type",
+            "    builtin.function public extern(\"C\") @g() {
+        %0 = builtin.function_ref @f : (i32) -> i32;
+        builtin.ret;
+    };
+    builtin.function public extern(\"C\") @f(i32) -> i32;",
+        ),
+        (
+            "builtin.call_indirect",
+            "builtin-call-indirect-by-type",
+            "    builtin.function public extern(\"C\") @g(%0: (i32) -> i32, %1: i32) -> i32 {
+        %2 = builtin.call_indirect %0(%1) : extern(\"C\") (i32) -> i32;
+        builtin.ret %2 : (i32);
+    };",
+        ),
+        (
+            "builtin.tail_call_indirect",
+            "builtin-tail-call-indirect-by-type",
+            "    builtin.function public extern(\"C\") @g(%0: (i32) -> i32, %1: i32) -> i32 {
+        builtin.tail_call_indirect %0(%1) : extern(\"C\") (i32) -> i32;
+    };",
+        ),
+    ];
+    for (name, pattern, source) in cases {
+        let (context, module) = parse_module(source);
+        let converter = function_values_to_i32(&context);
+        let err = convert_full(module, by_type_target(&context, &converter), &converter)
+            .expect_err("the function value becomes an i32");
+        let err = describe(&err);
+        assert!(err.contains(&format!("cannot convert '{name}' in ::m::g")), "{err}");
+        assert!(
+            err.contains(&format!(
+                "the type converter gives a function value of type `(i32) -> i32` the type(s) \
+                 (i32), not `(i32) -> i32`, the function type of its converted signature: the \
+                 builtin pattern '{pattern}' converts only a function value that stays a function \
+                 value"
+            )),
+            "{err}"
+        );
+    }
+}

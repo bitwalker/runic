@@ -8,10 +8,12 @@
 //! ([convert_signature]). A signature is converted by type, as every value is, so a call and the
 //! entry block of its callee agree. The patterns of `builtin.call_indirect`,
 //! `builtin.tail_call_indirect` and `builtin.function_ref` also need a function value to stay a
-//! function value: under a converter that gives a function type another answer (a conversion added
-//! after [TypeConverter::with_function_types], see there), they build operations whose types do
-//! not verify, and a conversion that gives function values another type brings patterns of its own
-//! for those three operations and leaves these out. Each type it gives for a parameter, a
+//! function value, of the function type of its converted signature: under a converter that gives a
+//! function type another answer (a conversion added after [TypeConverter::with_function_types],
+//! see there), each returns an error that names the operation and the answer, before it changes
+//! anything, since the operations it would build would not verify. A conversion that gives
+//! function values another type brings patterns of its own for those three operations and leaves
+//! these out. Each type it gives for a parameter, a
 //! result or a local must itself be legal (convert to itself): the function pattern and the call
 //! patterns check the answers they use, and return an error that names the type and what it was
 //! the answer for.
@@ -82,8 +84,12 @@
 //!
 //! Last, each type that another attribute of the function (a property other than the three, or
 //! an entry of its dictionary) holds directly, at any depth of attribute, and that converts to one
-//! other type is replaced by it (a debug-info subprogram holds the function's type), so that the
-//! function is legal by [TypeConverter::is_legal_op] afterwards and the pattern runs once. A type
+//! other type is replaced by it, so that the function is legal by [TypeConverter::is_legal_op]
+//! afterwards and the pattern runs once. The function type a debug-info subprogram holds (the
+//! function's own type) is a signature, not a value: it becomes the function type of its
+//! converted parameters and results ([TypeConverter::convert_signature_type]), whatever the
+//! converter gives a value of function type, and [TypeConverter::is_legal_op] judges it the same
+//! way. Any other function type held there is the type of a value, and converts as one. A type
 //! held there that converts to several types or none is left as it is, and so is an integer
 //! constant (its value has the width of its type, so it cannot be given another type here): the
 //! function stays illegal, and the conversion reports it, naming the first type that is not legal
@@ -500,7 +506,7 @@ impl ConversionPattern for FunctionPattern {
                 "the function still holds a type that is not legal after its signature, locals \
                  and attributes were converted",
             );
-            if let Some(first) = first_illegal_type(&context, &op.borrow(), converter) {
+            if let Some(first) = first_illegal_type(&op.borrow(), converter) {
                 reason.push_str(": ");
                 reason.push_str(&first);
             }
@@ -512,20 +518,10 @@ impl ConversionPattern for FunctionPattern {
 
 /// The first type `op` holds that is not legal under `converter`, and where it holds it, in the
 /// order of [Operation::walk_types]: "`T`, held by <site>".
-fn first_illegal_type(
-    context: &Context,
-    op: &Operation,
-    converter: &TypeConverter,
-) -> Option<alloc::string::String> {
-    let mut found = None;
-    let _ = op.walk_types(&mut |site, ty| {
-        if converter.is_legal_type(context, ty) {
-            return WalkResult::Skip;
-        }
-        found = Some(format!("`{ty}`, held by {site}"));
-        WalkResult::Break(Report::msg("found"))
-    });
-    found
+fn first_illegal_type(op: &Operation, converter: &TypeConverter) -> Option<alloc::string::String> {
+    converter
+        .first_illegal_held_type(op)
+        .map(|(site, ty)| format!("`{ty}`, held by {site}"))
 }
 
 /// An error, naming the function and the effect, when a declared effect of `function` names a
@@ -712,10 +708,14 @@ enum Leaf {
 }
 
 /// Replaces what an attribute holds at any depth of attribute: `leaf` is asked about each
-/// attribute first, and `ty` about each type held directly by an attribute it enters.
+/// attribute first, and `ty` about each type held directly by an attribute it enters, with
+/// whether that attribute holds a signature (a debug-info subprogram, whose function type
+/// describes a signature rather than a value).
 struct DeepReplacer<'a> {
     leaf: &'a mut dyn FnMut(&AttributeRef) -> Leaf,
-    ty: &'a mut dyn FnMut(Type) -> Type,
+    ty: &'a mut dyn FnMut(Type, bool) -> Type,
+    /// Whether the attribute being entered holds a signature.
+    in_signature: bool,
 }
 
 impl DeepReplacer<'_> {
@@ -724,7 +724,15 @@ impl DeepReplacer<'_> {
         match (self.leaf)(attr) {
             Leaf::Replace(new) => Some(new),
             Leaf::Keep => None,
-            Leaf::Enter => attr.borrow().replace_elements(self),
+            Leaf::Enter => {
+                let outer = core::mem::replace(
+                    &mut self.in_signature,
+                    super::type_converter::holds_a_signature(attr),
+                );
+                let new = attr.borrow().replace_elements(self);
+                self.in_signature = outer;
+                new
+            }
         }
     }
 
@@ -759,7 +767,7 @@ impl DeepReplacer<'_> {
 
 impl ElementReplacer for DeepReplacer<'_> {
     fn replace_type(&mut self, ty: Type) -> Type {
-        (self.ty)(ty)
+        (self.ty)(ty, self.in_signature)
     }
 
     fn replace_attribute(&mut self, attr: &AttributeRef) -> Option<AttributeRef> {
@@ -769,8 +777,11 @@ impl ElementReplacer for DeepReplacer<'_> {
 
 /// The changes to the function's attributes other than its signature, declared effects and
 /// locals: each type held directly, at any depth of attribute, that converts to one other type is
-/// replaced by it. A type that converts to several or none is kept, and so is an integer constant,
-/// whose value has the width of its type.
+/// replaced by it. The function type a debug-info subprogram holds is a signature, and converts by
+/// its parts ([TypeConverter::convert_signature_type]), never as a value of function type does;
+/// any other function type held there is the type of a value. A type that
+/// converts to several or none is kept, and so is an integer constant, whose value has the width
+/// of its type.
 fn replace_held_types(
     context: &Context,
     function: &Operation,
@@ -783,13 +794,19 @@ fn replace_held_types(
             Leaf::Enter
         }
     };
-    let mut ty = |ty: Type| match converter.convert_type(context, ty).as_slice() {
-        [one] => *one,
-        _ => ty,
+    let mut ty = |ty: Type, in_signature: bool| {
+        if in_signature && ty.is_function() {
+            return converter.convert_signature_type(context, ty);
+        }
+        match converter.convert_type(context, ty).as_slice() {
+            [one] => *one,
+            _ => ty,
+        }
     };
     let mut replacer = DeepReplacer {
         leaf: &mut leaf,
         ty: &mut ty,
+        in_signature: false,
     };
     replacer.replacements(function, &|name, is_property| {
         is_property && [SIGNATURE, MEMORY_EFFECTS, LOCALS].contains(&name)
@@ -901,11 +918,12 @@ fn renumber_locals(
                 Leaf::Replace(context.create_attribute::<ExpressionAttr, _>(new).as_attribute_ref())
             }
         };
-        let mut ty = |ty: Type| ty;
+        let mut ty = |ty: Type, _: bool| ty;
         attributes.extend(
             DeepReplacer {
                 leaf: &mut leaf,
                 ty: &mut ty,
+                in_signature: false,
             }
             .replacements(&op.borrow(), &|name, is_property| {
                 skip_expression && is_property && name == EXPRESSION
@@ -1204,6 +1222,7 @@ impl ConversionPattern for CallIndirectPattern {
             .clone();
         let converted = convert_signature(&context, &signature, &self.converter);
         check_answers_are_legal(&context, &self.converter, &signature, &converted, op)?;
+        check_function_value_stays(&context, &self.converter, op, callee_type(op), self.name())?;
         if converted.signature == signature
             && operands_are_themselves(&op.borrow(), operands.iter())
         {
@@ -1270,6 +1289,45 @@ fn check_tail_call_results_are_the_functions(
         parent = enclosing.borrow().parent_op();
     }
     Ok(())
+}
+
+/// The type of the callee of `op`, an indirect call or tail call: the type of its first operand.
+fn callee_type(op: OperationRef) -> Type {
+    op.borrow().operands()[0].borrow().ty()
+}
+
+/// An error, naming `op` and the pattern `pattern`, when `converter` gives a value of `ty`, a
+/// function type, other than one value of the function type of its converted signature
+/// ([TypeConverter::convert_signature_type]): `op`, a `builtin.call_indirect`, a
+/// `builtin.tail_call_indirect` or a `builtin.function_ref`, would be rebuilt with a function
+/// value whose type is not its signature's, which does not verify. A type that is not a function
+/// type (IR that was not verified) is left to the verifier.
+fn check_function_value_stays(
+    context: &Context,
+    converter: &TypeConverter,
+    op: OperationRef,
+    ty: Type,
+    pattern: &str,
+) -> Result<(), Report> {
+    if !ty.is_function() {
+        return Ok(());
+    }
+    let value = converter.convert_type(context, ty);
+    let signature = converter.convert_signature_type(context, ty);
+    if value.as_slice() == [signature] {
+        return Ok(());
+    }
+    let answer = value.iter().map(|ty| format!("{ty}")).collect::<Vec<_>>().join(", ");
+    let reason = format!(
+        "the type converter gives a function value of type `{ty}` the type(s) ({answer}), not \
+         `{signature}`, the function type of its converted signature: the builtin pattern \
+         '{pattern}' converts only a function value that stays a function value, and a conversion \
+         that gives function values another type needs a pattern of its own for this operation"
+    );
+    Err(crate::diagnostics::report!(
+        message: (format!("cannot convert {}", describe_op(op))),
+        labels: [primary(op.borrow().span(), reason)],
+    ))
 }
 
 /// Converts a `builtin.tail_call`: a tail call of the same callee, by the same path, with the
@@ -1366,6 +1424,7 @@ impl ConversionPattern for TailCallIndirectPattern {
             .clone();
         let converted = convert_signature(&context, &signature, &self.converter);
         check_answers_are_legal(&context, &self.converter, &signature, &converted, op)?;
+        check_function_value_stays(&context, &self.converter, op, callee_type(op), self.name())?;
         if converted.signature == signature
             && operands_are_themselves(&op.borrow(), operands.iter())
         {
@@ -1425,6 +1484,7 @@ impl ConversionPattern for FunctionReferencePattern {
             .downcast_ref::<FunctionReference>()
             .expect("rooted at function_ref")
             .get_ty();
+        check_function_value_stays(&context, &self.converter, op, ty, self.name())?;
         // A converter with function types gives a function type exactly one type.
         let new_ty = self.converter.convert_type_1_to_1(&context, ty)?;
         check_answer_is_legal(&context, &self.converter, ty, &[new_ty], || {

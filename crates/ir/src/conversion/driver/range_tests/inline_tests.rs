@@ -640,3 +640,526 @@ fn a_pattern_that_inlines_and_then_does_not_match_is_reported() {
         "{err}"
     );
 }
+
+/// The block an operation is inlined into is held directly by an operation the pattern created:
+/// a block of an operation the pattern only moved into one it created is refused, since the moved
+/// operation is converted after the operations moved into it would be.
+#[test]
+fn inlining_into_a_block_of_an_operation_the_pattern_moved_is_an_error() {
+    let (context, function) = parse_twin_function(
+        "()",
+        "    test.twin first {
+        %0 = test.constant 1 : i32;
+        test.sink %0 : (i32);
+    } second {
+    ^bb0(%1: i32):
+        test.twin first {
+            test.sink %1 : (i32);
+        } second {
+        ^bb1(%2: i32):
+            test.sink %2 : (i32);
+        };
+    };
+    builtin.ret;",
+    );
+    let rule = Rule::new::<Twin>(
+        &context,
+        "into-moved-twin",
+        None,
+        [registered::<Constant>(&context), registered::<Seq>(&context)],
+        |op, _operands, rewriter| {
+            let (first, second) = twin_blocks(op);
+            let span = op.borrow().span();
+            rewriter.set_insertion_point_before(op);
+            let constant = rewriter.create_op::<Constant, _>(span, (Int::from(7i32),))?;
+            let constant = constant.borrow().result().as_value_ref();
+            let seq = rewriter.create_op::<Seq, _>(span, ())?;
+            let region = seq.borrow().body().as_region_ref();
+            let block = rewriter.create_block(region, &[])?;
+            rewriter.inline_block_at_end(second, block, &[&[constant]])?;
+            let inner = block.borrow().body().back().as_pointer().unwrap();
+            let (inner_first, _) = twin_blocks(inner);
+            rewriter.inline_block_at_end(first, inner_first, &[])?;
+            rewriter.erase_op(op)?;
+            Ok(true)
+        },
+    );
+
+    let err = format!("{}", convert(function, twin_target(&context), [rule]).unwrap_err());
+
+    assert!(
+        err.ends_with(
+            "a pattern may inline a block only into a block of an operation it created or into a \
+             block that holds the operation it is given, 'test.twin', but the destination is a \
+             block of 'test.twin', which is neither"
+        ),
+        "{err}"
+    );
+}
+
+/// An operation offered before the walk reaches it (a pattern changed it in place) is not
+/// offered again by the walk, nor when a pattern then moves it.
+#[test]
+fn an_operation_offered_early_is_not_offered_again_when_it_is_moved() {
+    let (context, function) = parse_twin_function(
+        "()",
+        "    test.twin first {
+        %0 = test.constant 1 : i32;
+        test.sink %0 : (i32);
+    } second {
+    ^bb0(%1: i32):
+        test.sink %1 : (i32);
+    };
+    builtin.ret;",
+    );
+    let mut target = ConversionTarget::new(context.clone());
+    target
+        .set_unknown_op_policy(UnknownOpPolicy::Illegal)
+        .add_illegal_op::<Twin>()
+        .add_legal_op::<Seq>()
+        .add_legal_op::<Constant>();
+    let calls = Rc::new(RefCell::new(0));
+    let touch = calls.clone();
+    // The first application changes the first sink in place; the second merges the regions.
+    let rule = Rule::new::<Twin>(
+        &context,
+        "touch-then-merge",
+        None,
+        [registered::<Constant>(&context), registered::<Seq>(&context)],
+        move |op, _operands, rewriter| {
+            *touch.borrow_mut() += 1;
+            let (first, second) = twin_blocks(op);
+            if *touch.borrow() == 1 {
+                let sink = first.borrow().body().back().as_pointer().unwrap();
+                rewriter.modify_op_in_place(sink, |_| ())?;
+                return Ok(true);
+            }
+            let span = op.borrow().span();
+            rewriter.set_insertion_point_before(op);
+            let constant = rewriter.create_op::<Constant, _>(span, (Int::from(7i32),))?;
+            let constant = constant.borrow().result().as_value_ref();
+            let seq = rewriter.create_op::<Seq, _>(span, ())?;
+            let region = seq.borrow().body().as_region_ref();
+            let block = rewriter.create_block(region, &[])?;
+            rewriter.inline_block_at_end(first, block, &[])?;
+            rewriter.inline_block_at_end(second, block, &[&[constant]])?;
+            rewriter.erase_op(op)?;
+            Ok(true)
+        },
+    );
+    let offered = Rc::new(RefCell::new(Vec::<OperationRef>::new()));
+    let seen = offered.clone();
+    let count_sinks = Rule::new::<Sink>(&context, "count-sinks", None, [], move |op, _, _| {
+        seen.borrow_mut().push(op);
+        Ok(false)
+    });
+    let mut set = ConversionPatternSet::new(context.clone());
+    set.push(rule);
+    set.push(count_sinks);
+
+    apply_partial_conversion(function, target, set, ConversionConfig::default())
+        .unwrap_or_else(|err| panic!("{}", describe(&err)));
+
+    assert_eq!(*calls.borrow(), 2);
+    let offered = offered.borrow();
+    assert_eq!(offered.len(), 2, "each of the two sinks once");
+    assert_ne!(offered[0], offered[1], "a sink offered twice");
+}
+
+/// An operation moved out of a recursively legal operation, which the walk does not reach, into
+/// a block whose holder has not been offered yet, waits for that holder: it is offered after it.
+#[test]
+fn an_operation_moved_out_of_a_recursively_legal_operation_waits_for_its_new_holder() {
+    let (context, function) = parse_twin_function(
+        "()",
+        "    test.twin first {
+    } second {
+    ^bb0(%0: i32):
+    } attributes { poke = #builtin.bool<true> };
+    test.seq {
+        test.twin first {
+            test.hold {
+                %1 = test.constant 1 : i32;
+                test.sink %1 : (i32);
+            };
+        } second {
+        ^bb1(%2: i32):
+            test.sink %2 : (i32);
+        };
+    };
+    builtin.ret;",
+    );
+    let holder = entry_op(function, 1);
+    let twin = holder
+        .try_downcast_op::<Seq>()
+        .unwrap()
+        .borrow()
+        .body()
+        .entry()
+        .body()
+        .front()
+        .as_pointer()
+        .unwrap();
+    let hold = twin_blocks(twin).0.borrow().body().front().as_pointer().unwrap();
+    let held_sink = hold_block(hold).borrow().body().back().as_pointer().unwrap();
+    let mut target = ConversionTarget::new(context.clone());
+    target
+        .set_unknown_op_policy(UnknownOpPolicy::Illegal)
+        .add_illegal_op::<Twin>()
+        .add_legal_op::<Constant>()
+        .add_legal_op::<Hold>()
+        .mark_op_recursively_legal::<Hold>();
+    // The twin marked `poke` changes the other twin in place, so that it is offered before the
+    // walk reaches the `test.seq` that holds it, and is erased; the other moves the body of its
+    // `test.hold` before itself, into that `test.seq`, and merges its regions.
+    let rule = Rule::new::<Twin>(
+        &context,
+        "poke-or-unhold",
+        None,
+        [registered::<Constant>(&context), registered::<Seq>(&context)],
+        move |op, _operands, rewriter| {
+            if op.borrow().get_attribute("poke").is_some() {
+                rewriter.modify_op_in_place(twin, |_| ())?;
+                rewriter.erase_op(op)?;
+                return Ok(true);
+            }
+            let (first, second) = twin_blocks(op);
+            let hold = first.borrow().body().front().as_pointer().unwrap();
+            rewriter.inline_block_before(hold_block(hold), op, &[])?;
+            rewriter.erase_op(hold)?;
+            let span = op.borrow().span();
+            rewriter.set_insertion_point_before(op);
+            let constant = rewriter.create_op::<Constant, _>(span, (Int::from(7i32),))?;
+            let constant = constant.borrow().result().as_value_ref();
+            let seq = rewriter.create_op::<Seq, _>(span, ())?;
+            let region = seq.borrow().body().as_region_ref();
+            let block = rewriter.create_block(region, &[])?;
+            rewriter.inline_block_at_end(first, block, &[])?;
+            rewriter.inline_block_at_end(second, block, &[&[constant]])?;
+            rewriter.erase_op(op)?;
+            Ok(true)
+        },
+    );
+    let log = Rc::new(RefCell::new(Vec::<&'static str>::new()));
+    let seqs = log.clone();
+    let record_seqs = Rule::new::<Seq>(&context, "record-seqs", None, [], move |op, _, _| {
+        seqs.borrow_mut().push(if op == holder { "holder" } else { "seq" });
+        Ok(false)
+    });
+    let sinks = log.clone();
+    let record_sinks = Rule::new::<Sink>(&context, "record-sinks", None, [], move |op, _, _| {
+        sinks.borrow_mut().push(if op == held_sink { "held sink" } else { "sink" });
+        Ok(false)
+    });
+    let mut set = ConversionPatternSet::new(context.clone());
+    set.push(rule);
+    set.push(record_seqs);
+    set.push(record_sinks);
+
+    apply_partial_conversion(function, target, set, ConversionConfig::default())
+        .unwrap_or_else(|err| panic!("{}", describe(&err)));
+
+    assert_eq!(*log.borrow(), ["seq", "holder", "held sink", "sink"]);
+    assert_str_eq!(
+        function.borrow().to_string(),
+        function_text(
+            "()",
+            "    test.seq {
+        %1 = test.constant 1 : i32;
+        test.sink %1 : (i32);
+        %3 = test.constant 7 : i32;
+        test.seq {
+            test.sink %3 : (i32);
+        };
+    };
+    builtin.ret;"
+        )
+    );
+}
+
+/// An operation moved into a recursively legal operation the pattern created is not offered, as
+/// nothing under a recursively legal operation is.
+#[test]
+fn an_operation_moved_into_a_recursively_legal_operation_is_not_offered() {
+    let (context, function) = parse_twin_function(
+        "()",
+        "    test.twin first {
+        %0 = test.constant 1 : i32;
+        test.sink %0 : (i32);
+    } second {
+    ^bb0(%1: i32):
+        test.sink %1 : (i32);
+    };
+    builtin.ret;",
+    );
+    let mut target = ConversionTarget::new(context.clone());
+    target
+        .set_unknown_op_policy(UnknownOpPolicy::Illegal)
+        .add_illegal_op::<Twin>()
+        .add_legal_op::<Seq>()
+        .add_legal_op::<Constant>()
+        .add_legal_op::<Hold>()
+        .mark_op_recursively_legal::<Hold>();
+    let rule = Rule::new::<Twin>(
+        &context,
+        "hold-first",
+        None,
+        [
+            registered::<Constant>(&context),
+            registered::<Seq>(&context),
+            registered::<Hold>(&context),
+        ],
+        |op, _operands, rewriter| {
+            let (first, second) = twin_blocks(op);
+            let span = op.borrow().span();
+            rewriter.set_insertion_point_before(op);
+            let constant = rewriter.create_op::<Constant, _>(span, (Int::from(7i32),))?;
+            let constant = constant.borrow().result().as_value_ref();
+            let hold = rewriter.create_op::<Hold, _>(span, ())?;
+            let region = hold.borrow().body().as_region_ref();
+            let block = rewriter.create_block(region, &[])?;
+            rewriter.inline_block_at_end(first, block, &[])?;
+            rewriter.set_insertion_point_before(op);
+            let seq = rewriter.create_op::<Seq, _>(span, ())?;
+            let region = seq.borrow().body().as_region_ref();
+            let block = rewriter.create_block(region, &[])?;
+            rewriter.inline_block_at_end(second, block, &[&[constant]])?;
+            rewriter.erase_op(op)?;
+            Ok(true)
+        },
+    );
+    let offered = Rc::new(RefCell::new(0));
+    let seen = offered.clone();
+    let count_sinks = Rule::new::<Sink>(&context, "count-sinks", None, [], move |_, _, _| {
+        *seen.borrow_mut() += 1;
+        Ok(false)
+    });
+    let mut set = ConversionPatternSet::new(context.clone());
+    set.push(rule);
+    set.push(count_sinks);
+
+    apply_partial_conversion(function, target, set, ConversionConfig::default())
+        .unwrap_or_else(|err| panic!("{}", describe(&err)));
+
+    assert_eq!(*offered.borrow(), 1, "only the sink of the `test.seq`");
+}
+
+/// A pattern that moves the only block of a region out of an operation nested in the one it is
+/// given, and leaves that operation in the IR, is an error that names the pattern.
+#[test]
+fn leaving_an_operation_whose_region_a_pattern_emptied_is_an_error() {
+    let (context, function) = parse_twin_function(
+        "()",
+        "    test.twin first {
+        test.twin first {
+            %0 = test.constant 1 : i32;
+            test.sink %0 : (i32);
+        } second {
+        ^bb0(%1: i32):
+            test.sink %1 : (i32);
+        };
+    } second {
+    ^bb1(%2: i32):
+        test.sink %2 : (i32);
+    };
+    builtin.ret;",
+    );
+    let rule = Rule::new::<Twin>(
+        &context,
+        "empty-the-inner-twin",
+        None,
+        [registered::<Constant>(&context), registered::<Seq>(&context)],
+        |op, _operands, rewriter| {
+            let (first, second) = twin_blocks(op);
+            let inner = first.borrow().body().front().as_pointer().unwrap();
+            let (inner_first, _) = twin_blocks(inner);
+            let span = op.borrow().span();
+            rewriter.set_insertion_point_before(op);
+            let constant = rewriter.create_op::<Constant, _>(span, (Int::from(7i32),))?;
+            let constant = constant.borrow().result().as_value_ref();
+            let seq = rewriter.create_op::<Seq, _>(span, ())?;
+            let region = seq.borrow().body().as_region_ref();
+            let block = rewriter.create_block(region, &[])?;
+            rewriter.inline_block_at_end(inner_first, block, &[])?;
+            rewriter.inline_block_at_end(first, block, &[])?;
+            rewriter.inline_block_at_end(second, block, &[&[constant]])?;
+            rewriter.erase_op(op)?;
+            Ok(true)
+        },
+    );
+
+    let err = convert(function, twin_target(&context), [rule]).unwrap_err();
+
+    assert_eq!(
+        format!("{err}"),
+        "conversion pattern 'empty-the-inner-twin' moved every block out of a region of \
+         'test.twin' and left it in the IR"
+    );
+}
+
+/// Parses `body` as the body of `builtin.module @m`, with this file's operations and
+/// `test.forward_br` registered.
+fn parse_twin_module(body: &str) -> (Rc<Context>, OperationRef) {
+    use crate::dialects::builtin::Module;
+    let context = Rc::new(Context::default());
+    register_ops(&context);
+    registered::<super::signature_tests::ForwardBr>(&context);
+    let module = parse::<Module>(
+        ParserConfig::new(context.clone()),
+        "conversion",
+        &format!("builtin.module public @m {{\n{body}\n}};"),
+    )
+    .into_result()
+    .unwrap_or_else(|err| panic!("{}", describe(&err)));
+    (context, module.as_operation_ref())
+}
+
+/// The target of the tests that inline a function's blocks: `builtin.function` is illegal, and
+/// `test.seq` and every other operation legal.
+fn function_target(context: &Rc<Context>) -> ConversionTarget {
+    let mut target = ConversionTarget::new(context.clone());
+    target
+        .set_unknown_op_policy(UnknownOpPolicy::Legal)
+        .add_illegal_op::<Function>()
+        .add_legal_op::<Seq>();
+    target
+}
+
+/// A pattern rooted at `builtin.function` that creates a `test.seq` before the function, moves
+/// the function's entry block to the end of the seq's block, and erases the function.
+fn inline_function_entry(context: &Rc<Context>) -> Rule {
+    Rule::new::<Function>(
+        context,
+        "inline-function-entry",
+        None,
+        [registered::<Seq>(context)],
+        |op, _operands, rewriter| {
+            let entry = op.try_downcast_op::<Function>().unwrap().borrow().entry_block();
+            let span = op.borrow().span();
+            rewriter.set_insertion_point_before(op);
+            let seq = rewriter.create_op::<Seq, _>(span, ())?;
+            let region = seq.borrow().body().as_region_ref();
+            let block = rewriter.create_block(region, &[])?;
+            rewriter.inline_block_at_end(entry, block, &[])?;
+            rewriter.erase_op(op)?;
+            Ok(true)
+        },
+    )
+}
+
+/// A block that ends in a branch is not inlined: the branch would leave the region that holds its
+/// successor.
+#[test]
+fn inlining_a_block_that_ends_in_a_branch_is_an_error() {
+    let (context, module) = parse_twin_module(
+        "    builtin.function public extern(\"C\") @f() {
+        test.forward_br ^bb1;
+    ^bb1:
+        builtin.ret;
+    };",
+    );
+    let mut set = ConversionPatternSet::new(context.clone());
+    set.push(inline_function_entry(&context));
+
+    let err = apply_partial_conversion(
+        module,
+        function_target(&context),
+        set,
+        ConversionConfig::default(),
+    )
+    .unwrap_err();
+
+    let err = format!("{err}");
+    assert!(
+        err.ends_with(
+            "a block of 'builtin.function' ends in a branch and cannot be inlined: the branch \
+             would leave the region its successors are in"
+        ),
+        "{err}"
+    );
+}
+
+/// Only the one block of a region is inlined: a block of a region of several is refused, even
+/// when it does not branch.
+#[test]
+fn inlining_a_block_of_a_region_of_several_blocks_is_an_error() {
+    let (context, module) = parse_twin_module(
+        "    builtin.function public extern(\"C\") @f() {
+        builtin.ret;
+    ^bb1:
+        builtin.ret;
+    };",
+    );
+    let mut set = ConversionPatternSet::new(context.clone());
+    set.push(inline_function_entry(&context));
+
+    let err = apply_partial_conversion(
+        module,
+        function_target(&context),
+        set,
+        ConversionConfig::default(),
+    )
+    .unwrap_err();
+
+    let err = format!("{err}");
+    assert!(
+        err.ends_with(
+            "a block of 'builtin.function' is one of the 2 blocks of its region and cannot be \
+             inlined: only the one block of a region can be inlined"
+        ),
+        "{err}"
+    );
+}
+
+/// An operation a block of which is the successor of a branch outside it is not erased: the
+/// branch would be left without its successor.
+#[test]
+fn erasing_an_operation_whose_block_a_branch_outside_it_targets_is_an_error() {
+    use super::signature_tests::ForwardBr;
+    let (context, module) = parse_twin_module(
+        "    builtin.function public extern(\"C\") @f() {
+        builtin.ret;
+    ^bb1:
+        builtin.ret;
+    };",
+    );
+    let rule = Rule::new::<Function>(
+        &context,
+        "branch-in-then-erase",
+        None,
+        [registered::<Seq>(&context), registered::<ForwardBr>(&context)],
+        |op, _operands, rewriter| {
+            let entry = op.try_downcast_op::<Function>().unwrap().borrow().entry_block();
+            let target = entry.next().unwrap();
+            let span = op.borrow().span();
+            rewriter.set_insertion_point_before(op);
+            let seq = rewriter.create_op::<Seq, _>(span, ())?;
+            let region = seq.borrow().body().as_region_ref();
+            rewriter.create_block(region, &[])?;
+            rewriter.create_op::<ForwardBr, _>(span, (target, Vec::<ValueRef>::new()))?;
+            rewriter.erase_op(op)?;
+            Ok(true)
+        },
+    );
+    let mut set = ConversionPatternSet::new(context.clone());
+    set.push(rule);
+
+    let err = format!(
+        "{}",
+        apply_partial_conversion(
+            module,
+            function_target(&context),
+            set,
+            ConversionConfig::default()
+        )
+        .unwrap_err()
+    );
+
+    assert!(
+        err.ends_with(
+            "'builtin.function' cannot be erased: a block in it is the successor of \
+             'test.forward_br', which is not inside it and would be left without its successor"
+        ),
+        "{err}"
+    );
+}

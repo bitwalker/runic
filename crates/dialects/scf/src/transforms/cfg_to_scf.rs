@@ -231,14 +231,7 @@ impl Pass for LiftControlFlowToSCF {
                     while let Some(region) = next_region.take() {
                         next_region = region.next();
 
-                        let pending = if in_place { PendingExits::take(region) } else { None };
-                        if pending.is_some() {
-                            dominfo.invalidate_region(region);
-                        }
-
-                        let result =
-                            transforms::transform_cfg_to_scf(region, &mut transformation, dominfo);
-                        match result {
+                        match lift_region(region, &mut transformation, dominfo, in_place) {
                             Ok(did_change) => {
                                 log::trace!(
                                     target: "cfg-to-scf",
@@ -246,22 +239,8 @@ impl Pass for LiftControlFlowToSCF {
                                      (did_change={did_change})"
                                 );
                                 changed |= did_change;
-                                if let Some(pending) = pending {
-                                    let restored = pending.restore(true);
-                                    dominfo.invalidate_region(region);
-                                    if let Err(err) = restored {
-                                        return WalkResult::Break(err);
-                                    }
-                                }
                             }
-                            Err(err) => {
-                                // A refusal leaves every exit where it was.
-                                if let Some(pending) = pending {
-                                    let _ = pending.restore(false);
-                                    dominfo.invalidate_region(region);
-                                }
-                                return WalkResult::Break(err);
-                            }
+                            Err(err) => return WalkResult::Break(err),
                         }
                     }
 
@@ -308,6 +287,46 @@ impl Pass for LiftControlFlowToSCF {
         state.set_post_pass_status(changed.into());
 
         Ok(())
+    }
+}
+
+/// Lifts the control flow of `region` to structured control flow with `interface`, and answers
+/// whether it changed. With `in_place` (`exits=in-place`), the dead ends of the region are taken
+/// out first ([PendingExits::take]) and put back afterwards ([PendingExits::restore]). When the
+/// structuring fails part-way, its error is returned and the IR is in the unspecified state the
+/// structuring left it in ([transforms::transform_cfg_to_scf]): each exit whose placeholder is
+/// still in a block is put back in its place, and no placeholder is left in a block, but an exit
+/// whose placeholder the structuring moved out of the region goes with it.
+fn lift_region(
+    region: RegionRef,
+    interface: &mut dyn CFGToSCFInterface,
+    dominfo: &mut DominanceInfo,
+    in_place: bool,
+) -> Result<bool, Report> {
+    let pending = if in_place {
+        PendingExits::take(region)
+    } else {
+        None
+    };
+    if pending.is_some() {
+        dominfo.invalidate_region(region);
+    }
+    match transforms::transform_cfg_to_scf(region, interface, dominfo) {
+        Ok(did_change) => {
+            if let Some(pending) = pending {
+                let restored = pending.restore(true);
+                dominfo.invalidate_region(region);
+                restored?;
+            }
+            Ok(did_change)
+        }
+        Err(err) => {
+            if let Some(pending) = pending {
+                let _ = pending.restore(false);
+                dominfo.invalidate_region(region);
+            }
+            Err(err)
+        }
     }
 }
 
@@ -970,6 +989,258 @@ mod tests {
         }
         assert!(lifted >= 60, "{lifted} lifted");
         assert!(refused >= 4, "{refused} refused");
+    }
+
+    /// [ControlFlowToSCFTransformation], except that the `fail_at`-th structured branch region
+    /// operation it is asked for (counting from 1) is refused: the structuring fails part-way.
+    struct FailingTransformation {
+        fail_at: usize,
+        calls: core::cell::Cell<usize>,
+    }
+
+    impl CFGToSCFInterface for FailingTransformation {
+        fn create_structured_branch_region_op(
+            &self,
+            builder: &mut OpBuilder,
+            control_flow_cond_op: OperationRef,
+            result_types: &[runic_ir::Type],
+            regions: &mut SmallVec<[RegionRef; 2]>,
+        ) -> Result<OperationRef, Report> {
+            self.calls.set(self.calls.get() + 1);
+            if self.calls.get() == self.fail_at {
+                return Err(Report::msg("the test refuses this branch"));
+            }
+            ControlFlowToSCFTransformation.create_structured_branch_region_op(
+                builder,
+                control_flow_cond_op,
+                result_types,
+                regions,
+            )
+        }
+
+        fn create_structured_branch_region_terminator_op(
+            &self,
+            span: SourceSpan,
+            builder: &mut OpBuilder,
+            branch_region_op: OperationRef,
+            replaced_control_flow_op: Option<OperationRef>,
+            results: ValueRange<'_, 2>,
+        ) -> Result<(), Report> {
+            ControlFlowToSCFTransformation.create_structured_branch_region_terminator_op(
+                span,
+                builder,
+                branch_region_op,
+                replaced_control_flow_op,
+                results,
+            )
+        }
+
+        fn create_structured_do_while_loop_op(
+            &self,
+            builder: &mut OpBuilder,
+            replaced_op: OperationRef,
+            loop_values_init: ValueRange<'_, 2>,
+            condition: ValueRef,
+            loop_values_next_iter: ValueRange<'_, 2>,
+            loop_body: RegionRef,
+        ) -> Result<OperationRef, Report> {
+            ControlFlowToSCFTransformation.create_structured_do_while_loop_op(
+                builder,
+                replaced_op,
+                loop_values_init,
+                condition,
+                loop_values_next_iter,
+                loop_body,
+            )
+        }
+
+        fn get_cfg_bool_value(
+            &self,
+            span: SourceSpan,
+            builder: &mut OpBuilder,
+            value: bool,
+        ) -> ValueRef {
+            ControlFlowToSCFTransformation.get_cfg_bool_value(span, builder, value)
+        }
+
+        fn get_cfg_switch_value(
+            &self,
+            span: SourceSpan,
+            builder: &mut OpBuilder,
+            value: i32,
+        ) -> ValueRef {
+            ControlFlowToSCFTransformation.get_cfg_switch_value(span, builder, value)
+        }
+
+        fn create_cfg_switch_op(
+            &self,
+            span: SourceSpan,
+            builder: &mut OpBuilder,
+            flag: ValueRef,
+            case_values: &[i32],
+            case_destinations: &[BlockRef],
+            case_arguments: &[ValueRange<'_, 2>],
+            default_dest: BlockRef,
+            default_args: ValueRange<'_, 2>,
+        ) -> Result<(), Report> {
+            ControlFlowToSCFTransformation.create_cfg_switch_op(
+                span,
+                builder,
+                flag,
+                case_values,
+                case_destinations,
+                case_arguments,
+                default_dest,
+                default_args,
+            )
+        }
+
+        fn get_undef_value(
+            &self,
+            span: SourceSpan,
+            builder: &mut OpBuilder,
+            ty: runic_ir::Type,
+        ) -> ValueRef {
+            ControlFlowToSCFTransformation.get_undef_value(span, builder, ty)
+        }
+
+        fn create_unreachable_terminator(
+            &self,
+            span: SourceSpan,
+            builder: &mut OpBuilder,
+            region: RegionRef,
+        ) -> Result<OperationRef, Report> {
+            ControlFlowToSCFTransformation.create_unreachable_terminator(span, builder, region)
+        }
+
+        fn create_single_destination_branch(
+            &self,
+            span: SourceSpan,
+            builder: &mut OpBuilder,
+            dummy_flag: ValueRef,
+            destination: BlockRef,
+            arguments: ValueRange<'_, 2>,
+        ) -> Result<(), Report> {
+            ControlFlowToSCFTransformation.create_single_destination_branch(
+                span,
+                builder,
+                dummy_flag,
+                destination,
+                arguments,
+            )
+        }
+
+        fn create_conditional_branch(
+            &self,
+            span: SourceSpan,
+            builder: &mut OpBuilder,
+            condition: ValueRef,
+            true_dest: BlockRef,
+            true_args: ValueRange<'_, 2>,
+            false_dest: BlockRef,
+            false_args: ValueRange<'_, 2>,
+        ) -> Result<(), Report> {
+            ControlFlowToSCFTransformation.create_conditional_branch(
+                span, builder, condition, true_dest, true_args, false_dest, false_args,
+            )
+        }
+    }
+
+    /// When the structuring of `exits=in-place` fails part-way, after the exits were taken out,
+    /// the error of the structuring is returned, and the exits are put back where their
+    /// placeholders are: no `scf.pending_exit` is left in the function. The rest of the IR is in
+    /// the unspecified state the structuring left it in (the blocks it had moved into the regions
+    /// of the refused operation are gone, with their exits), so nothing more is checked.
+    #[test]
+    fn a_structuring_that_fails_part_way_returns_its_error_and_leaves_no_placeholder() {
+        use runic_ir::{
+            dialects::builtin::Function,
+            parse::{ParserConfig, parse},
+        };
+
+        let source = "builtin.function public extern(\"C\") @f(%c: i1, %d: i1, %a: i32, %b: i32) \
+                      -> i32 {
+    cf.cond_br %c ^x, ^y : (i1);
+^x:
+    cf.cond_br %d ^u, ^v : (i1);
+^u:
+    builtin.ret %a : (i32);
+^v:
+    builtin.ret %b : (i32);
+^y:
+    ub.unreachable;
+};";
+        for fail_at in [1, 2] {
+            let context = Rc::new(Context::default());
+            context.get_or_register_dialect::<crate::ScfDialect>();
+            context.get_or_register_dialect::<cf::ControlFlowDialect>();
+            context.get_or_register_dialect::<runic_dialect_ub::UndefinedBehaviorDialect>();
+            let function = parse::<Function>(ParserConfig::new(context.clone()), "f", source)
+                .into_result()
+                .unwrap_or_else(|err| panic!("does not parse: {err:?}"));
+            let function = function.as_operation_ref();
+            let region =
+                function.borrow().downcast_ref::<Function>().unwrap().body().as_region_ref();
+            let mut dominfo = DominanceInfo::new(&function.borrow());
+            let mut failing = FailingTransformation {
+                fail_at,
+                calls: core::cell::Cell::new(0),
+            };
+
+            let err = lift_region(region, &mut failing, &mut dominfo, true)
+                .expect_err("the structuring fails");
+
+            assert_eq!(format!("{err}"), "the test refuses this branch", "fail at {fail_at}");
+            assert_eq!(failing.calls.get(), fail_at, "fail at {fail_at}");
+            let mut placeholders = 0;
+            function.raw_prewalk_all::<Forward, _>(|op: OperationRef| {
+                if op.borrow().is::<PendingExit>() {
+                    placeholders += 1;
+                }
+            });
+            let after = format!("{}", function.borrow());
+            assert_eq!(placeholders, 0, "fail at {fail_at}:\n{after}");
+        }
+    }
+
+    /// The exits taken out of a region are put back exactly where they were: taking them out and
+    /// restoring them without a check, as the refusal path does, with no structuring in between,
+    /// leaves the function as it was, the `ub.unreachable` block the placeholders branched to
+    /// erased.
+    #[test]
+    fn restoring_the_exits_without_a_check_leaves_the_function_as_it_was() {
+        use runic_ir::{
+            dialects::builtin::Function,
+            parse::{ParserConfig, parse},
+        };
+
+        let context = Rc::new(Context::default());
+        context.get_or_register_dialect::<crate::ScfDialect>();
+        context.get_or_register_dialect::<cf::ControlFlowDialect>();
+        context.get_or_register_dialect::<runic_dialect_ub::UndefinedBehaviorDialect>();
+        let function = parse::<Function>(
+            ParserConfig::new(context.clone()),
+            "f",
+            "builtin.function public extern(\"C\") @f(%c: i1, %a: i32, %b: i32) -> i32 {
+    cf.cond_br %c ^x(%a : i32), ^y : (i1);
+^x(%v: i32):
+    builtin.ret %v : (i32);
+^y:
+    builtin.tail_call @f(%c, %b, %a) : extern(\"C\") (i1, i32, i32) -> i32;
+};",
+        )
+        .into_result()
+        .unwrap_or_else(|err| panic!("does not parse: {err:?}"));
+        let function = function.as_operation_ref();
+        let before = format!("{}", function.borrow());
+        let region = function.borrow().downcast_ref::<Function>().unwrap().body().as_region_ref();
+
+        let pending = PendingExits::take(region).expect("two exits are taken out");
+        let taken = format!("{}", function.borrow());
+        assert!(taken.contains("scf.pending_exit"), "{taken}");
+        pending.restore(false).unwrap_or_else(|err| panic!("{err}"));
+
+        assert_eq!(format!("{}", function.borrow()), before);
     }
 
     /// The option `exits` reads `merge` and `in-place`, and the pass prints itself with the

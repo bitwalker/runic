@@ -47,6 +47,7 @@ pub struct TrackedMutations {
     materialized_ops: Vec<OperationRef>,
     in_place_ops: Vec<OperationRef>,
     moved_ops: Vec<OperationRef>,
+    emptied_ops: Vec<OperationRef>,
     block_mutations: usize,
     mutation_count: usize,
 }
@@ -101,6 +102,14 @@ impl TrackedMutations {
     #[inline]
     pub fn moved_ops(&self) -> &[OperationRef] {
         &self.moved_ops
+    }
+
+    /// Return the operations a block of which the pattern inlined, in the order the blocks were
+    /// inlined: each has a region the pattern emptied, since an inlined block is the only block
+    /// of its region.
+    #[inline]
+    pub fn emptied_ops(&self) -> &[OperationRef] {
+        &self.emptied_ops
     }
 
     /// Return the number of block insertion/erasure notifications observed.
@@ -193,6 +202,12 @@ impl ConversionTrackingListener {
             push_unique(&mut mutations.moved_ops, op);
         }
         mutations.mutation_count += 1;
+    }
+
+    /// Records that a block of `op` was inlined, which left a region of `op` empty.
+    fn record_emptied_op(&self, op: OperationRef) {
+        let mut mutations = self.mutations.borrow_mut();
+        push_unique(&mut mutations.emptied_ops, op);
     }
 
     fn record_modified_op(&self, op: OperationRef) {
@@ -486,6 +501,7 @@ impl ConversionPatternRewriter {
         values: &[&[ValueRef]],
     ) -> Result<(), Report> {
         self.check_not_root(op, "replaced")?;
+        check_no_branch_from_outside(op, "replaced")?;
         let results = op
             .borrow()
             .results()
@@ -984,9 +1000,8 @@ impl ConversionPatternRewriter {
     /// `source` by the values given for it, and erase `source`.
     ///
     /// This is [Self::inline_block_at_end], with the operations placed before `before` in its
-    /// block instead of at the end of a block; there `source` must not end in a branch (the
-    /// operations after it would be unreachable). The checks and the replacement of the arguments
-    /// are those of [Self::inline_block_at_end].
+    /// block instead of at the end of a block. The checks and the replacement of the arguments are
+    /// those of [Self::inline_block_at_end].
     pub fn inline_block_before(
         &mut self,
         source: BlockRef,
@@ -1007,9 +1022,10 @@ impl ConversionPatternRewriter {
     ///
     /// `argument_values` holds one range per argument of `source`: one value, several (when the
     /// argument's type converts to several types), or none (when it converts to no type). A range
-    /// that is one value of the argument's own type replaces the argument. Any other range must
-    /// have exactly the types the pattern's type converter gives the argument, and when the
-    /// argument has users they are given a many-to-one `builtin.unrealized_conversion_cast` of
+    /// that is one value of the argument's own type replaces the argument. When the pattern has a
+    /// type converter, any other range must have exactly the types it gives the argument; without
+    /// one, any other range is accepted only for an argument without users. When the argument has
+    /// users and such a range, they are given a many-to-one `builtin.unrealized_conversion_cast` of
     /// the range back to the argument's type, placed before the moved operations: the same
     /// relation a signature conversion makes for an argument remapped to values
     /// ([SignatureConversion::remap_input]). So a user converted later is given the values, and
@@ -1018,12 +1034,17 @@ impl ConversionPatternRewriter {
     /// error, and nothing else is checked.
     ///
     /// `source` must be a block of the operation the pattern was given, or of an operation nested
-    /// in it, and must not be the successor of a branch. `destination` must be a block of an
-    /// operation the pattern created (at any depth), or a block that holds the operation the
-    /// pattern was given (directly or through the operations around it); it must not be `source`
-    /// or a block nested in it, and must not end in a branch. These rules keep the moved
-    /// operations in the order the driver converts: each moved operation, and each operation
-    /// nested in it, is converted once, after the operation that now holds it.
+    /// in it; it must be the only block of its region, must not be the successor of a branch, and
+    /// must not end in a branch (the branch would leave the region of its successors). The
+    /// operation whose region `source` was is left with an empty region, and the pattern erases
+    /// or replaces it: one left in the IR when the pattern succeeds is an error the driver
+    /// reports. `destination` must be a block of a region of an operation the pattern created
+    /// (that operation itself, not one it holds), or a block that holds the operation the pattern
+    /// was given (directly or through the operations around it); it must not be `source` or a
+    /// block nested in it, and, for [Self::inline_block_at_end], must not end in a branch. These
+    /// rules keep the moved operations in the order the driver converts: a moved operation is
+    /// offered at most once, and after the operation that now holds it (see the module
+    /// documentation of [crate::conversion]).
     ///
     /// The terminator of `source` moves like any other operation; a pattern that does not want it
     /// erases or replaces it afterwards. The moves and the erasure of `source` count as mutations,
@@ -1085,19 +1106,22 @@ impl ConversionPatternRewriter {
                 "{source_name} cannot be inlined into itself or into a block nested in it"
             )));
         }
+        if source.borrow().has_successors() {
+            return Err(Report::msg(format!(
+                "{source_name} ends in a branch and cannot be inlined: the branch would leave the \
+                 region its successors are in"
+            )));
+        }
+        let blocks_in_region =
+            source.borrow().parent().map_or(1, |region| region.borrow().body().len());
+        if blocks_in_region > 1 {
+            return Err(Report::msg(format!(
+                "{source_name} is one of the {blocks_in_region} blocks of its region and cannot \
+                 be inlined: only the one block of a region can be inlined"
+            )));
+        }
         let destination_name = describe(destination);
-        let in_created = {
-            let mut current = destination.borrow().parent_op();
-            let mut found = false;
-            while let Some(op) = current {
-                if self.created(op) {
-                    found = true;
-                    break;
-                }
-                current = op.parent_op();
-            }
-            found
-        };
+        let in_created = destination.borrow().parent_op().is_some_and(|op| self.created(op));
         let holds_matched =
             matched.parent().is_some_and(|block| is_block_within(block, destination));
         if !in_created && !holds_matched {
@@ -1107,21 +1131,11 @@ impl ConversionPatternRewriter {
                  destination is {destination_name}, which is neither"
             )));
         }
-        match before {
-            None if destination.borrow().has_successors() => {
-                return Err(Report::msg(format!(
-                    "{source_name} cannot be inlined at the end of {destination_name}, which ends \
-                     in a branch"
-                )));
-            }
-            Some(before) if source.borrow().has_successors() => {
-                return Err(Report::msg(format!(
-                    "{source_name} ends in a branch and cannot be inlined before '{}': the \
-                     operations after it would be unreachable",
-                    before.borrow().name()
-                )));
-            }
-            _ => {}
+        if before.is_none() && destination.borrow().has_successors() {
+            return Err(Report::msg(format!(
+                "{source_name} cannot be inlined at the end of {destination_name}, which ends in \
+                 a branch"
+            )));
         }
         let arguments = source.borrow().argument_values().collect::<SmallVec<[ValueRef; 4]>>();
         if arguments.len() != argument_values.len() {
@@ -1208,6 +1222,9 @@ impl ConversionPatternRewriter {
 
         *self.tracking.moving.borrow_mut() =
             source.borrow().body().iter().map(|op| op.as_operation_ref()).collect();
+        if let Some(parent) = source_parent {
+            self.tracking.record_emptied_op(parent);
+        }
         let ignored = SmallVec::<[Option<ValueRef>; 4]>::from_elem(None, arguments.len());
         self.inner.inline_block_before(source, destination, before, &ignored);
         self.tracking.moving.borrow_mut().clear();
@@ -1231,12 +1248,13 @@ impl ConversionPatternRewriter {
 
     /// Erase an operation with no remaining uses.
     ///
-    /// Callers are responsible for ensuring the operation can be erased without leaving invalid
-    /// control-flow edges. Erasing an operation a result of which still has real users (users that
-    /// are not `Transparent`), or the root of the conversion, is an error, raised before anything
-    /// changes. Transparent users are erased with the operation.
+    /// Erasing an operation a result of which still has real users (users that are not
+    /// `Transparent`), the root of the conversion, or an operation a block of which (at any depth)
+    /// is the successor of a branch that is not inside the operation, is an error, raised before
+    /// anything changes. Transparent users are erased with the operation.
     pub fn erase_op(&mut self, op: OperationRef) -> Result<(), Report> {
         self.check_not_root(op, "erased")?;
+        check_no_branch_from_outside(op, "erased")?;
         if let Some(index) =
             op.borrow().results().iter().position(|result| result.borrow().has_real_uses())
         {
@@ -1382,6 +1400,39 @@ fn user_not_after(result: ValueRef, last: OperationRef) -> Option<OperationRef> 
         }
         (!last.borrow().is_before_in_block(&ancestor)).then_some(user.owner)
     })
+}
+
+/// An error when a block of `op`, at any depth, is the successor of a branch that is not inside
+/// `op`: erasing `op` (to be `what`, erased or replaced) would leave that branch without its
+/// successor.
+fn check_no_branch_from_outside(op: OperationRef, what: &str) -> Result<(), Report> {
+    let mut outside = None;
+    op.borrow().prewalk_all(|nested: &Operation| {
+        if outside.is_some() {
+            return;
+        }
+        for region in nested.regions() {
+            for block in region.body() {
+                let branch = block
+                    .predecessors()
+                    .map(|predecessor| predecessor.owner)
+                    .find(|owner| !is_within(*owner, op));
+                if let Some(branch) = branch {
+                    outside = Some(branch);
+                    return;
+                }
+            }
+        }
+    });
+    match outside {
+        Some(branch) => Err(Report::msg(format!(
+            "'{}' cannot be {what}: a block in it is the successor of '{}', which is not inside \
+             it and would be left without its successor",
+            op.borrow().name(),
+            branch.borrow().name()
+        ))),
+        None => Ok(()),
+    }
 }
 
 /// The blocks of the regions of `op`, in order.

@@ -100,26 +100,37 @@
 //! before an operation or to the end of a block, and erase the emptied block.
 //!
 //! - **What may move where.** The block moved is a block of the operation the pattern was given,
-//!   or of an operation nested in it (which the pattern is expected to replace or erase as well).
-//!   It goes into a block of an operation the pattern created, at any depth, or into a block that
-//!   holds the operation the pattern was given. Anything else is an error, raised before anything
-//!   changes, as is a block that a branch targets, a destination that is the block itself or nested
-//!   in it, and a move that would leave operations after a branch.
+//!   or of an operation nested in it, and the only block of its region. It goes into a block of a
+//!   region of an operation the pattern created (that operation itself, not one nested in it), or
+//!   into a block that holds the operation the pattern was given. Anything else is an error,
+//!   raised before anything changes, as is a block that a branch targets, a block that ends in a
+//!   branch, a destination that is the block itself or nested in it, and a move to the end of a
+//!   block that ends in a branch.
+//! - **What is left behind.** The operation whose block moved is left with an empty region, and
+//!   the pattern erases or replaces it: a pattern that succeeds and leaves such an operation in
+//!   the IR is an error that names the pattern and the operation. An operation is not erased (or
+//!   replaced) while a block in it is the successor of a branch outside it; that is an error,
+//!   raised before anything changes.
 //! - **Block arguments.** Each argument of the moved block is replaced by the values the pattern
-//!   gives for it: one value, several (1:N), or none when its type converts to no type. A range
-//!   that is not one value of the argument's own type must have the types the pattern's converter
-//!   gives the argument, and its users are given a source cast of the range, placed before the
-//!   moved operations: the relation [SignatureConversion::remap_input] makes. So a user converted
-//!   later is given the values, and a user that stays reads the cast, which the converter's
-//!   materializations realize.
+//!   gives for it: one value, several (1:N), or none when its type converts to no type. When the
+//!   pattern has a type converter, a range that is not one value of the argument's own type must
+//!   have the types the converter gives the argument; without one, such a range is accepted only
+//!   for an argument without users. The users of an argument replaced by such a range are given a
+//!   source cast of the range, placed before the moved operations: the relation
+//!   [SignatureConversion::remap_input] makes. So a user converted later is given the values, and
+//!   a user that stays reads the cast, which the converter's materializations realize.
 //! - **What is converted.** A moved operation is not one the pattern created: it is not checked
-//!   against the pattern's generated operations, and it is converted once, with every operation
-//!   nested in it, after the operation that now holds it and before the operations nested in it.
-//!   One that the walk of the collected order has not reached yet is converted when the walk
-//!   reaches it (it was nested in the operation the pattern was given, so it comes later in the
-//!   walk); one the walk would not reach (moved out of a recursively legal operation) is converted
-//!   after the pattern, with what the pattern created, in pre-order. The terminator of a moved
-//!   block moves too and is converted like the rest, unless the pattern erases or replaces it.
+//!   against the pattern's generated operations. It is offered at most once, and not at all when
+//!   it was offered before it moved, or when it now sits under a recursively legal operation (as
+//!   nothing there is). Otherwise it is offered after the operation that now holds it: one that
+//!   the walk of the collected order has not reached yet is offered when the walk reaches it (it
+//!   was nested in the operation the pattern was given, so it comes later in the walk than that
+//!   operation and the operations around it, and the operation the pattern created that holds it
+//!   is legalized as soon as the pattern succeeds); one the walk would not reach (moved out of a
+//!   recursively legal operation) is offered after the pattern, with what the pattern created, in
+//!   pre-order, or, when an operation around it has not been offered yet, right after the walk
+//!   reaches that operation. The terminator of a moved block moves too and is converted like the
+//!   rest, unless the pattern erases or replaces it.
 //! - **What a pattern must not do.** Moves are not undone: a pattern that moves a block and then
 //!   answers `Ok(false)` or `Err` breaks the pattern contract, and is reported as for any other
 //!   change.
@@ -168,8 +179,10 @@
 //! The driver visits the operations under the root in the order it collected them (a pre-order
 //! walk that does not enter a recursively legal operation). The pattern applications that follow
 //! from one of them, to the operation itself, to what the patterns insert or change in place while
-//! it is legalized (and what they move that the walk does not reach), and to the operation again while it stays illegal, are counted, and the count
-//! starts again at the next operation. More than
+//! it is legalized (and what they move that the walk does not reach), and to the operation again
+//! while it stays illegal, are counted, and the count starts again at the next operation. An
+//! operation offered before the walk reaches it (a pattern changed it in place) is not offered
+//! again when the walk reaches it. More than
 //! [ConversionConfig::with_max_rewrites_per_operation] (1,024 by default) is an error that names
 //! the operation and the pattern: the limit stops a pattern that never ends, not a large program.
 //! It also bounds what one application may start: an application that inserts more operations
@@ -195,8 +208,9 @@
 //! A pattern may rely on: being offered only an operation the target does not call legal; its
 //! operands being given as described above, under its own type converter; the casts it causes
 //! being realized by its own converter's callbacks; the operations it creates being legalized
-//! after it succeeds; the operations it moves being converted once, after the operation that now
-//! holds them; and the patterns rooted at one operation being tried in order of the
+//! after it succeeds; the operations it moves being offered at most once, and, when they are
+//! offered after the move, after the operation that now holds them; and the patterns rooted at one
+//! operation being tried in order of the
 //! estimated length of their path to legal operations, then benefit.
 //!
 //! A pattern may not rely on: the order in which operations are offered (it is a pre-order walk,

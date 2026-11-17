@@ -1,0 +1,28 @@
+// RUN: runic-opt %s -p convert-to-wasm | filecheck %s
+// RUN: runic-opt %s -p 'convert-to-wasm,wasm-verify-form' | filecheck %s
+
+// A debug-info subprogram holds the type of its function. That type describes a signature, not a
+// function value: it becomes the function type of the converted signature, its parameters and
+// results converted as the function's are. A function value is an `i32` in Wasm form, so a
+// parameter of a function type becomes an `i32` there, but the subprogram's own type stays a
+// function type. The second RUN line checks that the result is in Wasm form.
+
+// CHECK-LABEL: builtin.module public @debug_info
+builtin.module public @debug_info attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    // The signature is already in Wasm form: the type is kept.
+    // CHECK: builtin.function public extern("C") @same(%0: i32, %1: i64) -> i64 {
+    // CHECK-NEXT: builtin.ret %1 : (i64);
+    // CHECK-NEXT: } attributes { di.subprogram = #di.subprogram<{ name = "same", file = "t.rs", line = 1, column = 1, ty = (i32, i64) -> i64, definition = true, local = false }> };
+    builtin.function public extern("C") @same(%a: i32, %b: i64) -> i64 {
+        builtin.ret %b : (i64);
+    } attributes { di.subprogram = #di.subprogram<{ name = "same", file = "t.rs", line = 1, column = 1, ty = (i32, i64) -> i64 }> };
+
+    // Each part is converted: a narrow integer and a pointer become `i32`, and so does a
+    // parameter of a function type, a function value.
+    // CHECK: builtin.function public extern("wasm") @parts({{%[0-9]+}}: i32, {{%[0-9]+}}: i32, {{%[0-9]+}}: i32) -> i32 {
+    // CHECK: } attributes { di.subprogram = #di.subprogram<{ name = "parts", file = "t.rs", line = 2, column = 1, ty = (i32, i32, i32) -> i32, definition = true, local = false }> };
+    builtin.function public extern("wasm") @parts(%a: i8, %p: ptr<i8>, %f: (i16) -> i16) -> i1 {
+        %t = arith.constant 1 : i1;
+        builtin.ret %t : (i1);
+    } attributes { di.subprogram = #di.subprogram<{ name = "parts", file = "t.rs", line = 2, column = 1, ty = (i8, ptr<i8>, (i16) -> i16) -> i1 }> };
+};

@@ -4,7 +4,11 @@ use core::cell::RefCell;
 use smallvec::SmallVec;
 
 use super::ConversionPatternRewriter;
-use crate::{Context, FxHashMap, Operation, Report, SourceSpan, Type, ValueRef, WalkResult};
+use crate::{
+    AttributeRef, Context, ElementSite, FxHashMap, Operation, Report, SourceSpan, Type, Value,
+    ValueRef, WalkResult, attributes::ElementVisitor,
+    dialects::debuginfo::attributes::SubprogramAttr,
+};
 
 type TypeConversionFn = Rc<dyn Fn(&Context, Type) -> Option<TypeConversion>>;
 type SourceMaterializationFn = Rc<
@@ -234,6 +238,27 @@ impl TypeConverter {
         types
     }
 
+    /// The function type a signature of function type `ty` converts to: the function type of its
+    /// parameters and results, each converted ([Self::convert_type]) and flattened, with a `never`
+    /// result kept; `ty` itself when it is not a function type.
+    ///
+    /// This is the answer for a function type that describes a signature (such as the type a
+    /// debug-info subprogram holds), not for a value of that type: no conversion is asked about
+    /// `ty` itself, so a conversion that gives a function value another type (a table index, say)
+    /// does not change it. A parameter or result of function type is a value, and converts by
+    /// [Self::convert_type]. Under [Self::with_function_types], when no conversion added after it
+    /// answers for `ty`, this is what [Self::convert_type] answers for `ty`; it is the function type
+    /// of the signature [super::convert_signature] gives.
+    pub fn convert_signature_type(&self, context: &Context, ty: Type) -> Type {
+        match ty.as_function() {
+            Some(function) => {
+                let (params, results) = (function.params().to_vec(), function.results().to_vec());
+                self.convert_function_type(context, &params, &results)
+            }
+            None => ty,
+        }
+    }
+
     /// The function type of `params` and `results`, each converted and flattened; a `never`
     /// result stays `never`.
     fn convert_function_type(&self, context: &Context, params: &[Type], results: &[Type]) -> Type {
@@ -275,27 +300,69 @@ impl TypeConverter {
     /// attributes at any depth of attribute (types held inside other types are not asked about).
     ///
     /// Each type is asked about with [Self::is_legal_type], so through the callbacks and what the
-    /// converter remembers of them. The types visited are
-    /// those of [Operation::walk_types] without descending into a type, plus the operand types. As
-    /// that walk does, it leaves out the type an attribute's kind fixes (the `i1` of a `BoolAttr`,
-    /// the `i32` of an `I32Attr`) and the types held by the key of a keyed successor; the operations
-    /// nested in the regions are not looked at.
+    /// converter remembers of them, except the function type a debug-info subprogram holds under
+    /// [Self::with_function_types]: that type describes a signature, not a value, and it is legal
+    /// when [Self::convert_signature_type] gives it back, that is, when its parameters and results
+    /// are legal, whatever a conversion says about a value of that type. Every other function type
+    /// an attribute holds (a parameter of a signature, a local, a `TypeAttr`) is the type of a
+    /// value. The types visited are those of [Operation::walk_types] without descending into a
+    /// type, plus the operand types. As that walk does, it leaves out the type an attribute's kind
+    /// fixes (the `i1` of a `BoolAttr`, the `i32` of an `I32Attr`) and the types held by the key of
+    /// a keyed successor; the operations nested in the regions are not looked at.
     pub fn is_legal_op(&self, op: &Operation) -> bool {
         let context = op.context();
         let operands_legal = op
             .operands()
             .iter()
             .all(|operand| self.is_legal_type(context, operand.borrow().ty()));
-        operands_legal
-            && !op
-                .walk_types(&mut |_, ty| {
-                    if self.is_legal_type(context, ty) {
-                        WalkResult::Skip
-                    } else {
-                        WalkResult::Break(Report::msg("illegal type"))
+        operands_legal && self.first_illegal_held_type(op).is_none()
+    }
+
+    /// The first type `op` has or holds that is not legal as [Self::is_legal_op] judges it (its
+    /// operand types aside), with where `op` holds it: the results, then the block arguments,
+    /// then the attributes, in the order of [Operation::walk_types].
+    pub(super) fn first_illegal_held_type(&self, op: &Operation) -> Option<(String, Type)> {
+        let context = op.context();
+        for (index, result) in op.results().iter().enumerate() {
+            let ty = result.borrow().ty();
+            if !self.is_legal_type(context, ty) {
+                return Some((format!("{}", ElementSite::Result(index)), ty));
+            }
+        }
+        for (region, body) in op.regions().iter().enumerate() {
+            for (block, body) in body.body().iter().enumerate() {
+                for (index, arg) in body.arguments().iter().enumerate() {
+                    let ty = arg.borrow().ty();
+                    if !self.is_legal_type(context, ty) {
+                        let site = ElementSite::BlockArgument {
+                            region,
+                            block,
+                            index,
+                        };
+                        return Some((format!("{site}"), ty));
                     }
-                })
-                .was_interrupted()
+                }
+            }
+        }
+        let mut found = None;
+        let _ = op.walk_attributes(&mut |site, attr| {
+            let signature = self.converts_function_types() && holds_a_signature(attr);
+            let mut types = HeldTypes::default();
+            attr.borrow().visit_elements(&mut types);
+            for ty in types.0 {
+                let legal = if signature && ty.is_function() {
+                    self.convert_signature_type(context, ty) == ty
+                } else {
+                    self.is_legal_type(context, ty)
+                };
+                if !legal {
+                    found = Some((format!("{site}"), ty));
+                    return WalkResult::Break(Report::msg("illegal type"));
+                }
+            }
+            WalkResult::Continue(())
+        });
+        found
     }
 
     /// The one type `ty` converts to, or an error when it converts to several or none.
@@ -349,6 +416,24 @@ impl TypeConverter {
     fn forget_answers(&mut self) {
         self.memo = Rc::default();
     }
+}
+
+/// Whether a function type `attr` holds directly describes a signature rather than the type of a
+/// value: the type of a debug-info subprogram.
+pub(super) fn holds_a_signature(attr: &AttributeRef) -> bool {
+    attr.borrow().downcast_ref::<SubprogramAttr>().is_some()
+}
+
+/// The types an attribute holds directly, in the order it lists them.
+#[derive(Default)]
+struct HeldTypes(SmallVec<[Type; 4]>);
+
+impl ElementVisitor for HeldTypes {
+    fn visit_type(&mut self, ty: Type) {
+        self.0.push(ty);
+    }
+
+    fn visit_attribute(&mut self, _attr: &AttributeRef) {}
 }
 
 fn exactly_one(
@@ -881,6 +966,68 @@ mod tests {
             let wide = context.create_attribute::<TypeAttr, _>(context.i128()).as_attribute_ref();
             sink.borrow_mut().set_attribute("wide", list_of(&context, &[wide]));
             assert!(!converter.is_legal_op(&sink.borrow()), "a list of an illegal type");
+        }
+
+        /// A debug-info subprogram whose function type `ty` names.
+        fn subprogram(context: &Rc<Context>, ty: Type) -> AttributeRef {
+            use crate::dialects::debuginfo::attributes::{Subprogram, SubprogramAttr};
+            let subprogram = Subprogram::new(
+                crate::interner::Symbol::intern("f"),
+                crate::interner::Symbol::intern("a.rs"),
+                1,
+                None,
+            )
+            .with_function_type(ty);
+            context.create_attribute::<SubprogramAttr, _>(subprogram).as_attribute_ref()
+        }
+
+        /// Under a converter that converts function types by their parts and then gives every
+        /// value of a function type one `i32`, the function type a debug-info subprogram holds is
+        /// a signature: it is legal when its parameters and results are. A value of a function
+        /// type, and a function type a `TypeAttr` holds, are the types of values, and are not
+        /// legal. Without the later conversion, the answers agree.
+        #[test]
+        fn a_subprogram_type_is_legal_when_its_parts_are() {
+            let (context, module) = parse_module(
+                "    builtin.function public extern(\"C\") @f(%0: (i32) -> i32, %1: i64) {
+        test.sink %0 : ((i32) -> i32);
+        test.sink %1 : (i64);
+        builtin.ret;
+    };",
+            );
+            let (i16, i32) = (context.i16(), context.i32());
+            let mut parts = TypeConverter::new();
+            parts.add_conversion(move |_, ty| (ty == i16).then_some(TypeConversion::One(i32)));
+            let parts = parts.with_function_types();
+            let mut values = parts.clone();
+            values
+                .add_conversion(move |_, ty| ty.is_function().then_some(TypeConversion::One(i32)));
+            let legal = context.function_type([i32], [i32]);
+
+            let mut sink = op_starting(module, "test.sink %1");
+            sink.borrow_mut().set_attribute("legal", subprogram(&context, legal));
+            assert!(values.is_legal_op(&sink.borrow()), "a signature of legal parts");
+            assert!(parts.is_legal_op(&sink.borrow()));
+            let narrow = context.function_type([i16], [i32]);
+            sink.borrow_mut().set_attribute("narrow", subprogram(&context, narrow));
+            assert!(!values.is_legal_op(&sink.borrow()), "a signature with an illegal part");
+            assert!(!parts.is_legal_op(&sink.borrow()));
+
+            let mut held = op_starting(module, "test.sink %1");
+            held.borrow_mut().remove_attribute("narrow");
+            let ty = context.create_attribute::<TypeAttr, _>(legal).as_attribute_ref();
+            held.borrow_mut().set_attribute("ty", ty);
+            assert!(!values.is_legal_op(&held.borrow()), "a TypeAttr of a function type");
+            assert!(parts.is_legal_op(&held.borrow()));
+
+            let value = op_starting(module, "test.sink %0");
+            assert!(!values.is_legal_op(&value.borrow()), "a value of a function type");
+            assert!(parts.is_legal_op(&value.borrow()));
+            assert_eq!(
+                values.convert_signature_type(&context, context.function_type([i16], [i16])),
+                context.function_type([i32], [i32])
+            );
+            assert_eq!(values.convert_signature_type(&context, i16), i16, "not a function type");
         }
 
         fn list_of(context: &Rc<Context>, entries: &[AttributeRef]) -> AttributeRef {
