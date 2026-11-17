@@ -706,7 +706,23 @@ impl crate::Verify<dyn CallableSymbol> for Function {
                 } else if let Some(ret_imm) = op.downcast_ref::<RetImm>() {
                     check_return(op, &[crate::Attribute::ty(&*ret_imm.value())])
                 } else if let Some(tail_call) = op.as_trait::<dyn TailCallOpInterface>() {
-                    check_tail_call(op, &tail_call.tail_signature())
+                    if op.implements::<dyn crate::traits::TailCallLike>() {
+                        check_tail_call(op, &tail_call.tail_signature())
+                    } else {
+                        let reason = format!(
+                            "`{}` implements `TailCallOpInterface`, but it is not `TailCallLike`, \
+                             which is how passes and analyses recognise a tail call as an exit of \
+                             the function",
+                            op.name()
+                        );
+                        Err(report!(
+                            message: "invalid operation builtin.function",
+                            labels: [
+                                primary(op.span(), reason),
+                                context(span, "in this function"),
+                            ],
+                        ))
+                    }
                 } else if op.implements::<dyn crate::traits::TailCallLike>() {
                     let reason = format!(
                         "`{}` is a tail call, but it does not implement `TailCallOpInterface`, \
@@ -1174,6 +1190,58 @@ mod tests {
         implements(OpPrinter)
     )]
     pub struct TailCallWithoutInterface {}
+
+    /// A terminator that implements [TailCallOpInterface] and is not [TailCallLike]. It exists in
+    /// this test binary only.
+    #[derive(OpPrinter, OpParser)]
+    #[operation(
+        dialect = TestDialect,
+        name = "tail_call_without_trait",
+        traits(Terminator),
+        implements(TailCallOpInterface, OpPrinter)
+    )]
+    pub struct TailCallWithoutTrait {}
+
+    impl TailCallOpInterface for TailCallWithoutTrait {
+        fn tail_signature(&self) -> crate::dialects::builtin::attributes::Signature {
+            crate::dialects::builtin::attributes::Signature::new(
+                &self.as_operation().context_rc(),
+                alloc::vec::Vec::<Type>::new(),
+                alloc::vec::Vec::<Type>::new(),
+            )
+        }
+    }
+
+    /// The function verifier rejects an operation that implements `TailCallOpInterface` without
+    /// being `TailCallLike`, naming both: the passes find the exits of a function through the
+    /// trait.
+    #[test]
+    fn an_operation_with_the_interface_and_not_the_trait_is_rejected_by_the_function_verifier() {
+        let source = "builtin.module public @m {
+    builtin.function public extern(\"C\") @f() {
+        \"test.tail_call_without_trait\"() : () -> ();
+    };
+};";
+        let context = alloc::rc::Rc::new(crate::Context::default());
+        let result = crate::parse::parse_any(
+            crate::parse::ParserConfig::new(context.clone()),
+            "tail_call",
+            source,
+        )
+        .into_result();
+        let error = match result {
+            Ok(_) => panic!("a tail call that is not TailCallLike was accepted"),
+            Err(report) => crate::testing::text::describe(&report),
+        };
+        assert!(error.contains("invalid operation builtin.function"), "{error}");
+        assert!(
+            error.contains(
+                "`test.tail_call_without_trait` implements `TailCallOpInterface`, but it is not \
+                 `TailCallLike`"
+            ),
+            "{error}"
+        );
+    }
 
     /// The function verifier rejects a `TailCallLike` operation that does not implement
     /// `TailCallOpInterface`, naming the operation and the interface.

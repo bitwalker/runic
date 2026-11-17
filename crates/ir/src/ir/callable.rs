@@ -81,7 +81,9 @@ pub fn verify_exit_crosses_only_forwarding_ops(
 /// function verifier finds the tail calls of a function through it and holds each to the
 /// function's declared results and calling convention, so a dialect's own tail call needs no check
 /// of that rule. A tail call that is `TailCallLike` and does not implement the interface is
-/// rejected by the function verifier.
+/// rejected by the function verifier, and so is an operation that implements the interface and is
+/// not `TailCallLike`: passes and analyses recognise a tail call as an exit of its function by the
+/// trait.
 ///
 /// The function verifier sees only the tail calls inside a function, so an implementor's own
 /// verifier calls [verify_tail_call_is_in_function], which rejects one anywhere else.
