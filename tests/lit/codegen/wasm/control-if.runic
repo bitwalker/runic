@@ -1,0 +1,141 @@
+// RUN: runic-opt %s -p 'convert-to-wasm,wasm-verify-form' | filecheck %s
+
+// `scf.if` becomes `wasm.if` on the carried condition, with the carriers of its result types and
+// no parameters (values from outside are used directly). An arm's `scf.yield` becomes `wasm.end`
+// of the carried values; an arm that ends in an exit keeps it.
+
+builtin.module public @control_if attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @g(i32) -> i32;
+
+    // Results of several types: the narrow `i8` is carried in an `i32`, and each arm's
+    // `scf.yield` becomes the `wasm.end` of its region.
+    // CHECK-LABEL: @results(
+    // CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32, [[V2:%[0-9]+]]: i64, [[V3:%[0-9]+]]: f32) -> (i32, i64, f32) {
+    // CHECK-NEXT: [[V4:%[0-9]+]], [[V5:%[0-9]+]], [[V6:%[0-9]+]] = wasm.if [[V0]] then {
+    // CHECK-NEXT: [[V7:%[0-9]+]] = wasm.const 1 : i32;
+    // CHECK-NEXT: [[V8:%[0-9]+]] = wasm.add [[V1]], [[V7]];
+    // CHECK-NEXT: [[V9:%[0-9]+]] = wasm.const 255 : i32;
+    // CHECK-NEXT: [[V10:%[0-9]+]] = wasm.and [[V8]], [[V9]];
+    // CHECK-NEXT: wasm.end [[V10]], [[V2]], [[V3]] : (i32, i64, f32);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: [[V11:%[0-9]+]] = wasm.const 7 : i64;
+    // CHECK-NEXT: wasm.end [[V1]], [[V11]], [[V3]] : (i32, i64, f32);
+    // CHECK-NEXT: } : (i32) -> (i32, i64, f32);
+    // CHECK-NEXT: builtin.ret [[V4]], [[V5]], [[V6]] : (i32, i64, f32);
+    // CHECK-NEXT: };
+    builtin.function public extern("wasm") @results(%c: i1, %x: i8, %y: i64, %z: f32) -> (i8, i64, f32) {
+        %a, %b, %d = scf.if %c then {
+            %one = arith.constant 1 : i8;
+            %s = arith.add %x, %one <{ overflow = #builtin.overflow<wrapping> }>;
+            scf.yield %s, %y, %z : (i8, i64, f32);
+        } else {
+            %k = arith.constant 7 : i64;
+            scf.yield %x, %k, %z : (i8, i64, f32);
+        } : (i1) -> (i8, i64, f32);
+        builtin.ret %a, %b, %d : (i8, i64, f32);
+    };
+
+    // No results: the second region only ends, and the text leaves it out.
+    // CHECK-LABEL: @no_results(
+    // CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 locals(i32) {
+    // CHECK-NEXT: wasm.if [[V0]] then {
+    // CHECK-NEXT: builtin.store_local 0, [[V1]];
+    // CHECK-NEXT: wasm.end : ();
+    // CHECK-NEXT: } : (i32) -> ();
+    // CHECK-NEXT: [[V2:%[0-9]+]] = builtin.load_local 0 : i32;
+    // CHECK-NEXT: builtin.ret [[V2]] : (i32);
+    // CHECK-NEXT: };
+    builtin.function public extern("wasm") @no_results(%c: i1, %x: i32) -> i32 locals(i32) {
+        scf.if %c then {
+            builtin.store_local 0, %x;
+            scf.yield : ();
+        } else {
+            scf.yield : ();
+        } : (i1) -> ();
+        %v = builtin.load_local 0 : i32;
+        builtin.ret %v : (i32);
+    };
+
+    // Arms that end in a return, a tail call and `ub.unreachable`: the first two stay as they
+    // are, the third becomes `wasm.unreachable`.
+    // CHECK-LABEL: @exits(
+    // CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32, [[V2:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[V3:%[0-9]+]] = wasm.const 1 : i32;
+    // CHECK-NEXT: [[V4:%[0-9]+]] = wasm.and [[V0]], [[V3]];
+    // CHECK-NEXT: [[V5:%[0-9]+]] = wasm.const 1 : i32;
+    // CHECK-NEXT: [[V6:%[0-9]+]] = wasm.and [[V1]], [[V5]];
+    // CHECK-NEXT: [[V7:%[0-9]+]] = wasm.if [[V4]] then {
+    // CHECK-NEXT: builtin.ret [[V2]] : (i32);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: [[V8:%[0-9]+]] = wasm.if [[V6]] then {
+    // CHECK-NEXT: builtin.tail_call @g([[V2]]) : extern("C") (i32) -> i32;
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: wasm.end [[V2]] : (i32);
+    // CHECK-NEXT: } : (i32) -> (i32);
+    // CHECK-NEXT: wasm.end [[V8]] : (i32);
+    // CHECK-NEXT: } : (i32) -> (i32);
+    // CHECK-NEXT: [[V9:%[0-9]+]] = wasm.const 0 : i32;
+    // CHECK-NEXT: [[V10:%[0-9]+]] = wasm.eq [[V7]], [[V9]];
+    // CHECK-NEXT: wasm.if [[V10]] then {
+    // CHECK-NEXT: wasm.unreachable;
+    // CHECK-NEXT: } : (i32) -> ();
+    // CHECK-NEXT: builtin.ret [[V7]] : (i32);
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @exits(%c: i1, %d: i1, %x: i32) -> i32 {
+        %r = scf.if %c then {
+            builtin.ret %x : (i32);
+        } else {
+            %s = scf.if %d then {
+                builtin.tail_call @g(%x) : extern("C") (i32) -> i32;
+            } else {
+                scf.yield %x : (i32);
+            } : (i1) -> (i32);
+            scf.yield %s : (i32);
+        } : (i1) -> (i32);
+        %z = arith.constant 0 : i32;
+        %bad = arith.cmpi eq %r, %z;
+        scf.if %bad then {
+            ub.unreachable;
+        } else {
+            scf.yield : ();
+        } : (i1) -> ();
+        builtin.ret %r : (i32);
+    };
+
+    // Nested ifs: the inner one is converted after it moves into the outer one.
+    // CHECK-LABEL: @nested(
+    // CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32, [[V2:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[V3:%[0-9]+]] = wasm.if [[V0]] then {
+    // CHECK-NEXT: [[V4:%[0-9]+]] = wasm.if [[V1]] then {
+    // CHECK-NEXT: [[V5:%[0-9]+]] = wasm.const 1 : i32;
+    // CHECK-NEXT: wasm.end [[V5]] : (i32);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: wasm.end [[V2]] : (i32);
+    // CHECK-NEXT: } : (i32) -> (i32);
+    // CHECK-NEXT: [[V6:%[0-9]+]] = wasm.add [[V4]], [[V2]];
+    // CHECK-NEXT: [[V7:%[0-9]+]] = wasm.const 65535 : i32;
+    // CHECK-NEXT: [[V8:%[0-9]+]] = wasm.and [[V6]], [[V7]];
+    // CHECK-NEXT: wasm.end [[V8]] : (i32);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: [[V9:%[0-9]+]] = wasm.const 2 : i32;
+    // CHECK-NEXT: wasm.end [[V9]] : (i32);
+    // CHECK-NEXT: } : (i32) -> (i32);
+    // CHECK-NEXT: builtin.ret [[V3]] : (i32);
+    // CHECK-NEXT: };
+    builtin.function public extern("wasm") @nested(%c: i1, %d: i1, %x: i16) -> i16 {
+        %r = scf.if %c then {
+            %s = scf.if %d then {
+                %one = arith.constant 1 : i16;
+                scf.yield %one : (i16);
+            } else {
+                scf.yield %x : (i16);
+            } : (i1) -> (i16);
+            %t = arith.add %s, %x <{ overflow = #builtin.overflow<wrapping> }>;
+            scf.yield %t : (i16);
+        } else {
+            %two = arith.constant 2 : i16;
+            scf.yield %two : (i16);
+        } : (i1) -> (i16);
+        builtin.ret %r : (i16);
+    };
+};

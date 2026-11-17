@@ -15,9 +15,6 @@
 // A shift amount of `N` or more is undefined in `arith`; the mask keeps carried form anyway.
 // `arith.sdiv` of the minimum value by -1 traps in `arith`; below the carrier's width the lowering
 // does not trap and gives the minimum value, which `arith` allows.
-//
-// An operation that no pattern lowers (here a load, left to the patterns of memory) is reported by
-// the conversion, which names it.
 
 // CHECK-LABEL: @add_i8(
 // CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {

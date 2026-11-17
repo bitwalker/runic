@@ -2,8 +2,10 @@
 
 pub mod calls;
 pub mod composed;
+pub mod control;
 pub mod float;
 pub mod int;
+pub mod labels;
 pub mod memory;
 pub mod symbols;
 
@@ -20,14 +22,14 @@ use runic_ir::{
     Context, EntityMut, Forward, Operation, OperationName, OperationRef, RawWalk, Report, Spanned,
     Symbol, Type, Value, WalkResult,
     conversion::{
-        ConversionConfig, ConversionPatternSet, ConversionTarget, TypeConverter,
-        add_builtin_legality_by_type, apply_full_conversion,
+        ConversionConfig, ConversionPatternSet, ConversionTarget, DynamicLegalityResult,
+        TypeConverter, add_builtin_legality_by_type, apply_full_conversion,
     },
     diagnostics::report,
     dialects::builtin::{
         Call, CallIndirect, Component, Function, FunctionAlias, FunctionReference, GlobalVariable,
-        Module, ModuleRef, RetImm, Segment, TailCall, TailCallIndirect, World,
-        attributes::Signature,
+        Module, ModuleRef, RetImm, Segment, TailCall, TailCallIndirect, UnrealizedConversionCast,
+        World, attributes::Signature,
     },
     pass::{Pass, PassExecutionState, PostPassStatus},
 };
@@ -67,7 +69,10 @@ const DESCRIPTION: &str = "Converts generic operations and types to Wasm form: w
 ///    builtin conversion patterns cover are legal exactly when their types are
 ///    ([add_builtin_legality_by_type]), except `builtin.ret_imm`, which is illegal (Wasm form
 ///    returns with `builtin.ret`), and `builtin.call_indirect`, `builtin.tail_call_indirect` and
-///    `builtin.function_ref`, which are illegal (Wasm form calls through a table); `builtin.module`, `builtin.function_alias`, `builtin.segment`
+///    `builtin.function_ref`, which are illegal (Wasm form calls through a table); a
+///    `builtin.unrealized_conversion_cast` is legal exactly when its types are (the patterns of
+///    control flow read a value through one, which folds away; see [control]);
+///    `builtin.module`, `builtin.function_alias`, `builtin.segment`
 ///    and `builtin.global_variable` are legal, and a global variable and a `wasm.global` are
 ///    recursively legal: an initializer is data or a constant expression, not code. Every other
 ///    operation is illegal, so an operation that no pattern converts is an error that names it.
@@ -176,6 +181,10 @@ pub fn conversion_target(
         .add_illegal_dialect::<ScfDialect>()
         .add_illegal_dialect::<UndefinedBehaviorDialect>();
     add_builtin_legality_by_type(&mut target, converter);
+    let by_type = alloc::rc::Rc::new(converter.clone());
+    target.add_dynamically_legal_op::<UnrealizedConversionCast, _>(move |op: &Operation| {
+        DynamicLegalityResult::legal_if(by_type.is_legal_op(op))
+    });
     target
         .add_illegal_op::<RetImm>()
         .add_illegal_op::<CallIndirect>()
@@ -193,7 +202,9 @@ pub fn conversion_target(
 /// Adds the patterns of `convert-to-wasm`, all driven by `converter`, for the target `target`,
 /// naming the well-known symbols `symbols` of the module they convert.
 ///
-/// Each area of the lowering adds its own from a module of its own under `convert/`.
+/// Each area of the lowering adds its own from a module of its own under `convert/`. The patterns
+/// of control flow share one new table of the constructs they create ([labels]), so the patterns
+/// of one call convert one module.
 pub fn populate_patterns(
     patterns: &mut ConversionPatternSet,
     converter: &TypeConverter,
@@ -206,6 +217,7 @@ pub fn populate_patterns(
     composed::populate(patterns, converter)?;
     memory::populate(patterns, converter, target, symbols.memory)?;
     symbols::populate(patterns, converter, symbols.table)?;
+    control::populate(patterns, converter, &labels::new_labels())?;
     Ok(())
 }
 

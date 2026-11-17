@@ -1,0 +1,161 @@
+// RUN: runic-opt %s -p 'cfg-to-scf{exits=in-place},wasm-lower-frames,convert-to-wasm,wasm-verify-form' | filecheck %s
+
+// The whole lowering pipeline from CFG input: the shapes `cfg-to-scf{exits=in-place}` leaves (an
+// exit nested in the regions of an `scf.if` or `scf.index_switch`, a loop that carries an exit's
+// operands and a selector out to a dispatch after it, a `ub.unreachable` after structured code
+// that every path leaves) all reach Wasm form.
+
+builtin.module public @control_exits attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @g(i32) -> i32;
+    builtin.function public extern("C") @h(i32) -> i32;
+
+    // A return and a tail call, each in its region of the `scf.if`, and so of the `wasm.if`; the
+    // region of the function ends in `ub.unreachable` after it, which becomes `wasm.unreachable`.
+    // CHECK-LABEL: @ret_and_tail_call(
+    // CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[V2:%[0-9]+]] = wasm.const 1 : i32;
+    // CHECK-NEXT: [[V3:%[0-9]+]] = wasm.and [[V0]], [[V2]];
+    // CHECK-NEXT: wasm.if [[V3]] then {
+    // CHECK-NEXT: builtin.ret [[V1]] : (i32);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: builtin.tail_call @g([[V1]]) : extern("C") (i32) -> i32;
+    // CHECK-NEXT: } : (i32) -> ();
+    // CHECK-NEXT: wasm.unreachable;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @ret_and_tail_call(%c: i1, %a: i32) -> i32 {
+        cf.cond_br %c ^x, ^y : (i1);
+    ^x:
+        builtin.ret %a : (i32);
+    ^y:
+        builtin.tail_call @g(%a) : extern("C") (i32) -> i32;
+    };
+
+    // Exits two conditionals deep, using a value of the outer conditional.
+    // CHECK-LABEL: @nested(
+    // CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32, [[V2:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[V3:%[0-9]+]] = wasm.const 1 : i32;
+    // CHECK-NEXT: [[V4:%[0-9]+]] = wasm.and [[V0]], [[V3]];
+    // CHECK-NEXT: [[V5:%[0-9]+]] = wasm.const 1 : i32;
+    // CHECK-NEXT: [[V6:%[0-9]+]] = wasm.and [[V1]], [[V5]];
+    // CHECK-NEXT: wasm.if [[V4]] then {
+    // CHECK-NEXT: [[V7:%[0-9]+]] = wasm.const 1 : i32;
+    // CHECK-NEXT: [[V8:%[0-9]+]] = wasm.add [[V2]], [[V7]];
+    // CHECK-NEXT: wasm.if [[V6]] then {
+    // CHECK-NEXT: builtin.tail_call @g([[V8]]) : extern("C") (i32) -> i32;
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: builtin.ret [[V8]] : (i32);
+    // CHECK-NEXT: } : (i32) -> ();
+    // CHECK-NEXT: wasm.end : ();
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: builtin.tail_call @h([[V2]]) : extern("C") (i32) -> i32;
+    // CHECK-NEXT: } : (i32) -> ();
+    // CHECK-NEXT: wasm.unreachable;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @nested(%c: i1, %d: i1, %a: i32) -> i32 {
+        cf.cond_br %c ^outer, ^other : (i1);
+    ^outer:
+        %one = arith.constant 1 : i32;
+        %v = arith.add %a, %one;
+        cf.cond_br %d ^inner, ^join : (i1);
+    ^inner:
+        builtin.tail_call @g(%v) : extern("C") (i32) -> i32;
+    ^join:
+        builtin.ret %v : (i32);
+    ^other:
+        builtin.tail_call @h(%a) : extern("C") (i32) -> i32;
+    };
+
+    // Three exits behind a `cf.switch` of two cases: an `scf.index_switch` of two cases, a chain
+    // of two `wasm.if`s.
+    // CHECK-LABEL: @three_exits(
+    // CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[V2:%[0-9]+]] = wasm.const 0 : i32;
+    // CHECK-NEXT: [[V3:%[0-9]+]] = wasm.eq [[V0]], [[V2]];
+    // CHECK-NEXT: wasm.if [[V3]] then {
+    // CHECK-NEXT: builtin.tail_call @h([[V1]]) : extern("C") (i32) -> i32;
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: [[V4:%[0-9]+]] = wasm.const 1 : i32;
+    // CHECK-NEXT: [[V5:%[0-9]+]] = wasm.eq [[V0]], [[V4]];
+    // CHECK-NEXT: wasm.if [[V5]] then {
+    // CHECK-NEXT: builtin.ret [[V1]] : (i32);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: builtin.tail_call @g([[V1]]) : extern("C") (i32) -> i32;
+    // CHECK-NEXT: } : (i32) -> ();
+    // CHECK-NEXT: wasm.end : ();
+    // CHECK-NEXT: } : (i32) -> ();
+    // CHECK-NEXT: wasm.unreachable;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @three_exits(%s: i32, %a: i32) -> i32 {
+        cf.switch %s [#builtin.i32<0> -> ^h_exit, #builtin.i32<1> -> ^r_exit], ^g_exit : (i32);
+    ^g_exit:
+        builtin.tail_call @g(%a) : extern("C") (i32) -> i32;
+    ^h_exit:
+        builtin.tail_call @h(%a) : extern("C") (i32) -> i32;
+    ^r_exit:
+        builtin.ret %a : (i32);
+    };
+
+    // A loop left normally and by an early return from its body: the loop carries the exit's
+    // operand and a selector out, and the dispatch after it on the selector holds the returns.
+    // CHECK-LABEL: @loop_dispatch(
+    // CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[V2:%[0-9]+]] = wasm.const 2 : i32;
+    // CHECK-NEXT: [[V3:%[0-9]+]] = wasm.const 1 : i32;
+    // CHECK-NEXT: [[V4:%[0-9]+]] = wasm.const 0 : i32;
+    // CHECK-NEXT: [[V5:%[0-9]+]] = wasm.const 0 : i32;
+    // CHECK-NEXT: [[V6:%[0-9]+]] = wasm.const 1 : i32;
+    // CHECK-NEXT: [[V7:%[0-9]+]] = wasm.const 0 : i32;
+    // CHECK-NEXT: [[V8:%[0-9]+]] = wasm.const 0 : i32;
+    // CHECK-NEXT: [[V9:%[0-9]+]], [[V10:%[0-9]+]], [[V11:%[0-9]+]] = wasm.loop [[V8]], [[V4]], [[V4]] {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[V12:%[0-9]+]]: i32, [[V13:%[0-9]+]]: i32, [[V14:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[V15:%[0-9]+]] = wasm.ge_u [[V12]], [[V0]];
+    // CHECK-NEXT: [[V16:%[0-9]+]], [[V17:%[0-9]+]], [[V18:%[0-9]+]] = wasm.if [[V15]] then {
+    // CHECK-NEXT: wasm.end [[V4]], [[V2]], [[V5]] : (i32, i32, i32);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: [[V19:%[0-9]+]] = wasm.eq [[V12]], [[V1]];
+    // CHECK-NEXT: [[V20:%[0-9]+]], [[V21:%[0-9]+]], [[V22:%[0-9]+]] = wasm.if [[V19]] then {
+    // CHECK-NEXT: wasm.end [[V4]], [[V3]], [[V5]] : (i32, i32, i32);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: [[V23:%[0-9]+]] = wasm.const 1 : i32;
+    // CHECK-NEXT: [[V24:%[0-9]+]] = wasm.add [[V12]], [[V23]];
+    // CHECK-NEXT: wasm.end [[V24]], [[V7]], [[V6]] : (i32, i32, i32);
+    // CHECK-NEXT: } : (i32) -> (i32, i32, i32);
+    // CHECK-NEXT: wasm.end [[V20]], [[V21]], [[V22]] : (i32, i32, i32);
+    // CHECK-NEXT: } : (i32) -> (i32, i32, i32);
+    // CHECK-NEXT: wasm.if [[V18]] then {
+    // CHECK-NEXT: wasm.br 1 [[V16]], [[V12]], [[V17]] : (i32, i32, i32);
+    // CHECK-NEXT: } : (i32) -> ();
+    // CHECK-NEXT: wasm.end [[V16]], [[V12]], [[V17]] : (i32, i32, i32);
+    // CHECK-NEXT: } : (i32, i32, i32) -> (i32, i32, i32);
+    // CHECK-NEXT: [[V25:%[0-9]+]] = wasm.const 1 : i32;
+    // CHECK-NEXT: [[V26:%[0-9]+]] = wasm.eq [[V11]], [[V25]];
+    // CHECK-NEXT: wasm.if [[V26]] then {
+    // CHECK-NEXT: builtin.ret [[V1]] : (i32);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: [[V27:%[0-9]+]] = wasm.const 2 : i32;
+    // CHECK-NEXT: [[V28:%[0-9]+]] = wasm.mul [[V10]], [[V27]];
+    // CHECK-NEXT: builtin.ret [[V28]] : (i32);
+    // CHECK-NEXT: } : (i32) -> ();
+    // CHECK-NEXT: wasm.unreachable;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @loop_dispatch(%n: i32, %k: i32) -> i32 {
+        %zero = arith.constant 0 : i32;
+        cf.br ^head(%zero : i32);
+    ^head(%i: i32):
+        %done = arith.cmpi uge %i, %n;
+        cf.cond_br %done ^after, ^body : (i1);
+    ^body:
+        %hit = arith.cmpi eq %i, %k;
+        cf.cond_br %hit ^leave, ^latch : (i1);
+    ^leave:
+        builtin.ret %k : (i32);
+    ^latch:
+        %one = arith.constant 1 : i32;
+        %next = arith.add %i, %one;
+        cf.br ^head(%next : i32);
+    ^after:
+        %two = arith.constant 2 : i32;
+        %r = arith.mul %i, %two;
+        builtin.ret %r : (i32);
+    };
+};

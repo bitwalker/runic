@@ -1,9 +1,10 @@
 // RUN: runic-opt %s -p 'wasm-lower-frames,convert-to-wasm,wasm-verify-form' --split-input-file | filecheck %s
 
-// The frames of `frames.runic` that hold no `scf` operation, taken on through `convert-to-wasm`
-// (which does not lower `scf` yet): the casts `wasm-lower-frames` leaves fold away, each slot's
-// address is used directly, and the result is in Wasm form. An address no access uses stays as
-// it is.
+// The frames of `frames.runic`, taken on through `convert-to-wasm`: the casts `wasm-lower-frames`
+// leaves fold away, each slot's address is used directly, and the result is in Wasm form. An
+// address no access uses stays as it is. Under an `scf.if`, which becomes a `wasm.if`, the slot's
+// address is used where the alloca stood, and each return and tail call restores the stack pointer
+// first.
 
 // CHECK-LABEL: builtin.module public @one
 // CHECK-NEXT: wasm.memory private declaration @__linear_memory : 0
@@ -102,4 +103,78 @@ builtin.module public @tail attributes { data_layout = #builtin.data_layout<litt
         builtin.tail_call @g(%y) : extern("C") (i32) -> i32;
     };
     builtin.function public extern("C") @g(i32) -> i32;
+};
+
+// -----
+
+// An alloca under `scf.if`; a return inside it and the tail call after it.
+
+// CHECK-LABEL: builtin.module public @nested
+// CHECK: builtin.function public extern("C") @f(
+// CHECK-SAME: [[C:%[0-9]+]]: i32, [[X:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[ONE:%[0-9]+]] = wasm.const 1 : i32;
+// CHECK-NEXT: [[B:%[0-9]+]] = wasm.and [[C]], [[ONE]];
+// CHECK-NEXT: [[SP:%[0-9]+]] = wasm.global_get @__stack_pointer : i32;
+// CHECK-NEXT: [[SIZE:%[0-9]+]] = wasm.const 16 : i32;
+// CHECK-NEXT: [[FP:%[0-9]+]] = wasm.sub [[SP]], [[SIZE]];
+// CHECK-NEXT: wasm.global_set @__stack_pointer, [[FP]];
+// CHECK-NEXT: [[R:%[0-9]+]] = wasm.if [[B]] then {
+// CHECK-NEXT: wasm.store @__linear_memory, [[FP]], [[X]];
+// CHECK-NEXT: [[Y:%[0-9]+]] = wasm.load @__linear_memory, [[FP]] : i32;
+// CHECK-NEXT: wasm.global_set @__stack_pointer, [[SP]];
+// CHECK-NEXT: builtin.ret [[Y]] : (i32);
+// CHECK-NEXT: } else {
+// CHECK-NEXT: wasm.end [[X]] : (i32);
+// CHECK-NEXT: } : (i32) -> (i32);
+// CHECK-NEXT: wasm.global_set @__stack_pointer, [[SP]];
+// CHECK-NEXT: builtin.tail_call @g([[R]]) : extern("C") (i32) -> i32;
+// CHECK-NOT: unrealized_conversion_cast
+builtin.module public @nested attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @f(%c: i1, %x: i32) -> i32 {
+        %r = scf.if %c then {
+            %p = mem.alloca i32;
+            mem.store %x, %p;
+            %y = mem.load %p;
+            builtin.ret %y : (i32);
+        } else {
+            scf.yield %x : (i32);
+        } : (i1) -> (i32);
+        builtin.tail_call @g(%r) : extern("C") (i32) -> i32;
+    };
+    builtin.function public extern("C") @g(i32) -> i32;
+};
+
+// -----
+
+// Returns at two depths: each restores the stack pointer.
+
+// CHECK-LABEL: builtin.module public @two_depths
+// CHECK: builtin.function public extern("C") @f(
+// CHECK-SAME: [[C:%[0-9]+]]: i32, [[X:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[ONE:%[0-9]+]] = wasm.const 1 : i32;
+// CHECK-NEXT: [[B:%[0-9]+]] = wasm.and [[C]], [[ONE]];
+// CHECK-NEXT: [[SP:%[0-9]+]] = wasm.global_get @__stack_pointer : i32;
+// CHECK-NEXT: [[SIZE:%[0-9]+]] = wasm.const 16 : i32;
+// CHECK-NEXT: [[FP:%[0-9]+]] = wasm.sub [[SP]], [[SIZE]];
+// CHECK-NEXT: wasm.global_set @__stack_pointer, [[FP]];
+// CHECK-NEXT: wasm.store @__linear_memory, [[FP]], [[X]];
+// CHECK-NEXT: wasm.if [[B]] then {
+// CHECK-NEXT: wasm.global_set @__stack_pointer, [[SP]];
+// CHECK-NEXT: builtin.ret [[X]] : (i32);
+// CHECK-NEXT: } : (i32) -> ();
+// CHECK-NEXT: [[Y:%[0-9]+]] = wasm.load @__linear_memory, [[FP]] : i32;
+// CHECK-NEXT: wasm.global_set @__stack_pointer, [[SP]];
+// CHECK-NEXT: builtin.ret [[Y]] : (i32);
+builtin.module public @two_depths attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @f(%c: i1, %x: i32) -> i32 {
+        %p = mem.alloca i32;
+        mem.store %x, %p;
+        scf.if %c then {
+            builtin.ret %x : (i32);
+        } else {
+            scf.yield : ();
+        } : (i1) -> ();
+        %y = mem.load %p;
+        builtin.ret %y : (i32);
+    };
 };

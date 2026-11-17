@@ -1,0 +1,50 @@
+// RUN: runic-opt %s -p convert-to-wasm --split-input-file --verify-diagnostics --no-verify
+
+// What the lowering of control flow refuses. The input is not verified (`--no-verify`), so that
+// an exit the `scf` verifier would reject reaches `convert-to-wasm`.
+
+// Unstructured control flow is for `cfg-to-scf{exits=in-place}` to structure first.
+builtin.module public @unstructured attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @f(%c: i1, %a: i32, %b: i32) -> i32 {
+        // expected-error@+1 {{unstructured control flow reached `convert-to-wasm`: run `cfg-to-scf{exits=in-place}` first}}
+        cf.cond_br %c ^x, ^y : (i1);
+    ^x:
+        builtin.ret %a : (i32);
+    ^y:
+        builtin.ret %b : (i32);
+    };
+};
+
+// -----
+
+// A break that names no enclosing loop.
+builtin.module public @names_nothing attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @f(%c: i1, %a: i32) -> i32 {
+        scf.if %c then {
+            // expected-error@+1 {{`convert-to-wasm` cannot lower this `scf.break`: it names enclosing loop 1, but only 0 enclose it}}
+            scf.break 1 : ();
+        } else {
+            scf.yield : ();
+        } : (i1) -> ();
+        builtin.ret %a : (i32);
+    };
+};
+
+// -----
+
+// A break that leaves a `wasm.loop` written before the lowering: a `wasm.br` to a loop goes back
+// to its top, and there is no block around the loop to leave.
+builtin.module public @frontend_loop attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("wasm") @f(%c: i1, %a: i32) -> i32 {
+        %r = wasm.loop {
+            scf.if %c then {
+                // expected-error@+1 {{`convert-to-wasm` cannot lower this `scf.break`: it leaves a `wasm.loop` that was written before the lowering, and a `wasm.br` to a loop goes back to its top instead}}
+                scf.break 1 %a : (i32);
+            } else {
+                scf.yield : ();
+            } : (i1) -> ();
+            wasm.end %a : (i32);
+        } : () -> (i32);
+        builtin.ret %r : (i32);
+    };
+};

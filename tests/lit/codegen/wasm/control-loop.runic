@@ -1,0 +1,360 @@
+// RUN: runic-opt %s -p 'convert-to-wasm,wasm-verify-form' | filecheck %s
+
+// `scf.while` becomes a `wasm.loop` whose body is the `before` body followed by a `wasm.if` on
+// the condition, whose first region is the `after` body and ends in a `wasm.br` back to the top
+// of the loop, and whose second only ends; the loop's body then ends in `wasm.end` of the
+// forwarded values, which leaves the loop with its results. A loop that some `scf.break` leaves
+// is wrapped in a `wasm.block` of its result types; the levels of `scf.break` and `scf.continue`
+// become `wasm.br` labels, counting every `wasm.block`, `wasm.loop` and `wasm.if` crossed.
+
+builtin.module public @control_loop attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    // A counting loop, with no exit: no block around the loop. The `before` body and the
+    // `wasm.if` of the condition are the loop's body; the `after` body is the first region of the
+    // `wasm.if`, its arguments the forwarded values, and its `scf.yield` a `wasm.br 1` to the top.
+    // CHECK-LABEL: @count(
+    // CHECK-SAME: [[V0:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[V1:%[0-9]+]] = wasm.const 0 : i32;
+    // CHECK-NEXT: [[V2:%[0-9]+]] = wasm.const 1 : i32;
+    // CHECK-NEXT: [[V3:%[0-9]+]], [[V4:%[0-9]+]] = wasm.loop [[V1]], [[V1]] {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[V5:%[0-9]+]]: i32, [[V6:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[V7:%[0-9]+]] = wasm.lt_u [[V5]], [[V0]];
+    // CHECK-NEXT: wasm.if [[V7]] then {
+    // CHECK-NEXT: [[V8:%[0-9]+]] = wasm.add [[V6]], [[V5]];
+    // CHECK-NEXT: [[V9:%[0-9]+]] = wasm.add [[V5]], [[V2]];
+    // CHECK-NEXT: wasm.br 1 [[V9]], [[V8]] : (i32, i32);
+    // CHECK-NEXT: } : (i32) -> ();
+    // CHECK-NEXT: wasm.end [[V5]], [[V6]] : (i32, i32);
+    // CHECK-NEXT: } : (i32, i32) -> (i32, i32);
+    // CHECK-NEXT: builtin.ret [[V4]] : (i32);
+    // CHECK-NEXT: };
+    builtin.function public extern("wasm") @count(%n: i32) -> i32 {
+        %zero = arith.constant 0 : i32;
+        %one = arith.constant 1 : i32;
+        %i, %s = scf.while %zero, %zero before {
+        ^b(%j: i32, %t: i32):
+            %more = arith.cmpi ult %j, %n;
+            scf.condition %more, %j, %t : (i1, i32, i32);
+        } after {
+        ^a(%k: i32, %u: i32):
+            %v = arith.add %u, %k <{ overflow = #builtin.overflow<wrapping> }>;
+            %l = arith.add %k, %one <{ overflow = #builtin.overflow<wrapping> }>;
+            scf.yield %l, %v : (i32, i32);
+        } : (i32, i32) -> (i32, i32);
+        builtin.ret %s : (i32);
+    };
+
+    // Two carried values of different types, one narrow: the loop's parameters and results are
+    // their carriers.
+    // CHECK-LABEL: @two_types(
+    // CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i64) -> (i32, i64) {
+    // CHECK-NEXT: [[V2:%[0-9]+]], [[V3:%[0-9]+]] = wasm.loop [[V0]], [[V1]] {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[V4:%[0-9]+]]: i32, [[V5:%[0-9]+]]: i64):
+    // CHECK-NEXT: [[V6:%[0-9]+]] = wasm.const 0 : i32;
+    // CHECK-NEXT: [[V7:%[0-9]+]] = wasm.ne [[V4]], [[V6]];
+    // CHECK-NEXT: wasm.if [[V7]] then {
+    // CHECK-NEXT: [[V8:%[0-9]+]] = wasm.const 1 : i32;
+    // CHECK-NEXT: [[V9:%[0-9]+]] = wasm.sub [[V4]], [[V8]];
+    // CHECK-NEXT: [[V10:%[0-9]+]] = wasm.const 255 : i32;
+    // CHECK-NEXT: [[V11:%[0-9]+]] = wasm.and [[V9]], [[V10]];
+    // CHECK-NEXT: [[V12:%[0-9]+]] = wasm.add [[V5]], [[V5]];
+    // CHECK-NEXT: wasm.br 1 [[V11]], [[V12]] : (i32, i64);
+    // CHECK-NEXT: } : (i32) -> ();
+    // CHECK-NEXT: wasm.end [[V4]], [[V5]] : (i32, i64);
+    // CHECK-NEXT: } : (i32, i64) -> (i32, i64);
+    // CHECK-NEXT: builtin.ret [[V2]], [[V3]] : (i32, i64);
+    // CHECK-NEXT: };
+    builtin.function public extern("wasm") @two_types(%x: i8, %y: i64) -> (i8, i64) {
+        %r, %q = scf.while %x, %y before {
+        ^b(%a: i8, %b: i64):
+            %z = arith.constant 0 : i8;
+            %more = arith.cmpi ne %a, %z;
+            scf.condition %more, %a, %b : (i1, i8, i64);
+        } after {
+        ^a(%c: i8, %d: i64):
+            %one = arith.constant 1 : i8;
+            %e = arith.sub %c, %one <{ overflow = #builtin.overflow<wrapping> }>;
+            %f = arith.add %d, %d <{ overflow = #builtin.overflow<wrapping> }>;
+            scf.yield %e, %f : (i8, i64);
+        } : (i8, i64) -> (i8, i64);
+        builtin.ret %r, %q : (i8, i64);
+    };
+
+    // An `after` body that ends in a return: no branch back.
+    // CHECK-LABEL: @after_returns(
+    // CHECK-SAME: [[V0:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[V1:%[0-9]+]] = wasm.loop [[V0]] {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[V2:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[V3:%[0-9]+]] = wasm.const 0 : i32;
+    // CHECK-NEXT: [[V4:%[0-9]+]] = wasm.ne [[V2]], [[V3]];
+    // CHECK-NEXT: wasm.if [[V4]] then {
+    // CHECK-NEXT: builtin.ret [[V2]] : (i32);
+    // CHECK-NEXT: } : (i32) -> ();
+    // CHECK-NEXT: wasm.end [[V2]] : (i32);
+    // CHECK-NEXT: } : (i32) -> (i32);
+    // CHECK-NEXT: builtin.ret [[V1]] : (i32);
+    // CHECK-NEXT: };
+    builtin.function public extern("wasm") @after_returns(%x: i32) -> i32 {
+        %r = scf.while %x before {
+        ^b(%a: i32):
+            %z = arith.constant 0 : i32;
+            %more = arith.cmpi ne %a, %z;
+            scf.condition %more, %a : (i1, i32);
+        } after {
+        ^a(%c: i32):
+            builtin.ret %c : (i32);
+        } : (i32) -> (i32);
+        builtin.ret %r : (i32);
+    };
+
+    // Nested loops: the inner one is converted after it moves into the outer one's `wasm.if`.
+    // CHECK-LABEL: @nested(
+    // CHECK-SAME: [[V0:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[V1:%[0-9]+]] = wasm.const 0 : i32;
+    // CHECK-NEXT: [[V2:%[0-9]+]] = wasm.const 1 : i32;
+    // CHECK-NEXT: [[V3:%[0-9]+]] = wasm.loop [[V1]] {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[V4:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[V5:%[0-9]+]] = wasm.lt_u [[V4]], [[V0]];
+    // CHECK-NEXT: wasm.if [[V5]] then {
+    // CHECK-NEXT: [[V6:%[0-9]+]] = wasm.loop [[V4]] {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[V7:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[V8:%[0-9]+]] = wasm.lt_u [[V7]], [[V0]];
+    // CHECK-NEXT: wasm.if [[V8]] then {
+    // CHECK-NEXT: [[V9:%[0-9]+]] = wasm.add [[V7]], [[V2]];
+    // CHECK-NEXT: wasm.br 1 [[V9]] : (i32);
+    // CHECK-NEXT: } : (i32) -> ();
+    // CHECK-NEXT: wasm.end [[V7]] : (i32);
+    // CHECK-NEXT: } : (i32) -> (i32);
+    // CHECK-NEXT: wasm.br 1 [[V6]] : (i32);
+    // CHECK-NEXT: } : (i32) -> ();
+    // CHECK-NEXT: wasm.end [[V4]] : (i32);
+    // CHECK-NEXT: } : (i32) -> (i32);
+    // CHECK-NEXT: builtin.ret [[V3]] : (i32);
+    // CHECK-NEXT: };
+    builtin.function public extern("wasm") @nested(%n: i32) -> i32 {
+        %zero = arith.constant 0 : i32;
+        %one = arith.constant 1 : i32;
+        %i = scf.while %zero before {
+        ^ob(%oi: i32):
+            %more = arith.cmpi ult %oi, %n;
+            scf.condition %more, %oi : (i1, i32);
+        } after {
+        ^oa(%ai: i32):
+            %j = scf.while %ai before {
+            ^ib(%ij: i32):
+                %imore = arith.cmpi ult %ij, %n;
+                scf.condition %imore, %ij : (i1, i32);
+            } after {
+            ^ia(%jj: i32):
+                %nj = arith.add %jj, %one <{ overflow = #builtin.overflow<wrapping> }>;
+                scf.yield %nj : (i32);
+            } : (i32) -> (i32);
+            scf.yield %j : (i32);
+        } : (i32) -> (i32);
+        builtin.ret %i : (i32);
+    };
+
+    // A break from an `scf.if` in the body: the loop is wrapped in a `wasm.block` of its result
+    // types, and the break is a `wasm.br` to it, across the if, the `wasm.if` of the condition
+    // and the loop.
+    // CHECK-LABEL: @break_from_if(
+    // CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[V2:%[0-9]+]] = wasm.const 0 : i32;
+    // CHECK-NEXT: [[V3:%[0-9]+]] = wasm.const 1 : i32;
+    // CHECK-NEXT: [[V4:%[0-9]+]] = wasm.block {
+    // CHECK-NEXT: [[V5:%[0-9]+]] = wasm.loop [[V2]] {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[V6:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[V7:%[0-9]+]] = wasm.lt_u [[V6]], [[V0]];
+    // CHECK-NEXT: wasm.if [[V7]] then {
+    // CHECK-NEXT: [[V8:%[0-9]+]] = wasm.eq [[V6]], [[V1]];
+    // CHECK-NEXT: wasm.if [[V8]] then {
+    // CHECK-NEXT: wasm.br 3 [[V6]] : (i32);
+    // CHECK-NEXT: } : (i32) -> ();
+    // CHECK-NEXT: [[V9:%[0-9]+]] = wasm.add [[V6]], [[V3]];
+    // CHECK-NEXT: wasm.br 1 [[V9]] : (i32);
+    // CHECK-NEXT: } : (i32) -> ();
+    // CHECK-NEXT: wasm.end [[V6]] : (i32);
+    // CHECK-NEXT: } : (i32) -> (i32);
+    // CHECK-NEXT: wasm.end [[V5]] : (i32);
+    // CHECK-NEXT: } : () -> (i32);
+    // CHECK-NEXT: builtin.ret [[V4]] : (i32);
+    // CHECK-NEXT: };
+    builtin.function public extern("wasm") @break_from_if(%n: i32, %k: i32) -> i32 {
+        %zero = arith.constant 0 : i32;
+        %one = arith.constant 1 : i32;
+        %r = scf.while %zero before {
+        ^b(%i: i32):
+            %more = arith.cmpi ult %i, %n;
+            scf.condition %more, %i : (i1, i32);
+        } after {
+        ^a(%j: i32):
+            %hit = arith.cmpi eq %j, %k;
+            scf.if %hit then {
+                scf.break 1 %j : (i32);
+            } else {
+                scf.yield : ();
+            } : (i1) -> ();
+            %next = arith.add %j, %one <{ overflow = #builtin.overflow<wrapping> }>;
+            scf.yield %next : (i32);
+        } : (i32) -> (i32);
+        builtin.ret %r : (i32);
+    };
+
+    // A continue from an `scf.if` in the body: a `wasm.br` to the loop, with no block around it.
+    // CHECK-LABEL: @continue_from_if(
+    // CHECK-SAME: [[V0:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[V1:%[0-9]+]] = wasm.const 0 : i32;
+    // CHECK-NEXT: [[V2:%[0-9]+]] = wasm.const 1 : i32;
+    // CHECK-NEXT: [[V3:%[0-9]+]] = wasm.const 2 : i32;
+    // CHECK-NEXT: [[V4:%[0-9]+]] = wasm.loop [[V1]] {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[V5:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[V6:%[0-9]+]] = wasm.lt_u [[V5]], [[V0]];
+    // CHECK-NEXT: wasm.if [[V6]] then {
+    // CHECK-NEXT: [[V7:%[0-9]+]] = wasm.and [[V5]], [[V2]];
+    // CHECK-NEXT: [[V8:%[0-9]+]] = wasm.eq [[V7]], [[V2]];
+    // CHECK-NEXT: wasm.if [[V8]] then {
+    // CHECK-NEXT: [[V9:%[0-9]+]] = wasm.add [[V5]], [[V3]];
+    // CHECK-NEXT: wasm.br 2 [[V9]] : (i32);
+    // CHECK-NEXT: } : (i32) -> ();
+    // CHECK-NEXT: [[V10:%[0-9]+]] = wasm.add [[V5]], [[V2]];
+    // CHECK-NEXT: wasm.br 1 [[V10]] : (i32);
+    // CHECK-NEXT: } : (i32) -> ();
+    // CHECK-NEXT: wasm.end [[V5]] : (i32);
+    // CHECK-NEXT: } : (i32) -> (i32);
+    // CHECK-NEXT: builtin.ret [[V4]] : (i32);
+    // CHECK-NEXT: };
+    builtin.function public extern("wasm") @continue_from_if(%n: i32) -> i32 {
+        %zero = arith.constant 0 : i32;
+        %one = arith.constant 1 : i32;
+        %two = arith.constant 2 : i32;
+        %r = scf.while %zero before {
+        ^b(%i: i32):
+            %more = arith.cmpi ult %i, %n;
+            scf.condition %more, %i : (i1, i32);
+        } after {
+        ^a(%j: i32):
+            %low = arith.band %j, %one;
+            %odd = arith.cmpi eq %low, %one;
+            scf.if %odd then {
+                %skip = arith.add %j, %two <{ overflow = #builtin.overflow<wrapping> }>;
+                scf.continue 1 %skip : (i32);
+            } else {
+                scf.yield : ();
+            } : (i1) -> ();
+            %next = arith.add %j, %one <{ overflow = #builtin.overflow<wrapping> }>;
+            scf.yield %next : (i32);
+        } : (i32) -> (i32);
+        builtin.ret %r : (i32);
+    };
+
+    // A break in an `scf.if` in an inner loop and a continue that ends the inner loop's body,
+    // each naming the outer loop (level 2): the outer loop has a block (the break leaves it), the
+    // inner one has none, and the continue goes back to the loop inside the outer block.
+    // CHECK-LABEL: @outer_exits(
+    // CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[V2:%[0-9]+]] = wasm.const 0 : i32;
+    // CHECK-NEXT: [[V3:%[0-9]+]] = wasm.const 1 : i32;
+    // CHECK-NEXT: [[V4:%[0-9]+]] = wasm.block {
+    // CHECK-NEXT: [[V5:%[0-9]+]] = wasm.loop [[V2]] {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[V6:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[V7:%[0-9]+]] = wasm.lt_u [[V6]], [[V0]];
+    // CHECK-NEXT: wasm.if [[V7]] then {
+    // CHECK-NEXT: [[V8:%[0-9]+]] = wasm.loop [[V2]] {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[V9:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[V10:%[0-9]+]] = wasm.lt_u [[V9]], [[V0]];
+    // CHECK-NEXT: wasm.if [[V10]] then {
+    // CHECK-NEXT: [[V11:%[0-9]+]] = wasm.eq [[V9]], [[V1]];
+    // CHECK-NEXT: wasm.if [[V11]] then {
+    // CHECK-NEXT: wasm.br 5 [[V9]] : (i32);
+    // CHECK-NEXT: } : (i32) -> ();
+    // CHECK-NEXT: [[V12:%[0-9]+]] = wasm.add [[V6]], [[V3]];
+    // CHECK-NEXT: wasm.br 3 [[V12]] : (i32);
+    // CHECK-NEXT: } : (i32) -> ();
+    // CHECK-NEXT: wasm.end [[V9]] : (i32);
+    // CHECK-NEXT: } : (i32) -> (i32);
+    // CHECK-NEXT: wasm.br 1 [[V8]] : (i32);
+    // CHECK-NEXT: } : (i32) -> ();
+    // CHECK-NEXT: wasm.end [[V6]] : (i32);
+    // CHECK-NEXT: } : (i32) -> (i32);
+    // CHECK-NEXT: wasm.end [[V5]] : (i32);
+    // CHECK-NEXT: } : () -> (i32);
+    // CHECK-NEXT: builtin.ret [[V4]] : (i32);
+    // CHECK-NEXT: };
+    builtin.function public extern("wasm") @outer_exits(%n: i32, %k: i32) -> i32 {
+        %zero = arith.constant 0 : i32;
+        %one = arith.constant 1 : i32;
+        %r = scf.while %zero before {
+        ^ob(%oi: i32):
+            %more = arith.cmpi ult %oi, %n;
+            scf.condition %more, %oi : (i1, i32);
+        } after {
+        ^oa(%ai: i32):
+            %j = scf.while %zero before {
+            ^ib(%ij: i32):
+                %imore = arith.cmpi ult %ij, %n;
+                scf.condition %imore, %ij : (i1, i32);
+            } after {
+            ^ia(%jj: i32):
+                %hit = arith.cmpi eq %jj, %k;
+                scf.if %hit then {
+                    scf.break 2 %jj : (i32);
+                } else {
+                    scf.yield : ();
+                } : (i1) -> ();
+                %next = arith.add %ai, %one <{ overflow = #builtin.overflow<wrapping> }>;
+                scf.continue 2 %next : (i32);
+            } : (i32) -> (i32);
+            scf.yield %j : (i32);
+        } : (i32) -> (i32);
+        builtin.ret %r : (i32);
+    };
+
+    // A frontend `wasm.block` around an `scf.while`, and a break that crosses the loop and names
+    // the block (level 2: the loop is level 1): the loop needs no block of its own.
+    // CHECK-LABEL: @frontend_block(
+    // CHECK-SAME: [[V0:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[V1:%[0-9]+]] = wasm.block {
+    // CHECK-NEXT: [[V2:%[0-9]+]] = wasm.const 0 : i32;
+    // CHECK-NEXT: [[V3:%[0-9]+]] = wasm.loop [[V2]] {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[V4:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[V5:%[0-9]+]] = wasm.lt_u [[V4]], [[V0]];
+    // CHECK-NEXT: wasm.if [[V5]] then {
+    // CHECK-NEXT: [[V6:%[0-9]+]] = wasm.const 7 : i32;
+    // CHECK-NEXT: [[V7:%[0-9]+]] = wasm.eq [[V4]], [[V6]];
+    // CHECK-NEXT: wasm.if [[V7]] then {
+    // CHECK-NEXT: wasm.br 3 [[V4]] : (i32);
+    // CHECK-NEXT: } : (i32) -> ();
+    // CHECK-NEXT: [[V8:%[0-9]+]] = wasm.const 1 : i32;
+    // CHECK-NEXT: [[V9:%[0-9]+]] = wasm.add [[V4]], [[V8]];
+    // CHECK-NEXT: wasm.br 1 [[V9]] : (i32);
+    // CHECK-NEXT: } : (i32) -> ();
+    // CHECK-NEXT: wasm.end [[V4]] : (i32);
+    // CHECK-NEXT: } : (i32) -> (i32);
+    // CHECK-NEXT: wasm.end [[V3]] : (i32);
+    // CHECK-NEXT: } : () -> (i32);
+    // CHECK-NEXT: builtin.ret [[V1]] : (i32);
+    // CHECK-NEXT: };
+    builtin.function public extern("wasm") @frontend_block(%n: i32) -> i32 {
+        %r = wasm.block {
+            %zero = arith.constant 0 : i32;
+            %w = scf.while %zero before {
+            ^b(%i: i32):
+                %more = arith.cmpi ult %i, %n;
+                scf.condition %more, %i : (i1, i32);
+            } after {
+            ^a(%j: i32):
+                %seven = arith.constant 7 : i32;
+                %hit = arith.cmpi eq %j, %seven;
+                scf.if %hit then {
+                    scf.break 2 %j : (i32);
+                } else {
+                    scf.yield : ();
+                } : (i1) -> ();
+                %one = arith.constant 1 : i32;
+                %next = arith.add %j, %one <{ overflow = #builtin.overflow<wrapping> }>;
+                scf.yield %next : (i32);
+            } : (i32) -> (i32);
+            wasm.end %w : (i32);
+        } : () -> (i32);
+        builtin.ret %r : (i32);
+    };
+};

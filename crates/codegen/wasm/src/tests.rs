@@ -16,10 +16,12 @@ use runic_ir::{
 
 mod carried;
 mod composed;
+mod control;
 mod eval;
 mod float;
 mod frames;
 mod int;
+mod labels;
 mod pipeline;
 mod symbols;
 mod target;

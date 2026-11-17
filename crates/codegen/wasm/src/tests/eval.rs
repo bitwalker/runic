@@ -7,9 +7,20 @@
 //! [Val].
 //!
 //! The operations it knows are the integer and float operations of the `wasm` dialect that
-//! lowered numeric code uses, `wasm.if` with `wasm.end`, `wasm.unreachable` and `builtin.ret`. An
-//! operation it does not know panics with a message that names it: a test never skips one
-//! silently.
+//! lowered numeric code uses, the structured control of "Control Instructions" (`wasm.block`,
+//! `wasm.loop`, `wasm.if`, `wasm.end`, `wasm.br`, `wasm.br_table`, `wasm.unreachable`) and
+//! `builtin.ret` at any depth. An operation it does not know panics with a message that names it:
+//! a test never skips one silently.
+//!
+//! **Control.** A `block`, a `loop` and an `if` run their body (for an `if`, the region the
+//! condition picks: the first when it is not zero) on their parameters. Falling off the `end`
+//! gives the results. A `br L` unwinds `L` enclosing constructs and then targets the next: a
+//! `block` or an `if` is left with the branch's values as its results; a `loop` runs its body
+//! again with them as its parameters. `br_table` takes the region of its index (entries in order,
+//! and the default for an index at or past their number, the index read unsigned), whose one
+//! `br` is the branch taken; the table itself is not a label. A `builtin.ret` at any depth leaves
+//! the function. Every operation run spends one unit of fuel ([FUEL]), and running out panics, so
+//! an endless loop is a test failure.
 //!
 //! Floats follow the specification's "Floating-Point Operations": IEEE 754 arithmetic rounding to
 //! nearest, ties to even, which Rust's `f32` and `f64` arithmetic and its `as` conversions between
@@ -146,10 +157,16 @@ fn mask(width: u32) -> u64 {
     }
 }
 
+/// The operations a run may execute before it panics: an endless loop is a failure, not a hang.
+pub(super) const FUEL: u64 = 1_000_000;
+
 /// What a body gave when it stopped.
 enum Flow {
     /// A `wasm.end` with these values.
     End(Vec<Val>),
+    /// A `wasm.br` to the label `depth` (0 is the innermost construct around the body that
+    /// stopped) with these values.
+    Br(u32, Vec<Val>),
     /// A `builtin.ret` with these values.
     Return(Vec<Val>),
     /// A trap.
@@ -159,6 +176,8 @@ enum Flow {
 /// The values of the SSA values of the function being run.
 struct Env {
     values: HashMap<ValueRef, Val>,
+    /// The operations left to run.
+    fuel: u64,
 }
 
 impl Env {
@@ -203,12 +222,14 @@ pub(super) fn run(function: OperationRef, arguments: &[Val]) -> Outcome {
     };
     let mut env = Env {
         values: HashMap::new(),
+        fuel: FUEL,
     };
     bind_arguments(&mut env, body, arguments);
     match run_block(&mut env, body) {
         Flow::Return(values) => Outcome::Values(values),
         Flow::Trap => Outcome::Trap,
         Flow::End(_) => panic!("the body of a function ended in `wasm.end`"),
+        Flow::Br(depth, _) => panic!("a `wasm.br` left the function, {depth} labels past it"),
     }
 }
 
@@ -246,8 +267,30 @@ fn run_region(env: &mut Env, region: RegionRef, arguments: &[Val]) -> Flow {
     run_block(env, entry)
 }
 
+/// The regions of `op`, in order.
+fn regions_of(op: OperationRef) -> Vec<RegionRef> {
+    op.borrow().regions().iter().map(|region| region.as_region_ref()).collect()
+}
+
+/// What the construct `op` (a `block`, a `loop` or an `if`) does when its body stopped with
+/// `flow`: `None` when it is left with results, which are defined; otherwise the flow that
+/// continues outward (a branch further out, a return, a trap).
+fn leave(env: &mut Env, op: OperationRef, flow: Flow) -> Option<Flow> {
+    match flow {
+        Flow::End(values) | Flow::Br(0, values) => {
+            env.define(op, &values);
+            None
+        }
+        Flow::Br(depth, values) => Some(Flow::Br(depth - 1, values)),
+        other => Some(other),
+    }
+}
+
 /// Runs one operation; `Some` when it ends the block.
 fn step(env: &mut Env, op: OperationRef) -> Option<Flow> {
+    env.fuel = env.fuel.checked_sub(1).unwrap_or_else(|| {
+        panic!("the evaluator ran out of fuel after {FUEL} operations: an endless loop?")
+    });
     let name = format!("{}", op.borrow().name());
     let operands = env.operands(op);
     match name.as_str() {
@@ -260,22 +303,48 @@ fn step(env: &mut Env, op: OperationRef) -> Option<Flow> {
         "wasm.unreachable" => return Some(Flow::Trap),
         "builtin.ret" => return Some(Flow::Return(operands)),
         "wasm.end" => return Some(Flow::End(operands)),
+        "wasm.br" => {
+            let level = *op.borrow().downcast_ref::<wasm::Br>().expect("a wasm.br").get_level();
+            let level = u32::try_from(level).expect("a label is at least 0");
+            return Some(Flow::Br(level, operands));
+        }
+        "wasm.block" => {
+            let flow = run_region(env, regions_of(op)[0], &operands);
+            return leave(env, op, flow);
+        }
         "wasm.if" => {
-            let regions = op
-                .borrow()
-                .regions()
-                .iter()
-                .map(|region| region.as_region_ref())
-                .collect::<Vec<_>>();
+            let regions = regions_of(op);
             let taken = if operands[0].bits != 0 {
                 regions[0]
             } else {
                 regions[1]
             };
-            match run_region(env, taken, &operands[1..]) {
-                Flow::End(values) => env.define(op, &values),
-                other => return Some(other),
+            let flow = run_region(env, taken, &operands[1..]);
+            return leave(env, op, flow);
+        }
+        "wasm.loop" => {
+            let body = regions_of(op)[0];
+            let mut parameters = operands;
+            loop {
+                match run_region(env, body, &parameters) {
+                    // A branch to the loop runs its body again, with new parameters.
+                    Flow::Br(0, values) => parameters = values,
+                    flow => return leave(env, op, flow),
+                }
             }
+        }
+        "wasm.br_table" => {
+            // The default region is the first; the entries follow it.
+            let regions = regions_of(op);
+            let entries = regions.len() - 1;
+            let index = operands[0].bits as usize;
+            let taken = if index < entries {
+                regions[index + 1]
+            } else {
+                regions[0]
+            };
+            // The table is not a label: the branch of the region is taken as it is.
+            return Some(run_region(env, taken, &[]));
         }
         "wasm.constf" => {
             let op_ref = op.borrow();
@@ -847,4 +916,94 @@ fn a_function_returns_each_of_its_values_in_order() {
         run_text(text, &[Val::i32(7), Val::f32(2.5)]),
         Outcome::Values(alloc::vec![Val::f32(2.5), Val::i32(7)])
     );
+}
+
+/// The `i32` function `@f` of the parameters `params` whose body is `body`, run on `arguments`.
+fn run_body(params: &str, body: &str, arguments: &[Val]) -> Outcome {
+    run_text(
+        &format!("builtin.function public extern(\"wasm\") @f({params}) -> i32 {{\n{body}\n}};"),
+        arguments,
+    )
+}
+
+#[test]
+fn a_block_gives_the_values_of_its_end_or_of_a_branch_that_names_it() {
+    let body = "%r = wasm.block %x {\n^b(%v: i32):\n    wasm.if %c then {\n        %k = \
+                wasm.const 7 : i32;\n        wasm.br 1 %k : (i32);\n    } : (i32) -> ();\n    \
+                wasm.end %v : (i32);\n} : (i32) -> (i32);\nbuiltin.ret %r : (i32);";
+    let run = |c| run_body("%c: i32, %x: i32", body, &[Val::i32(c), Val::i32(3)]);
+    assert_eq!(run(0), ok32(3));
+    assert_eq!(run(1), ok32(7));
+}
+
+#[test]
+fn an_if_with_results_gives_those_of_the_region_it_runs_on_its_parameters() {
+    let body = "%r = wasm.if %c, %x then {\n^t(%v: i32):\n    %one = wasm.const 1 : i32;\n    %s \
+                = wasm.add %v, %one;\n    wasm.end %s : (i32);\n} else {\n^e(%v: i32):\n    \
+                wasm.end %v : (i32);\n} : (i32, i32) -> (i32);\nbuiltin.ret %r : (i32);";
+    let run = |c| run_body("%c: i32, %x: i32", body, &[Val::i32(c), Val::i32(10)]);
+    assert_eq!(run(5), ok32(11));
+    assert_eq!(run(0), ok32(10));
+}
+
+#[test]
+fn a_branch_to_a_loop_runs_its_body_again_with_new_parameters() {
+    // Sums 1..=n: the loop carries (i, sum), branches back while i < n, and ends with the sum.
+    let body = "%zero = wasm.const 0 : i32;\n%one = wasm.const 1 : i32;\n%i, %s = wasm.loop \
+                %zero, %zero {\n^b(%j: i32, %t: i32):\n    %k = wasm.add %j, %one;\n    %u = \
+                wasm.add %t, %k;\n    %more = wasm.lt_u %k, %n;\n    wasm.if %more then {\n        \
+                wasm.br 1 %k, %u : (i32, i32);\n    } : (i32) -> ();\n    wasm.end %k, %u : (i32, \
+                i32);\n} : (i32, i32) -> (i32, i32);\nbuiltin.ret %s : (i32);";
+    let run = |n| run_body("%n: i32", body, &[Val::i32(n)]);
+    assert_eq!(run(1), ok32(1));
+    assert_eq!(run(4), ok32(10));
+    assert_eq!(run(100), ok32(5050));
+}
+
+#[test]
+fn a_branch_unwinds_the_constructs_it_crosses() {
+    // From inside a loop inside a block, `br 2` leaves the outer block; `br 1` leaves the inner.
+    let body = "%r = wasm.block {\n    %q = wasm.block {\n        wasm.loop {\n            %k = \
+                wasm.const 5 : i32;\n            wasm.if %c then {\n                wasm.br 3 %k \
+                : (i32);\n            } : (i32) -> ();\n            wasm.br 1 %k : (i32);\n        \
+                } : () -> ();\n        %never = wasm.const 0 : i32;\n        wasm.end %never : \
+                (i32);\n    } : () -> (i32);\n    %two = wasm.const 2 : i32;\n    %d = wasm.mul \
+                %q, %two;\n    wasm.end %d : (i32);\n} : () -> (i32);\nbuiltin.ret %r : (i32);";
+    let run = |c| run_body("%c: i32", body, &[Val::i32(c)]);
+    assert_eq!(run(1), ok32(5));
+    assert_eq!(run(0), ok32(10));
+}
+
+#[test]
+fn br_table_takes_the_entry_of_its_index_and_the_default_past_the_entries() {
+    let body = "%r = wasm.block {\n    wasm.block {\n        wasm.block {\n            \
+                wasm.br_table %i [{\n                wasm.br 0 : ();\n            }, {\n          \
+                      wasm.br 1 : ();\n            }] default {\n                wasm.br 1 : \
+                ();\n            } : (i32);\n        } : () -> ();\n        %a = wasm.const 10 : \
+                i32;\n        wasm.br 1 %a : (i32);\n    } : () -> ();\n    %b = wasm.const 20 : \
+                i32;\n    wasm.end %b : (i32);\n} : () -> (i32);\nbuiltin.ret %r : (i32);";
+    let run = |i| run_body("%i: i32", body, &[Val::i32(i)]);
+    assert_eq!(run(0), ok32(10));
+    assert_eq!(run(1), ok32(20));
+    assert_eq!(run(2), ok32(20));
+    // The index is unsigned: -1 is past the entries.
+    assert_eq!(run(u32::MAX), ok32(20));
+}
+
+#[test]
+fn a_return_nested_in_constructs_leaves_the_function() {
+    let body = "wasm.block {\n    wasm.loop {\n        wasm.if %c then {\n            builtin.ret \
+                %c : (i32);\n        } : (i32) -> ();\n        wasm.br 1 : ();\n    } : () -> \
+                ();\n    wasm.end : ();\n} : () -> ();\n%z = wasm.const 0 : i32;\nbuiltin.ret %z \
+                : (i32);";
+    let run = |c| run_body("%c: i32", body, &[Val::i32(c)]);
+    assert_eq!(run(9), ok32(9));
+    assert_eq!(run(0), ok32(0));
+}
+
+#[test]
+#[should_panic(expected = "the evaluator ran out of fuel")]
+fn an_endless_loop_runs_out_of_fuel() {
+    let body = "wasm.loop {\n    wasm.br 0 : ();\n} : () -> ();\nbuiltin.ret %c : (i32);";
+    run_body("%c: i32", body, &[Val::i32(0)]);
 }
