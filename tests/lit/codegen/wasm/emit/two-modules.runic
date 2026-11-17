@@ -1,0 +1,59 @@
+// RUN: runic-opt %s --target wasm32-unknown-unknown --stop-after wat | filecheck %s
+
+// Two modules in one input, a world, are linked into one binary. `@app` calls `@lib`'s function
+// twice: by a declaration whose link name is the definition's, which links to it instead of being
+// an import, and by its path. Both modules' global variables are data in the one memory, laid out
+// in the order written; with no frame in the unit there is no stack, and data starts at 1024. The
+// modules rely on the data layout of the target.
+
+// CHECK-LABEL: (module $two-modules
+// CHECK-NEXT: (type (;0;) (func (param i32) (result i32)))
+// CHECK-NEXT: (memory $__linear_memory (;0;) 1)
+// CHECK-NEXT: (export "main" (func $app::main))
+// CHECK-NEXT: (export "memory" (memory $__linear_memory))
+// CHECK-NEXT: (func $lib::add_base (;0;) (type 0) (param i32) (result i32)
+// CHECK-NEXT: local.get 0
+// CHECK-NEXT: i32.const 1024
+// CHECK-NEXT: i32.load
+// CHECK-NEXT: i32.add
+// CHECK-NEXT: ){{$}}
+// CHECK-NEXT: (func $app::main (;1;) (type 0) (param i32) (result i32)
+// CHECK-NEXT: local.get 0
+// CHECK-NEXT: call $lib::add_base
+// CHECK-NEXT: call $lib::add_base
+// CHECK-NEXT: i32.const 1028
+// CHECK-NEXT: i32.load
+// CHECK-NEXT: i32.add
+// CHECK-NEXT: ){{$}}
+// CHECK-NEXT: (data $lib::base (;0;) (i32.const 1024) "d\00\00\00")
+// CHECK-NEXT: (data $app::bonus (;1;) (i32.const 1028) "\03\00\00\00")
+// CHECK-NOT: (import
+builtin.world {
+    builtin.module public @lib {
+        builtin.global_variable public @base : i32 {
+            %k = arith.constant 100 : i32;
+            builtin.yield %k;
+        };
+        builtin.function public extern("C") @add_base(%x: i32) -> i32 {
+            %p = builtin.global_symbol @base : ptr<i32>;
+            %b = mem.load %p;
+            %r = arith.add %x, %b;
+            builtin.ret %r : (i32);
+        };
+    };
+    builtin.module public @app {
+        builtin.global_variable public @bonus : i32 {
+            %k = arith.constant 3 : i32;
+            builtin.yield %k;
+        };
+        builtin.function public extern("C") @add_base(i32) -> i32 attributes { link_name = "lib::add_base" };
+        builtin.function public extern("C") @main(%x: i32) -> i32 {
+            %y = builtin.call @add_base(%x) : extern("C") (i32) -> i32;
+            %z = builtin.call ::@lib::@add_base(%y) : extern("C") (i32) -> i32;
+            %p = builtin.global_symbol @bonus : ptr<i32>;
+            %b = mem.load %p;
+            %r = arith.add %z, %b;
+            builtin.ret %r : (i32);
+        } attributes { wasm.export_name = "main" };
+    };
+};

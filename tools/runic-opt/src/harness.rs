@@ -33,11 +33,14 @@ const DEFAULT_STOP: &str = "ir.optimized";
 ///
 /// This is where the frontends and backends of the tree are registered, each behind a cargo
 /// feature of its own. The `toy` feature registers the toy language `calc` and the toy machines
-/// `stackvm` and `altvm`, for the tests and the lit suite. The compiler has no default target.
+/// `stackvm` and `altvm`, for the tests and the lit suite; the `wasm` feature registers the
+/// WebAssembly backend `wasm`, for `wasm32-unknown-unknown`. The compiler has no default target.
 pub fn compiler() -> Compiler {
     let builder = Compiler::builder().frontend(IrFrontend);
     #[cfg(feature = "toy")]
     let builder = builder.frontend(CalcFrontend).backend(StackVmBackend).backend(AltVmBackend);
+    #[cfg(feature = "wasm")]
+    let builder = builder.backend(runic_codegen_wasm::WasmBackend);
     builder.build().expect("the stages the tool registers form a valid compiler")
 }
 

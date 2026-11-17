@@ -1,0 +1,54 @@
+// RUN: runic-opt %s --target wasm32-unknown-unknown --stop-after wat | filecheck %s
+
+// Function pointers. Each function a `builtin.function_ref` names gets a slot in the function
+// table the backend defines, from slot 1 (slot 0 stays empty, so that a null function pointer
+// traps), each function once however often it is named: the table is exactly as long as that,
+// and one active element segment fills it. A function value is its slot, an `i32.const`; an
+// indirect call takes its arguments, then the slot. The module relies on the data layout of the
+// target.
+
+// CHECK-LABEL: (module $table
+// CHECK-NEXT: (type (;0;) (func (param i32) (result i32)))
+// CHECK-NEXT: (type (;1;) (func (param i32 i32) (result i32)))
+// CHECK-NEXT: (table $__indirect_function_table (;0;) 3 3 funcref)
+// CHECK-NEXT: (export "run" (func $fp::run))
+// CHECK-NEXT: (elem (;0;) (i32.const 1) func $fp::double $fp::negate)
+// CHECK-LABEL: (func $fp::run (;2;) (type 1) (param i32 i32) (result i32)
+// CHECK-NEXT: local.get 1
+// CHECK-NEXT: local.get 0
+// CHECK-NEXT: if (result i32) ;; label = @1
+// CHECK-NEXT: i32.const 1
+// CHECK-NEXT: else
+// CHECK-NEXT: i32.const 2
+// CHECK-NEXT: end
+// CHECK-NEXT: call_indirect (type 0)
+// CHECK-NEXT: i32.const 1
+// CHECK-NEXT: call_indirect (type 0)
+// CHECK-NEXT: ){{$}}
+// CHECK-NOT: (table
+// CHECK-NOT: (elem
+builtin.module public @fp {
+    builtin.function public extern("wasm") @double(%x: i32) -> i32 {
+        %r = arith.add %x, %x;
+        builtin.ret %r : (i32);
+    };
+    builtin.function public extern("wasm") @negate(%x: i32) -> i32 {
+        %zero = arith.constant 0 : i32;
+        %r = arith.sub %zero, %x;
+        builtin.ret %r : (i32);
+    };
+    builtin.function public extern("wasm") @run(%flag: i1, %x: i32) -> i32 {
+        cf.cond_br %flag ^left, ^right : (i1);
+    ^left:
+        %d = builtin.function_ref @double : (i32) -> i32;
+        cf.br ^join(%d : (i32) -> i32);
+    ^right:
+        %n = builtin.function_ref @negate : (i32) -> i32;
+        cf.br ^join(%n : (i32) -> i32);
+    ^join(%f: (i32) -> i32):
+        %y = builtin.call_indirect %f(%x) : extern("wasm") (i32) -> i32;
+        %again = builtin.function_ref @double : (i32) -> i32;
+        %z = builtin.call_indirect %again(%y) : extern("wasm") (i32) -> i32;
+        builtin.ret %z : (i32);
+    } attributes { wasm.export_name = "run" };
+};

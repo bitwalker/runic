@@ -1318,6 +1318,8 @@ dependencies = [
 name = "runic-codegen-wasm"
 version = "0.1.0"
 dependencies = [
+ "clap",
+ "runic-compile",
  "runic-dialect-arith",
  "runic-dialect-cf",
  "runic-dialect-mem",
@@ -1325,6 +1327,7 @@ dependencies = [
  "runic-dialect-ub",
  "runic-dialect-wasm",
  "runic-ir",
+ "runic-transform",
  "wasm-encoder",
  "wasmi",
  "wasmparser 0.263.0",

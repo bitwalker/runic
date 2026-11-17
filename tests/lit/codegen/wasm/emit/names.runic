@@ -1,0 +1,38 @@
+// RUN: runic-opt %s --target wasm32-unknown-unknown --stop-after wat | filecheck %s
+
+// The `name` section, which the text shows as `$` names. The module is named after the unit (the
+// input's file stem), each entity after its link name (an import after its field, a function with
+// a `link_name` after that), and the parameters after the `params` of the function's
+// `di.subprogram`; the locals the emitter adds have no names. `runic-opt` asks for the default
+// debug information, so the section is always there; the unit tests of the backend show that a
+// request for none (`--debug=none` of a compiler built on the driver) leaves it out. The module relies
+// on the data layout of the target.
+
+// CHECK-LABEL: (module $names
+// CHECK: (import "env" "print" (func $print (;0;) (type 0) (param i32)))
+// CHECK: (export "add" (func $add_step))
+// CHECK: (func $add_step (;1;) (type 1) (param $count i32) (param $step i64) (result i64)
+// CHECK-NEXT: (local i32 i64)
+// CHECK-NEXT: local.get $count
+// CHECK-NEXT: i32.const 255
+// CHECK-NEXT: i32.and
+// CHECK-NEXT: local.set 2
+// CHECK: local.get $step
+// CHECK: call $print
+// CHECK: (data $named::total (;0;) (i32.const 1024) "\07\00\00\00\00\00\00\00")
+builtin.module public @named {
+    builtin.function public extern("C") @host_print(i32) attributes { link_name = "print" };
+    builtin.global_variable public @total : i64 {
+        %z = arith.constant 7 : i64;
+        builtin.yield %z;
+    };
+    builtin.function public extern("C") @add(%count: i8, %step: i64) -> i64 {
+        %p = builtin.global_symbol @total : ptr<i64>;
+        %t = mem.load %p;
+        %n = arith.add %t, %step;
+        mem.store %n, %p;
+        %c = arith.zext %count <{ ty = i32 }>;
+        builtin.call @host_print(%c) : extern("C") (i32);
+        builtin.ret %n : (i64);
+    } attributes { link_name = "add_step", wasm.export_name = "add", di.subprogram = #di.subprogram<{ name = "add", file = "named.rs", line = 3, ty = (i8, i64) -> i64, params = ["count", "step"] }> };
+};

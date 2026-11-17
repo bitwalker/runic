@@ -1,0 +1,37 @@
+// RUN: runic-opt %s --target wasm32-unknown-unknown --split-input-file --verify-diagnostics
+// RUN: not runic-opt %s --target wasm32-unknown-unknown --split-input-file 2>&1 | filecheck %s
+// RUN: not runic-opt %s --target wasm32-wasip2 --split-input-file 2>&1 | filecheck %s --check-prefix=TARGET
+
+// What the emitter cannot emit fails the compilation with its diagnostic, which names the
+// operations of the input it is about; nothing is written. The second run shows the diagnostics
+// with their labels. The modules rely on the data layout of the target.
+
+// A target no backend supports is refused by the harness, before any input is compiled.
+// TARGET: error: no backend supports the target 'wasm32-wasip2'; the targets are {{.*}}'wasm32-unknown-unknown'
+// TARGET-NOT: error
+
+// Two functions exported under one name.
+// CHECK: error: two exports are named `f`
+// CHECK: ---------------- this exports @a as `f` first
+// CHECK: ^^^^^^^^^^^^^^^^ this exports @b as `f`
+builtin.module public @dup {
+    builtin.function public extern("C") @a() -> i32 {
+        %x = arith.constant 1 : i32;
+        builtin.ret %x : (i32);
+    } attributes { wasm.export_name = "f" };
+    builtin.function public extern("C") @b() -> i32 { // expected-error {{two exports are named `f`}}
+        %x = arith.constant 2 : i32;
+        builtin.ret %x : (i32);
+    } attributes { wasm.export_name = "f" };
+};
+
+// -----
+
+// A second memory: multiple memories are outside the backend's feature set.
+// CHECK: error: a module with several memories cannot be emitted: multiple memories are outside the backend's feature set
+// CHECK: ----------- the module already has @one
+// CHECK: ^^^^^^^^^^^ this is a second memory, @two
+builtin.module public @mems {
+    wasm.memory public @one : 1;
+    wasm.memory public @two : 1; // expected-error {{a module with several memories cannot be emitted: multiple memories are outside the backend's feature set}}
+};

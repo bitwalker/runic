@@ -1,0 +1,27 @@
+// RUN: runic-opt %s --target wasm32-unknown-unknown | filecheck %s --check-prefix=MAGIC
+// RUN: runic-opt %s --target wasm32-unknown-unknown -o %t.core.wasm
+// RUN: filecheck %s --check-prefix=MAGIC --input-file %t.core.wasm
+// RUN: runic-opt %s --target wasm32-unknown-unknown --emit wat=%t.wat --emit module=%t.both.core.wasm | filecheck %s --check-prefix=MAGIC
+// RUN: filecheck %s --check-prefix=MAGIC --input-file %t.both.core.wasm
+// RUN: filecheck %s --check-prefix=TEXT --input-file %t.wat
+// RUN: runic-opt %s --target wasm32-unknown-unknown --stop-after module | filecheck %s --check-prefix=MAGIC
+
+// The default stop point of a compilation for `wasm32-unknown-unknown` is `wasm.module`, the end
+// of the backend's route: the binary module, written to standard output or to `-o`. It starts
+// with the magic bytes `\0asm` and the version 1, as four little-endian bytes (filecheck reads
+// the bytes as they are, and the pattern spells them as escapes). `--emit` writes the text
+// (`wat`) and the binary (`module`) of one compilation, each to its file. The module relies on the
+// data layout of the target.
+
+// MAGIC: {{^\x00asm\x01\x00\x00\x00}}
+// MAGIC: twice
+
+// TEXT: (module $binary
+// TEXT: (export "twice" (func $m::twice))
+// TEXT: (func $m::twice (;0;) (type 0) (param i32) (result i32)
+builtin.module public @m {
+    builtin.function public extern("C") @twice(%x: i32) -> i32 {
+        %r = arith.add %x, %x;
+        builtin.ret %r : (i32);
+    } attributes { wasm.export_name = "twice" };
+};

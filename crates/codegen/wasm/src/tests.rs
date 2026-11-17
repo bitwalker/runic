@@ -16,6 +16,8 @@ use runic_ir::{
 };
 
 mod atomic;
+#[cfg(feature = "std")]
+mod backend;
 mod branches;
 mod carried;
 mod composed;

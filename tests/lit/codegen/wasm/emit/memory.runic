@@ -1,0 +1,79 @@
+// RUN: runic-opt %s --target wasm32-unknown-unknown --stop-after wat | filecheck %s
+
+// Linear memory as the backend lays it out: the shadow stack takes the first 1 MiB (the default
+// of `--wasm-stack-size`), the global variables follow it, aligned by their types, and the memory
+// is as many pages of 64 KiB as the data needs (1,048,576 + 8 bytes, rounded up to the heap base
+// at 16, is 17 pages). The backend defines the memory and the stack pointer, which the lowering
+// declares as imports, and exports the memory as `memory`. A global variable is an active data
+// segment at its address, and code names it by that address. The module relies on the data layout
+// of the target.
+
+// CHECK-LABEL: (module $memory
+// CHECK: (memory $__linear_memory (;0;) 17)
+// CHECK-NEXT: (global $__stack_pointer (;0;) (mut i32) i32.const 1048576)
+// CHECK-NEXT: (export "bump" (func $mem::bump))
+// CHECK-NEXT: (export "keep" (func $mem::keep))
+// CHECK-NEXT: (export "memory" (memory $__linear_memory))
+
+// A global variable read and written at its address, 1048580 (after the three bytes of
+// `@greeting`, aligned to 4).
+// CHECK-LABEL: (func $mem::bump (;0;) (type 0) (param i32) (result i32)
+// CHECK-NEXT: (local i32)
+// CHECK-NEXT: i32.const 1048580
+// CHECK-NEXT: i32.const 1048580
+// CHECK-NEXT: i32.load
+// CHECK-NEXT: local.tee 1
+// CHECK-NEXT: local.get 0
+// CHECK-NEXT: i32.add
+// CHECK-NEXT: i32.store
+// CHECK-NEXT: local.get 1
+// CHECK-NEXT: ){{$}}
+
+// A frame of 16 bytes on the shadow stack, taken from the stack pointer and given back before the
+// return.
+// CHECK-LABEL: (func $mem::keep (;1;) (type 1) (param i64) (result i64)
+// CHECK-NEXT: (local i32 i32 i64)
+// CHECK-NEXT: global.get $__stack_pointer
+// CHECK-NEXT: local.tee 1
+// CHECK-NEXT: i32.const 16
+// CHECK-NEXT: i32.sub
+// CHECK-NEXT: local.tee 2
+// CHECK-NEXT: global.set $__stack_pointer
+// CHECK-NEXT: local.get 2
+// CHECK-NEXT: local.get 0
+// CHECK-NEXT: i64.store
+// CHECK-NEXT: local.get 2
+// CHECK-NEXT: i64.load
+// CHECK-NEXT: local.set 3
+// CHECK-NEXT: local.get 1
+// CHECK-NEXT: global.set $__stack_pointer
+// CHECK-NEXT: local.get 3
+// CHECK-NEXT: ){{$}}
+
+// The bytes of `builtin.bytes "0a6968"` are written most significant first, so the data is
+// "hi\n"; the integer 5 is four bytes, little-endian.
+// CHECK-NEXT: (data $mem::greeting (;0;) (i32.const 1048576) "hi\0a")
+// CHECK-NEXT: (data $mem::counter (;1;) (i32.const 1048580) "\05\00\00\00")
+builtin.module public @mem {
+    builtin.global_variable public @greeting : array<i8; 3> {
+        %b = builtin.bytes "0a6968" : array<i8; 3>;
+        builtin.yield %b;
+    };
+    builtin.global_variable public @counter : i32 {
+        %five = arith.constant 5 : i32;
+        builtin.yield %five;
+    };
+    builtin.function public extern("C") @bump(%by: i32) -> i32 {
+        %p = builtin.global_symbol @counter : ptr<i32>;
+        %old = mem.load %p;
+        %new = arith.add %old, %by;
+        mem.store %new, %p;
+        builtin.ret %old : (i32);
+    } attributes { wasm.export_name = "bump" };
+    builtin.function public extern("C") @keep(%x: i64) -> i64 {
+        %slot = mem.alloca i64;
+        mem.store %x, %slot;
+        %y = mem.load %slot;
+        builtin.ret %y : (i64);
+    } attributes { wasm.export_name = "keep" };
+};

@@ -1,0 +1,33 @@
+// RUN: runic-opt %s --target wasm32-unknown-unknown --stop-after wat | filecheck %s --check-prefix=DEFAULT
+// RUN: runic-opt %s --target wasm32-unknown-unknown --wasm-stack-size 65536 --stop-after wat | filecheck %s --check-prefix=SMALL
+// RUN: not runic-opt %s --target wasm32-unknown-unknown --wasm-stack-size 100 2>&1 | filecheck %s --check-prefix=UNALIGNED
+
+// `--wasm-stack-size` is the size of the shadow stack at the start of linear memory, and so the
+// initial value of the stack pointer and the address the data starts at. The default is 1 MiB,
+// 17 pages with the data; 64 KiB needs 2. A size that is not a multiple of 16, the alignment of
+// the stack, is an error of the layout. Its label is on the declaration of the stack pointer,
+// which the lowering creates with no location in the input, so only the message is shown; nothing
+// is written. The module relies on the data layout of the target.
+
+// DEFAULT: (memory $__linear_memory (;0;) 17)
+// DEFAULT-NEXT: (global $__stack_pointer (;0;) (mut i32) i32.const 1048576)
+// DEFAULT: (data $frame::seed (;0;) (i32.const 1048576) "*\00\00\00")
+
+// SMALL: (memory $__linear_memory (;0;) 2)
+// SMALL-NEXT: (global $__stack_pointer (;0;) (mut i32) i32.const 65536)
+// SMALL: (data $frame::seed (;0;) (i32.const 65536) "*\00\00\00")
+
+// UNALIGNED: {{^}}error: the stack size 100 (`--wasm-stack-size`) is not a multiple of 16, the alignment of the stack
+// UNALIGNED-NOT: {{.}}
+builtin.module public @frame {
+    builtin.global_variable public @seed : i32 {
+        %k = arith.constant 42 : i32;
+        builtin.yield %k;
+    };
+    builtin.function public extern("C") @keep(%x: i32) -> i32 {
+        %p = mem.alloca i32;
+        mem.store %x, %p;
+        %y = mem.load %p;
+        builtin.ret %y : (i32);
+    } attributes { wasm.export_name = "keep" };
+};

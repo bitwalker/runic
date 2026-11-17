@@ -1,8 +1,9 @@
 # runic-codegen-wasm
 
 The lowering of generic Runic IR (the dialects `arith`, `cf`, `mem`, `scf`, `ub` and `builtin`)
-to _Wasm form_, the input of the WebAssembly backend. Nothing here emits a binary: the result is
-IR, checked as text.
+to _Wasm form_, the input of the WebAssembly backend. The result of the lowering is IR, checked as
+text; the emitter and the backend `wasm` (see [The backend](#the-backend)) make a binary module of
+it.
 
 ```rust
 let mut passes = PassManager::on::<Module>(context.clone(), Nesting::Implicit);
@@ -15,6 +16,31 @@ or, in the tool (`cargo make runic-opt` builds it with the crate):
 ```sh
 runic-opt program.runic -p 'cfg-to-scf{exits=in-place},wasm-lower-frames,convert-to-wasm,wasm-verify-form'
 ```
+
+## The backend
+
+`WasmBackend` is the backend named `wasm` of the compile harness (`runic-compile`), for the target
+`wasm32-unknown-unknown`. `runic-opt`, built with its feature `wasm`, registers it:
+
+```sh
+runic-opt program.runic --target wasm32-unknown-unknown -o program.core.wasm
+runic-opt program.runic --target wasm32-unknown-unknown --stop-after wat
+runic-opt program.runic --target wasm32-unknown-unknown --emit wat=program.wat --emit module=program.core.wasm
+```
+
+- **Data layout**: the C ABI of wasm32: little-endian, pointers and `isize` of 32 bits, `i8`,
+  `i16`, `i32`, `i64` and `i128` aligned to 1, 2, 4, 8 and 16 bytes, `f32` to 4 and `f64` to 8.
+- **Passes**: `cfg-to-scf{exits=in-place}`, `wasm-lower-frames`, `convert-to-wasm`, then `cse` and
+  `dce` when the optimization level is above `0`, then `wasm-verify-form`.
+- **Checkpoints**, in order: `wasm.wat` (alias `wat`, a `.wat` file), the text of the module, and
+  `wasm.module` (alias `module`, a `.core.wasm` file), the binary, which is the default stop point.
+  Both are the same bytes, emitted once and validated.
+- **Option**: `--wasm-stack-size <BYTES>`, the size of the shadow stack at the start of linear
+  memory and the initial value of `__stack_pointer`; a multiple of 16, 1 MiB by default.
+- With no debug information asked for (`--debug=none`), the module has no `name` section; it is
+  named after the unit otherwise.
+
+What the emitter cannot emit fails the compilation with a diagnostic that names the operation.
 
 ## Wasm form
 

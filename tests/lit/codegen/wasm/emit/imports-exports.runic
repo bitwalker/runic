@@ -1,0 +1,47 @@
+// RUN: runic-opt %s --target wasm32-unknown-unknown --stop-after wat | filecheck %s
+
+// Imports and exports. A declaration that nothing in the unit defines is an import: from `env`,
+// or from the module `wasm.import_module` names, with its link name as the field. Only what
+// `wasm.export_name` names is exported, under each of its names (`@tick` as `tick` and `step`):
+// being `public` exports nothing. An exported mutable global needs the feature `mutable-globals`.
+// The module relies on the data layout of the target.
+
+// CHECK-LABEL: (module $imports-exports
+// CHECK-NEXT: (type (;0;) (func (param i32)))
+// CHECK-NEXT: (type (;1;) (func (result i64)))
+// CHECK-NEXT: (import "env" "log" (func $log (;0;) (type 0) (param i32)))
+// CHECK-NEXT: (import "clock" "now" (func $now (;1;) (type 1) (result i64)))
+// CHECK-NEXT: (import "env" "limit" (global $limit (;0;) i32))
+// CHECK-NEXT: (global $host::hits (;1;) (mut i32) i32.const 0)
+// CHECK-NEXT: (export "hits" (global $host::hits))
+// CHECK-NEXT: (export "tick" (func $host::tick))
+// CHECK-NEXT: (export "step" (func $host::tick))
+// CHECK-NEXT: (func $host::tick (;2;) (type 1) (result i64)
+// CHECK-NEXT: global.get $host::hits
+// CHECK-NEXT: i32.const 1
+// CHECK-NEXT: i32.add
+// CHECK-NEXT: global.set $host::hits
+// CHECK-NEXT: global.get $limit
+// CHECK-NEXT: call $log
+// CHECK-NEXT: call $now
+// CHECK-NEXT: ){{$}}
+// CHECK: (@custom "target_features" (after code) "\01+\0fmutable-globals")
+builtin.module public @host {
+    builtin.function public extern("C") @log(i32) attributes { link_name = "log" };
+    builtin.function public extern("C") @now() -> i64 attributes { link_name = "now", wasm.import_module = "clock" };
+    wasm.global private declaration @limit : i32 attributes { link_name = "limit" };
+    wasm.global public @hits : mut i32 {
+        %zero = wasm.const 0 : i32;
+        builtin.yield %zero;
+    } attributes { wasm.export_name = "hits" };
+    builtin.function public extern("C") @tick() -> i64 {
+        %h = wasm.global_get @hits : i32;
+        %one = wasm.const 1 : i32;
+        %n = wasm.add %h, %one;
+        wasm.global_set @hits, %n;
+        %l = wasm.global_get @limit : i32;
+        builtin.call @log(%l) : extern("C") (i32);
+        %t = builtin.call @now() : extern("C") () -> i64;
+        builtin.ret %t : (i64);
+    } attributes { wasm.export_name = ["tick", "step"] };
+};

@@ -463,10 +463,11 @@ fn list_stages_lists_the_frontends_the_backends_and_the_checkpoints() {
     assert_eq!(
         output.stdout,
         "frontends:\n  runic: .runic\n  calc: .calc\nbackends:\n  stackvm: \
-         stackvm-unknown-unknown, stackvm-unknown-tiny\n  altvm: \
-         stackvm-unknown-unknown\ncheckpoints:\n  calc.ast (alias ast) -> .ast\n  ir.translated \
-         -> .translated.runic\n  ir.optimized (alias ir) -> .runic\n  ir.lowered -> \
-         .lowered.runic\n  stackvm.asm (alias asm) -> .svm\n  altvm.out -> .alt\n"
+         stackvm-unknown-unknown, stackvm-unknown-tiny\n  altvm: stackvm-unknown-unknown\n  wasm: \
+         wasm32-unknown-unknown\ncheckpoints:\n  calc.ast (alias ast) -> .ast\n  ir.translated -> \
+         .translated.runic\n  ir.optimized (alias ir) -> .runic\n  ir.lowered -> .lowered.runic\n  \
+         stackvm.asm (alias asm) -> .svm\n  altvm.out -> .alt\n  wasm.wat (alias wat) -> .wat\n  \
+         wasm.module (alias module) -> .core.wasm\n"
     );
 
     let output = opt_on(&ir_only(), &["--list-stages"], "");

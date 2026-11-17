@@ -148,6 +148,8 @@ extern crate alloc;
 #[cfg(any(feature = "std", test))]
 extern crate std;
 
+#[cfg(feature = "std")]
+pub mod backend;
 pub mod carried;
 pub mod convert;
 pub mod emit;
@@ -170,6 +172,8 @@ use runic_ir::{
     pass::{OpPassManager, PassInfo, PassOptions, registry::RegistryEntry},
 };
 
+#[cfg(feature = "std")]
+pub use self::backend::WasmBackend;
 pub use self::{
     convert::ConvertToWasm,
     frames::LowerFrames,
@@ -208,13 +212,24 @@ pub(crate) fn no_module_error(pass: &str, root: OperationRef) -> Report {
 /// rejects its options.
 pub fn add_lowering_passes(passes: &mut OpPassManager) -> Result<(), Report> {
     for (name, options) in LOWERING_PASSES {
-        let info = PassInfo::lookup(name)
-            .ok_or_else(|| Report::msg(format!("the pass '{name}' is not registered")))?;
-        let mut pass_options = PassOptions::new();
-        for (key, value) in options {
-            pass_options.push(*key, Some(*value));
-        }
-        info.add_to_pipeline(passes, &pass_options)?;
+        add_lowering_pass(passes, name, options)?;
     }
     Ok(())
+}
+
+/// Adds the registered pass `name` with `options` to `passes`.
+///
+/// An error when no pass `name` is registered, or when the pass rejects its options.
+pub(crate) fn add_lowering_pass(
+    passes: &mut OpPassManager,
+    name: &str,
+    options: &[(&str, &str)],
+) -> Result<(), Report> {
+    let info = PassInfo::lookup(name)
+        .ok_or_else(|| Report::msg(format!("the pass '{name}' is not registered")))?;
+    let mut pass_options = PassOptions::new();
+    for (key, value) in options {
+        pass_options.push(*key, Some(*value));
+    }
+    info.add_to_pipeline(passes, &pass_options)
 }

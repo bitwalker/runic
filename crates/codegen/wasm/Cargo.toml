@@ -24,10 +24,15 @@ std = [
     "runic-dialect-scf/std",
     "runic-dialect-ub/std",
     "runic-dialect-wasm/std",
+    "dep:clap",
+    "dep:runic-compile",
+    "dep:runic-transform",
     "dep:wasmprinter",
 ]
 
 [dependencies]
+clap = { workspace = true, optional = true }
+runic-compile = { workspace = true, optional = true }
 runic-dialect-arith.workspace = true
 runic-dialect-cf.workspace = true
 runic-dialect-mem.workspace = true
@@ -35,6 +40,7 @@ runic-dialect-scf.workspace = true
 runic-dialect-ub.workspace = true
 runic-dialect-wasm.workspace = true
 runic-ir.workspace = true
+runic-transform = { workspace = true, optional = true }
 wasm-encoder.workspace = true
 wasmparser.workspace = true
 wasmprinter = { workspace = true, optional = true }

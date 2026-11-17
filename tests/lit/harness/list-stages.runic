@@ -10,6 +10,7 @@
 // CHECK-NEXT: backends:
 // CHECK-NEXT:   stackvm: stackvm-unknown-unknown, stackvm-unknown-tiny
 // CHECK-NEXT:   altvm: stackvm-unknown-unknown
+// CHECK-NEXT:   wasm: wasm32-unknown-unknown
 // CHECK-NEXT: checkpoints:
 // CHECK-NEXT:   calc.ast (alias ast) -> .ast
 // CHECK-NEXT:   ir.translated -> .translated.runic
@@ -17,3 +18,5 @@
 // CHECK-NEXT:   ir.lowered -> .lowered.runic
 // CHECK-NEXT:   stackvm.asm (alias asm) -> .svm
 // CHECK-NEXT:   altvm.out -> .alt
+// CHECK-NEXT:   wasm.wat (alias wat) -> .wat
+// CHECK-NEXT:   wasm.module (alias module) -> .core.wasm

@@ -1,0 +1,154 @@
+// RUN: runic-opt %s --target wasm32-unknown-unknown --stop-after wat | filecheck %s
+
+// Functions of each shape, written in generic IR and compiled by the backend `wasm`: the module's
+// text at `wasm.wat`, each function in full. The module relies on the data layout of the target
+// (`--target` states it on the world). `runic-opt` compiles at `-O0`, so the lowered code is
+// emitted as the lowering leaves it: constants are written again at each use, a value used once
+// by the next instruction stays on the stack, and every other value takes a local.
+
+// CHECK-LABEL: (module $functions
+// CHECK-NEXT: (type (;0;) (func (param i32 i32) (result i32)))
+// CHECK-NEXT: (type (;1;) (func (param i32) (result i32)))
+// CHECK-NEXT: (type (;2;) (func (param i64 i64) (result i64)))
+// CHECK-NEXT: (type (;3;) (func (param i32 i32 i32) (result i32 i32 i32)))
+// CHECK-NEXT: (type (;4;) (func (result i32 i32 i32 i32)))
+// CHECK-NEXT: (export "arith" (func $fns::arith))
+// CHECK-NEXT: (export "count" (func $fns::count))
+// CHECK-NEXT: (export "max" (func $fns::max))
+// CHECK-NEXT: (export "square_plus" (func $fns::square_plus))
+// CHECK-NEXT: (export "forward" (func $fns::forward))
+
+// Arithmetic: an expression tree, every value on the stack.
+// CHECK-LABEL: (func $fns::arith (;0;) (type 0) (param i32 i32) (result i32)
+// CHECK-NEXT: local.get 0
+// CHECK-NEXT: local.get 1
+// CHECK-NEXT: i32.add
+// CHECK-NEXT: local.get 0
+// CHECK-NEXT: i32.mul
+// CHECK-NEXT: local.get 1
+// CHECK-NEXT: i32.sub
+// CHECK-NEXT: ){{$}}
+
+// A loop in CFG form, structured by `cfg-to-scf`: a `loop` whose parameters are the index, the sum
+// and a flag, set into locals at its top; an `if` with four results; a `br` back to the loop
+// with its three values. The flags `cfg-to-scf` leaves that nothing reads are dropped.
+// CHECK-LABEL: (func $fns::count (;1;) (type 1) (param i32) (result i32)
+// CHECK-NEXT: (local i32 i32 i32 i32 i32 i32 i32)
+// CHECK-NEXT: i32.const 0
+// CHECK-NEXT: i32.const 0
+// CHECK-NEXT: i32.const 0
+// CHECK-NEXT: loop (type 3) (param i32 i32 i32) (result i32 i32 i32) ;; label = @1
+// CHECK-NEXT: drop
+// CHECK-NEXT: local.set 3
+// CHECK-NEXT: local.set 2
+// CHECK-NEXT: local.get 2
+// CHECK-NEXT: local.get 0
+// CHECK-NEXT: i32.ge_u
+// CHECK-NEXT: if (type 4) (result i32 i32 i32 i32) ;; label = @2
+// CHECK-NEXT: i32.const 0
+// CHECK-NEXT: i32.const 0
+// CHECK-NEXT: i32.const 1
+// CHECK-NEXT: i32.const 0
+// CHECK-NEXT: else
+// CHECK-NEXT: local.get 3
+// CHECK-NEXT: local.get 2
+// CHECK-NEXT: i32.add
+// CHECK-NEXT: local.set 7
+// CHECK-NEXT: local.get 2
+// CHECK-NEXT: i32.const 1
+// CHECK-NEXT: i32.add
+// CHECK-NEXT: local.get 7
+// CHECK-NEXT: i32.const 0
+// CHECK-NEXT: i32.const 1
+// CHECK-NEXT: end
+// CHECK-NEXT: local.set 6
+// CHECK-NEXT: drop
+// CHECK-NEXT: local.set 5
+// CHECK-NEXT: local.set 4
+// CHECK-NEXT: local.get 6
+// CHECK-NEXT: if ;; label = @2
+// CHECK-NEXT: local.get 4
+// CHECK-NEXT: local.get 5
+// CHECK-NEXT: local.get 3
+// CHECK-NEXT: br 1 (;@1;)
+// CHECK-NEXT: end
+// CHECK-NEXT: local.get 4
+// CHECK-NEXT: local.get 5
+// CHECK-NEXT: local.get 3
+// CHECK-NEXT: end
+// CHECK-NEXT: local.set 1
+// CHECK-NEXT: drop
+// CHECK-NEXT: drop
+// CHECK-NEXT: local.get 1
+// CHECK-NEXT: ){{$}}
+
+// An `if` with a return in each arm: `cfg-to-scf{exits=in-place}` keeps each return where it is,
+// and the end of the function that neither arm reaches is `unreachable`.
+// CHECK-LABEL: (func $fns::max (;2;) (type 2) (param i64 i64) (result i64)
+// CHECK-NEXT: local.get 0
+// CHECK-NEXT: local.get 1
+// CHECK-NEXT: i64.gt_s
+// CHECK-NEXT: if ;; label = @1
+// CHECK-NEXT: local.get 0
+// CHECK-NEXT: return
+// CHECK-NEXT: else
+// CHECK-NEXT: local.get 1
+// CHECK-NEXT: return
+// CHECK-NEXT: end
+// CHECK-NEXT: unreachable
+// CHECK-NEXT: ){{$}}
+
+// A call: its result stays on the stack for the addition.
+// CHECK-LABEL: (func $fns::square_plus (;3;) (type 1) (param i32) (result i32)
+// CHECK-NEXT: local.get 0
+// CHECK-NEXT: local.get 0
+// CHECK-NEXT: call $fns::arith
+// CHECK-NEXT: local.get 0
+// CHECK-NEXT: i32.add
+// CHECK-NEXT: ){{$}}
+
+// A tail call is `return_call`, which needs the tail-call feature.
+// CHECK-LABEL: (func $fns::forward (;4;) (type 1) (param i32) (result i32)
+// CHECK-NEXT: local.get 0
+// CHECK-NEXT: local.get 0
+// CHECK-NEXT: return_call $fns::arith
+// CHECK-NEXT: ){{$}}
+// CHECK: (@custom "target_features" (after code) "\02+\0amultivalue+\09tail-call")
+builtin.module public @fns {
+    builtin.function public extern("C") @arith(%a: i32, %b: i32) -> i32 {
+        %s = arith.add %a, %b;
+        %p = arith.mul %s, %a;
+        %d = arith.sub %p, %b;
+        builtin.ret %d : (i32);
+    } attributes { wasm.export_name = "arith" };
+    builtin.function public extern("C") @count(%n: i32) -> i32 {
+        %zero = arith.constant 0 : i32;
+        cf.br ^head(%zero, %zero : i32, i32);
+    ^head(%i: i32, %acc: i32):
+        %done = arith.cmpi uge %i, %n;
+        cf.cond_br %done ^exit, ^body : (i1);
+    ^body:
+        %acc2 = arith.add %acc, %i;
+        %one = arith.constant 1 : i32;
+        %i2 = arith.add %i, %one;
+        cf.br ^head(%i2, %acc2 : i32, i32);
+    ^exit:
+        builtin.ret %acc : (i32);
+    } attributes { wasm.export_name = "count" };
+    builtin.function public extern("C") @max(%a: i64, %b: i64) -> i64 {
+        %c = arith.cmpi sgt %a, %b;
+        cf.cond_br %c ^first, ^second : (i1);
+    ^first:
+        builtin.ret %a : (i64);
+    ^second:
+        builtin.ret %b : (i64);
+    } attributes { wasm.export_name = "max" };
+    builtin.function public extern("C") @square_plus(%x: i32) -> i32 {
+        %y = builtin.call @arith(%x, %x) : extern("C") (i32, i32) -> i32;
+        %z = arith.add %y, %x;
+        builtin.ret %z : (i32);
+    } attributes { wasm.export_name = "square_plus" };
+    builtin.function public extern("C") @forward(%x: i32) -> i32 {
+        builtin.tail_call @arith(%x, %x) : extern("C") (i32, i32) -> i32;
+    } attributes { wasm.export_name = "forward" };
+};

@@ -111,6 +111,20 @@ codegen/wasm/         the lowering to Wasm form (`runic-codegen-wasm`); every mo
                       through a function value) and programs-narrow.runic (narrow integers and the
                       calling conventions). The unit tests of the crate evaluate several of these
                       programs; they read the text of these files
+codegen/wasm/emit/    the backend `wasm`: modules compiled by `runic-opt --target
+                      wasm32-unknown-unknown`, checked as the text `--stop-after wat` prints
+                      (`wasmprinter`'s). Unlike the tests of the lowering, the modules state no
+                      `data_layout`: they rely on the target's, which the harness states on the
+                      world, since that layout is part of what is tested. A function's body is
+                      checked in full. Functions of each shape (functions.runic), the memory, the
+                      stack pointer and data (memory.runic), imports and exports
+                      (imports-exports.runic), the function table (table.runic), two modules of a
+                      world in one binary (two-modules.runic), the `name` section (names.runic),
+                      `--wasm-stack-size` (stack-size.runic), the emitter's diagnostics and a
+                      target no backend supports (errors.runic), and the binary at the default stop
+                      point, whose magic bytes filecheck matches as escapes (binary.runic).
+                      `runic-opt` compiles at `-O0` with the default debug information; the other
+                      levels are covered by the crate's unit tests
 analysis/             analyses, through the test passes
 tool/                 options and behaviour of runic-opt itself
 harness/              runic-opt's harness path: an input a frontend reads (`*.calc`) or a
