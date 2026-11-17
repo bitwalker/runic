@@ -8,7 +8,7 @@ use runic_ir::{
 };
 
 pub use self::{
-    backward::{SparseBackwardDataFlowAnalysis, set_all_to_exit_states},
+    backward::{OperandLattices, SparseBackwardDataFlowAnalysis, set_all_to_exit_states},
     forward::{SparseForwardDataFlowAnalysis, set_all_to_entry_states},
     lattice::SparseLattice,
 };
@@ -255,7 +255,7 @@ impl<A: SparseForwardDataFlowAnalysis> SparseForwardDataFlowAnalysis
         &self,
         call: &dyn CallOpInterface,
         action: crate::CallControlFlowAction,
-        before: &[crate::AnalysisStateGuard<'_, Self::Lattice>],
+        before: &[<Self::Lattice as SparseLattice>::Lattice],
         after: &mut [crate::AnalysisStateGuardMut<'_, Self::Lattice>],
         solver: &mut DataFlowSolver,
     ) {
@@ -300,7 +300,7 @@ impl<A: SparseBackwardDataFlowAnalysis> SparseBackwardDataFlowAnalysis
     fn visit_operation(
         &self,
         op: &Operation,
-        operands: &mut [super::AnalysisStateGuardMut<'_, Self::Lattice>],
+        operands: &mut OperandLattices<'_, Self::Lattice>,
         results: &[super::AnalysisStateGuard<'_, Self::Lattice>],
         solver: &mut DataFlowSolver,
     ) -> Result<(), Report> {
@@ -321,20 +321,8 @@ impl<A: SparseBackwardDataFlowAnalysis> SparseBackwardDataFlowAnalysis
         <A as SparseBackwardDataFlowAnalysis>::visit_call_operand(&self.analysis, operand, solver);
     }
 
-    fn visit_external_call(
-        &self,
-        call: &dyn CallOpInterface,
-        arguments: &mut [super::AnalysisStateGuardMut<'_, Self::Lattice>],
-        results: &[super::AnalysisStateGuard<'_, Self::Lattice>],
-        solver: &mut DataFlowSolver,
-    ) {
-        <A as SparseBackwardDataFlowAnalysis>::visit_external_call(
-            &self.analysis,
-            call,
-            arguments,
-            results,
-            solver,
-        );
+    fn visit_external_call(&self, call: &dyn CallOpInterface, solver: &mut DataFlowSolver) {
+        <A as SparseBackwardDataFlowAnalysis>::visit_external_call(&self.analysis, call, solver);
     }
 
     fn visit_branch_operand(&self, operand: &OpOperandImpl, solver: &mut DataFlowSolver) {

@@ -71,6 +71,12 @@ pub trait SparseForwardDataFlowAnalysis: 'static {
     ///   - `before` is the state of each argument being passed to the callee
     ///   - `after` is the state of each result after the call operation
     ///
+    /// `before` holds the values of those states, read before this transfer changes any of them:
+    /// a state of `before` may be one of `after` (a recursive call that passes its callee's own
+    /// entry arguments, a return of a recursive call's result), and the edge assigns all of
+    /// `after` at once. The framework has recorded the dependency on each, so a later change of
+    /// one visits the transfer again.
+    ///
     /// Implementations can implement additional custom behavior by handling specific cases manually.
     /// For example, if `call` may affect the lattice prior to entering the callee, the impl can
     /// handle `CallControlFlowAction::Enter`. Similarly, if `call` may affect the lattice post-
@@ -79,7 +85,7 @@ pub trait SparseForwardDataFlowAnalysis: 'static {
         &self,
         call: &dyn CallOpInterface,
         action: CallControlFlowAction,
-        before: &[AnalysisStateGuard<'_, Self::Lattice>],
+        before: &[<Self::Lattice as SparseLattice>::Lattice],
         after: &mut [AnalysisStateGuardMut<'_, Self::Lattice>],
         solver: &mut DataFlowSolver,
     ) {
@@ -90,7 +96,7 @@ pub trait SparseForwardDataFlowAnalysis: 'static {
             set_all_to_entry_states(self, after);
         } else {
             for (before, after) in before.iter().zip(after.iter_mut()) {
-                after.join(before.lattice());
+                after.join(before);
             }
         }
     }
@@ -247,10 +253,15 @@ where
         // TODO: resolve_in_symbol_table
         if !solver.config().is_interprocedural() || crate::analysis::is_external_call(call) {
             log::trace!(target: analysis.debug_name(), "callee {} is external", call.callable_for_callee());
+            let operands = operand_lattices
+                .iter()
+                .map(|lattice| lattice.lattice().clone())
+                .collect::<SmallVec<[_; 4]>>();
+            drop(operand_lattices);
             analysis.visit_call_control_flow_transfer(
                 call,
                 CallControlFlowAction::External,
-                &operand_lattices,
+                &operands,
                 &mut result_lattices,
                 solver,
             );
@@ -275,25 +286,42 @@ where
             }
         }
 
+        // The operand lattices are not read on this path, and one of them may be what a return
+        // of the callee returns (a recursive call `call @h(%x)` in `@h(%x)` with `ret %x`), which
+        // `get_lattice_element_for` must be able to hand out: they are let go. Their
+        // subscriptions stay.
+        drop(operand_lattices);
+
         let current_point = ProgramPoint::after(op);
+        let results = op
+            .results()
+            .all()
+            .iter()
+            .map(|result| result.borrow().as_value_ref())
+            .collect::<SmallVec<[ValueRef; 4]>>();
         log::trace!(target: analysis.debug_name(), "joining lattices from all call site predecessors at {current_point}");
+        // What every return returns is read before any result changes (see
+        // `read_edge_inputs`): a return of a recursive call of this function may return the
+        // call's own results, whose lattices are held here.
+        let mut returned =
+            SmallVec::<[_; 2]>::with_capacity(predecessors.known_predecessors().len());
         for predecessor in predecessors.known_predecessors() {
             let inputs = predecessors.successor_inputs(predecessor);
-            let mut operand_lattices = SmallVec::<[_; 4]>::with_capacity(inputs.len());
-            let mut required_inputs = SmallVec::<[ValueRef; 4]>::new();
-            for operand in inputs.iter().copied() {
-                let operand_lattice = if required_inputs.contains(&operand) {
-                    get_lattice_element::<A>(operand, solver)
-                } else {
-                    required_inputs.push(operand);
-                    get_lattice_element_for::<A>(current_point, operand, solver)
-                };
-                operand_lattices.push(operand_lattice);
-            }
+            returned.push(read_edge_inputs(
+                analysis,
+                current_point,
+                inputs.iter().copied(),
+                &results,
+                &mut result_lattices,
+                solver,
+            ));
+        }
+        drop(predecessors);
+        for values in returned {
             analysis.visit_call_control_flow_transfer(
                 call,
                 CallControlFlowAction::Exit,
-                &operand_lattices,
+                &values,
                 &mut result_lattices,
                 solver,
             );
@@ -383,23 +411,44 @@ pub(super) fn visit_block<A>(
             }
 
             log::trace!(target: analysis.debug_name(), "joining lattices from all call site predecessors at {current_point}");
+            // What every call site passes is read before any argument changes (see
+            // `read_edge_inputs`): a recursive call may pass the entry arguments themselves,
+            // whose lattices are held here, and a call may pass one value twice.
+            let arguments = block
+                .arguments()
+                .iter()
+                .map(|argument| argument.borrow().as_value_ref())
+                .collect::<SmallVec<[ValueRef; 4]>>();
+            let mut passed =
+                SmallVec::<[_; 2]>::with_capacity(callsites.known_predecessors().len());
             for callsite in callsites.known_predecessors() {
+                let call = callsite.borrow();
+                let call = call.as_trait::<dyn CallOpInterface>().unwrap();
+                let inputs = call
+                    .arguments()
+                    .iter()
+                    .map(|input| input.borrow().as_value_ref())
+                    .collect::<SmallVec<[ValueRef; 4]>>();
+                passed.push((
+                    *callsite,
+                    read_edge_inputs(
+                        analysis,
+                        current_point,
+                        inputs,
+                        &arguments,
+                        &mut arg_lattices,
+                        solver,
+                    ),
+                ));
+            }
+            drop(callsites);
+            for (callsite, values) in passed {
                 let callsite = callsite.borrow();
                 let call = callsite.as_trait::<dyn CallOpInterface>().unwrap();
-                let arguments = call.arguments();
-                let mut input_lattices = SmallVec::<[_; 4]>::with_capacity(arguments.len());
-                for input in call.arguments().iter() {
-                    let input_lattice = get_lattice_element_for::<A>(
-                        current_point,
-                        input.borrow().as_value_ref(),
-                        solver,
-                    );
-                    input_lattices.push(input_lattice);
-                }
                 analysis.visit_call_control_flow_transfer(
                     call,
                     CallControlFlowAction::Enter,
-                    &input_lattices,
+                    &values,
                     &mut arg_lattices,
                     solver,
                 );
@@ -661,6 +710,51 @@ fn visit_region_successors<A>(
             log::debug!(target: analysis.debug_name(), "updated lattice for {} to {:#?}: {change_result}", lattice.anchor(), lattice);
         }
     }
+}
+
+/// Read the values of the lattices of `inputs`, the values an edge of the call graph passes (the
+/// operands of a call to the entry arguments of its callee, or what a return returns to the
+/// results of a call), and record that `point` is visited again when any of them changes.
+///
+/// `held` are the lattices the edge assigns, whose guards the caller holds, and `held_values` the
+/// values they are the lattices of. An input may be one of them: a recursive call passes its
+/// callee's own entry arguments (in the same order, swapped, or one twice), and a return of a
+/// recursive function may return the result of its recursive call. The solver cannot hand out a
+/// guard on a lattice already guarded, so such an input is read from the guard held, and the
+/// dependency is recorded through that guard (`AnalysisStateGuardMut::require` is
+/// `DataFlowSolver::require` for a state already borrowed): a later change of the lattice, by this
+/// edge or another, visits `point` again, and the join is made with the new value. Every other
+/// input is required from the solver, and its guard let go before the next is taken, so an input
+/// passed twice is read twice. All the values are read before the caller changes any lattice: the
+/// edge assigns all its targets at once, from what its inputs held before it. The lattices have
+/// finite height and a join only moves up, so the visits end.
+fn read_edge_inputs<A>(
+    analysis: &SparseDataFlowAnalysis<A, Forward>,
+    point: ProgramPoint,
+    inputs: impl IntoIterator<Item = ValueRef>,
+    held_values: &[ValueRef],
+    held: &mut [AnalysisStateGuardMut<'_, <A as SparseForwardDataFlowAnalysis>::Lattice>],
+    solver: &mut DataFlowSolver,
+) -> SmallVec<[<<A as SparseForwardDataFlowAnalysis>::Lattice as SparseLattice>::Lattice; 4]>
+where
+    A: SparseForwardDataFlowAnalysis,
+{
+    let mut values = SmallVec::new();
+    for input in inputs {
+        let slot = held_values
+            .iter()
+            .position(|value| *value == input)
+            .filter(|slot| *slot < held.len());
+        let value = match slot {
+            Some(slot) => {
+                held[slot].require(analysis, point);
+                held[slot].lattice().clone()
+            }
+            None => get_lattice_element_for::<A>(point, input, solver).lattice().clone(),
+        };
+        values.push(value);
+    }
+    values
 }
 
 #[inline]

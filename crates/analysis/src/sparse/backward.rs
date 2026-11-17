@@ -9,7 +9,8 @@ use runic_ir::{
 
 use super::{SparseDataFlowAnalysis, SparseLattice};
 use crate::{
-    AnalysisStateGuard, AnalysisStateGuardMut, BuildableAnalysisState, DataFlowSolver,
+    AnalysisState, AnalysisStateGuard, AnalysisStateGuardMut, BuildableAnalysisState,
+    DataFlowSolver,
     analyses::dce::{Executable, PredecessorState},
 };
 
@@ -19,6 +20,10 @@ use crate::{
 /// Visiting a program point in sparse backward data-flow analysis will invoke the transfer function
 /// of the operation preceding the program point. Visiting a program point at the begining of block
 /// will visit the block itself.
+///
+/// The framework holds no lattice guard when it calls [Self::visit_branch_operand],
+/// [Self::visit_call_operand] or [Self::visit_external_call], so these may take the guards they
+/// need from the solver.
 #[allow(unused_variables)]
 pub trait SparseBackwardDataFlowAnalysis: 'static {
     type Lattice: BuildableAnalysisState + SparseLattice;
@@ -29,26 +34,24 @@ pub trait SparseBackwardDataFlowAnalysis: 'static {
 
     /// The operation transfer function.
     ///
-    /// Given the result lattices, this function is expected to set the operand lattices.
+    /// Given the result lattices, this function is expected to set the operand lattices. An
+    /// operation that uses one value more than once has one lattice for all those operands (see
+    /// [OperandLattices]).
     fn visit_operation(
         &self,
         op: &Operation,
-        operands: &mut [AnalysisStateGuardMut<'_, Self::Lattice>],
+        operands: &mut OperandLattices<'_, Self::Lattice>,
         results: &[AnalysisStateGuard<'_, Self::Lattice>],
         solver: &mut DataFlowSolver,
     ) -> Result<(), Report>;
 
     /// The transfer function for calls to external functions.
     ///
-    /// This function is expected to set lattice values of the call operands. By default, this calls
-    /// [Self::visit_call_operand] for all operands.
-    fn visit_external_call(
-        &self,
-        call: &dyn CallOpInterface,
-        arguments: &mut [AnalysisStateGuardMut<'_, Self::Lattice>],
-        results: &[AnalysisStateGuard<'_, Self::Lattice>],
-        solver: &mut DataFlowSolver,
-    ) {
+    /// This function is expected to set lattice values of the call operands, which it takes from
+    /// `solver`: no lattice guard is held when it is called. The framework has required the
+    /// lattices of the call's results at the point after the call, so the call is visited again
+    /// when they change. By default, this calls [Self::visit_call_operand] for all operands.
+    fn visit_external_call(&self, call: &dyn CallOpInterface, solver: &mut DataFlowSolver) {
         for operand in call.arguments() {
             let operand = operand.borrow();
             self.visit_call_operand(&operand, solver);
@@ -65,6 +68,96 @@ pub trait SparseBackwardDataFlowAnalysis: 'static {
     fn set_to_exit_state(&self, lattice: &mut AnalysisStateGuardMut<'_, Self::Lattice>);
 }
 
+/// The lattices of the operands of one operation, as a sparse backward analysis writes them.
+///
+/// It is indexed by operand position, as a slice of guards would be, and it holds one guard per
+/// distinct value: an operation that uses one value at several positions (`arith.add %a, %a`) has
+/// one lattice at all of them, as upstream MLIR's array of lattice pointers does, so what is
+/// written through one position is read through the others.
+pub struct OperandLattices<'guard, T: AnalysisState + 'static> {
+    /// One guard per distinct operand value, in the order of first use
+    lattices: SmallVec<[AnalysisStateGuardMut<'guard, T>; 2]>,
+    /// The values the guards of `lattices` are for, in the same order
+    values: SmallVec<[ValueRef; 2]>,
+    /// For each operand position, the index in `lattices` of its value's guard
+    positions: SmallVec<[usize; 4]>,
+}
+
+impl<'guard, T: BuildableAnalysisState> OperandLattices<'guard, T> {
+    /// Take the guard of the lattice of each distinct value of `operands` from `solver`.
+    fn new(operands: OpOperandRange<'_>, solver: &mut DataFlowSolver) -> Self {
+        let mut lattices = SmallVec::new();
+        let mut values = SmallVec::<[ValueRef; 2]>::new();
+        let mut positions = SmallVec::with_capacity(operands.len());
+        for operand in operands.iter() {
+            let value = operand.borrow().as_value_ref();
+            let index = match values.iter().position(|held| *held == value) {
+                Some(index) => index,
+                None => {
+                    values.push(value);
+                    lattices.push(solver.get_or_create_mut::<T, _>(value));
+                    values.len() - 1
+                }
+            };
+            positions.push(index);
+        }
+        Self {
+            lattices,
+            values,
+            positions,
+        }
+    }
+}
+
+impl<'guard, T: AnalysisState + 'static> OperandLattices<'guard, T> {
+    /// The number of operands, which is the number of positions this can be indexed by.
+    pub fn len(&self) -> usize {
+        self.positions.len()
+    }
+
+    /// Whether the operation has no operands.
+    pub fn is_empty(&self) -> bool {
+        self.positions.is_empty()
+    }
+
+    /// The guards of the distinct lattices, each once: what a function that changes every operand
+    /// lattice the same way (as [set_all_to_exit_states] does) is given.
+    pub fn distinct(&mut self) -> &mut [AnalysisStateGuardMut<'guard, T>] {
+        &mut self.lattices
+    }
+
+    /// The guard held for the lattice of `value`, if `value` is one of the operands.
+    fn held_mut(&mut self, value: ValueRef) -> Option<&mut AnalysisStateGuardMut<'guard, T>> {
+        let index = self.values.iter().position(|held| *held == value)?;
+        Some(&mut self.lattices[index])
+    }
+}
+
+impl<'guard, T: AnalysisState + 'static> core::ops::Index<usize> for OperandLattices<'guard, T> {
+    type Output = AnalysisStateGuardMut<'guard, T>;
+
+    /// The guard of the lattice of the operand at `position`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `position` is not less than [OperandLattices::len], as indexing a slice does.
+    fn index(&self, position: usize) -> &Self::Output {
+        &self.lattices[self.positions[position]]
+    }
+}
+
+impl<T: AnalysisState + 'static> core::ops::IndexMut<usize> for OperandLattices<'_, T> {
+    /// The guard of the lattice of the operand at `position`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `position` is not less than [OperandLattices::len], as indexing a slice does.
+    fn index_mut(&mut self, position: usize) -> &mut Self::Output {
+        &mut self.lattices[self.positions[position]]
+    }
+}
+
+/// Set each of `lattices` to the exit state of `analysis`.
 pub fn set_all_to_exit_states<A>(
     analysis: &A,
     lattices: &mut [AnalysisStateGuardMut<'_, <A as SparseBackwardDataFlowAnalysis>::Lattice>],
@@ -117,6 +210,19 @@ where
 /// Visit an operation. If this is a call operation or an operation with
 /// region control-flow, then its operand lattices are set accordingly.
 /// Otherwise, the operation transfer function is invoked.
+///
+/// The lattices are guarded at run time, and one lattice may be reached by more than one path of
+/// a visit: an operation may use one value twice, a branch may pass a block's own argument back to
+/// it, a return may return the results of a recursive call of its function. No path holds a guard
+/// while another path may take one on the same lattice: the paths that forward values along an
+/// edge (branches, region branches and their terminators, calls) hold one operand lattice at a
+/// time, and the hooks they call ([SparseBackwardDataFlowAnalysis::visit_branch_operand] and the
+/// others) are called with none held. Where a lattice read is one already held, it is read through
+/// the guard held, and the dependency is recorded through that guard.
+///
+/// Every visit ends: the lattices have finite height, and `meet` only moves a lattice down, so a
+/// lattice changes a finite number of times, and a point is visited again only when a lattice it
+/// read changes.
 pub(super) fn visit_operation<A>(
     analysis: &SparseDataFlowAnalysis<A, Backward>,
     op: &Operation,
@@ -136,10 +242,17 @@ where
         return Ok(());
     }
 
+    // Whatever the path below, the operation is visited again when the lattice of one of its
+    // results changes. The guards are let go at once, and each path takes the guards it needs: a
+    // region branch whose regions may be skipped forwards its operands to its own results, which
+    // `visit_region_successors` reads, and the transfer function's path takes them again below.
     let current_point = ProgramPoint::after(op);
-    let mut operands = get_lattice_elements_mut::<A>(analysis, op.operands().all(), solver);
-    let results =
-        get_lattice_elements_for::<A>(analysis, current_point, op.results().all(), solver);
+    drop(get_lattice_elements_for::<A>(
+        analysis,
+        current_point,
+        op.results().all(),
+        solver,
+    ));
 
     // Block arguments of region branch operations flow back into the operands of the parent op
     if let Some(branch) = op.as_trait::<dyn RegionBranchOpInterface>() {
@@ -159,27 +272,22 @@ where
 
         for successor_index in 0..branch.num_successors() {
             let successor_operands = branch.get_successor_operands(successor_index);
-            let forwarded = successor_operands.forwarded();
-            if !forwarded.is_empty() {
-                let num_produced = successor_operands.num_produced();
-                for (operand_index, operand) in forwarded.iter().enumerate() {
-                    unaccounted.set(operand.index(), false);
-                    if let Some(block_arg) =
-                        branch.get_successor_block_argument(operand_index + num_produced)
-                    {
-                        let mut operand_lattice = get_lattice_element_mut::<A>(
-                            analysis,
-                            operand.borrow().as_value_ref(),
-                            solver,
-                        );
-                        let result_lattice = get_lattice_element_for::<A>(
-                            analysis,
-                            current_point,
-                            block_arg.borrow().as_value_ref(),
-                            solver,
-                        );
-                        operand_lattice.meet(result_lattice.lattice());
-                    }
+            let num_produced = successor_operands.num_produced();
+            let block = op.successors()[successor_index].successor();
+            let block = block.borrow();
+            // The forwarded operand at `position` is passed to the argument after the produced
+            // ones, as upstream's `getBranchSuccessorArgument` computes it.
+            for (position, operand) in successor_operands.forwarded().iter().enumerate() {
+                let operand = operand.borrow();
+                unaccounted.set(operand.index(), false);
+                if let Some(argument) = block.arguments().get(position + num_produced) {
+                    meet_operand_with_input(
+                        analysis,
+                        operand.as_value_ref(),
+                        argument.borrow().as_value_ref(),
+                        current_point,
+                        solver,
+                    );
                 }
             }
         }
@@ -212,34 +320,30 @@ where
             // `visit_call_operand` for all operands.
             let arg_operands = call.arguments();
             let region = callable.get_callable_region();
-            if region.as_ref().is_none_or(|region| {
-                region.borrow().is_empty() || !solver.config().is_interprocedural()
-            }) {
+            let Some(region) = region.filter(|region| {
+                !region.borrow().is_empty() && solver.config().is_interprocedural()
+            }) else {
                 log::trace!(target: analysis.analysis.debug_name(), "{} is an external callee", target.as_symbol_ref());
-                analysis.visit_external_call(call, &mut operands, &results, solver);
+                analysis.visit_external_call(call, solver);
                 return Ok(());
-            }
+            };
 
             // Otherwise, propagate information from the entry point of the function back to
-            // operands whenever possible.
+            // operands whenever possible. A recursive call may pass an entry argument of its
+            // callee to that argument (see `meet_operand_with_input`).
             log::trace!(target: analysis.analysis.debug_name(), "propagating value lattices from callee entry to call operands");
-            let region = region.unwrap();
             let region = region.borrow();
             let block = region.entry();
             for (block_arg, arg_operand) in block.arguments().iter().zip(arg_operands.iter()) {
-                let mut arg_lattice = get_lattice_element_mut::<A>(
+                let arg_operand = arg_operand.borrow();
+                meet_operand_with_input(
                     analysis,
-                    arg_operand.borrow().as_value_ref(),
-                    solver,
-                );
-                let result_lattice = get_lattice_element_for::<A>(
-                    analysis,
-                    current_point,
+                    arg_operand.as_value_ref(),
                     block_arg.borrow().as_value_ref(),
+                    current_point,
                     solver,
                 );
-                arg_lattice.meet(result_lattice.lattice());
-                unaccounted.set(arg_operand.borrow().index as usize, false);
+                unaccounted.set(arg_operand.index as usize, false);
             }
 
             // Handle the operands of the call op that aren't forwarded to any arguments.
@@ -274,6 +378,14 @@ where
         }
     }
 
+    // The remaining paths hold the guards of all operand lattices at once, and those of the
+    // result lattices. An operand is never one of the operation's own results (the verifier
+    // refuses an operation that reads its own result, in a graph region too), so the two never
+    // name one lattice; operands that are one value share one guard (see [OperandLattices]).
+    let results =
+        get_lattice_elements_for::<A>(analysis, current_point, op.results().all(), solver);
+    let mut operands = OperandLattices::<A::Lattice>::new(op.operands().all(), solver);
+
     if op.implements::<dyn ReturnLike>() {
         log::trace!(target: analysis.analysis.debug_name(), "op implements ReturnLike");
         // Going backwards, the operands of the return are derived from the results of all CallOps
@@ -295,14 +407,31 @@ where
                 log::trace!(target: analysis.analysis.debug_name(), "meeting lattices of return values and call site results");
                 for call in callsites.known_predecessors() {
                     let call = call.borrow();
-                    let call_result_lattices = get_lattice_elements_for::<A>(
-                        analysis,
-                        current_point,
-                        call.results().all(),
-                        solver,
-                    );
-                    for (op, result) in operands.iter_mut().zip(call_result_lattices) {
-                        op.meet(result.lattice());
+                    for (index, result) in call.results().iter().enumerate().take(operands.len()) {
+                        let result = result.borrow().as_value_ref();
+                        // A recursive call of this function may be the definition of what this
+                        // return returns (`%r = call @f(..); ret %r`, or two results returned
+                        // swapped). Then the call's result lattice is one of the operand lattices
+                        // held, and the solver cannot hand it out again: it is read from the
+                        // guard held, and the dependency is recorded through that guard
+                        // (`AnalysisStateGuardMut::require` is `DataFlowSolver::require` for a
+                        // state already borrowed). A later change of that lattice, by this visit
+                        // or another, visits the return again, and the meet is made with the new
+                        // value. When the result is the operand at `index` itself, the meet
+                        // changes nothing.
+                        if let Some(held) = operands.held_mut(result) {
+                            held.require(analysis, current_point);
+                            let value = held.lattice().clone();
+                            operands[index].meet(&value);
+                        } else {
+                            let lattice = get_lattice_element_for::<A>(
+                                analysis,
+                                current_point,
+                                result,
+                                solver,
+                            );
+                            operands[index].meet(lattice.lattice());
+                        }
                     }
                 }
             } else {
@@ -313,7 +442,7 @@ where
                     target: analysis.analysis.debug_name(),
                     "not all call sites are known - setting return value lattices to exit state"
                 );
-                set_all_to_exit_states(analysis, &mut operands);
+                set_all_to_exit_states(analysis, operands.distinct());
             }
             return Ok(());
         }
@@ -323,7 +452,44 @@ where
     analysis.visit_operation(op, &mut operands, &results, solver)
 }
 
+/// Meet the lattice of `operand` with the lattice of `input`, the value it is passed to along an
+/// edge of control flow, and visit `point` again when the lattice of `input` changes.
+///
+/// The two are one lattice when the edge passes a value to itself: a branch that passes a block's
+/// own argument back to it, a continue that carries an entry argument of its loop back to that
+/// argument, a recursive call that passes an entry argument of its callee to that argument. The
+/// solver cannot hand out a second guard on a lattice already guarded, so one guard is taken, and
+/// the dependency is recorded through it (`AnalysisStateGuardMut::require` is
+/// `DataFlowSolver::require` for a state already borrowed). The meet itself is left out: the meet
+/// of a lattice with itself changes nothing, now or after any later change of the lattice, so the
+/// answer is the one two lattices would give, and with the dependency recorded nothing else is
+/// lost. Every other edge passes a value to another value, and the two guards are on two
+/// lattices.
+fn meet_operand_with_input<A>(
+    analysis: &SparseDataFlowAnalysis<A, Backward>,
+    operand: ValueRef,
+    input: ValueRef,
+    point: ProgramPoint,
+    solver: &mut DataFlowSolver,
+) where
+    A: SparseBackwardDataFlowAnalysis,
+{
+    if operand == input {
+        let mut lattice = get_lattice_element_mut::<A>(analysis, operand, solver);
+        lattice.require(analysis, point);
+        return;
+    }
+    let input_lattice = get_lattice_element_for::<A>(analysis, point, input, solver);
+    let mut operand_lattice = get_lattice_element_mut::<A>(analysis, operand, solver);
+    operand_lattice.meet(input_lattice.lattice());
+}
+
 /// Visit an op with regions (like e.g. `scf.while`)
+///
+/// The operands of the op are defined outside it, and the inputs of its entry successors are the
+/// arguments of its regions or its own results, so an operand is never an input. One operand may
+/// be forwarded to more than one input (`scf.while %x, %x`, or one value to two regions): each
+/// edge takes its guards and lets them go before the next.
 fn visit_region_successors<A>(
     analysis: &SparseDataFlowAnalysis<A, Backward>,
     branch: &dyn RegionBranchOpInterface,
@@ -332,6 +498,7 @@ fn visit_region_successors<A>(
     A: SparseBackwardDataFlowAnalysis,
 {
     let op = branch.as_operation();
+    let point = ProgramPoint::after(op);
 
     let mut const_operands =
         SmallVec::<[Option<AttributeRef>; 2]>::with_capacity(op.num_operands());
@@ -347,14 +514,8 @@ fn visit_region_successors<A>(
         let inputs = successor.successor_inputs();
         for (operand, input) in operands.forwarded().iter().zip(inputs.iter()) {
             let operand = operand.borrow();
-            let operand_index = operand.index as usize;
-            let mut operand_lattice =
-                get_lattice_element_mut::<A>(analysis, operand.as_value_ref(), solver);
-            let point = ProgramPoint::after(op);
-            let input_lattice = get_lattice_element_for::<A>(analysis, point, input, solver);
-
-            operand_lattice.meet(input_lattice.lattice());
-            unaccounted.set(operand_index, false);
+            meet_operand_with_input(analysis, operand.as_value_ref(), input, point, solver);
+            unaccounted.set(operand.index as usize, false);
         }
     }
 
@@ -369,6 +530,10 @@ fn visit_region_successors<A>(
 /// of its operands, given its parent op `branch`. The lattice value of an
 /// operand is determined based on the corresponding arguments in
 /// `terminator`'s region successor(s).
+///
+/// An operand may be one of the inputs: a continue that carries an entry argument of its loop back
+/// to that argument (see `meet_operand_with_input`), or to another argument, which is another
+/// lattice.
 fn visit_region_successors_from_terminator<A>(
     analysis: &SparseDataFlowAnalysis<A, Backward>,
     terminator: &dyn RegionBranchTerminatorOpInterface,
@@ -390,6 +555,7 @@ fn visit_region_successors_from_terminator<A>(
     const_operands.resize_with(num_operands, || None);
 
     let terminator_op = terminator.as_operation();
+    let point = ProgramPoint::after(terminator_op);
     let successors = terminator.get_successor_regions(&const_operands);
     let successors = RegionSuccessorIter::new(terminator_op, successors);
 
@@ -402,11 +568,7 @@ fn visit_region_successors_from_terminator<A>(
         let operands = terminator.get_successor_operands(*successor.branch_point());
         for (operand, input) in operands.forwarded().iter().zip(inputs.iter()) {
             let operand = operand.borrow();
-            let mut operand_lattice =
-                get_lattice_element_mut::<A>(analysis, operand.as_value_ref(), solver);
-            let point = ProgramPoint::after(terminator_op);
-            let input_lattice = get_lattice_element_for::<A>(analysis, point, input, solver);
-            operand_lattice.meet(input_lattice.lattice());
+            meet_operand_with_input(analysis, operand.as_value_ref(), input, point, solver);
             unaccounted.set(operand.index(), false);
         }
     }
@@ -443,23 +605,6 @@ where
 {
     log::trace!(target: analysis.debug_name(), "getting lattice for {value} at {point}");
     solver.require::<_, _>(value, point)
-}
-
-fn get_lattice_elements_mut<'guard, A>(
-    analysis: &SparseDataFlowAnalysis<A, Backward>,
-    values: OpOperandRange<'_>,
-    solver: &mut DataFlowSolver,
-) -> SmallVec<[AnalysisStateGuardMut<'guard, <A as SparseBackwardDataFlowAnalysis>::Lattice>; 2]>
-where
-    A: SparseBackwardDataFlowAnalysis,
-{
-    log::trace!(target: analysis.debug_name(), "getting lattices for {:#?}", values.as_slice());
-    let mut results = SmallVec::with_capacity(values.len());
-    for value in values.iter() {
-        let lattice = solver.get_or_create_mut::<_, _>(value.borrow().as_value_ref());
-        results.push(lattice);
-    }
-    results
 }
 
 /// Get the lattice elements for a range of values, and also set up dependencies so that the
