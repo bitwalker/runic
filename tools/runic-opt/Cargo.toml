@@ -17,8 +17,8 @@ edition.workspace = true
 # The toy language `calc` and the toy machines `stackvm` and `altvm` among the stages the tool
 # registers: stages to run the harness path against, for the tests and the lit suite.
 toy = ["runic-compile/testing"]
-# The `wasm` dialect, linked and registered.
-wasm = ["dep:runic-dialect-wasm"]
+# The `wasm` dialect and the lowering to Wasm form (`runic-codegen-wasm`), linked and registered.
+wasm = ["dep:runic-codegen-wasm", "dep:runic-dialect-wasm"]
 
 [lib]
 doctest = false
@@ -33,6 +33,7 @@ log.workspace = true
 # With Unicode classes for `expected-<kind>-re`.
 regex = { workspace = true, features = ["unicode"] }
 runic-analysis.workspace = true
+runic-codegen-wasm = { workspace = true, optional = true }
 runic-compile.workspace = true
 runic-driver.workspace = true
 runic-ir.workspace = true

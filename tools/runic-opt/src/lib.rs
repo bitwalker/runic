@@ -36,7 +36,8 @@
 //! an input with no operation is; with `--split-input-file` only a case of whitespace is skipped.
 //! `-Z` is accepted only when a registered stage declares unstable options. `--list-stages` lists the registered frontends and backends. With the cargo
 //! feature `toy`, the toy language `calc` and the toy machines `stackvm` and `altvm` are
-//! registered; with the cargo feature `wasm`, the `wasm` dialect is linked and registered.
+//! registered; with the cargo feature `wasm`, the `wasm` dialect and the passes that lower to Wasm
+//! form (`runic-codegen-wasm`) are linked and registered.
 //!
 //! [`run`] is the whole tool, given its arguments and streams; the binary calls it with the
 //! process's.
@@ -65,6 +66,8 @@ use std::{
 };
 
 use clap::{CommandFactory, FromArgMatches};
+#[cfg(feature = "wasm")]
+use runic_codegen_wasm as _;
 use runic_compile::{Compilation, Compiler};
 // The dialects and passes the tool links: naming each crate keeps its registrations.
 use runic_dialect_arith as _;

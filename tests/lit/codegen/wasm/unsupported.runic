@@ -1,0 +1,55 @@
+// RUN: runic-opt %s -p convert-to-wasm --split-input-file --verify-diagnostics
+
+// What `convert-to-wasm` refuses. A value whose type has no carrier is reported before anything is
+// converted, with the value and the operation that holds it; an operation that no pattern
+// converts is reported by the full conversion, which names it (with no location).
+
+// expected-error@unknown {{failed to legalize operation 'arith.add'}}
+builtin.module public @no_pattern attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @f(%x: i32) -> i32 {
+        %y = arith.add %x, %x;
+        builtin.ret %y : (i32);
+    };
+};
+
+// -----
+
+builtin.module public @wide attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    // expected-error@+1 {{`convert-to-wasm` cannot lower a value of type `i128`: integers wider than 64 bits are not lowered yet}}
+    builtin.function public extern("C") @f(%x: i128) {
+        builtin.ret;
+    };
+};
+
+// -----
+
+builtin.module public @wide_result attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @f() {
+        // expected-error@+1 {{result 0 of `arith.constant` has type `i65`}}
+        %x = arith.constant 1 : i65;
+        builtin.ret;
+    };
+};
+
+// -----
+
+builtin.module public @aggregate attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    // expected-error@+1 {{`convert-to-wasm` cannot lower a value of type `struct<i32, i8>`: the type has no Wasm value type to carry it}}
+    builtin.function public extern("C") @f(i32, struct<i32, i8>);
+};
+
+// -----
+
+builtin.module public @address_space attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    // expected-error@+1 {{only pointers in address space 0, into linear memory, have a Wasm carrier}}
+    builtin.function public extern("C") @f() -> ptr<i8, 1>;
+};
+
+// -----
+
+builtin.module public @function_value attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    // expected-error@+1 {{local 0 of `@f` has type `(i32) -> i32`}}
+    builtin.function public extern("C") @f() locals((i32) -> i32) {
+        builtin.ret;
+    };
+};

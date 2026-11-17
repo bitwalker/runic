@@ -88,6 +88,11 @@ transforms/<pass>/    a pass: cse, dce, sccp, canonicalizer, control-flow-sink, 
                       (sink-operand-defs), local2reg, cfg-to-scf
 transforms/pipeline/   several passes in a row, where what matters is what survives all of them
 conversion/           dialect conversion, through the test passes
+codegen/wasm/         the lowering to Wasm form (`runic-codegen-wasm`): `convert-to-wasm` on
+                      functions, calls, returns, locals and constants under each calling
+                      convention (calls.runic), the data layout it needs (layout.runic), what it
+                      refuses (unsupported.runic), `wasm-verify-form` (form.runic), and the passes
+                      in their order (pipeline.runic); every module states its `data_layout`
 analysis/             analyses, through the test passes
 tool/                 options and behaviour of runic-opt itself
 harness/              runic-opt's harness path: an input a frontend reads (`*.calc`) or a

@@ -1,0 +1,163 @@
+// RUN: runic-opt %s -p wasm-verify-form --split-input-file --verify-diagnostics | filecheck %s
+
+// `wasm-verify-form` changes nothing and fails on the first way a function is not in Wasm form,
+// naming the operation and the pass that should have removed it. Each case after the first is
+// one way of not being in Wasm form, and prints nothing.
+
+// A module in Wasm form is left as it is. The initializers of a global variable and of a
+// `wasm.global` are not function bodies, and are not looked at.
+// CHECK-LABEL: @in_form(
+// CHECK-SAME: [[X:%[0-9]+]]: i32, [[R:%[0-9]+]]: !wasm.funcref) -> (i32 { extend = #builtin.sext }) locals(i64) {
+// CHECK-NEXT: [[K:%[0-9]+]] = wasm.const 1 : i64;
+// CHECK-NEXT: builtin.store_local 0, [[K]];
+// CHECK-NEXT: [[Y:%[0-9]+]] = builtin.call @callee([[X]]) : extern("wasm") (i32) -> i32;
+// CHECK-NEXT: [[Z:%[0-9]+]] = wasm.block {
+// CHECK-NEXT: [[S:%[0-9]+]] = wasm.add [[X]], [[Y]];
+// CHECK-NEXT: wasm.end [[S]] : (i32);
+// CHECK-NEXT: } : () -> (i32);
+// CHECK-NEXT: builtin.ret [[Z]] : (i32);
+builtin.module public @m {
+    builtin.global_variable private @data : array<i8; 2> {
+        %bytes = builtin.bytes "0201" : array<i8; 2>;
+        builtin.yield %bytes;
+    };
+    wasm.global private @sp : mut i32 {
+        %v = wasm.const 65536 : i32;
+        builtin.yield %v;
+    };
+    builtin.function public extern("wasm") @callee(i32) -> i32;
+    builtin.function public extern("C") @in_form(%x: i32, %r: !wasm.funcref) -> (i32 { extend = #builtin.sext }) locals(i64) {
+        %k = wasm.const 1 : i64;
+        builtin.store_local 0, %k;
+        %y = builtin.call @callee(%x) : extern("wasm") (i32) -> i32;
+        %z = wasm.block {
+            %s = wasm.add %x, %y;
+            wasm.end %s : (i32);
+        } : () -> (i32);
+        builtin.ret %z : (i32);
+    };
+};
+
+// -----
+
+builtin.module public @m {
+    builtin.function public extern("C") @f(%x: i32) -> i32 {
+        // expected-error@+1 {{`arith.add` is not in Wasm form; `convert-to-wasm` should have removed it}}
+        %y = arith.add %x, %x;
+        builtin.ret %y : (i32);
+    };
+};
+
+// -----
+
+builtin.module public @m {
+    builtin.function public extern("C") @f(%s: i32) -> i32 {
+        // expected-error@+1 {{`scf.index_switch` is not in Wasm form; `convert-to-wasm` should have removed it}}
+        %r = scf.index_switch %s
+        case 1 {
+            scf.yield %s : (i32);
+        }
+        default {
+            scf.yield %s : (i32);
+        } : (i32);
+        builtin.ret %r : (i32);
+    };
+};
+
+// -----
+
+builtin.module public @m {
+    builtin.function public extern("C") @f() -> i32 {
+        // expected-error@+1 {{`ub.poison` is not in Wasm form; `convert-to-wasm` should have removed it}}
+        %poison = ub.poison <{ value = #ub.poison<i32> }>;
+        builtin.ret %poison : (i32);
+    };
+};
+
+// -----
+
+builtin.module public @m {
+    builtin.function public extern("C") @f(%x: i64) -> i32 {
+        // expected-error@+1 {{`builtin.unrealized_conversion_cast` is not in Wasm form; `convert-to-wasm` should have removed it}}
+        %y = builtin.unrealized_conversion_cast %x : i64 to i32;
+        builtin.ret %y : (i32);
+    };
+};
+
+// -----
+
+builtin.module public @m {
+    builtin.function public extern("C") @f() {
+        // expected-error@+1 {{`mem.alloca` is not in Wasm form; `wasm-lower-frames` should have removed it}}
+        %slot = mem.alloca i32;
+        builtin.ret;
+    };
+};
+
+// -----
+
+builtin.module public @m {
+    builtin.function public extern("C") @f(%x: i32) -> i32 {
+        // expected-error@+1 {{`cf.br` is not in Wasm form; `cfg-to-scf` should have removed it}}
+        cf.br ^next(%x : i32);
+    ^next(%y: i32):
+        builtin.ret %y : (i32);
+    };
+};
+
+// -----
+
+// A region of more than one block is reported as such when no branch joins its blocks.
+builtin.module public @m {
+    // expected-error@+1 {{region 0 of `@f` has 2 blocks, but a region in Wasm form has one; `cfg-to-scf` should have structured it}}
+    builtin.function public extern("C") @f(%x: i32) -> i32 {
+        builtin.ret %x : (i32);
+    ^dead:
+        builtin.ret %x : (i32);
+    };
+};
+
+// -----
+
+builtin.module public @m {
+    builtin.function public extern("C") @f() -> i32 {
+        // expected-error@+1 {{result 0 of `builtin.call` has type `i8`, which is not a Wasm value type; `convert-to-wasm` should have converted it}}
+        %r = builtin.call @g() : extern("C") () -> i8;
+        %k = wasm.const 0 : i32;
+        builtin.ret %k : (i32);
+    };
+    builtin.function public extern("C") @g() -> i8;
+};
+
+// -----
+
+// A declaration's signature is checked too.
+builtin.module public @m {
+    // expected-error@+1 {{parameter 1 of `@d` has type `ptr<i8>`, which is not a Wasm value type; `convert-to-wasm` should have converted it}}
+    builtin.function public extern("C") @d(i32, ptr<i8>);
+};
+
+// -----
+
+builtin.module public @m {
+    // expected-error@+1 {{result 0 of `@d` has type `isize`, which is not a Wasm value type; `convert-to-wasm` should have converted it}}
+    builtin.function public extern("C") @d() -> isize;
+};
+
+// -----
+
+builtin.module public @m {
+    // expected-error@+1 {{local 0 of `@f` has type `i1`, which is not a Wasm value type; `convert-to-wasm` should have converted it}}
+    builtin.function public extern("C") @f() locals(i1) {
+        builtin.ret;
+    };
+};
+
+// -----
+
+builtin.module public @m {
+    // expected-error@+1 {{`@f` uses the calling convention "fast": Wasm form has "wasm" and "C"}}
+    builtin.function public extern("fast") @f() {
+        builtin.ret;
+    };
+};

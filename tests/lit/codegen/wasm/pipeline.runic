@@ -1,0 +1,21 @@
+// RUN: runic-opt %s -p 'cfg-to-scf{exits=in-place},wasm-lower-frames,convert-to-wasm,wasm-verify-form' | filecheck %s
+
+// The passes of the lowering in their order (what `runic_codegen_wasm::add_lowering_passes`
+// adds): `cfg-to-scf` joins the blocks, `wasm-lower-frames` has nothing to do, `convert-to-wasm`
+// lowers what is left, and `wasm-verify-form` accepts it. The parameter is masked at the entry,
+// as `extern("C")` assumes nothing of its high bits, and the result is sign-extended, as it is
+// marked `sext`.
+
+// CHECK-LABEL: @f(
+// CHECK-SAME: [[X:%[0-9]+]]: i32) -> (i32 { extend = #builtin.sext }) {
+// CHECK-NEXT: [[K:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[M:%[0-9]+]] = wasm.and [[X]], [[K]];
+// CHECK-NEXT: [[S:%[0-9]+]] = wasm.extend8_s [[M]];
+// CHECK-NEXT: builtin.ret [[S]] : (i32);
+builtin.module public @m attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @f(%x: i8) -> (i8 { extend = #builtin.sext }) {
+        cf.br ^next(%x : i8);
+    ^next(%y: i8):
+        builtin.ret %y : (i8);
+    };
+};

@@ -17,7 +17,7 @@ harness is tested against are part of `runic-compile`, behind its `testing` feat
 
 ## The crates
 
-The workspace has eighteen members:
+The workspace has nineteen members:
 
 | crate | path | what it is for |
 |---|---|---|
@@ -28,6 +28,7 @@ The workspace has eighteen members:
 | `runic-dialect-mem` | `crates/dialects/mem` | byte-addressed memory, typed and opaque pointers |
 | `runic-dialect-ub` | `crates/dialects/ub` | undefined behaviour (`ub.poison`, `ub.unreachable`) |
 | `runic-dialect-wasm` | `crates/dialects/wasm` | WebAssembly's instructions as SSA operations (numeric, memory, global, table and reference operations, indirect calls, structured control flow with `wasm.block`, `wasm.loop`, `wasm.if`, `wasm.br` and `wasm.br_table`) and module-level operations for memories, tables, globals, element segments and tags |
+| `runic-codegen-wasm` | `crates/codegen/wasm` | the lowering of generic IR to Wasm form, the input of the WebAssembly backend: the passes `convert-to-wasm` (a dialect conversion to `wasm` operations and Wasm value types, with the `"wasm"` and `"C"` calling conventions), `wasm-lower-frames` and `wasm-verify-form`, and the pipeline that runs them after `cfg-to-scf` |
 | `runic-analysis` | `crates/analysis` | the data-flow analysis framework and its analyses |
 | `runic-transform` | `crates/transform` | transformation passes and utilities |
 | `runic-compile` | `crates/compile` | the compiler harness: a request that says what one compilation is asked to do, the stages it runs through (frontends, the optimization pipeline, backends), the checkpoints and outputs, and the toy language `calc` and machines `stackvm` and `altvm` behind the `testing` feature |

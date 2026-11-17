@@ -1,0 +1,40 @@
+[package]
+name = "runic-codegen-wasm"
+description = "Lowering of generic Runic IR to Wasm form, for the WebAssembly backend"
+version.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+license.workspace = true
+readme.workspace = true
+edition.workspace = true
+
+[lib]
+doctest = false
+
+[features]
+default = ["std"]
+std = [
+    "runic-ir/std",
+    "runic-dialect-arith/std",
+    "runic-dialect-cf/std",
+    "runic-dialect-mem/std",
+    "runic-dialect-scf/std",
+    "runic-dialect-ub/std",
+    "runic-dialect-wasm/std",
+]
+
+[dependencies]
+runic-dialect-arith.workspace = true
+runic-dialect-cf.workspace = true
+runic-dialect-mem.workspace = true
+runic-dialect-scf.workspace = true
+runic-dialect-ub.workspace = true
+runic-dialect-wasm.workspace = true
+runic-ir.workspace = true
+
+[dev-dependencies]
+# Use local paths for dev-only dependency to avoid relying on crates.io during packaging
+runic-ir = { path = "../../ir", features = ["logging"] }

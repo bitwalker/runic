@@ -6,6 +6,7 @@ resolver = "3"
 # explicit decision. See `.release/config.toml` for package classification.
 members = [
     "crates/analysis",
+    "crates/codegen/wasm",
     "crates/compile",
     "crates/diagnostics",
     "crates/diagnostics-macros",
@@ -97,6 +98,7 @@ toml = { version = "^1.1.2", features = ["preserve_order"] }
 
 # Workspace crates
 runic-analysis = { version = "0.1.0", path = "crates/analysis" }
+runic-codegen-wasm = { version = "0.1.0", path = "crates/codegen/wasm" }
 runic-compile = { version = "0.1.0", path = "crates/compile" }
 runic-diagnostics = { version = "0.1.0", path = "crates/diagnostics", default-features = false }
 runic-diagnostics-macros = { version = "0.1.0", path = "crates/diagnostics-macros" }

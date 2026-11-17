@@ -6,13 +6,15 @@
 // What runic-opt registers, each list on standard output: the passes, each with its description;
 // the dialects, each with the number of its operations; the operations, one name per line, sorted.
 // A list does not read the input: given a file, the tool still only lists. The counts are those of
-// this build (with the `wasm` dialect, which `cargo make runic-opt` links), and change when an
-// operation is added. The last operation listed anchors the end of the operations: it is the last
-// name in sort order, which is the last `wasm.*` operation.
+// this build (with the `wasm` dialect and the passes of the lowering to Wasm form, which `cargo
+// make runic-opt` links), and change when an operation is added. The last operation listed
+// anchors the end of the operations: it is the last name in sort order, which is the last
+// `wasm.*` operation.
 
 // PASSES: canonicalizer {{ +}}Applies the canonicalization patterns of all loaded dialects
 // PASSES-NEXT: cfg-to-scf
 // PASSES-NEXT: control-flow-sink
+// PASSES-NEXT: convert-to-wasm
 // PASSES-NEXT: cse
 // PASSES-NEXT: dce
 // PASSES-NEXT: local2reg
@@ -21,6 +23,8 @@
 // PASSES-NEXT: test-convert-wide-ints
 // PASSES-NEXT: test-fail
 // PASSES-NEXT: test-print-int-ranges {{ +}}Emits a hint{{.*}}
+// PASSES-NEXT: wasm-lower-frames
+// PASSES-NEXT: wasm-verify-form {{ +}}Checks that every function is in Wasm form{{.*}}
 // PASSES-NOT: {{.}}
 
 // DIALECTS: arith {{ +}}50 operations

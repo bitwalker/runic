@@ -38,6 +38,10 @@ name = "runic-analysis"
 unit = "compiler"
 
 [[packages]]
+name = "runic-codegen-wasm"
+unit = "compiler"
+
+[[packages]]
 name = "runic-compile"
 unit = "compiler"
 

@@ -1,0 +1,44 @@
+// RUN: runic-opt %s -p convert-to-wasm --split-input-file --verify-diagnostics | filecheck %s
+
+// `convert-to-wasm` needs a data layout in scope, little-endian, with 32-bit pointers and a
+// 32-bit `isize`; otherwise it fails on the module, saying how to state one. The first case has
+// one and converts; each other case prints nothing.
+
+// A layout stated on a world applies to the modules in it.
+// CHECK-LABEL: @f(
+// CHECK-SAME: [[X:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: builtin.ret [[X]] : (i32);
+builtin.world {
+    builtin.module public @m {
+        builtin.function public extern("C") @f(%x: isize) -> isize {
+            builtin.ret %x : (isize);
+        };
+    };
+} attributes { data_layout = #builtin.data_layout<little, ptr = 32> };
+
+// -----
+
+// expected-error@+1 {{`convert-to-wasm` needs a data layout: state `data_layout = #builtin.data_layout<little, ptr = 32>` on the module, or compile with `--target`}}
+builtin.module public @none {
+    builtin.function public extern("C") @f(%x: i8) -> i8 {
+        builtin.ret %x : (i8);
+    };
+};
+
+// -----
+
+// expected-error@+1 {{`convert-to-wasm` needs a little-endian data layout: Wasm memory is little-endian}}
+builtin.module public @big attributes { data_layout = #builtin.data_layout<big, ptr = 32> } {
+};
+
+// -----
+
+// expected-error@+1 {{the data layout in scope of this operation gives pointers of 64 bits in address space 0}}
+builtin.module public @wide attributes { data_layout = #builtin.data_layout<little, ptr = 64> } {
+};
+
+// -----
+
+// expected-error@+1 {{the data layout in scope of this operation gives `isize` 16 bits}}
+builtin.module public @narrow attributes { data_layout = #builtin.data_layout<little, ptr = 32 index 16> } {
+};

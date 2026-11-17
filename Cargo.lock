@@ -1303,6 +1303,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "runic-codegen-wasm"
+version = "0.1.0"
+dependencies = [
+ "runic-dialect-arith",
+ "runic-dialect-cf",
+ "runic-dialect-mem",
+ "runic-dialect-scf",
+ "runic-dialect-ub",
+ "runic-dialect-wasm",
+ "runic-ir",
+]
+
+[[package]]
 name = "runic-compile"
 version = "0.1.0"
 dependencies = [
@@ -1479,6 +1492,7 @@ dependencies = [
  "log",
  "regex",
  "runic-analysis",
+ "runic-codegen-wasm",
  "runic-compile",
  "runic-dialect-arith",
  "runic-dialect-cf",

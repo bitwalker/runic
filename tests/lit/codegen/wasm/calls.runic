@@ -1,0 +1,245 @@
+// RUN: runic-opt %s -p convert-to-wasm --split-input-file --verify-diagnostics | filecheck %s
+// RUN: runic-opt %s -p 'convert-to-wasm,wasm-verify-form' --split-input-file --verify-diagnostics | filecheck %s
+
+// Functions, calls, tail calls, returns, locals and constants in Wasm form: every type becomes its
+// carrier (an integer of up to 32 bits, `isize` and a pointer an `i32`, an integer of 33 to 64
+// bits an `i64`), and a narrow integer (one narrower than its carrier) is carried zero-extended.
+// The second RUN line checks that what the conversion leaves is in Wasm form.
+
+// Under `extern("wasm")` both sides of a call rely on carried form: nothing is masked or extended.
+
+// CHECK-LABEL: @callee(
+// CHECK-SAME: i32, i32, i32, i32, i32, i64, i64, i32, i32, i32, f32, f64) -> (i32, i64, i32, i32, f32);
+builtin.module public @wasm_convention attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("wasm") @callee(i1, i8, i16, i31, i32, i33, i64, isize, ptr<i8>, ptr, f32, f64) -> (i8, i33, isize, ptr<i8>, f32);
+
+    // CHECK-LABEL: @caller(
+    // CHECK-SAME: [[B:%[0-9]+]]: i32, [[C:%[0-9]+]]: i32, [[S:%[0-9]+]]: i32, [[N:%[0-9]+]]: i32, [[W:%[0-9]+]]: i32, [[X:%[0-9]+]]: i64, [[L:%[0-9]+]]: i64, [[Z:%[0-9]+]]: i32, [[P:%[0-9]+]]: i32, [[O:%[0-9]+]]: i32, [[F:%[0-9]+]]: f32, [[D:%[0-9]+]]: f64) -> (i32, i64, i32, i32, f32) {
+    // CHECK-NEXT: [[R8:%[0-9]+]], [[R33:%[0-9]+]], [[RZ:%[0-9]+]], [[RP:%[0-9]+]], [[RF:%[0-9]+]] = builtin.call @callee([[B]], [[C]], [[S]], [[N]], [[W]], [[X]], [[L]], [[Z]], [[P]], [[O]], [[F]], [[D]]) : extern("wasm") (i32, i32, i32, i32, i32, i64, i64, i32, i32, i32, f32, f64) -> (i32, i64, i32, i32, f32);
+    // CHECK-NEXT: builtin.ret [[R8]], [[R33]], [[RZ]], [[RP]], [[RF]] : (i32, i64, i32, i32, f32);
+    builtin.function public extern("wasm") @caller(%b: i1, %c: i8, %s: i16, %n: i31, %w: i32, %x: i33, %l: i64, %z: isize, %p: ptr<i8>, %o: ptr, %f: f32, %d: f64) -> (i8, i33, isize, ptr<i8>, f32) {
+        %r8, %r33, %rz, %rp, %rf = builtin.call @callee(%b, %c, %s, %n, %w, %x, %l, %z, %p, %o, %f, %d) : extern("wasm") (i1, i8, i16, i31, i32, i33, i64, isize, ptr<i8>, ptr, f32, f64) -> (i8, i33, isize, ptr<i8>, f32);
+        builtin.ret %r8, %r33, %rz, %rp, %rf : (i8, i33, isize, ptr<i8>, f32);
+    };
+
+    // CHECK-LABEL: @tail(
+    // CHECK-SAME: [[C:%[0-9]+]]: i32, [[X:%[0-9]+]]: i64) -> i32 {
+    // CHECK-NEXT: builtin.tail_call @next([[C]], [[X]]) : extern("wasm") (i32, i64) -> i32;
+    builtin.function public extern("wasm") @tail(%c: i8, %x: i33) -> i8 {
+        builtin.tail_call @next(%c, %x) : extern("wasm") (i8, i33) -> i8;
+    };
+
+    // CHECK-LABEL: builtin.function public extern("wasm") @next(
+    // CHECK-SAME: i32, i64) -> i32;
+    builtin.function public extern("wasm") @next(i8, i33) -> i8;
+
+    // A `builtin.ret_imm` is a `wasm.const` of its value zero-extended in the carrier, and a
+    // `builtin.ret`.
+    // CHECK-LABEL: @imm_wide(
+    // CHECK-SAME: ) -> i64 {
+    // CHECK-NEXT: [[K:%[0-9]+]] = wasm.const 8589934591 : i64;
+    // CHECK-NEXT: builtin.ret [[K]] : (i64);
+    builtin.function public extern("wasm") @imm_wide() -> i33 {
+        builtin.ret_imm -1 : i33;
+    };
+
+    // Constants of each width: an integer zero-extended in its carrier (a negative `i8` is 255),
+    // an `isize` truncated to the 32 bits of the target, a float as it is.
+    // CHECK-LABEL: @constants(
+    // CHECK-SAME: ) -> (i32, i32, i32, i32, i32, i32, i64, i64, i32, f32, f64) {
+    // CHECK-NEXT: [[T:%[0-9]+]] = wasm.const 1 : i32;
+    // CHECK-NEXT: [[M:%[0-9]+]] = wasm.const 255 : i32;
+    // CHECK-NEXT: [[FIVE:%[0-9]+]] = wasm.const 5 : i32;
+    // CHECK-NEXT: [[H:%[0-9]+]] = wasm.const 65535 : i32;
+    // CHECK-NEXT: [[N:%[0-9]+]] = wasm.const 2147483647 : i32;
+    // CHECK-NEXT: [[W:%[0-9]+]] = wasm.const -1 : i32;
+    // CHECK-NEXT: [[X:%[0-9]+]] = wasm.const 8589934591 : i64;
+    // CHECK-NEXT: [[L:%[0-9]+]] = wasm.const -1 : i64;
+    // CHECK-NEXT: [[Z:%[0-9]+]] = wasm.const -1 : i32;
+    // CHECK-NEXT: [[F:%[0-9]+]] = wasm.constf 1.5 : f32;
+    // CHECK-NEXT: [[D:%[0-9]+]] = wasm.constf -2.0 : f64;
+    // CHECK-NEXT: builtin.ret [[T]], [[M]], [[FIVE]], [[H]], [[N]], [[W]], [[X]], [[L]], [[Z]], [[F]], [[D]] : (i32, i32, i32, i32, i32, i32, i64, i64, i32, f32, f64);
+    builtin.function public extern("wasm") @constants() -> (i1, i8, i8, i16, i31, i32, i33, i64, isize, f32, f64) {
+        %t = arith.constant 1 : i1;
+        %m = arith.constant -1 : i8;
+        %five = arith.constant 5 : i8;
+        %h = arith.constant -1 : i16;
+        %n = arith.constant -1 : i31;
+        %w = arith.constant -1 : i32;
+        %x = arith.constant -1 : i33;
+        %l = arith.constant -1 : i64;
+        %z = arith.constant -1 : isize;
+        %f = arith.constantf 1.5 : f32;
+        %d = arith.constantf -2.0 : f64;
+        builtin.ret %t, %m, %five, %h, %n, %w, %x, %l, %z, %f, %d : (i1, i8, i8, i16, i31, i32, i33, i64, isize, f32, f64);
+    };
+};
+
+// -----
+
+// Under `extern("C")` nothing is assumed that the signature does not say. A function masks each
+// narrow parameter not marked `zext` at its entry, and sign-extends each narrow result marked
+// `sext` at a return; a call sign-extends each argument whose parameter is narrow and marked
+// `sext`, and masks each narrow result not marked `zext`. A parameter of 32 or 64 bits is not
+// narrow, whatever its marker.
+
+// CHECK-LABEL: @take(
+// CHECK-SAME: i32, i32 { extend = #builtin.zext }, i32 { extend = #builtin.sext }, i32 { extend = #builtin.sext }, i32 { extend = #builtin.sext }, i32 { extend = #builtin.sext }, i32 { extend = #builtin.sext }, i64 { extend = #builtin.sext }, i64 { extend = #builtin.sext }, i32 { extend = #builtin.sext });
+builtin.module public @c_convention attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @take(i8, i8 { extend = #builtin.zext }, i8 { extend = #builtin.sext }, i16 { extend = #builtin.sext }, i31 { extend = #builtin.sext }, i1 { extend = #builtin.sext }, i32 { extend = #builtin.sext }, i33 { extend = #builtin.sext }, i64 { extend = #builtin.sext }, isize { extend = #builtin.sext });
+
+    // CHECK-LABEL: @give(
+    // CHECK-SAME: ) -> (i32, i32 { extend = #builtin.zext }, i32 { extend = #builtin.sext }, i32, i32, i32, i64, i64 { extend = #builtin.sext }, i32, f64);
+    builtin.function public extern("C") @give() -> (i8, i8 { extend = #builtin.zext }, i8 { extend = #builtin.sext }, i1, i31, i32, i33, i64 { extend = #builtin.sext }, ptr<i8>, f64);
+
+    // The caller's side of the arguments. The parameters of `@passes` are unmarked, so the narrow
+    // ones are masked first; then each argument for a narrow `sext` parameter is sign-extended:
+    // `i8` and `i16` by their own instructions, `i31`, `i1` and `i33` by a shift pair.
+    // CHECK-LABEL: @passes(
+    // CHECK-SAME: [[C:%[0-9]+]]: i32, [[S:%[0-9]+]]: i32, [[N:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32, [[W:%[0-9]+]]: i32, [[X:%[0-9]+]]: i64, [[L:%[0-9]+]]: i64, [[Z:%[0-9]+]]: i32) {
+    // CHECK-NEXT: [[K8:%[0-9]+]] = wasm.const 255 : i32;
+    // CHECK-NEXT: [[C0:%[0-9]+]] = wasm.and [[C]], [[K8]];
+    // CHECK-NEXT: [[K16:%[0-9]+]] = wasm.const 65535 : i32;
+    // CHECK-NEXT: [[S0:%[0-9]+]] = wasm.and [[S]], [[K16]];
+    // CHECK-NEXT: [[K31:%[0-9]+]] = wasm.const 2147483647 : i32;
+    // CHECK-NEXT: [[N0:%[0-9]+]] = wasm.and [[N]], [[K31]];
+    // CHECK-NEXT: [[K1:%[0-9]+]] = wasm.const 1 : i32;
+    // CHECK-NEXT: [[B0:%[0-9]+]] = wasm.and [[B]], [[K1]];
+    // CHECK-NEXT: [[K33:%[0-9]+]] = wasm.const 8589934591 : i64;
+    // CHECK-NEXT: [[X0:%[0-9]+]] = wasm.and [[X]], [[K33]];
+    // CHECK-NEXT: [[CS:%[0-9]+]] = wasm.extend8_s [[C0]];
+    // CHECK-NEXT: [[SS:%[0-9]+]] = wasm.extend16_s [[S0]];
+    // CHECK-NEXT: [[ONE:%[0-9]+]] = wasm.const 1 : i32;
+    // CHECK-NEXT: [[NH:%[0-9]+]] = wasm.shl [[N0]], [[ONE]];
+    // CHECK-NEXT: [[NS:%[0-9]+]] = wasm.shr_s [[NH]], [[ONE]];
+    // CHECK-NEXT: [[K31B:%[0-9]+]] = wasm.const 31 : i32;
+    // CHECK-NEXT: [[BH:%[0-9]+]] = wasm.shl [[B0]], [[K31B]];
+    // CHECK-NEXT: [[BS:%[0-9]+]] = wasm.shr_s [[BH]], [[K31B]];
+    // CHECK-NEXT: [[K31L:%[0-9]+]] = wasm.const 31 : i64;
+    // CHECK-NEXT: [[XH:%[0-9]+]] = wasm.shl [[X0]], [[K31L]];
+    // CHECK-NEXT: [[XS:%[0-9]+]] = wasm.shr_s [[XH]], [[K31L]];
+    // CHECK-NEXT: builtin.call @take([[C0]], [[C0]], [[CS]], [[SS]], [[NS]], [[BS]], [[W]], [[XS]], [[L]], [[Z]]) : extern("C") (i32, i32 { extend = #builtin.zext }, i32 { extend = #builtin.sext }, i32 { extend = #builtin.sext }, i32 { extend = #builtin.sext }, i32 { extend = #builtin.sext }, i32 { extend = #builtin.sext }, i64 { extend = #builtin.sext }, i64 { extend = #builtin.sext }, i32 { extend = #builtin.sext });
+    // CHECK-NEXT: builtin.ret;
+    builtin.function public extern("C") @passes(%c: i8, %s: i16, %n: i31, %b: i1, %w: i32, %x: i33, %l: i64, %z: isize) {
+        builtin.call @take(%c, %c, %c, %s, %n, %b, %w, %x, %l, %z) : extern("C") (i8, i8 { extend = #builtin.zext }, i8 { extend = #builtin.sext }, i16 { extend = #builtin.sext }, i31 { extend = #builtin.sext }, i1 { extend = #builtin.sext }, i32 { extend = #builtin.sext }, i33 { extend = #builtin.sext }, i64 { extend = #builtin.sext }, isize { extend = #builtin.sext }) -> ();
+        builtin.ret;
+    };
+
+    // The caller's side of the results: each narrow result not marked `zext` is masked after the
+    // call (a `sext` one too); the `zext` one, the 32- and 64-bit ones, the pointer and the float
+    // are used as they are. The result marked `sext` here is returned unmarked, so it is not
+    // extended again; the one returned `sext` is.
+    // CHECK-LABEL: @receives(
+    // CHECK-SAME: ) -> (i32, i32 { extend = #builtin.zext }, i32 { extend = #builtin.sext }, i32, i32, i32, i64, i64 { extend = #builtin.sext }, i32, f64) {
+    // CHECK-NEXT: [[A:%[0-9]+]], [[B:%[0-9]+]], [[C:%[0-9]+]], [[D:%[0-9]+]], [[E:%[0-9]+]], [[F:%[0-9]+]], [[G:%[0-9]+]], [[H:%[0-9]+]], [[P:%[0-9]+]], [[Q:%[0-9]+]] = builtin.call @give() : extern("C") () -> (i32, i32 { extend = #builtin.zext }, i32 { extend = #builtin.sext }, i32, i32, i32, i64, i64 { extend = #builtin.sext }, i32, f64);
+    // CHECK-NEXT: [[KA:%[0-9]+]] = wasm.const 255 : i32;
+    // CHECK-NEXT: [[A0:%[0-9]+]] = wasm.and [[A]], [[KA]];
+    // CHECK-NEXT: [[KC:%[0-9]+]] = wasm.const 255 : i32;
+    // CHECK-NEXT: [[C0:%[0-9]+]] = wasm.and [[C]], [[KC]];
+    // CHECK-NEXT: [[KD:%[0-9]+]] = wasm.const 1 : i32;
+    // CHECK-NEXT: [[D0:%[0-9]+]] = wasm.and [[D]], [[KD]];
+    // CHECK-NEXT: [[KE:%[0-9]+]] = wasm.const 2147483647 : i32;
+    // CHECK-NEXT: [[E0:%[0-9]+]] = wasm.and [[E]], [[KE]];
+    // CHECK-NEXT: [[KG:%[0-9]+]] = wasm.const 8589934591 : i64;
+    // CHECK-NEXT: [[G0:%[0-9]+]] = wasm.and [[G]], [[KG]];
+    // CHECK-NEXT: [[CS:%[0-9]+]] = wasm.extend8_s [[C0]];
+    // CHECK-NEXT: builtin.ret [[A0]], [[B]], [[CS]], [[D0]], [[E0]], [[F]], [[G0]], [[H]], [[P]], [[Q]] : (i32, i32, i32, i32, i32, i32, i64, i64, i32, f64);
+    builtin.function public extern("C") @receives() -> (i8, i8 { extend = #builtin.zext }, i8 { extend = #builtin.sext }, i1, i31, i32, i33, i64 { extend = #builtin.sext }, ptr<i8>, f64) {
+        %a, %b, %c, %d, %e, %f, %g, %h, %p, %q = builtin.call @give() : extern("C") () -> (i8, i8 { extend = #builtin.zext }, i8 { extend = #builtin.sext }, i1, i31, i32, i33, i64 { extend = #builtin.sext }, ptr<i8>, f64);
+        builtin.ret %a, %b, %c, %d, %e, %f, %g, %h, %p, %q : (i8, i8, i8, i1, i31, i32, i33, i64, ptr<i8>, f64);
+    };
+
+    // The callee's side: the parameters `%a` (unmarked), `%c` (`sext`), `%x` and `%e` are masked
+    // at entry and the body reads the masked values; `%b` and `%s` (`zext`), and those of 32 bits,
+    // `isize`, the pointer and the float, are read as they are. At the return, the narrow results
+    // marked `sext` are sign-extended. Locals of narrow types are `i32`s.
+    // CHECK-LABEL: @entry(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32 { extend = #builtin.zext }, [[C:%[0-9]+]]: i32 { extend = #builtin.sext }, [[S:%[0-9]+]]: i32 { extend = #builtin.zext }, [[X:%[0-9]+]]: i64, [[E:%[0-9]+]]: i32, [[W:%[0-9]+]]: i32, [[Z:%[0-9]+]]: i32, [[P:%[0-9]+]]: i32, [[F:%[0-9]+]]: f32) -> (i32 { extend = #builtin.sext }, i32 { extend = #builtin.zext }, i64 { extend = #builtin.sext }, i32, i32 { extend = #builtin.sext }) locals(i32, i32, i32, i32, f32) {
+    // CHECK-NEXT: [[KA:%[0-9]+]] = wasm.const 255 : i32;
+    // CHECK-NEXT: [[A0:%[0-9]+]] = wasm.and [[A]], [[KA]];
+    // CHECK-NEXT: [[KC:%[0-9]+]] = wasm.const 255 : i32;
+    // CHECK-NEXT: [[C0:%[0-9]+]] = wasm.and [[C]], [[KC]];
+    // CHECK-NEXT: [[KX:%[0-9]+]] = wasm.const 8589934591 : i64;
+    // CHECK-NEXT: [[X0:%[0-9]+]] = wasm.and [[X]], [[KX]];
+    // CHECK-NEXT: [[KE:%[0-9]+]] = wasm.const 1 : i32;
+    // CHECK-NEXT: [[E0:%[0-9]+]] = wasm.and [[E]], [[KE]];
+    // CHECK-NEXT: builtin.store_local 0, [[B]];
+    // CHECK-NEXT: builtin.store_local 1, [[C0]];
+    // CHECK-NEXT: builtin.store_local 2, [[Z]];
+    // CHECK-NEXT: builtin.store_local 3, [[P]];
+    // CHECK-NEXT: builtin.store_local 4, [[F]];
+    // CHECK-NEXT: {{%[0-9]+}} = builtin.load_local 1 : i32;
+    // CHECK-NEXT: [[AS:%[0-9]+]] = wasm.extend8_s [[A0]];
+    // CHECK-NEXT: [[K31:%[0-9]+]] = wasm.const 31 : i64;
+    // CHECK-NEXT: [[XH:%[0-9]+]] = wasm.shl [[X0]], [[K31]];
+    // CHECK-NEXT: [[XS:%[0-9]+]] = wasm.shr_s [[XH]], [[K31]];
+    // CHECK-NEXT: builtin.ret [[AS]], [[S]], [[XS]], [[E0]], [[W]] : (i32, i32, i64, i32, i32);
+    builtin.function public extern("C") @entry(%a: i8, %b: i8 { extend = #builtin.zext }, %c: i8 { extend = #builtin.sext }, %s: i16 { extend = #builtin.zext }, %x: i33, %e: i1, %w: i32, %z: isize, %p: ptr<i8>, %f: f32) -> (i8 { extend = #builtin.sext }, i16 { extend = #builtin.zext }, i33 { extend = #builtin.sext }, i1, i32 { extend = #builtin.sext }) locals(i8, i8, isize, ptr<i8>, f32) {
+        builtin.store_local 0, %b;
+        builtin.store_local 1, %c;
+        builtin.store_local 2, %z;
+        builtin.store_local 3, %p;
+        builtin.store_local 4, %f;
+        %l = builtin.load_local 1 : i8;
+        builtin.ret %a, %s, %x, %e, %w : (i8, i16, i33, i1, i32);
+    };
+
+    // A tail call sign-extends the arguments of narrow `sext` parameters as a call does; its
+    // results are the callee's, whose markers the function's equal, so nothing follows it.
+    // CHECK-LABEL: @tail(
+    // CHECK-SAME: [[C:%[0-9]+]]: i32, [[S:%[0-9]+]]: i32) -> (i32 { extend = #builtin.sext }) {
+    // CHECK-NEXT: [[KC:%[0-9]+]] = wasm.const 255 : i32;
+    // CHECK-NEXT: [[C0:%[0-9]+]] = wasm.and [[C]], [[KC]];
+    // CHECK-NEXT: [[KS:%[0-9]+]] = wasm.const 65535 : i32;
+    // CHECK-NEXT: [[S0:%[0-9]+]] = wasm.and [[S]], [[KS]];
+    // CHECK-NEXT: [[CS:%[0-9]+]] = wasm.extend8_s [[C0]];
+    // CHECK-NEXT: builtin.tail_call @next([[CS]], [[S0]]) : extern("C") (i32 { extend = #builtin.sext }, i32) -> (i32 { extend = #builtin.sext });
+    builtin.function public extern("C") @tail(%c: i8, %s: i16) -> (i8 { extend = #builtin.sext }) {
+        builtin.tail_call @next(%c, %s) : extern("C") (i8 { extend = #builtin.sext }, i16) -> (i8 { extend = #builtin.sext });
+    };
+
+    // CHECK-LABEL: builtin.function public extern("C") @next(
+    // CHECK-SAME: i32 { extend = #builtin.sext }, i32) -> (i32 { extend = #builtin.sext });
+    builtin.function public extern("C") @next(i8 { extend = #builtin.sext }, i16) -> (i8 { extend = #builtin.sext });
+
+    // A `builtin.ret_imm` of a narrow result marked `sext` returns its value sign-extended in the
+    // carrier; unmarked, zero-extended.
+    // CHECK-LABEL: @imm_sext(
+    // CHECK-SAME: ) -> (i32 { extend = #builtin.sext }) {
+    // CHECK-NEXT: [[K:%[0-9]+]] = wasm.const -3 : i32;
+    // CHECK-NEXT: builtin.ret [[K]] : (i32);
+    builtin.function public extern("C") @imm_sext() -> (i8 { extend = #builtin.sext }) {
+        builtin.ret_imm -3 : i8;
+    };
+
+    // CHECK-LABEL: @imm(
+    // CHECK-SAME: ) -> i32 {
+    // CHECK-NEXT: [[K:%[0-9]+]] = wasm.const 253 : i32;
+    // CHECK-NEXT: builtin.ret [[K]] : (i32);
+    builtin.function public extern("C") @imm() -> i8 {
+        builtin.ret_imm -3 : i8;
+    };
+};
+
+// -----
+
+// Any other calling convention is an error that names it and the operation.
+builtin.module public @fast attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    // expected-error@+1 {{`convert-to-wasm` lowers the calling conventions "wasm" and "C", not "fast"}}
+    builtin.function public extern("fast") @f(%x: i8) -> i8 {
+        builtin.ret %x : (i8);
+    };
+};
+
+// -----
+
+// The convention of a call is checked too: here the callee is a declaration whose signature has
+// only legal types, and the call is the first operation that names the convention.
+builtin.module public @component attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @f() {
+        // expected-error@+1 {{this `builtin.call` uses the calling convention "component"}}
+        builtin.call @g() : extern("component") () -> ();
+        builtin.ret;
+    };
+    builtin.function public extern("component") @g();
+};
