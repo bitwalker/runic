@@ -42,3 +42,4 @@ wasmprinter = { workspace = true, optional = true }
 [dev-dependencies]
 # Use local paths for dev-only dependency to avoid relying on crates.io during packaging
 runic-ir = { path = "../../ir", features = ["logging"] }
+wasmi = { workspace = true, features = ["std"] }

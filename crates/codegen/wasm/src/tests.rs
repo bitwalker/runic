@@ -24,15 +24,25 @@ mod conventions;
 mod coverage;
 #[cfg(feature = "std")]
 mod emit {
-    //! The emitter's module description and its writers, on descriptions built by hand.
+    //! The emitter: its module description and writers, on descriptions built by hand; the plan,
+    //! the locals and the bodies of functions in Wasm form; and emitted modules run with `wasmi`
+    //! against the evaluator.
 
+    mod bodies;
+    mod errors;
     mod fixups;
+    mod instructions;
+    mod locals;
+    mod lowered;
     mod module;
+    mod plan;
     mod sections;
     mod support;
 }
 mod eval;
 mod evaluated;
+#[cfg(feature = "std")]
+mod exec;
 mod float;
 mod form;
 mod frames;

@@ -1326,6 +1326,7 @@ dependencies = [
  "runic-dialect-wasm",
  "runic-ir",
  "wasm-encoder",
+ "wasmi",
  "wasmparser 0.263.0",
  "wasmprinter",
 ]

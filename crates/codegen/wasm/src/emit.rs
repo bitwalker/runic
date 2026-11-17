@@ -6,8 +6,17 @@
 //! the fix-ups with the addresses and table slots a layout gives, and writes the binary with
 //! `wasm-encoder`, with the custom sections of [sections]; [validate::validate] checks it with
 //! `wasmparser` under the backend's [feature baseline](validate::baseline) before it is delivered.
+//!
+//! A function body is encoded by [body::encode_function]: [plan] decides where each value waits
+//! between its definition and its uses (on the stack, in a local, or written again), [locals]
+//! gives locals to the values that need them, and [instr] writes the instruction of each
+//! operation, recording a fix-up for every reference to another entity.
 
+pub mod body;
 pub mod desc;
+pub mod instr;
+pub mod locals;
+pub mod plan;
 pub mod sections;
 pub mod validate;
 pub mod write;
