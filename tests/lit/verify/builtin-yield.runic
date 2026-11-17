@@ -1,0 +1,60 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// `builtin.yield`: the end of a region whose value its parent takes. The initializer of a global
+// variable ends with it, and the type of the yielded value is the declared type of the global. A
+// function is left with `builtin.ret` and a structured operation with its own terminator, so a
+// yield is rejected under either.
+
+builtin.module public @valid {
+    builtin.global_variable public @data : array<i8; 2> {
+        %b = builtin.bytes "0a0b" : array<i8; 2>;
+        builtin.yield %b;
+    };
+    builtin.global_variable public @declaration : i32;
+};
+
+// -----
+
+builtin.module public @wrong_type {
+    builtin.global_variable public @g : i32 { // expected-error {{the initializer of `@g` yields a value of type `array<i8; 2>`, but the global is declared `i32`}}
+        %b = builtin.bytes "0a0b" : array<i8; 2>;
+        builtin.yield %b;
+    };
+};
+
+// -----
+
+builtin.module public @another_terminator {
+    builtin.global_variable public @g : i32 { // expected-error {{the initializer of `@g` ends with `ub.unreachable`, but an initializer ends with `builtin.yield`, which gives the value of the global}}
+        ub.unreachable;
+    };
+};
+
+// -----
+
+builtin.module public @no_terminator {
+    builtin.global_variable public @g : array<i8; 2> { // expected-error {{the initializer of `@g` ends with `builtin.bytes`, but an initializer ends with `builtin.yield`, which gives the value of the global}}
+        %b = builtin.bytes "0a0b" : array<i8; 2>;
+    };
+};
+
+// -----
+
+builtin.module public @in_a_function {
+    builtin.function public extern("C") @f(%a: i32) -> i32 {
+        builtin.yield %a; // expected-error {{`builtin.function` is a function, which is left with `builtin.ret`, not with `builtin.yield`}}
+    };
+};
+
+// -----
+
+builtin.module public @in_a_structured_operation {
+    builtin.function public extern("C") @f(%c: i1, %a: i32) {
+        scf.if %c then {
+            builtin.yield %a; // expected-error {{`scf.if` is a structured operation, which is left with its own terminator, not with `builtin.yield`}}
+        } else {
+            scf.yield : ();
+        } : (i1) -> ();
+        builtin.ret;
+    };
+};

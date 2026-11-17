@@ -68,8 +68,9 @@ impl ModuleBuilder {
 
     /// Declare a new [GlobalVariable] in this module with the given name, visibility, and type.
     ///
-    /// The returned [UnsafeIntrusiveEntityRef] can be used to construct a builder over the body
-    /// of the global variable initializer region.
+    /// The global is a declaration: the returned [UnsafeIntrusiveEntityRef] can be used to
+    /// construct a builder over the body of the global variable initializer region, which ends
+    /// with a [Yield](crate::dialects::builtin::Yield) of a value of the global's type.
     pub fn define_global_variable(
         &mut self,
         name: Ident,

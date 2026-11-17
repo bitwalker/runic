@@ -366,8 +366,9 @@ fn a_global_initializer_may_hold_references_addresses_and_the_value_of_an_immuta
              %v = wasm.mul %a, %a;",
         ),
     ] {
-        let result =
-            module_with_globals(&format!("wasm.global private @x : {ty} {{ {expression} }};"));
+        let result = module_with_globals(&format!(
+            "wasm.global private @x : {ty} {{ {expression} builtin.yield %v; }};"
+        ));
         assert!(result.is_ok(), "{expression}: {:?}", result.err());
     }
 }
@@ -390,10 +391,11 @@ fn a_global_initializer_rejects_the_value_of_a_mutable_global_and_the_state_oper
         ),
         ("i32", "%v = wasm.table_size @tab;", "wasm.table_size"),
     ] {
-        let error =
-            module_with_globals(&format!("wasm.global private @x : {ty} {{ {expression} }};"))
-                .err()
-                .unwrap_or_else(|| panic!("accepted: {expression}"));
+        let error = module_with_globals(&format!(
+            "wasm.global private @x : {ty} {{ {expression} builtin.yield %v; }};"
+        ))
+        .err()
+        .unwrap_or_else(|| panic!("accepted: {expression}"));
         assert!(error.contains(&message(op)), "{error}");
     }
     // The value of a mutable global is not a constant: the message says so
@@ -401,10 +403,11 @@ fn a_global_initializer_rejects_the_value_of_a_mutable_global_and_the_state_oper
         ("i32", "%v = wasm.global_get @g : i32;", "g"),
         ("i64", "%v = wasm.global_get @wide : i64;", "wide"),
     ] {
-        let error =
-            module_with_globals(&format!("wasm.global private @x : {ty} {{ {expression} }};"))
-                .err()
-                .unwrap_or_else(|| panic!("accepted: {expression}"));
+        let error = module_with_globals(&format!(
+            "wasm.global private @x : {ty} {{ {expression} builtin.yield %v; }};"
+        ))
+        .err()
+        .unwrap_or_else(|| panic!("accepted: {expression}"));
         assert!(
             error.contains(&format!(
                 "the initializer of `wasm.global` `@x` reads the mutable global `@{global}`, but \

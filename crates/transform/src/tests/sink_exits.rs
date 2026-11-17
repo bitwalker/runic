@@ -43,6 +43,7 @@ fn assert_left_alone(source: &str, what: &str) -> Result<(), Report> {
 const K1: &str = r#"builtin.module public @m {
 wasm.global public @g : mut i32 {
     %z = wasm.const 0 : i32;
+    builtin.yield %z;
 };
 builtin.function public extern("C") @f(%c: i32, %i: i32) -> i32 {
     %r = wasm.loop %i {
@@ -73,6 +74,7 @@ builtin.function public extern("C") @h(%c: i32, %i: i32) -> i32 {
 const K2: &str = r#"builtin.module public @m {
 wasm.global public @g : mut i32 {
     %z = wasm.const 0 : i32;
+    builtin.yield %z;
 };
 builtin.function public extern("C") @h(%c: i1, %i: i32) -> i32 {
     %r = scf.if %c then {

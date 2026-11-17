@@ -36,10 +36,12 @@ builtin.module public @shadow_stack {
     // OPT: wasm.memory private @mem : 1..2;
     wasm.memory private @mem : 1..2;
     // OPT-NEXT: wasm.global private @sp : mut i32 {
-    // OPT-NEXT: {{%[0-9]+}} = wasm.const 65536 : i32;
+    // OPT-NEXT: [[TOP:%[0-9]+]] = wasm.const 65536 : i32;
+    // OPT-NEXT: builtin.yield [[TOP]];
     // OPT-NEXT: };
     wasm.global private @sp : mut i32 {
         %top = wasm.const 65536 : i32;
+        builtin.yield %top;
     };
 
     // OPT-LABEL: builtin.function public extern("C") @add_pair(
@@ -417,10 +419,12 @@ builtin.module public @imports_and_exports {
     // OPT-NEXT: wasm.memory public @mem : 1..16 attributes { wasm.export_name = #builtin.string<"memory"> };
     wasm.memory public @mem : 1..16 attributes { wasm.export_name = "memory" };
     // OPT-NEXT: wasm.global public @counter : mut i32 {
-    // OPT-NEXT: {{%[0-9]+}} = wasm.const 0 : i32;
+    // OPT-NEXT: [[ZERO:%[0-9]+]] = wasm.const 0 : i32;
+    // OPT-NEXT: builtin.yield [[ZERO]];
     // OPT-NEXT: } attributes { wasm.export_name = #builtin.string<"counter"> };
     wasm.global public @counter : mut i32 {
         %zero = wasm.const 0 : i32;
+        builtin.yield %zero;
     } attributes { wasm.export_name = "counter" };
 
     // The two reads of the immutable `@base` are one; the read of `@counter` that nothing uses goes;

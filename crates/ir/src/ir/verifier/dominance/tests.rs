@@ -854,12 +854,13 @@ fn a_region_without_terminators_is_accepted_where_its_operation_says_so() {
     );
 }
 
-/// The initializer of a global variable holds its data and no terminator.
+/// The initializer of a global variable computes its data and ends with a yield of it.
 #[test]
-fn a_global_variable_initializer_needs_no_terminator() {
+fn a_global_variable_initializer_ends_with_a_yield() {
     let (_context, module) = parse(
         "builtin.global_variable public @g : array<i8; 2> {
     %0 = builtin.bytes \"0102\" : array<i8; 2>;
+    builtin.yield %0;
 };",
     );
     accepted(module);

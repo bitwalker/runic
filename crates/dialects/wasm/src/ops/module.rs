@@ -15,20 +15,20 @@ use alloc::{
 use runic_ir::{
     AsSymbolRef, Context, Ident, Op, OpAsmParser, OpParser, OpPrinter, Operation, OperationRef,
     OperationState, ParseResult, Report, SmallVec, Spanned, Symbol, SymbolName, SymbolRef,
-    SymbolUseList, UnsafeIntrusiveEntityRef, Usable, Value, Visibility,
+    SymbolUseList, UnsafeIntrusiveEntityRef, Usable, ValueRef, Visibility,
     attributes::AttrList,
     derive::operation,
     diagnostics::report,
-    dialects::builtin::attributes::{
-        Array, BoolAttr, IdentAttr, IntAttr, List, ListAttr, SymbolRefAttr, TypeArrayAttr,
-        TypeAttr, VisibilityAttr,
+    dialects::builtin::{
+        Yield,
+        attributes::{
+            Array, BoolAttr, IdentAttr, IntAttr, List, ListAttr, SymbolRefAttr, TypeArrayAttr,
+            TypeAttr, VisibilityAttr,
+        },
     },
     parse::{Delimiter, ParserError, ParserExt, Token},
     print::AsmPrinter,
-    traits::{
-        IsolatedFromAbove, NoRegionArguments, NoTerminator, RegionOperationsAreLive, SingleBlock,
-        SingleRegion, TypeConstraint,
-    },
+    traits::{IsolatedFromAbove, NoRegionArguments, SingleBlock, SingleRegion, TypeConstraint},
 };
 
 use crate::{
@@ -415,18 +415,21 @@ impl runic_ir::Verify<dyn ModuleEntity> for Table {
     }
 }
 
-/// A global: `wasm.global private @sp : mut i32 { %v = wasm.const 65536 : i32; };`.
+/// A global: `wasm.global private @sp : mut i32 { %v = wasm.const 65536 : i32; builtin.yield %v; };`.
 ///
 /// It mirrors Wasm's `global` and `import` of a global. The type is a Wasm value type, and the
 /// mutability says whether `global.set` may write it: `mut` is written before the type, and a
-/// constant global writes nothing. The initializer is the region: one block, with no terminator,
-/// holding a Wasm constant expression, and the value of the global is the one result of the last
-/// operation, which has the global's type. Every operation of the initializer is a constant
+/// constant global writes nothing. The initializer is the region: one block holding a Wasm
+/// constant expression, which ends with a `builtin.yield` of the value of the global, a value of
+/// the global's type. Every operation of the initializer other than the yield is a constant
 /// instruction (see [is_constant_instruction]) and uses only values defined in the region (the
 /// operation is isolated from above). A `global_get` in it names an immutable global that is an
 /// import, or is defined before this global in the same block (Wasm types the initializer of a
 /// global in a context of the globals before it, so a global cannot read itself, a later one, or
 /// take part in a cycle).
+///
+/// The initializer is ordinary code: the yield uses the value, so what computes it is live, and an
+/// operation of the region that nothing uses is dead.
 ///
 /// A declaration, an import, is written with the keyword `declaration` and has no region, as for
 /// [Memory]: `wasm.global private declaration @g : i32;`. A definition has its region, and a
@@ -437,7 +440,7 @@ impl runic_ir::Verify<dyn ModuleEntity> for Table {
 /// one `wasm.const` is not abbreviated.
 #[operation(
     dialect = WasmDialect,
-    traits(SingleRegion, SingleBlock, NoRegionArguments, NoTerminator, IsolatedFromAbove, RegionOperationsAreLive),
+    traits(SingleRegion, SingleBlock, NoRegionArguments, IsolatedFromAbove),
     implements(Symbol, OpPrinter, ModuleEntity)
 )]
 pub struct Global {
@@ -524,6 +527,18 @@ impl OpParser for Global {
 }
 
 impl Global {
+    /// The value the initializer yields: the operand of the `builtin.yield` that ends it, when it
+    /// has the type of the global.
+    ///
+    /// It is `None` for a declaration, and for an initializer that does not verify (one that does
+    /// not end with a yield, or yields a value of another type).
+    pub fn initializer_value(&self) -> Option<ValueRef> {
+        let last = self.initializer_ops().pop()?;
+        let last = last.borrow();
+        let value = last.downcast_ref::<Yield>()?.value().as_value_ref();
+        (value.borrow().ty() == *self.get_ty()).then_some(value)
+    }
+
     /// The operations of the initializer, in order. Empty for a declaration.
     fn initializer_ops(&self) -> Vec<OperationRef> {
         let region = self.initializer();
@@ -587,8 +602,8 @@ impl Global {
     }
 }
 
-/// The type is a Wasm value type; a definition has an initializer of constant instructions whose
-/// last operation gives one result of the type.
+/// The type is a Wasm value type; a definition has an initializer of constant instructions that
+/// ends with a `builtin.yield` of a value of the type.
 impl runic_ir::Verify<dyn ModuleEntity> for Global {
     fn verify(&self, _context: &Context) -> Result<(), Report> {
         let name = self.get_name().as_str();
@@ -622,12 +637,30 @@ impl runic_ir::Verify<dyn ModuleEntity> for Global {
                 &self.op,
                 format!(
                     "`wasm.global` `@{name}` has an initializer with no operation, but the \
-                     initializer of a definition computes the value of the global (an import is \
-                     written with `declaration` and has no region)"
+                     initializer of a definition ends with `builtin.yield`, which gives the value \
+                     of the global (an import is written with `declaration` and has no region)"
                 ),
             ));
         };
-        for op in &ops {
+        let last = last.borrow();
+        let Some(yielded) = last.downcast_ref::<Yield>() else {
+            return Err(report!(
+                message: "invalid operation",
+                labels: [
+                    primary(
+                        self.op.span(),
+                        format!(
+                            "the initializer of `wasm.global` `@{name}` ends with `{}`, but an \
+                             initializer ends with `builtin.yield`, which gives the value of the \
+                             global",
+                            last.name()
+                        )
+                    ),
+                    context(last.span(), "the initializer ends here"),
+                ],
+            ));
+        };
+        for op in &ops[..ops.len() - 1] {
             let op = op.borrow();
             if let Some(get) = op.downcast_ref::<crate::GlobalGet>() {
                 self.verify_global_read(name, &op, get)?;
@@ -649,28 +682,22 @@ impl runic_ir::Verify<dyn ModuleEntity> for Global {
                 ));
             }
         }
-        let last = last.borrow();
-        if last.num_results() != 1 {
-            return Err(invalid(
-                &self.op,
-                format!(
-                    "the initializer of `wasm.global` `@{name}` ends in `{}`, which has {} \
-                     results, but the value of a constant expression is one result",
-                    last.name(),
-                    last.num_results()
-                ),
-            ));
-        }
-        let value = last.results()[0].borrow().ty();
+        let value = yielded.value().ty();
         if value != ty {
-            return Err(invalid(
-                &self.op,
-                format!(
-                    "the initializer of `wasm.global` `@{name}` has the value type `{}`, but the \
-                     global has the type `{}`",
-                    val_type_name(value),
-                    val_type_name(ty)
-                ),
+            return Err(report!(
+                message: "invalid operation",
+                labels: [
+                    primary(
+                        self.op.span(),
+                        format!(
+                            "the initializer of `wasm.global` `@{name}` yields a value of type \
+                             `{}`, but the global has the type `{}`",
+                            val_type_name(value),
+                            val_type_name(ty)
+                        )
+                    ),
+                    context(last.span(), "this yields the value"),
+                ],
             ));
         }
         Ok(())

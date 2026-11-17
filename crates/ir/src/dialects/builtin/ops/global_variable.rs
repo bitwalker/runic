@@ -3,19 +3,19 @@ use alloc::format;
 use crate::{
     AsSymbolRef, Context, IdentAttr, LinkedSymbol, OpParser, OpPrinter, Operation, Report, Spanned,
     Symbol, SymbolName, SymbolRef, SymbolUseList, UnsafeIntrusiveEntityRef, Usable, Value,
-    Visibility,
+    ValueRef, Visibility,
     derive::{EffectOpInterface, operation},
     diagnostics::report,
     dialects::builtin::{
-        BuiltinDialect,
+        BuiltinDialect, Yield,
         attributes::{TypeAttr, VisibilityAttr},
     },
     effects::{AlwaysSpeculatable, ConditionallySpeculatable, MemoryEffectOpInterface, Pure},
     parse::ParserError,
     print::AsmPrinter,
     traits::{
-        AnyPointer, InferTypeOpInterface, IsolatedFromAbove, NoRegionArguments, NoTerminator,
-        RegionOperationsAreLive, SingleBlock, SingleRegion,
+        AnyPointer, InferTypeOpInterface, IsolatedFromAbove, NoRegionArguments, SingleBlock,
+        SingleRegion,
     },
 };
 
@@ -26,8 +26,18 @@ pub type GlobalVariableRef = UnsafeIntrusiveEntityRef<GlobalVariable>;
 /// Global variables may also specify an initializer, but if not provided, the underlying bytes
 /// will be zeroed, which may or may not be a valid instance of the type. It is up to frontends
 /// to ensure that an initializer is specified if necessary. The initializer is a region of one
-/// block holding the data, a [Bytes](super::Bytes) for example, and no terminator: nothing
-/// transfers control out of it.
+/// block that computes the data, a [Bytes](super::Bytes) for example, and ends with a
+/// [Yield](super::Yield) of the value of the global, which has the declared type of the global:
+///
+/// ```text
+/// builtin.global_variable public @data : array<i8; 2> {
+///     %b = builtin.bytes "0a0b" : array<i8; 2>;
+///     builtin.yield %b;
+/// };
+/// ```
+///
+/// The initializer is ordinary code: the yield uses the value, so what computes it is live, and
+/// any other operation of the region that nothing uses is dead.
 ///
 /// Global variables, like functions, may also be assigned a visibility. This is only used when
 /// resolving symbol uses, and imposes no access restrictions on the code generated from them.
@@ -37,9 +47,7 @@ pub type GlobalVariableRef = UnsafeIntrusiveEntityRef<GlobalVariable>;
         SingleRegion,
         SingleBlock,
         NoRegionArguments,
-        NoTerminator,
         IsolatedFromAbove,
-        RegionOperationsAreLive,
     ),
     implements(Symbol, OpPrinter, LinkedSymbol)
 )]
@@ -60,6 +68,83 @@ impl GlobalVariable {
     #[inline(always)]
     pub fn as_global_var_ref(&self) -> GlobalVariableRef {
         unsafe { GlobalVariableRef::from_raw(self) }
+    }
+
+    /// The value the initializer yields: the operand of the `builtin.yield` that ends it, when it
+    /// has the declared type of the global.
+    ///
+    /// It is `None` for a declaration, and for an initializer that does not verify (one that does
+    /// not end with a yield, or yields a value of another type).
+    pub fn initializer_value(&self) -> Option<ValueRef> {
+        let value = self.yielded_value()?;
+        (value.borrow().ty() == *self.get_ty()).then_some(value)
+    }
+
+    /// The operand of the yield that ends the initializer, whatever its type.
+    fn yielded_value(&self) -> Option<ValueRef> {
+        let region = self.initializer();
+        if region.is_empty() {
+            return None;
+        }
+        let last = region.entry().body().back().as_pointer()?;
+        let last = last.borrow();
+        let yielded = last.downcast_ref::<Yield>()?;
+        Some(yielded.value().as_value_ref())
+    }
+
+    /// Checks that a definition's initializer ends with a yield of a value of the declared type.
+    fn verify_initializer(&self) -> Result<(), Report> {
+        let region = self.initializer();
+        if region.is_empty() {
+            return Ok(());
+        }
+        let name = self.get_name().as_str();
+        let declared = *self.get_ty();
+        let expected =
+            "an initializer ends with `builtin.yield`, which gives the value of the global";
+        let last = region.entry().body().back().as_pointer();
+        let Some(last) = last else {
+            return Err(report!(
+                message: "invalid operation builtin.global_variable",
+                labels: [primary(
+                    self.op.span(),
+                    format!("the initializer of `@{name}` has no operation, but {expected}")
+                )],
+            ));
+        };
+        let last = last.borrow();
+        let Some(yielded) = last.downcast_ref::<Yield>() else {
+            return Err(report!(
+                message: "invalid operation builtin.global_variable",
+                labels: [
+                    primary(
+                        self.op.span(),
+                        format!(
+                            "the initializer of `@{name}` ends with `{}`, but {expected}",
+                            last.name()
+                        )
+                    ),
+                    context(last.span(), "the initializer ends here"),
+                ],
+            ));
+        };
+        let ty = yielded.value().ty();
+        if ty != declared {
+            return Err(report!(
+                message: "invalid operation builtin.global_variable",
+                labels: [
+                    primary(
+                        self.op.span(),
+                        format!(
+                            "the initializer of `@{name}` yields a value of type `{ty}`, but the \
+                             global is declared `{declared}`"
+                        )
+                    ),
+                    context(last.span(), "this yields the value"),
+                ],
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -116,10 +201,12 @@ impl Symbol for GlobalVariable {
 impl LinkedSymbol for GlobalVariable {}
 
 /// The `link_name` and `section` entries of the dictionary are well formed (see
-/// [verify_link_attributes](crate::verify_link_attributes)).
+/// [verify_link_attributes](crate::verify_link_attributes)), and the initializer of a definition
+/// ends with a `builtin.yield` of a value of the declared type.
 impl crate::Verify<dyn LinkedSymbol> for GlobalVariable {
     fn verify(&self, _context: &Context) -> Result<(), Report> {
-        crate::verify_link_attributes(&self.op)
+        crate::verify_link_attributes(&self.op)?;
+        self.verify_initializer()
     }
 }
 
@@ -396,33 +483,130 @@ mod tests {
         }
     }
 
-    /// An operation of a global's initializer is not trivially dead, whatever the uses of its
-    /// results; the same operation outside one is, when unused.
+    const INITIALIZED: &str = "builtin.module public @m {
+    builtin.global_variable public @g : array<i8; 2> {
+        %b = builtin.bytes \"0a0b\" : array<i8; 2>;
+        %unused = builtin.bytes \"0c0d\" : array<i8; 2>;
+        builtin.yield %b;
+    };
+};";
+
+    /// In an initializer, the operation that computes the yielded value is not trivially dead (the
+    /// yield uses it) and an unused one is, as the same operation is in a function.
     #[test]
-    fn an_operation_in_a_global_initializer_is_never_trivially_dead() {
+    fn in_an_initializer_the_operation_that_computes_the_value_is_live_and_an_unused_one_is_dead() {
+        let (_context, module) = parse_text(INITIALIZED).unwrap_or_else(|err| panic!("{err}"));
+        let mut dead = Vec::new();
+        module.borrow().prewalk_all(|op: &Operation| {
+            if op.is::<crate::dialects::builtin::Bytes>() {
+                dead.push((op.is_trivially_dead(), op.would_be_trivially_dead()));
+            }
+        });
+        assert_eq!(dead, [(false, true), (true, true)]);
+    }
+
+    /// The initializer's value is the operand of its yield; a declaration has none.
+    #[test]
+    fn the_initializer_value_is_the_yielded_value() {
         let source = "builtin.module public @m {
     builtin.global_variable public @g : array<i8; 2> {
         %b = builtin.bytes \"0a0b\" : array<i8; 2>;
+        builtin.yield %b;
     };
-    builtin.function public extern(\"C\") @f() {
+    builtin.global_variable public @d : i32;
+};";
+        let (_context, module) = parse_text(source).unwrap_or_else(|err| panic!("{err}"));
+        let mut values = Vec::new();
+        module.borrow().prewalk_all(|op: &Operation| {
+            if let Some(global) = op.downcast_ref::<GlobalVariable>() {
+                let value = global.initializer_value();
+                let defined_by_bytes = value.is_some_and(|value| {
+                    value
+                        .borrow()
+                        .get_defining_op()
+                        .is_some_and(|def| def.borrow().is::<crate::dialects::builtin::Bytes>())
+                });
+                values.push((global.get_name().as_str().to_string(), defined_by_bytes));
+            }
+        });
+        assert_eq!(values, [("g".to_string(), true), ("d".to_string(), false)]);
+    }
+
+    /// The initializer is checked in the custom and the generic form: the type of the yielded
+    /// value is the declared type of the global.
+    #[test]
+    fn the_yielded_value_has_the_declared_type_of_the_global() {
+        let source = "builtin.module public @m {
+    builtin.global_variable public @g : i32 {
         %b = builtin.bytes \"0a0b\" : array<i8; 2>;
+        builtin.yield %b;
+    };
+};";
+        let err = parse_text(source).map(|_| ()).expect_err("the types differ");
+        assert!(err.contains("invalid operation builtin.global_variable"), "{err}");
+        assert!(
+            err.contains(
+                "the initializer of `@g` yields a value of type `array<i8; 2>`, but the global is \
+                 declared `i32`"
+            ),
+            "{err}"
+        );
+
+        // The generic form is checked as well: the global as the generic printer writes it
+        let generic = |ty: &str| {
+            format!(
+                "builtin.module public @m {{
+    \"builtin.global_variable\"() <{{ name = #builtin.ident<@g>, visibility = \
+                 #builtin.visibility<public>, ty = #builtin.type<{ty}> }}> ({{
+        %0 = builtin.bytes \"0a0b\" : array<i8; 2>;
+        builtin.yield %0;
+    }}) : () -> ();
+}};"
+            )
+        };
+        parse_text(&generic("array<i8; 2>")).unwrap_or_else(|err| panic!("{err}"));
+        let err = parse_text(&generic("i32"))
+            .map(|_| ())
+            .expect_err("the generic form is checked");
+        assert!(
+            err.contains(
+                "the initializer of `@g` yields a value of type `array<i8; 2>`, but the global is \
+                 declared `i32`"
+            ),
+            "{err}"
+        );
+    }
+
+    /// An initializer that ends with another terminator, or has no operation, says what it ends
+    /// with and what it should end with.
+    #[test]
+    fn an_initializer_that_does_not_end_with_a_yield_is_an_error() {
+        let source = "builtin.module public @m {
+    builtin.global_variable public @g : i32 {
         builtin.ret;
     };
 };";
-        let (_context, module) = parse_text(source).unwrap_or_else(|err| panic!("{err}"));
-        let mut inside = Vec::new();
-        let mut outside = Vec::new();
-        module.borrow().prewalk_all(|op: &Operation| {
-            if op.is::<crate::dialects::builtin::Bytes>() {
-                if op.is_in_live_region() {
-                    inside.push((op.is_trivially_dead(), op.would_be_trivially_dead()));
-                } else {
-                    outside.push((op.is_trivially_dead(), op.would_be_trivially_dead()));
-                }
-            }
-        });
-        assert_eq!(inside, [(false, false)]);
-        assert_eq!(outside, [(true, true)]);
+        let err = parse_text(source).map(|_| ()).expect_err("no yield");
+        assert!(
+            err.contains(
+                "the initializer of `@g` ends with `builtin.ret`, but an initializer ends with \
+                 `builtin.yield`, which gives the value of the global"
+            ),
+            "{err}"
+        );
+        let source = "builtin.module public @m {
+    builtin.global_variable public @g : i32 {
+    ^bb0:
+    };
+};";
+        let err = parse_text(source).map(|_| ()).expect_err("no operation");
+        assert!(
+            err.contains(
+                "the initializer of `@g` has no operation, but an initializer ends with \
+                 `builtin.yield`, which gives the value of the global"
+            ),
+            "{err}"
+        );
     }
 
     /// The pointer to a global has the global's type, in the address space written; the module

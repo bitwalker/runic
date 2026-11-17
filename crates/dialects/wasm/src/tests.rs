@@ -313,12 +313,13 @@ const STATE: &str = r#"
     wasm.memory public @other : 1;
     builtin.global_variable private @data : array<i8; 4> {
         %bytes = builtin.bytes "01020304" : array<i8; 4>;
+        builtin.yield %bytes;
     };
     wasm.table private @tab : 4 x !wasm.funcref;
     wasm.table private @refs : 4 x !wasm.externref;
-    wasm.global private @g : mut i32 { %v = wasm.const 0 : i32; };
-    wasm.global private @k : i32 { %v = wasm.const 1 : i32; };
-    wasm.global private @wide : mut i64 { %v = wasm.const 0 : i64; };
+    wasm.global private @g : mut i32 { %v = wasm.const 0 : i32; builtin.yield %v; };
+    wasm.global private @k : i32 { %v = wasm.const 1 : i32; builtin.yield %v; };
+    wasm.global private @wide : mut i64 { %v = wasm.const 0 : i64; builtin.yield %v; };
     builtin.function public extern("C") @callee(%x: i32) -> (i32) {
         builtin.ret %x : (i32);
     };

@@ -9,6 +9,7 @@ mod local;
 mod module;
 mod segment;
 mod world;
+mod yield_op;
 
 // The op builders of components and modules are not exported: they would create ops
 // with names that skip the spelling and the checks of the builtin builders
@@ -27,6 +28,7 @@ pub use self::{
     module::{Module, ModuleRef},
     segment::*,
     world::{World, WorldRef},
+    yield_op::{Yield, YieldRef},
 };
 pub(crate) use self::{
     call::{CopiedAttributes, function_type_of, parse_signature, tail_call_mismatch},

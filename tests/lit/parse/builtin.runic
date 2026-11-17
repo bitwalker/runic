@@ -33,9 +33,11 @@ builtin.world {
         // CHECK-LABEL: builtin.global_variable public @noted_data
         // CHECK-SAME:  : array<i8; 2> {
         // CHECK-NEXT: [[BYTES:%[0-9]+]] = builtin.bytes "0201" : array<i8; 2> attributes { note = #builtin.i32<10> };
+        // CHECK-NEXT: builtin.yield [[BYTES]];
         // CHECK-NEXT: };
         builtin.global_variable public @noted_data : array<i8; 2> {
             %bytes = builtin.bytes "0201" : array<i8; 2> attributes { note = #builtin.i32<10> };
+            builtin.yield %bytes;
         };
         // CHECK-LABEL: builtin.function public extern("C") @pair(
         // CHECK-SAME: ) -> (i32, i64);
@@ -62,9 +64,11 @@ builtin.world {
         // CHECK-LABEL: builtin.global_variable public @data
         // CHECK-SAME:  : array<i8; 2> {
         // CHECK-NEXT: [[BYTES:%[0-9]+]] = builtin.bytes "0201" : array<i8; 2>;
+        // CHECK-NEXT: builtin.yield [[BYTES]];
         // CHECK-NEXT: };
         builtin.global_variable public @data : array<i8; 2> {
             %bytes = builtin.bytes "0201" : array<i8; 2>;
+            builtin.yield %bytes;
         };
         // A global without an initializer, and one with an attribute dictionary; then segments,
         // `readonly` at its default (left out, or written `false`) and not.

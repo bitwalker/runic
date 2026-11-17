@@ -50,34 +50,6 @@ pub trait ReturnLike {}
 #[operation_trait]
 pub trait TailCallLike {}
 
-/// Marker trait for operations whose regions are not code that runs but a description the
-/// operation stands for, such as the initializer of a global.
-///
-/// An operation directly in a block of one of those regions is used by its parent, even when none
-/// of its results has a use: the last operation of an initializer has no terminator, and its
-/// result is the value of the region. Which operation that is, and what each one computes, is
-/// what the parent stands for.
-///
-/// The rule for a transformation: it does not add, remove, move, merge or rewrite an operation
-/// that is directly in a region of a marked operation ([Operation::is_in_live_region]), and it does
-/// not move an operation into such a region or out of one. That covers erasing an unused
-/// operation (such an operation is never trivially dead:
-/// [Operation::would_be_trivially_dead](crate::Operation::would_be_trivially_dead) answers false
-/// for it), merging it with an equal one (the later of two equal operations may be the value),
-/// folding it, replacing it by a constant, sinking it or sinking into it, and materializing a copy
-/// of it. The values such an operation uses are live through it as usual, and the operation may be
-/// read by an analysis: only what changes the region is forbidden.
-///
-/// A region nested deeper, inside an operation of such a region, is ordinary code and is treated
-/// as such: the rule is about the operations directly in the marked operation's regions only.
-///
-/// The marker is conservative on purpose: it does not tell the value of the region from the
-/// operations that compute it, so an unused intermediate operation in an initializer is kept too.
-///
-/// [Operation::is_in_live_region]: crate::Operation::is_in_live_region
-#[operation_trait]
-pub trait RegionOperationsAreLive {}
-
 /// Op is a terminator (i.e. it can be used to terminate a block)
 #[operation_trait]
 pub trait Terminator {}

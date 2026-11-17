@@ -67,6 +67,7 @@ mod tests {
         let source = "builtin.module public @m {
     builtin.global_variable public @data : array<i8; 4> {
         %b = \"builtin.bytes\"() <{ value = #builtin.bytes<\"0a0b0c0d\"> }> : () -> array<i8; 4>;
+        builtin.yield %b;
     };
 };";
         let (_context, module) = parse::<Module>(source).unwrap_or_else(|err| panic!("{err}"));

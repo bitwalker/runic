@@ -9,6 +9,7 @@ builtin.module public @valid {
     %outside = arith.constant 1 : i32;
     builtin.global_variable public @data : array<i8; 2> {
         %bytes = builtin.bytes "0201" : array<i8; 2>;
+        builtin.yield %bytes;
     };
     builtin.function public extern("C") @f(%a: i32) -> i32 {
         %own = arith.constant 1 : i32;
@@ -49,5 +50,6 @@ builtin.module public @initializer_reads_module {
     %outside = builtin.bytes "0201" : array<i8; 2>;
     builtin.global_variable public @data : array<i8; 2> {
         %copy = builtin.unrealized_conversion_cast %outside : (array<i8; 2>) to array<i8; 2>; // expected-error {{is defined outside 'builtin.global_variable', which is isolated from above}}
+        builtin.yield %copy;
     };
 };

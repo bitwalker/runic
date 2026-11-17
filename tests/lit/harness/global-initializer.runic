@@ -1,16 +1,40 @@
-// RUN: runic-opt %s --target stackvm-unknown-tiny --stop-after ir.optimized | filecheck %s
+// RUN: runic-opt %s --target stackvm-unknown-tiny --stop-after ir.optimized | filecheck %s --check-prefix=TARGET
 // RUN: runic-opt %s --stop-after ir.optimized -p 'canonicalizer,cse,sccp,canonicalizer,dce' | filecheck %s
 
 // A global's initializer goes through the optimization pipeline of the compiler with the
-// functions around it: the passes leave it as it is, so the global stays a definition.
+// functions around it, as ordinary code: the value it yields stays, and an operation of it that
+// nothing uses and an operation equal to an earlier one do not.
+
+// The pipeline of the toy target runs no pass: the globals keep every operation and their yields.
+// TARGET: builtin.global_variable public @data : array<i8; 2> {
+// TARGET-NEXT: [[B:%[0-9]+]] = builtin.bytes "0a0b" : array<i8; 2>;
+// TARGET-NEXT: builtin.yield [[B]];
+// TARGET-NEXT: };
+// TARGET: builtin.global_variable public @counter : i32 {
+// TARGET: builtin.yield {{%[0-9]+}};
+// TARGET-NEXT: };
+// TARGET: builtin.function public extern("C") @twice(
 
 // CHECK: builtin.global_variable public @data : array<i8; 2> {
-// CHECK-NEXT: builtin.bytes "0a0b" : array<i8; 2>;
+// CHECK-NEXT: [[B:%[0-9]+]] = builtin.bytes "0a0b" : array<i8; 2>;
+// CHECK-NEXT: builtin.yield [[B]];
+// CHECK-NEXT: };
+// CHECK: builtin.global_variable public @counter : i32 {
+// CHECK-NEXT: [[C:%[0-9]+]] = arith.constant 5 : i32;
+// CHECK-NEXT: builtin.yield [[C]];
 // CHECK-NEXT: };
 // CHECK: builtin.function public extern("C") @twice(
 builtin.module public @user {
     builtin.global_variable public @data : array<i8; 2> {
         %b = builtin.bytes "0a0b" : array<i8; 2>;
+        builtin.yield %b;
+    };
+    builtin.global_variable public @counter : i32 {
+        %dead = arith.constant 4 : i32;
+        %a = arith.constant 2 : i32;
+        %b = arith.constant 3 : i32;
+        %c = arith.add %a, %b;
+        builtin.yield %c;
     };
     builtin.function public extern("C") @twice(%x: i32) -> i32 {
         %r = arith.add %x, %x;

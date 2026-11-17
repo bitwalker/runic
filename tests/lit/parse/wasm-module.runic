@@ -25,26 +25,32 @@ builtin.module public @wasm_module {
 
     // A mutable global with one constant, a constant global computed from three, and an import.
     // CHECK-NEXT: wasm.global private @sp : mut i32 {
-    // CHECK-NEXT: {{%[0-9]+}} = wasm.const 65536 : i32;
+    // CHECK-NEXT: [[SP:%[0-9]+]] = wasm.const 65536 : i32;
+    // CHECK-NEXT: builtin.yield [[SP]];
     // CHECK-NEXT: } attributes { wasm.export_name = #builtin.string<"stack_pointer"> };
     wasm.global private @sp : mut i32 {
         %v = wasm.const 65536 : i32;
+        builtin.yield %v;
     } attributes { wasm.export_name = "stack_pointer" };
     // CHECK-NEXT: wasm.global private @size : i64 {
     // CHECK-NEXT: {{%[0-9]+}} = wasm.const 8 : i64;
     // CHECK-NEXT: {{%[0-9]+}} = wasm.const 4 : i64;
-    // CHECK-NEXT: {{%[0-9]+}} = wasm.mul {{%[0-9]+}}, {{%[0-9]+}};
+    // CHECK-NEXT: [[SIZE:%[0-9]+]] = wasm.mul {{%[0-9]+}}, {{%[0-9]+}};
+    // CHECK-NEXT: builtin.yield [[SIZE]];
     // CHECK-NEXT: };
     wasm.global private @size : i64 {
         %a = wasm.const 8 : i64;
         %b = wasm.const 4 : i64;
         %c = wasm.mul %a, %b;
+        builtin.yield %c;
     };
     // CHECK-NEXT: wasm.global private @pi : f64 {
-    // CHECK-NEXT: {{%[0-9]+}} = wasm.constf 3.14 : f64;
+    // CHECK-NEXT: [[PI:%[0-9]+]] = wasm.constf 3.14 : f64;
+    // CHECK-NEXT: builtin.yield [[PI]];
     // CHECK-NEXT: };
     wasm.global private @pi : f64 {
         %v = wasm.constf 3.14 : f64;
+        builtin.yield %v;
     };
     // CHECK-NEXT: wasm.global private declaration @counter : mut i32 attributes { link_name = #builtin.string<"counter">, wasm.import_module = #builtin.string<"env"> };
     wasm.global private declaration @counter : mut i32 attributes { link_name = "counter", wasm.import_module = "env" };
@@ -74,5 +80,6 @@ builtin.module public @wasm_module {
     "wasm.memory"() <{ name = #builtin.ident<@generic>, visibility = #builtin.visibility<private>, limits = #wasm.limits<3..4>, declaration = #builtin.bool<false> }> : () -> ();
     "wasm.global"() <{ name = #builtin.ident<@generic_global>, visibility = #builtin.visibility<private>, ty = #builtin.type<i32>, mutability = #wasm.mutability<const> }> ({
         %v = "wasm.const"() <{ value = #builtin.int<1 : i32> }> : () -> i32;
+        "builtin.yield"(%v) : (i32) -> ();
     }) : () -> ();
 };

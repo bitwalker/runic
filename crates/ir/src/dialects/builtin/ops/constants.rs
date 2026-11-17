@@ -23,8 +23,8 @@ pub type BytesRef = UnsafeIntrusiveEntityRef<Bytes>;
 /// written, most significant byte first (as [BytesAttr] writes it): the first byte of the data, the
 /// one at the lowest address, is the last pair of digits. The example holds the bytes `0d 0c 0b 0a`
 /// in memory order. The result is an `array<i8; N>`, where `N` is the number of bytes. It is the
-/// data of the initializer region of a [GlobalVariable](super::GlobalVariable), whose contents are
-/// placed in memory at the address of the global.
+/// data of the initializer region of a [GlobalVariable](super::GlobalVariable), which yields it
+/// with a [Yield](super::Yield): the contents are placed in memory at the address of the global.
 ///
 /// The operation is a constant: it has no effects and folds to its value.
 #[derive(EffectOpInterface)]
@@ -202,7 +202,7 @@ mod tests {
     fn bytes_round_trip_in_both_forms() {
         let source = module(
             "array<i8; 2>",
-            "%b = builtin.bytes \"0201\" : array<i8; 2>;",
+            "%b = builtin.bytes \"0201\" : array<i8; 2>;\n        builtin.yield %b;",
             "        %e = builtin.bytes \"\" : array<i8; 0>;
         %c = builtin.bytes \"ff00a1\" : array<i8; 3> attributes { note = #builtin.i32<7> };",
         );
@@ -239,7 +239,8 @@ mod tests {
     fn a_byte_string_is_written_most_significant_byte_first() {
         let text = "%0 = builtin.bytes \"0a0b0c0d\" : array<i8; 4>;";
         let (_context, module) =
-            parse_text(&module("array<i8; 4>", text, "")).unwrap_or_else(|err| panic!("{err}"));
+            parse_text(&module("array<i8; 4>", &format!("{text}\n        builtin.yield %0;"), ""))
+                .unwrap_or_else(|err| panic!("{err}"));
         let found = all_bytes(module);
         assert_eq!(found.len(), 1);
         let op = found[0].borrow();

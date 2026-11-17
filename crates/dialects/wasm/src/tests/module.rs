@@ -69,11 +69,13 @@ const EVERY_OPERATION: &str = r#"
     wasm.table private declaration @itab : 4 x !wasm.externref;
     wasm.global private @sp : mut i32 {
         %v = wasm.const 65536 : i32;
+        builtin.yield %v;
     };
     wasm.global private @size : i64 {
         %a = wasm.const 8 : i64;
         %b = wasm.const 4 : i64;
         %c = wasm.mul %a, %b;
+        builtin.yield %c;
     };
     wasm.global private declaration @iglobal : f32;
     wasm.tag private @exn : (i32, i64);
@@ -358,20 +360,23 @@ fn the_initializer_of_a_global_is_a_constant_expression_of_the_globals_type() {
     rejected(
         "wasm.global private @g : i32 {
             %v = wasm.const 1 : i64;
+            builtin.yield %v;
          };",
-        "the initializer of `wasm.global` `@g` has the value type `i64`, but the global has the \
-         type `i32`",
+        "the initializer of `wasm.global` `@g` yields a value of type `i64`, but the global has \
+         the type `i32`",
     );
     rejected(
         "wasm.global private @g : f32 {
             %v = wasm.const 1 : i32;
+            builtin.yield %v;
          };",
-        "has the value type `i32`, but the global has the type `f32`",
+        "yields a value of type `i32`, but the global has the type `f32`",
     );
     rejected(
         "wasm.global private @g : i32 {
             %a = wasm.const 1 : i32;
             %b = wasm.div_s %a, %a;
+            builtin.yield %b;
          };",
         "the initializer of `wasm.global` `@g` holds `wasm.div_s`, but a Wasm constant expression \
          holds only constant instructions",
@@ -380,6 +385,7 @@ fn the_initializer_of_a_global_is_a_constant_expression_of_the_globals_type() {
         "wasm.global private @g : f32 {
             %a = wasm.constf 1.0 : f32;
             %b = wasm.add %a, %a;
+            builtin.yield %b;
          };",
         "the initializer of `wasm.global` `@g` holds `wasm.add`, but a Wasm constant expression \
          holds only constant instructions",
@@ -390,6 +396,7 @@ fn the_initializer_of_a_global_is_a_constant_expression_of_the_globals_type() {
             %a = wasm.const 1 : i32;
             %b = wasm.eqz %a;
             %c = wasm.const 2 : i32;
+            builtin.yield %c;
          };",
         "holds `wasm.eqz`",
     );
@@ -400,9 +407,11 @@ fn the_initializer_of_a_global_is_a_constant_expression_of_the_globals_type() {
             %c = wasm.add %a, %b;
             %d = wasm.sub %c, %a;
             %e = wasm.mul %d, %d;
+            builtin.yield %e;
          };
          wasm.global private @h : f64 {
             %a = wasm.constf 2.5 : f64;
+            builtin.yield %a;
          };",
     );
 }
@@ -415,6 +424,7 @@ fn the_initializer_of_a_global_uses_only_values_of_its_own_region() {
          };
          wasm.global private @g : i32 {
             %v = wasm.add %x, %x;
+            builtin.yield %v;
          };",
     );
     assert!(error.contains("%x") || error.contains("use of undeclared"), "{error}");
@@ -446,8 +456,8 @@ fn a_global_whose_initializer_has_a_block_and_no_operation_is_rejected() {
     assert!(
         error.contains(
             "`wasm.global` `@g` has an initializer with no operation, but the initializer of a \
-             definition computes the value of the global (an import is written with `declaration` \
-             and has no region)"
+             definition ends with `builtin.yield`, which gives the value of the global (an import \
+             is written with `declaration` and has no region)"
         ),
         "{error}"
     );
@@ -751,8 +761,8 @@ fn an_export_is_a_definition_with_one_name_or_an_array_of_names() {
             builtin.ret;
          } attributes { wasm.export_name = \"f\" };
          wasm.memory public @m : 1 attributes { wasm.export_name = [\"memory\", \"mem\"] };
-         wasm.global private @g : i32 { %v = wasm.const 0 : i32; } attributes { wasm.export_name = \
-         \"g\" };
+         wasm.global private @g : i32 { %v = wasm.const 0 : i32; builtin.yield %v; } attributes { \
+         wasm.export_name = \"g\" };
          wasm.table private @t : 1 x !wasm.funcref attributes { wasm.export_name = \"table\" };
          wasm.tag private @e : (i32) attributes { wasm.export_name = \"tag\" };
          wasm.tag private @unexported : ();",
@@ -805,7 +815,7 @@ fn an_import_module_on_a_definition_says_an_import_is_a_declaration() {
         "an import is a declaration, but `builtin.function @f` is a definition",
     );
     rejected(
-        "wasm.global private @g : i32 { %v = wasm.const 0 : i32; } attributes { \
+        "wasm.global private @g : i32 { %v = wasm.const 0 : i32; builtin.yield %v; } attributes { \
          wasm.import_module = \"env\" };",
         "an import is a declaration, but `wasm.global @g` is a definition",
     );
@@ -1002,19 +1012,22 @@ const NOT_BEFORE: &str = "but a Wasm constant expression reads only an imported 
 fn a_global_initializer_reads_an_import_or_an_earlier_immutable_global_only() {
     // accepted: an import (wherever it is), and a global defined before this one
     module_of(
-        "wasm.global private @later_import_user : i32 { %v = wasm.global_get @imported : i32; };
+        "wasm.global private @later_import_user : i32 { %v = wasm.global_get @imported : i32; \
+         builtin.yield %v; };
          wasm.global private declaration @imported : i32;
-         wasm.global private @first : i32 { %v = wasm.const 1 : i32; };
-         wasm.global private @second : i32 { %v = wasm.global_get @first : i32; };
+         wasm.global private @first : i32 { %v = wasm.const 1 : i32; builtin.yield %v; };
+         wasm.global private @second : i32 { %v = wasm.global_get @first : i32; builtin.yield %v; \
+         };
          wasm.global private @third : i32 {
              %a = wasm.global_get @first : i32;
              %b = wasm.global_get @second : i32;
              %v = wasm.add %a, %b;
+             builtin.yield %v;
          };",
     );
     // a global that reads itself
     rejected(
-        "wasm.global private @g : i32 { %v = wasm.global_get @g : i32; };",
+        "wasm.global private @g : i32 { %v = wasm.global_get @g : i32; builtin.yield %v; };",
         &format!(
             "the initializer of `wasm.global` `@g` reads `@g`, which is the global itself, \
              {NOT_BEFORE}"
@@ -1022,8 +1035,8 @@ fn a_global_initializer_reads_an_import_or_an_earlier_immutable_global_only() {
     );
     // two that read each other: one of them reads a later one, whatever the order
     rejected(
-        "wasm.global private @a : i32 { %v = wasm.global_get @b : i32; };
-         wasm.global private @b : i32 { %v = wasm.global_get @a : i32; };",
+        "wasm.global private @a : i32 { %v = wasm.global_get @b : i32; builtin.yield %v; };
+         wasm.global private @b : i32 { %v = wasm.global_get @a : i32; builtin.yield %v; };",
         &format!(
             "the initializer of `wasm.global` `@a` reads `@b`, which is a global that is not \
              defined before this one, {NOT_BEFORE}"
@@ -1031,8 +1044,8 @@ fn a_global_initializer_reads_an_import_or_an_earlier_immutable_global_only() {
     );
     // a later global
     rejected(
-        "wasm.global private @early : i32 { %v = wasm.global_get @late : i32; };
-         wasm.global private @late : i32 { %v = wasm.const 1 : i32; };",
+        "wasm.global private @early : i32 { %v = wasm.global_get @late : i32; builtin.yield %v; };
+         wasm.global private @late : i32 { %v = wasm.const 1 : i32; builtin.yield %v; };",
         &format!(
             "the initializer of `wasm.global` `@early` reads `@late`, which is a global that is \
              not defined before this one, {NOT_BEFORE}"
@@ -1040,9 +1053,100 @@ fn a_global_initializer_reads_an_import_or_an_earlier_immutable_global_only() {
     );
     // a mutable one, defined before this one
     rejected(
-        "wasm.global private @m : mut i32 { %v = wasm.const 1 : i32; };
-         wasm.global private @user : i32 { %v = wasm.global_get @m : i32; };",
+        "wasm.global private @m : mut i32 { %v = wasm.const 1 : i32; builtin.yield %v; };
+         wasm.global private @user : i32 { %v = wasm.global_get @m : i32; builtin.yield %v; };",
         "the initializer of `wasm.global` `@user` reads the mutable global `@m`, but a Wasm \
          constant expression reads only immutable globals",
+    );
+}
+
+/// The initializer of a definition ends with a `builtin.yield`: another last operation, a
+/// terminator that is not a yield, and a block with no operation each say what to write.
+#[test]
+fn a_global_initializer_ends_with_a_yield() {
+    let expected =
+        "but an initializer ends with `builtin.yield`, which gives the value of the global";
+    rejected(
+        "wasm.global private @g : i32 { %v = wasm.const 1 : i32; };",
+        &format!("the initializer of `wasm.global` `@g` ends with `wasm.const`, {expected}"),
+    );
+    rejected(
+        "wasm.global private @g : i32 { %v = wasm.const 1 : i32; wasm.unreachable; };",
+        &format!("the initializer of `wasm.global` `@g` ends with `wasm.unreachable`, {expected}"),
+    );
+}
+
+/// The yielded value has the type of the global, in the custom and the generic form.
+#[test]
+fn the_value_a_global_initializer_yields_has_the_globals_type() {
+    let message = "the initializer of `wasm.global` `@g` yields a value of type `i64`, but the \
+                   global has the type `i32`";
+    rejected(
+        "wasm.global private @g : i32 { %v = wasm.const 1 : i64; builtin.yield %v; };",
+        message,
+    );
+    rejected(
+        "\"wasm.global\"() <{ name = #builtin.ident<@g>, visibility = \
+         #builtin.visibility<private>, ty = #builtin.type<i32>, mutability = \
+         #wasm.mutability<const> }> ({
+             %v = \"wasm.const\"() <{ value = #builtin.int<1 : i64> }> : () -> i64;
+             \"builtin.yield\"(%v) : (i64) -> ();
+         }) : () -> ();",
+        message,
+    );
+}
+
+/// `initializer_value` is the yielded value of a definition and `None` for a declaration.
+#[test]
+fn the_initializer_value_of_a_global_is_the_value_it_yields() {
+    let (_context, module) = module_of(
+        "wasm.global private @sum : i64 {
+             %a = wasm.const 1 : i64;
+             %b = wasm.const 2 : i64;
+             %c = wasm.add %a, %b;
+             builtin.yield %c;
+         };
+         wasm.global private declaration @ext : i64;",
+    );
+    let sum = symbol(&module, "sum").try_downcast_op::<Global>().unwrap();
+    let value = sum.borrow().initializer_value().expect("a definition yields a value");
+    let definition = value.borrow().get_defining_op().unwrap();
+    assert_eq!(definition.borrow().name().to_string(), "wasm.add");
+    let ext = symbol(&module, "ext").try_downcast_op::<Global>().unwrap();
+    assert!(ext.borrow().initializer_value().is_none());
+}
+
+/// The builder ends the initializer it builds with a yield of the value the closure returns.
+#[test]
+fn the_builder_ends_a_global_initializer_with_a_yield_of_the_value() {
+    let mut test = Test::named("f").in_module("m");
+    let context = test.context_rc();
+    context.get_or_register_dialect::<WasmDialect>();
+    let module = test.module();
+    let body = module.borrow().body().entry_block_ref().unwrap();
+    let builder = test.builder_mut();
+    builder.set_insertion_point_to_end(body);
+    let global = builder
+        .create_global(
+            Ident::with_empty_span("sp".into()),
+            Visibility::Private,
+            context.i32(),
+            Mutability::Mut,
+            |b| Ok(b.i32(65536, SourceSpan::UNKNOWN)),
+        )
+        .unwrap();
+    module.borrow().as_operation().recursively_verify().unwrap();
+    let text = global.borrow().as_operation().to_string();
+    assert!(text.contains("builtin.yield %"), "{text}");
+    let value = global.borrow().initializer_value().unwrap();
+    assert_eq!(
+        value.borrow().get_defining_op().unwrap().borrow().name().to_string(),
+        "wasm.const"
+    );
+    // What the builder wrote is what the parser reads
+    let (_context, parsed) = module_of(&text);
+    assert_eq!(
+        symbol(&parsed, "sp").borrow().to_string(),
+        global.borrow().as_operation().to_string()
     );
 }

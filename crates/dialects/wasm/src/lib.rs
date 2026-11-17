@@ -65,7 +65,7 @@
 //! |---|---|---|
 //! | [Memory] (`memory`) | `wasm.memory public @mem : 1..16;` | limits in 64 KiB pages, at most 65536 |
 //! | [Table] (`table`) | `wasm.table private @tab : 0..8 x !wasm.funcref;` | limits in elements and a reference type |
-//! | [Global] (`global`) | `wasm.global private @sp : mut i32 { %v = wasm.const 65536 : i32; };` | a value type, `mut`, and a region of one constant expression |
+//! | [Global] (`global`) | `wasm.global private @sp : mut i32 { %v = wasm.const 65536 : i32; builtin.yield %v; };` | a value type, `mut`, and a region of one constant expression that ends with a `builtin.yield` of the value |
 //! | [Elem] (`elem`) | `wasm.elem private @init : @tab at 0 [@f, @g];` | an active segment of functions of a `funcref` table |
 //! | [Tag] (`tag`) | `wasm.tag private @exn : (i32, i64);` | parameter types |
 //!
@@ -136,11 +136,12 @@
 //!   layout (or the linker, by relocation) decides which `funcref` table that is and the position
 //!   of the function in it; the dialect assumes neither;
 //! - the initializer of a global is a Wasm constant expression, which is a tree. The dialect's
-//!   region is a list of SSA values: it may hold an operation whose result nothing uses, and a
-//!   value used twice. The value of the global is the result of the last operation; the emitter
-//!   rebuilds the tree from it, dropping what is unused and writing a shared operation at each of
-//!   its uses (every constant instruction is pure, so that is sound). A `global_get` in an
-//!   initializer is checked to read an immutable global that is an import or is defined before it.
+//!   region is a list of SSA values that ends with a `builtin.yield` of the value of the global,
+//!   and a value may be used twice. The emitter rebuilds the tree from the yielded value, writing
+//!   a shared operation at each of its uses (every constant instruction is pure, so that is
+//!   sound). The region is ordinary code to the passes: an operation of it that nothing uses is
+//!   dead, and equal operations are merged. A `global_get` in an initializer is checked to read
+//!   an immutable global that is an import or is defined before it.
 //!
 //! **Attributes.** [LimitsAttr] (`#wasm.limits<1..16>`) bounds the size of a memory or a table,
 //! [MemArgAttr] (`#wasm.memarg<offset = 8, align = 4>`) is the static part of a memory access,

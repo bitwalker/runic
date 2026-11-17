@@ -204,14 +204,6 @@ impl CSEDriver<'_> {
             return PostPassStatus::Unchanged;
         }
 
-        // An operation of a region that describes what its parent stands for (the initializer of
-        // a global) is neither merged into an earlier one nor an earlier one that others merge
-        // into: the value of the region is its last operation, and which operation that is does
-        // not change.
-        if operation.is_in_live_region() {
-            return PostPassStatus::Unchanged;
-        }
-
         // If the operation is already trivially dead just add it to the erase list.
         if operation.is_trivially_dead() {
             self.ops_to_erase.push(op);

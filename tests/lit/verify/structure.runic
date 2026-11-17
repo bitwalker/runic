@@ -15,6 +15,7 @@
 builtin.module public @valid {
     builtin.global_variable public @data : array<i8; 2> {
         %bytes = builtin.bytes "0201" : array<i8; 2>;
+        builtin.yield %bytes;
     };
     builtin.function public extern("C") @f(%a: i32) -> i32 {
         cf.br ^next;
@@ -72,6 +73,7 @@ builtin.module public @initializer {
     builtin.global_variable public @data : array<i8; 2> {
         ub.unreachable; // expected-error {{'ub.unreachable' is a terminator, but is not the last operation of its block}}
         %bytes = builtin.bytes "0201" : array<i8; 2>;
+        builtin.yield %bytes;
     };
 };
 

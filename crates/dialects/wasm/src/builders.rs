@@ -6,7 +6,7 @@ use runic_ir::{
     Type, Value, ValueRef, Visibility,
     attributes::AttrList,
     dialects::builtin::{
-        FunctionBuilder, GlobalVariableRef,
+        FunctionBuilder, GlobalVariableRef, Yield,
         attributes::{Array, List, Signature, SymbolRef, SymbolRefAttr},
     },
 };
@@ -348,8 +348,8 @@ pub trait WasmOpBuilder<'f, B: ?Sized + Builder> {
     ///
     /// The initializer is a region of one block; `init` is called with the builder positioned in
     /// it, builds the constant expression (`wasm.const` and the like), and returns the value the
-    /// global has. The value is not checked here: an expression that is not constant, or has
-    /// another type, does not verify. The insertion point is as it was before the call when it
+    /// global has; the initializer ends with a `builtin.yield` of that value. The value is not
+    /// checked here: an expression that is not constant, or has another type, does not verify. The insertion point is as it was before the call when it
     /// returns.
     ///
     /// Returns an error when the name is taken in the enclosing symbol table, or when `init` fails.
@@ -369,7 +369,9 @@ pub trait WasmOpBuilder<'f, B: ?Sized + Builder> {
         let mut guard = InsertionGuard::new(self.builder_mut());
         let block = guard.create_block(region, None, &[]);
         guard.set_insertion_point_to_end(block);
-        init(&mut *guard).map(|_| global)
+        let value = init(&mut *guard)?;
+        guard.create::<Yield, _>(name.span())(value)?;
+        Ok(global)
     }
 
     /// Creates an active [Elem] named `name` that puts `functions` into `table` from the element

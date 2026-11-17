@@ -15,6 +15,7 @@ builtin.module public @wasm_memory {
     wasm.memory private @aux : 1;
     builtin.global_variable public @data : array<i8; 4> {
         %bytes = builtin.bytes "01020304" : array<i8; 4>;
+        builtin.yield %bytes;
     };
     wasm.table private @tab : 4 x !wasm.funcref;
     wasm.table private @refs : 4 x !wasm.externref;
@@ -22,18 +23,18 @@ builtin.module public @wasm_memory {
     // Constant expressions of the new kinds in the initializer of a global: `ref.null`, `ref.func`,
     // `global.get` of an immutable global, `data_addr` and `func_index`.
     // CHECK: wasm.global private @counter : mut i32 {
-    wasm.global private @counter : mut i32 { %v = wasm.const 0 : i32; };
-    wasm.global private @limit : i32 { %v = wasm.const 8 : i32; };
+    wasm.global private @counter : mut i32 { %v = wasm.const 0 : i32; builtin.yield %v; };
+    wasm.global private @limit : i32 { %v = wasm.const 8 : i32; builtin.yield %v; };
     // CHECK: {{%[0-9]+}} = wasm.ref_func @callee;
-    wasm.global private @entry : !wasm.funcref { %f = wasm.ref_func @callee; };
+    wasm.global private @entry : !wasm.funcref { %f = wasm.ref_func @callee; builtin.yield %f; };
     // CHECK: {{%[0-9]+}} = wasm.ref_null : !wasm.externref;
-    wasm.global private @empty : !wasm.externref { %n = wasm.ref_null : !wasm.externref; };
+    wasm.global private @empty : !wasm.externref { %n = wasm.ref_null : !wasm.externref; builtin.yield %n; };
     // CHECK: {{%[0-9]+}} = wasm.data_addr @data + 16;
-    wasm.global private @base : i32 { %a = wasm.data_addr @data + 16; };
+    wasm.global private @base : i32 { %a = wasm.data_addr @data + 16; builtin.yield %a; };
     // CHECK: {{%[0-9]+}} = wasm.global_get @limit : i32;
-    wasm.global private @again : i32 { %v = wasm.global_get @limit : i32; };
+    wasm.global private @again : i32 { %v = wasm.global_get @limit : i32; builtin.yield %v; };
     // CHECK: {{%[0-9]+}} = wasm.func_index @callee;
-    wasm.global private @slot : i32 { %i = wasm.func_index @callee; };
+    wasm.global private @slot : i32 { %i = wasm.func_index @callee; builtin.yield %i; };
 
     builtin.function public extern("C") @callee(%x: i32) -> (i32) {
         builtin.ret %x : (i32);

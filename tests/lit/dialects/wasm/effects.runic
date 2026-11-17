@@ -13,7 +13,7 @@
 builtin.module public @wasm_effects {
     wasm.memory public @mem : 1;
     wasm.table private @tab : 4 x !wasm.funcref;
-    wasm.global private @g : mut i32 { %v = wasm.const 0 : i32; };
+    wasm.global private @g : mut i32 { %v = wasm.const 0 : i32; builtin.yield %v; };
     builtin.global_variable private @data : array<i8; 4>;
     builtin.function public extern("C") @opaque();
 

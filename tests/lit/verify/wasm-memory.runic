@@ -12,8 +12,8 @@ builtin.module public @valid {
     wasm.memory public @mem : 1;
     wasm.table private @tab : 4 x !wasm.funcref;
     wasm.table private @refs : 4 x !wasm.externref;
-    wasm.global private @g : mut i32 { %v = wasm.const 0 : i32; };
-    wasm.global private @k : i32 { %v = wasm.const 1 : i32; };
+    wasm.global private @g : mut i32 { %v = wasm.const 0 : i32; builtin.yield %v; };
+    wasm.global private @k : i32 { %v = wasm.const 1 : i32; builtin.yield %v; };
     builtin.global_variable private @data : array<i8; 4>;
     builtin.function public extern("C") @callee(%x: i32) -> (i32) { builtin.ret %x : (i32); };
     builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
@@ -198,7 +198,7 @@ builtin.module public @load_names_a_table {
 // A store names a memory.
 builtin.module public @store_names_a_global {
     wasm.memory public @mem : 1;
-    wasm.global private @g : mut i32 { %v = wasm.const 0 : i32; };
+    wasm.global private @g : mut i32 { %v = wasm.const 0 : i32; builtin.yield %v; };
     builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
         wasm.store @g, %a, %b; // expected-error {{`wasm.store` names `@g`, which is a `wasm.global`, not a `wasm.memory`}}
         builtin.ret;
@@ -267,7 +267,7 @@ builtin.module public @fill_value {
 // An init names passive data, a `builtin.global_variable`.
 builtin.module public @init_data {
     wasm.memory public @mem : 1;
-    wasm.global private @k : i32 { %v = wasm.const 1 : i32; };
+    wasm.global private @k : i32 { %v = wasm.const 1 : i32; builtin.yield %v; };
     builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
         wasm.memory_init @mem, @k, %a, %a, %a; // expected-error {{`wasm.memory_init` names `@k`, which is a `wasm.global`, not a `builtin.global_variable`}}
         builtin.ret;
@@ -289,7 +289,7 @@ builtin.module public @drop_data {
 
 // A global read gives the type of the global.
 builtin.module public @global_get_type {
-    wasm.global private @g : mut i32 { %v = wasm.const 0 : i32; };
+    wasm.global private @g : mut i32 { %v = wasm.const 0 : i32; builtin.yield %v; };
     builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
         %v = wasm.global_get @g : i64; // expected-error {{`wasm.global_get` takes the name of a global and gives a value of its type, but its result has type `i64` and the global `g` has type `i32`}}
         builtin.ret;
@@ -311,7 +311,7 @@ builtin.module public @global_get_kind {
 
 // Only a mutable global is written.
 builtin.module public @global_set_immutable {
-    wasm.global private @k : i32 { %v = wasm.const 1 : i32; };
+    wasm.global private @k : i32 { %v = wasm.const 1 : i32; builtin.yield %v; };
     builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
         wasm.global_set @k, %a; // expected-error {{`wasm.global_set` takes the name of a mutable global and a value of its type, but the global `k` is immutable, and `global.set` writes only a `mut` global}}
         builtin.ret;
@@ -322,7 +322,7 @@ builtin.module public @global_set_immutable {
 
 // A global is written with a value of its type.
 builtin.module public @global_set_type {
-    wasm.global private @g : mut i32 { %v = wasm.const 0 : i32; };
+    wasm.global private @g : mut i32 { %v = wasm.const 0 : i32; builtin.yield %v; };
     builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
         wasm.global_set @g, %l; // expected-error {{`wasm.global_set` takes the name of a mutable global and a value of its type, but its value has type `i64` and the global `g` has type `i32`}}
         builtin.ret;
@@ -366,7 +366,7 @@ builtin.module public @table_set_type {
 
 // A table is named by a table.
 builtin.module public @table_size_kind {
-    wasm.global private @g : mut i32 { %v = wasm.const 0 : i32; };
+    wasm.global private @g : mut i32 { %v = wasm.const 0 : i32; builtin.yield %v; };
     builtin.function public extern("C") @f(%a: i32, %b: i32, %l: i64, %f: f32, %d: f64, %r: !wasm.funcref, %x: !wasm.externref) {
         %n = wasm.table_size @g; // expected-error {{`wasm.table_size` names `@g`, which is a `wasm.global`, not a `wasm.table`}}
         builtin.ret;

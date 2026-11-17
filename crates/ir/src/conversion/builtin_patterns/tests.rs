@@ -773,9 +773,10 @@ fn a_debug_expression_of_a_vanished_local_is_an_error() {
 #[test]
 fn a_store_of_a_local_outside_a_function_is_left_alone() {
     let (context, module) = parse_module(
-        "    builtin.global_variable public @g : i32 {
+        "    builtin.global_variable public @g : i128 {
         %0 = test.constant 0 : i128;
         \"builtin.store_local\"(%0) <{ local = #builtin.local_variable<0, i128> }> : (i128) -> ();
+        builtin.yield %0;
     };",
     );
     let converter = wide_converter(&context);

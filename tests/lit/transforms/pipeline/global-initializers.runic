@@ -1,97 +1,153 @@
-// RUN: runic-opt %s | filecheck %s
-// RUN: runic-opt %s -p dce | filecheck %s
-// RUN: runic-opt %s -p cse | filecheck %s
-// RUN: runic-opt %s -p sccp | filecheck %s
-// RUN: runic-opt %s -p canonicalizer | filecheck %s
-// RUN: runic-opt %s -p control-flow-sink | filecheck %s
-// RUN: runic-opt %s -p sink-operand-defs | filecheck %s
-// RUN: runic-opt %s -p "recursive(builtin.function(local2reg))" | filecheck %s
-// RUN: runic-opt %s -p cfg-to-scf | filecheck %s
-// RUN: runic-opt %s -p 'canonicalizer,cse,sccp,canonicalizer,dce' | filecheck %s
-// RUN: runic-opt %s -p 'canonicalizer,cse,sccp,canonicalizer,dce' | runic-opt - --verify-roundtrip | filecheck %s
+// RUN: runic-opt %s | filecheck %s --check-prefix=INPUT
+// RUN: runic-opt %s -p control-flow-sink | filecheck %s --check-prefix=INPUT
+// RUN: runic-opt %s -p "recursive(builtin.function(local2reg))" | filecheck %s --check-prefix=INPUT
+// RUN: runic-opt %s -p cfg-to-scf | filecheck %s --check-prefix=INPUT
+// RUN: runic-opt %s -p dce | filecheck %s --check-prefix=DCE
+// RUN: runic-opt %s -p cse | filecheck %s --check-prefix=CSE
+// RUN: runic-opt %s -p 'canonicalizer,cse,sccp,canonicalizer,dce' | filecheck %s --check-prefix=PIPELINE
+// RUN: runic-opt %s -p 'canonicalizer,cse,sccp,canonicalizer,dce' | runic-opt - --verify-roundtrip | filecheck %s --check-prefix=PIPELINE
 
-// The initializer of a global is not code that runs but the value the global holds: its last
-// operation is the value, and no operation uses that result. No pass removes, merges, folds or
-// moves an operation of an initializer, so a definition stays a definition and every operation
-// of the initializer stays, even an intermediate that nothing else uses. Every RUN line checks
-// the same output.
+// The initializer of a global is ordinary code that ends with `builtin.yield`, which gives the
+// value of the global. The yield uses the value, so what computes it is live; an operation that
+// nothing uses is dead and is removed, equal operations are merged, and constants are folded.
+// Each RUN line names what the passes leave: a pass that does not touch the initializers leaves
+// every operation (INPUT), and the others change the code and never what is yielded.
 builtin.module public @global_initializers {
-    // CHECK: builtin.global_variable public @data : array<i8; 2> {
-    // CHECK-NEXT: builtin.bytes "0a0b" : array<i8; 2>;
-    // CHECK-NEXT: };
+    // The value is data: it stays under every pass.
+    // INPUT: builtin.global_variable public @data : array<i8; 2> {
+    // INPUT-NEXT: [[B:%[0-9]+]] = builtin.bytes "0a0b" : array<i8; 2>;
+    // INPUT-NEXT: builtin.yield [[B]];
+    // INPUT-NEXT: };
+    // DCE: builtin.global_variable public @data : array<i8; 2> {
+    // DCE-NEXT: [[B:%[0-9]+]] = builtin.bytes "0a0b" : array<i8; 2>;
+    // DCE-NEXT: builtin.yield [[B]];
+    // DCE-NEXT: };
+    // CSE: builtin.global_variable public @data : array<i8; 2> {
+    // CSE-NEXT: [[B:%[0-9]+]] = builtin.bytes "0a0b" : array<i8; 2>;
+    // CSE-NEXT: builtin.yield [[B]];
+    // CSE-NEXT: };
+    // PIPELINE: builtin.global_variable public @data : array<i8; 2> {
+    // PIPELINE-NEXT: [[B:%[0-9]+]] = builtin.bytes "0a0b" : array<i8; 2>;
+    // PIPELINE-NEXT: builtin.yield [[B]];
+    // PIPELINE-NEXT: };
     builtin.global_variable public @data : array<i8; 2> {
         %b = builtin.bytes "0a0b" : array<i8; 2>;
+        builtin.yield %b;
     };
 
-    // CHECK: wasm.global public @g : i32 {
-    // CHECK-NEXT: [[A:%[0-9]+]] = wasm.const 6 : i32;
-    // CHECK-NEXT: [[B:%[0-9]+]] = wasm.const 7 : i32;
-    // CHECK-NEXT: wasm.mul [[A]], [[B]];
-    // CHECK-NEXT: };
-    wasm.global public @g : i32 {
+    // A Wasm constant expression: nothing here is unused or equal to another.
+    // INPUT: wasm.global public @sum : i32 {
+    // INPUT-NEXT: [[A:%[0-9]+]] = wasm.const 6 : i32;
+    // INPUT-NEXT: [[B:%[0-9]+]] = wasm.const 7 : i32;
+    // INPUT-NEXT: [[P:%[0-9]+]] = wasm.mul [[A]], [[B]];
+    // INPUT-NEXT: builtin.yield [[P]];
+    // INPUT-NEXT: };
+    // PIPELINE: wasm.global public @sum : i32 {
+    // PIPELINE-NEXT: [[A:%[0-9]+]] = wasm.const 6 : i32;
+    // PIPELINE-NEXT: [[B:%[0-9]+]] = wasm.const 7 : i32;
+    // PIPELINE-NEXT: [[P:%[0-9]+]] = wasm.mul [[A]], [[B]];
+    // PIPELINE-NEXT: builtin.yield [[P]];
+    // PIPELINE-NEXT: };
+    wasm.global public @sum : i32 {
         %a = wasm.const 6 : i32;
         %b = wasm.const 7 : i32;
         %p = wasm.mul %a, %b;
+        builtin.yield %p;
     };
 
-    // The value of an initializer is its last operation: a later operation equal to an earlier
-    // one is not merged with it, so `2; 1; 2` stays and the value stays 2.
-    // CHECK: builtin.global_variable public @duplicate : i32 {
-    // CHECK-NEXT: arith.constant 2 : i32;
-    // CHECK-NEXT: arith.constant 1 : i32;
-    // CHECK-NEXT: arith.constant 2 : i32;
-    // CHECK-NEXT: };
+    // Two operations of the initializer have no use: they are removed, and the yielded 5 stays.
+    // INPUT: builtin.global_variable public @unused : i32 {
+    // INPUT-NEXT: arith.constant 4 : i32;
+    // INPUT-NEXT: [[V:%[0-9]+]] = arith.constant 5 : i32;
+    // INPUT-NEXT: arith.constant 6 : i32;
+    // INPUT-NEXT: builtin.yield [[V]];
+    // DCE: builtin.global_variable public @unused : i32 {
+    // DCE-NEXT: [[V:%[0-9]+]] = arith.constant 5 : i32;
+    // DCE-NEXT: builtin.yield [[V]];
+    // DCE-NEXT: };
+    // CSE: builtin.global_variable public @unused : i32 {
+    // CSE-NEXT: [[V:%[0-9]+]] = arith.constant 5 : i32;
+    // CSE-NEXT: builtin.yield [[V]];
+    // CSE-NEXT: };
+    // PIPELINE: builtin.global_variable public @unused : i32 {
+    // PIPELINE-NEXT: [[V:%[0-9]+]] = arith.constant 5 : i32;
+    // PIPELINE-NEXT: builtin.yield [[V]];
+    // PIPELINE-NEXT: };
+    builtin.global_variable public @unused : i32 {
+        %a = arith.constant 4 : i32;
+        %b = arith.constant 5 : i32;
+        %c = arith.constant 6 : i32;
+        builtin.yield %b;
+    };
+
+    // Equal operations are merged: the second `2` is the first, and the two sums are one. The
+    // pipeline folds the arithmetic: (2 + 1) + (2 + 1) is 6.
+    // INPUT: builtin.global_variable public @duplicate : i32 {
+    // INPUT-NEXT: [[A:%[0-9]+]] = arith.constant 2 : i32;
+    // INPUT-NEXT: [[B:%[0-9]+]] = arith.constant 1 : i32;
+    // INPUT-NEXT: [[C:%[0-9]+]] = arith.constant 2 : i32;
+    // INPUT-NEXT: [[D:%[0-9]+]] = arith.add [[A]], [[B]];
+    // INPUT-NEXT: [[E:%[0-9]+]] = arith.add [[C]], [[B]];
+    // INPUT-NEXT: [[F:%[0-9]+]] = arith.add [[D]], [[E]];
+    // INPUT-NEXT: builtin.yield [[F]];
+    // CSE: builtin.global_variable public @duplicate : i32 {
+    // CSE-NEXT: [[A:%[0-9]+]] = arith.constant 2 : i32;
+    // CSE-NEXT: [[B:%[0-9]+]] = arith.constant 1 : i32;
+    // CSE-NEXT: [[D:%[0-9]+]] = arith.add [[A]], [[B]];
+    // CSE-NEXT: [[F:%[0-9]+]] = arith.add [[D]], [[D]];
+    // CSE-NEXT: builtin.yield [[F]];
+    // CSE-NEXT: };
+    // PIPELINE: builtin.global_variable public @duplicate : i32 {
+    // PIPELINE-NEXT: [[F:%[0-9]+]] = arith.constant 6 : i32;
+    // PIPELINE-NEXT: builtin.yield [[F]];
+    // PIPELINE-NEXT: };
     builtin.global_variable public @duplicate : i32 {
         %a = arith.constant 2 : i32;
         %b = arith.constant 1 : i32;
         %c = arith.constant 2 : i32;
+        %d = arith.add %a, %b;
+        %e = arith.add %c, %b;
+        %f = arith.add %d, %e;
+        builtin.yield %f;
     };
 
-    // CHECK: wasm.global public @wasm_duplicate : i32 {
-    // CHECK-NEXT: wasm.const 2 : i32;
-    // CHECK-NEXT: wasm.const 1 : i32;
-    // CHECK-NEXT: wasm.const 2 : i32;
-    // CHECK-NEXT: };
+    // The same in a Wasm global, where nothing folds: the two constants are one.
+    // INPUT: wasm.global public @wasm_duplicate : i32 {
+    // INPUT-NEXT: [[A:%[0-9]+]] = wasm.const 2 : i32;
+    // INPUT-NEXT: [[C:%[0-9]+]] = wasm.const 2 : i32;
+    // INPUT-NEXT: [[D:%[0-9]+]] = wasm.add [[A]], [[C]];
+    // INPUT-NEXT: builtin.yield [[D]];
+    // CSE: wasm.global public @wasm_duplicate : i32 {
+    // CSE-NEXT: [[A:%[0-9]+]] = wasm.const 2 : i32;
+    // CSE-NEXT: [[D:%[0-9]+]] = wasm.add [[A]], [[A]];
+    // CSE-NEXT: builtin.yield [[D]];
+    // CSE-NEXT: };
+    // PIPELINE: wasm.global public @wasm_duplicate : i32 {
+    // PIPELINE-NEXT: [[A:%[0-9]+]] = wasm.const 2 : i32;
+    // PIPELINE-NEXT: [[D:%[0-9]+]] = wasm.add [[A]], [[A]];
+    // PIPELINE-NEXT: builtin.yield [[D]];
+    // PIPELINE-NEXT: };
     wasm.global public @wasm_duplicate : i32 {
         %a = wasm.const 2 : i32;
-        %b = wasm.const 1 : i32;
         %c = wasm.const 2 : i32;
+        %d = wasm.add %a, %c;
+        builtin.yield %d;
     };
 
-    // An intermediate that nothing uses stays, and a constant used twice is neither copied nor
-    // moved.
-    // CHECK: builtin.global_variable public @shared : i32 {
-    // CHECK-NEXT: arith.constant 1 : i32;
-    // CHECK-NEXT: arith.add
-    // CHECK-NEXT: arith.add
-    // CHECK-NEXT: arith.constant 9 : i32;
-    // CHECK-NEXT: };
-    builtin.global_variable public @shared : i32 {
-        %b = arith.constant 1 : i32;
-        %c = arith.add %b, %b;
-        %d = arith.add %b, %b;
-        %e = arith.constant 9 : i32;
-    };
-
-    // CHECK: wasm.global public @wasm_shared : i32 {
-    // CHECK-NEXT: wasm.const 1 : i32;
-    // CHECK-NEXT: wasm.add
-    // CHECK-NEXT: wasm.add
-    // CHECK-NEXT: };
-    wasm.global public @wasm_shared : i32 {
-        %b = wasm.const 1 : i32;
-        %c = wasm.add %b, %b;
-        %d = wasm.add %b, %b;
-    };
-
-    // Equal constants in a function beside the globals do not reach into them, nor they into it.
-    // CHECK: wasm.global public @twin : i32 {
-    // CHECK-NEXT: wasm.const 2 : i32;
-    // CHECK-NEXT: };
+    // Equal constants in a function beside the globals are not merged with theirs, nor theirs
+    // with them: each is its own region.
+    // CSE: wasm.global public @twin : i32 {
+    // CSE-NEXT: [[T:%[0-9]+]] = wasm.const 2 : i32;
+    // CSE-NEXT: builtin.yield [[T]];
+    // CSE-NEXT: };
+    // CSE: builtin.function public extern("C") @beside() -> i32 {
+    // CSE-NEXT: [[X:%[0-9]+]] = wasm.const 2 : i32;
+    // CSE-NEXT: [[Y:%[0-9]+]] = wasm.add [[X]], [[X]];
+    // CSE-NEXT: builtin.ret [[Y]] : (i32);
     wasm.global public @twin : i32 {
         %a = wasm.const 2 : i32;
+        builtin.yield %a;
     };
-    // CHECK: builtin.function public extern("C") @beside() -> i32 {
     builtin.function public extern("C") @beside() -> i32 {
         %a = wasm.const 2 : i32;
         %b = wasm.const 2 : i32;

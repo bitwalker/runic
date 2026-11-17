@@ -8,9 +8,7 @@ use runic_ir::{
     dominance::DominanceInfo,
     matchers::{self, Matcher},
     pass::{Pass, PassExecutionState, PostPassStatus},
-    traits::{
-        BinaryOp, ConstantLike, RegionOperationsAreLive, ReturnLike, TailCallLike, Transparent,
-    },
+    traits::{BinaryOp, ConstantLike, ReturnLike, TailCallLike, Transparent},
 };
 
 /// Check whether `operation` is the sole _non-transparent_ user of `value`.
@@ -229,10 +227,6 @@ impl Pass for ControlFlowSink {
                 let Some(branch) = op.as_trait::<dyn RegionBranchOpInterface>() else {
                     return;
                 };
-                // Nothing moves into the region of an operation that stands for a description.
-                if op.implements::<dyn RegionOperationsAreLive>() {
-                    return;
-                }
                 let mut regions = SmallVec::<[_; 4]>::default();
                 // Get the regions are that known to be executed at most once.
                 get_singly_executed_regions_to_sink(branch, &mut regions);
@@ -244,11 +238,10 @@ impl Pass for ControlFlowSink {
                 &regions_to_sink,
                 &dominfo,
                 |op: &Operation, region: &Region| {
-                    // An operation of an initializer stays where it is, as does one that holds an
-                    // exit or a loop that may not end: moved under a condition, the exit or the
-                    // divergence would happen only when the condition holds.
-                    !op.is_in_live_region()
-                        && !op.has_nested_exit_or_loop()
+                    // An operation that holds an exit or a loop that may not end stays where it
+                    // is: moved under a condition, the exit or the divergence would happen only
+                    // when the condition holds.
+                    !op.has_nested_exit_or_loop()
                         && op.is_memory_effect_free()
                         && (op.implements::<dyn ConstantLike>()
                             || !would_move_into_a_region_that_may_repeat(
@@ -365,12 +358,6 @@ impl Pass for SinkOperandDefs {
 
             log::trace!(target: Self::NAME, "visiting {op}");
 
-            // An operation of an initializer is neither moved nor given new operands.
-            if op.is_in_live_region() {
-                log::trace!(target: Self::NAME, "  ignoring an operation of an initializer");
-                return;
-            }
-
             for operand in op.operands().iter().rev() {
                 let value = operand.borrow();
                 let value = value.value();
@@ -390,10 +377,6 @@ impl Pass for SinkOperandDefs {
                 log::trace!(target: Self::NAME, "  evaluating operand '{value}'");
 
                 let def = defining_op.borrow();
-                if def.is_in_live_region() {
-                    log::trace!(target: Self::NAME, "    defining '{}' is in an initializer", def.name());
-                    continue;
-                }
                 if def.implements::<dyn ConstantLike>() {
                     log::trace!(target: Self::NAME, "    defining '{}' is constant-like", def.name());
                     worklist.push_back(OpOperandSink::new(operation));
@@ -526,10 +509,6 @@ impl Pass for SinkOperandDefs {
                 log::trace!(target: Self::NAME, "    is sole user of {value}? {is_sole_user}");
 
                 let def = defining_op.borrow();
-                if def.is_in_live_region() {
-                    log::trace!(target: Self::NAME, "    defining op is in an initializer, ignoring this operand");
-                    continue 'next_operand;
-                }
                 if let Some(attr) = matchers::constant().matches(&*def) {
                     if !is_sole_user {
                         log::trace!(target: Self::NAME, "    defining op is a constant with multiple uses, materializing fresh copy");

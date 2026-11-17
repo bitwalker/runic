@@ -257,6 +257,13 @@ pub trait BuiltinOpBuilder<'f, B: ?Sized + Builder> {
         op_builder(arg)
     }
 
+    /// Create a [Yield] of `value`: the end of a region whose value its parent takes, such as the
+    /// initializer of a global.
+    fn yield_value(&mut self, value: ValueRef, span: SourceSpan) -> Result<YieldRef, Report> {
+        let op_builder = self.builder_mut().create::<Yield, _>(span);
+        op_builder(value)
+    }
+
     /// Create a [LoadLocal] of `local`, and return the value read, of the local's type.
     fn load_local(&mut self, local: LocalVariable, span: SourceSpan) -> Result<ValueRef, Report> {
         let op_builder = self.builder_mut().create::<LoadLocal, _>(span);
