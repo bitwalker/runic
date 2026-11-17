@@ -1375,6 +1375,52 @@ impl RegionBranchTerminatorOpInterface for Continue {
     }
 }
 
+/// [PendingExit] marks the place of an exit of a function (a `builtin.ret`, a tail call, or any
+/// operation for which [Operation::leaves_callable] holds) that the `cfg-to-scf` pass has taken
+/// out of its block while it structures the region, under the option `exits=in-place`.
+///
+/// It exists only while that pass runs: the pass puts one in place of each exit, the structuring
+/// moves it with its block and may replace its operands (by loop results, for example), and the
+/// pass then puts the exit back where the [PendingExit] is, with its current operands, and erases
+/// it. Its operands are the operands of the exit, in order; it has no results and is not a
+/// terminator.
+///
+/// It declares a write of [PendingExitResource], so dead-code elimination keeps it and CSE never
+/// merges or removes one. Its verifier always fails: it is internal to the pass, and never appears
+/// in IR that is verified, written or read.
+#[derive(EffectOpInterface)]
+#[effects(MemoryEffect(MemoryEffect::Write), resource(PendingExitResource))]
+#[operation(dialect = ScfDialect, implements(MemoryEffectOpInterface))]
+pub struct PendingExit {
+    #[operands]
+    exit_operands: AnyType,
+}
+
+/// What an [PendingExit] writes: the exit it stands for. A child of the default resource, so a
+/// [PendingExit] is ordered against every effect on the default resource.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct PendingExitResource;
+
+impl Resource for PendingExitResource {
+    fn name(&self) -> &'static str {
+        "scf.pending_exit"
+    }
+}
+
+/// A [PendingExit] never verifies: one that is verified has escaped `cfg-to-scf`, or was written
+/// by a user.
+impl Verify<dyn MemoryEffectOpInterface> for PendingExit {
+    fn verify(&self, _context: &Context) -> Result<(), Report> {
+        Err(runic_ir::diagnostics::report!(
+            message: "invalid operation",
+            labels: [primary(
+                self.as_operation().span(),
+                "`scf.pending_exit` is internal to `cfg-to-scf` and never appears in IR"
+            )],
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use runic_expect_test::expect;

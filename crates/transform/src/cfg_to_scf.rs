@@ -487,7 +487,7 @@ mod unreachable_block_tests {
         // The context outlives the module it holds.
         let mut passes = PassManager::on::<Module>(context.clone(), Nesting::Implicit);
         passes
-            .add_pass(Box::new(runic_dialect_scf::transforms::LiftControlFlowToSCF))
+            .add_pass(Box::<runic_dialect_scf::transforms::LiftControlFlowToSCF>::default())
             .unwrap();
         let error: Report = passes.run(module).expect_err("the pass refuses");
         drop(passes);
@@ -750,7 +750,7 @@ mod entry_cycle_tests {
         let mut passes = PassManager::on::<Function>(context, Nesting::Implicit);
         passes.enable_verifier(!entry_placeholder);
         passes
-            .add_pass(Box::new(runic_dialect_scf::transforms::LiftControlFlowToSCF))
+            .add_pass(Box::<runic_dialect_scf::transforms::LiftControlFlowToSCF>::default())
             .unwrap();
         passes.run(function.as_operation_ref())?;
         assert_eq!(*function.borrow().signature(), signature);
@@ -1088,7 +1088,7 @@ mod canonical_entry_tests {
         let mut passes = PassManager::on::<Function>(context, Nesting::Implicit);
         passes.enable_verifier(false);
         passes
-            .add_pass(Box::new(runic_dialect_scf::transforms::LiftControlFlowToSCF))
+            .add_pass(Box::<runic_dialect_scf::transforms::LiftControlFlowToSCF>::default())
             .unwrap();
         passes.run(function.as_operation_ref())?;
         function.as_operation_ref().borrow().recursively_verify()?;

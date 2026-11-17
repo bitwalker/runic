@@ -99,9 +99,14 @@ fn reads_back(text: &str) -> Result<BTreeSet<String>, String> {
     Ok(names)
 }
 
+/// The operations no case uses, because no IR that verifies can hold them: `scf.pending_exit`
+/// exists only while `cfg-to-scf` runs (under `exits=in-place`), and its verifier always fails.
+const NOT_IN_ANY_CASE: [&str; 1] = ["scf.pending_exit"];
+
 /// Every case of every corpus parses, prints in the generic form, and that text parses, verifies
 /// and prints the same program, in both forms, as the case. Between them the cases use every
-/// operation registered here.
+/// operation registered here, except those that no IR that verifies can hold
+/// ([NOT_IN_ANY_CASE]).
 #[test]
 fn every_case_reads_back_from_the_generic_form() {
     // These golden files hold `test.debug_value`, an operation that only core's own tests
@@ -140,7 +145,10 @@ fn every_case_reads_back_from_the_generic_form() {
     let mut registered = BTreeSet::new();
     for dialect in context.registered_dialects().values() {
         for name in dialect.registered_ops().iter() {
-            registered.insert(name.to_string());
+            let name = name.to_string();
+            if !NOT_IN_ANY_CASE.contains(&name.as_str()) {
+                registered.insert(name);
+            }
         }
     }
     let missing = registered.difference(&used).collect::<Vec<_>>();

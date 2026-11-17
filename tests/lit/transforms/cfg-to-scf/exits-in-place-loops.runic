@@ -1,0 +1,243 @@
+// RUN: runic-opt %s -p 'cfg-to-scf{exits=in-place}' | filecheck %s
+// RUN: runic-opt %s -p 'cfg-to-scf{exits=in-place}' | runic-opt - --verify-roundtrip | filecheck %s
+
+// Exits and loops with `exits=in-place`. The structuring puts only the blocks of a cycle in the
+// loop's body, so an exit taken from inside a loop is not in the loop: the `scf.while` carries the
+// exit's operands and a selector (an `i32` that says which way the loop was left) out as results,
+// and after the loop an `scf.index_switch` on the selector holds the exits, one in each region.
+// This is a known limit, which the output shows: it is structured and verifies, and no `cf`
+// operation remains. An exit after the loop, on a path that does not go back to it, is placed as
+// in a function with no loop. The second RUN line reads the output back.
+builtin.module public @cfg_to_scf_exits_in_place_loops {
+    builtin.function public extern("C") @g(i32) -> i32;
+    builtin.function public extern("C") @h(i32) -> i32;
+
+    // A loop whose header leaves normally, to a return after the loop, and whose body returns
+    // early: both returns are after the loop, in the regions of an `scf.index_switch`; the
+    // default region takes the normal exit and computes what it returns.
+    // CHECK-LABEL: @normal_exit_and_ret(
+    // CHECK-SAME: [[N:%[0-9]+]]: i32, [[K:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[V0:%[0-9]+]] = arith.constant 2 : i32;
+    // CHECK-NEXT: [[V1:%[0-9]+]] = arith.constant 1 : i32;
+    // CHECK-NEXT: [[V2:%[0-9]+]] = ub.poison <{ value = #ub.poison<i32> }>;
+    // CHECK-NEXT: [[V3:%[0-9]+]] = arith.constant 0 : i1;
+    // CHECK-NEXT: [[V4:%[0-9]+]] = arith.constant 1 : i1;
+    // CHECK-NEXT: [[V5:%[0-9]+]] = arith.constant 0 : i32;
+    // CHECK-NEXT: [[V6:%[0-9]+]] = arith.constant 0 : i32;
+    // CHECK-NEXT: [[V7:%[0-9]+]], [[V8:%[0-9]+]], [[V9:%[0-9]+]] = scf.while [[V6]], [[V2]], [[V2]] before {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[V10:%[0-9]+]]: i32, [[V11:%[0-9]+]]: i32, [[V12:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[V13:%[0-9]+]] = arith.cmpi uge [[V10]], [[N]];
+    // CHECK-NEXT: [[V14:%[0-9]+]], [[V15:%[0-9]+]], [[V16:%[0-9]+]] = scf.if [[V13]] then {
+    // CHECK-NEXT: scf.yield [[V2]], [[V0]], [[V3]] : (i32, i32, i1);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: [[V17:%[0-9]+]] = arith.cmpi eq [[V10]], [[K]];
+    // CHECK-NEXT: [[V18:%[0-9]+]], [[V19:%[0-9]+]], [[V20:%[0-9]+]] = scf.if [[V17]] then {
+    // CHECK-NEXT: scf.yield [[V2]], [[V1]], [[V3]] : (i32, i32, i1);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: [[V21:%[0-9]+]] = arith.constant 1 : i32;
+    // CHECK-NEXT: [[V22:%[0-9]+]] = arith.add [[V10]], [[V21]];
+    // CHECK-NEXT: scf.yield [[V22]], [[V5]], [[V4]] : (i32, i32, i1);
+    // CHECK-NEXT: } : (i1) -> (i32, i32, i1);
+    // CHECK-NEXT: scf.yield [[V18]], [[V19]], [[V20]] : (i32, i32, i1);
+    // CHECK-NEXT: } : (i1) -> (i32, i32, i1);
+    // CHECK-NEXT: scf.condition [[V16]], [[V14]], [[V10]], [[V15]] : (i1, i32, i32, i32);
+    // CHECK-NEXT: } after {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[V23:%[0-9]+]]: i32, [[V24:%[0-9]+]]: i32, [[V25:%[0-9]+]]: i32):
+    // CHECK-NEXT: scf.yield [[V23]], [[V24]], [[V25]] : (i32, i32, i32);
+    // CHECK-NEXT: } : (i32, i32, i32) -> (i32, i32, i32);
+    // CHECK-NEXT: scf.index_switch [[V9]]
+    // CHECK-NEXT: case 1 {
+    // CHECK-NEXT: builtin.ret [[K]] : (i32);
+    // CHECK-NEXT: }
+    // CHECK-NEXT: default {
+    // CHECK-NEXT: [[V26:%[0-9]+]] = arith.constant 2 : i32;
+    // CHECK-NEXT: [[V27:%[0-9]+]] = arith.mul [[V8]], [[V26]];
+    // CHECK-NEXT: builtin.ret [[V27]] : (i32);
+    // CHECK-NEXT: } : ();
+    // CHECK-NEXT: ub.unreachable;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @normal_exit_and_ret(%n: i32, %k: i32) -> i32 {
+        %zero = arith.constant 0 : i32;
+        cf.br ^head(%zero : i32);
+    ^head(%i: i32):
+        %done = arith.cmpi uge %i, %n;
+        cf.cond_br %done ^after, ^body : (i1);
+    ^body:
+        %hit = arith.cmpi eq %i, %k;
+        cf.cond_br %hit ^leave, ^latch : (i1);
+    ^leave:
+        builtin.ret %k : (i32);
+    ^latch:
+        %one = arith.constant 1 : i32;
+        %next = arith.add %i, %one;
+        cf.br ^head(%next : i32);
+    ^after:
+        %two = arith.constant 2 : i32;
+        %r = arith.mul %i, %two;
+        builtin.ret %r : (i32);
+    };
+
+    // A loop whose only exits are a return and a tail call from its body: the loop yields the
+    // value both exits take, and the `scf.index_switch` after it holds the two exits.
+    // CHECK-LABEL: @only_body_exits(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[K:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[V0:%[0-9]+]] = arith.constant 2 : i32;
+    // CHECK-NEXT: [[V1:%[0-9]+]] = arith.constant 1 : i32;
+    // CHECK-NEXT: [[V2:%[0-9]+]] = ub.poison <{ value = #ub.poison<i32> }>;
+    // CHECK-NEXT: [[V3:%[0-9]+]] = arith.constant 0 : i1;
+    // CHECK-NEXT: [[V4:%[0-9]+]] = arith.constant 1 : i1;
+    // CHECK-NEXT: [[V5:%[0-9]+]] = arith.constant 0 : i32;
+    // CHECK-NEXT: [[V6:%[0-9]+]], [[V7:%[0-9]+]], [[V8:%[0-9]+]] = scf.while [[A]], [[V2]], [[V2]] before {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[V9:%[0-9]+]]: i32, [[V10:%[0-9]+]]: i32, [[V11:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[V12:%[0-9]+]] = arith.constant 1 : i32;
+    // CHECK-NEXT: [[V13:%[0-9]+]] = arith.add [[V9]], [[V12]];
+    // CHECK-NEXT: [[V14:%[0-9]+]] = arith.cmpi eq [[V13]], [[K]];
+    // CHECK-NEXT: [[V15:%[0-9]+]], [[V16:%[0-9]+]], [[V17:%[0-9]+]] = scf.if [[V14]] then {
+    // CHECK-NEXT: scf.yield [[V2]], [[V0]], [[V3]] : (i32, i32, i1);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: [[V18:%[0-9]+]] = arith.cmpi ugt [[V13]], [[K]];
+    // CHECK-NEXT: [[V19:%[0-9]+]], [[V20:%[0-9]+]], [[V21:%[0-9]+]] = scf.if [[V18]] then {
+    // CHECK-NEXT: scf.yield [[V2]], [[V1]], [[V3]] : (i32, i32, i1);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: scf.yield [[V13]], [[V5]], [[V4]] : (i32, i32, i1);
+    // CHECK-NEXT: } : (i1) -> (i32, i32, i1);
+    // CHECK-NEXT: scf.yield [[V19]], [[V20]], [[V21]] : (i32, i32, i1);
+    // CHECK-NEXT: } : (i1) -> (i32, i32, i1);
+    // CHECK-NEXT: scf.condition [[V17]], [[V15]], [[V13]], [[V16]] : (i1, i32, i32, i32);
+    // CHECK-NEXT: } after {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[V22:%[0-9]+]]: i32, [[V23:%[0-9]+]]: i32, [[V24:%[0-9]+]]: i32):
+    // CHECK-NEXT: scf.yield [[V22]], [[V23]], [[V24]] : (i32, i32, i32);
+    // CHECK-NEXT: } : (i32, i32, i32) -> (i32, i32, i32);
+    // CHECK-NEXT: scf.index_switch [[V8]]
+    // CHECK-NEXT: case 1 {
+    // CHECK-NEXT: builtin.tail_call @g([[V7]]) : extern("C") (i32) -> i32;
+    // CHECK-NEXT: }
+    // CHECK-NEXT: default {
+    // CHECK-NEXT: builtin.ret [[V7]] : (i32);
+    // CHECK-NEXT: } : ();
+    // CHECK-NEXT: ub.unreachable;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @only_body_exits(%a: i32, %k: i32) -> i32 {
+        cf.br ^head(%a : i32);
+    ^head(%i: i32):
+        %one = arith.constant 1 : i32;
+        %next = arith.add %i, %one;
+        %hit = arith.cmpi eq %next, %k;
+        cf.cond_br %hit ^ret, ^more : (i1);
+    ^ret:
+        builtin.ret %next : (i32);
+    ^more:
+        %big = arith.cmpi ugt %next, %k;
+        cf.cond_br %big ^call, ^head(%next : i32) : (i1);
+    ^call:
+        builtin.tail_call @g(%next) : extern("C") (i32) -> i32;
+    };
+
+    // A loop with one exit, followed by a branch to two exits: the branch is an `scf.if` after the
+    // loop, with an exit in each region, and reads the loop's result.
+    // CHECK-LABEL: @loop_then_two_exits(
+    // CHECK-SAME: [[N:%[0-9]+]]: i32, [[C:%[0-9]+]]: i1) -> i32 {
+    // CHECK-NEXT: [[V0:%[0-9]+]] = arith.constant 1 : i32;
+    // CHECK-NEXT: [[V1:%[0-9]+]] = ub.poison <{ value = #ub.poison<i32> }>;
+    // CHECK-NEXT: [[V2:%[0-9]+]] = arith.constant 0 : i1;
+    // CHECK-NEXT: [[V3:%[0-9]+]] = arith.constant 1 : i1;
+    // CHECK-NEXT: [[V4:%[0-9]+]] = arith.constant 0 : i32;
+    // CHECK-NEXT: [[V5:%[0-9]+]] = arith.constant 0 : i32;
+    // CHECK-NEXT: [[V6:%[0-9]+]], [[V7:%[0-9]+]] = scf.while [[V5]], [[V1]] before {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[V8:%[0-9]+]]: i32, [[V9:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[V10:%[0-9]+]] = arith.constant 1 : i32;
+    // CHECK-NEXT: [[V11:%[0-9]+]] = arith.add [[V8]], [[V10]];
+    // CHECK-NEXT: [[V12:%[0-9]+]] = arith.cmpi ult [[V11]], [[N]];
+    // CHECK-NEXT: [[V13:%[0-9]+]], [[V14:%[0-9]+]], [[V15:%[0-9]+]] = scf.if [[V12]] then {
+    // CHECK-NEXT: scf.yield [[V11]], [[V4]], [[V3]] : (i32, i32, i1);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: scf.yield [[V1]], [[V0]], [[V2]] : (i32, i32, i1);
+    // CHECK-NEXT: } : (i1) -> (i32, i32, i1);
+    // CHECK-NEXT: scf.condition [[V15]], [[V13]], [[V11]] : (i1, i32, i32);
+    // CHECK-NEXT: } after {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[V16:%[0-9]+]]: i32, [[V17:%[0-9]+]]: i32):
+    // CHECK-NEXT: scf.yield [[V16]], [[V17]] : (i32, i32);
+    // CHECK-NEXT: } : (i32, i32) -> (i32, i32);
+    // CHECK-NEXT: scf.if [[C]] then {
+    // CHECK-NEXT: builtin.tail_call @g([[V7]]) : extern("C") (i32) -> i32;
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: builtin.tail_call @h([[V7]]) : extern("C") (i32) -> i32;
+    // CHECK-NEXT: } : (i1) -> ();
+    // CHECK-NEXT: ub.unreachable;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @loop_then_two_exits(%n: i32, %c: i1) -> i32 {
+        %zero = arith.constant 0 : i32;
+        cf.br ^head(%zero : i32);
+    ^head(%i: i32):
+        %one = arith.constant 1 : i32;
+        %next = arith.add %i, %one;
+        %more = arith.cmpi ult %next, %n;
+        cf.cond_br %more ^head(%next : i32), ^after : (i1);
+    ^after:
+        cf.cond_br %c ^x, ^y : (i1);
+    ^x:
+        builtin.tail_call @g(%next) : extern("C") (i32) -> i32;
+    ^y:
+        builtin.tail_call @h(%next) : extern("C") (i32) -> i32;
+    };
+
+    // A `ub.unreachable` the user wrote in a loop body is a dead end like an exit: it is after the
+    // loop, in a region of the `scf.index_switch`.
+    // CHECK-LABEL: @unreachable_in_loop(
+    // CHECK-SAME: [[N:%[0-9]+]]: i32, [[K:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[V0:%[0-9]+]] = arith.constant 2 : i32;
+    // CHECK-NEXT: [[V1:%[0-9]+]] = arith.constant 1 : i32;
+    // CHECK-NEXT: [[V2:%[0-9]+]] = ub.poison <{ value = #ub.poison<i32> }>;
+    // CHECK-NEXT: [[V3:%[0-9]+]] = arith.constant 0 : i1;
+    // CHECK-NEXT: [[V4:%[0-9]+]] = arith.constant 1 : i1;
+    // CHECK-NEXT: [[V5:%[0-9]+]] = arith.constant 0 : i32;
+    // CHECK-NEXT: [[V6:%[0-9]+]] = arith.constant 0 : i32;
+    // CHECK-NEXT: [[V7:%[0-9]+]], [[V8:%[0-9]+]], [[V9:%[0-9]+]] = scf.while [[V6]], [[V2]], [[V2]] before {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[V10:%[0-9]+]]: i32, [[V11:%[0-9]+]]: i32, [[V12:%[0-9]+]]: i32):
+    // CHECK-NEXT: [[V13:%[0-9]+]] = arith.cmpi uge [[V10]], [[N]];
+    // CHECK-NEXT: [[V14:%[0-9]+]], [[V15:%[0-9]+]], [[V16:%[0-9]+]] = scf.if [[V13]] then {
+    // CHECK-NEXT: scf.yield [[V2]], [[V0]], [[V3]] : (i32, i32, i1);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: [[V17:%[0-9]+]] = arith.cmpi eq [[V10]], [[K]];
+    // CHECK-NEXT: [[V18:%[0-9]+]], [[V19:%[0-9]+]], [[V20:%[0-9]+]] = scf.if [[V17]] then {
+    // CHECK-NEXT: scf.yield [[V2]], [[V1]], [[V3]] : (i32, i32, i1);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: [[V21:%[0-9]+]] = arith.constant 1 : i32;
+    // CHECK-NEXT: [[V22:%[0-9]+]] = arith.add [[V10]], [[V21]];
+    // CHECK-NEXT: scf.yield [[V22]], [[V5]], [[V4]] : (i32, i32, i1);
+    // CHECK-NEXT: } : (i1) -> (i32, i32, i1);
+    // CHECK-NEXT: scf.yield [[V18]], [[V19]], [[V20]] : (i32, i32, i1);
+    // CHECK-NEXT: } : (i1) -> (i32, i32, i1);
+    // CHECK-NEXT: scf.condition [[V16]], [[V14]], [[V10]], [[V15]] : (i1, i32, i32, i32);
+    // CHECK-NEXT: } after {
+    // CHECK-NEXT: ^{{block[0-9]+}}([[V23:%[0-9]+]]: i32, [[V24:%[0-9]+]]: i32, [[V25:%[0-9]+]]: i32):
+    // CHECK-NEXT: scf.yield [[V23]], [[V24]], [[V25]] : (i32, i32, i32);
+    // CHECK-NEXT: } : (i32, i32, i32) -> (i32, i32, i32);
+    // CHECK-NEXT: scf.index_switch [[V9]]
+    // CHECK-NEXT: case 1 {
+    // CHECK-NEXT: ub.unreachable;
+    // CHECK-NEXT: }
+    // CHECK-NEXT: default {
+    // CHECK-NEXT: builtin.ret [[V8]] : (i32);
+    // CHECK-NEXT: } : ();
+    // CHECK-NEXT: ub.unreachable;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @unreachable_in_loop(%n: i32, %k: i32) -> i32 {
+        %zero = arith.constant 0 : i32;
+        cf.br ^head(%zero : i32);
+    ^head(%i: i32):
+        %done = arith.cmpi uge %i, %n;
+        cf.cond_br %done ^after, ^body : (i1);
+    ^body:
+        %hit = arith.cmpi eq %i, %k;
+        cf.cond_br %hit ^trap, ^latch : (i1);
+    ^trap:
+        ub.unreachable;
+    ^latch:
+        %one = arith.constant 1 : i32;
+        %next = arith.add %i, %one;
+        cf.br ^head(%next : i32);
+    ^after:
+        builtin.ret %i : (i32);
+    };
+};

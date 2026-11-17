@@ -1,0 +1,14 @@
+// RUN: not runic-opt %s 2>&1 | filecheck %s
+
+// `scf.pending_exit` is the operation cfg-to-scf puts in place of an exit while it works under
+// `exits=in-place`. It never verifies, so it cannot be written, and none survives the pass.
+
+// CHECK: error: invalid operation
+// CHECK: "scf.pending_exit"(%a) : (i32) -> ();
+// CHECK: `scf.pending_exit` is internal to `cfg-to-scf` and never appears in IR
+builtin.module public @cfg_to_scf_pending_exit {
+    builtin.function public extern("C") @f(%a: i32) -> i32 {
+        "scf.pending_exit"(%a) : (i32) -> ();
+        builtin.ret %a : (i32);
+    };
+};

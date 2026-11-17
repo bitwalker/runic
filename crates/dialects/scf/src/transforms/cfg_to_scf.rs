@@ -1,14 +1,18 @@
-use alloc::rc::Rc;
+use alloc::{format, rc::Rc, vec::Vec};
+use core::fmt;
 
 use runic_dialect_arith::ArithOpBuilder;
 use runic_dialect_cf::{self as cf, ControlFlowOpBuilder};
 use runic_dialect_ub::UndefinedBehaviorOpBuilder;
 use runic_ir::{
-    Builder, EntityMut, Forward, Op, Operation, OperationName, OperationRef, RawWalk, Report,
-    SmallVec, Spanned, ValueRange, ValueRef, WalkResult,
+    BlockRef, Builder, BuilderExt, Context, EntityMut, Forward, Op, OpBuilder, Operation,
+    OperationName, OperationRef, RawWalk, RegionBranchTerminatorOpInterface,
+    RegionExitTerminatorOpInterface, RegionRef, Report, SmallVec, Spanned, Usable, ValueRange,
+    ValueRef, WalkResult,
     dialects::builtin,
     dominance::DominanceInfo,
-    pass::{Pass, PassExecutionState, PostPassStatus},
+    pass::{Pass, PassExecutionState, PassOptions, PostPassStatus, write_pass_option},
+    traits::{ConstantLike, ReturnLike, Terminator},
 };
 use runic_transform::{self as transforms, CFGToSCFInterface};
 
@@ -16,25 +20,81 @@ use crate::*;
 
 /// Lifts unstructured control flow operations (`cf`) to structured control flow operations (`scf`).
 ///
-/// This pass is not always guaranteed to replace all unstructured control flow operations. If a
-/// region contains only a single kind of return-like operation, all unstructured control flow ops
-/// will be replaced successfully. Otherwise a single unstructured switch branching to one block per
-/// return-like operation kind remains.
+/// What the pass does with the dead ends of a region (the terminators without successors that do
+/// not hand control back to the operation that holds the region: the exits of the function, its
+/// `builtin.ret`s, tail calls and every other operation for which [Operation::leaves_callable]
+/// holds, and terminators such as `ub.unreachable`) is set by its option `exits` ([Exits]):
+///
+/// * `exits=merge` (the default) merges the dead ends of a region that are the same operation, with
+///   the same attributes and operand types, into one. If a region contains only a single kind of
+///   return-like operation, all unstructured control flow ops are replaced. Otherwise a single
+///   unstructured switch branching to one block per return-like operation kind remains.
+/// * `exits=in-place` leaves every dead end where it is, inside the structured code that holds it,
+///   and replaces all unstructured control flow of a function. Every dead end of a region with
+///   more than one block is treated alike, whatever its kind: a `ub.unreachable` the user wrote
+///   stays where it was, as a `builtin.ret` does. A region in which every path reaches a dead end
+///   ends in a `ub.unreachable` after its structured code. A dead end reached from inside a loop is
+///   still placed after the loop, in a region of an `scf.if` or `scf.index_switch` on a selector
+///   that the loop computes, as the structuring places every block that is not part of a cycle.
+///   A terminator that hands control back to the operation holding the region (an `scf.yield`, an
+///   `scf.condition`, an `scf.break`) is not a dead end, and is merged as in `exits=merge`.
+///
+/// A region with a block its entry cannot reach is refused, in either mode, before anything is
+/// changed.
 ///
 /// This pass may need to create unreachable terminators in case of infinite loops, which is only
 /// supported for 'builtin.func' for now. If you potentially have infinite loops inside CFG regions
 /// not belonging to 'builtin.func', consider using the `transform_cfg_to_scf` function directly
 /// with a corresponding [CFGToSCFInterface::create_unreachable_terminator] implementation.
 #[derive(Default)]
-pub struct LiftControlFlowToSCF;
+pub struct LiftControlFlowToSCF {
+    exits: Exits,
+}
+
+/// Where [LiftControlFlowToSCF] puts the exits of a function: the values of its option `exits`.
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
+pub enum Exits {
+    /// `merge`: the exits of one kind become one exit, after the structured code that computes its
+    /// operands; with more than one kind, an unstructured dispatch between them remains.
+    #[default]
+    Merge,
+    /// `in-place`: every exit stays in the block it ends, wherever the structuring puts that block,
+    /// and no unstructured control flow remains.
+    InPlace,
+}
+
+impl Exits {
+    /// The value of the option `exits` that selects this placement.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Merge => "merge",
+            Self::InPlace => "in-place",
+        }
+    }
+}
+
+impl LiftControlFlowToSCF {
+    /// The pass, placing the exits of a function as `exits` says.
+    pub const fn new(exits: Exits) -> Self {
+        Self { exits }
+    }
+
+    /// Where the pass places the exits of a function.
+    pub const fn exits(&self) -> Exits {
+        self.exits
+    }
+}
 
 runic_ir::inventory::submit!(::runic_ir::pass::registry::PassInfo::new::<LiftControlFlowToSCF>(
     "cfg-to-scf",
     DESCRIPTION
 ));
 
-const DESCRIPTION: &str =
-    "Replaces unstructured control flow (cf) by structured control flow (scf) where it can";
+const NAME: &str = "cfg-to-scf";
+
+const DESCRIPTION: &str = "Replaces unstructured control flow (cf) by structured control flow \
+                           (scf) where it can; `exits=in-place` leaves returns and tail calls \
+                           where they are";
 
 impl Pass for LiftControlFlowToSCF {
     type Target = Operation;
@@ -44,11 +104,47 @@ impl Pass for LiftControlFlowToSCF {
     }
 
     fn argument(&self) -> &'static str {
-        "cfg-to-scf"
+        NAME
     }
 
     fn description(&self) -> &'static str {
         DESCRIPTION
+    }
+
+    /// Reads `exits` (`merge` or `in-place`, see [Exits]) from the options of the pass pipeline.
+    fn initialize_options(&mut self, options: &PassOptions) -> Result<(), Report> {
+        options.check_keys(NAME, &["exits"])?;
+        if let Some(value) = options.get("exits") {
+            self.exits = match value.map(str::trim) {
+                Some("merge") => Exits::Merge,
+                Some("in-place") => Exits::InPlace,
+                Some(value) => {
+                    return Err(Report::msg(format!(
+                        "invalid value '{value}' of option 'exits' of pass '{NAME}': expected \
+                         'merge' or 'in-place'"
+                    )));
+                }
+                None => {
+                    return Err(Report::msg(format!(
+                        "option 'exits' of pass '{NAME}' needs a value: expected 'exits=merge' or \
+                         'exits=in-place'"
+                    )));
+                }
+            };
+        }
+        Ok(())
+    }
+
+    /// Prints the pass, with `{exits=in-place}` when it leaves exits in place; the default,
+    /// `merge`, is not printed.
+    fn print_as_textual_pipeline(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(NAME)?;
+        if self.exits != Exits::Merge {
+            f.write_str("{")?;
+            write_pass_option(f, "exits", Some(self.exits.as_str()))?;
+            f.write_str("}")?;
+        }
+        Ok(())
     }
 
     fn can_schedule_on(&self, _name: &OperationName) -> bool {
@@ -69,6 +165,7 @@ impl Pass for LiftControlFlowToSCF {
     ) -> Result<(), Report> {
         let mut transformation = ControlFlowToSCFTransformation;
         let mut changed = false;
+        let in_place = self.exits == Exits::InPlace;
 
         let root = op.as_operation_ref();
         drop(op);
@@ -134,6 +231,11 @@ impl Pass for LiftControlFlowToSCF {
                     while let Some(region) = next_region.take() {
                         next_region = region.next();
 
+                        let pending = if in_place { PendingExits::take(region) } else { None };
+                        if pending.is_some() {
+                            dominfo.invalidate_region(region);
+                        }
+
                         let result =
                             transforms::transform_cfg_to_scf(region, &mut transformation, dominfo);
                         match result {
@@ -144,8 +246,20 @@ impl Pass for LiftControlFlowToSCF {
                                      (did_change={did_change})"
                                 );
                                 changed |= did_change;
+                                if let Some(pending) = pending {
+                                    let restored = pending.restore(true);
+                                    dominfo.invalidate_region(region);
+                                    if let Err(err) = restored {
+                                        return WalkResult::Break(err);
+                                    }
+                                }
                             }
                             Err(err) => {
+                                // A refusal leaves every exit where it was.
+                                if let Some(pending) = pending {
+                                    let _ = pending.restore(false);
+                                    dominfo.invalidate_region(region);
+                                }
                                 return WalkResult::Break(err);
                             }
                         }
@@ -195,6 +309,266 @@ impl Pass for LiftControlFlowToSCF {
 
         Ok(())
     }
+}
+
+/// The exits of a region that `exits=in-place` has taken out while the region is structured.
+///
+/// [PendingExits::take] replaces each dead end of the region (see [is_dead_end]) by an `scf.pending_exit` with the exit's operands, followed
+/// by a `cf.br` to one block, added at the end of the region, that holds only `ub.unreachable`; the
+/// exit is detached, and its operands are dropped, so that no detached operation is a user of a
+/// value while the structuring runs. The structuring then sees one kind of exit only. Then
+/// [PendingExits::restore] puts each exit back where its placeholder is, with the placeholder's
+/// operands at that time, and erases the placeholder and every operation after it in its block.
+struct PendingExits {
+    /// The block every placeholder branches to, which holds only a `ub.unreachable`.
+    unreachable: BlockRef,
+    /// Each placeholder, the exit it stands for, and the size of each operand group of the exit.
+    exits: Vec<(OperationRef, OperationRef, SmallVec<[usize; 2]>)>,
+}
+
+impl PendingExits {
+    /// Takes the dead ends out of `region`, if it has more than one block and any dead end: see
+    /// [PendingExits].
+    fn take(region: RegionRef) -> Option<Self> {
+        let blocks = region
+            .borrow()
+            .body()
+            .iter()
+            .map(|block| block.as_block_ref())
+            .collect::<SmallVec<[BlockRef; 8]>>();
+        if blocks.len() < 2 {
+            return None;
+        }
+        let exits = blocks
+            .iter()
+            .filter_map(|block| block.borrow().terminator())
+            .filter(|terminator| is_dead_end(&terminator.borrow()))
+            .collect::<SmallVec<[OperationRef; 4]>>();
+        if exits.is_empty() {
+            return None;
+        }
+
+        let (context, span) = {
+            let parent = region.parent().expect("a region being lifted has a parent");
+            let parent = parent.borrow();
+            (parent.context_rc(), parent.span())
+        };
+        let mut builder = OpBuilder::new(context);
+        let unreachable = builder.create_block(region, None, &[]);
+        builder.set_insertion_point_to_end(unreachable);
+        builder.unreachable(span);
+
+        let mut pending = Vec::with_capacity(exits.len());
+        for mut exit in exits {
+            let block = exit.parent().expect("an exit is in a block");
+            let (operands, groups, span) = {
+                let op = exit.borrow();
+                let operands = op
+                    .operands()
+                    .all()
+                    .iter()
+                    .map(|operand| operand.borrow().as_value_ref())
+                    .collect::<SmallVec<[ValueRef; 4]>>();
+                let groups = op
+                    .operands()
+                    .groups()
+                    .map(|group| group.len())
+                    .collect::<SmallVec<[usize; 2]>>();
+                (operands, groups, op.span())
+            };
+            {
+                let mut op = exit.borrow_mut();
+                op.remove();
+                op.operands_mut().clear();
+            }
+            builder.set_insertion_point_to_end(block);
+            let placeholder =
+                builder.create::<PendingExit, (SmallVec<[ValueRef; 4]>,)>(span)(operands)
+                    .expect("an `scf.pending_exit` takes operands of any type")
+                    .as_operation_ref();
+            builder
+                .br(unreachable, [], span)
+                .expect("a `cf.br` to a block without arguments is well formed");
+            pending.push((placeholder, exit, groups));
+        }
+
+        Some(Self {
+            unreachable,
+            exits: pending,
+        })
+    }
+
+    /// Puts every exit back in place of its placeholder, with the placeholder's operands, and
+    /// erases the placeholder and what follows it in its block; then erases the block of
+    /// `ub.unreachable` the placeholders branched to, if nothing branches to it any more.
+    ///
+    /// With `check`, an operation after a placeholder whose result is used by an operation that
+    /// is not erased with it is an error (the structuring is assumed never to make one), and the
+    /// operations after that placeholder are left as they are; without `check` such operations
+    /// are left without an error. Every exit is put back either way; the first error is returned.
+    fn restore(self, check: bool) -> Result<(), Report> {
+        let mut first_error = None;
+        for (mut placeholder, exit, groups) in self.exits {
+            if let Err(error) = Self::put_back(placeholder, exit, &groups) {
+                first_error.get_or_insert(error);
+                continue;
+            }
+
+            let mut followers = SmallVec::<[OperationRef; 4]>::new();
+            let mut next = placeholder.next();
+            while let Some(op) = next {
+                next = op.next();
+                followers.push(op);
+            }
+            let escaping = followers.iter().copied().find(|follower| {
+                follower.borrow().results().all().iter().any(|result| {
+                    result.borrow().iter_uses().any(|user| {
+                        let user = user.owner.borrow();
+                        !followers.iter().any(|erased| erased.borrow().is_ancestor_of(&user))
+                    })
+                })
+            });
+            match escaping {
+                Some(op) => {
+                    if check {
+                        let op = op.borrow();
+                        first_error.get_or_insert(runic_ir::diagnostics::report!(
+                            message: "an internal assumption of `cfg-to-scf` does not hold",
+                            labels: [primary(
+                                op.span(),
+                                format!(
+                                    "this `{}` follows an exit that `cfg-to-scf` puts back in \
+                                     place, and an operation the pass keeps uses its result",
+                                    op.name()
+                                )
+                            )],
+                        ));
+                    }
+                }
+                None => {
+                    // The constants the structuring made for these operations (flags and
+                    // selectors, created once at the start of the region) may now be unused.
+                    let read = followers
+                        .iter()
+                        .flat_map(|follower| {
+                            follower
+                                .borrow()
+                                .operands()
+                                .all()
+                                .iter()
+                                .map(|operand| operand.borrow().as_value_ref())
+                                .collect::<SmallVec<[ValueRef; 4]>>()
+                        })
+                        .collect::<SmallVec<[ValueRef; 8]>>();
+                    for mut follower in followers.into_iter().rev() {
+                        follower.borrow_mut().erase();
+                    }
+                    for value in read {
+                        let defining_op = {
+                            let value = value.borrow();
+                            if value.is_used() {
+                                continue;
+                            }
+                            value.get_defining_op()
+                        };
+                        if let Some(mut op) = defining_op
+                            && op.parent().is_some()
+                            && op.borrow().implements::<dyn ConstantLike>()
+                        {
+                            op.borrow_mut().erase();
+                        }
+                    }
+                }
+            }
+            placeholder.borrow_mut().erase();
+        }
+
+        let mut unreachable = self.unreachable;
+        let unused = {
+            let block = unreachable.borrow();
+            block.parent().is_some() && !block.is_entry_block() && !block.has_predecessors()
+        };
+        if unused {
+            let ops = unreachable
+                .borrow()
+                .body()
+                .iter()
+                .map(|op| op.as_operation_ref())
+                .collect::<SmallVec<[OperationRef; 1]>>();
+            for mut op in ops.into_iter().rev() {
+                op.borrow_mut().erase();
+            }
+            unreachable.borrow_mut().erase();
+        }
+
+        first_error.map_or(Ok(()), Err)
+    }
+
+    /// Inserts `exit` before `placeholder`, its operands those of `placeholder`, in operand groups
+    /// of the sizes `groups` gives.
+    fn put_back(
+        placeholder: OperationRef,
+        mut exit: OperationRef,
+        groups: &[usize],
+    ) -> Result<(), Report> {
+        let (context, values) = {
+            let op = placeholder.borrow();
+            if op.parent().is_none() {
+                return Err(runic_ir::diagnostics::report!(
+                    message: "an internal assumption of `cfg-to-scf` does not hold",
+                    labels: [primary(
+                        exit.borrow().span(),
+                        "the structuring removed the place of this exit"
+                    )],
+                ));
+            }
+            let values = op
+                .operands()
+                .all()
+                .iter()
+                .map(|operand| operand.borrow().as_value_ref())
+                .collect::<SmallVec<[ValueRef; 4]>>();
+            (op.context_rc(), values)
+        };
+        debug_assert_eq!(values.len(), groups.iter().sum::<usize>());
+        exit.insert_before(placeholder);
+        let mut values = values.into_iter().enumerate();
+        let mut op = exit.borrow_mut();
+        for (group, &len) in groups.iter().enumerate() {
+            let operands = values
+                .by_ref()
+                .take(len)
+                .map(|(index, value)| make_operand(&context, value, exit, index))
+                .collect::<SmallVec<[_; 4]>>();
+            op.operands_mut().extend_group(group, operands);
+        }
+        Ok(())
+    }
+}
+
+/// Whether `op` is a dead end of its region under `exits=in-place`: a terminator without
+/// successors that leaves the function ([Operation::leaves_callable]), or that is not one of the
+/// terminators that hand control back to the operation holding the region (those that are
+/// [ReturnLike], or implement [RegionBranchTerminatorOpInterface] or
+/// [RegionExitTerminatorOpInterface]), such as `ub.unreachable`.
+fn is_dead_end(op: &Operation) -> bool {
+    op.implements::<dyn Terminator>()
+        && op.num_successors() == 0
+        && (op.leaves_callable()
+            || !(op.implements::<dyn ReturnLike>()
+                || op.implements::<dyn RegionBranchTerminatorOpInterface>()
+                || op.implements::<dyn RegionExitTerminatorOpInterface>()))
+}
+
+/// An operand of `owner` at position `index` that uses `value`.
+fn make_operand(
+    context: &Context,
+    value: ValueRef,
+    owner: OperationRef,
+    index: usize,
+) -> runic_ir::OpOperand {
+    let index = u16::try_from(index).expect("an operation has fewer than 2^16 operands");
+    context.make_operand(value, owner, index)
 }
 
 /// Implementation of [CFGToSCFInterface] used to lift unstructured control flow operations into
@@ -430,6 +804,203 @@ mod tests {
     };
 
     use super::*;
+
+    /// The inputs of the lit tests of cfg-to-scf, each with its name. A file of several cases
+    /// (`refused.runic`) is split at its `// -----` lines.
+    const LIT_INPUTS: [(&str, &str); 8] = [
+        (
+            "lift",
+            include_str!("../../../../../tests/lit/transforms/cfg-to-scf/lift.runic"),
+        ),
+        (
+            "refused",
+            include_str!("../../../../../tests/lit/transforms/cfg-to-scf/refused.runic"),
+        ),
+        (
+            "refusal-changes-nothing",
+            include_str!(
+                "../../../../../tests/lit/transforms/cfg-to-scf/refusal-changes-nothing.runic"
+            ),
+        ),
+        (
+            "tail-call",
+            include_str!("../../../../../tests/lit/transforms/cfg-to-scf/tail-call.runic"),
+        ),
+        (
+            "two-entry-loop",
+            include_str!("../../../../../tests/lit/transforms/cfg-to-scf/two-entry-loop.runic"),
+        ),
+        (
+            "exits-in-place",
+            include_str!("../../../../../tests/lit/transforms/cfg-to-scf/exits-in-place.runic"),
+        ),
+        (
+            "exits-in-place-loops",
+            include_str!(
+                "../../../../../tests/lit/transforms/cfg-to-scf/exits-in-place-loops.runic"
+            ),
+        ),
+        (
+            "exits-in-place-refusal",
+            include_str!(
+                "../../../../../tests/lit/transforms/cfg-to-scf/exits-in-place-refusal.runic"
+            ),
+        ),
+    ];
+
+    /// The operations under `op`, at any depth, for which [Operation::leaves_callable] holds, and
+    /// the dead ends ([is_dead_end]: the exits and terminators such as `ub.unreachable`) under it.
+    fn count_exits(op: OperationRef) -> (usize, usize) {
+        let mut exits = 0;
+        let mut dead_ends = 0;
+        op.raw_prewalk_all::<Forward, _>(|op: OperationRef| {
+            let op = op.borrow();
+            if op.leaves_callable() {
+                exits += 1;
+            }
+            if is_dead_end(&op) {
+                dead_ends += 1;
+            }
+        });
+        (exits, dead_ends)
+    }
+
+    /// Every function of the inputs of the lit tests of cfg-to-scf, lifted by the pass in either
+    /// mode, verifies afterwards, or is refused (a function with a block its entry cannot reach)
+    /// and left as it was. With `exits=in-place`, no `cf` branch and no `scf.pending_exit` remain,
+    /// the function has exactly as many exits as before, and exactly as many dead ends as before
+    /// but for the `ub.unreachable` the pass adds at the end of a body of several blocks: none is
+    /// dropped or duplicated.
+    #[test]
+    fn every_lit_input_lifts_in_both_modes_and_in_place_keeps_every_dead_end() {
+        use runic_ir::{
+            dialects::builtin::Function,
+            parse::{ParserConfig, parse_any},
+            pass::{Nesting, PassManager},
+        };
+
+        let mut lifted = 0;
+        let mut refused = 0;
+        for (name, text) in LIT_INPUTS {
+            for (index, case) in text.split("\n// -----\n").enumerate() {
+                for exits in [Exits::Merge, Exits::InPlace] {
+                    let context = Rc::new(Context::default());
+                    context.get_or_register_dialect::<crate::ScfDialect>();
+                    context.get_or_register_dialect::<cf::ControlFlowDialect>();
+                    context.get_or_register_dialect::<runic_dialect_arith::ArithDialect>();
+                    context.get_or_register_dialect::<runic_dialect_ub::UndefinedBehaviorDialect>();
+                    let root = parse_any(
+                        ParserConfig::new(context.clone()),
+                        format!("{name}#{index}"),
+                        case,
+                    )
+                    .into_result()
+                    .unwrap_or_else(|err| panic!("{name}#{index} does not parse: {err:?}"));
+
+                    let mut functions = alloc::vec::Vec::new();
+                    root.raw_prewalk_all::<Forward, _>(|op: OperationRef| {
+                        let is_definition = op
+                            .borrow()
+                            .downcast_ref::<Function>()
+                            .is_some_and(|function| !function.body().is_empty());
+                        if is_definition {
+                            functions.push(op);
+                        }
+                    });
+                    for function in functions {
+                        let before = format!("{}", function.borrow());
+                        let (exits_before, dead_ends_before) = count_exits(function);
+                        let several_blocks = function
+                            .borrow()
+                            .downcast_ref::<Function>()
+                            .is_some_and(|function| function.body().body().len() > 1);
+                        let mut passes =
+                            PassManager::on::<Function>(context.clone(), Nesting::Implicit);
+                        passes.add_pass(Box::new(LiftControlFlowToSCF::new(exits))).unwrap();
+                        passes.enable_verifier(true);
+                        let label = format!("{name}#{index} in mode {exits:?}:\n{before}");
+                        if let Err(err) = passes.run(function) {
+                            let err = format!("{err}");
+                            assert!(
+                                err.contains("does not support unreachable blocks"),
+                                "{label}\nfails: {err}"
+                            );
+                            assert_eq!(format!("{}", function.borrow()), before, "{label}");
+                            refused += 1;
+                            continue;
+                        }
+                        lifted += 1;
+                        if exits != Exits::InPlace {
+                            continue;
+                        }
+                        let after = format!("{}", function.borrow());
+                        let mut leftovers = alloc::vec::Vec::new();
+                        function.raw_prewalk_all::<Forward, _>(|op: OperationRef| {
+                            let op = op.borrow();
+                            if (op.name().dialect().as_str() == "cf" && op.has_successors())
+                                || op.is::<PendingExit>()
+                            {
+                                leftovers.push(format!("{}", op.name()));
+                            }
+                        });
+                        assert!(leftovers.is_empty(), "{label}\nleaves {leftovers:?}:\n{after}");
+                        // The `ub.unreachable` the pass leaves after the structured code of a body
+                        // in which every path reaches a dead end.
+                        let trailing = usize::from(
+                            several_blocks
+                                && function
+                                    .borrow()
+                                    .downcast_ref::<Function>()
+                                    .and_then(|function| function.body().entry_block_ref())
+                                    .and_then(|entry| entry.borrow().terminator())
+                                    .is_some_and(|last| {
+                                        last.borrow().is::<runic_dialect_ub::Unreachable>()
+                                    }),
+                        );
+                        let (exits_after, dead_ends_after) = count_exits(function);
+                        assert_eq!(exits_after, exits_before, "{label}\n{after}");
+                        assert_eq!(
+                            dead_ends_after,
+                            dead_ends_before + trailing,
+                            "{label}\n{after}"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(lifted >= 60, "{lifted} lifted");
+        assert!(refused >= 4, "{refused} refused");
+    }
+
+    /// The option `exits` reads `merge` and `in-place`, and the pass prints itself with the
+    /// option only when it is not the default.
+    #[test]
+    fn the_exits_option_reads_both_values_and_prints_only_in_place() -> Result<(), Report> {
+        use alloc::string::ToString;
+
+        struct Textual<'a>(&'a LiftControlFlowToSCF);
+        impl fmt::Display for Textual<'_> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.0.print_as_textual_pipeline(f)
+            }
+        }
+
+        for (text, exits, printed) in [
+            ("exits=merge", Exits::Merge, "cfg-to-scf"),
+            ("exits=in-place", Exits::InPlace, "cfg-to-scf{exits=\"in-place\"}"),
+            ("", Exits::Merge, "cfg-to-scf"),
+        ] {
+            let mut pass = LiftControlFlowToSCF::default();
+            pass.initialize_options(&PassOptions::parse(text)?)?;
+            assert_eq!(pass.exits(), exits, "{text}");
+            assert_eq!(Textual(&pass).to_string(), printed, "{text}");
+        }
+        for text in ["exits=sideways", "exits", "exit=merge"] {
+            let mut pass = LiftControlFlowToSCF::default();
+            assert!(pass.initialize_options(&PassOptions::parse(text)?).is_err(), "{text}");
+        }
+        Ok(())
+    }
 
     /// The result of a `builtin.unrealized_conversion_cast` of `value` to `ty`.
     fn cast(
@@ -951,7 +1522,7 @@ mod tests {
         expect_file![&before_path].assert_eq(&input);
 
         test.apply_passes(
-            [Box::new(LiftControlFlowToSCF), transforms::Canonicalizer::create()],
+            [Box::<LiftControlFlowToSCF>::default(), transforms::Canonicalizer::create()],
             true,
         )?;
 

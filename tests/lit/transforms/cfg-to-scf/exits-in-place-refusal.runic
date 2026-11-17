@@ -1,0 +1,41 @@
+// RUN: not runic-opt %s -p 'cfg-to-scf{exits=in-place}' --print-ir-after-failure 2>&1 | filecheck %s
+
+// With `exits=in-place`, cfg-to-scf still looks for a block that cannot be reached in every
+// function before it lifts any, and a refusal leaves the whole module as it was: `@first`, which
+// could be lifted, is printed after the failure as it was written, its exits where they were and
+// no `scf.pending_exit` in it.
+
+// CHECK: // ----- IR after failed cfg-to-scf on builtin.module -----
+// CHECK-NEXT: builtin.module public @cfg_to_scf_exits_in_place_refusal {
+// CHECK-NEXT: builtin.function public extern("C") @g(i32) -> i32;
+// CHECK-NEXT: builtin.function public extern("C") @first([[C:%[0-9]+]]: i1, [[A:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: cf.cond_br [[C]] ^[[LEFT:block[0-9]+]], ^[[RIGHT:block[0-9]+]] : (i1);
+// CHECK-NEXT: ^[[LEFT]]:
+// CHECK-NEXT: builtin.ret [[A]] : (i32);
+// CHECK-NEXT: ^[[RIGHT]]:
+// CHECK-NEXT: builtin.tail_call @g([[A]]) : extern("C") (i32) -> i32;
+// CHECK-NEXT: };
+// CHECK-NEXT: builtin.function public extern("C") @second([[X:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: builtin.ret [[X]] : (i32);
+// CHECK-NEXT: ^[[ISLAND:block[0-9]+]]:
+// CHECK-NEXT: cf.br ^[[ISLAND]];
+// CHECK-NEXT: };
+// CHECK-NEXT: };
+// CHECK: error: {{.*}}transformation does not support unreachable blocks
+builtin.module public @cfg_to_scf_exits_in_place_refusal {
+    builtin.function public extern("C") @g(i32) -> i32;
+
+    builtin.function public extern("C") @first(%c: i1, %a: i32) -> i32 {
+        cf.cond_br %c ^left, ^right : (i1);
+    ^left:
+        builtin.ret %a : (i32);
+    ^right:
+        builtin.tail_call @g(%a) : extern("C") (i32) -> i32;
+    };
+
+    builtin.function public extern("C") @second(%a: i32) -> i32 {
+        builtin.ret %a : (i32);
+    ^island:
+        cf.br ^island;
+    };
+};

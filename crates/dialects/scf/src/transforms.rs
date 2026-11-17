@@ -1,3 +1,3 @@
 mod cfg_to_scf;
 
-pub use self::cfg_to_scf::LiftControlFlowToSCF;
+pub use self::cfg_to_scf::{Exits, LiftControlFlowToSCF};

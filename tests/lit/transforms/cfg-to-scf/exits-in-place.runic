@@ -1,0 +1,330 @@
+// RUN: runic-opt %s -p 'cfg-to-scf{exits=in-place}' | filecheck %s
+// RUN: runic-opt %s -p 'cfg-to-scf{exits=in-place}' | runic-opt - --verify-roundtrip | filecheck %s
+// RUN: runic-opt %s -p 'cfg-to-scf' | filecheck %s --check-prefix=MERGE
+// RUN: runic-opt %s -p 'cfg-to-scf' | runic-opt - --verify-roundtrip | filecheck %s --check-prefix=MERGE
+
+// With `exits=in-place`, cfg-to-scf leaves each dead end of a function (an exit: a `builtin.ret`, a
+// `builtin.ret_imm`, a tail call; or a `ub.unreachable` the user wrote) in the block it ends,
+// wherever the structuring puts that block: in a region of the `scf.if` or `scf.index_switch`
+// that a branch becomes. They are not merged, so dead ends of different kinds need no dispatch
+// after the structured code, and no `cf` operation remains. Where every path ends in a dead end,
+// the region of the function ends in a `ub.unreachable` after the structured code. The second RUN
+// line reads the output back. The last two RUN lines run the default mode, `exits=merge`, on
+// `@modes`, the last function, for the two side by side.
+builtin.module public @cfg_to_scf_exits_in_place {
+    builtin.function public extern("C") @g(i32) -> i32;
+    builtin.function public extern("C") @h(i32) -> i32;
+
+    // Two returns stay in the two regions of the `scf.if`.
+    // CHECK-LABEL: @two_rets(
+    // CHECK-SAME: [[C:%[0-9]+]]: i1, [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: scf.if [[C]] then {
+    // CHECK-NEXT: builtin.ret [[A]] : (i32);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: builtin.ret [[B]] : (i32);
+    // CHECK-NEXT: } : (i1) -> ();
+    // CHECK-NEXT: ub.unreachable;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @two_rets(%c: i1, %a: i32, %b: i32) -> i32 {
+        cf.cond_br %c ^x, ^y : (i1);
+    ^x:
+        builtin.ret %a : (i32);
+    ^y:
+        builtin.ret %b : (i32);
+    };
+
+    // A return and a tail call, two kinds of exit, each in its region.
+    // CHECK-LABEL: @ret_and_tail_call(
+    // CHECK-SAME: [[C:%[0-9]+]]: i1, [[A:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: scf.if [[C]] then {
+    // CHECK-NEXT: builtin.ret [[A]] : (i32);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: builtin.tail_call @g([[A]]) : extern("C") (i32) -> i32;
+    // CHECK-NEXT: } : (i1) -> ();
+    // CHECK-NEXT: ub.unreachable;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @ret_and_tail_call(%c: i1, %a: i32) -> i32 {
+        cf.cond_br %c ^x, ^y : (i1);
+    ^x:
+        builtin.ret %a : (i32);
+    ^y:
+        builtin.tail_call @g(%a) : extern("C") (i32) -> i32;
+    };
+
+    // Tail calls to two callees.
+    // CHECK-LABEL: @two_callees(
+    // CHECK-SAME: [[C:%[0-9]+]]: i1, [[X:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: scf.if [[C]] then {
+    // CHECK-NEXT: builtin.tail_call @g([[X]]) : extern("C") (i32) -> i32;
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: builtin.tail_call @h([[X]]) : extern("C") (i32) -> i32;
+    // CHECK-NEXT: } : (i1) -> ();
+    // CHECK-NEXT: ub.unreachable;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @two_callees(%c: i1, %x: i32) -> i32 {
+        cf.cond_br %c ^a, ^b : (i1);
+    ^a:
+        builtin.tail_call @g(%x) : extern("C") (i32) -> i32;
+    ^b:
+        builtin.tail_call @h(%x) : extern("C") (i32) -> i32;
+    };
+
+    // Three exits of three kinds behind a `cf.switch`: one in each region of the
+    // `scf.index_switch`.
+    // CHECK-LABEL: @three_exits(
+    // CHECK-SAME: [[S:%[0-9]+]]: i32, [[A:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: scf.index_switch [[S]]
+    // CHECK-NEXT: case 0 {
+    // CHECK-NEXT: builtin.tail_call @h([[A]]) : extern("C") (i32) -> i32;
+    // CHECK-NEXT: }
+    // CHECK-NEXT: case 1 {
+    // CHECK-NEXT: builtin.ret [[A]] : (i32);
+    // CHECK-NEXT: }
+    // CHECK-NEXT: default {
+    // CHECK-NEXT: builtin.tail_call @g([[A]]) : extern("C") (i32) -> i32;
+    // CHECK-NEXT: } : ();
+    // CHECK-NEXT: ub.unreachable;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @three_exits(%s: i32, %a: i32) -> i32 {
+        cf.switch %s [#builtin.i32<0> -> ^h_exit, #builtin.i32<1> -> ^r_exit], ^g_exit : (i32);
+    ^g_exit:
+        builtin.tail_call @g(%a) : extern("C") (i32) -> i32;
+    ^h_exit:
+        builtin.tail_call @h(%a) : extern("C") (i32) -> i32;
+    ^r_exit:
+        builtin.ret %a : (i32);
+    };
+
+    // A `builtin.ret_imm` is an exit with no operands.
+    // CHECK-LABEL: @ret_imm(
+    // CHECK-SAME: [[C:%[0-9]+]]: i1, [[A:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: scf.if [[C]] then {
+    // CHECK-NEXT: builtin.ret_imm 7 : i32;
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: builtin.ret [[A]] : (i32);
+    // CHECK-NEXT: } : (i1) -> ();
+    // CHECK-NEXT: ub.unreachable;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @ret_imm(%c: i1, %a: i32) -> i32 {
+        cf.cond_br %c ^x, ^y : (i1);
+    ^x:
+        builtin.ret_imm 7 : i32;
+    ^y:
+        builtin.ret %a : (i32);
+    };
+
+    // A `builtin.tail_call_indirect` keeps its two operand groups, the callee and the arguments.
+    // CHECK-LABEL: @indirect(
+    // CHECK-SAME: [[C:%[0-9]+]]: i1, [[F:%[0-9]+]]: (i32) -> i32, [[V0:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: scf.if [[C]] then {
+    // CHECK-NEXT: builtin.tail_call_indirect [[F]]([[V0]]) : extern("C") (i32) -> i32;
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: builtin.ret [[V0]] : (i32);
+    // CHECK-NEXT: } : (i1) -> ();
+    // CHECK-NEXT: ub.unreachable;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @indirect(%c: i1, %f: (i32) -> i32, %a: i32) -> i32 {
+        cf.cond_br %c ^x, ^y : (i1);
+    ^x:
+        builtin.tail_call_indirect %f(%a) : extern("C") (i32) -> i32;
+    ^y:
+        builtin.ret %a : (i32);
+    };
+
+    // A chain of blocks joined by `cf.br` only becomes one block that ends in the return.
+    // CHECK-LABEL: @chain(
+    // CHECK-SAME: [[X:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[V0:%[0-9]+]] = arith.constant 1 : i32;
+    // CHECK-NEXT: [[V1:%[0-9]+]] = arith.add [[X]], [[V0]];
+    // CHECK-NEXT: builtin.ret [[V1]] : (i32);
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @chain(%x: i32) -> i32 {
+        cf.br ^a;
+    ^a:
+        %one = arith.constant 1 : i32;
+        %y = arith.add %x, %one;
+        cf.br ^b;
+    ^b:
+        builtin.ret %y : (i32);
+    };
+
+    // A diamond that merges and then returns: the return is after the merge, so the `scf.if`
+    // yields the value and holds no exit.
+    // CHECK-LABEL: @diamond(
+    // CHECK-SAME: [[C:%[0-9]+]]: i1, [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[V0:%[0-9]+]] = scf.if [[C]] then {
+    // CHECK-NEXT: [[V1:%[0-9]+]] = arith.constant 1 : i32;
+    // CHECK-NEXT: [[V2:%[0-9]+]] = arith.add [[A]], [[V1]];
+    // CHECK-NEXT: scf.yield [[V2]] : (i32);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: scf.yield [[B]] : (i32);
+    // CHECK-NEXT: } : (i1) -> (i32);
+    // CHECK-NEXT: builtin.ret [[V0]] : (i32);
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @diamond(%c: i1, %a: i32, %b: i32) -> i32 {
+        cf.cond_br %c ^l, ^r : (i1);
+    ^l:
+        %one = arith.constant 1 : i32;
+        %inc = arith.add %a, %one;
+        cf.br ^j(%inc : i32);
+    ^r:
+        cf.br ^j(%b : i32);
+    ^j(%v: i32):
+        builtin.ret %v : (i32);
+    };
+
+    // An exit two conditionals deep uses a value defined in the outer conditional; the inner
+    // `scf.if` holds both of its exits, and the outer region that holds it ends in an `scf.yield`.
+    // CHECK-LABEL: @nested(
+    // CHECK-SAME: [[C:%[0-9]+]]: i1, [[D:%[0-9]+]]: i1, [[A:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: scf.if [[C]] then {
+    // CHECK-NEXT: [[V0:%[0-9]+]] = arith.constant 1 : i32;
+    // CHECK-NEXT: [[V1:%[0-9]+]] = arith.add [[A]], [[V0]];
+    // CHECK-NEXT: scf.if [[D]] then {
+    // CHECK-NEXT: builtin.tail_call @g([[V1]]) : extern("C") (i32) -> i32;
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: builtin.ret [[V1]] : (i32);
+    // CHECK-NEXT: } : (i1) -> ();
+    // CHECK-NEXT: scf.yield : ();
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: builtin.tail_call @h([[A]]) : extern("C") (i32) -> i32;
+    // CHECK-NEXT: } : (i1) -> ();
+    // CHECK-NEXT: ub.unreachable;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @nested(%c: i1, %d: i1, %a: i32) -> i32 {
+        cf.cond_br %c ^outer, ^other : (i1);
+    ^outer:
+        %one = arith.constant 1 : i32;
+        %v = arith.add %a, %one;
+        cf.cond_br %d ^inner, ^join : (i1);
+    ^inner:
+        builtin.tail_call @g(%v) : extern("C") (i32) -> i32;
+    ^join:
+        builtin.ret %v : (i32);
+    ^other:
+        builtin.tail_call @h(%a) : extern("C") (i32) -> i32;
+    };
+
+    // A `ub.unreachable` the user wrote is a dead end like an exit, and stays where it was too:
+    // each dead end is in its own region of the nested `scf.if`s.
+    // CHECK-LABEL: @user_unreachable(
+    // CHECK-SAME: [[C:%[0-9]+]]: i1, [[D:%[0-9]+]]: i1, [[A:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: scf.if [[C]] then {
+    // CHECK-NEXT: scf.if [[D]] then {
+    // CHECK-NEXT: builtin.ret [[A]] : (i32);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: ub.unreachable;
+    // CHECK-NEXT: } : (i1) -> ();
+    // CHECK-NEXT: scf.yield : ();
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: builtin.tail_call @g([[A]]) : extern("C") (i32) -> i32;
+    // CHECK-NEXT: } : (i1) -> ();
+    // CHECK-NEXT: ub.unreachable;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @user_unreachable(%c: i1, %d: i1, %a: i32) -> i32 {
+        cf.cond_br %c ^x, ^y : (i1);
+    ^x:
+        cf.cond_br %d ^r, ^u : (i1);
+    ^r:
+        builtin.ret %a : (i32);
+    ^u:
+        ub.unreachable;
+    ^y:
+        builtin.tail_call @g(%a) : extern("C") (i32) -> i32;
+    };
+
+    // Two `ub.unreachable`s the user wrote, in different branches, and a return.
+    // CHECK-LABEL: @two_unreachables(
+    // CHECK-SAME: [[C:%[0-9]+]]: i1, [[D:%[0-9]+]]: i1, [[A:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: scf.if [[C]] then {
+    // CHECK-NEXT: scf.if [[D]] then {
+    // CHECK-NEXT: builtin.ret [[A]] : (i32);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: ub.unreachable;
+    // CHECK-NEXT: } : (i1) -> ();
+    // CHECK-NEXT: scf.yield : ();
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: ub.unreachable;
+    // CHECK-NEXT: } : (i1) -> ();
+    // CHECK-NEXT: ub.unreachable;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @two_unreachables(%c: i1, %d: i1, %a: i32) -> i32 {
+        cf.cond_br %c ^x, ^y : (i1);
+    ^x:
+        cf.cond_br %d ^r, ^u : (i1);
+    ^r:
+        builtin.ret %a : (i32);
+    ^u:
+        ub.unreachable;
+    ^y:
+        ub.unreachable;
+    };
+
+    // A function whose only dead ends are `ub.unreachable`s, with no exit at all.
+    // CHECK-LABEL: @only_unreachables(
+    // CHECK-SAME: [[C:%[0-9]+]]: i1) {
+    // CHECK-NEXT: scf.if [[C]] then {
+    // CHECK-NEXT: ub.unreachable;
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: ub.unreachable;
+    // CHECK-NEXT: } : (i1) -> ();
+    // CHECK-NEXT: ub.unreachable;
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @only_unreachables(%c: i1) {
+        cf.cond_br %c ^x, ^y : (i1);
+    ^x:
+        ub.unreachable;
+    ^y:
+        ub.unreachable;
+    };
+
+    // A function that is already structured, with an exit inside an `scf.if`, is left as it is.
+    // CHECK-LABEL: @structured(
+    // CHECK-SAME: [[C:%[0-9]+]]: i1, [[A:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: scf.if [[C]] then {
+    // CHECK-NEXT: builtin.tail_call @g([[A]]) : extern("C") (i32) -> i32;
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: scf.yield : ();
+    // CHECK-NEXT: } : (i1) -> ();
+    // CHECK-NEXT: builtin.ret [[A]] : (i32);
+    // CHECK-NEXT: };
+    builtin.function public extern("C") @structured(%c: i1, %a: i32) -> i32 {
+        scf.if %c then {
+            builtin.tail_call @g(%a) : extern("C") (i32) -> i32;
+        } else {
+            scf.yield : ();
+        } : (i1) -> ();
+        builtin.ret %a : (i32);
+    };
+
+    // The two modes on one input with two kinds of exit: in place, each exit is in its region of
+    // an `scf.if`; in the default mode, which merges exits of one kind only, the function is left
+    // as it is, the `cf.cond_br` being the dispatch between the two kinds.
+    // CHECK-LABEL: @modes(
+    // CHECK-SAME: [[C:%[0-9]+]]: i1, [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: scf.if [[C]] then {
+    // CHECK-NEXT: [[V0:%[0-9]+]] = arith.add [[A]], [[B]];
+    // CHECK-NEXT: builtin.ret [[V0]] : (i32);
+    // CHECK-NEXT: } else {
+    // CHECK-NEXT: builtin.tail_call @g([[B]]) : extern("C") (i32) -> i32;
+    // CHECK-NEXT: } : (i1) -> ();
+    // CHECK-NEXT: ub.unreachable;
+    // CHECK-NEXT: };
+    // MERGE-LABEL: @modes(
+    // MERGE-SAME: [[C:%[0-9]+]]: i1, [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) -> i32 {
+    // MERGE-NEXT: cf.cond_br [[C]] ^{{block[0-9]+}}, ^{{block[0-9]+}} : (i1);
+    // MERGE-NEXT: ^{{block[0-9]+}}:
+    // MERGE-NEXT: [[V0:%[0-9]+]] = arith.add [[A]], [[B]];
+    // MERGE-NEXT: builtin.ret [[V0]] : (i32);
+    // MERGE-NEXT: ^{{block[0-9]+}}:
+    // MERGE-NEXT: builtin.tail_call @g([[B]]) : extern("C") (i32) -> i32;
+    // MERGE-NEXT: };
+    builtin.function public extern("C") @modes(%c: i1, %a: i32, %b: i32) -> i32 {
+        cf.cond_br %c ^x, ^y : (i1);
+    ^x:
+        %s = arith.add %a, %b;
+        builtin.ret %s : (i32);
+    ^y:
+        builtin.tail_call @g(%b) : extern("C") (i32) -> i32;
+    };
+};

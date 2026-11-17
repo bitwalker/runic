@@ -1,0 +1,17 @@
+// RUN: runic-opt %s -p 'cfg-to-scf{exits=in-place},cfg-to-scf{exits=merge},cfg-to-scf' --dump-pass-pipeline 2>&1 >/dev/null | filecheck %s --check-prefix=DUMP
+// RUN: not runic-opt %s -p 'cfg-to-scf{exits=sideways}' 2>&1 | filecheck %s --check-prefix=VALUE
+// RUN: not runic-opt %s -p 'cfg-to-scf{exits}' 2>&1 | filecheck %s --check-prefix=NO-VALUE
+// RUN: not runic-opt %s -p 'cfg-to-scf{exit=merge}' 2>&1 | filecheck %s --check-prefix=KEY
+
+// The option `exits` of cfg-to-scf is `merge` (the default, which the pipeline does not print)
+// or `in-place`; any other value, the key without a value, or another key is an error.
+
+// DUMP: builtin.module(cfg-to-scf{exits="in-place"},cfg-to-scf,cfg-to-scf)
+// VALUE: error: invalid value 'sideways' of option 'exits' of pass 'cfg-to-scf': expected 'merge' or 'in-place'
+// NO-VALUE: error: option 'exits' of pass 'cfg-to-scf' needs a value: expected 'exits=merge' or 'exits=in-place'
+// KEY: error: pass 'cfg-to-scf' has no option 'exit'; it takes 'exits'
+builtin.module public @cfg_to_scf_exits_option {
+    builtin.function public extern("C") @f(%a: i32) -> i32 {
+        builtin.ret %a : (i32);
+    };
+};
