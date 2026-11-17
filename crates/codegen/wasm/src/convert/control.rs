@@ -38,6 +38,9 @@
 //!   the last is the default body. A switch with no case is a `wasm.block` of the default body.
 //! * `scf.break N %v..` and `scf.continue N %v..` become `wasm.br L %v'..`, `L` from
 //!   [labels](super::labels).
+//! * A `wasm.br` the frontend wrote keeps naming the construct it named before the lowering: when
+//!   the lowering put constructs between them, its label is set in place to the one that names
+//!   it ([labels](super::labels)).
 //! * `ub.unreachable` becomes `wasm.unreachable`, which traps.
 //! * `cf.br`, `cf.cond_br` and `cf.switch` are errors: `cfg-to-scf{exits=in-place}` structures
 //!   them first.
@@ -108,7 +111,7 @@ pub fn populate(
     labels: &Labels,
 ) -> Result<(), Report> {
     let context = patterns.context();
-    let rules: [(Rule, &'static str, Root); 11] = [
+    let rules: [(Rule, &'static str, Root); 12] = [
         (Rule::If, "wasm-scf-if", |c, n, g| pattern_info::<scf::If>(c, n, g)),
         (Rule::While, "wasm-scf-while", |c, n, g| pattern_info::<scf::While>(c, n, g)),
         (Rule::IndexSwitch, "wasm-scf-index-switch", |c, n, g| {
@@ -136,6 +139,7 @@ pub fn populate(
         (Rule::Terminator, "wasm-scf-condition", |c, n, g| {
             pattern_info::<scf::Condition>(c, n, g)
         }),
+        (Rule::Relabel, "wasm-br-relabel", |c, n, g| pattern_info::<wasm::Br>(c, n, g)),
     ];
     for (rule, name, root) in rules {
         patterns.push(ControlPattern {
@@ -171,6 +175,9 @@ enum Rule {
     /// `scf.yield` and `scf.condition`, which the pattern of the construct they end replaces: one
     /// met here is under an operation no pattern of this module lowers, an error.
     Terminator,
+    /// A `wasm.br` of the input whose label no longer names the construct it named: the label is
+    /// set in place to the one that does.
+    Relabel,
 }
 
 impl Rule {
@@ -194,7 +201,7 @@ impl Rule {
             ),
             Rule::Exit(_) => names!(wasm::Br),
             Rule::Unreachable => names!(wasm::Unreachable),
-            Rule::Unstructured | Rule::Terminator => Vec::new(),
+            Rule::Unstructured | Rule::Terminator | Rule::Relabel => Vec::new(),
         }
     }
 }
@@ -227,6 +234,18 @@ impl ConversionPattern for ControlPattern {
         match self.rule {
             Rule::Unstructured => return Err(unstructured(&op.borrow())),
             Rule::Terminator => return Err(stray_terminator(&op.borrow())),
+            Rule::Relabel => {
+                let Some(level) = super::labels::level_to_target(&op.borrow(), &self.labels)?
+                else {
+                    return Ok(false);
+                };
+                rewriter.modify_op_in_place(op, |op| {
+                    if let Some(branch) = op.downcast_mut::<wasm::Br>() {
+                        branch.set_level(level);
+                    }
+                })?;
+                return Ok(true);
+            }
             _ => {}
         }
         let Some(values) = operands.all_one() else {
@@ -235,7 +254,7 @@ impl ConversionPattern for ControlPattern {
         let values: SmallVec<[ValueRef; 4]> = values;
         let span = op.borrow().span();
         match self.rule {
-            Rule::Unstructured | Rule::Terminator => Ok(false),
+            Rule::Unstructured | Rule::Terminator | Rule::Relabel => Ok(false),
             Rule::Unreachable => {
                 rewriter.set_insertion_point_before(op);
                 rewriter.create_op::<wasm::Unreachable, _>(span, ())?;
@@ -272,7 +291,7 @@ impl ConversionPattern for ControlPattern {
 }
 
 /// The error of `cf.br`, `cf.cond_br` or `cf.switch` `op`.
-fn unstructured(op: &Operation) -> Report {
+pub(crate) fn unstructured(op: &Operation) -> Report {
     report!(
         message: "unstructured control flow reached `convert-to-wasm`: run \
                   `cfg-to-scf{{exits=in-place}}` first",
@@ -284,7 +303,7 @@ fn unstructured(op: &Operation) -> Report {
 }
 
 /// The error of an `scf.yield` or `scf.condition` `op` that no pattern of a construct replaced.
-fn stray_terminator(op: &Operation) -> Report {
+pub(crate) fn stray_terminator(op: &Operation) -> Report {
     let parent = op.parent_op().map_or_else(
         || alloc::string::String::from("nothing"),
         |parent| format!("`{}`", parent.borrow().name()),
@@ -304,7 +323,11 @@ fn stray_terminator(op: &Operation) -> Report {
 
 /// The entry block of region `index` of `op`; an error naming `op` when there is no such region
 /// or it has no block.
-fn entry(regions: &[RegionRef], index: usize, op: OperationRef) -> Result<BlockRef, Report> {
+pub(crate) fn entry(
+    regions: &[RegionRef],
+    index: usize,
+    op: OperationRef,
+) -> Result<BlockRef, Report> {
     regions.get(index).and_then(|region| region.borrow().entry_block_ref()).ok_or_else(|| {
         let op = op.borrow();
         report!(
@@ -312,6 +335,44 @@ fn entry(regions: &[RegionRef], index: usize, op: OperationRef) -> Result<BlockR
             labels: [primary(op.span(), "a body of this operation has no block")],
         )
     })
+}
+
+/// The refusals of the patterns of this module that the check before the conversion makes too:
+/// an `scf.yield` or `scf.condition` that does not end a region of the `scf` construct that
+/// lowers it ([stray_terminator]), and an `scf.if`, `scf.while` or `scf.index_switch` with a body
+/// that has no block ([entry]).
+pub(crate) fn check_structured(op: OperationRef) -> Result<(), Report> {
+    let (terminator, construct) = {
+        let op_ref = op.borrow();
+        (
+            op_ref.is::<scf::Yield>() || op_ref.is::<scf::Condition>(),
+            op_ref.is::<scf::If>() || op_ref.is::<scf::While>() || op_ref.is::<scf::IndexSwitch>(),
+        )
+    };
+    if terminator {
+        let op_ref = op.borrow();
+        let parent = op_ref.parent_op();
+        let lowered_with = parent.is_some_and(|parent| {
+            let parent = parent.borrow();
+            if op_ref.is::<scf::Condition>() {
+                parent.is::<scf::While>()
+            } else {
+                parent.is::<scf::If>()
+                    || parent.is::<scf::While>()
+                    || parent.is::<scf::IndexSwitch>()
+            }
+        });
+        if !lowered_with {
+            return Err(stray_terminator(&op_ref));
+        }
+    }
+    if construct {
+        let regions = regions_of(op);
+        for index in 0..regions.len() {
+            entry(&regions, index, op)?;
+        }
+    }
+    Ok(())
 }
 
 /// The values of the operands of `op`.
@@ -425,7 +486,7 @@ impl ControlPattern {
 
     /// Records `op`, a construct this pattern created, as `lowered` in the table of labels.
     fn record(&self, op: OperationRef, lowered: Lowered) {
-        self.labels.borrow_mut().insert(op, lowered);
+        self.labels.borrow_mut().constructs.insert(op, lowered);
     }
 
     /// Builds a `wasm.block` of no parameters and the results `results` at the insertion point,
@@ -755,10 +816,18 @@ impl ControlPattern {
     }
 }
 
-/// Whether some `scf.break` nested in `op`, an `scf.while`, leaves it.
-fn is_left_by_a_break(op: OperationRef) -> bool {
+/// Whether some `scf.break` nested in `op`, an `scf.while`, leaves it from code the lowering
+/// keeps: from either body, or from the `before` body alone when it does not end in
+/// `scf.condition` (the `after` body is then never entered, and is dropped).
+pub(crate) fn is_left_by_a_break(op: OperationRef) -> bool {
     let op_ref = op.borrow();
-    op_ref.regions().iter().any(|region| {
+    let before = op_ref.regions().iter().next().map(|before| before.as_region_ref());
+    let kept = if before.is_some_and(ends_in_condition) {
+        2
+    } else {
+        1
+    };
+    op_ref.regions().iter().take(kept).any(|region| {
         region
             .prewalk(|nested: &Operation| {
                 if let Some(exit) = nested.downcast_ref::<scf::Break>()
@@ -770,4 +839,13 @@ fn is_left_by_a_break(op: OperationRef) -> bool {
             })
             .was_interrupted()
     })
+}
+
+/// Whether the entry block of `region` ends in `scf.condition`.
+pub(crate) fn ends_in_condition(region: RegionRef) -> bool {
+    region
+        .borrow()
+        .entry_block_ref()
+        .and_then(|entry| entry.borrow().terminator())
+        .is_some_and(|terminator| terminator.borrow().is::<scf::Condition>())
 }

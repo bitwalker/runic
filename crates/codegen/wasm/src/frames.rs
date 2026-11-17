@@ -29,7 +29,8 @@ pub const STACK_ALIGN: u64 = 16;
 /// linear memory, addressed from the stack pointer `@__stack_pointer` ([crate::symbols]).
 ///
 /// It runs on each `builtin.function` with a body under the operation it runs on, nested ones
-/// included, after `cfg-to-scf` and before `convert-to-wasm`. A function with no `mem.alloca` (in
+/// included, after `cfg-to-scf` and before `convert-to-wasm`; the operation is a module, or holds
+/// modules through worlds and components, and one that holds none is an error. A function with no `mem.alloca` (in
 /// its body, outside the functions nested in it) is left as it is. For one with some:
 ///
 /// * Its control flow must be structured: a region of the function (outside nested functions)
@@ -54,7 +55,8 @@ pub const STACK_ALIGN: u64 = 16;
 ///   tail call, at any depth, outside nested functions) the stack pointer is restored
 ///   (`wasm.global_set @__stack_pointer, %sp`). A tail call's frame is dead when the callee runs.
 ///
-/// The stack pointer is found in the function's module or declared there ([crate::symbols]). The
+/// The stack pointer is found in the module that directly holds the function, or declared there
+/// ([crate::symbols]). The
 /// result verifies as it is, with `mem`, `wasm` and the casts mixed, and is the input of
 /// `convert-to-wasm`. A data layout must be in scope of a function with an alloca; the
 /// frame's size must fit in 32 bits.
@@ -98,6 +100,9 @@ impl Pass for LowerFrames {
     ) -> Result<(), Report> {
         let root = op.as_operation_ref();
         drop(op);
+        if crate::convert::modules_under(root).is_empty() {
+            return Err(crate::no_module_error(NAME, root));
+        }
         let mut functions = Vec::new();
         let _ = root.raw_prewalk::<Forward, _, _>(|op: OperationRef| {
             if let Ok(function) = op.try_downcast_op::<Function>()

@@ -39,7 +39,9 @@ const DESCRIPTION: &str =
 /// An operation of `cf` that branches names `cfg-to-scf`, a `mem.alloca` names
 /// `wasm-lower-frames`, and every other operation that is not allowed names `convert-to-wasm`.
 /// The functions are found through every operation except a `builtin.global_variable` and a
-/// `wasm.global`, whose initializers are not code.
+/// `wasm.global`, whose initializers are not code. The pass runs on a module, or on a world or a
+/// component that holds modules; one that holds none is an error ([verify_wasm_form] checks any
+/// operation).
 #[derive(Default)]
 pub struct VerifyForm;
 
@@ -77,6 +79,9 @@ impl Pass for VerifyForm {
         drop(op);
         state.set_post_pass_status(PostPassStatus::Unchanged);
         state.preserved_analyses_mut().preserve_all();
+        if crate::convert::modules_under(root).is_empty() {
+            return Err(crate::no_module_error(NAME, root));
+        }
         verify_wasm_form(root)
     }
 }

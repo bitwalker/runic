@@ -12,7 +12,8 @@
 //     by one operand's magnitude, whose divisor is made 1 when it is 0, so it cannot trap. A
 //     checked operation traps with `wasm.unreachable` in a `wasm.if` on `o`;
 //   * `min`, `max`: `select` on the comparison (of the operands sign-extended, for signed);
-//   * `udivrem`, `sdivrem`: the two divisions (`sdivrem` sign-extends and masks);
+//   * `udivrem`, `sdivrem`: the two divisions (`sdivrem` sign-extends and masks, and below the
+//     carrier's width traps, as `arith` does, when the quotient does not fit: the minimum by -1);
 //   * `rotl`, `rotr`: the Wasm rotate at the carrier's width; below it the amount modulo `N` (an
 //     `and` for a power of two, `rem_u` otherwise), two shifts, an `or` and a mask;
 //   * `popcnt`; `clz` less the `W - N` bits above `N`; `ctz` of `x | 2^N`; `clo` and `cto` on the
@@ -384,12 +385,17 @@
 // CHECK-NEXT: [[V2:%[0-9]+]] = wasm.extend8_s [[V0]];
 // CHECK-NEXT: [[V3:%[0-9]+]] = wasm.extend8_s [[V1]];
 // CHECK-NEXT: [[V4:%[0-9]+]] = wasm.div_s [[V2]], [[V3]];
-// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.const 255 : i32;
-// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.and [[V4]], [[V5]];
-// CHECK-NEXT: [[V7:%[0-9]+]] = wasm.rem_s [[V2]], [[V3]];
-// CHECK-NEXT: [[V8:%[0-9]+]] = wasm.const 255 : i32;
-// CHECK-NEXT: [[V9:%[0-9]+]] = wasm.and [[V7]], [[V8]];
-// CHECK-NEXT: builtin.ret [[V6]], [[V9]] : (i32, i32);
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.extend8_s [[V4]];
+// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.ne [[V4]], [[V5]];
+// CHECK-NEXT: wasm.if [[V6]] then {
+// CHECK-NEXT: wasm.unreachable;
+// CHECK-NEXT: } : (i32) -> ();
+// CHECK-NEXT: [[V7:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V8:%[0-9]+]] = wasm.and [[V4]], [[V7]];
+// CHECK-NEXT: [[V9:%[0-9]+]] = wasm.rem_s [[V2]], [[V3]];
+// CHECK-NEXT: [[V10:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V11:%[0-9]+]] = wasm.and [[V9]], [[V10]];
+// CHECK-NEXT: builtin.ret [[V8]], [[V11]] : (i32, i32);
 
 // CHECK-LABEL: @sdivrem_i64(
 // CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> (i64, i64) {

@@ -20,7 +20,7 @@
 
 use alloc::{format, rc::Rc, vec::Vec};
 
-use runic_dialect_wasm::{self as wasm, TableRef};
+use runic_dialect_wasm as wasm;
 use runic_ir::{
     Int, Op, OperationRef, Report, Spanned, ValueRef,
     conversion::{
@@ -35,17 +35,20 @@ use runic_ir::{
 };
 
 use crate::{
-    convert::calls::{self, Role, pattern_info, registered},
+    convert::{
+        WellKnownSymbols,
+        calls::{self, Role, pattern_info, registered},
+    },
     symbols::{INDIRECT_FUNCTION_TABLE, local_path},
 };
 
-/// Adds the patterns of this module. `table` is the indirect-function table of the module being
-/// converted, found or declared before the conversion starts; `None` when the module makes no
-/// indirect call, and then a pattern that needs it is an error.
+/// Adds the patterns of this module. `symbols` holds the indirect-function table of each module
+/// whose functions make an indirect call, found or declared before the conversion starts; a
+/// pattern that needs one its module has not got is an error.
 pub fn populate(
     patterns: &mut ConversionPatternSet,
     converter: &TypeConverter,
-    table: Option<TableRef>,
+    symbols: &Rc<WellKnownSymbols>,
 ) -> Result<(), Report> {
     let context = patterns.context();
     patterns.push(GlobalSymbolPattern {
@@ -87,7 +90,7 @@ pub fn populate(
         let inner: Rc<dyn ConversionPattern> = Rc::new(IndirectCallPattern {
             info,
             converter: converter.clone(),
-            table,
+            symbols: symbols.clone(),
             tail,
         });
         patterns.push(calls::with_convention(&context, role, inner, converter));
@@ -191,14 +194,14 @@ impl ConversionPattern for FunctionRefPattern {
     }
 }
 
-/// `builtin.call_indirect` (or, with `tail`, `builtin.tail_call_indirect`) through the table
-/// `table`, by type: the callee is the `i32` index its operand became, the arguments the values
+/// `builtin.call_indirect` (or, with `tail`, `builtin.tail_call_indirect`) through the table of
+/// its module in `symbols`, by type: the callee is the `i32` index its operand became, the arguments the values
 /// the others became, and the signature the converted one. The calling convention's rules are
 /// added around it by `calls::with_convention`.
 struct IndirectCallPattern {
     info: PatternInfo,
     converter: TypeConverter,
-    table: Option<TableRef>,
+    symbols: Rc<WellKnownSymbols>,
     tail: bool,
 }
 
@@ -228,7 +231,7 @@ impl ConversionPattern for IndirectCallPattern {
             };
             (signature.expect("rooted at an indirect call"), op_ref.span())
         };
-        let Some(table) = self.table else {
+        let Some(table) = self.symbols.of_op(op).table else {
             return Err(Report::msg(format!(
                 "`convert-to-wasm` declared no indirect-function table for the module of `{}`",
                 op.borrow().name()

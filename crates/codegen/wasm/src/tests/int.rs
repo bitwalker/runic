@@ -23,7 +23,10 @@ use super::{
 use crate::{convert::convert_module, verify_wasm_form};
 
 /// The widths every operation is tried at, besides `isize`.
-pub(super) const WIDTHS: [u32; 9] = [1, 7, 8, 16, 31, 32, 33, 63, 64];
+/// They include the boundaries of the classes of the patterns: 2 (the least width with a sign
+/// bit apart from its value bits), 17 (the least whose product needs an `i64` on a 32-bit
+/// carrier) and 62 (the most below 63 carried in an `i64`).
+pub(super) const WIDTHS: [u32; 12] = [1, 2, 7, 8, 16, 17, 31, 32, 33, 62, 63, 64];
 
 /// An integer type under test.
 #[derive(Clone, Debug)]
@@ -481,22 +484,13 @@ fn unsigned_division_and_remainder_match_arith_and_trap_on_zero() {
 #[test]
 fn signed_division_and_remainder_match_arith() {
     let context = context();
-    let carrier = |n: u32| if n <= 32 { 32 } else { 64 };
-    let count = binary(&context, "sdiv", "", false, |a, b, n| match a.div_signed(b) {
-        Some(quotient) => Expect::Value(quotient),
-        // Division by zero traps in `arith` and in the lowering.
-        None if b.is_zero() => Expect::Trap,
-        // The minimum value divided by -1 traps in `arith`. The lowering divides sign-extended
-        // operands in the carrier: when `N` is below the carrier's width the division does not
-        // trap, and the masked quotient is the minimum value (an operation that would trap may be
-        // given any behaviour that does not introduce a trap); when `N` is the carrier's width
-        // Wasm's `div_s` traps as well.
-        None if n < carrier(n) => Expect::Value(a),
-        None => Expect::Trap,
-    }) + binary(&context, "srem", "", false, |a, b, _| {
-        // Only a zero divisor traps; the minimum value remainder -1 is 0 in both.
-        value_or_trap(a.rem_signed(b))
-    });
+    // Division by zero and the minimum value divided by -1 trap in `arith` and in the lowering, at
+    // every width.
+    let count = binary(&context, "sdiv", "", false, |a, b, _| value_or_trap(a.div_signed(b)))
+        + binary(&context, "srem", "", false, |a, b, _| {
+            // Only a zero divisor traps; the minimum value remainder -1 is 0 in both.
+            value_or_trap(a.rem_signed(b))
+        });
     assert!(count > 1000, "{count}");
 }
 
@@ -514,7 +508,7 @@ fn division_by_zero_traps_at_every_width() {
 }
 
 #[test]
-fn the_minimum_divided_by_minus_one_is_the_minimum_below_the_carrier_and_traps_at_it() {
+fn the_minimum_divided_by_minus_one_traps_at_every_width() {
     let context = context();
     for ty in types() {
         let lowered = lower(&context, &[&ty, &ty], &ty, "arith.sdiv %a, %b")
@@ -522,13 +516,9 @@ fn the_minimum_divided_by_minus_one_is_the_minimum_below_the_carrier_and_traps_a
         let min = Int::signed_min(ty.n).unsigned() as u64;
         let minus_one = Int::all_ones(ty.n).unsigned() as u64;
         let arguments = [Val::new(min, ty.carrier()), Val::new(minus_one, ty.carrier())];
-        let outcome = run(lowered.function, &arguments);
-        if ty.n < ty.carrier() {
-            // `arith` traps; the lowering does not introduce a trap and gives the minimum value.
-            assert_eq!(outcome, Outcome::Values(vec![Val::new(min, ty.carrier())]), "{}", ty.name);
-        } else {
-            assert_eq!(outcome, Outcome::Trap, "{}", ty.name);
-        }
+        // `arith` traps, and a trap whose result is used is kept: below the carrier's width the
+        // quotient is tested, at it `wasm.div_s` traps.
+        assert_eq!(run(lowered.function, &arguments), Outcome::Trap, "{}", ty.name);
     }
 }
 
@@ -624,5 +614,53 @@ fn poison_of_an_integer_is_a_value_that_keeps_carried_form() {
     for ty in types() {
         let body = format!("ub.poison <{{ value = #ub.poison<{}> }}>", ty.name);
         check(&context, "ub.poison", &[], &ty, &body, &[], |_| Expect::Undefined);
+    }
+}
+
+#[test]
+fn constants_and_immediate_returns_of_every_width_give_their_value_zero_extended() {
+    let context = context();
+    for ty in types() {
+        for value in edges(ty.n) {
+            let expected = Outcome::Values(vec![Val::new(value.unsigned() as u64, ty.carrier())]);
+            let body = format!("arith.constant {} : {}", value.unsigned(), ty.name);
+            let lowered = lower(&context, &[], &ty, &body)
+                .unwrap_or_else(|report| panic!("{body}: {}", describe(&report)));
+            assert_eq!(run(lowered.function, &[]), expected, "{body}");
+            let text = format!(
+                "builtin.module public @m {LAYOUT} {{\n    builtin.function public \
+                 extern(\"wasm\") @f() -> {} {{\n        builtin.ret_imm {} : {};\n    }};\n}};",
+                ty.name,
+                value.unsigned(),
+                ty.name
+            );
+            let module = parse_module_in(&context, &text)
+                .unwrap_or_else(|report| panic!("{text}: {}", describe(&report)));
+            convert_module(module).unwrap_or_else(|report| panic!("{}", describe(&report)));
+            verify_wasm_form(module.as_operation_ref())
+                .unwrap_or_else(|report| panic!("{}", describe(&report)));
+            let function = runic_ir::SymbolTable::symbol_manager(&*module.borrow())
+                .lookup_op("f")
+                .expect("the function @f");
+            assert_eq!(run(function, &[]), expected, "ret_imm {} : {}", value.unsigned(), ty.name);
+        }
+    }
+}
+
+#[test]
+fn poison_of_a_float_or_a_pointer_is_the_zero_of_its_carrier() {
+    // `cf.select` takes integers only, so its float and pointer forms do not verify.
+    let context = context();
+    let cases = [
+        ("f32", Val::f32(0.0)),
+        ("f64", Val::f64(0.0)),
+        ("ptr<i8>", Val::i32(0)),
+        ("ptr", Val::i32(0)),
+    ];
+    for (ty, zero) in cases {
+        let body = format!("ub.poison <{{ value = #ub.poison<{ty}> }}>");
+        let lowered = lower_text(&context, &[], &[ty], &body)
+            .unwrap_or_else(|report| panic!("{ty}: {}", describe(&report)));
+        assert_eq!(run(lowered.function, &[]), Outcome::Values(vec![zero]), "{ty}");
     }
 }

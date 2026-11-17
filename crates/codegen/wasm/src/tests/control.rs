@@ -147,7 +147,8 @@ fn the_conversion_offers_an_operation_before_those_nested_in_it_moved_ones_inclu
     ));
     let module_op = module.as_operation_ref();
     let target = WasmTarget::of(&module_op.borrow()).unwrap();
-    let symbols = WellKnownSymbols::of(module).unwrap();
+    let symbols = Rc::new(WellKnownSymbols::of(module).unwrap());
+    let labels = crate::convert::labels::new_labels();
     let converter = crate::types::type_converter();
     let seen = Rc::new(RefCell::new(Vec::new()));
     let mut patterns = ConversionPatternSet::new(context.clone());
@@ -162,10 +163,10 @@ fn the_conversion_offers_an_operation_before_those_nested_in_it_moved_ones_inclu
             seen: seen.clone(),
         });
     }
-    populate_patterns(&mut patterns, &converter, &target, &symbols).unwrap();
+    populate_patterns(&mut patterns, &converter, &target, &symbols, &labels).unwrap();
     apply_full_conversion(
         module_op,
-        conversion_target(&context, &converter),
+        conversion_target(&context, &converter, &labels),
         patterns,
         ConversionConfig::default(),
     )
@@ -394,5 +395,23 @@ fn a_loop_with_a_break_and_a_continue_goes_back_to_the_loop_inside_its_block() {
             (i32s(&[10, 5]), one(Val::i32(6))),
             (i32s(&[0, 5]), one(Val::i32(0))),
         ],
+    );
+}
+
+#[test]
+fn a_loop_whose_only_break_is_in_the_after_body_it_never_enters_gets_no_block() {
+    // The `before` body returns, so the `after` body, which holds the only break, is dropped: the
+    // loop needs no block to leave.
+    let functions = "builtin.function public extern(\"wasm\") @f(%c: i1, %x: i32) -> i32 {\n    %w = \
+                     scf.while %x before {\n    ^b(%i: i32):\n        builtin.ret %i : (i32);\n    \
+                     } after {\n    ^a(%j: i32):\n        scf.if %c then {\n            scf.break \
+                     1 %j : (i32);\n        } else {\n            scf.yield : ();\n        } : (i1) \
+                     -> ();\n        scf.yield %j : (i32);\n    } : (i32) -> (i32);\n    \
+                     builtin.ret %w : (i32);\n};";
+    let (_context, module, _function) = lowered(functions);
+    assert!(!text_of(module).contains("wasm.block"), "{}", text_of(module));
+    check(
+        functions,
+        &[(i32s(&[1, 5]), one(Val::i32(5))), (i32s(&[0, 7]), one(Val::i32(7)))],
     );
 }

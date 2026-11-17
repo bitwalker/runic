@@ -8,7 +8,8 @@
 //! form: every integer result is zero-extended to `N` bits, the carried `i1` of an overflow flag
 //! included. `W` below is the width of the carrier, 32 or 64. No pattern introduces a trap: every
 //! division it adds has a divisor that cannot be zero, and the only traps are those `arith` has
-//! (a `checked` overflow, a failed assertion, a division by zero).
+//! (a `checked` overflow, a failed assertion, a division by zero, the minimum divided by -1 in a
+//! signed division).
 //!
 //! **The overflow flag.** `o` is 1 exactly when the exact result, with the operands read as the
 //! operation's signedness says, does not fit in `N` bits read the same way. It is computed per
@@ -139,9 +140,9 @@ enum Rule {
     /// `arith.udivrem`: `wasm.div_u` and `wasm.rem_u`; a zero divisor traps in both.
     Udivrem,
     /// `arith.sdivrem`: both operands sign-extended from `N`, `wasm.div_s` and `wasm.rem_s`, each
-    /// masked. As for `arith.sdiv`, the minimum by -1 does not trap when `N < W` (the masked
-    /// quotient is the minimum, the remainder 0), which refines `arith`'s trap; at `N = W` Wasm
-    /// traps too.
+    /// masked. The minimum divided by -1 traps, as in `arith`: at `N = W` `wasm.div_s` traps, and
+    /// when `N < W` the quotient (`2^(N-1)`, which the carrier holds) is tested before the mask
+    /// and traps when it does not fit in `N` bits ([trap_unless_quotient_fits]).
     Sdivrem,
     /// `arith.rotl`: `wasm.rotl` when `N = W`; the operand itself when `N = 1`; otherwise the
     /// amount modulo `N` (`k`), then `mask((x << k) | (x >> (N - k)))`. An amount of 0 shifts `x`
@@ -205,7 +206,9 @@ impl Rule {
                 names!(wasm::Select, wasm::LtU, wasm::LtS, wasm::GtU, wasm::GtS)
             }
             Rule::Udivrem => names!(wasm::DivU, wasm::RemU),
-            Rule::Sdivrem => names!(wasm::DivS, wasm::RemS),
+            Rule::Sdivrem => {
+                names!(wasm::DivS, wasm::RemS, wasm::Ne, wasm::If, wasm::End, wasm::Unreachable)
+            }
             Rule::Rotl | Rule::Rotr => {
                 names!(wasm::Rotl, wasm::Rotr, wasm::RemU, wasm::ShrU, wasm::Sub, wasm::Or)
             }
@@ -553,6 +556,27 @@ fn trap_unless(
     Ok(())
 }
 
+/// Traps when `quotient`, the quotient of a `wasm.div_s` of two operands sign-extended from `n`
+/// bits in their carrier, does not fit in `n` signed bits: `quotient != sext_n(quotient)`, which
+/// holds only for the minimum divided by -1 (the quotient `2^(n-1)`), where `arith.sdiv` and
+/// `arith.sdivrem` trap. Nothing when `n` is the carrier's width, where `wasm.div_s` traps itself.
+/// The insertion point is before `op` after it.
+pub(super) fn trap_unless_quotient_fits(
+    rw: &mut ConversionPatternRewriter,
+    quotient: ValueRef,
+    n: u32,
+    op: OperationRef,
+    span: SourceSpan,
+) -> Result<(), Report> {
+    let (_, w) = carrier_of(quotient);
+    if n >= w {
+        return Ok(());
+    }
+    let extended = sign_extend(rw, quotient, n, span)?;
+    let unfit = binary::<wasm::Ne>(rw, quotient, extended, span)?;
+    trap_unless(rw, unfit, true, op, span)
+}
+
 /// The `i32` 0 or 1 of comparing `a` and `b`, of width `n`: `less` or greater, `signed` or
 /// unsigned (the operands sign-extended from `n` first).
 fn order(
@@ -708,6 +732,7 @@ impl ComposedPattern {
                 let sa = sign_extend(rw, a, n, span)?;
                 let sb = sign_extend(rw, b, n, span)?;
                 let quotient = binary::<wasm::DivS>(rw, sa, sb, span)?;
+                trap_unless_quotient_fits(rw, quotient, n, op, span)?;
                 let quotient = mask(rw, quotient, n, span)?;
                 let remainder = binary::<wasm::RemS>(rw, sa, sb, span)?;
                 let remainder = mask(rw, remainder, n, span)?;

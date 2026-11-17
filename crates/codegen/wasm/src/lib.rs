@@ -27,14 +27,23 @@
 //! `convert-to-wasm` keeps the invariant, through the helpers of [carried].
 //!
 //! **The calling conventions.** `extern("wasm")` and `extern("C")` are lowered (see
-//! [convert::calls]); any other is an error. Under `extern("wasm")` both sides of a call rely on
-//! carried form and nothing is masked or extended. Under `extern("C")` nothing is assumed that the
+//! [convert::calls]); any other is an error, on a declaration that nothing calls too. Under
+//! `extern("wasm")` both sides of a call rely on carried form and nothing is masked or extended, so
+//! a public `extern("wasm")` function trusts every caller (a host or another module included) to
+//! pass its narrow parameters in carried form. Under `extern("C")` nothing is assumed that the
 //! signature does not say: a function masks each narrow parameter not marked `zext` at its entry
 //! and sign-extends each narrow result marked `sext` at each return, and a call sign-extends each
 //! argument of a narrow `sext` parameter and masks each narrow result not marked `zext`.
 //!
 //! A value of a function type is the index of the function in the module's indirect-function
-//! table; an indirect call calls through that table.
+//! table; an indirect call calls through that table. `wasm.func_index` names the function by the
+//! path it was written with, an alias included; resolving it to an index is the emitter's and the
+//! linker's.
+//!
+//! **Traps.** Where `arith` traps, the lowering traps: a division by zero, and the minimum value
+//! divided by -1 in `arith.sdiv` and `arith.sdivrem` at every width (below the carrier's width the
+//! quotient is tested, since the sign-extended `wasm.div_s` gives it without trapping). Where
+//! `arith` leaves a result undefined, any value that keeps carried form is given.
 //!
 //! **The passes, in order.** [add_lowering_passes] adds them to a pass manager. The examples show
 //! the operations they change:
@@ -102,15 +111,25 @@
 //! **The well-known symbols.** Lowered code names the linear memory, the function table and the
 //! stack pointer by symbol: `wasm.memory @__linear_memory`, `wasm.table
 //! @__indirect_function_table` of `!wasm.funcref` and `wasm.global @__stack_pointer : mut i32`.
-//! [symbols] finds each in a module, or declares it there as a private import from `env`, with the
-//! link names `__linear_memory`, `__indirect_function_table` and `__stack_pointer` (each is its
-//! own name, not its path in the module).
+//! [symbols] finds each in the module that directly holds the function whose code names it, or
+//! declares it there as a private import from `env`, with the link names `__linear_memory`,
+//! `__indirect_function_table` and `__stack_pointer` (each is its own name, not its path in the
+//! module). A nested module has its own; nothing is declared in an outer module on behalf of an
+//! inner one. Only the symbols the lowering itself needs are declared: IR that already uses `wasm`
+//! operations naming one declares it itself.
+//!
+//! **A failed conversion changes nothing.** `convert-to-wasm` checks every module before it
+//! changes any, and every diagnostic it gives on IR that verifies comes from that check
+//! ([ConvertToWasm]).
 //!
 //! **What is not lowered.** Integers wider than 64 bits, aggregates as values, address spaces other
 //! than 0, a `mem.alloca` in a loop, big-endian layouts and 64-bit pointers are errors, and so are
 //! the operations that need an earlier pass (`mem.alloca` without `wasm-lower-frames`, `cf.br`,
 //! `cf.cond_br` and `cf.switch` without `cfg-to-scf`). A return or tail call inside a loop is
-//! dispatched after the loop, and the message of a `cf.assert` is dropped. The README of the crate
+//! dispatched after the loop, and the message of a `cf.assert` is dropped. A global variable's
+//! initializer is data, and is not converted. An `isize` constant the 32-bit `isize` does not hold
+//! and a `builtin.unrealized_conversion_cast` to a narrow integer written before the lowering are
+//! errors. The README of the crate
 //! lists them with their diagnostics, and the unit test `tests::coverage` fails for a source
 //! operation that is neither lowered nor listed.
 
@@ -136,7 +155,8 @@ mod tests;
 use alloc::format;
 
 use runic_ir::{
-    Report,
+    OperationRef, Report, Spanned,
+    diagnostics::report,
     pass::{OpPassManager, PassInfo, PassOptions, registry::RegistryEntry},
 };
 
@@ -155,6 +175,20 @@ pub const LOWERING_PASSES: [(&str, &[(&str, &str)]); 4] = [
     (convert::NAME, &[]),
     (verify_form::NAME, &[]),
 ];
+
+/// The error of the pass `pass` run on `root` when `root` is not a `builtin.module` and holds none
+/// (through worlds and components): each of the passes of the lowering works on modules.
+pub(crate) fn no_module_error(pass: &str, root: OperationRef) -> Report {
+    let root = root.borrow();
+    let name = root.name();
+    report!(
+        message: (format!(
+            "`{pass}` runs on a `builtin.module`, or on a world or a component that holds one, but \
+             this `{name}` holds none"
+        )),
+        labels: [primary(root.span(), format!("this `{name}` is not a `builtin.module` and holds none"))],
+    )
+}
 
 /// Adds the passes that lower generic IR to Wasm form to `passes`, by their registered names and
 /// in order: `cfg-to-scf{exits=in-place}`, `wasm-lower-frames`, `convert-to-wasm`,

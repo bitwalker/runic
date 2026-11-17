@@ -115,8 +115,8 @@ fn a_function_used_outside_its_module_whose_signature_changes_is_refused() {
     let error = error_of(passes.run(world.as_operation_ref()));
     assert!(
         error.contains(
-            "the conversion changes the signature of function 'builtin.function' ::a::f, which is \
-             named by 'builtin.call' in ::b::g outside the root of the conversion"
+            "`convert-to-wasm` changes the signature of `@f`, but a `builtin.call` in `@g`, \
+             outside the module `@a` that is converted, names it"
         ),
         "{error}"
     );

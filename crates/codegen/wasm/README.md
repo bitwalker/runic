@@ -51,13 +51,26 @@ carrier above its width are zero:
 
 Every pattern keeps that invariant. A function value is the index of the function in
 `@__indirect_function_table`: `builtin.function_ref @f` is `wasm.func_index @f`, and an indirect
-call goes through the table.
+call goes through the table. `wasm.func_index` names the function by the path it was written with,
+an alias or a function of another module included: resolving that path to an index is left to the
+emitter and the linker.
+
+Where `arith` traps, the lowering traps: a division by zero, and the minimum value divided by -1
+in `arith.sdiv` and `arith.sdivrem` at every width. Below the carrier's width the sign-extended
+`wasm.div_s` does not trap on it, so the quotient is tested and a `wasm.if` traps when it does not
+fit in `N` bits. `arith.srem` of the minimum by -1 is 0 and does not trap. Where `arith` leaves a
+result undefined (a shift by `N` or more, an unchecked overflow, poison), any value that keeps
+carried form is given.
 
 ## The calling conventions
 
-Both are lowered; any other `extern("...")` is an error naming it.
+Both are lowered; any other `extern("...")` is an error naming it, on a declaration that nothing
+calls too.
 
-- `extern("wasm")`: both sides of a call rely on carried form. Nothing is masked or extended.
+- `extern("wasm")`: both sides of a call rely on carried form. Nothing is masked or extended, so
+  a public `extern("wasm")` function trusts every caller, a host or another module included, to
+  pass its narrow parameters in carried form; a function called by code that does not keep it is
+  `extern("C")`.
 - `extern("C")`: nothing is assumed that the signature does not say. A function masks each narrow
   parameter that is not marked `zext` at its entry, and sign-extends each narrow result marked
   `sext` at each return. A call sign-extends each argument whose parameter is narrow and marked
@@ -66,8 +79,11 @@ Both are lowered; any other `extern("...")` is an error naming it.
 
 ## The well-known symbols
 
-Lowered code names three symbols. Each is found in the module by name and kind, or declared in it
-as a private import from `env` whose `link_name` is its own name:
+Lowered code names three symbols. Each is found by name and kind in the `builtin.module` that
+directly holds the function whose code names it, or declared there as a private import from `env`
+whose `link_name` is its own name. A module nested in another has its own: nothing is declared in
+an outer module on behalf of an inner one, and an inner module's own definition is used for its
+code.
 
 | symbol | operation | link name | declared by |
 |---|---|---|---|
@@ -75,7 +91,9 @@ as a private import from `env` whose `link_name` is its own name:
 | `@__indirect_function_table` | `wasm.table` of `!wasm.funcref`, limits 0 | `__indirect_function_table` | `convert-to-wasm`, when the module makes an indirect call |
 | `@__stack_pointer` | `wasm.global` of type `mut i32` | `__stack_pointer` | `wasm-lower-frames`, when a function has a `mem.alloca` |
 
-A module that holds a symbol of one of these names of another kind is an error naming both.
+A module that holds a symbol of one of these names of another kind is an error naming both. Only
+the symbols the lowering itself needs are declared: IR that already uses `wasm` operations naming
+one of them (`wasm.load @__linear_memory`, say) declares it itself.
 
 ## The passes
 
@@ -140,7 +158,9 @@ scf.if %0 then {
 ub.unreachable;
 ```
 
-**`convert-to-wasm`** is a full dialect conversion of each `builtin.module`: the types become
+**`convert-to-wasm`** checks every module under the operation it runs on before it changes any,
+so a failed run leaves the IR as it was: every diagnostic the pass gives on IR that verifies comes
+from that check. Then it is a full dialect conversion of each `builtin.module`: the types become
 their carriers, the operations of `arith`, `cf.select`, `cf.assert`, `mem`, `scf` and `ub` become
 `wasm` operations, and the calling convention is applied. The parameters are masked at the entry of
 `@f` (`extern("C")`), the `scf.if` is a `wasm.if`, and the memory is declared:
@@ -223,6 +243,16 @@ The limits that are not per operation:
   converts itself, or travels in locals and arguments.
 - **An `scf.break` that names a `wasm.loop` written before the lowering is an error**: leaving such
   a loop with its results has no `wasm.br` (a `wasm.br` to a loop goes back to its top).
+- **A global variable's initializer is data**, and is not converted: `convert-to-wasm` and
+  `wasm-verify-form` leave the regions of `builtin.global_variable` and `wasm.global` as they are.
+- **A `builtin.unrealized_conversion_cast` written before the lowering to a narrow integer** is an
+  error: nothing says the bits of its input above the width are clear. `arith.trunc` makes one.
+- **An `isize` constant outside `-2^31 ..= 2^32 - 1`** (an `arith.constant` or a
+  `builtin.ret_imm`) is an error naming it and its value: the target's `isize` has 32 bits.
+- **A `wasm.br` the frontend wrote** inside an `scf` construct keeps naming the construct it named:
+  the lowering gives it the label that counts the constructs it put between them.
+- **The passes run on modules**: run on an operation that is not a `builtin.module` and holds none,
+  each of the three passes of this crate says so.
 - **Dead code is left.** Nothing in the lowering removes it: the slot arithmetic of an alloca
   whose pointer is never used stays.
 - **`ub.poison` is a zero of its type and `ub.unreachable` is a trap**: both refine the undefined

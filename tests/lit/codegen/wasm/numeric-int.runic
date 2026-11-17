@@ -13,8 +13,9 @@
 //   * `trunc`: `wrap` when the carrier narrows, then a mask; `zext`: `extend_u` when the carrier
 //     widens; `sext`: sign-extend from `N`, `extend_s` when the carrier widens, then a mask.
 // A shift amount of `N` or more is undefined in `arith`; the mask keeps carried form anyway.
-// `arith.sdiv` of the minimum value by -1 traps in `arith`; below the carrier's width the lowering
-// does not trap and gives the minimum value, which `arith` allows.
+// `arith.sdiv` of the minimum value by -1 traps in `arith`, and in the lowering: at the carrier's
+// width `wasm.div_s` traps, and below it the quotient (`2^(N-1)`, which the carrier holds) is
+// compared with itself sign-extended from `N` and a `wasm.if` traps when they differ.
 
 // CHECK-LABEL: @add_i8(
 // CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
@@ -74,9 +75,14 @@
 // CHECK-NEXT: [[V2:%[0-9]+]] = wasm.extend8_s [[V0]];
 // CHECK-NEXT: [[V3:%[0-9]+]] = wasm.extend8_s [[V1]];
 // CHECK-NEXT: [[V4:%[0-9]+]] = wasm.div_s [[V2]], [[V3]];
-// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.const 255 : i32;
-// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.and [[V4]], [[V5]];
-// CHECK-NEXT: builtin.ret [[V6]] : (i32);
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.extend8_s [[V4]];
+// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.ne [[V4]], [[V5]];
+// CHECK-NEXT: wasm.if [[V6]] then {
+// CHECK-NEXT: wasm.unreachable;
+// CHECK-NEXT: } : (i32) -> ();
+// CHECK-NEXT: [[V7:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V8:%[0-9]+]] = wasm.and [[V4]], [[V7]];
+// CHECK-NEXT: builtin.ret [[V8]] : (i32);
 
 // CHECK-LABEL: @srem_i8(
 // CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
@@ -309,9 +315,16 @@
 // CHECK-NEXT: [[V6:%[0-9]+]] = wasm.shl [[V1]], [[V5]];
 // CHECK-NEXT: [[V7:%[0-9]+]] = wasm.shr_s [[V6]], [[V5]];
 // CHECK-NEXT: [[V8:%[0-9]+]] = wasm.div_s [[V4]], [[V7]];
-// CHECK-NEXT: [[V9:%[0-9]+]] = wasm.const 1099511627775 : i64;
-// CHECK-NEXT: [[V10:%[0-9]+]] = wasm.and [[V8]], [[V9]];
-// CHECK-NEXT: builtin.ret [[V10]] : (i64);
+// CHECK-NEXT: [[V9:%[0-9]+]] = wasm.const 24 : i64;
+// CHECK-NEXT: [[V10:%[0-9]+]] = wasm.shl [[V8]], [[V9]];
+// CHECK-NEXT: [[V11:%[0-9]+]] = wasm.shr_s [[V10]], [[V9]];
+// CHECK-NEXT: [[V12:%[0-9]+]] = wasm.ne [[V8]], [[V11]];
+// CHECK-NEXT: wasm.if [[V12]] then {
+// CHECK-NEXT: wasm.unreachable;
+// CHECK-NEXT: } : (i32) -> ();
+// CHECK-NEXT: [[V13:%[0-9]+]] = wasm.const 1099511627775 : i64;
+// CHECK-NEXT: [[V14:%[0-9]+]] = wasm.and [[V8]], [[V13]];
+// CHECK-NEXT: builtin.ret [[V14]] : (i64);
 
 // CHECK-LABEL: @srem_i40(
 // CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {

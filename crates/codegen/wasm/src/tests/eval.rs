@@ -14,8 +14,21 @@
 //! `builtin.ret` at any depth. It also runs `builtin.call` and `builtin.tail_call` of a function
 //! with a body in the same module (a tail call replaces the running function: it does not grow
 //! anything), and the memory operations `wasm.load`, `wasm.store` and `wasm.data_addr` on the
-//! machine's memory (little-endian, an access out of bounds traps). An operation it does not
-//! know panics with a message that names it: a test never skips one silently.
+//! machine's memory (little-endian, an access out of bounds traps), with `wasm.memory_copy` (the
+//! ranges may overlap) and `wasm.memory_fill` (the low byte of the value), each trapping when a
+//! range is not all in memory. An operation it does not know panics with a message that names it:
+//! a test never skips one silently.
+//!
+//! **Globals, tables and locals.** `wasm.global_get` and `wasm.global_set` read and write the
+//! machine's globals by name, and every set is logged ([Machine::global_sets]); reading a global
+//! the test did not set panics. `wasm.func_index` gives a function its index in the machine's
+//! table (the next free one, the first time a function is named), and `wasm.call_indirect` and
+//! `wasm.return_call_indirect` call the function at their index operand, trapping on an index past
+//! the table, as `call_indirect` does. `builtin.load_local` and `builtin.store_local` read and
+//! write the locals of the running function, which start at zero, as Wasm's do.
+//!
+//! **Calls.** Every function run, the one a test runs included, is logged with its arguments
+//! ([Machine::calls]), so that a test can read what a caller passed.
 //!
 //! **Control.** A `block`, a `loop` and an `if` run their body (for an `if`, the region the
 //! condition picks: the first when it is not zero) on their parameters. Falling off the `end`
@@ -45,7 +58,7 @@ use std::collections::HashMap;
 use runic_dialect_wasm as wasm;
 use runic_ir::{
     BlockRef, OperationRef, RegionRef, Type, Value, ValueRef,
-    dialects::builtin::{Call, Function, TailCall},
+    dialects::builtin::{Call, Function, LoadLocal, StoreLocal, TailCall},
 };
 
 /// A Wasm number: the bits of an `i32`, an `i64`, an `f32` or an `f64` in the low `width` bits of
@@ -193,6 +206,16 @@ pub(super) struct Machine {
     pub memory: Vec<u8>,
     /// The address `wasm.data_addr` gives for each data symbol, by name.
     pub data: HashMap<String, u32>,
+    /// The values of the globals, by name.
+    pub globals: HashMap<String, Val>,
+    /// Every `wasm.global_set` run, in order: the global's name and the value.
+    pub global_sets: Vec<(String, Val)>,
+    /// The functions of the table, by index: each function the first time a `wasm.func_index`
+    /// names it.
+    pub table: Vec<OperationRef>,
+    /// Every call run (direct, tail or indirect), in order: the callee's name and the arguments
+    /// it was given.
+    pub calls: Vec<(String, Vec<Val>)>,
     /// The operations left to run.
     fuel: u64,
 }
@@ -203,6 +226,10 @@ impl Machine {
         Self {
             memory: alloc::vec![0; size],
             data: HashMap::new(),
+            globals: HashMap::new(),
+            global_sets: Vec::new(),
+            table: Vec::new(),
+            calls: Vec::new(),
             fuel: FUEL,
         }
     }
@@ -253,11 +280,20 @@ impl Machine {
         }
         true
     }
+
+    /// The range of `length` bytes from `address`, or `None` when they are not all in memory.
+    fn range(&self, address: u64, length: u64) -> Option<core::ops::Range<usize>> {
+        let start = usize::try_from(address as u32).ok()?;
+        let end = start.checked_add(usize::try_from(length as u32).ok()?)?;
+        (end <= self.memory.len()).then_some(start..end)
+    }
 }
 
 /// The values of the SSA values of the function being run.
 struct Env<'m> {
     values: HashMap<ValueRef, Val>,
+    /// The locals of the function, by index; one not written yet is zero.
+    locals: HashMap<u32, Val>,
     /// The machine the function runs on.
     machine: &'m mut Machine,
 }
@@ -306,6 +342,12 @@ pub(super) fn run_in(machine: &mut Machine, function: OperationRef, arguments: &
     let mut function = function;
     let mut arguments = arguments.to_vec();
     loop {
+        let name = function
+            .borrow()
+            .downcast_ref::<Function>()
+            .map(|function| function.get_name().as_str().to_string())
+            .unwrap_or_default();
+        machine.calls.push((name, arguments.clone()));
         let body = {
             let function = function.borrow();
             let function = function.downcast_ref::<Function>().expect("a builtin.function");
@@ -313,6 +355,7 @@ pub(super) fn run_in(machine: &mut Machine, function: OperationRef, arguments: &
         };
         let mut env = Env {
             values: HashMap::new(),
+            locals: HashMap::new(),
             machine: &mut *machine,
         };
         bind_arguments(&mut env, body, &arguments);
@@ -343,6 +386,21 @@ fn callee_of(op: &runic_ir::Operation) -> OperationRef {
         .as_function()
         .expect("the callee is a function")
         .as_operation_ref()
+}
+
+/// The name of the symbol `path` names: its last component.
+fn symbol_name(path: &runic_ir::SymbolPath) -> String {
+    path.name().as_str().to_string()
+}
+
+/// The zero of the Wasm number type `ty`.
+fn zero_of(ty: Type) -> Val {
+    let (width, float) = number_type(ty).unwrap_or_else(|| panic!("`{ty}` is not a number type"));
+    if float {
+        Val::float_bits(0, width)
+    } else {
+        Val::new(0, width)
+    }
 }
 
 /// Defines the arguments of `block` as `values`.
@@ -422,6 +480,100 @@ fn step(env: &mut Env, op: OperationRef) -> Option<Flow> {
         }
         "builtin.tail_call" => {
             return Some(Flow::TailCall(callee_of(&op.borrow()), operands));
+        }
+        "builtin.store_local" => {
+            let local =
+                op.borrow().downcast_ref::<StoreLocal>().expect("a store").get_local().index();
+            env.locals.insert(local, operands[0]);
+        }
+        "builtin.load_local" => {
+            let (index, ty) = {
+                let op_ref = op.borrow();
+                let local = *op_ref.downcast_ref::<LoadLocal>().expect("a load").get_local();
+                (local.index(), local.ty())
+            };
+            let value = env.locals.get(&index).copied().unwrap_or_else(|| zero_of(ty));
+            env.define(op, &[value]);
+        }
+        "wasm.global_get" => {
+            let name = {
+                let op_ref = op.borrow();
+                symbol_name(
+                    op_ref.downcast_ref::<wasm::GlobalGet>().expect("a get").global().path(),
+                )
+            };
+            let value = *env
+                .machine
+                .globals
+                .get(&name)
+                .unwrap_or_else(|| panic!("the test gave the global `@{name}` no value"));
+            env.define(op, &[value]);
+        }
+        "wasm.global_set" => {
+            let name = {
+                let op_ref = op.borrow();
+                symbol_name(
+                    op_ref.downcast_ref::<wasm::GlobalSet>().expect("a set").global().path(),
+                )
+            };
+            env.machine.global_sets.push((name.clone(), operands[0]));
+            env.machine.globals.insert(name, operands[0]);
+        }
+        "wasm.func_index" => {
+            let function = {
+                let op_ref = op.borrow();
+                let index = op_ref.downcast_ref::<wasm::FuncIndex>().expect("a wasm.func_index");
+                index
+                    .callee()
+                    .resolve_callable()
+                    .expect("the function resolves")
+                    .target()
+                    .as_function()
+                    .expect("the callee is a function")
+                    .as_operation_ref()
+            };
+            let index = match env.machine.table.iter().position(|entry| *entry == function) {
+                Some(index) => index,
+                None => {
+                    env.machine.table.push(function);
+                    env.machine.table.len() - 1
+                }
+            };
+            env.define(op, &[Val::i32(index as u32)]);
+        }
+        "wasm.call_indirect" | "wasm.return_call_indirect" => {
+            // Operand 0 is the index in the table; the arguments follow it.
+            let Some(callee) = env.machine.table.get(operands[0].bits as usize).copied() else {
+                return Some(Flow::Trap);
+            };
+            if name == "wasm.return_call_indirect" {
+                return Some(Flow::TailCall(callee, operands[1..].to_vec()));
+            }
+            match run_in(env.machine, callee, &operands[1..]) {
+                Outcome::Values(values) => env.define(op, &values),
+                Outcome::Trap => return Some(Flow::Trap),
+            }
+        }
+        "wasm.memory_copy" => {
+            let [dst, src, length] = operands[..] else {
+                panic!("`wasm.memory_copy` takes a destination, a source and a length");
+            };
+            let (Some(to), Some(from)) = (
+                env.machine.range(dst.bits, length.bits),
+                env.machine.range(src.bits, length.bits),
+            ) else {
+                return Some(Flow::Trap);
+            };
+            env.machine.memory.copy_within(from, to.start);
+        }
+        "wasm.memory_fill" => {
+            let [dst, byte, length] = operands[..] else {
+                panic!("`wasm.memory_fill` takes a destination, a value and a length");
+            };
+            let Some(to) = env.machine.range(dst.bits, length.bits) else {
+                return Some(Flow::Trap);
+            };
+            env.machine.memory[to].fill(byte.bits as u8);
         }
         "wasm.data_addr" => {
             let op_ref = op.borrow();

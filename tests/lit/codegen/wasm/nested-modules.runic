@@ -1,0 +1,90 @@
+// RUN: runic-opt %s -p 'cfg-to-scf{exits=in-place},wasm-lower-frames,convert-to-wasm,wasm-verify-form' --split-input-file | filecheck %s
+
+// A function's code names the well-known symbols of the `builtin.module` that directly holds it:
+// each module has its own memory, table and stack pointer, found there or declared there, and
+// nothing is declared in an outer module on behalf of an inner one. Both `convert-to-wasm` and
+// `wasm-lower-frames` follow this rule.
+
+// The inner module's function loads, allocates, fills and calls indirectly; the outer module's
+// function only loads, so the outer module gets only a memory.
+// CHECK-LABEL: builtin.module public @outer
+// CHECK-NEXT: wasm.memory private declaration @__linear_memory : 0
+// CHECK-NEXT: builtin.module public @inner {
+// CHECK-NEXT: wasm.table private declaration @__indirect_function_table : 0 x !wasm.funcref
+// CHECK-NEXT: wasm.memory private declaration @__linear_memory : 0
+// CHECK-NEXT: wasm.global private declaration @__stack_pointer : mut i32
+// CHECK-NEXT: builtin.function public extern("C") @f(
+// CHECK-NEXT: wasm.global_get @__stack_pointer : i32;
+// CHECK: wasm.load @__linear_memory,
+// CHECK: wasm.memory_fill @__linear_memory,
+// CHECK: wasm.call_indirect @__indirect_function_table,
+// CHECK: builtin.function public extern("C") @g(
+// CHECK-NEXT: wasm.load @__linear_memory,
+builtin.module public @outer attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.module public @inner {
+        builtin.function public extern("C") @f(%p: ptr<i32>, %fr: (i32) -> i32) -> i32 {
+            %v = mem.load %p : i32;
+            %q = mem.alloca i32;
+            mem.store %v, %q;
+            %b = arith.constant 0 : i8;
+            %n = arith.constant 4 : isize;
+            mem.memset %q, %b, %n;
+            %r = builtin.call_indirect %fr(%v) : extern("C") (i32) -> i32;
+            builtin.ret %r : (i32);
+        };
+    };
+    builtin.function public extern("C") @g(%p: ptr<i32>) -> i32 {
+        %v = mem.load %p : i32;
+        builtin.ret %v : (i32);
+    };
+};
+
+// -----
+
+// An inner module that defines its own memory: its code names that one, nothing is declared in
+// it, and the outer module, whose code names none, gets nothing.
+// CHECK-LABEL: builtin.module public @outer_of_defined
+// CHECK-NEXT: builtin.module public @inner {
+// CHECK-NEXT: wasm.memory public @__linear_memory : 1..16;
+// CHECK-NEXT: builtin.function public extern("C") @f(
+// CHECK-NEXT: wasm.load @__linear_memory,
+// CHECK-NOT: declaration
+builtin.module public @outer_of_defined attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.module public @inner {
+        wasm.memory public @__linear_memory : 1..16;
+        builtin.function public extern("C") @f(%p: ptr<i32>) -> i32 {
+            %v = mem.load %p : i32;
+            builtin.ret %v : (i32);
+        };
+    };
+};
+
+// -----
+
+// A world and a component holding two modules: each module declares its own memory.
+// CHECK-LABEL: builtin.world {
+// CHECK-NEXT: builtin.component public @acme::@comp {
+// CHECK-NEXT: builtin.module public @a
+// CHECK-NEXT: wasm.memory private declaration @__linear_memory : 0
+// CHECK-NEXT: builtin.function public extern("C") @g(
+// CHECK-NEXT: wasm.load @__linear_memory,
+// CHECK: builtin.module public @b
+// CHECK-NEXT: wasm.memory private declaration @__linear_memory : 0
+// CHECK-NEXT: builtin.function public extern("C") @h(
+// CHECK-NEXT: wasm.load @__linear_memory,
+builtin.world {
+    builtin.component public @acme::@comp {
+        builtin.module public @a attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+            builtin.function public extern("C") @g(%p: ptr<i32>) -> i32 {
+                %v = mem.load %p : i32;
+                builtin.ret %v : (i32);
+            };
+        };
+        builtin.module public @b attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+            builtin.function public extern("C") @h(%p: ptr<i32>) -> i32 {
+                %v = mem.load %p : i32;
+                builtin.ret %v : (i32);
+            };
+        };
+    };
+};

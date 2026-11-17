@@ -8,26 +8,79 @@ use alloc::{
 };
 
 use runic_ir::{
-    Context, Op, Report,
+    Context, Op, OperationRef, Report,
     dialects::builtin::{Module, ModuleRef},
     parse::{self, ParserConfig},
+    pass::{Nesting, PassPipeline},
     testing::text::describe,
 };
 
+mod atomic;
+mod branches;
 mod carried;
 mod composed;
 mod control;
+mod conventions;
 mod coverage;
 mod eval;
+mod evaluated;
 mod float;
+mod form;
 mod frames;
 mod int;
 mod labels;
+mod modules;
 mod pipeline;
 mod programs;
 mod symbols;
 mod target;
 mod types;
+
+/// The attributes of a test module: the data layout the lowering needs.
+const LAYOUT: &str = "attributes { data_layout = #builtin.data_layout<little, ptr = 32> }";
+
+/// The four passes of the lowering, as a textual pipeline.
+const LOWERING: &str =
+    "cfg-to-scf{exits=in-place},wasm-lower-frames,convert-to-wasm,wasm-verify-form";
+
+/// A module `@m` of the functions `functions`, with the data layout of the lowering.
+fn module_of(functions: &str) -> String {
+    format!("builtin.module public @m {LAYOUT} {{\n{functions}\n}};")
+}
+
+/// `text`, a module, parsed in `context` without being verified.
+fn parse_unverified_in(context: &Rc<Context>, text: &str) -> Result<ModuleRef, Report> {
+    let mut config = ParserConfig::new(context.clone());
+    config.verify = false;
+    parse::parse::<Module>(config, "m", text).into_result()
+}
+
+/// Runs the textual pipeline `pipeline` on `root`, with the verifier on.
+fn run_pipeline(context: &Rc<Context>, root: OperationRef, pipeline: &str) -> Result<(), Report> {
+    let anchor = root.borrow().name();
+    let mut passes = PassPipeline::parse_elements(&anchor, pipeline)
+        .and_then(|pipeline| pipeline.load(context.clone(), Nesting::Implicit))?;
+    passes.enable_verifier(true);
+    passes.run(root)
+}
+
+/// The module `text`, parsed, verified and lowered by the textual pipeline `pipeline`.
+#[track_caller]
+fn lowered_by(text: &str, pipeline: &str) -> (Rc<Context>, ModuleRef) {
+    let (context, module) = parse_module(text);
+    run_pipeline(&context, module.as_operation_ref(), pipeline).unwrap_or_else(|report| {
+        panic!("{}\n--- the IR after the failure:\n{}", describe(&report), text_of(module))
+    });
+    (context, module)
+}
+
+/// The function `@name` that `module` directly holds.
+#[track_caller]
+fn function_named(module: ModuleRef, name: &str) -> OperationRef {
+    runic_ir::SymbolTable::symbol_manager(&*module.borrow())
+        .lookup_op(runic_ir::interner::Symbol::intern(name))
+        .unwrap_or_else(|| panic!("no function @{name}"))
+}
 
 /// A context with the dialects the lowering reads and writes registered.
 fn context() -> Rc<Context> {

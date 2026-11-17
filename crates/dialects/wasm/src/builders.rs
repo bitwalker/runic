@@ -21,7 +21,8 @@ fn add_results(
     span: SourceSpan,
 ) {
     for ty in results {
-        let result = context.make_result(span, *ty, owner, 0);
+        let index = owner.borrow().num_results() as u16;
+        let result = context.make_result(span, *ty, owner, index);
         owner.borrow_mut().results_mut().push(result);
     }
 }

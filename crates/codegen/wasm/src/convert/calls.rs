@@ -22,14 +22,17 @@
 //!
 //! `builtin.ret_imm` becomes a `wasm.const` and a `builtin.ret`; `arith.constant` becomes a
 //! `wasm.const` of its value zero-extended in the carrier, and `arith.constantf` a `wasm.constf`.
+//! An `isize` constant holds 64 bits, and the target's `isize` has 32: one that the low 32 bits
+//! do not give back, read as signed or as unsigned (outside `-2^31 ..= 2^32 - 1`), is an error
+//! naming the operation and the value (`check_constant`), never a truncation.
 
 use alloc::{format, rc::Rc, vec::Vec};
 
 use runic_dialect_arith as arith;
 use runic_dialect_wasm as wasm;
 use runic_ir::{
-    Context, Op, OpRegistration, Operation, OperationName, OperationRef, Report, SmallVec, Spanned,
-    Symbol, Type, Value, ValueRef,
+    Context, Int, Op, OpRegistration, Operation, OperationName, OperationRef, Report, SmallVec,
+    Spanned, Symbol, Type, Value, ValueRef,
     conversion::{
         ConversionPattern, ConversionPatternRewriter, ConversionPatternSet, ConvertedOperands,
         FrozenConversionPatternSet, TypeConverter, populate_builtin_conversion_patterns,
@@ -76,6 +79,32 @@ impl Convention {
             )),
         }
     }
+}
+
+/// The least and the greatest `isize` constant the target's 32-bit `isize` holds: every value
+/// whose low 32 bits, read as signed or as unsigned, give it back.
+pub const ISIZE_CONSTANTS: (i128, i128) = (-(1 << 31), (1 << 32) - 1);
+
+/// An error naming `op` and `value` when `value`, a constant of type `ty` that `op` holds (an
+/// `arith.constant` or a `builtin.ret_imm`), is an `isize` outside [ISIZE_CONSTANTS]: the target's
+/// `isize` has 32 bits, and the value does not fit them.
+pub(crate) fn check_constant(op: &Operation, value: Int, ty: Type) -> Result<(), Report> {
+    let (least, greatest) = ISIZE_CONSTANTS;
+    let number = value.signed();
+    if !ty.is_isize() || (least..=greatest).contains(&number) {
+        return Ok(());
+    }
+    Err(report!(
+        message: (format!(
+            "`convert-to-wasm` cannot lower this `{}`: the target's `isize` has 32 bits, and the \
+             `isize` constant {number} does not fit them",
+            op.name()
+        )),
+        labels: [primary(
+            op.span(),
+            format!("this `isize` is {number}, outside {least} ..= {greatest}")
+        )],
+    ))
 }
 
 /// The width `N` of `ty` when it is a narrow integer: a carried integer narrower than its
@@ -626,6 +655,7 @@ impl ConversionPattern for RetImmPattern {
         let Some(carrier_bits) = carrier_width(carrier) else {
             return Ok(false);
         };
+        check_constant(&op.borrow(), value, ty)?;
         let sign_extended = sign_extended_results(&op.borrow())?
             .is_some_and(|extend| extend.iter().any(|(index, _)| *index == 0));
         let bits = if sign_extended {
@@ -673,6 +703,7 @@ impl ConversionPattern for ConstantPattern {
         let Some(carrier) = carrier(rewriter.context(), ty) else {
             return Ok(false);
         };
+        check_constant(&op.borrow(), value, ty)?;
         rewriter.set_insertion_point_before(op);
         let constant = const_int(rewriter, value.unsigned() as u64, carrier, span)?;
         rewriter.replace_op(op, &[constant])?;

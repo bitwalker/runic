@@ -26,7 +26,10 @@
 //! * **`mem.memcpy`** and **`mem.memmove`**: `wasm.memory_copy` within the linear memory (Wasm's
 //!   copy allows the ranges to overlap); **`mem.memset`**: `wasm.memory_fill`.
 //! * **`mem.alloca`** has no pattern: `wasm-lower-frames` gives each one a slot in a frame, and
-//!   `convert-to-wasm` reports one it meets before it converts anything.
+//!   `convert-to-wasm` reports one it meets before it converts anything (`alloca_error`).
+//!
+//! Every refusal of these patterns on IR that verifies is one function that the check before the
+//! conversion calls too (`access`, `gep_layout`, `measure`), so the check finds it first.
 
 use alloc::{format, rc::Rc, string::String};
 
@@ -46,19 +49,22 @@ use runic_ir::{
 use crate::{
     WasmTarget,
     carried::{self, const_int, mask},
-    convert::calls::{pattern_info, registered},
+    convert::{
+        WellKnownSymbols,
+        calls::{pattern_info, registered},
+    },
     symbols::{LINEAR_MEMORY, local_path},
     types::{carrier, carrier_width, width},
 };
 
-/// Adds the patterns of this module. `memory` is the linear memory of the module being converted,
-/// found or declared before the conversion starts; `None` when nothing in the module accesses
-/// memory, and then a pattern that needs it is an error.
+/// Adds the patterns of this module. `symbols` holds the linear memory of each module whose
+/// functions access memory, found or declared before the conversion starts; a pattern that needs
+/// one its module has not got is an error.
 pub fn populate(
     patterns: &mut ConversionPatternSet,
     converter: &TypeConverter,
     target: &WasmTarget,
-    memory: Option<MemoryRef>,
+    symbols: &Rc<WellKnownSymbols>,
 ) -> Result<(), Report> {
     let context = patterns.context();
     let rules = [
@@ -80,7 +86,7 @@ pub fn populate(
             info: rule.info(&context),
             converter: converter.clone(),
             layout: target.layout().clone(),
-            memory,
+            symbols: symbols.clone(),
             rule,
         });
     }
@@ -153,6 +159,81 @@ pub(crate) fn access(
         storage,
         mask,
     })
+}
+
+/// The error of a `mem.alloca` that reaches `convert-to-wasm`, which has no pattern for it.
+pub(crate) fn alloca_error(op: &Operation) -> Report {
+    report!(
+        message: (format!(
+            "`{}` does not lower `mem.alloca`: run `{}` first, which gives each one a slot in its \
+             function's frame",
+            super::NAME,
+            crate::frames::NAME
+        )),
+        labels: [primary(op.span(), "this `mem.alloca` has no slot in a frame")],
+    )
+}
+
+/// What the `mem.gep` `op` adds to its base under `layout`: the size of its pointee when it has
+/// an index, and the offset of its path (0 for an empty path); `None` when `op` is not a
+/// `mem.gep` of a typed pointer with a path. An error naming `op` when the layout does not know
+/// the size or the offset, or when one does not fit in 32 bits.
+pub(crate) fn gep_layout(
+    layout: &DataLayout,
+    op: &Operation,
+) -> Result<Option<(Option<u64>, u64)>, Report> {
+    let Some(gep) = op.downcast_ref::<mem::Gep>() else {
+        return Ok(None);
+    };
+    let (Some(pointee), Some(path)) = (gep.base().ty().pointee(), gep.steps()) else {
+        return Ok(None);
+    };
+    let size = if gep.dynamic_index().is_none() {
+        None
+    } else {
+        let size = layout.size_of(pointee).map_err(|error| {
+            layout_error(op, format!("the size of `{pointee}` is not known: {error}"))
+        })?;
+        Some(fits_32(op, size, || format!("the size of `{pointee}`"))?)
+    };
+    let offset = if path.is_empty() {
+        0
+    } else {
+        let (offset, _) = layout.offset_of(pointee, &path).map_err(|error| {
+            layout_error(op, format!("the offset of {path:?} in `{pointee}` is not known: {error}"))
+        })?;
+        fits_32(op, offset, || format!("the offset of {path:?} in `{pointee}`"))?
+    };
+    Ok(Some((size, offset)))
+}
+
+/// The answer of `layout` for `op`, a `mem.sizeof`, `mem.alignof` or `mem.offsetof`, in 32 bits;
+/// `None` for any other operation. An error naming `op` when the layout does not know it or it
+/// does not fit in 32 bits.
+pub(crate) fn measure(layout: &DataLayout, op: &Operation) -> Result<Option<u64>, Report> {
+    let (value, what) = if let Some(sizeof) = op.downcast_ref::<mem::Sizeof>() {
+        let ty = *sizeof.get_ty();
+        let size = layout.size_of(ty).map_err(|error| {
+            layout_error(op, format!("the size of `{ty}` is not known: {error}"))
+        })?;
+        (size, format!("the size of `{ty}`"))
+    } else if let Some(alignof) = op.downcast_ref::<mem::Alignof>() {
+        let ty = *alignof.get_ty();
+        let align = layout.align_of(ty).map_err(|error| {
+            layout_error(op, format!("the alignment of `{ty}` is not known: {error}"))
+        })?;
+        (align.bytes(), format!("the alignment of `{ty}`"))
+    } else if let Some(offsetof) = op.downcast_ref::<mem::Offsetof>() {
+        let ty = *offsetof.get_ty();
+        let path = offsetof.steps().unwrap_or_default();
+        let (offset, _) = layout.offset_of(ty, &path).map_err(|error| {
+            layout_error(op, format!("the offset of {path:?} in `{ty}` is not known: {error}"))
+        })?;
+        (offset, format!("the offset of {path:?} in `{ty}`"))
+    } else {
+        return Ok(None);
+    };
+    fits_32(op, value, || what).map(Some)
 }
 
 /// The path by which an operation that replaces `op` names `memory` ([local_path]).
@@ -254,7 +335,7 @@ struct MemPattern {
     info: PatternInfo,
     converter: TypeConverter,
     layout: DataLayout,
-    memory: Option<MemoryRef>,
+    symbols: Rc<WellKnownSymbols>,
     rule: Rule,
 }
 
@@ -285,7 +366,9 @@ impl ConversionPattern for MemPattern {
             Rule::Store => self.store(op, &values, rewriter, span),
             Rule::Gep => self.gep(op, &values, rewriter, span),
             Rule::Sizeof | Rule::Alignof | Rule::Offsetof => {
-                let value = self.measure(op)?;
+                let Some(value) = measure(&self.layout, &op.borrow())? else {
+                    return Ok(false);
+                };
                 let constant = const_int(rewriter, value, rewriter.context().i32(), span)?;
                 rewriter.replace_op(op, &[constant])?;
                 Ok(true)
@@ -330,9 +413,9 @@ impl ConversionPattern for MemPattern {
 }
 
 impl MemPattern {
-    /// The linear memory; an error when none was found or declared for the module of `op`.
+    /// The linear memory of the module of `op`; an error when none was found or declared for it.
     fn memory(&self, op: OperationRef) -> Result<MemoryRef, Report> {
-        self.memory.ok_or_else(|| {
+        self.symbols.of_op(op).memory.ok_or_else(|| {
             Report::msg(format!(
                 "`convert-to-wasm` declared no linear memory for the module of `{}`",
                 op.borrow().name()
@@ -423,21 +506,12 @@ impl MemPattern {
         let Some((&base, index)) = values.split_first() else {
             return Ok(false);
         };
-        let (pointee, path) = {
-            let op_ref = op.borrow();
-            let gep = op_ref.downcast_ref::<mem::Gep>().expect("rooted at mem.gep");
-            (gep.base().ty().pointee(), gep.steps())
-        };
-        let (Some(pointee), Some(path)) = (pointee, path) else {
+        let Some((size, offset)) = gep_layout(&self.layout, &op.borrow())? else {
             return Ok(false);
         };
         let i32 = rewriter.context().i32();
         let mut address = base;
-        if let Some(&index) = index.first() {
-            let size = self.layout.size_of(pointee).map_err(|error| {
-                layout_error(&op.borrow(), format!("the size of `{pointee}` is not known: {error}"))
-            })?;
-            let size = fits_32(&op.borrow(), size, || format!("the size of `{pointee}`"))?;
+        if let (Some(&index), Some(size)) = (index.first(), size) {
             let step = match size {
                 0 => None,
                 1 => Some(index),
@@ -451,53 +525,13 @@ impl MemPattern {
                     carried::result(&rewriter.create_op::<wasm::Add, _>(span, (address, step))?);
             }
         }
-        if !path.is_empty() {
-            let (offset, _) = self.layout.offset_of(pointee, &path).map_err(|error| {
-                layout_error(
-                    &op.borrow(),
-                    format!("the offset of {path:?} in `{pointee}` is not known: {error}"),
-                )
-            })?;
-            let offset =
-                fits_32(&op.borrow(), offset, || format!("the offset of {path:?} in `{pointee}`"))?;
-            if offset != 0 {
-                let offset = const_int(rewriter, offset, i32, span)?;
-                address =
-                    carried::result(&rewriter.create_op::<wasm::Add, _>(span, (address, offset))?);
-            }
+        if offset != 0 {
+            let offset = const_int(rewriter, offset, i32, span)?;
+            address =
+                carried::result(&rewriter.create_op::<wasm::Add, _>(span, (address, offset))?);
         }
         rewriter.replace_op(op, &[address])?;
         Ok(true)
-    }
-
-    /// The answer of the layout for `mem.sizeof`, `mem.alignof` or `mem.offsetof`, in 32 bits.
-    fn measure(&self, op: OperationRef) -> Result<u64, Report> {
-        let op_ref = op.borrow();
-        let (value, what) = if let Some(sizeof) = op_ref.downcast_ref::<mem::Sizeof>() {
-            let ty = *sizeof.get_ty();
-            let size = self.layout.size_of(ty).map_err(|error| {
-                layout_error(&op_ref, format!("the size of `{ty}` is not known: {error}"))
-            })?;
-            (size, format!("the size of `{ty}`"))
-        } else if let Some(alignof) = op_ref.downcast_ref::<mem::Alignof>() {
-            let ty = *alignof.get_ty();
-            let align = self.layout.align_of(ty).map_err(|error| {
-                layout_error(&op_ref, format!("the alignment of `{ty}` is not known: {error}"))
-            })?;
-            (align.bytes(), format!("the alignment of `{ty}`"))
-        } else {
-            let offsetof = op_ref.downcast_ref::<mem::Offsetof>().expect("rooted at mem.offsetof");
-            let ty = *offsetof.get_ty();
-            let path = offsetof.steps().unwrap_or_default();
-            let (offset, _) = self.layout.offset_of(ty, &path).map_err(|error| {
-                layout_error(
-                    &op_ref,
-                    format!("the offset of {path:?} in `{ty}` is not known: {error}"),
-                )
-            })?;
-            (offset, format!("the offset of {path:?} in `{ty}`"))
-        };
-        fits_32(&op_ref, value, || what)
     }
 }
 

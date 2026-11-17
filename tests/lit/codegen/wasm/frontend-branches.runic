@@ -1,0 +1,83 @@
+// RUN: runic-opt %s -p 'convert-to-wasm,wasm-verify-form' | filecheck %s
+
+// A `wasm.br` the frontend wrote (one in a `wasm.br_table` included) names the construct it named
+// before the lowering. `scf.if`, `scf.while` and `scf.index_switch` are no labels, and the
+// lowering replaces them by `wasm` constructs, which are: a branch across one gets the label that
+// counts them. A branch across none keeps its label.
+
+builtin.module public @frontend_branches attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    // In an `scf.if`: label 0 was the block; after the lowering the `wasm.if` is label 0.
+    // CHECK-LABEL: @in_if(
+    // CHECK: wasm.block {
+    // CHECK-NEXT: wasm.if
+    // CHECK-NEXT: wasm.const 7 : i32;
+    // CHECK-NEXT: wasm.br 1 %{{[0-9]+}} : (i32);
+    builtin.function public extern("wasm") @in_if(%c: i1) -> i32 {
+        %r = wasm.block {
+            %x = scf.if %c then {
+                %v = wasm.const 7 : i32;
+                wasm.br 0 %v : (i32);
+            } else {
+                %u = arith.constant 1 : i32;
+                scf.yield %u : (i32);
+            } : (i1) -> (i32);
+            wasm.end %x : (i32);
+        } : () -> (i32);
+        builtin.ret %r : (i32);
+    };
+    // In a frontend `wasm.if` in the `after` body of an `scf.while`: label 1 was the block; after
+    // the lowering the loop's `wasm.loop` and the `wasm.if` of its condition come between them.
+    // CHECK-LABEL: @in_while(
+    // CHECK: wasm.block {
+    // CHECK-NEXT: wasm.loop
+    // CHECK: wasm.if
+    // CHECK: wasm.if
+    // CHECK-NEXT: wasm.br 3 %{{[0-9]+}} : (i32);
+    // CHECK-NEXT: } : (i32) -> ();
+    // CHECK-NEXT: wasm.br 1 %{{[0-9]+}} : (i32);
+    builtin.function public extern("wasm") @in_while(%n: i32) -> i32 {
+        %zero = arith.constant 0 : i32;
+        %r = wasm.block {
+            %w = scf.while %zero before {
+            ^b(%i: i32):
+                %more = arith.cmpi ult %i, %n;
+                scf.condition %more, %i : (i1, i32);
+            } after {
+            ^a(%j: i32):
+                %k = wasm.const 999 : i32;
+                %jz = wasm.eqz %j;
+                wasm.if %jz then {
+                    wasm.br 1 %k : (i32);
+                } else {
+                    wasm.end : ();
+                } : (i32) -> ();
+                scf.yield %j : (i32);
+            } : (i32) -> (i32);
+            wasm.end %w : (i32);
+        } : () -> (i32);
+        builtin.ret %r : (i32);
+    };
+    // The branches of a `wasm.br_table` in an `scf.if`: the entry that named the outer block gets
+    // label 2, and the default, which names the block around the table, keeps label 0.
+    // CHECK-LABEL: @table_in_if(
+    // CHECK: wasm.br_table
+    // CHECK-NEXT: wasm.br 2 %{{[0-9]+}} : (i32);
+    // CHECK-NEXT: }] default {
+    // CHECK-NEXT: wasm.br 0 %{{[0-9]+}} : (i32);
+    builtin.function public extern("wasm") @table_in_if(%c: i1, %s: i32) -> i32 {
+        %r = wasm.block {
+            %x = scf.if %c then {
+                %v = wasm.const 7 : i32;
+                %y = wasm.block {
+                    wasm.br_table %s, %v [{ wasm.br 1 %v : (i32); }] default { wasm.br 0 %v : (i32); } : (i32, i32);
+                } : () -> (i32);
+                scf.yield %y : (i32);
+            } else {
+                %u = arith.constant 1 : i32;
+                scf.yield %u : (i32);
+            } : (i1) -> (i32);
+            wasm.end %x : (i32);
+        } : () -> (i32);
+        builtin.ret %r : (i32);
+    };
+};

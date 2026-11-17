@@ -1,7 +1,9 @@
 //! The well-known symbols lowered code names: the linear memory, the function table and the
 //! stack pointer.
 //!
-//! Each is found in a `builtin.module` by name, or declared there. A symbol of its name and kind
+//! Each is found in a `builtin.module` by name, or declared there: the module that directly holds
+//! the function whose code names it (a module nested in another has its own, and nothing is
+//! declared in an outer module on behalf of an inner one). A symbol of its name and kind
 //! that the module holds, a definition or a declaration, is used as it is. Otherwise a declaration
 //! (an import, from the module `env`) is created at the start of the module's body (a body is
 //! created for a module that has none), private, with
@@ -40,15 +42,18 @@ pub const STACK_POINTER: &str = "__stack_pointer";
 /// An error, naming both, when the module holds a symbol of that name that is not a
 /// `wasm.memory`.
 pub fn linear_memory(module: ModuleRef) -> Result<MemoryRef, Report> {
-    find_or_declare::<Memory>(
-        module,
-        LINEAR_MEMORY,
-        "wasm.memory",
-        |_, _| None,
-        |builder, name| {
-            builder.create_memory_declaration(name, Visibility::Private, Limits::at_least(0))
-        },
-    )
+    if let Some(memory) = find_linear_memory(module)? {
+        return Ok(memory);
+    }
+    declare(module, LINEAR_MEMORY, |builder, name| {
+        builder.create_memory_declaration(name, Visibility::Private, Limits::at_least(0))
+    })
+}
+
+/// The linear memory `module` holds, if it holds one; changes nothing. The error of
+/// [linear_memory] when it holds another symbol of that name.
+pub fn find_linear_memory(module: ModuleRef) -> Result<Option<MemoryRef>, Report> {
+    find::<Memory>(module, LINEAR_MEMORY, "wasm.memory", |_, _| None)
 }
 
 /// The table of `module` that indirect calls go through, `wasm.table @__indirect_function_table`
@@ -57,25 +62,23 @@ pub fn linear_memory(module: ModuleRef) -> Result<MemoryRef, Report> {
 /// An error, naming both, when the module holds a symbol of that name that is not a `wasm.table`,
 /// or is one of another element type.
 pub fn indirect_function_table(module: ModuleRef) -> Result<TableRef, Report> {
-    find_or_declare::<Table>(
-        module,
-        INDIRECT_FUNCTION_TABLE,
-        "wasm.table",
-        |context, table: &Table| {
-            let ty = *table.get_element_type();
-            (ty != FuncRefType::get(context))
-                .then(|| format!("a `wasm.table` of `{ty}`, not of `!wasm.funcref`"))
-        },
-        |builder, name| {
-            let funcref = FuncRefType::get(builder.context());
-            builder.create_table_declaration(
-                name,
-                Visibility::Private,
-                Limits::at_least(0),
-                funcref,
-            )
-        },
-    )
+    if let Some(table) = find_indirect_function_table(module)? {
+        return Ok(table);
+    }
+    declare(module, INDIRECT_FUNCTION_TABLE, |builder, name| {
+        let funcref = FuncRefType::get(builder.context());
+        builder.create_table_declaration(name, Visibility::Private, Limits::at_least(0), funcref)
+    })
+}
+
+/// The indirect-function table `module` holds, if it holds one; changes nothing. The error of
+/// [indirect_function_table] when it holds another symbol of that name.
+pub fn find_indirect_function_table(module: ModuleRef) -> Result<Option<TableRef>, Report> {
+    find::<Table>(module, INDIRECT_FUNCTION_TABLE, "wasm.table", |context, table: &Table| {
+        let ty = *table.get_element_type();
+        (ty != FuncRefType::get(context))
+            .then(|| format!("a `wasm.table` of `{ty}`, not of `!wasm.funcref`"))
+    })
 }
 
 /// The stack pointer of `module`, `wasm.global @__stack_pointer : mut i32`: the module's own, or a
@@ -84,59 +87,71 @@ pub fn indirect_function_table(module: ModuleRef) -> Result<TableRef, Report> {
 /// An error, naming both, when the module holds a symbol of that name that is not a
 /// `wasm.global`, or is one of another type or not mutable.
 pub fn stack_pointer(module: ModuleRef) -> Result<GlobalRef, Report> {
-    find_or_declare::<Global>(
-        module,
-        STACK_POINTER,
-        "wasm.global",
-        |context, global: &Global| {
-            let ty = *global.get_ty();
-            let mutable = global.get_mutability().is_mut();
-            (ty != context.i32() || !mutable).then(|| {
-                let mutability = if mutable { "mut " } else { "" };
-                format!("a `wasm.global` of type `{mutability}{ty}`, not of type `mut i32`")
-            })
-        },
-        |builder, name| {
-            let i32 = builder.context().i32();
-            builder.create_global_declaration(name, Visibility::Private, i32, Mutability::Mut)
-        },
-    )
+    if let Some(global) = find_stack_pointer(module)? {
+        return Ok(global);
+    }
+    declare(module, STACK_POINTER, |builder, name| {
+        let i32 = builder.context().i32();
+        builder.create_global_declaration(name, Visibility::Private, i32, Mutability::Mut)
+    })
 }
 
-/// The symbol `name` of `module` if it is a `T` that `mismatch` accepts; otherwise an error when
-/// the module holds a symbol of that name; otherwise the declaration `declare` creates at the start
-/// of the module's body, given the `link_name` of `name`.
+/// The stack pointer `module` holds, if it holds one; changes nothing. The error of
+/// [stack_pointer] when it holds another symbol of that name.
+pub fn find_stack_pointer(module: ModuleRef) -> Result<Option<GlobalRef>, Report> {
+    find::<Global>(module, STACK_POINTER, "wasm.global", |context, global: &Global| {
+        let ty = *global.get_ty();
+        let mutable = global.get_mutability().is_mut();
+        (ty != context.i32() || !mutable).then(|| {
+            let mutability = if mutable { "mut " } else { "" };
+            format!("a `wasm.global` of type `{mutability}{ty}`, not of type `mut i32`")
+        })
+    })
+}
+
+/// The symbol `name` of `module` if it is a `T` that `mismatch` accepts; an error when the
+/// module holds another symbol of that name; `None` when it holds none. Changes nothing.
 ///
 /// `kind` is the name of `T` as the error spells it. `mismatch` says what is wrong with a `T` of
 /// that name, or `None` when it is the one wanted.
-fn find_or_declare<T: Op>(
+fn find<T: Op>(
     module: ModuleRef,
     name: &str,
     kind: &str,
     mismatch: impl FnOnce(&Context, &T) -> Option<alloc::string::String>,
+) -> Result<Option<UnsafeIntrusiveEntityRef<T>>, Report> {
+    let context = module.borrow().as_operation().context_rc();
+    let symbol = interner::Symbol::intern(name);
+    let found: Option<OperationRef> = module.borrow().symbol_manager().lookup_op(symbol);
+    let Some(found) = found else {
+        return Ok(None);
+    };
+    let found_name = found.borrow().name();
+    let problem = match found.try_downcast_op::<T>() {
+        Ok(entity) => match mismatch(&context, &entity.borrow()) {
+            None => return Ok(Some(entity)),
+            Some(problem) => problem,
+        },
+        Err(_) => format!("a `{found_name}`, not a `{kind}`"),
+    };
+    Err(report!(
+        message: (format!(
+            "the module names `@{name}` the {kind} that lowered code uses, but it holds another \
+             symbol of that name"
+        )),
+        labels: [primary(found.borrow().span(), format!("`@{name}` is {problem}"))],
+    ))
+}
+
+/// The declaration `declare` creates of the symbol `name` at the start of the body of `module`
+/// (a body is created when it has none), with the `link_name` of `name`.
+fn declare<T: Op>(
+    module: ModuleRef,
+    name: &str,
     declare: impl FnOnce(&mut OpBuilder, Ident) -> Result<UnsafeIntrusiveEntityRef<T>, Report>,
 ) -> Result<UnsafeIntrusiveEntityRef<T>, Report> {
     let context = module.borrow().as_operation().context_rc();
     let symbol = interner::Symbol::intern(name);
-    let found: Option<OperationRef> = module.borrow().symbol_manager().lookup_op(symbol);
-    if let Some(found) = found {
-        let found_name = found.borrow().name();
-        let problem = match found.try_downcast_op::<T>() {
-            Ok(entity) => match mismatch(&context, &entity.borrow()) {
-                None => return Ok(entity),
-                Some(problem) => problem,
-            },
-            Err(_) => format!("a `{found_name}`, not a `{kind}`"),
-        };
-        return Err(report!(
-            message: (format!(
-                "the module names `@{name}` the {kind} that lowered code uses, but it holds \
-                 another symbol of that name"
-            )),
-            labels: [primary(found.borrow().span(), format!("`@{name}` is {problem}"))],
-        ));
-    }
-
     let (region, body) = {
         let module = module.borrow();
         let region = module.body();

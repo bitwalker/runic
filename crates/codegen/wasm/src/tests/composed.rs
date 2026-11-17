@@ -260,14 +260,8 @@ fn division_with_remainder_matches_arith() {
                     (Some(quotient), Some(remainder)) => {
                         vec![Expect::Value(quotient), Expect::Value(remainder)]
                     }
-                    _ if b.is_zero() => vec![Expect::Trap, Expect::Trap],
-                    // The minimum divided by -1 traps in `arith`. Below the carrier's width the
-                    // sign-extended division does not trap, and gives the minimum (masked) and 0,
-                    // which `arith` allows (a trap is never introduced, and may be removed); at the
-                    // carrier's width Wasm's `div_s` traps as well.
-                    _ if ty.n < ty.carrier() => {
-                        vec![Expect::Value(a), Expect::Value(Int::zero(ty.n))]
-                    }
+                    // A zero divisor and the minimum divided by -1 trap in `arith` and in the
+                    // lowering, at every width.
                     _ => vec![Expect::Trap, Expect::Trap],
                 }
             },

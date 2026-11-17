@@ -4,18 +4,18 @@
 //! builds `wasm` operations on the carriers of the operands, and keeps carried form: the result is
 //! zero-extended to `N` bits. `W` below is the width of the carrier, 32 or 64.
 //!
-//! Where a Wasm instruction does not give what `arith` says, it refines it: `arith` leaves the
-//! result undefined or the operation trapping, and any behaviour that picks one of the allowed
-//! outcomes is a valid lowering (an operation that would trap may be removed, and a trap is
-//! never introduced).
+//! Where a Wasm instruction does not give what `arith` says, it refines it: where `arith` leaves
+//! the result undefined, any behaviour that keeps carried form is a valid lowering. A trap of
+//! `arith` is kept (an operation that would trap may be removed only when its result is unused,
+//! which is not the lowering's to decide), and a trap is never introduced.
 //!
 //! * **Shifts.** An amount at or above `N` is undefined in `arith`; Wasm takes the amount modulo
 //!   `W`. Any result is allowed, but the invariant must hold still, so `shl` and `ashr` are masked
 //!   (`shr` of a zero-extended value cannot set a bit above `N`).
-//! * **`sdiv`.** `arith.sdiv` traps on the minimum value divided by -1. When `N < W` the operands
-//!   are sign-extended, `wasm.div_s` does not trap, and the masked quotient is the minimum value;
-//!   not trapping is one of the outcomes `arith` allows. For `N = W` Wasm traps too. A division by
-//!   zero traps in both.
+//! * **`sdiv`.** `arith.sdiv` traps on the minimum value divided by -1. For `N = W` `wasm.div_s`
+//!   traps too. When `N < W` the operands are sign-extended and `wasm.div_s` gives `2^(N-1)`,
+//!   which the carrier holds, so the quotient is tested before the mask and traps when it does
+//!   not fit in `N` signed bits, as the `checked` patterns trap. A division by zero traps in both.
 //! * **Overflow.** `unchecked` overflow is undefined, so the wrapping operation refines it. A
 //!   `checked` operation is lowered by the patterns of [composed](super::composed).
 //! * **`srem`.** The minimum value remainder -1 is 0 in both.
@@ -44,7 +44,10 @@ use runic_ir::{
 use crate::{
     WasmTarget,
     carried::{self, const_int, mask, sign_extend, zero},
-    convert::calls::{pattern_info, registered},
+    convert::{
+        calls::{pattern_info, registered},
+        composed::trap_unless_quotient_fits,
+    },
     types::{carrier, carrier_width, width},
 };
 
@@ -149,8 +152,9 @@ enum Rule {
     Udiv,
     /// `arith.urem`: `wasm.rem_u`; the remainder is below the divisor.
     Urem,
-    /// `arith.sdiv`: both operands sign-extended from `N`, `wasm.div_s`, then the mask. See the
-    /// module documentation for the minimum value divided by -1.
+    /// `arith.sdiv`: both operands sign-extended from `N`, `wasm.div_s`, a trap when `N < W` and
+    /// the quotient does not fit in `N` signed bits (the minimum value divided by -1; see the
+    /// module documentation), then the mask.
     Sdiv,
     /// `arith.srem`: both operands sign-extended from `N`, `wasm.rem_s`, then the mask.
     Srem,
@@ -201,6 +205,10 @@ impl Rule {
             Rule::Urem => names!(wasm::RemU),
             Rule::Sdiv => names!(
                 wasm::DivS,
+                wasm::Ne,
+                wasm::If,
+                wasm::End,
+                wasm::Unreachable,
                 wasm::And,
                 wasm::Const,
                 wasm::Shl,
@@ -347,6 +355,7 @@ impl IntPattern {
     fn lower(
         &self,
         rw: &mut ConversionPatternRewriter,
+        op: OperationRef,
         source: &Source,
         values: &[ValueRef],
     ) -> Result<Option<ValueRef>, Report> {
@@ -394,6 +403,7 @@ impl IntPattern {
                 let a = sign_extend(rw, first, n, span)?;
                 let b = sign_extend(rw, b, n, span)?;
                 let quotient = binary::<wasm::DivS>(rw, a, b, span)?;
+                trap_unless_quotient_fits(rw, quotient, n, op, span)?;
                 mask(rw, quotient, n, span)?
             }
             (Rule::Srem, Some(b)) => {
@@ -540,7 +550,7 @@ impl ConversionPattern for IntPattern {
         };
         let values: SmallVec<[ValueRef; 4]> = values;
         rewriter.set_insertion_point_before(op);
-        let Some(value) = self.lower(rewriter, &source, &values)? else {
+        let Some(value) = self.lower(rewriter, op, &source, &values)? else {
             return Ok(false);
         };
         rewriter.replace_op(op, &[value])?;
