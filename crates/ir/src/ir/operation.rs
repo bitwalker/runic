@@ -1743,7 +1743,9 @@ impl Operation {
     /// * an early exit ([RegionExitTerminatorOpInterface]) whose target is this operation or one
     ///   nested in it;
     /// * any other [RegionBranchTerminatorOpInterface], which goes to a sibling region or back to
-    ///   its own parent.
+    ///   its own parent;
+    /// * a [Yield](crate::dialects::builtin::Yield), which ends a region
+    ///   whose value its parent takes: it states no successor and leaves nothing.
     ///
     /// Every other terminator counts: a return (which leaves the enclosing function from any
     /// depth), an early exit that addresses an ancestor of this operation or does not resolve, a
@@ -1780,7 +1782,9 @@ impl Operation {
                 if is_loop(op) {
                     return WalkResult::Break(());
                 }
-                if !op.implements::<dyn crate::traits::Terminator>() {
+                if !op.implements::<dyn crate::traits::Terminator>()
+                    || op.downcast_ref::<crate::dialects::builtin::Yield>().is_some()
+                {
                     return WalkResult::Continue(());
                 }
                 let stays_inside = match op.as_trait::<dyn RegionExitTerminatorOpInterface>() {

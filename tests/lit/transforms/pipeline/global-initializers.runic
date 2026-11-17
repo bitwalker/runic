@@ -4,6 +4,9 @@
 // RUN: runic-opt %s -p cfg-to-scf | filecheck %s --check-prefix=INPUT
 // RUN: runic-opt %s -p dce | filecheck %s --check-prefix=DCE
 // RUN: runic-opt %s -p cse | filecheck %s --check-prefix=CSE
+// RUN: runic-opt %s -p sccp | filecheck %s --check-prefix=SCCP
+// RUN: runic-opt %s -p canonicalizer | filecheck %s --check-prefix=CANON
+// RUN: runic-opt %s -p sink-operand-defs | filecheck %s --check-prefix=SINK
 // RUN: runic-opt %s -p 'canonicalizer,cse,sccp,canonicalizer,dce' | filecheck %s --check-prefix=PIPELINE
 // RUN: runic-opt %s -p 'canonicalizer,cse,sccp,canonicalizer,dce' | runic-opt - --verify-roundtrip | filecheck %s --check-prefix=PIPELINE
 
@@ -11,7 +14,10 @@
 // value of the global. The yield uses the value, so what computes it is live; an operation that
 // nothing uses is dead and is removed, equal operations are merged, and constants are folded.
 // Each RUN line names what the passes leave: a pass that does not touch the initializers leaves
-// every operation (INPUT), and the others change the code and never what is yielded.
+// every operation (INPUT), and the others change the code and never what is yielded: `sccp` alone
+// replaces what it folds with constants and leaves the operations it made unused (SCCP), the
+// canonicalizer folds and removes what is unused (CANON), and `sink-operand-defs` moves
+// operations and keeps every one (SINK).
 builtin.module public @global_initializers {
     // The value is data: it stays under every pass.
     // INPUT: builtin.global_variable public @data : array<i8; 2> {
@@ -55,12 +61,75 @@ builtin.module public @global_initializers {
         builtin.yield %p;
     };
 
+    // The value is computed by an operation with regions, `scf.if` on a constant condition. `sccp`
+    // takes the branch the condition selects and yields the constant 3, and leaves the constants
+    // it replaced; `dce` and `cse` do not look into the branch; the canonicalizer and the pipeline
+    // give the constant alone.
+    // INPUT: builtin.global_variable public @branch : i32 {
+    // INPUT-NEXT: [[C:%[0-9]+]] = arith.constant 1 : i1;
+    // INPUT-NEXT: arith.constant 9 : i32;
+    // INPUT-NEXT: [[R:%[0-9]+]] = scf.if [[C]] then {
+    // INPUT: builtin.yield [[R]];
+    // INPUT-NEXT: };
+    // DCE: builtin.global_variable public @branch : i32 {
+    // DCE-NEXT: [[C:%[0-9]+]] = arith.constant 1 : i1;
+    // DCE-NEXT: [[R:%[0-9]+]] = scf.if [[C]] then {
+    // DCE: builtin.yield [[R]];
+    // DCE-NEXT: };
+    // SCCP: builtin.global_variable public @branch : i32 {
+    // SCCP-NEXT: [[R:%[0-9]+]] = arith.constant 3 : i32;
+    // SCCP-NEXT: arith.constant 9 : i32;
+    // SCCP-NEXT: arith.constant 1 : i1;
+    // SCCP-NEXT: builtin.yield [[R]];
+    // SCCP-NEXT: };
+    // CANON: builtin.global_variable public @branch : i32 {
+    // CANON-NEXT: [[R:%[0-9]+]] = arith.constant 3 : i32;
+    // CANON-NEXT: builtin.yield [[R]];
+    // CANON-NEXT: };
+    // SINK: builtin.global_variable public @branch : i32 {
+    // SINK-NEXT: arith.constant 9 : i32;
+    // SINK-NEXT: [[C:%[0-9]+]] = arith.constant 1 : i1;
+    // SINK-NEXT: [[R:%[0-9]+]] = scf.if [[C]] then {
+    // SINK: builtin.yield [[R]];
+    // SINK-NEXT: };
+    // PIPELINE: builtin.global_variable public @branch : i32 {
+    // PIPELINE-NEXT: [[R:%[0-9]+]] = arith.constant 3 : i32;
+    // PIPELINE-NEXT: builtin.yield [[R]];
+    // PIPELINE-NEXT: };
+    builtin.global_variable public @branch : i32 {
+        %c = arith.constant 1 : i1;
+        %dead = arith.constant 9 : i32;
+        %r = scf.if %c then {
+            %t = arith.constant 3 : i32;
+            scf.yield %t : (i32);
+        } else {
+            %e = arith.constant 4 : i32;
+            scf.yield %e : (i32);
+        } : (i1) -> (i32);
+        builtin.yield %r;
+    };
+
     // Two operations of the initializer have no use: they are removed, and the yielded 5 stays.
     // INPUT: builtin.global_variable public @unused : i32 {
     // INPUT-NEXT: arith.constant 4 : i32;
     // INPUT-NEXT: [[V:%[0-9]+]] = arith.constant 5 : i32;
     // INPUT-NEXT: arith.constant 6 : i32;
     // INPUT-NEXT: builtin.yield [[V]];
+    // SCCP: builtin.global_variable public @unused : i32 {
+    // SCCP-NEXT: arith.constant 6 : i32;
+    // SCCP-NEXT: [[V:%[0-9]+]] = arith.constant 5 : i32;
+    // SCCP-NEXT: arith.constant 4 : i32;
+    // SCCP-NEXT: builtin.yield [[V]];
+    // CANON: builtin.global_variable public @unused : i32 {
+    // CANON-NEXT: [[V:%[0-9]+]] = arith.constant 5 : i32;
+    // CANON-NEXT: builtin.yield [[V]];
+    // CANON-NEXT: };
+    // SINK: builtin.global_variable public @unused : i32 {
+    // SINK-NEXT: arith.constant 4 : i32;
+    // SINK-NEXT: arith.constant 6 : i32;
+    // SINK-NEXT: [[V:%[0-9]+]] = arith.constant 5 : i32;
+    // SINK-NEXT: builtin.yield [[V]];
+    // SINK-NEXT: };
     // DCE: builtin.global_variable public @unused : i32 {
     // DCE-NEXT: [[V:%[0-9]+]] = arith.constant 5 : i32;
     // DCE-NEXT: builtin.yield [[V]];
@@ -90,6 +159,17 @@ builtin.module public @global_initializers {
     // INPUT-NEXT: [[E:%[0-9]+]] = arith.add [[C]], [[B]];
     // INPUT-NEXT: [[F:%[0-9]+]] = arith.add [[D]], [[E]];
     // INPUT-NEXT: builtin.yield [[F]];
+    // SCCP: builtin.global_variable public @duplicate : i32 {
+    // SCCP-NEXT: [[F:%[0-9]+]] = arith.constant 6 : i32;
+    // SCCP-NEXT: arith.constant 3 : i32;
+    // SCCP-NEXT: arith.constant 1 : i32;
+    // SCCP-NEXT: arith.constant 2 : i32;
+    // SCCP-NEXT: builtin.yield [[F]];
+    // SCCP-NEXT: };
+    // CANON: builtin.global_variable public @duplicate : i32 {
+    // CANON-NEXT: [[F:%[0-9]+]] = arith.constant 6 : i32;
+    // CANON-NEXT: builtin.yield [[F]];
+    // CANON-NEXT: };
     // CSE: builtin.global_variable public @duplicate : i32 {
     // CSE-NEXT: [[A:%[0-9]+]] = arith.constant 2 : i32;
     // CSE-NEXT: [[B:%[0-9]+]] = arith.constant 1 : i32;

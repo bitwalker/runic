@@ -1,15 +1,11 @@
-use alloc::format;
-
 use crate::{
-    AsValueRange, CallableOpInterface, Context, Op, OpParser, OpPrinter, OperationState,
-    RegionBranchOpInterface, Report, Spanned, UnsafeIntrusiveEntityRef,
+    AsValueRange, Op, OpParser, OpPrinter, OperationState, UnsafeIntrusiveEntityRef,
     derive::{EffectOpInterface, operation},
-    diagnostics::report,
     dialects::builtin::BuiltinDialect,
     effects::{MemoryEffect, MemoryEffectOpInterface},
     parse::ParseResult,
     print::AsmPrinter,
-    traits::{AnyType, Terminator},
+    traits::{AnyType, Terminator, YieldsToParent},
 };
 
 pub type YieldRef = UnsafeIntrusiveEntityRef<Yield>;
@@ -26,14 +22,16 @@ pub type YieldRef = UnsafeIntrusiveEntityRef<Yield>;
 /// pass that looks for the exits of a function or the successors of a region does not see it. Its
 /// use of the value keeps the value, and what computes it, alive.
 ///
-/// Under an operation that is a function ([CallableOpInterface]) or that branches between its own
-/// regions ([RegionBranchOpInterface]) the yield would state no successor, and the verifier
-/// rejects it: those operations have terminators of their own.
+/// The verifier accepts a yield only under an operation that takes the value of its region, one
+/// that carries [RegionYieldsValue](crate::traits::RegionYieldsValue). Under a function
+/// ([CallableOpInterface](crate::CallableOpInterface)) or an operation that branches between its
+/// own regions ([RegionBranchOpInterface](crate::RegionBranchOpInterface)) it would state no
+/// successor: those operations have terminators of their own.
 #[derive(EffectOpInterface)]
 #[effects(MemoryEffect())]
 #[operation(
     dialect = BuiltinDialect,
-    traits(Terminator),
+    traits(Terminator, YieldsToParent),
     implements(MemoryEffectOpInterface, OpPrinter)
 )]
 pub struct Yield {
@@ -71,36 +69,6 @@ impl OpParser for Yield {
     }
 }
 
-/// The parent is not a function and does not branch between its own regions: a function is left
-/// with `builtin.ret`, and a structured operation with a terminator of its own.
-impl crate::Verify<dyn MemoryEffectOpInterface> for Yield {
-    fn verify(&self, _context: &Context) -> Result<(), Report> {
-        let op = self.as_operation();
-        let Some(parent) = op.parent_op() else {
-            return Ok(());
-        };
-        let parent = parent.borrow();
-        let reason = if parent.implements::<dyn CallableOpInterface>() {
-            format!(
-                "`{}` is a function, which is left with `builtin.ret`, not with `builtin.yield`",
-                parent.name()
-            )
-        } else if parent.implements::<dyn RegionBranchOpInterface>() {
-            format!(
-                "`{}` is a structured operation, which is left with its own terminator, not with \
-                 `builtin.yield`",
-                parent.name()
-            )
-        } else {
-            return Ok(());
-        };
-        Err(report!(
-            message: "invalid operation builtin.yield",
-            labels: [primary(op.span(), reason)],
-        ))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use alloc::{
@@ -111,7 +79,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        Builder, Ident, Operation, OperationRef, SourceSpan, Visibility,
+        Builder, Context, Ident, Operation, OperationRef, SourceSpan, Visibility,
         dialects::builtin::{BuiltinOpBuilder, Module},
         parse::{ParserConfig, parse_any},
         testing::{
@@ -158,8 +126,7 @@ mod tests {
     fn a_yield_round_trips_in_both_forms() {
         let (_context, module) = parse_text(MODULE).unwrap_or_else(|err| panic!("{err}"));
         let printed = module.borrow().to_string();
-        assert!(printed.contains("builtin.yield %0;") || printed.contains("builtin.yield %"));
-        assert!(!printed.contains("builtin.yield %0 :"), "{printed}");
+        assert!(printed.lines().any(|line| line.trim() == "builtin.yield %0;"), "{printed}");
         let mut skipped = Vec::new();
         let failures = round_trip::<Module>(module, true, &mut skipped);
         assert!(failures.is_empty(), "{}", failures.join("\n\n"));
@@ -238,8 +205,114 @@ mod tests {
         );
     }
 
+    /// A global declared as the given type in a new module, whose initializer is a block that
+    /// `fill` fills.
+    fn global_with(
+        declared: fn(&Context) -> crate::Type,
+        fill: impl FnOnce(&mut crate::OpBuilder),
+    ) -> (Test, crate::dialects::builtin::GlobalVariableRef) {
+        let mut test = Test::named("f").in_module("m");
+        let module = test.module();
+        let context = test.context_rc();
+        let declared = declared(&context);
+        let global = {
+            let b = test.builder_mut();
+            let body = module.borrow().body().entry_block_ref().unwrap();
+            b.set_insertion_point_to_end(body);
+            let global = b
+                .create_global_variable(
+                    Ident::with_empty_span("g".into()),
+                    Visibility::Public,
+                    declared,
+                )
+                .unwrap();
+            let region = global.borrow().initializer().as_region_ref();
+            let block = b.create_block(region, None, &[]);
+            b.set_insertion_point_to_end(block);
+            fill(b);
+            global
+        };
+        (test, global)
+    }
+
+    /// The value of an initializer that does not verify is `None`, and asking for it does not
+    /// panic: a block with no operation, one that ends with another terminator or with no
+    /// terminator, a yield whose operand was taken away, and a yield of another type.
+    #[test]
+    fn the_initializer_value_of_a_global_that_does_not_verify_is_none() {
+        let bytes_ty = |context: &Context| context.array_type(context.i8(), 2);
+        let bytes = |b: &mut crate::OpBuilder| {
+            let op = b.bytes(alloc::vec![1_u8, 2], SourceSpan::UNKNOWN).unwrap();
+            op.borrow().as_operation().results()[0].borrow().as_value_ref()
+        };
+
+        let (_test, global) = global_with(bytes_ty, |_| ());
+        assert!(global.borrow().initializer_value().is_none(), "an empty block");
+
+        let (_test, global) = global_with(bytes_ty, |b| {
+            b.ret([], SourceSpan::UNKNOWN).unwrap();
+        });
+        assert!(global.borrow().initializer_value().is_none(), "another terminator");
+
+        let (_test, global) = global_with(bytes_ty, |b| {
+            bytes(b);
+        });
+        assert!(global.borrow().initializer_value().is_none(), "no terminator");
+
+        let (_test, global) = global_with(bytes_ty, |b| {
+            let value = bytes(b);
+            let mut op = b.yield_value(value, SourceSpan::UNKNOWN).unwrap();
+            op.borrow_mut().as_operation_mut().set_operands([]);
+            assert_eq!(op.borrow().as_operation().num_operands(), 0);
+        });
+        assert!(global.borrow().initializer_value().is_none(), "a yield with no operand");
+
+        let (_test, global) = global_with(
+            |context| context.i32(),
+            |b| {
+                let value = bytes(b);
+                b.yield_value(value, SourceSpan::UNKNOWN).unwrap();
+            },
+        );
+        assert!(global.borrow().initializer_value().is_none(), "a yield of another type");
+
+        let (_test, global) = global_with(bytes_ty, |b| {
+            let value = bytes(b);
+            b.yield_value(value, SourceSpan::UNKNOWN).unwrap();
+        });
+        assert!(global.borrow().initializer_value().is_some(), "a yield of the declared type");
+    }
+
+    /// A yield states no exit: an operation that holds a global is not one that has a nested exit,
+    /// and neither is the global.
+    #[test]
+    fn a_yield_is_not_an_exit_of_the_operation_that_holds_it() {
+        let (_context, module) = parse_text(MODULE).unwrap_or_else(|err| panic!("{err}"));
+        assert!(!module.borrow().has_nested_exit_or_loop());
+        let yields = yields(&module);
+        let global = yields[0].borrow().as_operation().parent_op().unwrap();
+        assert!(!global.borrow().has_nested_exit_or_loop());
+    }
+
+    /// A yield is rejected under an operation that does not take the value of its region.
+    #[test]
+    fn a_yield_under_a_module_is_rejected() {
+        let source = "builtin.module public @m {
+    %a = builtin.bytes \"0a0b\" : array<i8; 2>;
+    builtin.yield %a;
+};";
+        let err = parse_text(source).map(|_| ()).expect_err("a module takes no yielded value");
+        assert!(
+            err.contains(
+                "`builtin.module` does not take a yielded value: `builtin.yield` ends the \
+                 initializer of a global"
+            ),
+            "{err}"
+        );
+    }
+
     /// The builder creates the yield the parser reads: the global built with a `builtin.bytes` and
-    /// a yield of it prints as the text and verifies, and its initializer value is the bytes.
+    /// a yield of it prints as the global the text states, and its initializer value is the bytes.
     #[test]
     fn the_builder_creates_what_the_parser_reads() {
         let mut test = Test::named("f").in_module("m");
@@ -268,8 +341,13 @@ mod tests {
         test.module().borrow().as_operation().recursively_verify().unwrap();
         let global = global.borrow();
         assert!(global.initializer_value() == Some(bytes));
-        let text = global.as_operation().to_string();
-        assert!(text.contains("builtin.yield %"), "{text}");
-        assert!(!text.contains("builtin.yield %0 :"), "{text}");
+        let (_context, parsed) = parse_text(MODULE).unwrap_or_else(|err| panic!("{err}"));
+        let mut parsed_global = None;
+        parsed.borrow().prewalk_all(|op: &Operation| {
+            if op.is::<crate::dialects::builtin::GlobalVariable>() {
+                parsed_global = Some(op.to_string());
+            }
+        });
+        assert_eq!(global.as_operation().to_string(), parsed_global.unwrap());
     }
 }

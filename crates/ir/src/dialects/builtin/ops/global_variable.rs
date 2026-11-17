@@ -1,8 +1,8 @@
 use alloc::format;
 
 use crate::{
-    AsSymbolRef, Context, IdentAttr, LinkedSymbol, OpParser, OpPrinter, Operation, Report, Spanned,
-    Symbol, SymbolName, SymbolRef, SymbolUseList, UnsafeIntrusiveEntityRef, Usable, Value,
+    AsSymbolRef, Context, IdentAttr, LinkedSymbol, Op, OpParser, OpPrinter, Operation, Report,
+    Spanned, Symbol, SymbolName, SymbolRef, SymbolUseList, UnsafeIntrusiveEntityRef, Usable, Value,
     ValueRef, Visibility,
     derive::{EffectOpInterface, operation},
     diagnostics::report,
@@ -14,8 +14,8 @@ use crate::{
     parse::ParserError,
     print::AsmPrinter,
     traits::{
-        AnyPointer, InferTypeOpInterface, IsolatedFromAbove, NoRegionArguments, SingleBlock,
-        SingleRegion,
+        AnyPointer, InferTypeOpInterface, IsolatedFromAbove, NoRegionArguments, RegionYieldsValue,
+        SingleBlock, SingleRegion,
     },
 };
 
@@ -48,6 +48,7 @@ pub type GlobalVariableRef = UnsafeIntrusiveEntityRef<GlobalVariable>;
         SingleBlock,
         NoRegionArguments,
         IsolatedFromAbove,
+        RegionYieldsValue,
     ),
     implements(Symbol, OpPrinter, LinkedSymbol)
 )]
@@ -89,6 +90,9 @@ impl GlobalVariable {
         let last = region.entry().body().back().as_pointer()?;
         let last = last.borrow();
         let yielded = last.downcast_ref::<Yield>()?;
+        if yielded.as_operation().num_operands() != 1 {
+            return None;
+        }
         Some(yielded.value().as_value_ref())
     }
 

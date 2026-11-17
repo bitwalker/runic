@@ -1150,3 +1150,75 @@ fn the_builder_ends_a_global_initializer_with_a_yield_of_the_value() {
         global.borrow().as_operation().to_string()
     );
 }
+
+/// What the end of the initializer of a global built through the API is, for the test below.
+enum Ending {
+    /// A block with no operation
+    Nothing,
+    /// A `wasm.const` that no yield follows
+    NoYield,
+    /// A `builtin.ret`, a terminator that is not a yield
+    AnotherTerminator,
+    /// A `builtin.yield` whose operand was taken away
+    YieldWithoutOperand,
+    /// A `builtin.yield` of a value of another type than the global's
+    YieldOfAnotherType,
+}
+
+/// `initializer_value` is `None`, and does not panic, for an initializer that does not verify.
+#[test]
+fn the_initializer_value_of_a_global_that_does_not_verify_is_none() {
+    for (index, ending) in [
+        Ending::Nothing,
+        Ending::NoYield,
+        Ending::AnotherTerminator,
+        Ending::YieldWithoutOperand,
+        Ending::YieldOfAnotherType,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut test = Test::named("f").in_module("m");
+        let context = test.context_rc();
+        context.get_or_register_dialect::<WasmDialect>();
+        let module = test.module();
+        let body = module.borrow().body().entry_block_ref().unwrap();
+        let builder = test.builder_mut();
+        builder.set_insertion_point_to_end(body);
+        let global = builder
+            .create_global_declaration(
+                Ident::with_empty_span("g".into()),
+                Visibility::Private,
+                context.i32(),
+                Mutability::Const,
+            )
+            .unwrap();
+        global.clone().borrow_mut().set_declaration(false);
+        let region = global.borrow().initializer().as_region_ref();
+        let block = builder.create_block(region, None, &[]);
+        builder.set_insertion_point_to_end(block);
+        match ending {
+            Ending::Nothing => (),
+            Ending::NoYield => {
+                builder.i32(1, SourceSpan::UNKNOWN);
+            }
+            Ending::AnotherTerminator => {
+                builder.ret([], SourceSpan::UNKNOWN).unwrap();
+            }
+            Ending::YieldWithoutOperand => {
+                let value = builder.i32(1, SourceSpan::UNKNOWN);
+                let mut op = builder.yield_value(value, SourceSpan::UNKNOWN).unwrap();
+                op.borrow_mut().as_operation_mut().set_operands([]);
+                assert_eq!(op.borrow().as_operation().num_operands(), 0);
+            }
+            Ending::YieldOfAnotherType => {
+                let value = builder.i64(1, SourceSpan::UNKNOWN);
+                builder.yield_value(value, SourceSpan::UNKNOWN).unwrap();
+            }
+        }
+        assert!(
+            global.borrow().initializer_value().is_none(),
+            "case {index}: the initializer does not verify, and yields no value"
+        );
+    }
+}

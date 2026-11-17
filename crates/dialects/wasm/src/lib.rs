@@ -141,7 +141,10 @@
 //!   a shared operation at each of its uses (every constant instruction is pure, so that is
 //!   sound). The region is ordinary code to the passes: an operation of it that nothing uses is
 //!   dead, and equal operations are merged. A `global_get` in an initializer is checked to read
-//!   an immutable global that is an import or is defined before it.
+//!   an immutable global that is an import or is defined before it. Because the initializer is
+//!   ordinary code to the passes, a canonicalization pattern or a fold added to the dialect must
+//!   turn constant instructions only into constant instructions: the verifier of `wasm.global` is
+//!   what catches one that does not.
 //!
 //! **Attributes.** [LimitsAttr] (`#wasm.limits<1..16>`) bounds the size of a memory or a table,
 //! [MemArgAttr] (`#wasm.memarg<offset = 8, align = 4>`) is the static part of a memory access,

@@ -3,7 +3,10 @@
 // `builtin.yield`: the end of a region whose value its parent takes. The initializer of a global
 // variable ends with it, and the type of the yielded value is the declared type of the global. A
 // function is left with `builtin.ret` and a structured operation with its own terminator, so a
-// yield is rejected under either.
+// yield is rejected under either. An operation takes the value of its region only if it says so
+// (it carries `RegionYieldsValue`: a global variable and `wasm.global` do), so a yield is rejected
+// under every other operation: a module, a component, a world, a `wasm.block` and the holder of
+// the test dialect.
 
 builtin.module public @valid {
     builtin.global_variable public @data : array<i8; 2> {
@@ -57,4 +60,44 @@ builtin.module public @in_a_structured_operation {
         } : (i1) -> ();
         builtin.ret;
     };
+};
+
+// -----
+
+builtin.module public @in_a_module {
+    %a = arith.constant 1 : i32;
+    builtin.yield %a; // expected-error {{`builtin.module` does not take a yielded value: `builtin.yield` ends the initializer of a global}}
+};
+
+// -----
+
+builtin.component public @acme::@in_a_component {
+    %a = arith.constant 1 : i32;
+    builtin.yield %a; // expected-error {{`builtin.component` does not take a yielded value: `builtin.yield` ends the initializer of a global}}
+};
+
+// -----
+
+builtin.world {
+    builtin.component public @acme::@in_a_world { };
+    %a = arith.constant 1 : i32;
+    builtin.yield %a; // expected-error {{`builtin.world` does not take a yielded value: `builtin.yield` ends the initializer of a global}}
+};
+
+// -----
+
+builtin.function public extern("C") @in_a_wasm_block(%a: i32) -> i32 {
+    %r = wasm.block {
+        builtin.yield %a; // expected-error {{`wasm.block` is a structured operation, which is left with its own terminator, not with `builtin.yield`}}
+    } : () -> (i32);
+    builtin.ret %r : (i32);
+};
+
+// -----
+
+builtin.function public extern("C") @in_a_holder(%a: i32) -> i32 {
+    "test.reads_locals_and_holds"() ({
+        builtin.yield %a; // expected-error {{`test.reads_locals_and_holds` does not take a yielded value: `builtin.yield` ends the initializer of a global}}
+    }) : () -> ();
+    builtin.ret %a : (i32);
 };

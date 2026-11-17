@@ -18,7 +18,10 @@ use runic_ir::{
     dialects::builtin::{Bytes, GlobalVariable},
     matchers::{self, Matcher},
     parse::{ParserConfig, parse_any},
-    pass::{Nesting, PassPipeline, registry::PassInfo},
+    pass::{
+        Nesting, OpPassManager, PassOptions, PassPipeline,
+        registry::{PassInfo, RegistryEntry},
+    },
 };
 
 /// Initializers of both kinds of global, in the shapes a pass is most likely to change: a single
@@ -179,26 +182,59 @@ fn evaluate(value: ValueRef) -> Value {
     Value::Int(i64::from(combined as i32))
 }
 
-/// The value of each global of a module by name, and the size of its initializer.
-type Globals = BTreeMap<String, (Value, usize)>;
+/// What a global is: its declared type, whether it is mutable, its visibility, and the value its
+/// initializer computes. (A builtin global has no mutability, so it is `"-"`.)
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Shape {
+    ty: String,
+    mutability: &'static str,
+    visibility: String,
+    value: Value,
+}
 
-/// The value of each global of `module` by name, and the number of operations in its initializer
-/// (the yield is not counted).
+/// What each global of a module is by name, and the size of its initializer.
+type Globals = BTreeMap<String, (Shape, usize)>;
+
+/// What each global of `module` is by name, and the number of operations in its initializer (the
+/// yield is not counted).
 fn globals(module: OperationRef) -> Globals {
     let mut found = BTreeMap::new();
     module.borrow().prewalk_all(|op: &Operation| {
-        let (name, value) = if let Some(global) = op.downcast_ref::<GlobalVariable>() {
-            (global.get_name().as_str().to_string(), global.initializer_value())
-        } else if let Some(global) = op.downcast_ref::<runic_dialect_wasm::Global>() {
-            (global.get_name().as_str().to_string(), global.initializer_value())
-        } else {
-            return;
-        };
+        let (name, ty, mutability, visibility, value) =
+            if let Some(global) = op.downcast_ref::<GlobalVariable>() {
+                (
+                    global.get_name().as_str().to_string(),
+                    global.get_ty().to_string(),
+                    "-",
+                    global.get_visibility().as_str().to_string(),
+                    global.initializer_value(),
+                )
+            } else if let Some(global) = op.downcast_ref::<runic_dialect_wasm::Global>() {
+                (
+                    global.get_name().as_str().to_string(),
+                    global.get_ty().to_string(),
+                    if global.get_mutability().is_mut() {
+                        "mut"
+                    } else {
+                        "const"
+                    },
+                    global.get_visibility().as_str().to_string(),
+                    global.initializer_value(),
+                )
+            } else {
+                return;
+            };
         let value = value.unwrap_or_else(|| panic!("`@{name}` yields no value:\n{op}"));
         let mut count = 0;
         op.prewalk_all(|_: &Operation| count += 1);
         // The global itself and the yield are not operations of the computation
-        found.insert(name, (evaluate(value), count - 2));
+        let shape = Shape {
+            ty,
+            mutability,
+            visibility,
+            value: evaluate(value),
+        };
+        found.insert(name, (shape, count - 2));
     });
     found
 }
@@ -220,10 +256,42 @@ fn run_shapes(pipeline: &str) -> Result<(Globals, Globals), Report> {
     Ok((before, after))
 }
 
-/// Runs `pipeline` as it is, or, for a pass that runs on functions, nested on them.
-fn run_nested(pipeline: &str) -> Result<(Globals, Globals), Report> {
-    run_shapes(pipeline)
-        .or_else(|_| run_shapes(&format!("recursive(builtin.function({pipeline}))")))
+/// Where a registered pass is scheduled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Schedule {
+    /// On the module, so that it reaches every global
+    OnTheModule,
+    /// On the functions only (`recursive(builtin.function(..))`): the pass cannot be scheduled on
+    /// a module, and no global is reached
+    OnFunctions,
+}
+
+/// Decides from the pass itself, not from a failed run, where it can be scheduled: whether it can
+/// be scheduled on a `builtin.module`.
+fn schedule_of(pass: &PassInfo) -> Schedule {
+    let context = Rc::new(Context::default());
+    context.get_or_register_dialect::<runic_dialect_wasm::WasmDialect>();
+    let module = parse_any(ParserConfig::new(context.clone()), "shapes", SHAPES.to_string())
+        .into_result()
+        .expect("the shapes parse");
+    let name = module.borrow().name();
+    let mut manager = OpPassManager::any(Nesting::Implicit, context);
+    pass.add_to_pipeline(&mut manager, &PassOptions::new())
+        .unwrap_or_else(|error| panic!("`{}` cannot be added: {error}", pass.argument()));
+    if manager.passes().iter().all(|pass| pass.can_schedule_on(&name)) {
+        Schedule::OnTheModule
+    } else {
+        Schedule::OnFunctions
+    }
+}
+
+/// Runs `pipeline` where `schedule` says: on the module as it is, or nested on the functions. A
+/// failure is a failure: it is not retried in the other form.
+fn run_scheduled(pipeline: &str, schedule: Schedule) -> Result<(Globals, Globals), Report> {
+    match schedule {
+        Schedule::OnTheModule => run_shapes(pipeline),
+        Schedule::OnFunctions => run_shapes(&format!("recursive(builtin.function({pipeline}))")),
+    }
 }
 
 /// The registered passes this test cannot run on `SHAPES` as they are, with the reason. Every
@@ -235,48 +303,68 @@ const NOT_RUN: [(&str, &str); 1] = [("test-fail", "fails at the operation it run
 /// The default pipeline of the compiler.
 const DEFAULT: &str = "canonicalizer,cse,sccp,canonicalizer,dce";
 
-/// No pass in the build changes the value of a global: every registered pass runs over the shapes
-/// above (and the default pipeline too), the module verifies after each, and each global yields
-/// the value it did.
+/// The passes that are run on the module, and so reach every global: each must be, or the test
+/// compares nothing for it.
+const ON_THE_MODULE: [&str; 7] = [
+    "canonicalizer",
+    "cse",
+    "dce",
+    "sccp",
+    "sink-operand-defs",
+    "control-flow-sink",
+    "cfg-to-scf",
+];
+
+/// No pass in the build changes what a global is: every registered pass runs over the shapes
+/// above (and the default pipeline too), on the module when it can be scheduled there and on the
+/// functions when it cannot, the module verifies after each, and each global is what it was.
 #[test]
-fn no_registered_pass_changes_the_value_of_a_global() {
+fn no_registered_pass_changes_what_a_global_is() {
     let registered = PassInfo::registered();
     let mut ran = Vec::new();
     let mut failures = Vec::new();
     let mut pipelines = registered
         .iter()
-        .map(|pass| pass.argument())
-        .filter(|argument| !NOT_RUN.iter().any(|(name, _)| name == argument))
-        .map(String::from)
+        .filter(|pass| !NOT_RUN.iter().any(|(name, _)| *name == pass.argument()))
+        .map(|pass| (pass.argument().to_string(), schedule_of(pass)))
         .collect::<Vec<_>>();
-    pipelines.push(DEFAULT.to_string());
-    for pipeline in pipelines {
-        let (before, after) = match run_nested(&pipeline) {
+    pipelines.push((DEFAULT.to_string(), Schedule::OnTheModule));
+    for (pipeline, schedule) in pipelines {
+        let (before, after) = match run_scheduled(&pipeline, schedule) {
             Ok(result) => result,
             Err(error) => {
-                failures.push(format!("`{pipeline}` could not run: {error}"));
+                failures.push(format!("`{pipeline}` ({schedule:?}) could not run: {error}"));
                 continue;
             }
         };
-        let values = |globals: &Globals| {
+        let shapes = |globals: &Globals| {
             globals
                 .iter()
-                .map(|(name, (value, _))| (name.clone(), value.clone()))
+                .map(|(name, (shape, _))| (name.clone(), shape.clone()))
                 .collect::<Vec<_>>()
         };
-        if values(&before) != values(&after) {
+        if shapes(&before) != shapes(&after) {
             failures.push(format!(
-                "`{pipeline}` changed the value of a global:\nbefore: {:?}\nafter: {:?}",
-                values(&before),
-                values(&after)
+                "`{pipeline}` changed a global:\nbefore: {:?}\nafter: {:?}",
+                shapes(&before),
+                shapes(&after)
             ));
         }
-        ran.push(pipeline);
+        ran.push((pipeline, schedule));
     }
     assert!(failures.is_empty(), "{}\n(ran: {ran:?})", failures.join("\n"));
-    for pass in ["canonicalizer", "cse", "dce", "sccp", "sink-operand-defs", "control-flow-sink"] {
-        assert!(ran.iter().any(|ran| ran == pass), "{pass} did not run: {ran:?}");
+    for pass in ON_THE_MODULE {
+        assert!(
+            ran.iter()
+                .any(|(name, schedule)| name == pass && *schedule == Schedule::OnTheModule),
+            "{pass} did not run on the module: {ran:?}"
+        );
     }
+    assert!(
+        ran.iter()
+            .any(|(name, schedule)| name == DEFAULT && *schedule == Schedule::OnTheModule),
+        "the default pipeline did not run on the module: {ran:?}"
+    );
 }
 
 /// The values the shapes hold, as computed from their initializers, are the ones the text states:
@@ -286,7 +374,7 @@ fn the_evaluator_computes_the_values_the_shapes_hold() {
     let (before, _) = run_shapes("").expect("the shapes parse and verify");
     let values = before
         .iter()
-        .map(|(name, (value, _))| (name.as_str(), value.clone()))
+        .map(|(name, (shape, _))| (name.as_str(), shape.value.clone()))
         .collect::<BTreeMap<_, _>>();
     assert_eq!(values["data"], Value::Bytes(alloc::vec![0x0b, 0x0a]));
     assert_eq!(values["k_single"], Value::Int(7));
@@ -326,7 +414,7 @@ fn the_pipeline_removes_unused_operations_and_merges_and_folds_the_rest() {
     assert_eq!(size(&after, "k_operation"), 1, "6 + 7 is the constant 13");
     assert_eq!(size(&after, "k_equal_sums"), 1, "(2 + 1) + (2 + 1) is the constant 6");
     assert_eq!(size(&after, "w_unused"), 1);
-    for (name, (value, _)) in &before {
-        assert_eq!(&after[name].0, value, "`@{name}`");
+    for (name, (shape, _)) in &before {
+        assert_eq!(&after[name].0, shape, "`@{name}`");
     }
 }

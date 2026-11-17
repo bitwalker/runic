@@ -58,6 +58,57 @@ pub trait Terminator {}
 #[operation_trait]
 pub trait NoTerminator {}
 
+/// Each region of this operation ends in `builtin.yield`, and the operation takes the value
+/// yielded: a global's initializer is the example.
+///
+/// Only the verifier of `builtin.yield` reads this trait: it accepts a yield whose parent carries
+/// it, and rejects every other. No pass consults it: what a yield does to a pass is what an
+/// ordinary terminator with an operand does, and a pass must not branch on it.
+#[operation_trait]
+pub trait RegionYieldsValue {}
+
+/// Marks `builtin.yield`: an operation that ends a region whose value its parent takes.
+///
+/// The verifier requires the parent to carry [RegionYieldsValue]. A function is left with
+/// `builtin.ret` and a structured operation with a terminator of its own, so those two are
+/// named in the error; every other parent, a module for one, takes no yielded value. Like
+/// [RegionYieldsValue], only the verifier reads this trait.
+#[operation_trait]
+pub trait YieldsToParent {
+    #[verifier]
+    fn parent_takes_the_yielded_value(op: &Operation, _context: &Context) -> Result<(), Report> {
+        let Some(parent) = op.parent_op() else {
+            return Ok(());
+        };
+        let parent = parent.borrow();
+        if parent.implements::<dyn RegionYieldsValue>() {
+            return Ok(());
+        }
+        let reason = if parent.implements::<dyn crate::CallableOpInterface>() {
+            format!(
+                "`{}` is a function, which is left with `builtin.ret`, not with `builtin.yield`",
+                parent.name()
+            )
+        } else if parent.implements::<dyn crate::RegionBranchOpInterface>() {
+            format!(
+                "`{}` is a structured operation, which is left with its own terminator, not with \
+                 `builtin.yield`",
+                parent.name()
+            )
+        } else {
+            format!(
+                "`{}` does not take a yielded value: `builtin.yield` ends the initializer of a \
+                 global",
+                parent.name()
+            )
+        };
+        Err(crate::diagnostics::report!(
+            message: (format!("invalid operation {}", op.name())),
+            labels: [primary(op.span(), reason)],
+        ))
+    }
+}
+
 /// Marker trait for idemptoent ops, i.e. `op op X == op X (unary) / X op X == X (binary)`
 #[operation_trait]
 pub trait Idempotent {}

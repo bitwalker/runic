@@ -28,7 +28,10 @@ use runic_ir::{
     },
     parse::{Delimiter, ParserError, ParserExt, Token},
     print::AsmPrinter,
-    traits::{IsolatedFromAbove, NoRegionArguments, SingleBlock, SingleRegion, TypeConstraint},
+    traits::{
+        IsolatedFromAbove, NoRegionArguments, RegionYieldsValue, SingleBlock, SingleRegion,
+        TypeConstraint,
+    },
 };
 
 use crate::{
@@ -440,7 +443,7 @@ impl runic_ir::Verify<dyn ModuleEntity> for Table {
 /// one `wasm.const` is not abbreviated.
 #[operation(
     dialect = WasmDialect,
-    traits(SingleRegion, SingleBlock, NoRegionArguments, IsolatedFromAbove),
+    traits(SingleRegion, SingleBlock, NoRegionArguments, IsolatedFromAbove, RegionYieldsValue),
     implements(Symbol, OpPrinter, ModuleEntity)
 )]
 pub struct Global {
@@ -533,9 +536,17 @@ impl Global {
     /// It is `None` for a declaration, and for an initializer that does not verify (one that does
     /// not end with a yield, or yields a value of another type).
     pub fn initializer_value(&self) -> Option<ValueRef> {
-        let last = self.initializer_ops().pop()?;
+        let region = self.initializer();
+        if region.is_empty() {
+            return None;
+        }
+        let last = region.entry().body().back().as_pointer()?;
         let last = last.borrow();
-        let value = last.downcast_ref::<Yield>()?.value().as_value_ref();
+        let yielded = last.downcast_ref::<Yield>()?;
+        if yielded.as_operation().num_operands() != 1 {
+            return None;
+        }
+        let value = yielded.value().as_value_ref();
         (value.borrow().ty() == *self.get_ty()).then_some(value)
     }
 
