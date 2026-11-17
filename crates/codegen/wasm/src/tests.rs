@@ -39,6 +39,7 @@ mod emit {
     mod plan;
     mod sections;
     mod support;
+    mod unit;
 }
 mod eval;
 mod evaluated;
