@@ -24,6 +24,7 @@ std = [
     "runic-dialect-scf/std",
     "runic-dialect-ub/std",
     "runic-dialect-wasm/std",
+    "dep:wasmprinter",
 ]
 
 [dependencies]
@@ -34,6 +35,9 @@ runic-dialect-scf.workspace = true
 runic-dialect-ub.workspace = true
 runic-dialect-wasm.workspace = true
 runic-ir.workspace = true
+wasm-encoder.workspace = true
+wasmparser.workspace = true
+wasmprinter = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Use local paths for dev-only dependency to avoid relying on crates.io during packaging

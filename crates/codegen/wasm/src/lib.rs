@@ -132,6 +132,13 @@
 //! errors. The README of the crate
 //! lists them with their diagnostics, and the unit test `tests::coverage` fails for a source
 //! operation that is neither lowered nor listed.
+//!
+//! **The emitter.** [emit] turns a module in Wasm form into a binary core WebAssembly module. It
+//! first builds a [module description](emit::desc::ModuleDesc), in which every reference between
+//! entities is a recorded fix-up; the [complete-module writer](emit::write::write_module) assigns
+//! the index spaces, resolves the fix-ups and writes the binary with `wasm-encoder`, and
+//! [emit::validate::validate] checks it with `wasmparser` under the backend's feature baseline.
+//! With the `std` feature, [text::print] renders a module in the text format with `wasmprinter`.
 
 #![no_std]
 #![deny(warnings)]
@@ -143,9 +150,12 @@ extern crate std;
 
 pub mod carried;
 pub mod convert;
+pub mod emit;
 mod frames;
 pub mod symbols;
 mod target;
+#[cfg(feature = "std")]
+pub mod text;
 pub mod types;
 mod verify_form;
 

@@ -22,6 +22,15 @@ mod composed;
 mod control;
 mod conventions;
 mod coverage;
+#[cfg(feature = "std")]
+mod emit {
+    //! The emitter's module description and its writers, on descriptions built by hand.
+
+    mod fixups;
+    mod module;
+    mod sections;
+    mod support;
+}
 mod eval;
 mod evaluated;
 mod float;
