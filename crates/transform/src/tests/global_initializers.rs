@@ -94,3 +94,156 @@ fn a_global_with_an_initializer_stays_a_definition_after_dce() -> Result<(), Rep
     assert!(text.contains("wasm.mul"), "{text}");
     Ok(())
 }
+
+// ---- every registered pass ---------------------------------------------------------------------
+
+use alloc::{string::String, vec::Vec};
+
+use runic_ir::{Operation, pass::registry::PassInfo};
+
+/// Initializers of both kinds of global, in the shapes a pass is most likely to change: a single
+/// constant; a duplicate constant before the last operation (the value of the initializer is the
+/// last operation, so merging `2; 1; 2` into `2; 1` changes it); an unused intermediate; two
+/// constants and an operation on them; equal constants in two globals and in a function beside
+/// them.
+const SHAPES: &str = r#"builtin.module public @shapes {
+    builtin.global_variable public @k_single : i32 {
+        %a = arith.constant 7 : i32;
+    };
+    builtin.global_variable public @k_duplicate : i32 {
+        %a = arith.constant 2 : i32;
+        %b = arith.constant 1 : i32;
+        %c = arith.constant 2 : i32;
+    };
+    builtin.global_variable public @k_unused : i32 {
+        %a = arith.constant 4 : i32;
+        %b = arith.constant 5 : i32;
+        %c = arith.constant 6 : i32;
+    };
+    builtin.global_variable public @k_operation : i32 {
+        %a = arith.constant 6 : i32;
+        %b = arith.constant 7 : i32;
+        %c = arith.add %a, %b;
+    };
+    builtin.global_variable public @k_shared_one : i32 {
+        %a = arith.constant 2 : i32;
+        %b = arith.add %a, %a;
+    };
+    builtin.global_variable public @k_shared_two : i32 {
+        %a = arith.constant 2 : i32;
+        %b = arith.add %a, %a;
+    };
+    wasm.global public @w_single : i32 {
+        %a = wasm.const 7 : i32;
+    };
+    wasm.global public @w_duplicate : i32 {
+        %a = wasm.const 2 : i32;
+        %b = wasm.const 1 : i32;
+        %c = wasm.const 2 : i32;
+    };
+    wasm.global public @w_unused : i32 {
+        %a = wasm.const 4 : i32;
+        %b = wasm.const 5 : i32;
+        %c = wasm.const 6 : i32;
+    };
+    wasm.global public @w_operation : i32 {
+        %a = wasm.const 6 : i32;
+        %b = wasm.const 7 : i32;
+        %c = wasm.add %a, %b;
+    };
+    wasm.global public @w_shared_one : i32 {
+        %a = wasm.const 2 : i32;
+        %b = wasm.add %a, %a;
+    };
+    wasm.global public @w_shared_two : i32 {
+        %a = wasm.const 2 : i32;
+        %b = wasm.add %a, %a;
+    };
+    builtin.function public extern("C") @beside() -> i32 {
+        %a = arith.constant 2 : i32;
+        %b = arith.constant 2 : i32;
+        %c = arith.add %a, %b;
+        %d = wasm.const 2 : i32;
+        %e = wasm.add %d, %d;
+        %f = arith.constant 4 : i32;
+        %g = arith.add %c, %f;
+        builtin.ret %g : (i32);
+    };
+}; "#;
+
+/// The text of every global of `module`, each printed alone.
+fn globals(module: runic_ir::OperationRef) -> Vec<String> {
+    let mut found = Vec::new();
+    module.borrow().prewalk_all(|op: &Operation| {
+        let name = op.name().to_string();
+        if name == "builtin.global_variable" || name == "wasm.global" {
+            found.push(op.to_string());
+        }
+    });
+    found
+}
+
+/// Parses `SHAPES`, runs `pipeline` on it and returns the globals before and after.
+fn run_shapes(pipeline: &str) -> Result<(Vec<String>, Vec<String>), Report> {
+    let context = Rc::new(Context::default());
+    context.get_or_register_dialect::<runic_dialect_wasm::WasmDialect>();
+    let module = parse_any(ParserConfig::new(context.clone()), "shapes", SHAPES.to_string())
+        .into_result()?;
+    let before = globals(module);
+    let pipeline = PassPipeline::parse_elements(&module.borrow().name(), pipeline)?;
+    let mut passes = pipeline.load(context.clone(), Nesting::Implicit)?;
+    passes.enable_verifier(true);
+    passes.run(module)?;
+    let after = globals(module);
+    drop(passes);
+    Ok((before, after))
+}
+
+/// The registered passes this test cannot run on `SHAPES` as they are, with the reason. Every
+/// other registered pass, and so every pass added to the build later, is run. (`test-fail` is
+/// registered by `runic-opt`'s own tests, which this crate's test binary does not link: it is
+/// listed so that the list says what a build that links it does.)
+const NOT_RUN: [(&str, &str); 1] = [("test-fail", "fails at the operation it runs on, by design")];
+
+/// No pass in the build changes an initializer: every registered pass runs over the shapes of
+/// initializers above (and the default pipeline too), and each global prints as it was written.
+#[test]
+fn no_registered_pass_changes_an_initializer() {
+    let registered = PassInfo::registered();
+    let mut ran = Vec::new();
+    let mut failures = Vec::new();
+    let mut pipelines = registered
+        .iter()
+        .map(|pass| pass.argument())
+        .filter(|argument| !NOT_RUN.iter().any(|(name, _)| name == argument))
+        .map(String::from)
+        .collect::<Vec<_>>();
+    pipelines.push("canonicalizer,cse,sccp,canonicalizer,dce".to_string());
+    for pipeline in pipelines {
+        // A pass that runs on functions is nested on them, as `local2reg` is in the test above.
+        let (before, after) = match run_shapes(&pipeline) {
+            Ok(result) => result,
+            Err(_) => {
+                match run_shapes(&alloc::format!("recursive(builtin.function({pipeline}))")) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        failures.push(alloc::format!("`{pipeline}` could not run: {error}"));
+                        continue;
+                    }
+                }
+            }
+        };
+        if before != after {
+            failures.push(alloc::format!(
+                "`{pipeline}` changed an initializer:\nbefore:\n{}\nafter:\n{}",
+                before.join("\n"),
+                after.join("\n")
+            ));
+        }
+        ran.push(pipeline);
+    }
+    assert!(failures.is_empty(), "{}\n(ran: {ran:?})", failures.join("\n"));
+    for pass in ["canonicalizer", "cse", "dce", "sccp", "sink-operand-defs", "control-flow-sink"] {
+        assert!(ran.iter().any(|ran| ran == pass), "{pass} did not run: {ran:?}");
+    }
+}

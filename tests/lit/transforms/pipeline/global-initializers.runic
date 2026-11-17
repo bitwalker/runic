@@ -33,4 +33,69 @@ builtin.module public @global_initializers {
         %b = wasm.const 7 : i32;
         %p = wasm.mul %a, %b;
     };
+
+    // The value of an initializer is its last operation: a later operation equal to an earlier
+    // one is not merged with it, so `2; 1; 2` stays and the value stays 2.
+    // CHECK: builtin.global_variable public @duplicate : i32 {
+    // CHECK-NEXT: arith.constant 2 : i32;
+    // CHECK-NEXT: arith.constant 1 : i32;
+    // CHECK-NEXT: arith.constant 2 : i32;
+    // CHECK-NEXT: };
+    builtin.global_variable public @duplicate : i32 {
+        %a = arith.constant 2 : i32;
+        %b = arith.constant 1 : i32;
+        %c = arith.constant 2 : i32;
+    };
+
+    // CHECK: wasm.global public @wasm_duplicate : i32 {
+    // CHECK-NEXT: wasm.const 2 : i32;
+    // CHECK-NEXT: wasm.const 1 : i32;
+    // CHECK-NEXT: wasm.const 2 : i32;
+    // CHECK-NEXT: };
+    wasm.global public @wasm_duplicate : i32 {
+        %a = wasm.const 2 : i32;
+        %b = wasm.const 1 : i32;
+        %c = wasm.const 2 : i32;
+    };
+
+    // An intermediate that nothing uses stays, and a constant used twice is neither copied nor
+    // moved.
+    // CHECK: builtin.global_variable public @shared : i32 {
+    // CHECK-NEXT: arith.constant 1 : i32;
+    // CHECK-NEXT: arith.add
+    // CHECK-NEXT: arith.add
+    // CHECK-NEXT: arith.constant 9 : i32;
+    // CHECK-NEXT: };
+    builtin.global_variable public @shared : i32 {
+        %b = arith.constant 1 : i32;
+        %c = arith.add %b, %b;
+        %d = arith.add %b, %b;
+        %e = arith.constant 9 : i32;
+    };
+
+    // CHECK: wasm.global public @wasm_shared : i32 {
+    // CHECK-NEXT: wasm.const 1 : i32;
+    // CHECK-NEXT: wasm.add
+    // CHECK-NEXT: wasm.add
+    // CHECK-NEXT: };
+    wasm.global public @wasm_shared : i32 {
+        %b = wasm.const 1 : i32;
+        %c = wasm.add %b, %b;
+        %d = wasm.add %b, %b;
+    };
+
+    // Equal constants in a function beside the globals do not reach into them, nor they into it.
+    // CHECK: wasm.global public @twin : i32 {
+    // CHECK-NEXT: wasm.const 2 : i32;
+    // CHECK-NEXT: };
+    wasm.global public @twin : i32 {
+        %a = wasm.const 2 : i32;
+    };
+    // CHECK: builtin.function public extern("C") @beside() -> i32 {
+    builtin.function public extern("C") @beside() -> i32 {
+        %a = wasm.const 2 : i32;
+        %b = wasm.const 2 : i32;
+        %c = wasm.add %a, %b;
+        builtin.ret %c : (i32);
+    };
 };
