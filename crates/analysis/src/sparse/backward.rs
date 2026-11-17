@@ -50,9 +50,11 @@ pub trait SparseBackwardDataFlowAnalysis: 'static {
     /// This function is expected to set lattice values of the call operands, which it takes from
     /// `solver`: no lattice guard is held when it is called. The framework has required the
     /// lattices of the call's results at the point after the call, so the call is visited again
-    /// when they change. By default, this calls [Self::visit_call_operand] for all operands.
+    /// when they change. By default, this calls [Self::visit_call_operand] for every operand of
+    /// the call, its arguments and any other (the callee of an indirect call), as upstream MLIR's
+    /// default does.
     fn visit_external_call(&self, call: &dyn CallOpInterface, solver: &mut DataFlowSolver) {
-        for operand in call.arguments() {
+        for operand in call.as_operation().operands().iter() {
             let operand = operand.borrow();
             self.visit_call_operand(&operand, solver);
         }
@@ -74,6 +76,26 @@ pub trait SparseBackwardDataFlowAnalysis: 'static {
 /// distinct value: an operation that uses one value at several positions (`arith.add %a, %a`) has
 /// one lattice at all of them, as upstream MLIR's array of lattice pointers does, so what is
 /// written through one position is read through the others.
+///
+/// The framework builds one for each call of [SparseBackwardDataFlowAnalysis::visit_operation].
+/// An analysis builds one with [OperandLattices::from_values] to call its own transfer function
+/// from a hook, with operands the framework did not choose, as upstream's `LivenessAnalysis` does
+/// from `visitBranchOperand` with the one operand it is given:
+///
+/// ```rust,ignore
+/// fn visit_branch_operand(&self, operand: &OpOperandImpl, solver: &mut DataFlowSolver) {
+///     let op = operand.owner.borrow();
+///     let mut operands = OperandLattices::from_values([operand.as_value_ref()], solver);
+///     let results = op
+///         .results()
+///         .iter()
+///         .map(|result| solver.require(result.borrow().as_value_ref(), ProgramPoint::after(&*op)))
+///         .collect::<Vec<_>>();
+///     let _ = self.visit_operation(&op, &mut operands, &results, solver);
+/// }
+/// ```
+///
+/// The hooks are called with no lattice guard held, so the guards can be taken there.
 pub struct OperandLattices<'guard, T: AnalysisState + 'static> {
     /// One guard per distinct operand value, in the order of first use
     lattices: SmallVec<[AnalysisStateGuardMut<'guard, T>; 2]>,
@@ -86,11 +108,25 @@ pub struct OperandLattices<'guard, T: AnalysisState + 'static> {
 impl<'guard, T: BuildableAnalysisState> OperandLattices<'guard, T> {
     /// Take the guard of the lattice of each distinct value of `operands` from `solver`.
     fn new(operands: OpOperandRange<'_>, solver: &mut DataFlowSolver) -> Self {
+        Self::from_values(operands.iter().map(|operand| operand.borrow().as_value_ref()), solver)
+    }
+
+    /// The lattices of `values`, one position per value, in order: a value that occurs at several
+    /// positions has one guard, taken from `solver` once, at all of them.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a guard on the lattice of one of `values` is alive: the solver hands out one
+    /// mutable guard on a lattice at a time.
+    pub fn from_values(
+        values: impl IntoIterator<Item = ValueRef>,
+        solver: &mut DataFlowSolver,
+    ) -> Self {
+        let values_in = values.into_iter();
         let mut lattices = SmallVec::new();
         let mut values = SmallVec::<[ValueRef; 2]>::new();
-        let mut positions = SmallVec::with_capacity(operands.len());
-        for operand in operands.iter() {
-            let value = operand.borrow().as_value_ref();
+        let mut positions = SmallVec::with_capacity(values_in.size_hint().0);
+        for value in values_in {
             let index = match values.iter().position(|held| *held == value) {
                 Some(index) => index,
                 None => {
@@ -120,10 +156,18 @@ impl<'guard, T: AnalysisState + 'static> OperandLattices<'guard, T> {
         self.positions.is_empty()
     }
 
-    /// The guards of the distinct lattices, each once: what a function that changes every operand
-    /// lattice the same way (as [set_all_to_exit_states] does) is given.
-    pub fn distinct(&mut self) -> &mut [AnalysisStateGuardMut<'guard, T>] {
-        &mut self.lattices
+    /// The guards of the distinct lattices, each once, in the order of first use: what a function
+    /// that changes every operand lattice the same way (as [set_all_to_exit_states] does) is
+    /// given.
+    ///
+    /// The guards are lent through an iterator, not as a slice, so they cannot be reordered in
+    /// place (`swap`, `sort`): their order maps each operand position to its lattice. A guard
+    /// replaced through what is lent (an assignment, `mem::swap`) rebinds every position of its
+    /// value, which no transfer function needs.
+    pub fn distinct(
+        &mut self,
+    ) -> impl ExactSizeIterator<Item = &mut AnalysisStateGuardMut<'guard, T>> {
+        self.lattices.iter_mut()
     }
 
     /// The guard held for the lattice of `value`, if `value` is one of the operands.
@@ -158,10 +202,18 @@ impl<T: AnalysisState + 'static> core::ops::IndexMut<usize> for OperandLattices<
 }
 
 /// Set each of `lattices` to the exit state of `analysis`.
-pub fn set_all_to_exit_states<A>(
+///
+/// It takes a slice of guards, or the guards of [OperandLattices::distinct].
+pub fn set_all_to_exit_states<'a, 'guard, A>(
     analysis: &A,
-    lattices: &mut [AnalysisStateGuardMut<'_, <A as SparseBackwardDataFlowAnalysis>::Lattice>],
+    lattices: impl IntoIterator<
+        Item = &'a mut AnalysisStateGuardMut<
+            'guard,
+            <A as SparseBackwardDataFlowAnalysis>::Lattice,
+        >,
+    >,
 ) where
+    'guard: 'a,
     A: SparseBackwardDataFlowAnalysis,
 {
     for lattice in lattices {
@@ -280,7 +332,16 @@ where
             for (position, operand) in successor_operands.forwarded().iter().enumerate() {
                 let operand = operand.borrow();
                 unaccounted.set(operand.index(), false);
-                if let Some(argument) = block.arguments().get(position + num_produced) {
+                let argument = block.arguments().get(position + num_produced);
+                // The verifier refuses a branch that gives a successor more operands than it has
+                // arguments, as upstream's `getArgument` asserts.
+                debug_assert!(
+                    argument.is_some(),
+                    "successor {successor_index} of {} has no argument for forwarded operand \
+                     {position} (after {num_produced} produced)",
+                    op.name()
+                );
+                if let Some(argument) = argument {
                     meet_operand_with_input(
                         analysis,
                         operand.as_value_ref(),

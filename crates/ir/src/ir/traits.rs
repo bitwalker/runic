@@ -133,36 +133,34 @@ pub trait BranchOpInterface: crate::Op {
         let operand_group = op.successors()[index].operand_group as usize;
         crate::SuccessorOperandRangeMut::forward(op.operands_mut().group_mut(operand_group))
     }
-    /// Returns the block argument of the successor corresponding to the operand at `operand_index`.
+    /// Returns the block argument of the successor corresponding to the operand at `operand_index`,
+    /// an index into the operation's whole operand list.
+    ///
+    /// The forwarded operands of a successor (see [Self::get_successor_operands]) bind its
+    /// arguments after the produced ones, so the forwarded operand at position `i` binds argument
+    /// `num_produced + i`, as upstream MLIR's `getBranchSuccessorArgument` computes it. When the
+    /// operand is forwarded to more than one successor, the first is the one given.
     ///
     /// Returns `None` if the specified operand is not a successor operand.
     fn get_successor_block_argument(
         &self,
         operand_index: usize,
     ) -> Option<crate::BlockArgumentRef> {
+        use crate::SuccessorOperands;
+
         let op = <Self as crate::Op>::as_operation(self);
-        let operand_groups = op.operands().num_groups();
-        let mut next_index = 0usize;
-        for operand_group in 0..operand_groups {
-            let group_size = op.operands().group(operand_group).len();
-            if (next_index..(next_index + group_size)).contains(&operand_index) {
-                let arg_index = operand_index - next_index;
-                // We found the operand group, now map that to a successor
-                let succ_info =
-                    op.successors().iter().find(|s| operand_group == s.operand_group as usize)?;
-                return succ_info
-                    .block
-                    .borrow()
-                    .successor()
-                    .borrow()
-                    .arguments()
-                    .get(arg_index)
-                    .cloned();
-            }
-
-            next_index += group_size;
+        for successor_index in 0..op.num_successors() {
+            let operands = self.get_successor_operands(successor_index);
+            let Some(position) = operands
+                .forwarded()
+                .iter()
+                .position(|operand| operand.borrow().index as usize == operand_index)
+            else {
+                continue;
+            };
+            let block = op.successors()[successor_index].successor();
+            return block.borrow().arguments().get(operands.num_produced() + position).cloned();
         }
-
         None
     }
     /// Returns the successor that would be chosen with the given constant operands.
@@ -628,8 +626,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        BlockRef, BuilderExt, Op, Report, SourceSpan, StructField, StructType, Type, Value,
-        ValueRef,
+        BlockRef, BuilderExt, Op, OperationRef, Report, SourceSpan, StructField, StructType, Type,
+        Value, ValueRef,
         derive::{EffectOpInterface, operation},
         dialects::{
             builtin::{BuiltinOpBuilder, attributes::TypeAttr},
@@ -834,17 +832,17 @@ mod tests {
 
     /// Build a branch from the entry block of a function taking an `i32` and an `i64` to a block
     /// whose arguments have the types `dest` returns, forwarding the function's arguments at the
-    /// positions in `forwarded`, and verify the branch. The branch is a [BranchTestProducingBr]
-    /// when `producing` is set, and a [BranchTestBr] otherwise.
-    fn verify_branch(
+    /// positions in `forwarded`. The branch is a [BranchTestProducingBr] when `producing` is set,
+    /// and a [BranchTestBr] otherwise. The [Test] owns the context the branch is built in.
+    fn build_branch(
         producing: bool,
         dest: fn(&Context) -> alloc::vec::Vec<Type>,
         forwarded: &[usize],
-    ) -> Result<(), Report> {
+    ) -> (Test, OperationRef) {
         type Args = (BlockRef, alloc::vec::Vec<ValueRef>);
 
         let span = SourceSpan::UNKNOWN;
-        let mut test = Test::named("verify_branch");
+        let mut test = Test::named("build_branch");
         let (i32, i64) = (test.context().i32(), test.context().i64());
         test.with_function("verify_branch", &[i32, i64], &[]);
         let dest_types = dest(test.context());
@@ -869,7 +867,53 @@ mod tests {
             let create = builder.builder_mut().create::<BranchTestBr, Args>(span);
             create(block, operands).unwrap().as_operation_ref()
         };
+        (test, branch)
+    }
+
+    /// Build a branch as [build_branch] does, and verify it.
+    fn verify_branch(
+        producing: bool,
+        dest: fn(&Context) -> alloc::vec::Vec<Type>,
+        forwarded: &[usize],
+    ) -> Result<(), Report> {
+        let (_test, branch) = build_branch(producing, dest, forwarded);
         branch.borrow().verify()
+    }
+
+    /// For each operand index of a branch built as [build_branch] does, and one past them, the
+    /// index of the successor's argument [BranchOpInterface::get_successor_block_argument] gives.
+    fn successor_block_arguments(
+        producing: bool,
+        dest: fn(&Context) -> alloc::vec::Vec<Type>,
+        forwarded: &[usize],
+    ) -> alloc::vec::Vec<Option<usize>> {
+        let (_test, branch) = build_branch(producing, dest, forwarded);
+        let branch = branch.borrow();
+        let interface = branch.as_trait::<dyn BranchOpInterface>().unwrap();
+        (0..=branch.num_operands())
+            .map(|index| {
+                interface
+                    .get_successor_block_argument(index)
+                    .map(|argument| argument.borrow().index())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_forwarded_operand_binds_the_successor_argument_after_the_produced_ones() {
+        let arguments = successor_block_arguments(
+            false,
+            |context| [context.i32(), context.i64()].into(),
+            &[0, 1],
+        );
+        assert_eq!(arguments, [Some(0), Some(1), None]);
+
+        let arguments = successor_block_arguments(
+            true,
+            |context| [context.i1(), context.i32(), context.i64()].into(),
+            &[0, 1],
+        );
+        assert_eq!(arguments, [Some(1), Some(2), None]);
     }
 
     #[test]

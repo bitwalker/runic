@@ -127,16 +127,25 @@ impl<T: 'static> RawAnalysisStateInfoHandle<T> {
         unsafe { self.state.as_ref().borrow_unsafe() }
     }
 
-    pub fn with<F>(&mut self, callback: F)
+    /// Call `callback` with a shared borrow of the state and its [AnalysisStateInfo].
+    ///
+    /// Any number of shared guards on the state may be alive: the borrow taken is shared, and
+    /// what of the info may change through a shared reference (its subscriptions) is in a cell
+    /// of its own.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the state is borrowed mutably (an [AnalysisStateGuardMut] on it is alive).
+    #[track_caller]
+    pub fn with_shared<F>(&self, callback: F)
     where
-        F: FnOnce(&mut T, &mut AnalysisStateInfo),
+        F: FnOnce(&T, &AnalysisStateInfo),
     {
-        let mut info =
-            unsafe { self.state.byte_sub(self.offset as usize).cast::<AnalysisStateInfo>() };
-        let mut state = self.state;
-        let state = unsafe { state.as_mut() };
-        let info = unsafe { info.as_mut() };
-        callback(&mut state.borrow_mut(), info);
+        let raw = unsafe { self.state.as_ref() };
+        let state = raw.borrow();
+        let info = unsafe { self.state.byte_sub(self.offset as usize).cast::<AnalysisStateInfo>() };
+        let info = unsafe { info.as_ref() };
+        callback(&state, info);
     }
 }
 

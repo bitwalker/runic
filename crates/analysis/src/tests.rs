@@ -17,6 +17,7 @@ use runic_ir::{
 mod one_region_loop;
 mod sparse_backward;
 mod sparse_forward_calls;
+mod sparse_require;
 mod tail_calls;
 
 use crate::{

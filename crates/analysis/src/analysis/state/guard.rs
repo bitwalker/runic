@@ -217,7 +217,7 @@ impl<'a, T: AnalysisState + 'static> AnalysisStateGuardMut<'a, T> {
     {
         let analysis = analysis as *const dyn DataFlowAnalysis;
         let analysis = unsafe { NonNull::new_unchecked(analysis.cast_mut()) };
-        let info = unsafe { self.info.as_mut() };
+        let info = unsafe { self.info.as_ref() };
         let state = unsafe { self.state.as_ref() };
         <T as AnalysisStateSubscriptionBehavior>::on_require_analysis(
             state, info, analysis, dependent,

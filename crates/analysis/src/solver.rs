@@ -510,6 +510,15 @@ impl DataFlowSolver {
     /// and returned. Typically, the resulting state will not be very useful, however, as mentioned
     /// above, this analysis will be re-run if the state is ever modified, at which point it may
     /// be able to do something more useful with the results.
+    ///
+    /// The caller may hold shared guards ([AnalysisStateGuard]) on the state, as a transfer
+    /// function is given those of the lattices it reads. A caller that holds the state mutably (an
+    /// [AnalysisStateGuardMut] on it) records the dependency through that guard's own
+    /// [AnalysisStateGuardMut::require] instead.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the state is borrowed mutably.
     #[track_caller]
     pub fn require<'a, T, A>(
         &mut self,
@@ -537,7 +546,7 @@ impl DataFlowSolver {
         log::trace!(target: "dataflow:solver", "    key       = {key:?}");
         log::trace!(target: "dataflow:solver", "    lattice   = {}", core::any::type_name::<T>());
         log::trace!(target: "dataflow:solver", "    dependent = {dependent}");
-        let (info, mut handle) = match self.analysis_state.borrow_mut().entry(key) {
+        let (info, handle) = match self.analysis_state.borrow_mut().entry(key) {
             Entry::Occupied(entry) => {
                 log::trace!(target: "dataflow:solver", "found existing analysis state entry");
                 let info = *entry.get();
@@ -558,7 +567,7 @@ impl DataFlowSolver {
         };
 
         let current_analysis = self.current_analysis.unwrap();
-        handle.with(|state, info| {
+        handle.with_shared(|state, info| {
             <T as AnalysisStateSubscriptionBehavior>::on_require_analysis(
                 state,
                 info,

@@ -285,3 +285,119 @@ fn a_branch_may_pass_one_value_twice() {
     check(&source.replace("PASSED", "%five"), &[("%a", "5"), ("%b", "5"), ("%s", "10")]);
     check(&source.replace("PASSED", "%six"), &[("%a", "5"), ("%b", "6"), ("%s", "11")]);
 }
+
+/// Two functions that call each other, the caller placed before both: `@a` passes `%ax` to `@b`,
+/// and `@b` passes `%bx + 1` back to `@a`, so `%ax` is joined from 0 and 1, and every value is not
+/// a constant. The control passes `%bx` back: every value is 0, and `%bn` is 1.
+#[test]
+fn constants_flow_through_mutually_recursive_calls() {
+    let source = r#"builtin.module public @m {
+    builtin.function public extern("C") @f(%fc: i1) -> i32 {
+        %zero = arith.constant 0 : i32;
+        %r = builtin.call @a(%fc, %zero) : extern("C") (i1, i32) -> i32;
+        builtin.ret %r : (i32);
+    };
+    builtin.function private extern("C") @a(%ac: i1, %ax: i32) -> i32 {
+        cf.cond_br %ac ^rec, ^base : (i1);
+    ^rec:
+        %ar = builtin.call @b(%ac, %ax) : extern("C") (i1, i32) -> i32;
+        builtin.ret %ar : (i32);
+    ^base:
+        builtin.ret %ax : (i32);
+    };
+    builtin.function private extern("C") @b(%bc: i1, %bx: i32) -> i32 {
+        %one = arith.constant 1 : i32;
+        %bn = arith.add %bx, %one;
+        %br = builtin.call @a(%bc, PASSED) : extern("C") (i1, i32) -> i32;
+        builtin.ret %br : (i32);
+    };
+};"#;
+    check(
+        &source.replace("PASSED", "%bn"),
+        &[
+            ("%ax", "T"),
+            ("%bx", "T"),
+            ("%bn", "T"),
+            ("%ar", "T"),
+            ("%br", "T"),
+            ("%r", "T"),
+        ],
+    );
+    check(
+        &source.replace("PASSED", "%bx"),
+        &[
+            ("%ax", "0"),
+            ("%bx", "0"),
+            ("%bn", "1"),
+            ("%ar", "0"),
+            ("%br", "0"),
+            ("%r", "0"),
+        ],
+    );
+}
+
+/// A recursive function that returns its recursive call's two results swapped, and its arguments
+/// from the base case, called with 1 and 2 from a caller placed before it: each result is joined
+/// with the other, and neither is a constant. Returned in the same order, the results are 1 and
+/// 2; with the first result returned twice, the first is 1 and the second is joined from 2 and 1.
+#[test]
+fn a_return_may_return_the_results_of_a_recursive_call_swapped() {
+    let source = r#"builtin.module public @m {
+    builtin.function public extern("C") @f(%fc: i1) -> (i32, i32) {
+        %one = arith.constant 1 : i32;
+        %two = arith.constant 2 : i32;
+        %r1, %r2 = builtin.call @h(%fc, %one, %two) : extern("C") (i1, i32, i32) -> (i32, i32);
+        builtin.ret %r1, %r2 : (i32, i32);
+    };
+    builtin.function private extern("C") @h(%c: i1, %x: i32, %y: i32) -> (i32, i32) {
+        cf.cond_br %c ^rec, ^base : (i1);
+    ^rec:
+        %h1, %h2 = builtin.call @h(%c, %x, %y) : extern("C") (i1, i32, i32) -> (i32, i32);
+        builtin.ret RETURNED : (i32, i32);
+    ^base:
+        builtin.ret %x, %y : (i32, i32);
+    };
+};"#;
+    check(
+        &source.replace("RETURNED", "%h2, %h1"),
+        &[("%h1", "T"), ("%h2", "T"), ("%r1", "T"), ("%r2", "T")],
+    );
+    check(
+        &source.replace("RETURNED", "%h1, %h2"),
+        &[("%h1", "1"), ("%h2", "2"), ("%r1", "1"), ("%r2", "2")],
+    );
+    check(
+        &source.replace("RETURNED", "%h1, %h1"),
+        &[("%h1", "1"), ("%h2", "T"), ("%r1", "1"), ("%r2", "T")],
+    );
+}
+
+/// A recursive call inside a function with a loop, passing the function's second argument to its
+/// first and the loop-carried `%i` to its second; `%i` changes on the loop's back edge after the
+/// first visit of the call. Every argument and loop value ends not a constant. The call's result,
+/// and so the outer call's, is never reached: no return returns a value other than the call's own
+/// result.
+#[test]
+fn a_recursive_call_may_pass_a_loop_carried_value_that_changes_late() {
+    let source = r#"builtin.module public @m {
+    builtin.function public extern("C") @f(%fc: i1) -> i32 {
+        %zero = arith.constant 0 : i32;
+        %r = builtin.call @h(%fc, %zero, %zero) : extern("C") (i1, i32, i32) -> i32;
+        builtin.ret %r : (i32);
+    };
+    builtin.function private extern("C") @h(%c: i1, %x: i32, %y: i32) -> i32 {
+        cf.br ^head(%x : i32);
+    ^head(%i: i32):
+        %one = arith.constant 1 : i32;
+        %n = arith.add %i, %one;
+        cf.cond_br %c ^head(%n : i32), ^out : (i1);
+    ^out:
+        %hr = builtin.call @h(%c, %y, %i) : extern("C") (i1, i32, i32) -> i32;
+        builtin.ret %hr : (i32);
+    };
+};"#;
+    check(
+        source,
+        &[("%x", "T"), ("%y", "T"), ("%i", "T"), ("%n", "T"), ("%hr", "?"), ("%r", "?")],
+    );
+}

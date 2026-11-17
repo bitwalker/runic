@@ -85,7 +85,7 @@ impl AnalysisState for Executable {
 impl AnalysisStateSubscriptionBehavior for Executable {
     fn on_require_analysis(
         &self,
-        info: &mut AnalysisStateInfo,
+        info: &AnalysisStateInfo,
         current_analysis: core::ptr::NonNull<dyn DataFlowAnalysis>,
         dependent: ProgramPoint,
     ) {

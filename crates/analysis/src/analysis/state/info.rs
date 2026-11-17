@@ -205,9 +205,13 @@ pub trait AnalysisStateSubscriptionBehavior: AnalysisState {
     ///
     /// NOTE: Subscriptions are established when an analysis is queried, if you wish to execute
     /// custom behavior when updates are being propagated, see `on_update`.
+    ///
+    /// `info` is shared, because shared guards on the state may be alive when it is called: a
+    /// subscription is recorded through [AnalysisStateInfo::subscribe], whose set has a cell of
+    /// its own.
     fn on_require_analysis(
         &self,
-        info: &mut AnalysisStateInfo,
+        info: &AnalysisStateInfo,
         current_analysis: NonNull<dyn DataFlowAnalysis>,
         dependent: ProgramPoint,
     ) {
@@ -238,7 +242,7 @@ pub trait AnalysisStateSubscriptionBehavior: AnalysisState {
 impl<T: AnalysisState> AnalysisStateSubscriptionBehavior for T {
     default fn on_require_analysis(
         &self,
-        info: &mut AnalysisStateInfo,
+        info: &AnalysisStateInfo,
         current_analysis: NonNull<dyn DataFlowAnalysis>,
         dependent: ProgramPoint,
     ) {
@@ -295,7 +299,7 @@ impl<T: AnalysisState> AnalysisStateSubscriptionBehavior for T {
 }
 
 pub fn on_require_analysis_fallback(
-    info: &mut AnalysisStateInfo,
+    info: &AnalysisStateInfo,
     current_analysis: NonNull<dyn DataFlowAnalysis>,
     dependent: ProgramPoint,
 ) {
