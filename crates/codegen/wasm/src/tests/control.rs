@@ -19,7 +19,8 @@ use runic_ir::{
 };
 
 use super::{
-    eval::{Outcome, Val, run},
+    eval::{Outcome, Val},
+    exec::run,
     *,
 };
 use crate::{

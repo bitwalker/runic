@@ -23,6 +23,42 @@ fn emit_error(functions: &str) -> String {
     error_of(assemble(module.as_operation_ref(), &setup, &[], &BodyConfig::default()).map(|_| ()))
 }
 
+/// The entities of a unit that has none.
+struct None_;
+impl crate::emit::instr::Entities for None_ {
+    fn function(
+        &mut self,
+        user: &runic_ir::Operation,
+        _: &runic_ir::dialects::builtin::attributes::SymbolRefAttr,
+    ) -> Result<crate::emit::desc::FuncId, runic_ir::Report> {
+        Err(crate::emit::instr::unsupported(user, "no entities"))
+    }
+
+    fn global(
+        &mut self,
+        user: &runic_ir::Operation,
+        _: &runic_ir::dialects::builtin::attributes::SymbolRefAttr,
+    ) -> Result<crate::emit::desc::GlobalId, runic_ir::Report> {
+        Err(crate::emit::instr::unsupported(user, "no entities"))
+    }
+
+    fn table(
+        &mut self,
+        user: &runic_ir::Operation,
+        _: &runic_ir::dialects::builtin::attributes::SymbolRefAttr,
+    ) -> Result<crate::emit::desc::TableId, runic_ir::Report> {
+        Err(crate::emit::instr::unsupported(user, "no entities"))
+    }
+
+    fn data(
+        &mut self,
+        user: &runic_ir::Operation,
+        _: &runic_ir::dialects::builtin::attributes::SymbolRefAttr,
+    ) -> Result<crate::emit::desc::DataId, runic_ir::Report> {
+        Err(crate::emit::instr::unsupported(user, "no entities"))
+    }
+}
+
 #[test]
 fn an_operation_that_is_not_of_wasm_form_is_an_error_naming_it() {
     let error = emit_error(
@@ -37,15 +73,35 @@ fn an_operation_that_is_not_of_wasm_form_is_an_error_naming_it() {
 }
 
 #[test]
-fn control_is_an_internal_error_that_it_is_not_implemented_yet() {
-    let error = emit_error(
+fn a_construct_given_to_the_encoder_of_one_instruction_is_a_defect_of_the_backend() {
+    // The walk of a body writes structured control; `encode` writes one instruction.
+    let (_context, module) = parse_module(&module_of(
         "builtin.function public extern(\"wasm\") @f(%a: i32) -> i32 {\n%r = wasm.block %a \
          {\n^b(%v: i32):\nwasm.end %v : (i32);\n} : (i32) -> (i32);\nbuiltin.ret %r : (i32);\n};",
-    );
+    ));
+    let function = function_named(module, "f");
+    let block = {
+        let op = function.borrow();
+        let function = op.downcast_ref::<runic_ir::dialects::builtin::Function>().unwrap();
+        let entry = function.body().entry_block_ref().unwrap();
+        entry.borrow().body().iter().next().unwrap().as_operation_ref()
+    };
+    let mut desc = ModuleDesc::new();
+    let mut body = crate::emit::desc::FunctionBody::default();
+    let mut writer = body.writer();
+    let mut cx = crate::emit::instr::Encoder {
+        desc: &mut desc,
+        entities: &mut None_,
+        params: 1,
+    };
+    let error = error_of(crate::emit::instr::encode(&block.borrow(), &mut writer, &mut cx));
     assert!(
         error.contains(
-            "the emission of `wasm.block` is not implemented yet, which is a defect of the backend"
-        ) && error.contains("`wasm.block` is not implemented yet"),
+            "the WebAssembly body of `wasm.block` could not be encoded, which is a defect of the \
+             backend"
+        ) && error.contains(
+            "structured control is written by the walk of a body, not as one instruction"
+        ),
         "{error}"
     );
 }
@@ -67,40 +123,6 @@ fn a_declaration_has_no_body_to_encode() {
     let (_context, module) =
         parse_module(&module_of("builtin.function public extern(\"wasm\") @f(i32) -> i32;"));
     let mut desc = ModuleDesc::new();
-    struct None_;
-    impl crate::emit::instr::Entities for None_ {
-        fn function(
-            &mut self,
-            user: &runic_ir::Operation,
-            _: &runic_ir::dialects::builtin::attributes::SymbolRefAttr,
-        ) -> Result<crate::emit::desc::FuncId, runic_ir::Report> {
-            Err(crate::emit::instr::unsupported(user, "no entities"))
-        }
-
-        fn global(
-            &mut self,
-            user: &runic_ir::Operation,
-            _: &runic_ir::dialects::builtin::attributes::SymbolRefAttr,
-        ) -> Result<crate::emit::desc::GlobalId, runic_ir::Report> {
-            Err(crate::emit::instr::unsupported(user, "no entities"))
-        }
-
-        fn table(
-            &mut self,
-            user: &runic_ir::Operation,
-            _: &runic_ir::dialects::builtin::attributes::SymbolRefAttr,
-        ) -> Result<crate::emit::desc::TableId, runic_ir::Report> {
-            Err(crate::emit::instr::unsupported(user, "no entities"))
-        }
-
-        fn data(
-            &mut self,
-            user: &runic_ir::Operation,
-            _: &runic_ir::dialects::builtin::attributes::SymbolRefAttr,
-        ) -> Result<crate::emit::desc::DataId, runic_ir::Report> {
-            Err(crate::emit::instr::unsupported(user, "no entities"))
-        }
-    }
     let error = error_of(encode_function(
         function_named(module, "f"),
         &mut desc,
@@ -148,4 +170,17 @@ fn each_use_of_a_feature_is_recorded_and_nothing_else() {
     assert_eq!(features_of(&reference), (Vec::from([Feature::ReferenceTypes]), false));
     let tail = f("(%a: i32) -> i32", "builtin.tail_call @f(%a) : extern(\"wasm\") (i32) -> i32;");
     assert_eq!(features_of(&tail), (Vec::from([Feature::TailCall]), false));
+    // A construct with one result and no inputs has a value type for its block type; one with
+    // inputs a function type, which is multivalue.
+    let one_result = f(
+        "(%a: i32) -> i32",
+        "%r = wasm.block {\nwasm.end %a : (i32);\n} : () -> (i32);\nbuiltin.ret %r : (i32);",
+    );
+    assert_eq!(features_of(&one_result), (Vec::new(), false));
+    let with_inputs = f(
+        "(%a: i32) -> i32",
+        "%r = wasm.block %a {\n^b(%v: i32):\nwasm.end %v : (i32);\n} : (i32) -> \
+         (i32);\nbuiltin.ret %r : (i32);",
+    );
+    assert_eq!(features_of(&with_inputs), (Vec::from([Feature::Multivalue]), false));
 }

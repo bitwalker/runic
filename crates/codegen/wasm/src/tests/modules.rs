@@ -7,7 +7,8 @@ use alloc::vec;
 use runic_ir::{OperationRef, RawWalk, dialects::builtin::World};
 
 use super::{
-    eval::{Machine, Outcome, Val, run_in},
+    eval::{Machine, Outcome, Val},
+    exec::{PAGE, run_in},
     *,
 };
 
@@ -54,7 +55,7 @@ fn nested(module: ModuleRef, name: &str) -> ModuleRef {
 
 /// Runs `@function` of `module` on the address 16, which holds 21, with the stack pointer at 256.
 fn run_on_21(module: ModuleRef, function: &str) -> Outcome {
-    let mut machine = Machine::new(256);
+    let mut machine = Machine::new(PAGE);
     machine.globals.insert(String::from("__stack_pointer"), Val::i32(256));
     machine.write_words(16, &[21]);
     let outcome = run_in(&mut machine, function_named(module, function), &[Val::i32(16)]);

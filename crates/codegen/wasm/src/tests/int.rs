@@ -17,7 +17,8 @@ use runic_dialect_arith::CmpPredicate;
 use runic_ir::{Int, OperationRef, dialects::builtin::ModuleRef};
 
 use super::{
-    eval::{Outcome, Val, run},
+    eval::{Outcome, Val},
+    exec::{Cache, run, run_cached},
     *,
 };
 use crate::{convert::convert_module, verify_wasm_form};
@@ -255,13 +256,14 @@ pub(super) fn check_tuples(
     let lowered = lower_text(context, &param_names, &result_names, body)
         .unwrap_or_else(|report| panic!("{what} `{body}`: {}", describe(&report)));
     let mut count = 0;
+    let mut cache = Cache::default();
     for operands in tuples {
         let arguments = operands
             .iter()
             .zip(params)
             .map(|(value, ty)| Val::new(value.unsigned() as u64, ty.carrier()))
             .collect::<Vec<_>>();
-        let outcome = run(lowered.function, &arguments);
+        let outcome = run_cached(&mut cache, lowered.function, &arguments);
         let at = || format!("{what} `{body}` at ({})", describe_operands(params, operands));
         let expected = reference(operands);
         assert_eq!(expected.len(), results.len(), "{}: the reference", at());

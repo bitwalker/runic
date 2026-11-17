@@ -10,7 +10,8 @@ use alloc::{vec, vec::Vec};
 use runic_ir::pass::{Nesting, PassManager, PassPipeline};
 
 use super::{
-    eval::{Machine, Outcome, Val, run_in},
+    eval::{Machine, Outcome, Val},
+    exec::{PAGE, run_in},
     *,
 };
 use crate::add_lowering_passes;
@@ -57,22 +58,22 @@ fn i32s(values: &[u32]) -> Vec<Val> {
 fn the_array_sum_adds_the_words_it_is_given() {
     let (_context, module) = lowered(PROGRAMS, "sum");
     let sum = function(module, "sum");
-    let mut machine = Machine::new(64);
+    let mut machine = Machine::new(PAGE);
     machine.write_words(16, &[1, 2, 3, 4, 5]);
     let mut run = |pointer: u32, count: u32| run_in(&mut machine, sum, &i32s(&[pointer, count]));
     assert_eq!(run(16, 5), Outcome::Values(i32s(&[15])));
     assert_eq!(run(16, 1), Outcome::Values(i32s(&[1])));
     assert_eq!(run(20, 3), Outcome::Values(i32s(&[9])));
     // No element is read: a pointer outside the memory is not touched.
-    assert_eq!(run(1000, 0), Outcome::Values(i32s(&[0])));
+    assert_eq!(run(PAGE as u32 + 1000, 0), Outcome::Values(i32s(&[0])));
     // A read past the end of the memory traps.
-    assert_eq!(run(60, 2), Outcome::Trap);
+    assert_eq!(run(PAGE as u32 - 4, 2), Outcome::Trap);
 }
 
 #[test]
 fn the_array_sum_wraps_at_32_bits() {
     let (_context, module) = lowered(PROGRAMS, "sum");
-    let mut machine = Machine::new(32);
+    let mut machine = Machine::new(PAGE);
     machine.write_words(0, &[u32::MAX, 2, 7]);
     let outcome = run_in(&mut machine, function(module, "sum"), &i32s(&[0, 3]));
     assert_eq!(outcome, Outcome::Values(i32s(&[8])));
@@ -134,7 +135,7 @@ fn narrow_integers_wrap_in_their_own_width_and_compare_as_signed_or_unsigned() {
 fn the_global_counter_is_read_and_written_at_the_address_it_is_given() {
     let (_context, module) = lowered(MEMORY, "global");
     let bump = function(module, "bump");
-    let mut machine = Machine::new(32);
+    let mut machine = Machine::new(PAGE);
     machine.data.insert("counter".into(), 8);
     machine.write_words(8, &[5]);
     // The old value and the address come back, and the new value is in memory.

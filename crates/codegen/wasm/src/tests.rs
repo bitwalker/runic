@@ -29,6 +29,7 @@ mod emit {
     //! against the evaluator.
 
     mod bodies;
+    mod control;
     mod errors;
     mod fixups;
     mod instructions;

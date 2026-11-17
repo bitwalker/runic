@@ -106,3 +106,65 @@ fn the_parameters_are_the_first_locals_in_order() {
     let locals = params.iter().map(|param| plan.locals.of(*param)).collect::<Vec<_>>();
     assert_eq!(locals, [Some(0), Some(1)], "{}", plan.plan);
 }
+
+/// The results of the operations of the body of the construct at `position` of the plan of the
+/// body's block, in order (the first result of each that has one).
+fn nested_results(plan: &FunctionPlan, position: usize) -> Vec<ValueRef> {
+    let construct = plan.plan.steps[position].op;
+    let block = construct.borrow().regions().iter().next().unwrap().entry_block_ref().unwrap();
+    let nested = plan.plan_of(block).expect("the body of the construct is planned");
+    nested
+        .steps
+        .iter()
+        .filter_map(|step| {
+            step.op
+                .borrow()
+                .results()
+                .iter()
+                .next()
+                .map(|result| result.borrow().as_value_ref())
+        })
+        .collect()
+}
+
+#[test]
+fn a_value_defined_before_a_loop_and_used_inside_it_keeps_its_local_to_the_loop_s_end() {
+    let (_context, _module, plan) = planned(super::control::LIVE_ACROSS_LOOP, true);
+    // `d` (0) dies at `d2` (1), just before the loop: `v` (2) takes its local.
+    assert_eq!(locals_of(&plan, &[0, 2]), [Some(2), Some(2)], "{}", plan.plan);
+    let v = plan.locals.of(result(&plan, 2));
+    // No value of the loop's body (4) shares `v`'s local, although `v`'s one use in the body is
+    // its first operation.
+    for value in nested_results(&plan, 4) {
+        let local = plan.locals.of(value);
+        assert!(local.is_none() || local != v, "a value of the loop takes `v`'s local {v:?}");
+    }
+}
+
+#[test]
+fn the_arguments_of_a_region_take_the_local_of_an_input_whose_last_use_is_the_construct() {
+    // `a` and `b` are used last as the inputs of the `if`; its first region's arguments take
+    // their locals, and its second region's arguments take those of the first's.
+    let function = "builtin.function public extern(\"wasm\") @f(%c: i32, %x: i32) -> i32 {\n%a = \
+                    wasm.add %x, %x;\n%b = wasm.mul %a, %a;\n%r = wasm.if %c, %b then {\n^t(%p: \
+                    i32):\n%q = wasm.add %p, %p;\nwasm.end %q : (i32);\n} else {\n^e(%p: \
+                    i32):\n%s = wasm.sub %p, %p;\nwasm.end %s : (i32);\n} : (i32, i32) -> \
+                    (i32);\nbuiltin.ret %r : (i32);\n};";
+    let (_context, _module, plan) = planned(function, true);
+    let construct = plan.plan.steps[2].op;
+    let arguments = construct
+        .borrow()
+        .regions()
+        .iter()
+        .map(|region| {
+            let block = region.entry_block_ref().unwrap();
+            let argument = block.borrow().argument_values().next().unwrap();
+            plan.locals.of(argument)
+        })
+        .collect::<Vec<_>>();
+    // `a` is in local 2, `b` (used once, by the `if`, the operation right after it) on the stack.
+    assert_eq!(locals_of(&plan, &[0]), [Some(2)]);
+    assert_eq!(arguments, [Some(2), Some(2)], "{}", plan.plan);
+    let (_context, _module, plan) = planned(function, false);
+    assert_eq!(plan.locals.emitter().len(), 3, "without reuse: `a` and the two arguments");
+}

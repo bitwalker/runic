@@ -1,15 +1,16 @@
-//! The emitted modules of 6c's straight-line lowered functions, run by `wasmi` against the
-//! evaluator ([agree](crate::tests::exec::agree)).
+//! The emitted modules of 6c's lowered functions, run by `wasmi` against the evaluator
+//! ([agree](crate::tests::exec::agree)).
 //!
 //! Two sources, found by trying: the operations of 6c's differential tests of the numeric
 //! patterns (`int.rs`, `float.rs`, `composed.rs`), rebuilt here at every type and lowered as
 //! they lower them; and every function of 6c's whole programs and of the lit files of the
 //! lowering whose functions it evaluates (`programs*.runic`, `indirect-calls.runic`,
-//! `frames-pipeline.runic`, `numeric-*.runic`), lowered by each file's pipelines. A function is
-//! run when it, and every function it can reach, holds no control (Task 3 emits control); it is
-//! skipped and counted otherwise. The counts are asserted, so that a change in the lowering shows.
+//! `frames-pipeline.runic`, `numeric-*.runic`), lowered by each file's pipelines, with the
+//! declarations their branching programs call given bodies first ([DEFINITIONS]). A function is
+//! run unless it can reach a declaration (which the evaluator cannot call); it is skipped and
+//! counted then. The counts are asserted, so that a change in the lowering shows.
 
-use alloc::{format, string::String, vec, vec::Vec};
+use alloc::{format, vec, vec::Vec};
 
 use runic_dialect_arith::{CmpFPredicate, CmpPredicate};
 use runic_dialect_wasm as wasm;
@@ -18,20 +19,17 @@ use runic_ir::{
     dialects::builtin::{Call, Function, GlobalVariable, TailCall},
 };
 
-use crate::{
-    emit::body::has_control,
-    tests::{
-        context,
-        eval::Val,
-        exec::{Cache, PAGE, Setup, agree_cached, ops_of},
-        int::{Ty, WIDTHS, edges, lower_text, product, types},
-        parse_module, run_pipeline,
-    },
+use crate::tests::{
+    context,
+    eval::Val,
+    exec::{Cache, PAGE, Setup, agree_cached, ops_of},
+    int::{Ty, WIDTHS, edges, lower_text, product, types},
+    parse_module, run_pipeline,
 };
 
 /// The operations of the `wasm` dialect and `builtin` that the evaluator interprets; a function
 /// that holds another is not compared.
-const EVALUATED: [&str; 71] = [
+const EVALUATED: [&str; 73] = [
     "wasm.const",
     "wasm.constf",
     "wasm.select",
@@ -99,18 +97,17 @@ const EVALUATED: [&str; 71] = [
     "builtin.ret",
     "builtin.load_local",
     "builtin.store_local",
-    // Control, which a function that is run does not hold.
     "wasm.block",
     "wasm.loop",
     "wasm.if",
     "wasm.end",
+    "wasm.br",
+    "wasm.br_table",
 ];
 
 /// Why a function is not run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Skip {
-    /// It, or a function it can reach, holds control.
-    Control,
     /// It can reach a declaration, which the evaluator cannot call.
     Declaration,
     /// It holds an operation the evaluator does not interpret.
@@ -124,8 +121,6 @@ struct Counts {
     functions: usize,
     /// Cases run (a function on one tuple of arguments).
     cases: usize,
-    /// Functions skipped because they hold control.
-    control: usize,
     /// Functions skipped because they reach a declaration.
     declaration: usize,
     /// Functions skipped because they hold an operation the evaluator does not interpret.
@@ -135,7 +130,6 @@ struct Counts {
 impl Counts {
     fn skip(&mut self, why: Skip) {
         match why {
-            Skip::Control => self.control += 1,
             Skip::Declaration => self.declaration += 1,
             Skip::Unevaluated => self.unevaluated += 1,
         }
@@ -172,9 +166,8 @@ fn callees(function: OperationRef) -> Vec<OperationRef> {
     found
 }
 
-/// Whether `function` is run, or why not; the functions of its module that it cannot reach are
-/// added to `stubs` by name (their bodies are not emitted).
-fn runnable(function: OperationRef) -> Result<Vec<String>, Skip> {
+/// Whether `function` is run, or why not.
+fn runnable(function: OperationRef) -> Result<(), Skip> {
     let mut reached = vec![function];
     let mut next = 0;
     while next < reached.len() {
@@ -182,9 +175,6 @@ fn runnable(function: OperationRef) -> Result<Vec<String>, Skip> {
         next += 1;
         if current.borrow().downcast_ref::<Function>().unwrap().is_declaration() {
             return Err(Skip::Declaration);
-        }
-        if has_control(entry(current)) {
-            return Err(Skip::Control);
         }
         let mut unknown = false;
         let _ = current.raw_prewalk::<Forward, _, _>(|op: OperationRef| -> WalkResult<Report> {
@@ -202,15 +192,7 @@ fn runnable(function: OperationRef) -> Result<Vec<String>, Skip> {
             }
         }
     }
-    let module = function.borrow().parent_op().unwrap();
-    Ok(ops_of(module)
-        .into_iter()
-        .filter(|op| {
-            op.borrow().downcast_ref::<Function>().is_some_and(|f| !f.is_declaration())
-                && !reached.contains(op)
-        })
-        .map(|op| op.borrow().downcast_ref::<Function>().unwrap().get_name().as_str().into())
-        .collect())
+    Ok(())
 }
 
 /// Runs `function` on `cases` under `setup` both ways when it is runnable; counts it.
@@ -218,14 +200,10 @@ fn runnable(function: OperationRef) -> Result<Vec<String>, Skip> {
 fn sweep(counts: &mut Counts, setup: &Setup, function: OperationRef, cases: &[Vec<Val>]) {
     match runnable(function) {
         Err(why) => counts.skip(why),
-        Ok(stubs) => {
-            let setup = Setup {
-                stubs,
-                ..setup.clone()
-            };
+        Ok(()) => {
             let mut cache = Cache::default();
             for case in cases {
-                agree_cached(&mut cache, &setup, function, case);
+                agree_cached(&mut cache, setup, function, case);
             }
             counts.functions += 1;
             counts.cases += cases.len();
@@ -261,7 +239,7 @@ fn sweep_text(
 }
 
 #[test]
-fn the_integer_operations_of_6c_agree_where_they_are_straight_line() {
+fn the_integer_operations_of_6c_agree() {
     let context = context();
     let mut counts = Counts::default();
     let predicates = [
@@ -355,13 +333,12 @@ fn the_integer_operations_of_6c_agree_where_they_are_straight_line() {
     let assert = ["i1"];
     let flags = int_vals(&Ty::int(1)).into_iter().map(|v| vec![v]).collect::<Vec<_>>();
     sweep_text(&mut counts, &context, &assert, &[], "cf.assert %a, \"the message\"", &flags);
-    // Recorded as found: what ran, and what waits for Task 3.
+    // Recorded as found.
     assert_eq!(
         counts,
         Counts {
-            functions: 946,
-            cases: 42022,
-            control: 99,
+            functions: 1045,
+            cases: 48826,
             declaration: 0,
             unevaluated: 0,
         }
@@ -399,7 +376,7 @@ fn float_vals(width: u32) -> Vec<Val> {
 }
 
 #[test]
-fn the_float_operations_of_6c_agree_where_they_are_straight_line() {
+fn the_float_operations_of_6c_agree() {
     let context = context();
     let mut counts = Counts::default();
     for (t, width) in [("f32", 32), ("f64", 64)] {
@@ -466,7 +443,6 @@ fn the_float_operations_of_6c_agree_where_they_are_straight_line() {
         Counts {
             functions: 152,
             cases: 9090,
-            control: 0,
             declaration: 0,
             unevaluated: 0,
         }
@@ -514,6 +490,33 @@ const FILES: [(&str, &str, &[&str]); 8] = [
         "numeric-int.runic",
         include_str!("../../../../../../tests/lit/codegen/wasm/numeric-int.runic"),
         &["convert-to-wasm,wasm-verify-form"],
+    ),
+];
+
+/// The declarations of the programs that a function to be run calls, each with a body that
+/// replaces it before the lowering, so that the function can be run: a declaration and its
+/// definition.
+const DEFINITIONS: [(&str, &str); 4] = [
+    (
+        "builtin.function public extern(\"C\") @on_zero(i32) -> i32;",
+        "builtin.function public extern(\"C\") @on_zero(%v: i32) -> i32 {\n%k = arith.constant \
+         100 : i32;\n%r = arith.add %v, %k;\nbuiltin.ret %r : (i32);\n};",
+    ),
+    (
+        "builtin.function public extern(\"C\") @on_one(i32) -> i32;",
+        "builtin.function public extern(\"C\") @on_one(%v: i32) -> i32 {\n%k = arith.constant 3 : \
+         i32;\n%r = arith.mul %v, %k;\nbuiltin.ret %r : (i32);\n};",
+    ),
+    (
+        "builtin.function public extern(\"C\") @g(i32) -> i32;",
+        "builtin.function public extern(\"C\") @g(%v: i32) -> i32 {\n%k = arith.constant 5 : \
+         i32;\n%r = arith.sub %v, %k;\nbuiltin.ret %r : (i32);\n};",
+    ),
+    (
+        "builtin.function public extern(\"C\") @fill(ptr<struct<i32, i64>>) -> i32;",
+        "builtin.function public extern(\"C\") @fill(%p: ptr<struct<i32, i64>>) -> i32 {\n%f = \
+         mem.gep %p, [0];\n%v = mem.load %f;\n%k = arith.constant 11 : i32;\n%w = arith.add %v, \
+         %k;\nmem.store %w, %f;\n%two = arith.constant 2 : i32;\nbuiltin.ret %two : (i32);\n};",
     ),
 ];
 
@@ -567,15 +570,26 @@ fn program_setup(module: OperationRef) -> Setup {
 }
 
 #[test]
-fn the_functions_of_6c_s_programs_agree_where_they_are_straight_line() {
+fn the_functions_of_6c_s_programs_agree() {
     let mut counts = Counts::default();
     for (file, text, pipelines) in FILES {
         for chunk in text.split("// -----") {
             if !chunk.contains("builtin.module") {
                 continue;
             }
+            // Each declaration line (not a `CHECK` line that quotes one) becomes its definition.
+            let chunk = chunk
+                .lines()
+                .map(|line| {
+                    DEFINITIONS
+                        .iter()
+                        .find(|(declaration, _)| line.trim() == *declaration)
+                        .map_or(line, |(_, definition)| definition)
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
             for pipeline in pipelines {
-                let (context, module) = parse_module(chunk);
+                let (context, module) = parse_module(&chunk);
                 run_pipeline(&context, module.as_operation_ref(), pipeline).unwrap_or_else(
                     |report| panic!("{file}: {}", runic_ir::testing::text::describe(&report)),
                 );
@@ -605,10 +619,9 @@ fn the_functions_of_6c_s_programs_agree_where_they_are_straight_line() {
     assert_eq!(
         counts,
         Counts {
-            functions: 197,
-            cases: 980,
-            control: 34,
-            declaration: 3,
+            functions: 240,
+            cases: 1190,
+            declaration: 2,
             unevaluated: 0,
         }
     );

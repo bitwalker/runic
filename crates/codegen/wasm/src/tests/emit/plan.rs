@@ -217,3 +217,68 @@ fn an_operation_without_results_and_a_root_with_an_unused_result_end_their_trees
          wasm.add [stack %1, get arg1]: root, drop\n3 builtin.ret [get %1]: root\n"
     );
 }
+
+#[test]
+fn a_value_used_only_in_a_nested_region_is_in_a_local() {
+    // The block takes no operand: `a`'s use inside it is not an operand of the block, so the
+    // `mul` is a root whose result is set.
+    let body = "%a = wasm.mul %x, %y;\n%r = wasm.block {\n%b = wasm.add %a, %z;\nwasm.end %b : \
+                (i32);\n} : () -> (i32);\nbuiltin.ret %r : (i32);";
+    assert_eq!(
+        plan_of(&f("", body)),
+        "0 wasm.mul [get arg0, get arg1]: root, set\n1 wasm.block: on the stack\n2 builtin.ret \
+         [stack %1]: root\n"
+    );
+}
+
+#[test]
+fn a_constant_used_at_three_depths_is_written_again_at_each() {
+    // Used here, in the block and in the `if` inside the block: no local, written at each use.
+    let body = "%k = wasm.const 5 : i32;\n%a = wasm.add %x, %k;\n%r = wasm.block {\n%b = wasm.add \
+                %a, %k;\n%s = wasm.if %z then {\n%d = wasm.mul %b, %k;\nwasm.end %d : (i32);\n} \
+                else {\nwasm.end %b : (i32);\n} : (i32) -> (i32);\nwasm.end %s : (i32);\n} : () \
+                -> (i32);\nbuiltin.ret %r : (i32);";
+    assert_eq!(
+        plan_of(&f("", body)),
+        "0 wasm.const: written again\n1 wasm.add [get arg0, const %0]: root, set\n2 wasm.block: \
+         on the stack\n3 builtin.ret [stack %2]: root\n"
+    );
+}
+
+#[test]
+fn a_value_teed_into_a_tree_whose_root_is_an_if_that_uses_it_in_its_arm() {
+    // `a` is the condition of the `if` and is used again inside its first arm: that use is not
+    // an operand of an operation on the chain, so `a` stays on the stack and is teed; the arm
+    // reads the local after the tee, when the `if` runs.
+    let body = "%a = wasm.mul %x, %y;\n%r = wasm.if %a then {\n%b = wasm.add %a, %x;\nwasm.end %b \
+                : (i32);\n} else {\nwasm.end %y : (i32);\n} : (i32) -> (i32);\nbuiltin.ret %r : \
+                (i32);";
+    assert_eq!(
+        plan_of(&f("", body)),
+        "0 wasm.mul [get arg0, get arg1]: on the stack, tee\n1 wasm.if [stack %0]: on the \
+         stack\n2 builtin.ret [stack %1]: root\n"
+    );
+}
+
+#[test]
+fn the_branches_of_a_branch_table_count_as_the_table_s_own_use_of_its_values() {
+    // `v` is pushed by the table; the `wasm.br` of each region carries the same value, which is
+    // no other use: `v` stays on the stack without a tee.
+    let body = "%r = wasm.block {\n%v = wasm.add %x, %y;\nwasm.br_table %z, %v [{ wasm.br 0 %v : \
+                (i32); }] default { wasm.br 0 %v : (i32); } : (i32, i32);\n} : () -> \
+                (i32);\nbuiltin.ret %r : (i32);";
+    let (_context, module) = parse_module(&module_of(&f("", body)));
+    let function = function_named(module, "f");
+    let block = {
+        let op = function.borrow();
+        let function = op.downcast_ref::<runic_ir::dialects::builtin::Function>().unwrap();
+        let entry = function.body().entry_block_ref().unwrap();
+        let construct = entry.borrow().body().iter().next().unwrap().as_operation_ref();
+        construct.borrow().regions().iter().next().unwrap().entry_block_ref().unwrap()
+    };
+    assert_eq!(
+        format!("{}", plan_block(block)),
+        "0 wasm.add [get outer, get outer]: on the stack\n1 wasm.br_table [stack %0, get outer]: \
+         root\n"
+    );
+}

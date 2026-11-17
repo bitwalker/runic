@@ -9,7 +9,8 @@
 use alloc::vec;
 
 use super::{
-    eval::{Machine, Outcome, Val, run_in},
+    eval::{Machine, Outcome, Val},
+    exec::run_in,
     *,
 };
 

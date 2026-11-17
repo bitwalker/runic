@@ -164,7 +164,7 @@ pub const INSTRUCTIONS: [&str; 90] = [
 ];
 
 /// The structured control of the dialect: constructs, their ends and branches. A function body's
-/// walk handles them; [encode] does not.
+/// walk ([body](super::body)) writes them; [encode] does not.
 pub const CONTROL: [&str; 6] =
     ["wasm.block", "wasm.loop", "wasm.if", "wasm.end", "wasm.br", "wasm.br_table"];
 
@@ -198,9 +198,10 @@ pub fn is_control(op: &Operation) -> bool {
 }
 
 /// The values `op` takes from the Wasm stack, in the order they are pushed: the first is pushed
-/// first. For every operation but three this is the order of its operands; `wasm.select %c, %a,
-/// %b` pushes `a, b, c`, and `wasm.call_indirect @t, %i(%args..)` (and its tail form) pushes the
-/// arguments, then `i`.
+/// first. For every operation but five this is the order of its operands; `wasm.select %c, %a,
+/// %b` pushes `a, b, c`, `wasm.call_indirect @t, %i(%args..)` (and its tail form) pushes the
+/// arguments, then `i`, `wasm.if %c, %inputs..` pushes the inputs, then `c`, and `wasm.br_table
+/// %i, %values..` pushes the values, then `i`.
 pub fn stack_operands(op: &Operation) -> Vec<ValueRef> {
     let operands = op
         .operands()
@@ -209,7 +210,9 @@ pub fn stack_operands(op: &Operation) -> Vec<ValueRef> {
         .collect::<Vec<_>>();
     match name_of(op).as_str() {
         "wasm.select" if operands.len() == 3 => Vec::from([operands[1], operands[2], operands[0]]),
-        "wasm.call_indirect" | "wasm.return_call_indirect" if !operands.is_empty() => {
+        "wasm.call_indirect" | "wasm.return_call_indirect" | "wasm.if" | "wasm.br_table"
+            if !operands.is_empty() =>
+        {
             let mut pushed = operands[1..].to_vec();
             pushed.push(operands[0]);
             pushed
@@ -251,15 +254,15 @@ pub fn unsupported_at(name: &str, span: SourceSpan, label: String) -> Report {
     )
 }
 
-/// The internal error of an operation that this version of the emitter does not write yet: a
-/// defect of the backend, not of the IR.
-pub fn not_implemented(op: &Operation) -> Report {
-    let name = name_of(op);
+/// The internal error of a body whose plan the encoder cannot follow, at `op`, with `what` saying
+/// what went wrong: a defect of the backend, not of the IR.
+pub fn defect(op: &Operation, what: &str) -> Report {
     report!(
         message: (format!(
-            "the emission of `{name}` is not implemented yet, which is a defect of the backend"
+            "the WebAssembly body of `{}` could not be encoded, which is a defect of the backend",
+            name_of(op)
         )),
-        labels: [primary(op.span(), format!("`{name}` is not implemented yet"))],
+        labels: [primary(op.span(), String::from(what))],
     )
 }
 
@@ -608,8 +611,9 @@ fn as_op<T: runic_ir::Op>(op: &Operation) -> Result<&T, Report> {
 /// module needs a data-count section).
 ///
 /// `builtin.ret` is written `return`; a walk that ends the function with it writes nothing
-/// instead. An operation of [CONTROL] is the internal error that it is not implemented yet; any
-/// other operation that is not of [INSTRUCTIONS] is an error naming it.
+/// instead. An operation of [CONTROL] is written by the walk of a body
+/// ([body](super::body)), not here: given one, this is a [defect]. Any other operation that is not
+/// of [INSTRUCTIONS] is an error naming it.
 pub fn encode(
     op: &Operation,
     writer: &mut CodeWriter<'_>,
@@ -618,7 +622,10 @@ pub fn encode(
     use Instruction as I;
     let name = name_of(op);
     if CONTROL.contains(&name.as_str()) {
-        return Err(not_implemented(op));
+        return Err(defect(
+            op,
+            "structured control is written by the walk of a body, not as one instruction",
+        ));
     }
     if let Some(short) = name.strip_prefix("wasm.")
         && let Some(instruction) = numeric_of(op, short)?

@@ -13,7 +13,8 @@ use alloc::{collections::BTreeSet, format, vec, vec::Vec};
 use runic_ir::Int;
 
 use super::{
-    eval::{Outcome, Val, run},
+    eval::{Outcome, Val},
+    exec::run,
     int::{Expect, Ty, amounts, check, check_tuples, edges, lower_text, product, types},
     *,
 };

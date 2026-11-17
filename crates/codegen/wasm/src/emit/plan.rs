@@ -28,6 +28,18 @@
 //!    after it. A value read that way is never defined in such a later subtree: a value that is
 //!    an operand of an operation on the chain being built is not teed inside the chain, so its
 //!    local is set before its first fetch.
+//!
+//! **Regions.** Each block is planned on its own: a construct (`wasm.block`, `wasm.loop`,
+//! `wasm.if`) is one operation of its block, whose stack operands are its inputs (and, for an
+//! `if`, its condition, pushed last), and the blocks of its regions have plans of their own. A
+//! value of an outer block that an inner block uses is fetched from its local there, or written
+//! again when it is a constant. A use nested in a region of an operation is not an operand of that
+//! operation: "other uses" and "on the chain" are read by the use's direct owner. That reading is
+//! sound for the tee: a use nested in a region of an operation on the chain runs when that
+//! operation's instruction runs, which is after all its operands were pushed, so after the tee;
+//! the only reads that run early are fetches, and those are of operands. The one exception to
+//! reading by the direct owner is the `wasm.br` of a region of a `wasm.br_table`: it carries the
+//! table's own values, which the table pushes, so its uses count as uses by the table.
 
 use alloc::{format, string::String, vec, vec::Vec};
 use core::fmt;
@@ -319,7 +331,8 @@ fn build(
 ///
 /// It can when `candidate` has exactly one result, which is `value`, `value` occurs once among
 /// the operands of `user`, and no other use of `value` is an operand of an operation on the chain
-/// of trees being built (the user included). It is teed when it has other uses.
+/// of trees being built (the user included), reading each use by its [effective_owner]. It is
+/// teed when it has other uses.
 fn stays_on_stack(
     value: ValueRef,
     candidate: &Step,
@@ -348,13 +361,27 @@ fn stays_on_stack(
     let value = value.borrow();
     let mut others = 0;
     for use_ in value.iter_uses() {
-        if use_.owner == user_op {
+        let owner = effective_owner(use_.owner);
+        if owner == user_op {
             continue;
         }
         others += 1;
-        if chain.iter().any(|frame| steps[order[frame.position]].op == use_.owner) {
+        if chain.iter().any(|frame| steps[order[frame.position]].op == owner) {
             return None;
         }
     }
     Some(others > 0)
+}
+
+/// The operation whose instruction reads a value that `owner` uses: `owner` itself, except for the
+/// `wasm.br` of a region of a `wasm.br_table`, which carries the table's values, pushed by the
+/// table.
+fn effective_owner(owner: OperationRef) -> OperationRef {
+    if owner.borrow().is::<runic_dialect_wasm::Br>()
+        && let Some(parent) = owner.parent_region().and_then(|region| region.borrow().parent())
+        && parent.borrow().is::<runic_dialect_wasm::BrTable>()
+    {
+        return parent;
+    }
+    owner
 }

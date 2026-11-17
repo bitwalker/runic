@@ -8,7 +8,8 @@
 use alloc::vec;
 
 use super::{
-    eval::{Outcome, Val, run},
+    eval::{Outcome, Val},
+    exec::run,
     *,
 };
 

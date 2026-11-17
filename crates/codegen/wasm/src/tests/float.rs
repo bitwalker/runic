@@ -18,7 +18,8 @@ use runic_ir::{
 };
 
 use super::{
-    eval::{Outcome, Val, run},
+    eval::{Outcome, Val},
+    exec::{Cache, run_cached},
     int::{Lowered, Ty, edges, lower_text, module_text, product, types},
     *,
 };
@@ -212,10 +213,12 @@ fn check(
     tuples: &[Vec<Arg>],
     reference: impl Fn(&[Arg]) -> Expect,
 ) -> usize {
+    let mut cache = Cache::default();
     for operands in tuples {
         let arguments = operands.iter().map(|arg| arg.val()).collect::<Vec<_>>();
         let at = || format!("{what} at {operands:?}");
-        let Outcome::Values(values) = run(case.lowered.function, &arguments) else {
+        let Outcome::Values(values) = run_cached(&mut cache, case.lowered.function, &arguments)
+        else {
             panic!("{}: trapped; no float operation traps", at());
         };
         let [value] = values.as_slice() else {

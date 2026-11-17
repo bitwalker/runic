@@ -9,7 +9,8 @@
 use alloc::{vec, vec::Vec};
 
 use super::{
-    eval::{Machine, Outcome, Val, run_in},
+    eval::{Machine, Outcome, Val},
+    exec::{PAGE, run_in},
     *,
 };
 
@@ -26,8 +27,8 @@ const OPT: &str = "canonicalizer,cse,sccp,canonicalizer,dce,cfg-to-scf{exits=in-
 /// The passes of the lowering after `cfg-to-scf`, for programs in `scf` form with frames.
 const FR: &str = "wasm-lower-frames,convert-to-wasm,wasm-verify-form";
 
-/// The stack pointer a run starts with, at the end of the machine's memory.
-const STACK_TOP: u32 = 1024;
+/// The stack pointer a run starts with, at the end of the machine's memory (one page).
+const STACK_TOP: u32 = PAGE as u32;
 
 fn i32s(values: &[u32]) -> Vec<Val> {
     values.iter().map(|value| Val::i32(*value)).collect()
@@ -891,7 +892,7 @@ builtin.function public extern("C") @f(%x: i32) -> isize {
 fn an_over_aligned_slot_is_aligned_and_below_the_stack_pointer_wherever_it_starts() {
     let (_context, module) = lowered_by(&module_of(FR_ALIGN), FR);
     for sp in [1024u32, 1008, 1040, 992] {
-        let mut machine = Machine::new(2048);
+        let mut machine = Machine::new(PAGE);
         machine.globals.insert(String::from("__stack_pointer"), Val::i32(sp));
         let outcome = run_in(&mut machine, function_named(module, "f"), &i32s(&[0]));
         let Outcome::Values(values) = outcome else {

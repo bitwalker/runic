@@ -24,7 +24,13 @@
 //! [agree] runs one function both ways, twice for the emitted module (with reuse of locals on and
 //! off), and asserts the same [Outcome]: values bit for bit (a NaN as a NaN of its type), a trap
 //! for a trap, and with [Setup::compare_memory] the same memory, and always the same final values
-//! of the globals the setup names. Every emitted module is validated before it runs.
+//! of the globals the setup names; and that reuse never gives more locals. Every emitted module is
+//! validated before it runs.
+//!
+//! [run] and [run_in] are the evaluator's own two entry points with the emitted module run beside
+//! them: 6c's evaluated tests call these, so every evaluation they make is also a comparison.
+//! [run_in] takes the setup from the test's machine as it is before the run (its memory, which is
+//! then a whole number of pages, its data symbols and its globals) and compares the memory after.
 
 use alloc::{
     format,
@@ -40,7 +46,7 @@ use runic_ir::{
     testing::text::describe,
 };
 
-use super::eval::{Machine, Outcome, Val, run_in};
+use super::eval::{Machine, Outcome, Val, run_in as run_evaluator};
 use crate::emit::{
     body::{BodyConfig, encode_function},
     desc::{
@@ -72,9 +78,6 @@ pub(super) struct Setup {
     pub globals: Vec<(String, Val)>,
     /// Whether the memory after the run is compared.
     pub compare_memory: bool,
-    /// The functions, by name, whose bodies are not emitted but replaced by `unreachable`:
-    /// functions the run does not reach, which hold what the emitter does not write yet.
-    pub stubs: Vec<String>,
 }
 
 impl Default for Setup {
@@ -87,7 +90,6 @@ impl Default for Setup {
             passive: Vec::new(),
             globals: Vec::new(),
             compare_memory: false,
-            stubs: Vec::new(),
         }
     }
 }
@@ -121,6 +123,43 @@ impl Setup {
     pub fn comparing_memory(mut self) -> Self {
         self.compare_memory = true;
         self
+    }
+
+    /// The setup of `machine` as it is before a run: its memory (a whole number of pages) with
+    /// its bytes, its data symbols and its globals; the memory is compared after the run.
+    #[track_caller]
+    pub fn of_machine(machine: &Machine) -> Self {
+        assert_eq!(
+            machine.memory.len() % PAGE,
+            0,
+            "the memory of a machine run against the emitted module is a whole number of pages"
+        );
+        let mut writes = Vec::new();
+        let first = machine.memory.iter().position(|byte| *byte != 0);
+        let last = machine.memory.iter().rposition(|byte| *byte != 0);
+        if let (Some(first), Some(last)) = (first, last) {
+            writes.push((first as u32, machine.memory[first..=last].to_vec()));
+        }
+        let mut data = machine
+            .data
+            .iter()
+            .map(|(name, address)| (name.clone(), *address))
+            .collect::<Vec<_>>();
+        data.sort();
+        let mut globals = machine
+            .globals
+            .iter()
+            .map(|(name, value)| (name.clone(), *value))
+            .collect::<Vec<_>>();
+        globals.sort_by(|a, b| a.0.cmp(&b.0));
+        Self {
+            memory: machine.memory.len(),
+            writes,
+            data,
+            passive: Vec::new(),
+            globals,
+            compare_memory: true,
+        }
     }
 
     /// The evaluator's machine of this setup.
@@ -241,6 +280,8 @@ pub(super) struct Assembled {
     pub features: crate::emit::desc::FeatureSet,
     /// Whether the description asks for a data-count section.
     pub uses_data_count: bool,
+    /// The number of locals of every function body, beyond the parameters.
+    pub locals: usize,
 }
 
 /// Assembles the functions of `module` under `setup`, with the evaluator's table `table` (the
@@ -374,16 +415,10 @@ pub(super) fn assemble(
             });
         }
     }
+    let mut locals = 0;
     for (op, id) in &defined {
-        if setup.stubs.contains(&desc.function(*id).name) {
-            let mut body = FunctionBody::default();
-            body.writer()
-                .instruction(&wasm_encoder::Instruction::Unreachable)
-                .instruction(&wasm_encoder::Instruction::End);
-            desc.function_mut(*id).entity = Entity::Definition(body);
-            continue;
-        }
         let body = encode_function(*op, &mut desc, &mut unit, config)?;
+        locals += body.locals.len();
         desc.function_mut(*id).entity = Entity::Definition(body);
         let _ = op.raw_prewalk::<Forward, _, _>(|nested: OperationRef| -> WalkResult<Report> {
             if let Some(ref_func) = nested.borrow().downcast_ref::<wasm::RefFunc>()
@@ -443,6 +478,7 @@ pub(super) fn assemble(
         has_memory,
         features: desc.features,
         uses_data_count: desc.uses_data_count,
+        locals,
     })
 }
 
@@ -623,8 +659,50 @@ pub(super) fn agree_cached(
     function: OperationRef,
     arguments: &[Val],
 ) -> Outcome {
-    let mut machine = setup.machine();
-    let expected = run_in(&mut machine, function, arguments);
+    compare(cache, setup, &mut setup.machine(), function, arguments)
+}
+
+/// Runs `function` on `arguments` with the evaluator, as [eval::run](super::eval::run) does, and
+/// the emitted module beside it (see [agree]): what the evaluator gives.
+///
+/// This is the evaluator's `run` for 6c's evaluated tests, so that each of them also compares the
+/// emitted module.
+#[track_caller]
+pub(super) fn run(function: OperationRef, arguments: &[Val]) -> Outcome {
+    run_in(&mut Machine::new(0), function, arguments)
+}
+
+/// [run], reusing the modules of `cache` (which must hold only modules of `function`'s module).
+#[track_caller]
+pub(super) fn run_cached(cache: &mut Cache, function: OperationRef, arguments: &[Val]) -> Outcome {
+    let mut machine = Machine::new(0);
+    let setup = Setup::of_machine(&machine);
+    compare(cache, &setup, &mut machine, function, arguments)
+}
+
+/// Runs `function` on `arguments` with the evaluator on `machine`, as
+/// [eval::run_in](super::eval::run_in) does, and the emitted module beside it under the setup of
+/// `machine` before the run ([Setup::of_machine]), comparing the memory after it too: what the
+/// evaluator gives. `machine` must have a whole number of pages of memory.
+#[track_caller]
+pub(super) fn run_in(machine: &mut Machine, function: OperationRef, arguments: &[Val]) -> Outcome {
+    let setup = Setup::of_machine(machine);
+    compare(&mut Cache::default(), &setup, machine, function, arguments)
+}
+
+/// Runs `function` on `arguments` with the evaluator on `machine`, whose state before the run
+/// `setup` describes, then the emitted modules of `cache` (assembled under `setup` and the
+/// evaluator's table after the run, with reuse of locals on and off), and asserts that they agree
+/// and that reuse never gives more locals: what the evaluator gives.
+#[track_caller]
+fn compare(
+    cache: &mut Cache,
+    setup: &Setup,
+    machine: &mut Machine,
+    function: OperationRef,
+    arguments: &[Val],
+) -> Outcome {
+    let expected = run_evaluator(machine, function, arguments);
     let table = machine.table.clone();
     let position = match cache.modules.iter().position(|(slots, _)| *slots == table) {
         Some(position) => position,
@@ -632,7 +710,13 @@ pub(super) fn agree_cached(
             let modules = CONFIGS
                 .iter()
                 .map(|config| assembled(function, setup, &table, config))
-                .collect();
+                .collect::<Vec<_>>();
+            assert!(
+                modules[0].locals <= modules[1].locals,
+                "reusing locals gives {} locals, and not reusing them {}",
+                modules[0].locals,
+                modules[1].locals
+            );
             cache.modules.push((table, modules));
             cache.modules.len() - 1
         }
@@ -647,7 +731,10 @@ pub(super) fn agree_cached(
             ran.outcome
         );
         if setup.compare_memory {
-            let memory = ran.memory.as_ref().expect("the module has a memory");
+            let Some(memory) = ran.memory.as_ref() else {
+                assert!(machine.memory.is_empty(), "the emitted module has no memory");
+                continue;
+            };
             if let Some(at) = memory.iter().zip(&machine.memory).position(|(a, b)| a != b) {
                 panic!(
                     "`@{name}` on {arguments:?} ({config:?}): the memory differs first at {at}: \
