@@ -3,8 +3,10 @@
 //! The writer assigns each index space (imports first, in description order, then definitions in
 //! description order), replaces every placeholder with the shortest encoding of its resolved value,
 //! and writes the sections in the order WebAssembly requires, then the custom sections of
-//! [super::sections]. An empty section is not written. It does not validate the result; see
-//! [super::validate].
+//! [super::sections]. An empty section is not written, and neither is a data entry that has no
+//! segment ([DataEntry::has_segment](super::desc::DataEntry::has_segment): zeroed data, or an
+//! address with no bytes); the data-count section counts the segments written. It does not
+//! validate the result; see [super::validate].
 
 use alloc::{
     borrow::Cow,
@@ -75,7 +77,8 @@ pub struct IndexSpaces {
     memories: Vec<u32>,
     globals: Vec<u32>,
     types: u32,
-    data: u32,
+    data: Vec<Option<u32>>,
+    segments: u32,
 }
 
 /// The index of each entity of one kind, given whether each is an import.
@@ -105,7 +108,17 @@ impl IndexSpaces {
             memories: index_space(desc.memories().iter().map(|m| m.entity.is_import())),
             globals: index_space(desc.globals().iter().map(|g| g.entity.is_import())),
             types: desc.types().len() as u32,
-            data: desc.data().len() as u32,
+            data: desc
+                .data()
+                .iter()
+                .scan(0u32, |next, entry| {
+                    Some(entry.has_segment().then(|| {
+                        *next += 1;
+                        *next - 1
+                    }))
+                })
+                .collect(),
+            segments: desc.data().iter().filter(|entry| entry.has_segment()).count() as u32,
         }
     }
 
@@ -134,10 +147,16 @@ impl IndexSpaces {
         (id.index() < self.types).then_some(id.index())
     }
 
-    /// The index of the data segment of the entry `id`, when it is an entry of the description:
-    /// every entry has one segment, in description order.
+    /// The index of the data segment of the entry `id`, when it is an entry of the description
+    /// that [has a segment](super::desc::DataEntry::has_segment): the entries that have one are
+    /// numbered in description order.
     pub fn data(&self, id: DataId) -> Option<u32> {
-        (id.index() < self.data).then_some(id.index())
+        self.data.get(id.index() as usize).copied().flatten()
+    }
+
+    /// The number of data segments: the entries of the description that have one.
+    pub fn data_segments(&self) -> u32 {
+        self.segments
     }
 }
 
@@ -286,7 +305,7 @@ impl Resolver<'_> {
                 })?;
         match entry.placement {
             DataPlacement::Fixed(offset) => Ok(offset),
-            DataPlacement::Layout | DataPlacement::Passive => {
+            DataPlacement::Layout | DataPlacement::Passive | DataPlacement::Symbol => {
                 self.resolved.data_address(id).ok_or_else(|| WriteError::Unresolved {
                     site: site.clone(),
                     target: FixupKind::MemoryAddr(id),
@@ -600,7 +619,7 @@ pub fn write_module(desc: &ModuleDesc, resolved: &Resolved) -> Result<Vec<u8>, W
     // The data count.
     if desc.uses_data_count {
         module.section(&DataCountSection {
-            count: desc.data().len() as u32,
+            count: spaces.data_segments(),
         });
     }
 
@@ -629,11 +648,15 @@ pub fn write_module(desc: &ModuleDesc, resolved: &Resolved) -> Result<Vec<u8>, W
             id,
             name: entry.name.clone(),
         };
+        if !entry.has_segment() {
+            continue;
+        }
         let bytes = resolver.data(&entry.bytes, &entry.fixups, &site)?;
         match entry.placement {
             DataPlacement::Passive => {
                 data.passive(bytes);
             }
+            DataPlacement::Symbol => {}
             DataPlacement::Layout | DataPlacement::Fixed(_) => {
                 if desc.memories().is_empty() {
                     return Err(WriteError::NoMemory { site });

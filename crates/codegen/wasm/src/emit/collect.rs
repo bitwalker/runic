@@ -13,9 +13,10 @@
 //!   encoded by [encode_function];
 //! - `wasm.global` (its initializer by [constexpr]), `wasm.table`, `wasm.memory`;
 //! - `wasm.elem`: an active element segment;
-//! - `builtin.global_variable`: a data entry *stub*, with its name and `section` and the placement
-//!   [DataPlacement::Layout], and no bytes; the layout fills it in. A declaration that links to no
-//!   definition is an *undefined data symbol* ([Unit::undefined_data]);
+//! - `builtin.global_variable`: a data entry with its name, its `section` and the placement
+//!   [DataPlacement::Layout]; a definition's bytes, alignment and fix-ups are its initializer's
+//!   ([data::evaluate]), and the layout gives it its place. A declaration that links to no
+//!   definition is an *undefined data symbol* ([Unit::undefined_data]), a stub with no bytes;
 //! - `builtin.function_alias`: no entity of its own: a use of it is a use of its target;
 //! - `builtin.segment`: remembered for the layout ([Unit::segments]);
 //! - `wasm.tag`: an error (exceptions are not emitted).
@@ -85,7 +86,7 @@ use runic_ir::{
 use super::{
     EmitOptions,
     body::{BodyConfig, encode_function},
-    constexpr,
+    constexpr, data,
     desc::{
         ConstExpr, DataEntry, DataId, DataPlacement, ElemSegment, Entity, Export, ExportTarget,
         Feature, FuncId, FuncType, Function, FunctionBody, Global, GlobalId, Import, Limits,
@@ -109,6 +110,16 @@ pub struct Unit {
     origins: Origins,
     undefined_data: Vec<DataId>,
     segments: Vec<OperationRef>,
+    data_uses: FxHashMap<DataId, DataUses>,
+}
+
+/// The first operations of the unit that name a data entry, by how they name it.
+#[derive(Clone, Copy, Debug, Default)]
+struct DataUses {
+    /// The first `wasm.memory_init` or `wasm.data_drop`, which make the entry passive.
+    passive: Option<OperationRef>,
+    /// The first `wasm.data_addr` or `builtin.global_symbol`, which take its address.
+    address: Option<OperationRef>,
 }
 
 /// The operation each entity of the description was made from, by id: the definition, or the
@@ -162,6 +173,19 @@ impl Unit {
     pub fn segments(&self) -> &[OperationRef] {
         &self.segments
     }
+
+    /// The first `wasm.memory_init` or `wasm.data_drop` of the unit (in a function body) that
+    /// names the data entry `id`, which makes it a passive segment.
+    pub fn passive_use(&self, id: DataId) -> Option<OperationRef> {
+        self.data_uses.get(&id).and_then(|uses| uses.passive)
+    }
+
+    /// The first operation of the unit that takes the address of the data entry `id`: a
+    /// `wasm.data_addr` (in a body or a `wasm.global`'s initializer), or a `builtin.global_symbol`
+    /// in a global variable's initializer.
+    pub fn address_use(&self, id: DataId) -> Option<OperationRef> {
+        self.data_uses.get(&id).and_then(|uses| uses.address)
+    }
 }
 
 /// The error of a declared global variable `op` that links to no definition: a core module cannot
@@ -207,6 +231,7 @@ pub fn collect(
         origins: collector.origins,
         undefined_data: collector.undefined_data,
         segments: collector.segments,
+        data_uses: collector.resolver.data_uses,
     })
 }
 
@@ -583,6 +608,8 @@ struct Resolver {
     /// Whether a `wasm.ref_func` is recorded in `ref_funcs` (in function bodies only).
     recording: bool,
     ref_funcs: Vec<FuncId>,
+    /// How each data entry is first named.
+    data_uses: FxHashMap<DataId, DataUses>,
 }
 
 impl Resolver {
@@ -673,10 +700,17 @@ impl Entities for Resolver {
     }
 
     fn data(&mut self, user: &Operation, data: &SymbolRefAttr) -> Result<DataId, Report> {
-        match self.entity(user, data, Kind::Data, data.resolve().map(op_of))? {
-            Id::Data(id) => Ok(id),
-            _ => unreachable!("the kind is checked"),
-        }
+        let Id::Data(id) = self.entity(user, data, Kind::Data, data.resolve().map(op_of))? else {
+            unreachable!("the kind is checked");
+        };
+        let uses = self.data_uses.entry(id).or_default();
+        let first = if user.is::<wasm::MemoryInit>() || user.is::<wasm::DataDrop>() {
+            &mut uses.passive
+        } else {
+            &mut uses.address
+        };
+        first.get_or_insert(user.as_operation_ref());
+        Ok(id)
     }
 }
 
@@ -1024,7 +1058,7 @@ impl Collector {
     }
 
     /// Encodes what a definition holds: a function's body and parameter names, a global's
-    /// initializer, an element segment.
+    /// initializer, a global variable's bytes, an element segment.
     fn contents(&mut self, op: OperationRef, config: &BodyConfig) -> Result<(), Report> {
         let what = what(&op.borrow());
         match what {
@@ -1046,6 +1080,16 @@ impl Collector {
                 let expr =
                     constexpr::initializer(&op.borrow(), &mut self.desc, &mut self.resolver)?;
                 self.desc.global_mut(id).entity = Entity::Definition(expr);
+            }
+            What::Data if !is_declaration(&op.borrow()) => {
+                let Some(Id::Data(id)) = self.resolver.ids.get(&op).copied() else {
+                    unreachable!("every definition has an id");
+                };
+                let init = data::evaluate(&op.borrow(), &mut self.resolver)?;
+                let entry = self.desc.data_mut(id);
+                entry.bytes = init.bytes;
+                entry.align = init.align;
+                entry.fixups = init.fixups;
             }
             What::Elem => {
                 let borrowed = op.borrow();

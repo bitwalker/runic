@@ -247,6 +247,61 @@ fn data_entries_are_active_at_their_address_passive_or_at_a_fixed_offset() {
 }
 
 #[test]
+fn zeroed_and_address_only_entries_have_no_segment_and_the_data_indices_count_those_written() {
+    let mut desc = ModuleDesc::new();
+    desc.names = true;
+    memory(&mut desc, "memory", 1);
+    let zero = desc.add_data(data("zero", &[0; 8], DataPlacement::Layout));
+    let symbol = desc.add_data(data("__heap_base", &[], DataPlacement::Symbol));
+    desc.add_data(data("first", b"ab", DataPlacement::Passive));
+    let second = desc.add_data(data("second", b"cd", DataPlacement::Passive));
+    desc.uses_data_count = true;
+    define(&mut desc, "init", (&[], &[I32]), &[], |code| {
+        code.sink().i32_const(0).i32_const(0).i32_const(2);
+        code.fixup_index(&[0xfc, 0x08], FixupKind::DataIndex(second)).raw(&[0x00]);
+        code.fixup_i32_const(FixupKind::MemoryAddr(symbol), 0);
+    });
+    let mut resolved = Resolved::new();
+    resolved.set_data_address(zero, 1024);
+    resolved.set_data_address(symbol, 1040);
+    let bytes = written(&desc, &resolved);
+    let text = crate::text::print(&bytes).unwrap();
+    // `memory.init 1` names the second passive segment; the address of the symbol is written.
+    assert!(text.contains("    memory.init $second\n    i32.const 1040\n"), "{text}");
+    assert!(
+        text.contains("  (data $first (;0;) \"ab\")\n  (data $second (;1;) \"cd\")\n"),
+        "{text}"
+    );
+    assert!(!text.contains("$zero") && !text.contains("$__heap_base"), "{text}");
+    let count = payloads(&bytes).iter().find_map(|payload| match payload {
+        Payload::DataCountSection { count, .. } => Some(*count),
+        _ => None,
+    });
+    assert_eq!(count, Some(2));
+}
+
+#[test]
+fn a_laid_out_entry_with_a_fix_up_has_a_segment_though_its_bytes_are_zero() {
+    let mut desc = ModuleDesc::new();
+    memory(&mut desc, "memory", 1);
+    let target = desc.add_data(data("target", b"x", DataPlacement::Layout));
+    let mut pointer = data("pointer", &[0; 4], DataPlacement::Layout);
+    pointer.fixups.push(crate::emit::desc::Fixup {
+        offset: 0,
+        kind: FixupKind::MemoryAddr(target),
+        addend: 0,
+    });
+    let pointer = desc.add_data(pointer);
+    desc.add_data(data("zero", &[0; 4], DataPlacement::Layout));
+    let mut resolved = Resolved::new();
+    resolved.set_data_address(target, 1024);
+    resolved.set_data_address(pointer, 1028);
+    let text = text(&desc, &resolved);
+    assert!(text.contains("(data (;1;) (i32.const 1028) \"\\00\\04\\00\\00\")"), "{text}");
+    assert_eq!(text.matches("(data ").count(), 2, "{text}");
+}
+
+#[test]
 fn without_memory_init_or_data_drop_there_is_no_data_count_section() {
     let mut desc = ModuleDesc::new();
     memory(&mut desc, "memory", 1);

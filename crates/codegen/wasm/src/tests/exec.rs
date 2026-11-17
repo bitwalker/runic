@@ -784,3 +784,65 @@ pub(super) fn text_of_module(module: OperationRef, setup: &Setup) -> String {
         .unwrap_or_else(|report| panic!("{}", describe(&report)));
     crate::text::print(&assembled.bytes).unwrap_or_else(|report| panic!("{report}"))
 }
+
+/// A complete module, as [emit_module](crate::emit::emit_module) emits it, instantiated by `wasmi`
+/// with no imports: it needs no host. Its exports are called and its memory and globals read by
+/// their export names.
+pub(super) struct Instance {
+    store: wasmi::Store<()>,
+    instance: wasmi::Instance,
+}
+
+impl Instance {
+    /// The module `bytes` instantiated with no imports; a module that does not instantiate
+    /// panics with the reason.
+    #[track_caller]
+    pub fn new(bytes: &[u8]) -> Self {
+        let engine = wasmi::Engine::default();
+        let module = wasmi::Module::new(&engine, bytes)
+            .unwrap_or_else(|error| panic!("wasmi rejects the emitted module: {error}"));
+        let mut store = wasmi::Store::new(&engine, ());
+        let instance = wasmi::Linker::<()>::new(&engine)
+            .instantiate_and_start(&mut store, &module)
+            .unwrap_or_else(|error| panic!("the emitted module does not instantiate: {error}"));
+        Self { store, instance }
+    }
+
+    /// Calls the exported function `name` on `arguments`: its results, or a trap.
+    #[track_caller]
+    pub fn call(&mut self, name: &str, arguments: &[Val]) -> Outcome {
+        let func = self
+            .instance
+            .get_func(&self.store, name)
+            .unwrap_or_else(|| panic!("the emitted module exports no function `{name}`"));
+        let ty = func.ty(&self.store);
+        let inputs = arguments.iter().map(|value| to_wasmi(*value)).collect::<Vec<_>>();
+        let mut outputs =
+            ty.results().iter().map(|ty| wasmi::Val::default(*ty)).collect::<Vec<_>>();
+        match func.call(&mut self.store, &inputs, &mut outputs) {
+            Ok(()) => Outcome::Values(outputs.iter().map(from_wasmi).collect()),
+            Err(error) if error.as_trap_code().is_some() => Outcome::Trap,
+            Err(error) => panic!("running `{name}` failed without a trap: {error}"),
+        }
+    }
+
+    /// The bytes of the exported memory `memory`.
+    #[track_caller]
+    pub fn memory(&self) -> Vec<u8> {
+        let memory = self
+            .instance
+            .get_memory(&self.store, "memory")
+            .expect("the emitted module exports its memory as `memory`");
+        memory.data(&self.store).to_vec()
+    }
+
+    /// The value of the exported global `name`.
+    #[track_caller]
+    pub fn global(&self, name: &str) -> Val {
+        let global = self
+            .instance
+            .get_global(&self.store, name)
+            .unwrap_or_else(|| panic!("the emitted module exports no global `{name}`"));
+        from_wasmi(&global.get(&self.store))
+    }
+}

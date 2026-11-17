@@ -33,6 +33,7 @@ mod emit {
     mod errors;
     mod fixups;
     mod instructions;
+    mod layout;
     mod locals;
     mod lowered;
     mod module;

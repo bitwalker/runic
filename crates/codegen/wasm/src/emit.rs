@@ -2,7 +2,9 @@
 //!
 //! [emit_module] is the entry point. It [collects](collect::collect) every `builtin.module` under
 //! the operation it is given into one unit linked by link name, lays out its memory and table
-//! ([layout]), writes the module and validates it.
+//! ([layout]: the shadow stack, the data, the fixed segments, the table slots, and definitions of
+//! the memory, stack pointer and table the lowering imports), writes the module and validates it.
+//! The module needs no host: it defines its memory, its stack and its function table.
 //!
 //! The emitter builds a [module description](desc::ModuleDesc), in which every reference from a
 //! body, a constant expression or data to another entity is a recorded [fix-up](desc::Fixup), not
@@ -15,11 +17,13 @@
 //! between its definition and its uses (on the stack, in a local, or written again), [locals]
 //! gives locals to the values that need them, and [instr] writes the instruction of each
 //! operation, recording a fix-up for every reference to another entity. A `wasm.global`'s
-//! initializer is a constant expression built by [constexpr].
+//! initializer is a constant expression built by [constexpr]; a `builtin.global_variable`'s
+//! initializer becomes the bytes of a data entry by [data].
 
 pub mod body;
 pub mod collect;
 pub mod constexpr;
+pub mod data;
 pub mod desc;
 pub mod instr;
 pub mod layout;
@@ -36,7 +40,8 @@ use runic_ir::{OperationRef, Report};
 /// How a module is emitted.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EmitOptions {
-    /// The size of the shadow stack, in bytes (used by the layout).
+    /// The size of the shadow stack, in bytes: a multiple of 16. The layout reserves it from
+    /// address 0 when it defines the stack pointer.
     pub stack_size: u32,
     /// Whether the module carries a `name` section.
     pub names: bool,

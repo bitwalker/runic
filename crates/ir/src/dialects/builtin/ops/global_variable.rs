@@ -23,11 +23,12 @@ pub type GlobalVariableRef = UnsafeIntrusiveEntityRef<GlobalVariable>;
 
 /// A [GlobalVariable] represents a named, typed, location in memory.
 ///
-/// Global variables may also specify an initializer, but if not provided, the underlying bytes
-/// will be zeroed, which may or may not be a valid instance of the type. It is up to frontends
-/// to ensure that an initializer is specified if necessary. The initializer is a region of one
-/// block that computes the data, a [Bytes](super::Bytes) for example, and ends with a
-/// [Yield](super::Yield) of the value of the global, which has the declared type of the global:
+/// A global variable with an initializer is a definition; one without is a declaration
+/// ([Symbol::is_declaration]) of a global variable defined elsewhere, and has no bytes of its own.
+/// A definition whose bytes are zero states them, with zero bytes or a zero constant. The
+/// initializer is a region of one block that computes the data, a [Bytes](super::Bytes) for
+/// example, and ends with a [Yield](super::Yield) of the value of the global, which has the
+/// declared type of the global:
 ///
 /// ```text
 /// builtin.global_variable public @data : array<i8; 2> {

@@ -282,7 +282,7 @@ fn an_import_declared_in_two_modules_is_one_import() {
 }
 
 #[test]
-fn the_well_known_symbols_the_lowering_declares_in_two_modules_are_three_imports() {
+fn the_well_known_symbols_the_lowering_declares_in_two_modules_are_defined_once_each() {
     let function = |name: &str| {
         format!(
             "builtin.function public extern(\"C\") @{name}(%p: ptr<i32>, %fr: (i32) -> i32) -> \
@@ -301,17 +301,19 @@ fn the_well_known_symbols_the_lowering_declares_in_two_modules_are_three_imports
     run_pipeline(&context, world, LOWERING)
         .unwrap_or_else(|report| panic!("{}", describe(&report)));
     let text = wat(world);
-    assert_eq!(text.matches("(import ").count(), 3, "{text}");
+    // The layout defines the three: one each, however many modules declare them, and nothing is
+    // imported. The stack pointer is neither imported nor exported, so no mutable-globals.
+    assert!(!text.contains("(import "), "{text}");
     assert_mentions(
         &text,
         &[
-            "(import \"env\" \"__indirect_function_table\" (table $__indirect_function_table \
-             (;0;) 0 funcref))",
-            "(import \"env\" \"__linear_memory\" (memory $__linear_memory (;0;) 0))",
-            "(import \"env\" \"__stack_pointer\" (global $__stack_pointer (;0;) (mut i32)))",
-            "(@custom \"target_features\"",
+            "(table $__indirect_function_table (;0;) 1 1 funcref)",
+            "(memory $__linear_memory (;0;) 16)",
+            "(global $__stack_pointer (;0;) (mut i32) i32.const 1048576)",
+            "(export \"memory\" (memory $__linear_memory))",
         ],
     );
+    assert!(!text.contains("mutable-globals"), "{text}");
 }
 
 // ---- Globals, tables, memories, exports ---------------------------------------------------------
@@ -434,8 +436,8 @@ fn a_global_s_initializer_is_each_kind_of_constant_expression() {
 
 #[test]
 fn an_address_and_a_table_slot_in_an_initializer_are_value_fix_ups() {
-    let text = world_of(&[&module(
-        "m",
+    let text = world_of(&[&format!(
+        "builtin.module public @m {LAYOUT} {{\n{}\n}};",
         "builtin.global_variable public @data : i32 { %v = arith.constant 1 : i32; builtin.yield \
          %v; };\nwasm.global private @a : i32 { %v = wasm.data_addr @data + 8; builtin.yield %v; \
          };\nwasm.global private @s : i32 { %v = wasm.func_index @callee; builtin.yield %v; \
@@ -467,9 +469,14 @@ fn an_address_and_a_table_slot_in_an_initializer_are_value_fix_ups() {
         matches!(kinds[1][..], [(FixupKind::TableSlot(id), 0)] if id.index() == 0),
         "{kinds:?}"
     );
-    // Both need the layout, which is not built yet.
-    let error = error_of(emit_module(world, &EmitOptions::default()));
-    assert_mentions(&error, &["does not build yet"]);
+    // The layout resolves both: the data at 1024, the function at slot 1.
+    assert_mentions(
+        &wat(world),
+        &[
+            "(global $m::a (;0;) i32 i32.const 1032)",
+            "(global $m::s (;1;) i32 i32.const 1)",
+        ],
+    );
 }
 
 #[test]
@@ -885,16 +892,20 @@ fn an_undefined_data_symbol_is_an_error_naming_the_declaration() {
 }
 
 #[test]
-fn a_module_that_needs_the_layout_is_the_error_of_the_seam() {
-    let seam = "the module needs the layout of its linear memory or function table, which this \
-                backend does not build yet";
-    let error = error_of_world(&world_of(&[&module(
-        "m",
+fn a_module_with_data_a_table_slot_or_a_segment_is_laid_out() {
+    let text = wat_of_world(&world_of(&[&format!(
+        "builtin.module public @m {LAYOUT} {{\n{}\n}};",
         "builtin.global_variable public @g : i32 { %v = arith.constant 1 : i32; builtin.yield %v; \
-         };",
+         };"
     )]));
-    assert_mentions(&error, &[seam, "this is data in linear memory"]);
-    let error = error_of_world(&world_of(&[&module(
+    assert_mentions(
+        &text,
+        &[
+            "(memory $__linear_memory (;0;) 1)",
+            "(data $m::g (;0;) (i32.const 1024) \"\\01\\00\\00\\00\")",
+        ],
+    );
+    let text = wat_of_world(&world_of(&[&module(
         "m",
         &[
             adder("inc", 1, ""),
@@ -906,12 +917,18 @@ fn a_module_that_needs_the_layout_is_the_error_of_the_seam() {
         .join("\n"),
     )]));
     assert_mentions(
-        &error,
-        &[seam, "this function takes the slot of `m::inc` in the function table"],
+        &text,
+        &[
+            "(table $__indirect_function_table (;0;) 2 2 funcref)",
+            "(elem (;0;) (i32.const 1) func $m::inc)",
+        ],
     );
-    let error = error_of_world(&world_of(&[&module(
+    let text = wat_of_world(&world_of(&[&module(
         "m",
         "builtin.segment <{ offset = #builtin.i64<16>, data = #builtin.bytes<\"cc3f\"> }>;",
     )]));
-    assert_mentions(&error, &[seam, "this is data at a fixed address"]);
+    assert_mentions(
+        &text,
+        &["(memory $__linear_memory (;0;) 1)", "(data (;0;) (i32.const 16) \"?\\cc\")"],
+    );
 }

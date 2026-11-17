@@ -343,13 +343,17 @@ pub enum DataPlacement {
     Passive,
     /// An active segment in memory 0 at a fixed offset (a `builtin.segment`).
     Fixed(u32),
+    /// An address the layout gives ([super::write::Resolved::data_address]) and no bytes: a
+    /// linker-defined data symbol such as `__heap_base`. It has no segment.
+    Symbol,
 }
 
 /// A data entry: bytes for linear memory, with where they go, how they are aligned, the section
 /// they belong to and the fix-ups in them.
 ///
-/// The writer gives every data entry one data segment, in description order, so the data index of
-/// an entry is its id's position.
+/// The writer gives each data entry that [has a segment](DataEntry::has_segment) one data
+/// segment, in description order; the data index of an entry is the number of entries before it
+/// that have one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DataEntry {
     /// The entry's name in the `name` section; an empty name is not written.
@@ -372,6 +376,19 @@ impl DataEntry {
     /// Whether the entry is a passive segment.
     pub fn is_passive(&self) -> bool {
         self.placement == DataPlacement::Passive
+    }
+
+    /// Whether a complete module has a data segment for the entry: every passive or fixed entry
+    /// does; a [DataPlacement::Layout] entry does unless its bytes are all zero and it has no
+    /// fix-up (linear memory starts zeroed); a [DataPlacement::Symbol] never does.
+    pub fn has_segment(&self) -> bool {
+        match self.placement {
+            DataPlacement::Passive | DataPlacement::Fixed(_) => true,
+            DataPlacement::Layout => {
+                !self.fixups.is_empty() || self.bytes.iter().any(|byte| *byte != 0)
+            }
+            DataPlacement::Symbol => false,
+        }
     }
 }
 
