@@ -1011,13 +1011,3 @@ builtin.module public @m attributes { data_layout = #builtin.data_layout<little,
         builtin.ret %r : (ptr<i8>);
     };
 };
-
-// -----
-
-// expected-error@unknown {{failed to legalize operation 'mem.load'}}
-builtin.module public @left_to_other_patterns attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
-    builtin.function public extern("wasm") @load(%p: ptr<i32>) -> i32 {
-        %r = mem.load %p;
-        builtin.ret %r : (i32);
-    };
-};

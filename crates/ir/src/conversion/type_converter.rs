@@ -102,12 +102,18 @@ impl TypeConversion {
 /// once. The memo is shared by the clones of a converter, and a clone that is given another
 /// callback starts a memo of its own.
 ///
-/// A converter made with [Self::with_function_types] answers for a builtin function type itself,
-/// before any callback is asked: the function type of the converted parameters and results. This
-/// is the one exception to "a converter is flat", and the builtin conversion patterns require it.
+/// A converter made with [Self::with_function_types] answers for a builtin function type itself:
+/// the function type of the converted parameters and results. That rule takes its place among the
+/// callbacks where it was added: a callback added before it is not asked about function types, and
+/// one added after it is asked first, so a converter can say what a *value* of a function type
+/// becomes (a table index, a pointer) while signatures are still converted parameter by parameter
+/// ([super::convert_signature]). This is the one exception to "a converter is flat", and the
+/// builtin conversion patterns require it.
 #[derive(Clone, Default)]
 pub struct TypeConverter {
-    function_types: bool,
+    /// When the converter converts function types by their parts: the number of callbacks added
+    /// before that rule, which are not asked about function types.
+    function_types: Option<usize>,
     conversions: Vec<TypeConversionFn>,
     source_materializations: Vec<SourceMaterializationFn>,
     target_materializations: Vec<TargetMaterializationFn>,
@@ -136,25 +142,28 @@ impl TypeConverter {
     }
 
     /// Makes this converter answer, for a builtin function type, the function type of its converted
-    /// parameters and results (each flattened), before any registered conversion is asked. This
-    /// is a case inside [Self::convert_type] (a callback is not given the converter); it starts a
-    /// new memo, as adding a conversion does.
+    /// parameters and results (each flattened), in place of every conversion added before this
+    /// call; a conversion added after it is asked first, and answers for a function type when it
+    /// returns `Some`. This is a case inside [Self::convert_type] (a callback is not given the
+    /// converter); it starts a new memo, as adding a conversion does. Called again, the rule moves
+    /// to its new place, after every conversion added so far.
     ///
     /// Each parameter and result is converted with [Self::convert_type], so a function type held
-    /// by a function type converts too; a `never` result stays `never`, as it does in
-    /// [super::convert_signature]. So for every signature `s`, the function type of
-    /// `convert_signature(s)` is what this converter answers for the function type of `s`.
+    /// by a function type converts too, by the same rules; a `never` result stays `never`, as it
+    /// does in [super::convert_signature]. So for every signature `s` whose function type no later
+    /// conversion answers for, the function type of `convert_signature(s)` is what this converter
+    /// answers for the function type of `s`.
     pub fn with_function_types(mut self) -> Self {
-        self.function_types = true;
+        self.function_types = Some(self.conversions.len());
         self.forget_answers();
         self
     }
 
     /// Whether the converter answers for builtin function types itself
-    /// ([Self::with_function_types]).
+    /// ([Self::with_function_types]), unless a conversion added after that answers first.
     #[inline]
     pub fn converts_function_types(&self) -> bool {
-        self.function_types
+        self.function_types.is_some()
     }
 
     /// Add a source materialization callback: many new values to one value of the old type.
@@ -199,23 +208,27 @@ impl TypeConverter {
 
     /// The types a value of type `ty` becomes: itself alone when it is legal, several, or none.
     ///
-    /// Under [Self::with_function_types], a builtin function type becomes one function type,
-    /// whatever the callbacks say about it.
+    /// Under [Self::with_function_types], a builtin function type that no conversion added after
+    /// it answers for becomes one function type, whatever the conversions added before it say.
     pub fn convert_type(&self, context: &Context, ty: Type) -> SmallVec<[Type; 2]> {
         if let Some(types) = self.memo.borrow().get(&ty) {
             return types.clone();
         }
-        let types = match ty.as_function().filter(|_| self.function_types) {
-            Some(function) => {
-                let (params, results) = (function.params().to_vec(), function.results().to_vec());
-                smallvec::smallvec![self.convert_function_type(context, &params, &results)]
-            }
-            None => self
-                .conversions
+        let answer = |conversions: &[TypeConversionFn]| {
+            conversions
                 .iter()
                 .rev()
                 .find_map(|convert| convert(context, ty))
-                .map_or_else(|| smallvec::smallvec![ty], TypeConversion::into_types),
+                .map(TypeConversion::into_types)
+        };
+        let types = match (ty.as_function(), self.function_types) {
+            (Some(function), Some(position)) => answer(&self.conversions[position..])
+                .unwrap_or_else(|| {
+                    let (params, results) =
+                        (function.params().to_vec(), function.results().to_vec());
+                    smallvec::smallvec![self.convert_function_type(context, &params, &results)]
+                }),
+            _ => answer(&self.conversions).unwrap_or_else(|| smallvec::smallvec![ty]),
         };
         self.memo.borrow_mut().insert(ty, types.clone());
         types
@@ -604,6 +617,80 @@ mod tests {
             }
         });
         assert!(converter.convert_type(&context, function).is_empty());
+        let converter = converter.with_function_types();
+        assert_eq!(
+            converter.convert_type(&context, function).as_slice(),
+            [context.function_type([i32], [])]
+        );
+    }
+
+    /// A conversion added after `with_function_types` is asked about a function type first, and
+    /// its answer wins; a function type it does not answer for converts by its parts, and the
+    /// parameters and results of that type are converted by the same rules, so a parameter of a
+    /// function type gets the later answer too.
+    #[test]
+    fn a_conversion_added_after_function_types_answers_for_function_types_first() {
+        let context = Context::default();
+        let (i16, i32, i64) = (context.i16(), context.i32(), context.i64());
+        let mut converter = TypeConverter::new();
+        converter.add_conversion(move |_, ty| (ty == i16).then_some(TypeConversion::One(i32)));
+        let mut converter = converter.with_function_types();
+        assert!(converter.converts_function_types());
+        let value = context.function_type([i16], [i16]);
+        converter.add_conversion(move |_, ty| (ty == value).then_some(TypeConversion::One(i64)));
+
+        assert_eq!(converter.convert_type(&context, value).as_slice(), [i64]);
+        assert!(converter.converts_function_types());
+
+        let holder = context.function_type([value, i16], [value]);
+        assert_eq!(
+            converter.convert_type(&context, holder).as_slice(),
+            [context.function_type([i64, i32], [i64])]
+        );
+        let other = context.function_type([i64], [i16]);
+        assert_eq!(
+            converter.convert_type(&context, other).as_slice(),
+            [context.function_type([i64], [i32])]
+        );
+    }
+
+    /// Under a conversion added after `with_function_types` that gives every function type one
+    /// `i32`, a signature still converts parameter by parameter, and its parameters of a function
+    /// type become `i32`.
+    #[test]
+    fn a_signature_converts_by_its_parameters_when_function_values_have_another_type() {
+        use crate::dialects::builtin::attributes::Signature;
+
+        let context = Rc::new(Context::default());
+        let (i8, i32) = (context.i8(), context.i32());
+        let mut converter = TypeConverter::new();
+        converter.add_conversion(move |_, ty| (ty == i8).then_some(TypeConversion::One(i32)));
+        let mut converter = converter.with_function_types();
+        converter.add_conversion(move |_, ty| ty.is_function().then_some(TypeConversion::One(i32)));
+
+        let callback = context.function_type([i8], [i8]);
+        let signature = Signature::new(&context, [callback, i8], [i8]);
+        let converted = super::super::convert_signature(&context, &signature, &converter);
+        assert_eq!(converted.signature, Signature::new(&context, [i32, i32], [i32]));
+        assert_eq!(converter.convert_type(&context, callback).as_slice(), [i32]);
+    }
+
+    /// `with_function_types` called again takes its place after every conversion added so far:
+    /// a conversion that answered first before is not asked about function types after it.
+    #[test]
+    fn function_types_called_again_moves_the_rule_after_every_conversion() {
+        let context = Context::default();
+        let (i32, i64) = (context.i32(), context.i64());
+        let mut converter = TypeConverter::new().with_function_types();
+        converter.add_conversion(move |_, ty| {
+            if ty.is_function() {
+                Some(TypeConversion::One(i32))
+            } else {
+                (ty == i64).then_some(TypeConversion::One(i32))
+            }
+        });
+        let function = context.function_type([i64], []);
+        assert_eq!(converter.convert_type(&context, function).as_slice(), [i32]);
         let converter = converter.with_function_types();
         assert_eq!(
             converter.convert_type(&context, function).as_slice(),

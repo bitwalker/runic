@@ -6,7 +6,12 @@
 //! ([TypeConverter::with_function_types]): a function type converts to the function type of its
 //! converted parameters and results, which is the function type of the converted signature
 //! ([convert_signature]). A signature is converted by type, as every value is, so a call and the
-//! entry block of its callee agree. Each type it gives for a parameter, a
+//! entry block of its callee agree. The patterns of `builtin.call_indirect`,
+//! `builtin.tail_call_indirect` and `builtin.function_ref` also need a function value to stay a
+//! function value: under a converter that gives a function type another answer (a conversion added
+//! after [TypeConverter::with_function_types], see there), they build operations whose types do
+//! not verify, and a conversion that gives function values another type brings patterns of its own
+//! for those three operations and leaves these out. Each type it gives for a parameter, a
 //! result or a local must itself be legal (convert to itself): the function pattern and the call
 //! patterns check the answers they use, and return an error that names the type and what it was
 //! the answer for.

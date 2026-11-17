@@ -60,12 +60,12 @@ pub(crate) fn carrier_width(ty: Type) -> Option<u32> {
 /// The type converter of `convert-to-wasm`: every type with a [carrier] other than itself
 /// converts to it, and every other type converts to itself.
 ///
-/// The converter converts builtin function types by their parts
-/// ([TypeConverter::with_function_types]), as the builtin conversion patterns require: a function
-/// type converts to the function type of its parameters' and results' carriers. So under this
-/// converter a value of a function type keeps a function type, not its carrier `i32`: the framework
-/// answers for function types before any callback, and `convert-to-wasm` refuses a value of a
-/// function type before it converts anything (see [crate::ConvertToWasm]).
+/// A value of a function type converts to its carrier `i32`, the index of the function in the
+/// indirect-function table. The converter also converts builtin function types by their parts
+/// ([TypeConverter::with_function_types]), as the builtin conversion patterns require, and answers
+/// for function types after that rule, so the `i32` wins; signatures are still converted
+/// parameter by parameter ([runic_ir::conversion::convert_signature]), so a parameter of a
+/// function type becomes an `i32` and the rest their carriers.
 ///
 /// A type with no carrier converts to itself, which the converter calls legal: `convert-to-wasm`
 /// reports the operation that holds one before the conversion.
@@ -75,5 +75,8 @@ pub fn type_converter() -> TypeConverter {
         Some(carrier) if carrier != ty => Some(TypeConversion::one(carrier)),
         _ => None,
     });
-    converter.with_function_types()
+    let mut converter = converter.with_function_types();
+    converter
+        .add_conversion(|context, ty| ty.is_function().then(|| TypeConversion::one(context.i32())));
+    converter
 }

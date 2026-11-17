@@ -4,10 +4,15 @@
 // converted, with the value and the operation that holds it; an operation that no pattern
 // converts is reported by the full conversion, which names it (with no location).
 
-// expected-error@unknown {{failed to legalize operation 'mem.load'}}
+// `scf.if` has no pattern yet (the lowering of `scf` is to come).
+// expected-error@unknown {{failed to legalize operation 'scf.if'}}
 builtin.module public @no_pattern attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
-    builtin.function public extern("C") @f(%p: ptr<i32>) -> i32 {
-        %y = mem.load %p;
+    builtin.function public extern("C") @f(%c: i1, %x: i32) -> i32 {
+        %y = scf.if %c then {
+            scf.yield %x : (i32);
+        } else {
+            scf.yield %x : (i32);
+        } : (i1) -> (i32);
         builtin.ret %y : (i32);
     };
 };
@@ -43,13 +48,4 @@ builtin.module public @aggregate attributes { data_layout = #builtin.data_layout
 builtin.module public @address_space attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
     // expected-error@+1 {{only pointers in address space 0, into linear memory, have a Wasm carrier}}
     builtin.function public extern("C") @f() -> ptr<i8, 1>;
-};
-
-// -----
-
-builtin.module public @function_value attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
-    // expected-error@+1 {{local 0 of `@f` has type `(i32) -> i32`}}
-    builtin.function public extern("C") @f() locals((i32) -> i32) {
-        builtin.ret;
-    };
 };

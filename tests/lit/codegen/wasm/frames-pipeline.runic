@@ -1,0 +1,105 @@
+// RUN: runic-opt %s -p 'wasm-lower-frames,convert-to-wasm,wasm-verify-form' --split-input-file | filecheck %s
+
+// The frames of `frames.runic` that hold no `scf` operation, taken on through `convert-to-wasm`
+// (which does not lower `scf` yet): the casts `wasm-lower-frames` leaves fold away, each slot's
+// address is used directly, and the result is in Wasm form. An address no access uses stays as
+// it is.
+
+// CHECK-LABEL: builtin.module public @one
+// CHECK-NEXT: wasm.memory private declaration @__linear_memory : 0
+// CHECK-NEXT: wasm.global private declaration @__stack_pointer : mut i32
+// CHECK-NEXT: builtin.function public extern("C") @f(
+// CHECK-SAME: [[X:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[SP:%[0-9]+]] = wasm.global_get @__stack_pointer : i32;
+// CHECK-NEXT: [[SIZE:%[0-9]+]] = wasm.const 16 : i32;
+// CHECK-NEXT: [[FP:%[0-9]+]] = wasm.sub [[SP]], [[SIZE]];
+// CHECK-NEXT: wasm.global_set @__stack_pointer, [[FP]];
+// CHECK-NEXT: wasm.store @__linear_memory, [[FP]], [[X]];
+// CHECK-NEXT: [[Y:%[0-9]+]] = wasm.load @__linear_memory, [[FP]] : i32;
+// CHECK-NEXT: wasm.global_set @__stack_pointer, [[SP]];
+// CHECK-NEXT: builtin.ret [[Y]] : (i32);
+builtin.module public @one attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @f(%x: i32) -> i32 {
+        %p = mem.alloca i32;
+        mem.store %x, %p;
+        %y = mem.load %p;
+        builtin.ret %y : (i32);
+    };
+};
+
+// -----
+
+// CHECK-LABEL: builtin.module public @three
+// CHECK: builtin.function public extern("C") @f(
+// CHECK-SAME: [[X:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[SP:%[0-9]+]] = wasm.global_get @__stack_pointer : i32;
+// CHECK-NEXT: [[SIZE:%[0-9]+]] = wasm.const 32 : i32;
+// CHECK-NEXT: [[FP:%[0-9]+]] = wasm.sub [[SP]], [[SIZE]];
+// CHECK-NEXT: wasm.global_set @__stack_pointer, [[FP]];
+// CHECK-NEXT: [[K8:%[0-9]+]] = wasm.const 8 : i32;
+// CHECK-NEXT: [[B:%[0-9]+]] = wasm.add [[FP]], [[K8]];
+// CHECK-NEXT: [[K16:%[0-9]+]] = wasm.const 16 : i32;
+// CHECK-NEXT: wasm.add [[FP]], [[K16]];
+// CHECK-NEXT: wasm.store @__linear_memory, [[B]], [[X]];
+// CHECK-NEXT: wasm.global_set @__stack_pointer, [[SP]];
+// CHECK-NEXT: builtin.ret [[X]] : (i64);
+// CHECK-NOT: unrealized_conversion_cast
+builtin.module public @three attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @f(%x: i64) -> i64 {
+        %a = mem.alloca i8;
+        %b = mem.alloca i64;
+        %c = mem.alloca i16, align 4;
+        mem.store %x, %b;
+        builtin.ret %x : (i64);
+    };
+};
+
+// -----
+
+// CHECK-LABEL: builtin.module public @over_aligned
+// CHECK: builtin.function public extern("wasm") @f(
+// CHECK-SAME: [[B:%[0-9]+]]: i32, [[N:%[0-9]+]]: i32) {
+// CHECK-NEXT: [[SP:%[0-9]+]] = wasm.global_get @__stack_pointer : i32;
+// CHECK-NEXT: [[SIZE:%[0-9]+]] = wasm.const 112 : i32;
+// CHECK-NEXT: [[BELOW:%[0-9]+]] = wasm.sub [[SP]], [[SIZE]];
+// CHECK-NEXT: [[MASK:%[0-9]+]] = wasm.const -64 : i32;
+// CHECK-NEXT: [[FP:%[0-9]+]] = wasm.and [[BELOW]], [[MASK]];
+// CHECK-NEXT: wasm.global_set @__stack_pointer, [[FP]];
+// CHECK-NEXT: [[K64:%[0-9]+]] = wasm.const 64 : i32;
+// CHECK-NEXT: [[A:%[0-9]+]] = wasm.add [[FP]], [[K64]];
+// CHECK-NEXT: wasm.memory_fill @__linear_memory, [[A]], [[B]], [[N]];
+// CHECK-NEXT: wasm.global_set @__stack_pointer, [[SP]];
+// CHECK-NEXT: builtin.ret;
+builtin.module public @over_aligned attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("wasm") @f(%b: i8, %n: isize) {
+        %a = mem.alloca i8;
+        %big = mem.alloca array<i8; 40>, align 64;
+        mem.memset %big, %b, %n;
+        builtin.ret;
+    };
+};
+
+// -----
+
+// A tail call restores the stack pointer before it: the frame is dead when the callee runs.
+
+// CHECK-LABEL: builtin.module public @tail
+// CHECK: builtin.function public extern("C") @f(
+// CHECK-SAME: [[X:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[SP:%[0-9]+]] = wasm.global_get @__stack_pointer : i32;
+// CHECK-NEXT: [[SIZE:%[0-9]+]] = wasm.const 16 : i32;
+// CHECK-NEXT: [[FP:%[0-9]+]] = wasm.sub [[SP]], [[SIZE]];
+// CHECK-NEXT: wasm.global_set @__stack_pointer, [[FP]];
+// CHECK-NEXT: wasm.store @__linear_memory, [[FP]], [[X]];
+// CHECK-NEXT: [[Y:%[0-9]+]] = wasm.load @__linear_memory, [[FP]] : i32;
+// CHECK-NEXT: wasm.global_set @__stack_pointer, [[SP]];
+// CHECK-NEXT: builtin.tail_call @g([[Y]]) : extern("C") (i32) -> i32;
+builtin.module public @tail attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @f(%x: i32) -> i32 {
+        %p = mem.alloca i32;
+        mem.store %x, %p;
+        %y = mem.load %p;
+        builtin.tail_call @g(%y) : extern("C") (i32) -> i32;
+    };
+    builtin.function public extern("C") @g(i32) -> i32;
+};

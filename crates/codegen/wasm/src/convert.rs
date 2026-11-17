@@ -4,16 +4,18 @@ pub mod calls;
 pub mod composed;
 pub mod float;
 pub mod int;
+pub mod memory;
+pub mod symbols;
 
 use alloc::{format, string::String, vec::Vec};
 use core::fmt;
 
 use runic_dialect_arith::ArithDialect;
 use runic_dialect_cf::ControlFlowDialect;
-use runic_dialect_mem::MemDialect;
+use runic_dialect_mem::{self as mem, MemDialect};
 use runic_dialect_scf::ScfDialect;
 use runic_dialect_ub::UndefinedBehaviorDialect;
-use runic_dialect_wasm::{self as wasm, WasmDialect};
+use runic_dialect_wasm::{self as wasm, MemoryRef, TableRef, WasmDialect};
 use runic_ir::{
     Context, EntityMut, Forward, Operation, OperationName, OperationRef, RawWalk, Report, Spanned,
     Symbol, Type, Value, WalkResult,
@@ -23,8 +25,9 @@ use runic_ir::{
     },
     diagnostics::report,
     dialects::builtin::{
-        Call, CallIndirect, Component, Function, FunctionAlias, GlobalVariable, Module, ModuleRef,
-        RetImm, Segment, TailCall, TailCallIndirect, World, attributes::Signature,
+        Call, CallIndirect, Component, Function, FunctionAlias, FunctionReference, GlobalVariable,
+        Module, ModuleRef, RetImm, Segment, TailCall, TailCallIndirect, World,
+        attributes::Signature,
     },
     pass::{Pass, PassExecutionState, PostPassStatus},
 };
@@ -50,14 +53,21 @@ const DESCRIPTION: &str = "Converts generic operations and types to Wasm form: w
 ///    `"wasm"` and `"C"` (on a function or on a call) is an error naming it, and so is each value
 ///    (a parameter, a result, a local, the result of an operation, the argument of a block) whose
 ///    type has no carrier ([carrier]): an integer wider than 64 bits (not lowered yet), an
-///    aggregate, a pointer in an address space other than 0. A value of a function type is refused
-///    too: the type converter cannot give it its carrier (see [crate::types::type_converter]).
-/// 3. The module is converted by a full conversion ([apply_full_conversion]), verified after,
+///    aggregate, a pointer in an address space other than 0. A `mem.alloca` is an error that says
+///    `wasm-lower-frames` must run first, and a `mem.load` or `mem.store` of a value that one
+///    Wasm access cannot read or write is an error naming the operation and the type.
+/// 3. The well-known symbols the module's operations name are found or declared
+///    ([crate::symbols]), before the conversion starts, so that no pattern creates an operation
+///    at the level of the module: the linear memory when an operation accesses memory (a
+///    `mem.load`, `mem.store`, `mem.memcpy`, `mem.memmove` or `mem.memset`), the
+///    indirect-function table when it makes an indirect call.
+/// 4. The module is converted by a full conversion ([apply_full_conversion]), verified after,
 ///    under the target that [populate_patterns] is written for: the `wasm` dialect is legal; the
 ///    `arith`, `cf`, `mem`, `scf` and `ub` dialects are illegal; the builtin operations the
 ///    builtin conversion patterns cover are legal exactly when their types are
 ///    ([add_builtin_legality_by_type]), except `builtin.ret_imm`, which is illegal (Wasm form
-///    returns with `builtin.ret`); `builtin.module`, `builtin.function_alias`, `builtin.segment`
+///    returns with `builtin.ret`), and `builtin.call_indirect`, `builtin.tail_call_indirect` and
+///    `builtin.function_ref`, which are illegal (Wasm form calls through a table); `builtin.module`, `builtin.function_alias`, `builtin.segment`
 ///    and `builtin.global_variable` are legal, and a global variable and a `wasm.global` are
 ///    recursively legal: an initializer is data or a constant expression, not code. Every other
 ///    operation is illegal, so an operation that no pattern converts is an error that names it.
@@ -141,11 +151,12 @@ pub fn convert_module(module: ModuleRef) -> Result<bool, Report> {
     let module_op = module.as_operation_ref();
     let context = module_op.borrow().context_rc();
     let target = WasmTarget::of(&module_op.borrow())?;
-    check_module(module_op)?;
+    check_module(module_op, &target)?;
+    let symbols = WellKnownSymbols::of(module)?;
     let converter = crate::types::type_converter();
     let conversion_target = conversion_target(&context, &converter);
     let mut patterns = ConversionPatternSet::new(context.clone());
-    populate_patterns(&mut patterns, &converter, &target)?;
+    populate_patterns(&mut patterns, &converter, &target, &symbols)?;
     let result =
         apply_full_conversion(module_op, conversion_target, patterns, ConversionConfig::default())?;
     Ok(result.changed())
@@ -167,6 +178,9 @@ pub fn conversion_target(
     add_builtin_legality_by_type(&mut target, converter);
     target
         .add_illegal_op::<RetImm>()
+        .add_illegal_op::<CallIndirect>()
+        .add_illegal_op::<TailCallIndirect>()
+        .add_illegal_op::<FunctionReference>()
         .add_legal_op::<Module>()
         .add_legal_op::<FunctionAlias>()
         .add_legal_op::<Segment>()
@@ -176,28 +190,68 @@ pub fn conversion_target(
     target
 }
 
-/// Adds the patterns of `convert-to-wasm`, all driven by `converter`, for the target `target`.
+/// Adds the patterns of `convert-to-wasm`, all driven by `converter`, for the target `target`,
+/// naming the well-known symbols `symbols` of the module they convert.
 ///
 /// Each area of the lowering adds its own from a module of its own under `convert/`.
 pub fn populate_patterns(
     patterns: &mut ConversionPatternSet,
     converter: &TypeConverter,
     target: &WasmTarget,
+    symbols: &WellKnownSymbols,
 ) -> Result<(), Report> {
     calls::populate(patterns, converter)?;
     int::populate(patterns, converter, target)?;
     float::populate(patterns, converter)?;
     composed::populate(patterns, converter)?;
+    memory::populate(patterns, converter, target, symbols.memory)?;
+    symbols::populate(patterns, converter, symbols.table)?;
     Ok(())
 }
 
+/// The well-known symbols ([crate::symbols]) of one module that the patterns of `convert-to-wasm`
+/// name, each found or declared before the conversion of the module starts.
+#[derive(Clone, Default)]
+pub struct WellKnownSymbols {
+    /// The linear memory, `@__linear_memory`; `None` when no operation of the module accesses
+    /// memory.
+    pub memory: Option<MemoryRef>,
+    /// The indirect-function table, `@__indirect_function_table`; `None` when no operation of the
+    /// module makes an indirect call.
+    pub table: Option<TableRef>,
+}
+
+impl WellKnownSymbols {
+    /// The symbols the operations of `module` need: each found in the module, or declared there
+    /// when it is needed and missing. An error when the module holds another symbol of a
+    /// well-known name ([crate::symbols]).
+    pub fn of(module: ModuleRef) -> Result<Self, Report> {
+        let (mut memory, mut table) = (false, false);
+        let _ = module.as_operation_ref().raw_prewalk::<Forward, _, _>(|op: OperationRef| {
+            let op = op.borrow();
+            memory |= op.is::<mem::Load>()
+                || op.is::<mem::Store>()
+                || op.is::<mem::MemCpy>()
+                || op.is::<mem::MemMove>()
+                || op.is::<mem::MemSet>();
+            table |= op.is::<CallIndirect>() || op.is::<TailCallIndirect>();
+            WalkResult::<()>::Continue(())
+        });
+        Ok(Self {
+            memory: memory.then(|| crate::symbols::linear_memory(module)).transpose()?,
+            table: table.then(|| crate::symbols::indirect_function_table(module)).transpose()?,
+        })
+    }
+}
+
 /// Checks, before anything is converted, the functions of `module`: their calling conventions
-/// and those of their calls, and that every value has a carrier (see [ConvertToWasm]).
-fn check_module(module: OperationRef) -> Result<(), Report> {
+/// and those of their calls, the memory accesses, and that every value has a carrier (see
+/// [ConvertToWasm]).
+fn check_module(module: OperationRef, target: &WasmTarget) -> Result<(), Report> {
     let result = module.raw_prewalk::<Forward, _, _>(|op: OperationRef| -> WalkResult {
         let is_function = op.borrow().is::<Function>();
         if is_function {
-            return match check_function(op) {
+            return match check_function(op, target) {
                 Ok(()) => WalkResult::Skip,
                 Err(error) => WalkResult::Break(error),
             };
@@ -213,7 +267,7 @@ fn check_module(module: OperationRef) -> Result<(), Report> {
 }
 
 /// Checks the function `function` (see [check_module]).
-fn check_function(function: OperationRef) -> Result<(), Report> {
+fn check_function(function: OperationRef, target: &WasmTarget) -> Result<(), Report> {
     let op = function.borrow();
     let span = op.span();
     let func = op.downcast_ref::<Function>().expect("a builtin.function");
@@ -240,7 +294,7 @@ fn check_function(function: OperationRef) -> Result<(), Report> {
         if inner == function {
             return WalkResult::Continue(());
         }
-        match check_operation(inner) {
+        match check_operation(inner, target) {
             Ok(()) => WalkResult::Continue(()),
             Err(error) => WalkResult::Break(error),
         }
@@ -253,12 +307,31 @@ fn context_of(op: OperationRef) -> alloc::rc::Rc<Context> {
     op.borrow().context_rc()
 }
 
-/// Checks one operation of a function body: the convention of a call, and the carriers of its
-/// results and of the arguments of the blocks of its regions.
-fn check_operation(op: OperationRef) -> Result<(), Report> {
+/// Checks one operation of a function body: that it is not a `mem.alloca`, what a memory access
+/// reads or writes, the convention of a call, and the carriers of its results and of the
+/// arguments of the blocks of its regions.
+fn check_operation(op: OperationRef, target: &WasmTarget) -> Result<(), Report> {
     let context = context_of(op);
     {
         let op_ref = op.borrow();
+        if op_ref.is::<mem::Alloca>() {
+            return Err(report!(
+                message: (format!(
+                    "`{NAME}` does not lower `mem.alloca`: run `{}` first, which gives each one a \
+                     slot in its function's frame",
+                    crate::frames::NAME
+                )),
+                labels: [primary(op_ref.span(), "this `mem.alloca` has no slot in a frame")],
+            ));
+        }
+        let accessed = if let Some(load) = op_ref.downcast_ref::<mem::Load>() {
+            Some(load.result().ty())
+        } else {
+            op_ref.downcast_ref::<mem::Store>().map(|store| store.value().ty())
+        };
+        if let Some(ty) = accessed {
+            memory::access(&context, target.layout(), ty, &op_ref)?;
+        }
         if let Some(signature) = call_signature(&op_ref) {
             calls::Convention::of(&signature, &op_ref)?;
         }
@@ -320,16 +393,14 @@ fn call_signature(op: &Operation) -> Option<Signature> {
 }
 
 /// An error, with a label on `span` that says `what` (a value) has type `ty`, when `ty` has no
-/// carrier, or is a function type.
+/// carrier.
 fn check_carried(
     context: &Context,
     ty: Type,
     span: runic_ir::SourceSpan,
     what: impl FnOnce() -> String,
 ) -> Result<(), Report> {
-    let problem = if ty.is_function() {
-        "values of function type are not lowered yet"
-    } else if carrier(context, ty).is_some() {
+    let problem = if carrier(context, ty).is_some() {
         return Ok(());
     } else if ty.integer_width().is_some() {
         "integers wider than 64 bits are not lowered yet"

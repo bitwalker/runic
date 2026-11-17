@@ -16,10 +16,10 @@ use runic_dialect_wasm::{
     WasmOpBuilder,
 };
 use runic_ir::{
-    Builder, Context, Ident, LINK_NAME, Op, OpBuilder, OperationRef, Report, Spanned, SymbolTable,
-    UnsafeIntrusiveEntityRef, Visibility,
+    Builder, Context, Ident, LINK_NAME, Op, OpBuilder, OperationRef, Report, Spanned,
+    SymbolNameComponent, SymbolPath, SymbolTable, UnsafeIntrusiveEntityRef, Visibility,
     diagnostics::report,
-    dialects::builtin::{ModuleRef, attributes::StringAttr},
+    dialects::builtin::{Module, ModuleRef, attributes::StringAttr},
     interner,
 };
 
@@ -150,4 +150,17 @@ fn find_or_declare<T: Op>(
     let link_name = context.create_attribute::<StringAttr, _>(name).as_attribute_ref();
     entity.borrow_mut().as_operation_mut().set_attribute(LINK_NAME, link_name);
     Ok(entity)
+}
+
+/// The path by which `user` names `symbol`, a symbol called `name`: the bare name (`@name`) when
+/// `symbol` is in the module nearest `user`, and `None` otherwise, where the absolute path the
+/// builders give is kept.
+pub(crate) fn local_path(
+    user: OperationRef,
+    symbol: OperationRef,
+    name: &str,
+) -> Option<SymbolPath> {
+    let module = user.borrow().nearest_parent_op::<Module>()?.as_operation_ref();
+    (symbol.borrow().parent_op() == Some(module))
+        .then(|| SymbolPath::from_iter([SymbolNameComponent::Leaf(interner::Symbol::intern(name))]))
 }

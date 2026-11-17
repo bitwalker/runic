@@ -111,15 +111,21 @@ fn the_converter_gives_each_type_its_carrier_and_leaves_one_without_alone() {
     assert!(!converter.is_legal_type(&context, i8));
 }
 
-/// The converter answers for function types by their parts, as the builtin patterns require, so a
-/// function type converts to the function type of its carriers, not to its own carrier `i32`.
+/// A value of a function type converts to its carrier `i32`, while the converter still converts
+/// function types by their parts for the builtin patterns, and a signature converts parameter by
+/// parameter: a parameter of a function type becomes an `i32`.
 #[test]
-fn the_converter_converts_a_function_type_by_its_parts() {
+fn the_converter_gives_a_function_value_its_carrier() {
     let context = context();
     let converter = type_converter();
     assert!(converter.converts_function_types());
     let function = context.function_type([context.i8(), context.int_type(33)], [context.i1()]);
-    let converted = converter.convert_type(&context, function);
-    assert_eq!(converted.len(), 1);
-    assert_eq!(converted[0].to_string(), "(i32, i64) -> i32");
+    assert_eq!(converter.convert_type(&context, function).as_slice(), [context.i32()]);
+    let signature = runic_ir::dialects::builtin::attributes::Signature::new(
+        &context,
+        [function, context.i8()],
+        [context.int_type(40)],
+    );
+    let converted = runic_ir::conversion::convert_signature(&context, &signature, &converter);
+    assert_eq!(converted.signature.to_string(), "extern(\"C\") (i32, i32) -> i64");
 }

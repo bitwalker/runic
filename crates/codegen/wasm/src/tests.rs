@@ -18,6 +18,7 @@ mod carried;
 mod composed;
 mod eval;
 mod float;
+mod frames;
 mod int;
 mod pipeline;
 mod symbols;

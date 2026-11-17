@@ -1,0 +1,207 @@
+// RUN: runic-opt %s -p wasm-lower-frames --split-input-file --verify-diagnostics | filecheck %s
+
+// `wasm-lower-frames` alone: each `mem.alloca` gets a slot in one frame per function on the
+// shadow stack. The frame is taken below the stack pointer at the entry (its size rounded up to
+// 16 bytes, its base aligned down to the largest slot alignment when that is above 16), each
+// alloca becomes the address of its slot and a cast of it to the alloca's pointer type, and the
+// stack pointer is restored before every return and tail call, at any depth. The stack pointer is
+// declared (an import) in a module that has none. `frames-pipeline.runic` takes the same frames
+// on through `convert-to-wasm`.
+
+// CHECK-LABEL: builtin.module public @one
+// CHECK-NEXT: wasm.global private declaration @__stack_pointer : mut i32 attributes { link_name = #builtin.string<"__stack_pointer"> };
+// CHECK-NEXT: builtin.function public extern("C") @f(
+// CHECK-SAME: [[X:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[SP:%[0-9]+]] = wasm.global_get @__stack_pointer : i32;
+// CHECK-NEXT: [[SIZE:%[0-9]+]] = wasm.const 16 : i32;
+// CHECK-NEXT: [[FP:%[0-9]+]] = wasm.sub [[SP]], [[SIZE]];
+// CHECK-NEXT: wasm.global_set @__stack_pointer, [[FP]];
+// CHECK-NEXT: [[P:%[0-9]+]] = builtin.unrealized_conversion_cast [[FP]] : i32 to ptr<i32>;
+// CHECK-NEXT: mem.store [[X]], [[P]];
+// CHECK-NEXT: [[Y:%[0-9]+]] = mem.load [[P]];
+// CHECK-NEXT: wasm.global_set @__stack_pointer, [[SP]];
+// CHECK-NEXT: builtin.ret [[Y]] : (i32);
+builtin.module public @one attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @f(%x: i32) -> i32 {
+        %p = mem.alloca i32;
+        mem.store %x, %p;
+        %y = mem.load %p;
+        builtin.ret %y : (i32);
+    };
+};
+
+// -----
+
+// Three slots of different alignments, in order: an `i8` at 0, an `i64` at 8, an `i16` stated to
+// align 4 at 16; 18 bytes, rounded up to 32.
+
+// CHECK-LABEL: builtin.module public @three
+// CHECK: builtin.function public extern("C") @f(
+// CHECK-SAME: [[X:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[SP:%[0-9]+]] = wasm.global_get @__stack_pointer : i32;
+// CHECK-NEXT: [[SIZE:%[0-9]+]] = wasm.const 32 : i32;
+// CHECK-NEXT: [[FP:%[0-9]+]] = wasm.sub [[SP]], [[SIZE]];
+// CHECK-NEXT: wasm.global_set @__stack_pointer, [[FP]];
+// CHECK-NEXT: builtin.unrealized_conversion_cast [[FP]] : i32 to ptr<i8>;
+// CHECK-NEXT: [[K8:%[0-9]+]] = wasm.const 8 : i32;
+// CHECK-NEXT: [[A8:%[0-9]+]] = wasm.add [[FP]], [[K8]];
+// CHECK-NEXT: [[B:%[0-9]+]] = builtin.unrealized_conversion_cast [[A8]] : i32 to ptr<i64>;
+// CHECK-NEXT: [[K16:%[0-9]+]] = wasm.const 16 : i32;
+// CHECK-NEXT: [[A16:%[0-9]+]] = wasm.add [[FP]], [[K16]];
+// CHECK-NEXT: builtin.unrealized_conversion_cast [[A16]] : i32 to ptr<i16>;
+// CHECK-NEXT: mem.store [[X]], [[B]];
+// CHECK-NEXT: wasm.global_set @__stack_pointer, [[SP]];
+// CHECK-NEXT: builtin.ret [[X]] : (i64);
+builtin.module public @three attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @f(%x: i64) -> i64 {
+        %a = mem.alloca i8;
+        %b = mem.alloca i64;
+        %c = mem.alloca i16, align 4;
+        mem.store %x, %b;
+        builtin.ret %x : (i64);
+    };
+};
+
+// -----
+
+// An over-aligned slot: the frame (an `i8` at 0, 40 bytes aligned to 64 at 64: 104 bytes, 112
+// rounded) is aligned down to 64 below the stack pointer.
+
+// CHECK-LABEL: builtin.module public @over_aligned
+// CHECK: builtin.function public extern("C") @f() {
+// CHECK-NEXT: [[SP:%[0-9]+]] = wasm.global_get @__stack_pointer : i32;
+// CHECK-NEXT: [[SIZE:%[0-9]+]] = wasm.const 112 : i32;
+// CHECK-NEXT: [[BELOW:%[0-9]+]] = wasm.sub [[SP]], [[SIZE]];
+// CHECK-NEXT: [[MASK:%[0-9]+]] = wasm.const -64 : i32;
+// CHECK-NEXT: [[FP:%[0-9]+]] = wasm.and [[BELOW]], [[MASK]];
+// CHECK-NEXT: wasm.global_set @__stack_pointer, [[FP]];
+// CHECK-NEXT: builtin.unrealized_conversion_cast [[FP]] : i32 to ptr<i8>;
+// CHECK-NEXT: [[K64:%[0-9]+]] = wasm.const 64 : i32;
+// CHECK-NEXT: [[A64:%[0-9]+]] = wasm.add [[FP]], [[K64]];
+// CHECK-NEXT: builtin.unrealized_conversion_cast [[A64]] : i32 to ptr<array<i8; 40>>;
+// CHECK-NEXT: wasm.global_set @__stack_pointer, [[SP]];
+// CHECK-NEXT: builtin.ret;
+builtin.module public @over_aligned attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @f() {
+        %a = mem.alloca i8;
+        %b = mem.alloca array<i8; 40>, align 64;
+        builtin.ret;
+    };
+};
+
+// -----
+
+// An alloca under `scf.if` gets its slot in the function's frame, its address computed where it
+// stands; a return inside the `scf.if` and the tail call after it each restore the stack pointer.
+
+// CHECK-LABEL: builtin.module public @nested
+// CHECK: builtin.function public extern("C") @f(
+// CHECK-SAME: [[C:%[0-9]+]]: i1, [[X:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[SP:%[0-9]+]] = wasm.global_get @__stack_pointer : i32;
+// CHECK-NEXT: [[SIZE:%[0-9]+]] = wasm.const 16 : i32;
+// CHECK-NEXT: [[FP:%[0-9]+]] = wasm.sub [[SP]], [[SIZE]];
+// CHECK-NEXT: wasm.global_set @__stack_pointer, [[FP]];
+// CHECK-NEXT: [[R:%[0-9]+]] = scf.if [[C]] then {
+// CHECK-NEXT: [[P:%[0-9]+]] = builtin.unrealized_conversion_cast [[FP]] : i32 to ptr<i32>;
+// CHECK-NEXT: mem.store [[X]], [[P]];
+// CHECK-NEXT: [[Y:%[0-9]+]] = mem.load [[P]];
+// CHECK-NEXT: wasm.global_set @__stack_pointer, [[SP]];
+// CHECK-NEXT: builtin.ret [[Y]] : (i32);
+// CHECK-NEXT: } else {
+// CHECK-NEXT: scf.yield [[X]] : (i32);
+// CHECK-NEXT: } : (i1) -> (i32);
+// CHECK-NEXT: wasm.global_set @__stack_pointer, [[SP]];
+// CHECK-NEXT: builtin.tail_call @g([[R]]) : extern("C") (i32) -> i32;
+builtin.module public @nested attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @f(%c: i1, %x: i32) -> i32 {
+        %r = scf.if %c then {
+            %p = mem.alloca i32;
+            mem.store %x, %p;
+            %y = mem.load %p;
+            builtin.ret %y : (i32);
+        } else {
+            scf.yield %x : (i32);
+        } : (i1) -> (i32);
+        builtin.tail_call @g(%r) : extern("C") (i32) -> i32;
+    };
+    builtin.function public extern("C") @g(i32) -> i32;
+};
+
+// -----
+
+// Returns at two depths: each restores the stack pointer.
+
+// CHECK-LABEL: builtin.module public @two_depths
+// CHECK: builtin.function public extern("C") @f(
+// CHECK-SAME: [[C:%[0-9]+]]: i1, [[X:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[SP:%[0-9]+]] = wasm.global_get @__stack_pointer : i32;
+// CHECK: scf.if [[C]] then {
+// CHECK-NEXT: wasm.global_set @__stack_pointer, [[SP]];
+// CHECK-NEXT: builtin.ret [[X]] : (i32);
+// CHECK-NEXT: } else {
+// CHECK-NEXT: scf.yield : ();
+// CHECK-NEXT: } : (i1) -> ();
+// CHECK-NEXT: mem.load
+// CHECK-NEXT: wasm.global_set @__stack_pointer, [[SP]];
+// CHECK-NEXT: builtin.ret
+builtin.module public @two_depths attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @f(%c: i1, %x: i32) -> i32 {
+        %p = mem.alloca i32;
+        mem.store %x, %p;
+        scf.if %c then {
+            builtin.ret %x : (i32);
+        } else {
+            scf.yield : ();
+        } : (i1) -> ();
+        %y = mem.load %p;
+        builtin.ret %y : (i32);
+    };
+};
+
+// -----
+
+// A function with no alloca is left as it is, and no stack pointer is declared.
+
+// CHECK-LABEL: builtin.module public @none
+// CHECK-NEXT: builtin.function public extern("C") @f(
+// CHECK-SAME: [[X:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: builtin.ret [[X]] : (i32);
+builtin.module public @none attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @f(%x: i32) -> i32 {
+        builtin.ret %x : (i32);
+    };
+};
+
+// -----
+
+// Errors. An alloca in a loop would need a slot per iteration.
+
+builtin.module public @in_loop attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @f(%x: i32) -> i32 {
+        %r = scf.while %x before {
+        ^b(%i: i32):
+            // expected-error@+1 {{each `mem.alloca` has one slot in its function's frame; one in a loop would need a slot per iteration}}
+            %p = mem.alloca i32;
+            %c = arith.constant 0 : i1;
+            scf.condition %c, %i : (i1, i32);
+        } after {
+        ^a(%j: i32):
+            scf.yield %j : (i32);
+        } : (i32) -> (i32);
+        builtin.ret %r : (i32);
+    };
+};
+
+// -----
+
+// Unstructured control flow is for `cfg-to-scf` to structure first.
+
+builtin.module public @unstructured attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    // expected-error@+1 {{`wasm-lower-frames` needs structured control flow: run `cfg-to-scf` first}}
+    builtin.function public extern("C") @f(%x: i32) -> i32 {
+        %p = mem.alloca i32;
+        cf.br ^next;
+    ^next:
+        builtin.ret %x : (i32);
+    };
+};

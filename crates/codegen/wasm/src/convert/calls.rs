@@ -1,9 +1,12 @@
 //! The patterns of functions, calls, returns, locals and constants, and the calling conventions.
 //!
 //! The types change through core's builtin conversion patterns
-//! ([populate_builtin_conversion_patterns]): this module adds them all, and wraps four of them
-//! (those of `builtin.function`, `builtin.call`, `builtin.tail_call` and `builtin.ret`) with what
-//! the calling convention needs on top, in carried form:
+//! ([populate_builtin_conversion_patterns]): this module adds them, and wraps four of them (those
+//! of `builtin.function`, `builtin.call`, `builtin.tail_call` and `builtin.ret`) with what the
+//! calling convention needs on top, in carried form. The builtin patterns of
+//! `builtin.call_indirect`, `builtin.tail_call_indirect` and `builtin.function_ref` are left out:
+//! a function value is an `i32` here, a table index, and [symbols](super::symbols) lowers those
+//! three, its indirect calls under the same rules:
 //!
 //! * `extern("wasm")`: nothing. Both sides of a call rely on carried form.
 //! * `extern("C")`: nothing is assumed that the signature does not say. A function masks each
@@ -13,7 +16,8 @@
 //!   parameter is narrow and marked `sext`, and masks each narrow result that is not marked
 //!   `zext`. A tail call sign-extends its arguments as a call does; its results are the callee's,
 //!   and the function verifier already requires that the callee's results, markers included, are
-//!   the function's, so nothing is done to them.
+//!   the function's, so nothing is done to them. An indirect call and an indirect tail call follow
+//!   the rules of a call and a tail call.
 //! * any other convention is an error naming the convention and the operation.
 //!
 //! `builtin.ret_imm` becomes a `wasm.const` and a `builtin.ret`; `arith.constant` becomes a
@@ -32,7 +36,8 @@ use runic_ir::{
     },
     diagnostics::report,
     dialects::builtin::{
-        Call, Function, Ret, RetImm, TailCall, UnrealizedConversionCast,
+        Call, CallIndirect, Function, Ret, RetImm, TailCall, TailCallIndirect,
+        UnrealizedConversionCast,
         attributes::{ArgumentExtension, Signature},
     },
     patterns::{Pattern, PatternBenefit, PatternInfo, PatternKind},
@@ -137,6 +142,11 @@ pub fn populate(
             "builtin-call-by-type" => Role::Call,
             "builtin-tail-call-by-type" => Role::TailCall,
             "builtin-ret-by-type" => Role::Ret,
+            // A function value is a table index here, not a function value: lowered by
+            // `symbols`.
+            "builtin-call-indirect-by-type"
+            | "builtin-tail-call-indirect-by-type"
+            | "builtin-function-ref-by-type" => continue,
             _ => {
                 patterns.push(Shared(inner));
                 continue;
@@ -202,13 +212,38 @@ impl ConversionPattern for Shared {
     }
 }
 
-/// Which builtin pattern a [WithConvention] wraps.
+/// Which pattern a [WithConvention] wraps: the operation it is rooted at.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-enum Role {
+pub(crate) enum Role {
+    /// `builtin.function`.
     Function,
+    /// `builtin.call`.
     Call,
+    /// `builtin.tail_call`.
     TailCall,
+    /// `builtin.ret`.
     Ret,
+    /// `builtin.call_indirect`, whose operand 0 is the callee and whose new call is a
+    /// `wasm.call_indirect`.
+    CallIndirect,
+    /// `builtin.tail_call_indirect`, whose operand 0 is the callee.
+    TailCallIndirect,
+}
+
+/// `inner`, a pattern rooted at the operation `role` names that converts it by type, with the
+/// rules of the calling convention on top (see the module documentation), as one pattern: the
+/// rules of functions, calls and returns, shared by every pattern that lowers one.
+///
+/// For a call (`Role::Call`, `Role::CallIndirect`), `inner` must leave the new call, a
+/// `builtin.call` or a `wasm.call_indirect`, after the operations that preceded the old one, and
+/// its results read only through the casts the conversion leaves.
+pub(crate) fn with_convention(
+    context: &Rc<Context>,
+    role: Role,
+    inner: Rc<dyn ConversionPattern>,
+    converter: &TypeConverter,
+) -> impl ConversionPattern + 'static {
+    WithConvention::new(context, role, inner, converter)
 }
 
 /// A builtin conversion pattern of a function, a call, a tail call or a return, and the rules of
@@ -233,6 +268,12 @@ impl WithConvention {
             Role::Call => pattern_info::<Call>(context, "wasm-call", generated),
             Role::TailCall => pattern_info::<TailCall>(context, "wasm-tail-call", generated),
             Role::Ret => pattern_info::<Ret>(context, "wasm-ret", generated),
+            Role::CallIndirect => {
+                pattern_info::<CallIndirect>(context, "wasm-call-indirect", generated)
+            }
+            Role::TailCallIndirect => {
+                pattern_info::<TailCallIndirect>(context, "wasm-tail-call-indirect", generated)
+            }
         };
         Self {
             info,
@@ -262,7 +303,9 @@ impl ConversionPattern for WithConvention {
     ) -> Result<bool, Report> {
         match self.role {
             Role::Function => self.function(op, operands, rewriter),
-            Role::Call | Role::TailCall => self.call(op, operands, rewriter),
+            Role::Call | Role::TailCall | Role::CallIndirect | Role::TailCallIndirect => {
+                self.call(op, operands, rewriter)
+            }
             Role::Ret => self.ret(op, operands, rewriter),
         }
     }
@@ -328,9 +371,10 @@ impl WithConvention {
         Ok(true)
     }
 
-    /// A call or a tail call: under `"C"`, each argument whose parameter is narrow and marked
-    /// `sext` sign-extended before the builtin pattern converts the call, and each narrow result
-    /// of a call that is not marked `zext` masked after it, its users reading the masked value.
+    /// A call or a tail call, direct or indirect: under `"C"`, each argument whose parameter is
+    /// narrow and marked `sext` sign-extended before the inner pattern converts the call, and each
+    /// narrow result of a call that is not marked `zext` masked after it, its users reading the
+    /// masked value.
     fn call(
         &self,
         op: OperationRef,
@@ -340,16 +384,21 @@ impl WithConvention {
         let (signature, span) = {
             let op_ref = op.borrow();
             let signature = match self.role {
-                Role::Call => {
-                    op_ref.downcast_ref::<Call>().expect("rooted at call").get_signature().clone()
+                Role::Call => op_ref.downcast_ref::<Call>().map(|op| op.get_signature().clone()),
+                Role::TailCall => {
+                    op_ref.downcast_ref::<TailCall>().map(|op| op.get_signature().clone())
                 }
-                _ => op_ref
-                    .downcast_ref::<TailCall>()
-                    .expect("rooted at tail_call")
-                    .get_signature()
-                    .clone(),
+                Role::CallIndirect => {
+                    op_ref.downcast_ref::<CallIndirect>().map(|op| op.get_signature().clone())
+                }
+                _ => op_ref.downcast_ref::<TailCallIndirect>().map(|op| op.get_signature().clone()),
             };
-            (signature, op_ref.span())
+            (signature.expect("rooted at a call"), op_ref.span())
+        };
+        // The callee of an indirect call is its operand 0, before the arguments.
+        let first_argument = match self.role {
+            Role::CallIndirect | Role::TailCallIndirect => 1,
+            _ => 0,
         };
         let convention = Convention::of(&signature, &op.borrow())?;
         if convention == Convention::Wasm {
@@ -360,10 +409,10 @@ impl WithConvention {
             .iter()
             .enumerate()
             .filter(|(_, param)| param.extension() == ArgumentExtension::Sext)
-            .filter_map(|(index, param)| narrow(param.ty).map(|n| (index, n)))
+            .filter_map(|(index, param)| narrow(param.ty).map(|n| (first_argument + index, n)))
             .collect::<Vec<_>>();
         let masks = match self.role {
-            Role::Call => signature
+            Role::Call | Role::CallIndirect => signature
                 .results()
                 .iter()
                 .enumerate()
@@ -395,10 +444,14 @@ impl WithConvention {
         let call = loop {
             let Some(candidate) = next else {
                 return Err(Report::msg(
-                    "`convert-to-wasm` did not find the call the builtin call pattern built",
+                    "`convert-to-wasm` did not find the call the call pattern built",
                 ));
             };
-            if candidate.borrow().is::<Call>() {
+            let found = match self.role {
+                Role::CallIndirect => candidate.borrow().is::<wasm::CallIndirect>(),
+                _ => candidate.borrow().is::<Call>(),
+            };
+            if found {
                 break candidate;
             }
             next = candidate.next();

@@ -1,0 +1,349 @@
+// RUN: runic-opt %s -p 'convert-to-wasm,wasm-verify-form' --split-input-file --verify-diagnostics | filecheck %s
+
+// The `mem` dialect in Wasm form. A pointer and an `isize` are an `i32`, the address of a byte in
+// the linear memory `@__linear_memory`, which is declared (an import) when the module has none
+// and an operation accesses memory. A load reads the size of its type under the layout with one
+// Wasm load of the carrier (a narrow one, zero-extended, below the carrier's size) and masks an
+// integer narrower than the bytes read; a store writes those bytes of the carried value. The
+// alignment is the one stated, else the layout's, and never above the width of the access; it is
+// printed only when it is not the width.
+
+// CHECK-LABEL: builtin.module public @access
+// CHECK-NEXT: wasm.memory private declaration @__linear_memory : 0 attributes { link_name = #builtin.string<"__linear_memory"> };
+builtin.module public @access attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    // An `i1` is one byte, masked to one bit.
+    // CHECK-LABEL: @i1(
+    // CHECK-SAME: [[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[L:%[0-9]+]] = wasm.load @__linear_memory, [[P]] as i8 unsigned : i32;
+    // CHECK-NEXT: [[K:%[0-9]+]] = wasm.const 1 : i32;
+    // CHECK-NEXT: [[V:%[0-9]+]] = wasm.and [[L]], [[K]];
+    // CHECK-NEXT: wasm.store @__linear_memory, [[Q]], [[V]] as i8;
+    // CHECK-NEXT: builtin.ret [[V]] : (i32);
+    builtin.function public extern("wasm") @i1(%p: ptr<i1>, %q: ptr<i1>) -> i1 {
+        %v = mem.load %p;
+        mem.store %v, %q;
+        builtin.ret %v : (i1);
+    };
+
+    // CHECK-LABEL: @i7(
+    // CHECK-SAME: [[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[L:%[0-9]+]] = wasm.load @__linear_memory, [[P]] as i8 unsigned : i32;
+    // CHECK-NEXT: [[K:%[0-9]+]] = wasm.const 127 : i32;
+    // CHECK-NEXT: [[V:%[0-9]+]] = wasm.and [[L]], [[K]];
+    // CHECK-NEXT: wasm.store @__linear_memory, [[Q]], [[V]] as i8;
+    // CHECK-NEXT: builtin.ret [[V]] : (i32);
+    builtin.function public extern("wasm") @i7(%p: ptr<i7>, %q: ptr<i7>) -> i7 {
+        %v = mem.load %p;
+        mem.store %v, %q;
+        builtin.ret %v : (i7);
+    };
+
+    // CHECK-LABEL: @i8(
+    // CHECK-SAME: [[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[V:%[0-9]+]] = wasm.load @__linear_memory, [[P]] as i8 unsigned : i32;
+    // CHECK-NEXT: wasm.store @__linear_memory, [[Q]], [[V]] as i8;
+    // CHECK-NEXT: builtin.ret [[V]] : (i32);
+    builtin.function public extern("wasm") @i8(%p: ptr<i8>, %q: ptr<i8>) -> i8 {
+        %v = mem.load %p;
+        mem.store %v, %q;
+        builtin.ret %v : (i8);
+    };
+
+    // CHECK-LABEL: @i16(
+    // CHECK-SAME: [[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[V:%[0-9]+]] = wasm.load @__linear_memory, [[P]] as i16 unsigned : i32;
+    // CHECK-NEXT: wasm.store @__linear_memory, [[Q]], [[V]] as i16;
+    // CHECK-NEXT: builtin.ret [[V]] : (i32);
+    builtin.function public extern("wasm") @i16(%p: ptr<i16>, %q: ptr<i16>) -> i16 {
+        %v = mem.load %p;
+        mem.store %v, %q;
+        builtin.ret %v : (i16);
+    };
+
+    // An `i24` is four bytes under the layout: the whole `i32`, masked; the byte stored above its
+    // 24 bits is zero.
+    // CHECK-LABEL: @i24(
+    // CHECK-SAME: [[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[L:%[0-9]+]] = wasm.load @__linear_memory, [[P]] : i32;
+    // CHECK-NEXT: [[K:%[0-9]+]] = wasm.const 16777215 : i32;
+    // CHECK-NEXT: [[V:%[0-9]+]] = wasm.and [[L]], [[K]];
+    // CHECK-NEXT: wasm.store @__linear_memory, [[Q]], [[V]];
+    // CHECK-NEXT: builtin.ret [[V]] : (i32);
+    builtin.function public extern("wasm") @i24(%p: ptr<i24>, %q: ptr<i24>) -> i24 {
+        %v = mem.load %p;
+        mem.store %v, %q;
+        builtin.ret %v : (i24);
+    };
+
+    // CHECK-LABEL: @i32(
+    // CHECK-SAME: [[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[V:%[0-9]+]] = wasm.load @__linear_memory, [[P]] : i32;
+    // CHECK-NEXT: wasm.store @__linear_memory, [[Q]], [[V]];
+    // CHECK-NEXT: builtin.ret [[V]] : (i32);
+    builtin.function public extern("wasm") @i32(%p: ptr<i32>, %q: ptr<i32>) -> i32 {
+        %v = mem.load %p;
+        mem.store %v, %q;
+        builtin.ret %v : (i32);
+    };
+
+    // An `i40` is eight bytes: the whole `i64`, masked.
+    // CHECK-LABEL: @i40(
+    // CHECK-SAME: [[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32) -> i64 {
+    // CHECK-NEXT: [[L:%[0-9]+]] = wasm.load @__linear_memory, [[P]] : i64;
+    // CHECK-NEXT: [[K:%[0-9]+]] = wasm.const 1099511627775 : i64;
+    // CHECK-NEXT: [[V:%[0-9]+]] = wasm.and [[L]], [[K]];
+    // CHECK-NEXT: wasm.store @__linear_memory, [[Q]], [[V]];
+    // CHECK-NEXT: builtin.ret [[V]] : (i64);
+    builtin.function public extern("wasm") @i40(%p: ptr<i40>, %q: ptr<i40>) -> i40 {
+        %v = mem.load %p;
+        mem.store %v, %q;
+        builtin.ret %v : (i40);
+    };
+
+    // CHECK-LABEL: @i64(
+    // CHECK-SAME: [[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32) -> i64 {
+    // CHECK-NEXT: [[V:%[0-9]+]] = wasm.load @__linear_memory, [[P]] : i64;
+    // CHECK-NEXT: wasm.store @__linear_memory, [[Q]], [[V]];
+    // CHECK-NEXT: builtin.ret [[V]] : (i64);
+    builtin.function public extern("wasm") @i64(%p: ptr<i64>, %q: ptr<i64>) -> i64 {
+        %v = mem.load %p;
+        mem.store %v, %q;
+        builtin.ret %v : (i64);
+    };
+
+    // CHECK-LABEL: @isize(
+    // CHECK-SAME: [[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[V:%[0-9]+]] = wasm.load @__linear_memory, [[P]] : i32;
+    // CHECK-NEXT: wasm.store @__linear_memory, [[Q]], [[V]];
+    // CHECK-NEXT: builtin.ret [[V]] : (i32);
+    builtin.function public extern("wasm") @isize(%p: ptr<isize>, %q: ptr<isize>) -> isize {
+        %v = mem.load %p;
+        mem.store %v, %q;
+        builtin.ret %v : (isize);
+    };
+
+    // CHECK-LABEL: @pointer(
+    // CHECK-SAME: [[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[V:%[0-9]+]] = wasm.load @__linear_memory, [[P]] : i32;
+    // CHECK-NEXT: wasm.store @__linear_memory, [[Q]], [[V]];
+    // CHECK-NEXT: builtin.ret [[V]] : (i32);
+    builtin.function public extern("wasm") @pointer(%p: ptr<ptr<i8>>, %q: ptr<ptr<i8>>) -> ptr<i8> {
+        %v = mem.load %p;
+        mem.store %v, %q;
+        builtin.ret %v : (ptr<i8>);
+    };
+
+    // CHECK-LABEL: @f32(
+    // CHECK-SAME: [[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32) -> f32 {
+    // CHECK-NEXT: [[V:%[0-9]+]] = wasm.load @__linear_memory, [[P]] : f32;
+    // CHECK-NEXT: wasm.store @__linear_memory, [[Q]], [[V]];
+    // CHECK-NEXT: builtin.ret [[V]] : (f32);
+    builtin.function public extern("wasm") @f32(%p: ptr<f32>, %q: ptr<f32>) -> f32 {
+        %v = mem.load %p;
+        mem.store %v, %q;
+        builtin.ret %v : (f32);
+    };
+
+    // CHECK-LABEL: @f64(
+    // CHECK-SAME: [[P:%[0-9]+]]: i32, [[Q:%[0-9]+]]: i32) -> f64 {
+    // CHECK-NEXT: [[V:%[0-9]+]] = wasm.load @__linear_memory, [[P]] : f64;
+    // CHECK-NEXT: wasm.store @__linear_memory, [[Q]], [[V]];
+    // CHECK-NEXT: builtin.ret [[V]] : (f64);
+    builtin.function public extern("wasm") @f64(%p: ptr<f64>, %q: ptr<f64>) -> f64 {
+        %v = mem.load %p;
+        mem.store %v, %q;
+        builtin.ret %v : (f64);
+    };
+
+    // Through an opaque pointer, with and without a stated alignment: one below the width is
+    // kept, one above it (16 on an `i32`, 64 on a store of one) is the width.
+    // CHECK-LABEL: @opaque(
+    // CHECK-SAME: [[O:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[A:%[0-9]+]] = wasm.load @__linear_memory, [[O]] as i16 unsigned : i32;
+    // CHECK-NEXT: wasm.load @__linear_memory, [[O]] as i16 unsigned <{ align = 1 }> : i32;
+    // CHECK-NEXT: [[C:%[0-9]+]] = wasm.load @__linear_memory, [[O]] <{ align = 2 }> : i32;
+    // CHECK-NEXT: [[D:%[0-9]+]] = wasm.load @__linear_memory, [[O]] : i32;
+    // CHECK-NEXT: [[E:%[0-9]+]] = wasm.load @__linear_memory, [[O]] <{ align = 4 }> : i64;
+    // CHECK-NEXT: [[L:%[0-9]+]] = wasm.load @__linear_memory, [[O]] as i8 unsigned : i32;
+    // CHECK-NEXT: [[K:%[0-9]+]] = wasm.const 1 : i32;
+    // CHECK-NEXT: [[F:%[0-9]+]] = wasm.and [[L]], [[K]];
+    // CHECK-NEXT: wasm.store @__linear_memory, [[O]], [[A]] as i16 <{ align = 1 }>;
+    // CHECK-NEXT: wasm.store @__linear_memory, [[O]], [[C]];
+    // CHECK-NEXT: wasm.store @__linear_memory, [[O]], [[E]] <{ align = 2 }>;
+    // CHECK-NEXT: wasm.store @__linear_memory, [[O]], [[F]] as i8;
+    // CHECK-NEXT: builtin.ret [[D]] : (i32);
+    builtin.function public extern("wasm") @opaque(%o: ptr) -> i32 {
+        %a = mem.load %o : i16;
+        %b = mem.load %o, align 1 : i16;
+        %c = mem.load %o, align 2 : i32;
+        %d = mem.load %o, align 16 : i32;
+        %e = mem.load %o, align 4 : i64;
+        %f = mem.load %o : i1;
+        mem.store %a, %o, align 1;
+        mem.store %c, %o, align 64;
+        mem.store %e, %o, align 2;
+        mem.store %f, %o;
+        builtin.ret %d : (i32);
+    };
+};
+
+// -----
+
+// Addresses: `mem.gep %p, %i, [path]` is `%p + %i * size + offset` with only what is needed (no
+// multiplication by an element size of 1, no addition of an offset of 0, `%p` itself with
+// neither); the measures of a type are constants from the layout; the pointer casts are the
+// operand itself; the bulk operations are `wasm.memory_copy` (which allows overlap, so
+// `mem.memmove` is one too) and `wasm.memory_fill`; `builtin.global_symbol` is the address of the
+// global variable.
+
+// CHECK-LABEL: builtin.module public @addresses
+// CHECK-NEXT: wasm.memory private declaration @__linear_memory : 0
+builtin.module public @addresses attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.global_variable public @g : i32;
+
+    // `struct<i32, array<i16; 4>>` is 12 bytes; its field 1 is at 4 and element 2 of that at 8;
+    // element 3 of `array<i32; 8>` is at 12; in `struct<i8, struct<i16, i64>>` field 1 is at 8 (an
+    // `i64` aligns it) and its field 1 at 8 more.
+    // CHECK-LABEL: @gep(
+    // CHECK-SAME: [[S:%[0-9]+]]: i32, [[A:%[0-9]+]]: i32, [[N:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32, [[I:%[0-9]+]]: i32) -> (i32, i32, i32, i32, i32, i32, i32, i32) {
+    // CHECK-NEXT: [[K12:%[0-9]+]] = wasm.const 12 : i32;
+    // CHECK-NEXT: [[STEP:%[0-9]+]] = wasm.mul [[I]], [[K12]];
+    // CHECK-NEXT: [[INDEX:%[0-9]+]] = wasm.add [[S]], [[STEP]];
+    // CHECK-NEXT: [[K4:%[0-9]+]] = wasm.const 4 : i32;
+    // CHECK-NEXT: [[PATH:%[0-9]+]] = wasm.add [[S]], [[K4]];
+    // CHECK-NEXT: [[K12B:%[0-9]+]] = wasm.const 12 : i32;
+    // CHECK-NEXT: [[STEPB:%[0-9]+]] = wasm.mul [[I]], [[K12B]];
+    // CHECK-NEXT: [[BASE:%[0-9]+]] = wasm.add [[S]], [[STEPB]];
+    // CHECK-NEXT: [[K8:%[0-9]+]] = wasm.const 8 : i32;
+    // CHECK-NEXT: [[BOTH:%[0-9]+]] = wasm.add [[BASE]], [[K8]];
+    // CHECK-NEXT: [[K12C:%[0-9]+]] = wasm.const 12 : i32;
+    // CHECK-NEXT: [[ARRAY:%[0-9]+]] = wasm.add [[A]], [[K12C]];
+    // CHECK-NEXT: [[K16:%[0-9]+]] = wasm.const 16 : i32;
+    // CHECK-NEXT: [[NESTED:%[0-9]+]] = wasm.add [[N]], [[K16]];
+    // CHECK-NEXT: [[BYTE:%[0-9]+]] = wasm.add [[B]], [[I]];
+    // CHECK-NEXT: builtin.ret [[PATH]], [[BOTH]], [[INDEX]], [[S]], [[ARRAY]], [[NESTED]], [[BYTE]], [[S]] : (i32, i32, i32, i32, i32, i32, i32, i32);
+    builtin.function public extern("wasm") @gep(%s: ptr<struct<i32, array<i16; 4>>>, %a: ptr<array<i32; 8>>, %n: ptr<struct<i8, struct<i16, i64>>>, %b: ptr<i8>, %i: isize) -> (ptr<array<i16; 4>>, ptr<i16>, ptr<struct<i32, array<i16; 4>>>, ptr<struct<i32, array<i16; 4>>>, ptr<i32>, ptr<i64>, ptr<i8>, ptr<i32>) {
+        %index = mem.gep %s, %i;
+        %path = mem.gep %s, [1];
+        %both = mem.gep %s, %i, [1, 2];
+        %neither = mem.gep %s;
+        %array = mem.gep %a, [3];
+        %nested = mem.gep %n, [1, 1];
+        %byte = mem.gep %b, %i;
+        %first = mem.gep %s, [0];
+        builtin.ret %path, %both, %index, %neither, %array, %nested, %byte, %first : (ptr<array<i16; 4>>, ptr<i16>, ptr<struct<i32, array<i16; 4>>>, ptr<struct<i32, array<i16; 4>>>, ptr<i32>, ptr<i64>, ptr<i8>, ptr<i32>);
+    };
+
+    // CHECK-LABEL: @measures(
+    // CHECK-SAME: ) -> (i32, i32, i32) {
+    // CHECK-NEXT: [[SIZE:%[0-9]+]] = wasm.const 24 : i32;
+    // CHECK-NEXT: [[ALIGN:%[0-9]+]] = wasm.const 8 : i32;
+    // CHECK-NEXT: [[OFFSET:%[0-9]+]] = wasm.const 16 : i32;
+    // CHECK-NEXT: builtin.ret [[SIZE]], [[ALIGN]], [[OFFSET]] : (i32, i32, i32);
+    builtin.function public extern("wasm") @measures() -> (isize, isize, isize) {
+        %size = mem.sizeof struct<i8, struct<i16, i64>>;
+        %align = mem.alignof struct<i8, struct<i16, i64>>;
+        %offset = mem.offsetof struct<i8, struct<i16, i64>>, [1, 1];
+        builtin.ret %size, %align, %offset : (isize, isize, isize);
+    };
+
+    // CHECK-LABEL: @casts(
+    // CHECK-SAME: [[P:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: builtin.ret [[P]] : (i32);
+    builtin.function public extern("wasm") @casts(%p: ptr<i32>) -> ptr {
+        %a = mem.ptrtoint %p;
+        %q = mem.inttoptr %a : ptr<i8>;
+        %o = mem.ptrcast %q : ptr;
+        builtin.ret %o : (ptr);
+    };
+
+    // CHECK-LABEL: @bulk(
+    // CHECK-SAME: [[D:%[0-9]+]]: i32, [[S:%[0-9]+]]: i32, [[N:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) {
+    // CHECK-NEXT: wasm.memory_copy @__linear_memory, @__linear_memory, [[D]], [[S]], [[N]];
+    // CHECK-NEXT: wasm.memory_copy @__linear_memory, @__linear_memory, [[D]], [[S]], [[N]];
+    // CHECK-NEXT: wasm.memory_fill @__linear_memory, [[D]], [[B]], [[N]];
+    // CHECK-NEXT: builtin.ret;
+    builtin.function public extern("wasm") @bulk(%d: ptr<i8>, %s: ptr<i8>, %n: isize, %b: i8) {
+        mem.memcpy %d, %s, %n;
+        mem.memmove %d, %s, %n;
+        mem.memset %d, %b, %n;
+        builtin.ret;
+    };
+
+    // The offset 0 of `wasm.data_addr` is not printed.
+    // CHECK-LABEL: @global(
+    // CHECK-SAME: ) -> i32 {
+    // CHECK-NEXT: [[G:%[0-9]+]] = wasm.data_addr @g;
+    // CHECK-NEXT: builtin.ret [[G]] : (i32);
+    builtin.function public extern("wasm") @global() -> ptr<i32> {
+        %p = builtin.global_symbol @g : ptr<i32>;
+        builtin.ret %p : (ptr<i32>);
+    };
+};
+
+// -----
+
+// A module that defines its own linear memory: it is used, and none is declared.
+
+// CHECK-LABEL: builtin.module public @own
+// CHECK-NEXT: wasm.memory public @__linear_memory : 1..16;
+// CHECK-NEXT: builtin.function public extern("wasm") @f(
+// CHECK-SAME: [[P:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V:%[0-9]+]] = wasm.load @__linear_memory, [[P]] : i32;
+// CHECK-NEXT: builtin.ret [[V]] : (i32);
+builtin.module public @own attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    wasm.memory public @__linear_memory : 1..16;
+    builtin.function public extern("wasm") @f(%p: ptr<i32>) -> i32 {
+        %v = mem.load %p;
+        builtin.ret %v : (i32);
+    };
+};
+
+// -----
+
+// A module that only computes addresses accesses no memory: no memory is declared.
+
+// CHECK-LABEL: builtin.module public @no_access
+// CHECK-NEXT: builtin.function public extern("wasm") @f(
+builtin.module public @no_access attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("wasm") @f(%p: ptr<i32>, %i: isize) -> ptr<i32> {
+        %q = mem.gep %p, %i;
+        builtin.ret %q : (ptr<i32>);
+    };
+};
+
+// -----
+
+// Errors. An aggregate is not one Wasm value: it is loaded field by field.
+
+builtin.module public @aggregate attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("wasm") @f(%p: ptr<struct<i32, i8>>) {
+        // expected-error@+1 {{`mem.load` of `struct<i32, i8>`: only a value that fits one Wasm load is loaded; load its fields}}
+        %v = mem.load %p;
+        builtin.ret;
+    };
+};
+
+// -----
+
+// A `mem.alloca` is given its slot by `wasm-lower-frames`, which did not run.
+
+builtin.module public @alloca attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("wasm") @f() {
+        // expected-error@+1 {{`convert-to-wasm` does not lower `mem.alloca`: run `wasm-lower-frames` first, which gives each one a slot in its function's frame}}
+        %p = mem.alloca i32;
+        builtin.ret;
+    };
+};
+
+// -----
+
+// Only address space 0 is linear memory.
+
+builtin.module public @address_space attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    // expected-error@+1 {{`convert-to-wasm` cannot lower a value of type `ptr<i32, 1>`: only pointers in address space 0, into linear memory, have a Wasm carrier}}
+    builtin.function public extern("wasm") @f(%p: ptr<i32, 1>) -> i32 {
+        %v = mem.load %p;
+        builtin.ret %v : (i32);
+    };
+};

@@ -26,17 +26,15 @@
 //! form; under `extern("C")` nothing is assumed that the signature does not say (see
 //! [convert::calls]).
 //!
-//! A value of a function type is refused by `convert-to-wasm` for now: the builtin conversion
-//! patterns need a type converter that converts function types by their parts
-//! (`TypeConverter::with_function_types`), which answers for a function type before any callback,
-//! so the converter cannot give such a value its carrier.
+//! A value of a function type is the index of the function in the module's indirect-function
+//! table; an indirect call calls through that table.
 //!
 //! **The passes, in order.** [add_lowering_passes] adds them to a pass manager:
 //!
 //! 1. `cfg-to-scf{exits=in-place}` (`runic-dialect-scf`): unstructured control flow becomes
 //!    structured, and each return and tail call stays where it is.
 //! 2. [`wasm-lower-frames`](LowerFrames): every `mem.alloca` gets a slot in a frame on the shadow
-//!    stack (registered, and changing nothing yet).
+//!    stack, addressed from the stack pointer.
 //! 3. [`convert-to-wasm`](ConvertToWasm): generic operations and types become `wasm` operations
 //!    and Wasm value types, in a full dialect conversion of each module.
 //! 4. [`wasm-verify-form`](VerifyForm): checks the result; changes nothing.

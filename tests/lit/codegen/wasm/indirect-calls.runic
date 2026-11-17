@@ -1,0 +1,123 @@
+// RUN: runic-opt %s -p 'convert-to-wasm,wasm-verify-form' --split-input-file | filecheck %s
+
+// Function values and indirect calls in Wasm form. A value of a function type is an `i32`, the
+// index of the function in the indirect-function table `@__indirect_function_table` (declared,
+// an import, when the module has none and makes an indirect call): `builtin.function_ref @f` is
+// `wasm.func_index @f`, and it is passed, kept in a local and loaded as any `i32` is. An indirect
+// call goes through the table with the converted signature; an indirect tail call is
+// `wasm.return_call_indirect`. The rules of the calling conventions are those of direct calls.
+
+// CHECK-LABEL: builtin.module public @values
+// CHECK-NEXT: wasm.table private declaration @__indirect_function_table : 0 x !wasm.funcref attributes { link_name = #builtin.string<"__indirect_function_table"> };
+builtin.module public @values attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("wasm") @double(%x: i32) -> i32 {
+        %r = arith.add %x, %x;
+        builtin.ret %r : (i32);
+    };
+
+    // A function value as a parameter, called.
+    // CHECK-LABEL: @apply(
+    // CHECK-SAME: [[F:%[0-9]+]]: i32, [[X:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[R:%[0-9]+]] = wasm.call_indirect @__indirect_function_table, [[F]]([[X]]) : extern("wasm") (i32) -> i32;
+    // CHECK-NEXT: builtin.ret [[R]] : (i32);
+    builtin.function public extern("wasm") @apply(%f: (i32) -> i32, %x: i32) -> i32 {
+        %r = builtin.call_indirect %f(%x) : extern("wasm") (i32) -> i32;
+        builtin.ret %r : (i32);
+    };
+
+    // A function value taken, kept in a local, loaded back, passed and returned: the local is an
+    // `i32`.
+    // CHECK-LABEL: @user(
+    // CHECK-SAME: [[X:%[0-9]+]]: i32) -> (i32, i32) locals(i32) {
+    // CHECK-NEXT: [[F:%[0-9]+]] = wasm.func_index @double;
+    // CHECK-NEXT: builtin.store_local 0, [[F]];
+    // CHECK-NEXT: [[G:%[0-9]+]] = builtin.load_local 0 : i32;
+    // CHECK-NEXT: [[R:%[0-9]+]] = builtin.call @apply([[G]], [[X]]) : extern("wasm") (i32, i32) -> i32;
+    // CHECK-NEXT: builtin.ret [[R]], [[G]] : (i32, i32);
+    builtin.function public extern("wasm") @user(%x: i32) -> (i32, (i32) -> i32) locals((i32) -> i32) {
+        %f = builtin.function_ref @double : (i32) -> i32;
+        builtin.store_local 0, %f;
+        %g = builtin.load_local 0 : (i32) -> i32;
+        %r = builtin.call @apply(%g, %x) : extern("wasm") ((i32) -> i32, i32) -> i32;
+        builtin.ret %r, %g : (i32, (i32) -> i32);
+    };
+
+    // An indirect tail call.
+    // CHECK-LABEL: @tail(
+    // CHECK-SAME: [[F:%[0-9]+]]: i32, [[X:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: wasm.return_call_indirect @__indirect_function_table, [[F]]([[X]]) : extern("wasm") (i32) -> i32;
+    builtin.function public extern("wasm") @tail(%f: (i32) -> i32, %x: i32) -> i32 {
+        builtin.tail_call_indirect %f(%x) : extern("wasm") (i32) -> i32;
+    };
+};
+
+// -----
+
+// Under `extern("C")` an indirect call is a call: the argument of a narrow `sext` parameter is
+// sign-extended, a narrow result not marked `zext` is masked; an indirect tail call sign-extends
+// its arguments too. (The caller's own `i8` parameters are masked at its entry.)
+
+// CHECK-LABEL: builtin.module public @c_convention
+builtin.module public @c_convention attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    // CHECK-LABEL: @apply(
+    // CHECK-SAME: [[F:%[0-9]+]]: i32, [[X:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[K:%[0-9]+]] = wasm.const 255 : i32;
+    // CHECK-NEXT: [[M:%[0-9]+]] = wasm.and [[X]], [[K]];
+    // CHECK-NEXT: [[S:%[0-9]+]] = wasm.extend8_s [[M]];
+    // CHECK-NEXT: [[R:%[0-9]+]] = wasm.call_indirect @__indirect_function_table, [[F]]([[S]]) : extern("C") (i32 { extend = #builtin.sext }) -> i32;
+    // CHECK-NEXT: [[K2:%[0-9]+]] = wasm.const 255 : i32;
+    // CHECK-NEXT: [[RM:%[0-9]+]] = wasm.and [[R]], [[K2]];
+    // CHECK-NEXT: builtin.ret [[RM]] : (i32);
+    builtin.function public extern("C") @apply(%f: (i8) -> i8, %x: i8) -> i8 {
+        %r = builtin.call_indirect %f(%x) : extern("C") (i8 { extend = #builtin.sext }) -> i8;
+        builtin.ret %r : (i8);
+    };
+
+    // CHECK-LABEL: @tail(
+    // CHECK-SAME: [[F:%[0-9]+]]: i32, [[X:%[0-9]+]]: i32) -> i32 {
+    // CHECK-NEXT: [[K:%[0-9]+]] = wasm.const 255 : i32;
+    // CHECK-NEXT: [[M:%[0-9]+]] = wasm.and [[X]], [[K]];
+    // CHECK-NEXT: [[S:%[0-9]+]] = wasm.extend8_s [[M]];
+    // CHECK-NEXT: wasm.return_call_indirect @__indirect_function_table, [[F]]([[S]]) : extern("C") (i32 { extend = #builtin.sext }) -> i32;
+    builtin.function public extern("C") @tail(%f: (i8) -> i8, %x: i8) -> i8 {
+        builtin.tail_call_indirect %f(%x) : extern("C") (i8 { extend = #builtin.sext }) -> i8;
+    };
+};
+
+// -----
+
+// A module that defines its own table: it is used, and none is declared.
+
+// CHECK-LABEL: builtin.module public @own
+// CHECK-NEXT: wasm.table public @__indirect_function_table : 4..4 x !wasm.funcref;
+// CHECK-NEXT: builtin.function public extern("wasm") @f(
+// CHECK-SAME: [[F:%[0-9]+]]: i32, [[X:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[R:%[0-9]+]] = wasm.call_indirect @__indirect_function_table, [[F]]([[X]]) : extern("wasm") (i32) -> i32;
+// CHECK-NEXT: builtin.ret [[R]] : (i32);
+builtin.module public @own attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    wasm.table public @__indirect_function_table : 4..4 x !wasm.funcref;
+    builtin.function public extern("wasm") @f(%g: (i8) -> i8, %x: i8) -> i8 {
+        %r = builtin.call_indirect %g(%x) : extern("wasm") (i8) -> i8;
+        builtin.ret %r : (i8);
+    };
+};
+
+// -----
+
+// A function value with no indirect call declares no table.
+
+// CHECK-LABEL: builtin.module public @no_call
+// CHECK-NEXT: builtin.function public extern("wasm") @g(
+// CHECK: builtin.function public extern("wasm") @f(
+// CHECK-SAME: ) -> i32 {
+// CHECK-NEXT: [[F:%[0-9]+]] = wasm.func_index @g;
+// CHECK-NEXT: builtin.ret [[F]] : (i32);
+builtin.module public @no_call attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("wasm") @g() {
+        builtin.ret;
+    };
+    builtin.function public extern("wasm") @f() -> (() -> ()) {
+        %f = builtin.function_ref @g : () -> ();
+        builtin.ret %f : (() -> ());
+    };
+};
