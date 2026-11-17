@@ -621,18 +621,28 @@ fn visit_region_successors<A>(
 
         // An operand that is itself one of the inputs (a continue that carries an entry argument of
         // a loop with one region back to that loop: to the same argument, or to another one, as
-        // `br 0 %b, %a` does in a loop of `%a, %b`) has a lattice that is borrowed mutably here. It
-        // is read from the lattice that is held, before any of them changes: the edge assigns all
-        // its inputs at once.
-        let held = operands
-            .forwarded()
-            .iter()
-            .map(|operand| {
-                let operand = operand.borrow().as_value_ref();
-                let position = inputs.iter().position(|input| *input == operand)?;
-                lattices.get(first_index + position).map(|held| held.lattice().clone())
-            })
-            .collect::<SmallVec<[_; 4]>>();
+        // `br 0 %b, %a` does in a loop of `%a, %b`) has a lattice that is borrowed mutably here,
+        // so `get_lattice_element_for` cannot hand it out. Its value is read from the guard that
+        // is held, before any of the joins below changes any input: the edge assigns all its
+        // inputs at once from the values they held before it. The dependency is recorded all the
+        // same, through the guard (`AnalysisStateGuardMut::require` is
+        // `DataFlowSolver::require` for a state that is already borrowed): a later change of the
+        // operand's lattice, by this edge or by another predecessor, enqueues `point` again, and
+        // the join is recomputed from the new value. The lattices have finite height and a join
+        // only moves up, so the visits end.
+        let mut held = SmallVec::<[_; 4]>::with_capacity(operands.forwarded().len());
+        for operand in operands.forwarded().iter() {
+            let operand = operand.borrow().as_value_ref();
+            let slot = inputs
+                .iter()
+                .position(|input| *input == operand)
+                .map(|position| first_index + position)
+                .filter(|slot| *slot < lattices.len());
+            held.push(slot.map(|slot| {
+                lattices[slot].require(analysis, point);
+                lattices[slot].lattice().clone()
+            }));
+        }
         for (index, (operand, lattice)) in operands
             .forwarded()
             .iter()
