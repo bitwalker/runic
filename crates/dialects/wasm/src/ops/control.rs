@@ -148,6 +148,21 @@ fn first_non_value_type(op: &Operation, first_input: usize) -> Option<String> {
     None
 }
 
+/// Checks that `op` has exactly `expected` regions, which the message calls `what`: the generic
+/// form can write more, and the custom form would not print them.
+fn verify_region_count(op: &Operation, expected: usize, what: &str) -> Result<(), Report> {
+    let count = op.num_regions();
+    if count == expected {
+        return Ok(());
+    }
+    let plural = if count == 1 { "" } else { "s" };
+    Err(rule_error(
+        op,
+        &format!("takes exactly {what}"),
+        format!("it has {count} region{plural}"),
+    ))
+}
+
 /// Checks that the entry block of `region`, the body called `name` of `op`, takes as its arguments
 /// the operands of `op` from `first_input` on.
 fn verify_body_arguments(
@@ -240,6 +255,7 @@ const BLOCK_RULE: &str = "takes parameters and gives results of Wasm value types
 impl Verify<dyn RegionBranchOpInterface> for BlockOp {
     fn verify(&self, _context: &Context) -> Result<(), Report> {
         let op = self.as_operation();
+        verify_region_count(op, 1, "one region, its body")?;
         if let Some(problem) = first_non_value_type(op, 0) {
             return Err(rule_error(op, BLOCK_RULE, problem));
         }
@@ -333,6 +349,7 @@ const LOOP_RULE: &str = "takes parameters and gives results of Wasm value types,
 impl Verify<dyn RegionBranchOpInterface> for Loop {
     fn verify(&self, _context: &Context) -> Result<(), Report> {
         let op = self.as_operation();
+        verify_region_count(op, 1, "one region, its body")?;
         if let Some(problem) = first_non_value_type(op, 0) {
             return Err(rule_error(op, LOOP_RULE, problem));
         }
@@ -498,6 +515,7 @@ impl If {
 impl Verify<dyn RegionBranchOpInterface> for If {
     fn verify(&self, _context: &Context) -> Result<(), Report> {
         let op = self.as_operation();
+        verify_region_count(op, 2, "two regions, its `then` and `else` bodies")?;
         let condition = operand_type(op, 0);
         if condition != op.context().i32() {
             return Err(rule_error(

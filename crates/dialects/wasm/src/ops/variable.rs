@@ -116,7 +116,7 @@ impl Verify<dyn MemoryEffectOpInterface> for GlobalGet {
                 op,
                 GLOBAL_GET_RULE,
                 format!(
-                    "its result has type `{}`, but the global `{}` has type `{}`",
+                    "its result has type `{}` and the global `{}` has type `{}`",
                     val_type_name(found),
                     self.global().path(),
                     val_type_name(ty)
@@ -185,7 +185,7 @@ impl Verify<dyn MemoryEffectOpInterface> for GlobalSet {
                 op,
                 GLOBAL_SET_RULE,
                 format!(
-                    "its value has type `{}`, but the global `{}` has type `{}`",
+                    "its value has type `{}` and the global `{}` has type `{}`",
                     val_type_name(found),
                     self.global().path(),
                     val_type_name(ty)
@@ -223,7 +223,7 @@ fn expect_element(
         op,
         rule,
         format!(
-            "{what} has type `{}`, but the table `{}` holds `{}`",
+            "{what} has type `{}` and the table `{}` holds `{}`",
             val_type_name(found),
             reference.path(),
             val_type_name(element)
@@ -283,7 +283,7 @@ impl Verify<dyn MemoryEffectOpInterface> for TableGet {
                 op,
                 TABLE_GET_RULE,
                 format!(
-                    "its result has type `{}`, but the table `{}` holds `{}`",
+                    "its result has type `{}` and the table `{}` holds `{}`",
                     val_type_name(found),
                     self.table().path(),
                     val_type_name(element)
@@ -573,6 +573,13 @@ impl Verify<dyn MemoryEffectOpInterface> for RefNull {
 ///
 /// `@f` is a callable (a function, or an alias of one); the result is a `!wasm.funcref`. It is
 /// free of effects and may appear in a Wasm constant expression ([ConstantInstruction]).
+///
+/// Wasm validates `ref.func` in a function body only for a function that the module *declares*:
+/// one named by an element segment, by an export, or by the initializer of a global. The dialect
+/// accepts `wasm.ref_func` of any function, as it is an IR and not a binary, and does not check
+/// that rule. An emitter must satisfy it, by writing a declarative element segment
+/// (`(elem declare func $f)`) for each function that a `ref_func` in a function body names and
+/// that nothing else declares.
 #[derive(EffectOpInterface)]
 #[operation(
     dialect = WasmDialect,
@@ -806,9 +813,11 @@ impl Verify<dyn MemoryEffectOpInterface> for DataAddr {
 /// The index of a function in the indirect-call table: `%i = wasm.func_index @f;`.
 ///
 /// This is **not a Wasm instruction**. It stands for an `i32.const` whose value only a layout or
-/// a linker knows: the position of the function `@f` in the table that `wasm.call_indirect`
-/// calls through. The backend that builds that table (a backend with its own layout) resolves it,
-/// or, in an object file, the linker does through a relocation. `@f` is a callable and the result
+/// a linker knows: the position of the function `@f` in the module's indirect-function table.
+/// The operation names no table, and the dialect assumes none: which `funcref` table that is (a
+/// module may have several, and `wasm.call_indirect` names the one it calls through) and where in
+/// it `@f` sits are decided by the layout of the backend that builds the table, or, in an object
+/// file, by the linker through a relocation. `@f` is a callable and the result
 /// is an `i32`. The operation is free of effects and may appear in a Wasm constant expression
 /// ([ConstantInstruction]), as the `i32.const` it stands for does.
 #[derive(EffectOpInterface)]

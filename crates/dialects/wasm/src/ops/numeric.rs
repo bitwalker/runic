@@ -229,6 +229,10 @@ impl OpParser for ConstF {
 /// `wasm.select %c, %a, %b` has the value `%a` when `%c`, an `i32`, is not zero, and `%b` when it
 /// is zero. Both values are evaluated. `%a` and `%b` have one Wasm value type, numeric or
 /// reference, and the result has that type. It is free of effects.
+///
+/// An emitter writes Wasm's untyped `select` for a number type, and the typed `select t`
+/// (`select (result t)`) for a reference type: the untyped instruction does not validate on
+/// references. (Always writing the typed form is valid too.)
 #[derive(EffectOpInterface, OpPrinter, OpParser)]
 #[operation(
     dialect = WasmDialect,

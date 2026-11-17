@@ -75,7 +75,7 @@ const EVERY_OPERATION: &str = r#"
         %b = wasm.const 4 : i64;
         %c = wasm.mul %a, %b;
     };
-    wasm.global private @iglobal : f32;
+    wasm.global private declaration @iglobal : f32;
     wasm.tag private @exn : (i32, i64);
     wasm.tag private declaration @itag : (f32);
     builtin.function public extern("C") @f() {
@@ -106,7 +106,7 @@ fn the_module_operations_print_the_text_forms_the_documentation_gives() {
         "wasm.table private @tab : 0..8 x !wasm.funcref;",
         "wasm.table private declaration @itab : 4 x !wasm.externref;",
         "wasm.global private @sp : mut i32 {",
-        "wasm.global private @iglobal : f32;",
+        "wasm.global private declaration @iglobal : f32;",
         "wasm.tag private @exn : (i32, i64);",
         "wasm.tag private declaration @itag : (f32);",
         "wasm.elem private @init : @tab at 0 [@f, @g];",
@@ -187,16 +187,58 @@ fn an_element_offset_is_read_as_a_constant_i32_is() {
 }
 
 #[test]
-fn a_declaration_is_a_global_without_a_region_and_an_empty_pair_of_braces_is_one() {
-    let (_context, module) = module_of(
-        "wasm.global private @a : i32;
-         wasm.global private @b : mut i64 { };",
+fn a_global_import_is_written_with_declaration_like_every_other_import() {
+    let (_context, module) = module_of("wasm.global private declaration @a : mut i64;");
+    let global = symbol(&module, "a").try_downcast_op::<Global>().unwrap();
+    assert!(global.borrow().is_declaration());
+    assert!(global.borrow().initializer().is_empty());
+    assert!(text_of(&module).contains("wasm.global private declaration @a : mut i64;"));
+    let generic = print_generic(&symbol(&module, "a").borrow());
+    assert!(generic.contains("declaration = #builtin.bool<true>"), "{generic}");
+}
+
+#[test]
+fn an_empty_initializer_or_none_is_an_error_and_not_an_import() {
+    // `{ }` is a definition with no operation
+    let error = module_error("wasm.global private @b : mut i64 { };");
+    assert!(
+        error.contains("`wasm.global` `@b` has an initializer with no operation"),
+        "{error}"
     );
-    for name in ["a", "b"] {
-        let global = symbol(&module, name).try_downcast_op::<Global>().unwrap();
-        assert!(global.borrow().is_declaration(), "{name}");
-    }
-    assert!(text_of(&module).contains("wasm.global private @b : mut i64;"));
+    // no region at all is not written for a definition
+    let error = module_error("wasm.global private @a : i32;");
+    assert!(
+        error.contains(
+            "a global that is not a `declaration` has an initializer, a region `{ .. }` that \
+             holds a constant expression, but none is written"
+        ),
+        "{error}"
+    );
+    // an import has no region
+    let error = module_error(
+        "wasm.global private declaration @c : i32 {
+             %v = wasm.const 1 : i32;
+         };",
+    );
+    assert!(error.contains("expected"), "{error}");
+}
+
+#[test]
+fn a_declaration_with_an_initializer_is_rejected_in_the_generic_form() {
+    let error = module_error(
+        "\"wasm.global\"() <{ name = #builtin.ident<@g>, visibility = \
+         #builtin.visibility<private>, ty = #builtin.type<i32>, mutability = \
+         #wasm.mutability<const>, declaration = #builtin.bool<true> }> ({
+             %v = \"wasm.const\"() <{ value = #builtin.int<1 : i32> }> : () -> i32;
+         }) : () -> ();",
+    );
+    assert!(
+        error.contains(
+            "`wasm.global` `@g` is a declaration, but it has an initializer: an import has no \
+             region"
+        ),
+        "{error}"
+    );
 }
 
 #[test]
@@ -214,7 +256,7 @@ fn a_memory_declaration_and_a_definition_differ_in_the_property_declaration() {
 #[test]
 fn a_symbol_of_each_kind_shares_the_one_name_space_of_its_module() {
     let error = module_error(
-        "wasm.global private @x : i32;
+        "wasm.global private declaration @x : i32;
          builtin.function public extern(\"C\") @x();",
     );
     assert!(error.contains("redefinition of symbol"), "{error}");
@@ -298,7 +340,7 @@ fn a_table_has_limits_within_32_bits_and_a_reference_element_type() {
 fn a_global_has_a_value_type() {
     for ty in ["i8", "i1", "isize", "ptr<i32>"] {
         rejected(
-            &format!("wasm.global private @g : {ty};"),
+            &format!("wasm.global private declaration @g : {ty};"),
             &format!(
                 "`wasm.global` `@g` has the type `{ty}`, but a Wasm global holds a value: `i32`, \
                  `i64`, `f32`, `f64`, `funcref` or `externref`"
@@ -306,8 +348,8 @@ fn a_global_has_a_value_type() {
         );
     }
     for ty in ["i32", "i64", "f32", "f64", "!wasm.funcref", "!wasm.externref"] {
-        module_of(&format!("wasm.global private @g : {ty};"));
-        module_of(&format!("wasm.global private @m : mut {ty};"));
+        module_of(&format!("wasm.global private declaration @g : {ty};"));
+        module_of(&format!("wasm.global private declaration @m : mut {ty};"));
     }
 }
 
@@ -395,6 +437,8 @@ fn a_global_whose_initializer_has_a_block_and_no_operation_is_rejected() {
             Mutability::Const,
         )
         .unwrap();
+    // a definition: a block with no operation
+    global.clone().borrow_mut().set_declaration(false);
     let region = global.borrow().initializer().as_region_ref();
     builder.create_block(region, None, &[]);
     let error = module.borrow().as_operation().recursively_verify().unwrap_err();
@@ -402,7 +446,8 @@ fn a_global_whose_initializer_has_a_block_and_no_operation_is_rejected() {
     assert!(
         error.contains(
             "`wasm.global` `@g` has an initializer with no operation, but the initializer of a \
-             definition computes the value of the global (a declaration has no region)"
+             definition computes the value of the global (an import is written with `declaration` \
+             and has no region)"
         ),
         "{error}"
     );
@@ -414,12 +459,12 @@ fn an_element_segment_names_a_funcref_table_an_i32_offset_and_functions() {
         "wasm.memory public @mem : 1;
          builtin.function public extern(\"C\") @f();
          wasm.elem private @e : @mem at 0 [@f];",
-        "`wasm.elem` names `mem`, which is a `wasm.memory`, not a `wasm.table`",
+        "`wasm.elem` names `@mem`, which is a `wasm.memory`, not a `wasm.table`",
     );
     rejected(
         "builtin.function public extern(\"C\") @f();
          wasm.elem private @e : @f at 0 [@f];",
-        "`wasm.elem` names `f`, which is a `builtin.function`, not a `wasm.table`",
+        "`wasm.elem` names `@f`, which is a `builtin.function`, not a `wasm.table`",
     );
     rejected(
         "wasm.table private @tab : 1 x !wasm.externref;
@@ -437,7 +482,7 @@ fn an_element_segment_names_a_funcref_table_an_i32_offset_and_functions() {
     );
     rejected(
         "wasm.table private @tab : 1 x !wasm.funcref;
-         wasm.global private @g : i32;
+         wasm.global private declaration @g : i32;
          wasm.elem private @e : @tab at 0 [@g];",
         "lists `g`, which is a `wasm.global`",
     );
@@ -592,7 +637,7 @@ fn the_builders_make_each_operation_and_the_module_verifies() {
         "wasm.global private @sp : mut i32 {",
         "wasm.const 65536 : i32;",
         "wasm.add",
-        "wasm.global private @ext : mut f64;",
+        "wasm.global private declaration @ext : mut f64;",
         "wasm.tag private @exn : (i32, i64);",
         "wasm.tag private declaration @itag : ();",
         "wasm.elem private @init : ::@m::@tab at 3 [::@m::@f];",
@@ -646,7 +691,7 @@ fn referenced_entity_checks_the_kind_of_what_a_symbol_names() {
         .unwrap_err();
     let error = describe(&error);
     assert!(
-        error.contains("`wasm.elem` names `tab`, which is a `wasm.table`, not a `wasm.memory`"),
+        error.contains("`wasm.elem` names `@tab`, which is a `wasm.table`, not a `wasm.memory`"),
         "{error}"
     );
 }
@@ -660,7 +705,7 @@ fn with_attributes(text: &str) -> Result<(Rc<Context>, ModuleRef), String> {
 fn an_import_is_a_declaration_of_a_function_a_global_a_memory_a_table_or_a_tag() {
     let (_context, module) = with_attributes(
         "builtin.function public extern(\"C\") @f() attributes { wasm.import_module = \"other\" };
-         wasm.global private @g : i32 attributes { wasm.import_module = \"env\" };
+         wasm.global private declaration @g : i32 attributes { wasm.import_module = \"env\" };
          wasm.memory public declaration @m : 1 attributes { wasm.import_module = \"env\" };
          wasm.table private declaration @t : 1 x !wasm.funcref attributes { wasm.import_module = \
          \"env\" };
@@ -727,13 +772,14 @@ fn an_export_is_a_definition_with_one_name_or_an_array_of_names() {
 }
 
 #[test]
-fn an_import_module_is_a_non_empty_string() {
-    let shape = "`wasm.import_module` must be a non-empty string, the name of the module an \
-                 import comes from, but this is";
-    rejected(
+fn an_import_module_is_a_string_and_the_empty_one_is_a_module_name() {
+    let shape = "`wasm.import_module` must be a string, the name of the module an import comes \
+                 from, but this is";
+    // Wasm allows an empty module name: `(import "" "" (func))`
+    let (_context, module) = module_of(
         "wasm.memory public declaration @m : 1 attributes { wasm.import_module = \"\" };",
-        &format!("{shape} #builtin.string<\"\">"),
     );
+    assert_eq!(import_module(&symbol(&module, "m").borrow()).as_deref(), Some(""));
     rejected(
         "wasm.memory public declaration @m : 1 attributes { wasm.import_module = #builtin.i32<1> \
          };",
@@ -805,13 +851,18 @@ fn an_import_module_on_anything_else_is_rejected() {
 }
 
 #[test]
-fn an_export_name_is_a_string_or_an_array_of_distinct_non_empty_strings() {
-    let shape = "`wasm.export_name` must be a non-empty string or an array of distinct non-empty \
-                 strings, but";
+fn an_export_name_is_a_string_or_an_array_of_distinct_strings_and_the_empty_one_is_a_name() {
+    let shape = "`wasm.export_name` must be a string or an array of distinct strings, but";
+    // Wasm allows an empty export name: `(export "" (func 0))`
+    let (_context, module) = module_of(
+        "wasm.memory public @a : 1 attributes { wasm.export_name = \"\" };
+         wasm.memory public @b : 1 attributes { wasm.export_name = [\"\", \"b\"] };",
+    );
+    assert_eq!(export_names(&symbol(&module, "a").borrow()).as_slice(), [""]);
+    assert_eq!(export_names(&symbol(&module, "b").borrow()).as_slice(), ["", "b"]);
     for (value, problem) in [
-        ("\"\"", "this is an empty string"),
-        ("[\"a\", \"\"]", "entry 1 is an empty string"),
         ("[\"a\", \"b\", \"a\"]", "`a` is exported twice"),
+        ("[\"\", \"\"]", "`` is exported twice"),
         ("#builtin.i32<1>", "this is #builtin.i32<1>"),
         ("[\"a\", #builtin.i32<1>]", "this is"),
     ] {
@@ -824,20 +875,22 @@ fn an_export_name_is_a_string_or_an_array_of_distinct_non_empty_strings() {
 }
 
 #[test]
-fn an_export_name_on_a_declaration_or_on_anything_else_is_rejected() {
-    rejected(
-        "wasm.memory public declaration @m : 1 attributes { wasm.export_name = \"m\" };",
-        "`wasm.export_name` marks an export, and an export is a definition, but `wasm.memory @m` \
-         is a declaration (an import)",
+fn an_import_may_be_exported_and_nothing_but_what_wasm_exports_is() {
+    // Wasm exports what it imports: a module that forwards an imported entity writes both entries
+    let (_context, module) = module_of(
+        "wasm.memory public declaration @m : 1 attributes { wasm.import_module = \"env\", \
+         wasm.export_name = \"m\" };
+         builtin.function public extern(\"C\") @f() attributes { wasm.export_name = \"f\" };
+         wasm.global private declaration @g : i32 attributes { wasm.export_name = [\"g\", \"h\"] };
+         wasm.table private declaration @t : 1 x !wasm.funcref attributes { wasm.export_name = \
+         \"t\" };
+         wasm.tag private declaration @e : () attributes { wasm.export_name = \"e\" };",
     );
-    rejected(
-        "builtin.function public extern(\"C\") @f() attributes { wasm.export_name = \"f\" };",
-        "an export is a definition, but `builtin.function @f` is a declaration (an import)",
-    );
-    rejected(
-        "wasm.global private @g : i32 attributes { wasm.export_name = \"g\" };",
-        "an export is a definition, but `wasm.global @g` is a declaration (an import)",
-    );
+    for (name, exported) in [("m", "m"), ("f", "f"), ("g", "g"), ("t", "t"), ("e", "e")] {
+        let names = export_names(&symbol(&module, name).borrow());
+        assert_eq!(names[0], exported, "{name}");
+    }
+    assert_eq!(import_module(&symbol(&module, "m").borrow()).as_deref(), Some("env"));
     rejected(
         "builtin.global_variable public @g : i32 attributes { wasm.export_name = \"g\" };",
         "`wasm.export_name` marks an export, but `builtin.global_variable @g` is not one: Wasm \
@@ -888,10 +941,8 @@ fn the_entries_are_checked_in_the_generic_form_too() {
         ),
         "{error}"
     );
-    let Err(error) = parse_text(&memory(true, "wasm.export_name = \"m\"")) else {
-        panic!("a declaration with an export name is accepted");
-    };
-    assert!(error.contains("an export is a definition"), "{error}");
+    // an import that is exported
+    parse_text(&memory(true, "wasm.export_name = \"m\"")).unwrap();
 }
 
 #[test]
@@ -899,4 +950,99 @@ fn a_function_is_found_among_the_symbols_of_the_module_by_name() {
     let (_context, module) = module_of(EVERY_OPERATION);
     assert!(symbol(&module, "f").borrow().is::<Function>());
     assert!(module.borrow().as_operation().implements::<dyn SymbolTable>());
+}
+
+/// The generic form of an element segment whose function list is `list`.
+fn generic_elem(list: &str) -> String {
+    module_text(&format!(
+        "wasm.table private @tab : 4 x !wasm.funcref;
+         builtin.function public extern(\"C\") @callee();
+         \"wasm.elem\"() <{{ name = #builtin.ident<@e>, visibility = #builtin.visibility<private>, \
+         table = #builtin.symbol<@tab>, offset = #builtin.int<0 : i32>, functions = {list} }}> : \
+         () -> ();"
+    ))
+}
+
+#[test]
+fn every_entry_of_an_element_segments_function_list_is_a_function_symbol() {
+    for (list, entry) in [
+        ("[#builtin.symbol<@callee>, #builtin.int<5 : i32>]", 1),
+        ("[#builtin.int<5 : i32>]", 0),
+        ("[[#builtin.symbol<@callee>]]", 0),
+        (
+            "[#builtin.symbol<@callee>, #builtin.symbol<@callee>, #builtin.string<\"f\">]",
+            2,
+        ),
+    ] {
+        let Err(error) = parse_text(&generic_elem(list)) else {
+            panic!("`{list}` is accepted");
+        };
+        assert!(
+            error.contains(&format!(
+                "`wasm.elem` `@e` has entry {entry} of its function list that is not a function \
+                 symbol, but every element of a segment of functions is a function"
+            )),
+            "{error}"
+        );
+    }
+    // every entry is a symbol: accepted, and every entry is read
+    let (_context, module) =
+        parse_text(&generic_elem("[#builtin.symbol<@callee>, #builtin.symbol<@callee>]")).unwrap();
+    let elem = symbol(&module, "e");
+    let elem = elem.borrow();
+    let elem = elem.downcast_ref::<Elem>().unwrap();
+    assert_eq!(elem.function_refs().len(), 2);
+    assert_eq!(elem.function_count(), 2);
+}
+
+const NOT_BEFORE: &str = "but a Wasm constant expression reads only an imported global or a \
+                          global defined before this one in the module";
+
+#[test]
+fn a_global_initializer_reads_an_import_or_an_earlier_immutable_global_only() {
+    // accepted: an import (wherever it is), and a global defined before this one
+    module_of(
+        "wasm.global private @later_import_user : i32 { %v = wasm.global_get @imported : i32; };
+         wasm.global private declaration @imported : i32;
+         wasm.global private @first : i32 { %v = wasm.const 1 : i32; };
+         wasm.global private @second : i32 { %v = wasm.global_get @first : i32; };
+         wasm.global private @third : i32 {
+             %a = wasm.global_get @first : i32;
+             %b = wasm.global_get @second : i32;
+             %v = wasm.add %a, %b;
+         };",
+    );
+    // a global that reads itself
+    rejected(
+        "wasm.global private @g : i32 { %v = wasm.global_get @g : i32; };",
+        &format!(
+            "the initializer of `wasm.global` `@g` reads `@g`, which is the global itself, \
+             {NOT_BEFORE}"
+        ),
+    );
+    // two that read each other: one of them reads a later one, whatever the order
+    rejected(
+        "wasm.global private @a : i32 { %v = wasm.global_get @b : i32; };
+         wasm.global private @b : i32 { %v = wasm.global_get @a : i32; };",
+        &format!(
+            "the initializer of `wasm.global` `@a` reads `@b`, which is a global that is not \
+             defined before this one, {NOT_BEFORE}"
+        ),
+    );
+    // a later global
+    rejected(
+        "wasm.global private @early : i32 { %v = wasm.global_get @late : i32; };
+         wasm.global private @late : i32 { %v = wasm.const 1 : i32; };",
+        &format!(
+            "the initializer of `wasm.global` `@early` reads `@late`, which is a global that is \
+             not defined before this one, {NOT_BEFORE}"
+        ),
+    );
+    // a mutable one, defined before this one
+    rejected(
+        "wasm.global private @m : mut i32 { %v = wasm.const 1 : i32; };
+         wasm.global private @user : i32 { %v = wasm.global_get @m : i32; };",
+        "the initializer of `wasm.global` `@user` reads the mutable global `@m`, but a Wasm \
+         constant expression reads only immutable globals",
+    );
 }

@@ -1317,3 +1317,69 @@ fn a_branch_states_one_exit_to_its_target_and_a_loop_allows_a_continue_from_its_
         assert!(receiver.has_nested_predecessors());
     }
 }
+
+/// The generic form of a function `@f` whose body is `body`: the generic form can write a number
+/// of regions that the custom form has no way to print.
+fn generic_function(body: &str) -> String {
+    format!(
+        "\"builtin.function\"() <{{ name = #builtin.ident<@f>, linkage = \
+         #builtin.visibility<public>, signature = #builtin.signature<extern(\"C\") () -> ()>, \
+         memory_effects = #builtin.declared_effects<unknown>, locals = #builtin.type_array<> }}> \
+         ({{\n ^e():\n {body}\n \"builtin.ret\"() : () -> ();\n }}) : () -> ();"
+    )
+}
+
+#[track_caller]
+fn rejects_generic(body: &str, message: &str) {
+    let text = generic_function(body);
+    match check_in(&rich_context(), &text) {
+        Ok(printed) => panic!("accepted:\n{printed}"),
+        Err(error) => {
+            assert!(error.contains(message), "`{message}` is not in\n{error}\nfor\n{body}")
+        }
+    }
+}
+
+const END: &str = "{ \"wasm.end\"() : () -> (); }";
+
+#[test]
+fn a_block_has_exactly_one_region_in_the_generic_form() {
+    rejects_generic(
+        &format!("\"wasm.block\"() ({END}, {END}) : () -> ();"),
+        "`wasm.block` takes exactly one region, its body, but it has 2 regions",
+    );
+}
+
+#[test]
+fn a_loop_has_exactly_one_region_in_the_generic_form() {
+    rejects_generic(
+        &format!("\"wasm.loop\"() ({END}, {END}) : () -> ();"),
+        "`wasm.loop` takes exactly one region, its body, but it has 2 regions",
+    );
+    rejects_generic(
+        &format!("\"wasm.loop\"() ({END}, {END}, {END}) : () -> ();"),
+        "but it has 3 regions",
+    );
+}
+
+#[test]
+fn an_if_has_exactly_two_regions_in_the_generic_form() {
+    let condition = "%c = \"wasm.const\"() <{ value = #builtin.int<1 : i32> }> : () -> i32;";
+    rejects_generic(
+        &format!("{condition}\n \"wasm.if\"(%c) ({END}, {END}, {END}) : (i32 |) -> ();"),
+        "`wasm.if` takes exactly two regions, its `then` and `else` bodies, but it has 3 regions",
+    );
+    rejects_generic(
+        &format!("{condition}\n \"wasm.if\"(%c) ({END}) : (i32 |) -> ();"),
+        "'wasm.if' has at least 2 region(s), but this has 1",
+    );
+}
+
+#[test]
+fn a_br_table_without_regions_is_rejected_in_the_generic_form() {
+    let condition = "%c = \"wasm.const\"() <{ value = #builtin.int<1 : i32> }> : () -> i32;";
+    rejects_generic(
+        &format!("{condition}\n \"wasm.br_table\"(%c) : (i32 |) -> ();"),
+        "'wasm.br_table' has at least 1 region(s), but this has 0",
+    );
+}

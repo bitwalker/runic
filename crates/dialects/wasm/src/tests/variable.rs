@@ -71,15 +71,15 @@ fn a_global_is_read_with_its_type_and_written_when_it_is_mutable() {
     rejected(
         "%v = wasm.global_get @g : i64;",
         "`wasm.global_get` takes the name of a global and gives a value of its type, but its \
-         result has type `i64`, but the global `g` has type `i32`",
+         result has type `i64` and the global `g` has type `i32`",
     );
     rejected(
         "%v = wasm.global_get @mem : i32;",
-        "`wasm.global_get` names `mem`, which is a `wasm.memory`, not a `wasm.global`",
+        "`wasm.global_get` names `@mem`, which is a `wasm.memory`, not a `wasm.global`",
     );
     rejected(
         "%v = wasm.global_get @callee : i32;",
-        "`wasm.global_get` names `callee`, which is a `builtin.function`, not a `wasm.global`",
+        "`wasm.global_get` names `@callee`, which is a `builtin.function`, not a `wasm.global`",
     );
     rejected(
         "wasm.global_set @k, %a;",
@@ -89,11 +89,11 @@ fn a_global_is_read_with_its_type_and_written_when_it_is_mutable() {
     rejected(
         "wasm.global_set @g, %l;",
         "`wasm.global_set` takes the name of a mutable global and a value of its type, but its \
-         value has type `i64`, but the global `g` has type `i32`",
+         value has type `i64` and the global `g` has type `i32`",
     );
     rejected(
         "wasm.global_set @tab, %a;",
-        "`wasm.global_set` names `tab`, which is a `wasm.table`, not a `wasm.global`",
+        "`wasm.global_set` names `@tab`, which is a `wasm.table`, not a `wasm.global`",
     );
     rejected("wasm.global_set @nothing, %a;", "nothing");
 }
@@ -107,16 +107,16 @@ fn a_table_is_read_and_written_with_an_i32_index_and_its_element_type() {
     );
     rejected(
         "%v = wasm.table_get @tab, %a : !wasm.externref;",
-        "but its result has type `externref`, but the table `tab` holds `funcref`",
+        "but its result has type `externref` and the table `tab` holds `funcref`",
     );
     rejected(
         "%v = wasm.table_get @mem, %a : !wasm.funcref;",
-        "`wasm.table_get` names `mem`, which is a `wasm.memory`, not a `wasm.table`",
+        "`wasm.table_get` names `@mem`, which is a `wasm.memory`, not a `wasm.table`",
     );
     rejected(
         "wasm.table_set @tab, %a, %x;",
         "`wasm.table_set` takes a table, an `i32` index and a reference of the table's element \
-         type, but its value has type `externref`, but the table `tab` holds `funcref`",
+         type, but its value has type `externref` and the table `tab` holds `funcref`",
     );
     rejected(
         "wasm.table_set @tab, %l, %r;",
@@ -125,23 +125,23 @@ fn a_table_is_read_and_written_with_an_i32_index_and_its_element_type() {
     );
     rejected(
         "wasm.table_set @refs, %a, %a;",
-        "its value has type `i32`, but the table `refs` holds `externref`",
+        "its value has type `i32` and the table `refs` holds `externref`",
     );
     rejected(
         "%n = wasm.table_size @g;",
-        "`wasm.table_size` names `g`, which is a `wasm.global`, not a `wasm.table`",
+        "`wasm.table_size` names `@g`, which is a `wasm.global`, not a `wasm.table`",
     );
     rejected(
         "%o = wasm.table_grow @tab, %x, %a;",
         "`wasm.table_grow` takes a table, a reference of the table's element type and an `i32` \
-         number of elements, and gives an `i32`, but its initial value has type `externref`, but \
+         number of elements, and gives an `i32`, but its initial value has type `externref` and \
          the table `tab` holds `funcref`",
     );
     rejected("%o = wasm.table_grow @tab, %r, %l;", "but its delta has type `i64`");
     rejected(
         "wasm.table_fill @tab, %a, %x, %a;",
         "`wasm.table_fill` takes a table, an `i32` index, a reference of the table's element type \
-         and an `i32` number of elements, but its value has type `externref`, but the table `tab` \
+         and an `i32` number of elements, but its value has type `externref` and the table `tab` \
          holds `funcref`",
     );
     rejected("wasm.table_fill @tab, %l, %r, %a;", "but its index has type `i64`");
@@ -230,11 +230,11 @@ fn a_data_address_names_data_and_has_a_signed_32_bit_offset() {
     );
     rejected(
         "%v = wasm.data_addr @mem;",
-        "`wasm.data_addr` names `mem`, which is a `wasm.memory`, not a `builtin.global_variable`",
+        "`wasm.data_addr` names `@mem`, which is a `wasm.memory`, not a `builtin.global_variable`",
     );
     rejected(
         "%v = wasm.data_addr @callee + 4;",
-        "`wasm.data_addr` names `callee`, which is a `builtin.function`, not a \
+        "`wasm.data_addr` names `@callee`, which is a `builtin.function`, not a \
          `builtin.global_variable`",
     );
     rejected("%v = wasm.data_addr @nothing;", "nothing");
@@ -381,8 +381,6 @@ fn a_global_initializer_rejects_the_value_of_a_mutable_global_and_the_state_oper
         )
     };
     for (ty, expression, op) in [
-        ("i32", "%v = wasm.global_get @g : i32;", "wasm.global_get"),
-        ("i64", "%v = wasm.global_get @wide : i64;", "wasm.global_get"),
         ("i32", "%a = wasm.const 0 : i32;\n %v = wasm.load @mem, %a : i32;", "wasm.load"),
         ("i32", "%v = wasm.memory_size @mem;", "wasm.memory_size"),
         (
@@ -397,6 +395,23 @@ fn a_global_initializer_rejects_the_value_of_a_mutable_global_and_the_state_oper
                 .err()
                 .unwrap_or_else(|| panic!("accepted: {expression}"));
         assert!(error.contains(&message(op)), "{error}");
+    }
+    // The value of a mutable global is not a constant: the message says so
+    for (ty, expression, global) in [
+        ("i32", "%v = wasm.global_get @g : i32;", "g"),
+        ("i64", "%v = wasm.global_get @wide : i64;", "wide"),
+    ] {
+        let error =
+            module_with_globals(&format!("wasm.global private @x : {ty} {{ {expression} }};"))
+                .err()
+                .unwrap_or_else(|| panic!("accepted: {expression}"));
+        assert!(
+            error.contains(&format!(
+                "the initializer of `wasm.global` `@x` reads the mutable global `@{global}`, but \
+                 a Wasm constant expression reads only immutable globals"
+            )),
+            "{error}"
+        );
     }
 }
 

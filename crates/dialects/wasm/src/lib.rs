@@ -56,8 +56,9 @@
 //!
 //! **Module-level operations.** A memory, a table, a global, an element segment and a tag are
 //! symbols that sit beside the functions of a `builtin.module`, in its one name space. Each is
-//! defined, or, written with `declaration` (a global: with no initializer region), an import.
-//! [ModuleEntity] marks them, and [referenced_entity] is the check an operation makes that a
+//! defined, or, written with `declaration`, an import (a global too: `wasm.global private
+//! declaration @g : i32;`, with no initializer region), except the element segment, which cannot
+//! be an import. [ModuleEntity] marks them, and [referenced_entity] is the check an operation makes that a
 //! symbol names the kind it needs (a load names a [Memory]).
 //!
 //! | Operation | Text | Is |
@@ -113,13 +114,33 @@
 //! references and the address operations have no effects.
 //!
 //! **Imports and exports.** Two entries of the attribute dictionary mark them, on a
-//! `builtin.function` or on one of the operations above: `wasm.import_module` (a non-empty string,
-//! on a declaration; `env` when absent, see [import_module]) and `wasm.export_name` (a string or
-//! an array of distinct strings, on a definition, see [export_names]). The dialect checks both on
-//! any operation, and rejects any other key that begins with `wasm.`. The field name of an import
-//! is the symbol's effective link name. What a module as a whole must satisfy (how many memories
-//! it has, the order of its index spaces, that the exported names are unique) is for a later
-//! stage.
+//! `builtin.function` or on one of the operations above: `wasm.import_module` (a string, the empty
+//! one included, on a declaration; `env` when absent, see [import_module]) and `wasm.export_name`
+//! (a string or an array of distinct strings, the empty one included, on a definition or on a
+//! declaration: Wasm exports what it imports, see [export_names]). The dialect checks both on any
+//! operation, and rejects any other key that begins with `wasm.`. The field name of an import is
+//! the symbol's effective link name.
+//!
+//! **What is not checked.** What a module as a whole must satisfy is for a later stage, and the
+//! emitter has to satisfy it:
+//!
+//! - how many memories and tables the module has, the order of its index spaces, and that the
+//!   exported names are unique across the module;
+//! - a function named by a [RefFunc] in a function body must be *declared* in the module: named by
+//!   an element segment, by an export, or by a global's initializer. The dialect accepts any
+//!   function; the emitter writes a declarative element segment (`(elem declare func $f)`) for
+//!   each one that nothing else declares;
+//! - [Select] of a reference type is Wasm's typed `select t`, and of a number type the untyped
+//!   `select`: the emitter writes the form the type needs;
+//! - [FuncIndex] gives an index in the module's indirect-function table and names no table: the
+//!   layout (or the linker, by relocation) decides which `funcref` table that is and the position
+//!   of the function in it; the dialect assumes neither;
+//! - the initializer of a global is a Wasm constant expression, which is a tree. The dialect's
+//!   region is a list of SSA values: it may hold an operation whose result nothing uses, and a
+//!   value used twice. The value of the global is the result of the last operation; the emitter
+//!   rebuilds the tree from it, dropping what is unused and writing a shared operation at each of
+//!   its uses (every constant instruction is pure, so that is sound). A `global_get` in an
+//!   initializer is checked to read an immutable global that is an import or is defined before it.
 //!
 //! **Attributes.** [LimitsAttr] (`#wasm.limits<1..16>`) bounds the size of a memory or a table,
 //! [MemArgAttr] (`#wasm.memarg<offset = 8, align = 4>`) is the static part of a memory access,

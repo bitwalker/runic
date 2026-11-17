@@ -6,7 +6,11 @@
 //! rules that need the whole module (how many memories there may be, the order of the index
 //! spaces) are not.
 
-use alloc::{format, string::String, vec::Vec};
+use alloc::{
+    format,
+    string::{String, ToString},
+    vec::Vec,
+};
 
 use runic_ir::{
     AsSymbolRef, Context, Ident, Op, OpAsmParser, OpParser, OpPrinter, Operation, OperationRef,
@@ -71,7 +75,7 @@ pub fn referenced_entity<T: Op>(
         return Err(invalid(
             op,
             format!(
-                "`{}` names `{path}`, which resolves to no symbol, not a `{expected}`",
+                "`{}` names `@{path}`, which resolves to no symbol, not a `{expected}`",
                 op.name()
             ),
         ));
@@ -81,7 +85,7 @@ pub fn referenced_entity<T: Op>(
     target.try_downcast_op::<T>().map_err(|_| {
         invalid(
             op,
-            format!("`{}` names `{path}`, which is a `{found}`, not a `{expected}`", op.name()),
+            format!("`{}` names `@{path}`, which is a `{found}`, not a `{expected}`", op.name()),
         )
     })
 }
@@ -250,8 +254,8 @@ fn parse_limits(
 /// most 65536 pages, and the maximum is at least the minimum. Where the text writes `declaration`
 /// (`wasm.memory public declaration @mem : 1..16;`), the memory is an import: the property
 /// `declaration` is true, and `wasm.import_module` says which module it comes from (`env` when the
-/// entry is absent). A memory that is not a declaration is a definition, and `wasm.export_name`
-/// exports it.
+/// entry is absent). A memory that is not a declaration is a definition. `wasm.export_name`
+/// exports it, whether it is a definition or an import (Wasm exports what it imports).
 ///
 /// The text form is `visibility [declaration] @name : MIN[..MAX]`, then an optional
 /// `attributes { .. }`. The operation is a [Symbol] and has no region.
@@ -419,12 +423,18 @@ impl runic_ir::Verify<dyn ModuleEntity> for Table {
 /// holding a Wasm constant expression, and the value of the global is the one result of the last
 /// operation, which has the global's type. Every operation of the initializer is a constant
 /// instruction (see [is_constant_instruction]) and uses only values defined in the region (the
-/// operation is isolated from above). A declaration, an import, has no region, and is written
-/// without one; so a global is a declaration exactly when its region is empty.
+/// operation is isolated from above). A `global_get` in it names an immutable global that is an
+/// import, or is defined before this global in the same block (Wasm types the initializer of a
+/// global in a context of the globals before it, so a global cannot read itself, a later one, or
+/// take part in a cycle).
 ///
-/// The text form is `visibility @name : [mut] TYPE`, then the region `{ .. }` of a definition,
-/// then an optional `attributes { .. }`. The region form is the only one: a global with one
-/// `wasm.const` is not abbreviated.
+/// A declaration, an import, is written with the keyword `declaration` and has no region, as for
+/// [Memory]: `wasm.global private declaration @g : i32;`. A definition has its region, and a
+/// region with no operation is an error, not an import.
+///
+/// The text form is `visibility [declaration] @name : [mut] TYPE`, then the region `{ .. }` of a
+/// definition, then an optional `attributes { .. }`. The region form is the only one: a global with
+/// one `wasm.const` is not abbreviated.
 #[operation(
     dialect = WasmDialect,
     traits(SingleRegion, SingleBlock, NoRegionArguments, NoTerminator, IsolatedFromAbove, RegionOperationsAreLive),
@@ -440,6 +450,9 @@ pub struct Global {
     #[attr]
     #[default]
     mutability: MutabilityAttr,
+    #[attr]
+    #[default]
+    declaration: BoolAttr,
     #[region]
     initializer: RegionRef,
     #[default]
@@ -449,13 +462,13 @@ pub struct Global {
 /// A reference to a [Global].
 pub type GlobalRef = UnsafeIntrusiveEntityRef<Global>;
 
-module_symbol!(Global, |this| this.initializer().is_empty());
+module_symbol!(Global, |this| *this.get_declaration());
 
 impl OpPrinter for Global {
     fn print(&self, printer: &mut AsmPrinter<'_>) {
         use runic_ir::formatter::const_text;
 
-        print_header(printer, *self.get_visibility(), false, *self.get_name());
+        print_header(printer, *self.get_visibility(), *self.get_declaration(), *self.get_name());
         *printer += runic_ir::formatter::const_text(" : ");
         if self.get_mutability().is_mut() {
             printer.print_keyword("mut");
@@ -472,7 +485,7 @@ impl OpPrinter for Global {
 
 impl OpParser for Global {
     fn parse(state: &mut OperationState, parser: &mut dyn OpAsmParser<'_>) -> ParseResult {
-        parse_header(state, parser, false)?;
+        let declaration = parse_header(state, parser, true)?;
         parser.parse_colon()?;
         let mutability = if parser.parse_optional_custom_keyword("mut")?.is_some() {
             Mutability::Mut
@@ -485,11 +498,26 @@ impl OpParser for Global {
         );
         let ty = parser.parse_type()?.into_inner();
         state.add_attribute("ty", parser.context_rc().create_attribute::<TypeAttr, _>(ty));
-        let initializer = parser.parse_optional_region(&[], false)?;
-        // The region is always added, empty for a declaration
-        state
-            .regions
-            .push(initializer.unwrap_or_else(|| parser.context().create_region()));
+        // The region is always added, empty for a declaration. A definition must write one: a
+        // missing region is not an import.
+        let initializer = if declaration {
+            parser.context().create_region()
+        } else {
+            match parser.parse_optional_region(&[], false)? {
+                Some(region) => region,
+                None => {
+                    return Err(ParserError::from(report!(
+                        message: "invalid wasm.global operation",
+                        labels: [primary(
+                            state.span,
+                            "a global that is not a `declaration` has an initializer, a region \
+                             `{{ .. }}` that holds a constant expression, but none is written"
+                        )],
+                    )));
+                }
+            }
+        };
+        state.regions.push(initializer);
         parser.parse_optional_attribute_dict_with_keyword(&mut state.attrs)?;
         Ok(())
     }
@@ -503,6 +531,59 @@ impl Global {
             return Vec::new();
         }
         region.entry().body().iter().map(|op| op.as_operation_ref()).collect()
+    }
+}
+
+impl Global {
+    /// Checks the `global_get` `op` of this global's initializer: it reads an immutable global that
+    /// is an import or is defined before this global in its block.
+    fn verify_global_read(
+        &self,
+        name: &str,
+        op: &Operation,
+        get: &crate::GlobalGet,
+    ) -> Result<(), Report> {
+        // A reference that names no global is the business of the read's own verifier
+        let Some(read) = get.global_op() else {
+            return Ok(());
+        };
+        let (read_name, read_ref) = (read.borrow().get_name().as_str().to_string(), read);
+        let invalid_read = |problem: String| {
+            report!(
+                message: "invalid operation",
+                labels: [
+                    primary(self.op.span(), problem),
+                    context(op.span(), "this reads the global"),
+                ],
+            )
+        };
+        if read_ref.borrow().get_mutability().is_mut() {
+            return Err(invalid_read(format!(
+                "the initializer of `wasm.global` `@{name}` reads the mutable global \
+                 `@{read_name}`, but a Wasm constant expression reads only immutable globals"
+            )));
+        }
+        if read_ref.borrow().is_declaration() {
+            return Ok(());
+        }
+        let read_op = read_ref.as_operation_ref();
+        let mut earlier = self.op.as_operation_ref().prev();
+        while let Some(candidate) = earlier {
+            if candidate == read_op {
+                return Ok(());
+            }
+            earlier = candidate.prev();
+        }
+        let which = if read_op == self.op.as_operation_ref() {
+            "the global itself"
+        } else {
+            "a global that is not defined before this one"
+        };
+        Err(invalid_read(format!(
+            "the initializer of `wasm.global` `@{name}` reads `@{read_name}`, which is {which}, \
+             but a Wasm constant expression reads only an imported global or a global defined \
+             before this one in the module"
+        )))
     }
 }
 
@@ -523,22 +604,34 @@ impl runic_ir::Verify<dyn ModuleEntity> for Global {
                 ),
             ));
         }
+        let ops = self.initializer_ops();
         if self.is_declaration() {
+            if !self.initializer().is_empty() {
+                return Err(invalid(
+                    &self.op,
+                    format!(
+                        "`wasm.global` `@{name}` is a declaration, but it has an initializer: an \
+                         import has no region"
+                    ),
+                ));
+            }
             return Ok(());
         }
-        let ops = self.initializer_ops();
         let Some(last) = ops.last() else {
             return Err(invalid(
                 &self.op,
                 format!(
                     "`wasm.global` `@{name}` has an initializer with no operation, but the \
-                     initializer of a definition computes the value of the global (a declaration \
-                     has no region)"
+                     initializer of a definition computes the value of the global (an import is \
+                     written with `declaration` and has no region)"
                 ),
             ));
         };
         for op in &ops {
             let op = op.borrow();
+            if let Some(get) = op.downcast_ref::<crate::GlobalGet>() {
+                self.verify_global_read(name, &op, get)?;
+            }
             if !is_constant_instruction(&op) {
                 return Err(report!(
                     message: "invalid operation",
@@ -589,8 +682,9 @@ impl runic_ir::Verify<dyn ModuleEntity> for Global {
 /// It mirrors Wasm's `elem` of the active form with a table and a constant offset: the functions
 /// are put into the table `@tab` from the element `at` the offset. The table is a [Table] whose
 /// element type is `funcref`; the offset is an `i32` constant, written as `wasm.const` writes it;
-/// each function resolves to a callable. Passive and declarative segments, and segments whose
-/// elements are expressions, are not modelled.
+/// each function resolves to a callable. A segment is always a definition: Wasm does not import one,
+/// so it has no `declaration` form. Passive and declarative segments, and segments whose elements
+/// are expressions, are not modelled.
 ///
 /// The text form is `visibility @name : @TABLE at OFFSET [@f, @g, ..]`, then an optional
 /// `attributes { .. }`.
@@ -616,15 +710,31 @@ pub type ElemRef = UnsafeIntrusiveEntityRef<Elem>;
 module_symbol!(Elem, |_this| false);
 
 impl Elem {
-    /// The references to the functions of the segment, in order. Each is a symbol reference held
-    /// by this operation.
-    pub fn function_refs(&self) -> Vec<UnsafeIntrusiveEntityRef<SymbolRefAttr>> {
+    /// The entries of the function list, in order, whatever they are. A verified segment has only
+    /// symbol references among them.
+    fn function_entries(&self) -> Vec<runic_ir::AttributeRef> {
         let functions = self.get_functions();
         let entries: &AttrList = AsRef::<AttrList>::as_ref(&*functions);
-        entries
-            .iter()
-            .filter_map(|entry| entry.as_attribute_ref().try_downcast_attr::<SymbolRefAttr>().ok())
+        entries.iter().map(|entry| entry.as_attribute_ref()).collect()
+    }
+
+    /// The references to the functions of the segment, in order, one for each entry of the list:
+    /// each is a symbol reference held by this operation.
+    ///
+    /// The verifier rejects a segment with an entry that is not a symbol reference, so for a
+    /// verified segment this is the whole list, and no entry is skipped. For one that is not
+    /// verified, the entries that are not symbol references are left out; ask
+    /// [Self::function_count] to compare.
+    pub fn function_refs(&self) -> Vec<UnsafeIntrusiveEntityRef<SymbolRefAttr>> {
+        self.function_entries()
+            .into_iter()
+            .filter_map(|entry| entry.try_downcast_attr::<SymbolRefAttr>().ok())
             .collect()
+    }
+
+    /// The number of entries of the function list, symbol references or not.
+    pub fn function_count(&self) -> usize {
+        self.function_entries().len()
     }
 
     /// The table this segment initializes, or `None` if the reference is not linked to a [Table].
@@ -651,11 +761,16 @@ impl OpPrinter for Elem {
         printer.print_int(*self.get_offset());
         printer.print_space();
         *printer += const_text("[");
-        for (index, reference) in self.function_refs().into_iter().enumerate() {
+        for (index, entry) in self.function_entries().into_iter().enumerate() {
             if index > 0 {
                 *printer += const_text(", ");
             }
-            printer.print_symbol_path(reference.borrow().path());
+            // An entry that is not a symbol is invalid, and printed as the attribute it is, so
+            // that the text of invalid IR does not look like valid IR.
+            match entry.try_downcast_attr::<SymbolRefAttr>() {
+                Ok(reference) => printer.print_symbol_path(reference.borrow().path()),
+                Err(entry) => printer.print_attribute_value(&*entry.borrow()),
+            }
         }
         *printer += const_text("]");
         print_attributes(printer, &self.op);
@@ -690,8 +805,8 @@ impl OpParser for Elem {
     }
 }
 
-/// The table is a `wasm.table` of `funcref`, the offset is an `i32`, and each function is a
-/// callable.
+/// The table is a `wasm.table` of `funcref`, the offset is an `i32`, and each entry of the
+/// function list is a symbol that names a callable.
 impl runic_ir::Verify<dyn ModuleEntity> for Elem {
     fn verify(&self, _context: &Context) -> Result<(), Report> {
         let name = self.get_name().as_str();
@@ -719,7 +834,17 @@ impl runic_ir::Verify<dyn ModuleEntity> for Elem {
                 ),
             ));
         }
-        for reference in self.function_refs() {
+        for (index, entry) in self.function_entries().into_iter().enumerate() {
+            let Ok(reference) = entry.try_downcast_attr::<SymbolRefAttr>() else {
+                return Err(invalid(
+                    &self.op,
+                    format!(
+                        "`wasm.elem` `@{name}` has entry {index} of its function list that is not \
+                         a function symbol, but every element of a segment of functions is a \
+                         function"
+                    ),
+                ));
+            };
             let reference = reference.borrow();
             let path = reference.path();
             let Some(symbol) = reference.resolve() else {

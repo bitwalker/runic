@@ -14,7 +14,7 @@ builtin.module public @valid {
         %b = wasm.const 2 : i64;
         %c = wasm.add %a, %b;
     };
-    wasm.global private @ext : i32;
+    wasm.global private declaration @ext : i32;
     wasm.tag private @t : (i32, f64, !wasm.funcref);
     builtin.function public extern("C") @f();
     wasm.table private @funcs : 2 x !wasm.funcref;
@@ -54,7 +54,7 @@ builtin.module public @table_type {
 // -----
 
 builtin.module public @global_type {
-    wasm.global private @g : i8; // expected-error {{`wasm.global` `@g` has the type `i8`, but a Wasm global holds a value: `i32`, `i64`, `f32`, `f64`, `funcref` or `externref`}}
+    wasm.global private declaration @g : i8; // expected-error {{`wasm.global` `@g` has the type `i8`, but a Wasm global holds a value: `i32`, `i64`, `f32`, `f64`, `funcref` or `externref`}}
 };
 
 // -----
@@ -88,7 +88,7 @@ builtin.module public @global_float_add {
 builtin.module public @elem_not_a_table {
     wasm.memory public @mem : 1;
     builtin.function public extern("C") @f();
-    wasm.elem private @e : @mem at 0 [@f]; // expected-error {{`wasm.elem` names `mem`, which is a `wasm.memory`, not a `wasm.table`}}
+    wasm.elem private @e : @mem at 0 [@f]; // expected-error {{`wasm.elem` names `@mem`, which is a `wasm.memory`, not a `wasm.table`}}
 };
 
 // -----
@@ -125,7 +125,7 @@ builtin.module public @tag_type {
 
 builtin.module public @import_ok {
     builtin.function public extern("C") @f() attributes { wasm.import_module = "other" };
-    wasm.global private @g : i32 attributes { wasm.import_module = "env", link_name = "field" };
+    wasm.global private declaration @g : i32 attributes { wasm.import_module = "env", link_name = "field" };
     wasm.memory public declaration @m : 1 attributes { wasm.import_module = "env" };
     wasm.table private declaration @t : 1 x !wasm.funcref attributes { wasm.import_module = "env" };
     wasm.tag private declaration @e : (i32) attributes { wasm.import_module = "env" };
@@ -133,14 +133,15 @@ builtin.module public @import_ok {
 
 // -----
 
+// The empty string is a module name in Wasm: `(import "" "" (func))`.
 builtin.module public @import_empty {
-    wasm.memory public declaration @m : 1 attributes { wasm.import_module = "" }; // expected-error {{`wasm.import_module` must be a non-empty string, the name of the module an import comes from, but this is #builtin.string<"">}}
+    wasm.memory public declaration @m : 1 attributes { wasm.import_module = "" };
 };
 
 // -----
 
 builtin.module public @import_not_a_string {
-    wasm.memory public declaration @m : 1 attributes { wasm.import_module = #builtin.i32<1> }; // expected-error {{`wasm.import_module` must be a non-empty string, the name of the module an import comes from, but this is #builtin.i32<1>}}
+    wasm.memory public declaration @m : 1 attributes { wasm.import_module = #builtin.i32<1> }; // expected-error {{`wasm.import_module` must be a string, the name of the module an import comes from, but this is #builtin.i32<1>}}
 };
 
 // -----
@@ -183,32 +184,34 @@ builtin.module public @export_ok {
 
 // -----
 
+// The empty string is an export name in Wasm: `(export "" (func 0))`.
 builtin.module public @export_empty {
-    wasm.memory public @m : 1 attributes { wasm.export_name = "" }; // expected-error {{`wasm.export_name` must be a non-empty string or an array of distinct non-empty strings, but this is an empty string}}
+    wasm.memory public @m : 1 attributes { wasm.export_name = "" };
 };
 
 // -----
 
 builtin.module public @export_empty_entry {
-    wasm.memory public @m : 1 attributes { wasm.export_name = ["a", ""] }; // expected-error {{`wasm.export_name` must be a non-empty string or an array of distinct non-empty strings, but entry 1 is an empty string}}
+    wasm.memory public @m : 1 attributes { wasm.export_name = ["a", ""] };
 };
 
 // -----
 
 builtin.module public @export_duplicate {
-    wasm.memory public @m : 1 attributes { wasm.export_name = ["a", "b", "a"] }; // expected-error {{`wasm.export_name` must be a non-empty string or an array of distinct non-empty strings, but `a` is exported twice}}
+    wasm.memory public @m : 1 attributes { wasm.export_name = ["a", "b", "a"] }; // expected-error {{`wasm.export_name` must be a string or an array of distinct strings, but `a` is exported twice}}
 };
 
 // -----
 
 builtin.module public @export_not_strings {
-    wasm.memory public @m : 1 attributes { wasm.export_name = #builtin.i32<1> }; // expected-error {{`wasm.export_name` must be a non-empty string or an array of distinct non-empty strings, but this is #builtin.i32<1>}}
+    wasm.memory public @m : 1 attributes { wasm.export_name = #builtin.i32<1> }; // expected-error {{`wasm.export_name` must be a string or an array of distinct strings, but this is #builtin.i32<1>}}
 };
 
 // -----
 
+// Wasm exports what it imports: a module that forwards an imported memory.
 builtin.module public @export_declaration {
-    wasm.memory public declaration @m : 1 attributes { wasm.export_name = "m" }; // expected-error {{`wasm.export_name` marks an export, and an export is a definition, but `wasm.memory @m` is a declaration (an import)}}
+    wasm.memory public declaration @m : 1 attributes { wasm.import_module = "env", wasm.export_name = "m" };
 };
 
 // -----
@@ -221,4 +224,48 @@ builtin.module public @export_global_variable {
 
 builtin.module public @unknown_key {
     wasm.memory public @m : 1 attributes { wasm.nonsense = "x" }; // expected-error {{`wasm.nonsense` is not an attribute of the `wasm` dialect: it knows `wasm.import_module` and `wasm.export_name`}}
+};
+
+// -----
+
+// The initializer of a global reads an import, or a global defined before it.
+builtin.module public @global_reads_ok {
+    wasm.global private declaration @imported : i32;
+    wasm.global private @first : i32 { %v = wasm.global_get @imported : i32; };
+    wasm.global private @second : i32 { %v = wasm.global_get @first : i32; };
+};
+
+// -----
+
+builtin.module public @global_reads_itself {
+    wasm.global private @g : i32 { // expected-error {{the initializer of `wasm.global` `@g` reads `@g`, which is the global itself, but a Wasm constant expression reads only an imported global or a global defined before this one in the module}}
+        %v = wasm.global_get @g : i32;
+    };
+};
+
+// -----
+
+builtin.module public @global_reads_a_later_one {
+    wasm.global private @a : i32 { // expected-error {{the initializer of `wasm.global` `@a` reads `@b`, which is a global that is not defined before this one, but a Wasm constant expression reads only an imported global or a global defined before this one in the module}}
+        %v = wasm.global_get @b : i32;
+    };
+    wasm.global private @b : i32 {
+        %v = wasm.global_get @a : i32;
+    };
+};
+
+// -----
+
+builtin.module public @global_reads_a_mutable_one {
+    wasm.global private @m : mut i32 { %v = wasm.const 1 : i32; };
+    wasm.global private @g : i32 { // expected-error {{the initializer of `wasm.global` `@g` reads the mutable global `@m`, but a Wasm constant expression reads only immutable globals}}
+        %v = wasm.global_get @m : i32;
+    };
+};
+
+// -----
+
+// An empty initializer is not an import: an import is written with `declaration`.
+builtin.module public @global_without_initializer {
+    wasm.global private @g : i32 { }; // expected-error {{`wasm.global` `@g` has an initializer with no operation}}
 };

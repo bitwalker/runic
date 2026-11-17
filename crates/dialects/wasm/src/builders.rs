@@ -324,8 +324,8 @@ pub trait WasmOpBuilder<'f, B: ?Sized + Builder> {
         Ok(op)
     }
 
-    /// Creates a [Global] declaration, an import, of the type `ty`: its region is empty. A
-    /// definition is made by [Self::create_global].
+    /// Creates a [Global] declaration, an import, of the type `ty`: it has the property
+    /// `declaration` and its region is empty. A definition is made by [Self::create_global].
     fn create_global_declaration(
         &mut self,
         name: Ident,
@@ -336,7 +336,11 @@ pub trait WasmOpBuilder<'f, B: ?Sized + Builder> {
         ensure_definable::<Global, _>(self.builder(), name.name)?;
         let op_builder = self.builder_mut().create::<Global, (_, _, _)>(name.span());
         let mut global = op_builder(name, visibility, ty)?;
-        global.borrow_mut().set_mutability(mutability);
+        {
+            let mut op = global.borrow_mut();
+            op.set_mutability(mutability);
+            op.set_declaration(true);
+        }
         Ok(global)
     }
 
@@ -357,7 +361,10 @@ pub trait WasmOpBuilder<'f, B: ?Sized + Builder> {
         mutability: Mutability,
         init: impl FnOnce(&mut B) -> Result<ValueRef, Report>,
     ) -> Result<GlobalRef, Report> {
-        let global = self.create_global_declaration(name, visibility, ty, mutability)?;
+        ensure_definable::<Global, _>(self.builder(), name.name)?;
+        let op_builder = self.builder_mut().create::<Global, (_, _, _)>(name.span());
+        let mut global = op_builder(name, visibility, ty)?;
+        global.borrow_mut().set_mutability(mutability);
         let region = global.borrow().initializer().as_region_ref();
         let mut guard = InsertionGuard::new(self.builder_mut());
         let block = guard.create_block(region, None, &[]);

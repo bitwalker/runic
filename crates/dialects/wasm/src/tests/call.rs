@@ -70,7 +70,7 @@ fn an_indirect_tail_call_is_a_terminator_with_no_results_that_round_trips() {
 fn an_indirect_call_goes_through_a_funcref_table_by_an_i32_index() {
     rejected_call(
         "wasm.call_indirect @mem, %a() : extern(\"C\") ();",
-        "`wasm.call_indirect` names `mem`, which is a `wasm.memory`, not a `wasm.table`",
+        "`wasm.call_indirect` names `@mem`, which is a `wasm.memory`, not a `wasm.table`",
     );
     rejected_call(
         "wasm.call_indirect @refs, %a() : extern(\"C\") ();",
@@ -108,7 +108,7 @@ fn a_signature_of_an_indirect_call_has_wasm_value_types() {
         let error = kind(&format!("wasm.call_indirect @tab, %i(%v) : extern(\"C\") ({ty});"));
         assert!(
             error.contains(&format!(
-                "parameter 0 of its signature has type `{ty}`, but a Wasm value type is `i32`, \
+                "parameter 0 of its signature has type `{ty}`, and a Wasm value type is `i32`, \
                  `i64`, `f32`, `f64`, `funcref` or `externref`"
             )),
             "{error}"
@@ -126,7 +126,7 @@ fn a_signature_of_an_indirect_call_has_wasm_value_types() {
     .expect("an i8 result");
     assert!(
         error.contains(
-            "result 0 of its signature has type `i8`, but a Wasm value type is `i32`, `i64`, \
+            "result 0 of its signature has type `i8`, and a Wasm value type is `i32`, `i64`, \
              `f32`, `f64`, `funcref` or `externref`"
         ),
         "{error}"
@@ -169,13 +169,12 @@ fn the_arguments_and_results_of_an_indirect_call_agree_with_its_signature() {
     };
     let error = call(", %b", " | i32", "%v = ", "i32");
     assert!(
-        error.contains("it passes 1 argument(s), but its signature has 2 parameter(s)"),
+        error.contains("it passes 1 argument(s) and its signature has 2 parameter(s)"),
         "{error}"
     );
     let error = call(", %b, %b", " | i32, i32", "%v = ", "i32");
     assert!(
-        error
-            .contains("argument 1 has type `i32`, but parameter 1 of its signature has type `i64`"),
+        error.contains("argument 1 has type `i32` and parameter 1 of its signature has type `i64`"),
         "{error}"
     );
     let error = call(", %b, %l", " | i32, i64", "", "()");
@@ -186,7 +185,7 @@ fn the_arguments_and_results_of_an_indirect_call_agree_with_its_signature() {
     );
     let error = call(", %b, %l", " | i32, i64", "%v = ", "i64");
     assert!(
-        error.contains("result 0 has type `i64`, but result 0 of its signature has type `i32`"),
+        error.contains("result 0 has type `i64` and result 0 of its signature has type `i32`"),
         "{error}"
     );
 }

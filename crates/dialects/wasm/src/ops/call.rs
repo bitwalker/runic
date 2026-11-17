@@ -26,7 +26,7 @@ use crate::{
 
 /// The hook the verifiers of the two indirect calls hang from: the rules need the operations'
 /// signatures, which no trait that exists carries.
-pub trait IndirectCall: Op {}
+trait IndirectCall: Op {}
 
 /// A reference to a [CallIndirect].
 pub type CallIndirectRef = runic_ir::UnsafeIntrusiveEntityRef<CallIndirect>;
@@ -68,7 +68,7 @@ fn verify_indirect_call(
                     op,
                     CALL_RULE,
                     format!(
-                        "{kind} {index} of its signature has type `{}`, but a Wasm value type is \
+                        "{kind} {index} of its signature has type `{}`, and a Wasm value type is \
                          {}",
                         val_type_name(param.ty),
                         ValType::get().description()
@@ -83,7 +83,7 @@ fn verify_indirect_call(
             op,
             CALL_RULE,
             format!(
-                "it passes {} argument(s), but its signature has {} parameter(s)",
+                "it passes {} argument(s) and its signature has {} parameter(s)",
                 arguments.len(),
                 signature.params().len()
             ),
@@ -96,7 +96,7 @@ fn verify_indirect_call(
                 op,
                 CALL_RULE,
                 format!(
-                    "argument {index} has type `{}`, but parameter {index} of its signature has \
+                    "argument {index} has type `{}` and parameter {index} of its signature has \
                      type `{}`",
                     val_type_name(found),
                     val_type_name(param.ty)
@@ -256,7 +256,7 @@ impl Verify<dyn IndirectCall> for CallIndirect {
                 op,
                 CALL_RULE,
                 format!(
-                    "it has {} result(s), but its signature has {}",
+                    "it has {} result(s) and its signature has {}",
                     op.num_results(),
                     results.len()
                 ),
@@ -269,7 +269,7 @@ impl Verify<dyn IndirectCall> for CallIndirect {
                     op,
                     CALL_RULE,
                     format!(
-                        "result {index} has type `{}`, but result {index} of its signature has \
+                        "result {index} has type `{}` and result {index} of its signature has \
                          type `{}`",
                         val_type_name(found),
                         val_type_name(expected.ty)

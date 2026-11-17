@@ -347,7 +347,7 @@ fn verify_access(
                 op,
                 rule,
                 format!(
-                    "{value} has type `{}` and its storage is `{storage}`, but only an integer is \
+                    "{value} has type `{}` and its storage is `{storage}`, and only an integer is \
                      {verb} through narrower storage (Wasm has no narrow float access)",
                     val_type_name(ty)
                 ),
@@ -358,9 +358,9 @@ fn verify_access(
                 op,
                 rule,
                 format!(
-                    "{value} has type `{}` and its storage is `{storage}`, but narrow storage is \
-                     narrower than the value (`i8` or `i16` for an `i32`; `i8`, `i16` or `i32` \
-                     for an `i64`), and an access of the whole value names no storage",
+                    "{value} has type `{}` and its storage is `{storage}`, which is not narrower \
+                     than the value (narrow storage is `i8` or `i16` for an `i32`; `i8`, `i16` or \
+                     `i32` for an `i64`), and an access of the whole value names no storage",
                     val_type_name(ty)
                 ),
             ));
@@ -373,8 +373,8 @@ fn verify_access(
                     op,
                     rule,
                     format!(
-                        "its storage is `{storage}`, but a narrow load says whether it extends \
-                         the value read with `signed` or `unsigned`, and this one says neither"
+                        "its storage is `{storage}`, so a narrow load says whether it extends the \
+                         value read with `signed` or `unsigned`, and this one says neither"
                     ),
                 ));
             }
@@ -383,7 +383,7 @@ fn verify_access(
                     op,
                     rule,
                     format!(
-                        "it is `{extension}`, but a load of the whole value extends nothing (only \
+                        "it is `{extension}`, and a load of the whole value extends nothing (only \
                          a narrow load is `signed` or `unsigned`)"
                     ),
                 ));
@@ -397,9 +397,10 @@ fn verify_access(
             op,
             rule,
             format!(
-                "its alignment is {} bytes, but the access is {width} bytes wide and the \
-                 alignment of a Wasm access is at most its width",
-                memarg.align()
+                "its alignment is {} bytes and the access is {width} {} wide, and the alignment \
+                 of a Wasm access is at most its width",
+                memarg.align(),
+                if width == 1 { "byte" } else { "bytes" }
             ),
         ));
     }
@@ -408,7 +409,7 @@ fn verify_access(
             op,
             rule,
             format!(
-                "its offset is {}, but the offset of a Wasm access is an unsigned 32-bit integer",
+                "its offset is {}, and the offset of a Wasm access is an unsigned 32-bit integer",
                 memarg.offset()
             ),
         ));

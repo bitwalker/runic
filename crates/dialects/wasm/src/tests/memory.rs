@@ -123,26 +123,26 @@ fn the_forms_wasm_does_not_have_are_rejected_with_the_rule() {
     rejected(
         "%v = wasm.load @mem, %a as i8 signed : f32;",
         "`wasm.load` takes an `i32` address in a memory and gives a number, `i32`, `i64`, `f32` \
-         or `f64`, read from it, but its result has type `f32` and its storage is `i8`, but only \
+         or `f64`, read from it, but its result has type `f32` and its storage is `i8`, and only \
          an integer is read through narrower storage (Wasm has no narrow float access)",
     );
     rejected(
         "wasm.store @mem, %a, %d as i16;",
-        "its value has type `f64` and its storage is `i16`, but only an integer is written \
+        "its value has type `f64` and its storage is `i16`, and only an integer is written \
          through narrower storage (Wasm has no narrow float access)",
     );
     // Storage as wide as the value, or wider
     rejected(
         "%v = wasm.load @mem, %a as i32 signed : i32;",
-        "its result has type `i32` and its storage is `i32`, but narrow storage is narrower than \
-         the value (`i8` or `i16` for an `i32`; `i8`, `i16` or `i32` for an `i64`), and an access \
-         of the whole value names no storage",
+        "its result has type `i32` and its storage is `i32`, which is not narrower than the value \
+         (narrow storage is `i8` or `i16` for an `i32`; `i8`, `i16` or `i32` for an `i64`), and \
+         an access of the whole value names no storage",
     );
-    rejected("wasm.store @mem, %a, %a as i32;", "narrow storage is narrower than the value");
+    rejected("wasm.store @mem, %a, %a as i32;", "which is not narrower than the value");
     // A narrow load names how it extends, and a load of the whole value does not
     rejected(
         "%v = wasm.load @mem, %a as i8 : i32;",
-        "its storage is `i8`, but a narrow load says whether it extends the value read with \
+        "its storage is `i8`, so a narrow load says whether it extends the value read with \
          `signed` or `unsigned`, and this one says neither",
     );
     let error = parse_state(&state_module(
@@ -154,7 +154,7 @@ fn the_forms_wasm_does_not_have_are_rejected_with_the_rule() {
     .expect("a load of the whole value that extends does not verify");
     assert!(
         error.contains(
-            "it is `signed`, but a load of the whole value extends nothing (only a narrow load is \
+            "it is `signed`, and a load of the whole value extends nothing (only a narrow load is \
              `signed` or `unsigned`)"
         ),
         "{error}"
@@ -182,9 +182,10 @@ fn the_alignment_is_at_most_the_width_of_the_access() {
         accepted(&format!("%v = wasm.load @mem, %a{access} <{{ align = {width} }}> : {ty};"));
         if width < 8 {
             let error = format!(
-                "its alignment is {} bytes, but the access is {width} bytes wide and the \
-                 alignment of a Wasm access is at most its width",
-                width * 2
+                "its alignment is {} bytes and the access is {width} {} wide, and the alignment \
+                 of a Wasm access is at most its width",
+                width * 2,
+                if width == 1 { "byte" } else { "bytes" }
             );
             rejected(
                 &format!("%v = wasm.load @mem, %a{access} <{{ align = {} }}> : {ty};", width * 2),
@@ -194,7 +195,7 @@ fn the_alignment_is_at_most_the_width_of_the_access() {
     }
     rejected(
         "wasm.store @mem, %a, %l as i16 <{ align = 4 }>;",
-        "its alignment is 4 bytes, but the access is 2 bytes wide",
+        "its alignment is 4 bytes and the access is 2 bytes wide",
     );
     accepted("wasm.store @mem, %a, %l as i16 <{ align = 2 }>;");
     accepted("wasm.store @mem, %a, %l <{ align = 1 }>;");
@@ -218,11 +219,11 @@ fn the_offset_is_an_unsigned_32_bit_integer() {
     accepted("%v = wasm.load @mem, %a <{ offset = 4294967295 }> : i32;");
     rejected(
         "%v = wasm.load @mem, %a <{ offset = 4294967296 }> : i32;",
-        "its offset is 4294967296, but the offset of a Wasm access is an unsigned 32-bit integer",
+        "its offset is 4294967296, and the offset of a Wasm access is an unsigned 32-bit integer",
     );
     rejected(
         "wasm.store @mem, %a, %b <{ offset = 4294967296 }>;",
-        "its offset is 4294967296, but the offset of a Wasm access is an unsigned 32-bit integer",
+        "its offset is 4294967296, and the offset of a Wasm access is an unsigned 32-bit integer",
     );
 }
 
@@ -263,11 +264,11 @@ fn a_memory_access_prints_the_offset_and_the_alignment_only_when_they_differ_fro
 fn a_load_and_a_store_name_a_memory_and_take_an_i32_address() {
     rejected(
         "%v = wasm.load @tab, %a : i32;",
-        "`wasm.load` names `tab`, which is a `wasm.table`, not a `wasm.memory`",
+        "`wasm.load` names `@tab`, which is a `wasm.table`, not a `wasm.memory`",
     );
     rejected(
         "wasm.store @g, %a, %b;",
-        "`wasm.store` names `g`, which is a `wasm.global`, not a `wasm.memory`",
+        "`wasm.store` names `@g`, which is a `wasm.global`, not a `wasm.memory`",
     );
     rejected("%v = wasm.load @nothing, %a : i32;", "nothing");
     rejected(
@@ -321,7 +322,7 @@ fn the_memory_size_and_grow_operations_take_i32s_and_give_an_i32() {
     accepted("%n = wasm.memory_size @mem;\n %o = wasm.memory_grow @mem, %n;");
     rejected(
         "%n = wasm.memory_size @tab;",
-        "`wasm.memory_size` names `tab`, which is a `wasm.table`, not a `wasm.memory`",
+        "`wasm.memory_size` names `@tab`, which is a `wasm.table`, not a `wasm.memory`",
     );
     rejected(
         "%o = wasm.memory_grow @mem, %l;",
@@ -330,7 +331,7 @@ fn the_memory_size_and_grow_operations_take_i32s_and_give_an_i32() {
     );
     rejected(
         "%o = wasm.memory_grow @g, %a;",
-        "`wasm.memory_grow` names `g`, which is a `wasm.global`, not a `wasm.memory`",
+        "`wasm.memory_grow` names `@g`, which is a `wasm.global`, not a `wasm.memory`",
     );
 }
 
@@ -349,11 +350,11 @@ fn the_bulk_operations_take_their_memories_and_three_i32s() {
     );
     rejected(
         "wasm.memory_copy @mem, @tab, %a, %a, %a;",
-        "`wasm.memory_copy` names `tab`, which is a `wasm.table`, not a `wasm.memory`",
+        "`wasm.memory_copy` names `@tab`, which is a `wasm.table`, not a `wasm.memory`",
     );
     rejected(
         "wasm.memory_copy @tab, @mem, %a, %a, %a;",
-        "`wasm.memory_copy` names `tab`, which is a `wasm.table`, not a `wasm.memory`",
+        "`wasm.memory_copy` names `@tab`, which is a `wasm.table`, not a `wasm.memory`",
     );
     rejected(
         "wasm.memory_fill @mem, %a, %a, %l;",
@@ -363,16 +364,16 @@ fn the_bulk_operations_take_their_memories_and_three_i32s() {
     rejected("wasm.memory_init @mem, @data, %a, %a, %l;", "but its length has type `i64`");
     rejected(
         "wasm.memory_init @mem, @k, %a, %a, %a;",
-        "`wasm.memory_init` names `k`, which is a `wasm.global`, not a `builtin.global_variable`",
+        "`wasm.memory_init` names `@k`, which is a `wasm.global`, not a `builtin.global_variable`",
     );
     rejected(
         "wasm.memory_init @data, @data, %a, %a, %a;",
-        "`wasm.memory_init` names `data`, which is a `builtin.global_variable`, not a \
+        "`wasm.memory_init` names `@data`, which is a `builtin.global_variable`, not a \
          `wasm.memory`",
     );
     rejected(
         "wasm.data_drop @mem;",
-        "`wasm.data_drop` names `mem`, which is a `wasm.memory`, not a `builtin.global_variable`",
+        "`wasm.data_drop` names `@mem`, which is a `wasm.memory`, not a `builtin.global_variable`",
     );
 }
 

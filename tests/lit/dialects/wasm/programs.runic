@@ -412,8 +412,8 @@ builtin.module public @imports_and_exports {
     // OPT: builtin.function public extern("C") @log(
     // OPT-SAME: i32) attributes { link_name = #builtin.string<"log_i32">, wasm.import_module = #builtin.string<"env"> };
     builtin.function public extern("C") @log(i32) attributes { link_name = "log_i32", wasm.import_module = "env" };
-    // OPT-NEXT: wasm.global private @base : i32 attributes { link_name = #builtin.string<"heap_base">, wasm.import_module = #builtin.string<"env"> };
-    wasm.global private @base : i32 attributes { link_name = "heap_base", wasm.import_module = "env" };
+    // OPT-NEXT: wasm.global private declaration @base : i32 attributes { link_name = #builtin.string<"heap_base">, wasm.import_module = #builtin.string<"env"> };
+    wasm.global private declaration @base : i32 attributes { link_name = "heap_base", wasm.import_module = "env" };
     // OPT-NEXT: wasm.memory public @mem : 1..16 attributes { wasm.export_name = #builtin.string<"memory"> };
     wasm.memory public @mem : 1..16 attributes { wasm.export_name = "memory" };
     // OPT-NEXT: wasm.global public @counter : mut i32 {

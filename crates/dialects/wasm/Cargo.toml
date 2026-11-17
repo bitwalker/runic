@@ -16,7 +16,7 @@ doctest = false
 
 [features]
 default = ["std"]
-std = ["runic-ir/std"]
+std = ["runic-ir/std", "runic-dialect-mem/std"]
 
 [dependencies]
 paste.workspace = true

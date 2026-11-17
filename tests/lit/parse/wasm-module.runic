@@ -46,8 +46,8 @@ builtin.module public @wasm_module {
     wasm.global private @pi : f64 {
         %v = wasm.constf 3.14 : f64;
     };
-    // CHECK-NEXT: wasm.global private @counter : mut i32 attributes { link_name = #builtin.string<"counter">, wasm.import_module = #builtin.string<"env"> };
-    wasm.global private @counter : mut i32 attributes { link_name = "counter", wasm.import_module = "env" };
+    // CHECK-NEXT: wasm.global private declaration @counter : mut i32 attributes { link_name = #builtin.string<"counter">, wasm.import_module = #builtin.string<"env"> };
+    wasm.global private declaration @counter : mut i32 attributes { link_name = "counter", wasm.import_module = "env" };
 
     // CHECK-NEXT: wasm.tag private @exn : (i32, i64);
     // CHECK-NEXT: wasm.tag private declaration @none : ();

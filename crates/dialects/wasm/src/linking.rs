@@ -6,8 +6,10 @@
 //! the operation has no body, and its field name is the symbol's effective link name
 //! ([effective_link_name](runic_ir::effective_link_name)); `wasm.import_module` names the module,
 //! `env` when it is absent (a C toolchain's convention), so the entry is needed only for another
-//! module. An export is a definition, and `wasm.export_name` is the name, or an array of names
-//! when one entity is exported under several. A `builtin.global_variable` is data in linear
+//! module. An export is a definition or a declaration (Wasm exports what it imports: a module that
+//! forwards an imported memory or table writes both entries), and `wasm.export_name` is the name,
+//! or an array of names when one entity is exported under several. A name is any string, the empty
+//! one included, as in Wasm. A `builtin.global_variable` is data in linear
 //! memory, and Wasm neither imports nor exports it.
 //!
 //! The dialect checks the entries on any operation (see
@@ -27,11 +29,12 @@ use runic_ir::{
 
 use crate::{Global, Memory, Table, Tag};
 
-/// The name of the entry that gives the module an imported entity comes from: a non-empty string.
+/// The name of the entry that gives the module an imported entity comes from: a string, which may
+/// be empty.
 pub const IMPORT_MODULE: &str = "wasm.import_module";
 
 /// The name of the entry that gives the name an entity is exported under: a string, or an array of
-/// distinct non-empty strings.
+/// distinct strings, each of which may be empty.
 pub const EXPORT_NAME: &str = "wasm.export_name";
 
 /// The module an import comes from when the declaration has no [IMPORT_MODULE] entry.
@@ -149,16 +152,17 @@ pub(crate) fn verify_entry(
     }
 }
 
-/// `wasm.import_module` is a non-empty string, on a declaration of an entity Wasm imports.
+/// `wasm.import_module` is a string (the empty one is a module name in Wasm), on a declaration of
+/// an entity Wasm imports.
 fn verify_import_module(op: &Operation, attr: &AttributeRef) -> Result<(), Report> {
     match string_value(attr) {
-        Some(module) if !module.is_empty() => {}
-        _ => {
+        Some(_) => {}
+        None => {
             return Err(invalid(
                 op,
                 format!(
-                    "`{IMPORT_MODULE}` must be a non-empty string, the name of the module an \
-                     import comes from, but this is {}",
+                    "`{IMPORT_MODULE}` must be a string, the name of the module an import comes \
+                     from, but this is {}",
                     print_attribute(op, attr)
                 ),
             ));
@@ -191,27 +195,21 @@ fn verify_import_module(op: &Operation, attr: &AttributeRef) -> Result<(), Repor
     Ok(())
 }
 
-/// `wasm.export_name` is a string or an array of distinct non-empty strings, on a definition of an
-/// entity Wasm exports.
+/// `wasm.export_name` is a string or an array of distinct strings (the empty one is a name in
+/// Wasm), on a definition or a declaration of an entity Wasm exports.
 fn verify_export_name(op: &Operation, attr: &AttributeRef) -> Result<(), Report> {
     let shape = |problem: &str| {
         invalid(
             op,
             format!(
-                "`{EXPORT_NAME}` must be a non-empty string or an array of distinct non-empty \
-                 strings, but {problem}"
+                "`{EXPORT_NAME}` must be a string or an array of distinct strings, but {problem}"
             ),
         )
     };
-    if let Some(name) = string_value(attr) {
-        if name.is_empty() {
-            return Err(shape("this is an empty string"));
-        }
+    if string_value(attr).is_some() {
+        // one name, whatever it is
     } else if let Some(names) = string_entries(attr) {
         for (index, name) in names.iter().enumerate() {
-            if name.is_empty() {
-                return Err(shape(&format!("entry {index} is an empty string")));
-            }
             if names[..index].contains(name) {
                 return Err(shape(&format!("`{name}` is exported twice")));
             }
@@ -225,16 +223,6 @@ fn verify_export_name(op: &Operation, attr: &AttributeRef) -> Result<(), Report>
             format!(
                 "`{EXPORT_NAME}` marks an export, but {} is not one: Wasm exports functions, \
                  globals, memories, tables and tags ({LINKABLE})",
-                describe(op)
-            ),
-        ));
-    }
-    if is_declaration(op) {
-        return Err(invalid(
-            op,
-            format!(
-                "`{EXPORT_NAME}` marks an export, and an export is a definition, but {} is a \
-                 declaration (an import)",
                 describe(op)
             ),
         ));
