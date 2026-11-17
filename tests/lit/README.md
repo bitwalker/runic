@@ -13,10 +13,11 @@ cargo make test-lit
 ```
 
 builds `runic-opt` and `toyc` into `bin/` (git-ignored) and runs every test. `runic-opt` is built
-with the cargo feature `toy`, which registers the toy frontend `calc` and the toy backends `stackvm`
-and `altvm`; `toyc` is the example `toyc` of `crates/driver`, a compiler built on the driver crate
-with the same stages (`cargo make toyc` builds it alone). To run tests by hand, build once and point
-`litcheck` at `bin`. The suite is run from the repository root, as below: run from a
+with the cargo features `toy`, which registers the toy frontend `calc` and the toy backends `stackvm`
+and `altvm`, and `wasm`, which registers the `wasm` dialect and the passes of the lowering to Wasm
+form (`convert-to-wasm`, `wasm-lower-frames`, `wasm-verify-form`); `toyc` is the example `toyc` of
+`crates/driver`, a compiler built on the driver crate with the same stages (`cargo make toyc` builds
+it alone). To run tests by hand, build once and point `litcheck` at `bin`. The suite is run from the repository root, as below: run from a
 directory inside the suite, `litcheck` does not find it, and it refuses a path outside the working
 directory:
 
@@ -88,11 +89,28 @@ transforms/<pass>/    a pass: cse, dce, sccp, canonicalizer, control-flow-sink, 
                       (sink-operand-defs), local2reg, cfg-to-scf
 transforms/pipeline/   several passes in a row, where what matters is what survives all of them
 conversion/           dialect conversion, through the test passes
-codegen/wasm/         the lowering to Wasm form (`runic-codegen-wasm`): `convert-to-wasm` on
-                      functions, calls, returns, locals and constants under each calling
-                      convention (calls.runic), the data layout it needs (layout.runic), what it
-                      refuses (unsupported.runic), `wasm-verify-form` (form.runic), and the passes
-                      in their order (pipeline.runic); every module states its `data_layout`
+codegen/wasm/         the lowering to Wasm form (`runic-codegen-wasm`); every module states its
+                      `data_layout`, and a file with several modules separates them with `// -----`
+                      and is run with `--split-input-file`. The passes run one at a time
+                      or in their order: `convert-to-wasm` on functions, calls, returns, locals and
+                      constants under each calling convention (calls.runic), the data layout it needs
+                      (layout.runic), what it refuses (unsupported.runic), `wasm-verify-form`
+                      (form.runic), and the four passes in order (pipeline.runic). The operations:
+                      integers (numeric-int.runic), floats (numeric-float.runic), the composed
+                      ones, such as checked arithmetic, min, max and rotates
+                      (numeric-composed.runic), memory and addresses (memory.runic), function
+                      values and indirect calls (indirect-calls.runic), frames on the shadow
+                      stack (frames.runic with `wasm-lower-frames` alone, frames-pipeline.runic
+                      through `convert-to-wasm`), and structured control flow (control-if,
+                      control-loop, control-switch, control-exits for CFG input, control-errors).
+                      Whole programs in generic IR in CFG form, each run through the four passes with
+                      its output checked in full, and again behind the default optimization pipeline
+                      (`canonicalizer,cse,sccp,canonicalizer,dce`) with the checks that matter,
+                      under the prefix `OPT`: programs.runic (an array sum, three exits, a state
+                      machine), programs-memory.runic (locals in memory, a global variable, a call
+                      through a function value) and programs-narrow.runic (narrow integers and the
+                      calling conventions). The unit tests of the crate evaluate several of these
+                      programs; they read the text of these files
 analysis/             analyses, through the test passes
 tool/                 options and behaviour of runic-opt itself
 harness/              runic-opt's harness path: an input a frontend reads (`*.calc`) or a

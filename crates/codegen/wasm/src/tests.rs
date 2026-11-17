@@ -17,12 +17,14 @@ use runic_ir::{
 mod carried;
 mod composed;
 mod control;
+mod coverage;
 mod eval;
 mod float;
 mod frames;
 mod int;
 mod labels;
 mod pipeline;
+mod programs;
 mod symbols;
 mod target;
 mod types;

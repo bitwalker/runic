@@ -2,15 +2,20 @@
 //! "Numerics" and "Execution") and independent of the patterns of the crate.
 //!
 //! [run] executes one `builtin.function` whose body is `wasm` operations and ends in
-//! `builtin.ret`, on argument values, and gives the values it returns or [Outcome::Trap]. A value
+//! `builtin.ret`, on argument values, and gives the values it returns or [Outcome::Trap]. [run_in]
+//! runs it on a [Machine], which holds a linear memory of bytes and the addresses of the data
+//! symbols a test assigns, shared by the calls it makes. A value
 //! is its bit pattern in a `u64`, the width of its type (32 or 64) and whether it is a float:
 //! [Val].
 //!
 //! The operations it knows are the integer and float operations of the `wasm` dialect that
 //! lowered numeric code uses, the structured control of "Control Instructions" (`wasm.block`,
 //! `wasm.loop`, `wasm.if`, `wasm.end`, `wasm.br`, `wasm.br_table`, `wasm.unreachable`) and
-//! `builtin.ret` at any depth. An operation it does not know panics with a message that names it:
-//! a test never skips one silently.
+//! `builtin.ret` at any depth. It also runs `builtin.call` and `builtin.tail_call` of a function
+//! with a body in the same module (a tail call replaces the running function: it does not grow
+//! anything), and the memory operations `wasm.load`, `wasm.store` and `wasm.data_addr` on the
+//! machine's memory (little-endian, an access out of bounds traps). An operation it does not
+//! know panics with a message that names it: a test never skips one silently.
 //!
 //! **Control.** A `block`, a `loop` and an `if` run their body (for an `if`, the region the
 //! condition picks: the first when it is not zero) on their parameters. Falling off the `end`
@@ -29,12 +34,18 @@
 //! leaves a NaN's sign and payload to the engine, the bits given here are Rust's, and a test
 //! compares a NaN result only as being a NaN ([Val::is_nan]).
 
-use alloc::{format, string::String, vec::Vec};
+use alloc::{
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
 use std::collections::HashMap;
 
 use runic_dialect_wasm as wasm;
 use runic_ir::{
-    BlockRef, OperationRef, RegionRef, Type, Value, ValueRef, dialects::builtin::Function,
+    BlockRef, OperationRef, RegionRef, Type, Value, ValueRef,
+    dialects::builtin::{Call, Function, TailCall},
 };
 
 /// A Wasm number: the bits of an `i32`, an `i64`, an `f32` or an `f64` in the low `width` bits of
@@ -169,18 +180,89 @@ enum Flow {
     Br(u32, Vec<Val>),
     /// A `builtin.ret` with these values.
     Return(Vec<Val>),
+    /// A `builtin.tail_call` of this function on these values.
+    TailCall(OperationRef, Vec<Val>),
     /// A trap.
     Trap,
 }
 
-/// The values of the SSA values of the function being run.
-struct Env {
-    values: HashMap<ValueRef, Val>,
+/// What a run reads and writes beyond its own values: a linear memory, the addresses of the data
+/// symbols, and the operations left to run (shared by a function and everything it calls).
+pub(super) struct Machine {
+    /// The bytes of the linear memory; an access past its end traps.
+    pub memory: Vec<u8>,
+    /// The address `wasm.data_addr` gives for each data symbol, by name.
+    pub data: HashMap<String, u32>,
     /// The operations left to run.
     fuel: u64,
 }
 
-impl Env {
+impl Machine {
+    /// A machine with `size` zero bytes of memory and no data symbols.
+    pub fn new(size: usize) -> Self {
+        Self {
+            memory: alloc::vec![0; size],
+            data: HashMap::new(),
+            fuel: FUEL,
+        }
+    }
+
+    /// Writes `bytes` at `address`.
+    pub fn write(&mut self, address: u32, bytes: &[u8]) {
+        let start = address as usize;
+        self.memory[start..start + bytes.len()].copy_from_slice(bytes);
+    }
+
+    /// Writes the 32-bit little-endian words `words` from `address` on.
+    pub fn write_words(&mut self, address: u32, words: &[u32]) {
+        for (index, word) in words.iter().enumerate() {
+            self.write(address + 4 * index as u32, &word.to_le_bytes());
+        }
+    }
+
+    /// The 32-bit little-endian word at `address`.
+    pub fn word(&self, address: u32) -> u32 {
+        let start = address as usize;
+        u32::from_le_bytes(self.memory[start..start + 4].try_into().unwrap())
+    }
+
+    /// The `size` bytes at `address` and `offset` as a little-endian number, or `None` when they
+    /// are not all in memory.
+    fn read(&self, address: u64, offset: u64, size: u64) -> Option<u64> {
+        let start = u64::from(address as u32) + offset;
+        let end = start.checked_add(size)?;
+        let bytes = self.memory.get(usize::try_from(start).ok()?..usize::try_from(end).ok()?)?;
+        Some(bytes.iter().rev().fold(0, |value, byte| (value << 8) | u64::from(*byte)))
+    }
+
+    /// Writes the low `size` bytes of `value` at `address` and `offset`, or says (`false`) that
+    /// they are not all in memory.
+    fn store(&mut self, address: u64, offset: u64, size: u64, value: u64) -> bool {
+        let start = u64::from(address as u32) + offset;
+        let Some(end) = start.checked_add(size) else {
+            return false;
+        };
+        let (Ok(start), Ok(end)) = (usize::try_from(start), usize::try_from(end)) else {
+            return false;
+        };
+        let Some(bytes) = self.memory.get_mut(start..end) else {
+            return false;
+        };
+        for (index, byte) in bytes.iter_mut().enumerate() {
+            *byte = (value >> (8 * index)) as u8;
+        }
+        true
+    }
+}
+
+/// The values of the SSA values of the function being run.
+struct Env<'m> {
+    values: HashMap<ValueRef, Val>,
+    /// The machine the function runs on.
+    machine: &'m mut Machine,
+}
+
+impl Env<'_> {
     fn get(&self, value: ValueRef) -> Val {
         *self.values.get(&value).unwrap_or_else(|| {
             panic!("the evaluator read `{}` before it was defined", value.borrow())
@@ -210,31 +292,61 @@ impl Env {
     }
 }
 
-/// Runs the function `function`, a `builtin.function` in Wasm form, on `arguments`.
+/// Runs the function `function`, a `builtin.function` in Wasm form, on `arguments`, with no memory.
 ///
 /// Panics for an operation the evaluator does not know, naming it, and when `arguments` do not
 /// match the parameters in number or width.
 pub(super) fn run(function: OperationRef, arguments: &[Val]) -> Outcome {
-    let body = {
-        let function = function.borrow();
-        let function = function.downcast_ref::<Function>().expect("a builtin.function");
-        function.body().entry_block_ref().expect("a function with a body")
-    };
-    let mut env = Env {
-        values: HashMap::new(),
-        fuel: FUEL,
-    };
-    bind_arguments(&mut env, body, arguments);
-    match run_block(&mut env, body) {
-        Flow::Return(values) => Outcome::Values(values),
-        Flow::Trap => Outcome::Trap,
-        Flow::End(_) => panic!("the body of a function ended in `wasm.end`"),
-        Flow::Br(depth, _) => panic!("a `wasm.br` left the function, {depth} labels past it"),
+    run_in(&mut Machine::new(0), function, arguments)
+}
+
+/// Runs the function `function` on `arguments` and `machine`: as [run], with the memory and the
+/// data addresses of `machine`, and calls of the functions of its module.
+pub(super) fn run_in(machine: &mut Machine, function: OperationRef, arguments: &[Val]) -> Outcome {
+    let mut function = function;
+    let mut arguments = arguments.to_vec();
+    loop {
+        let body = {
+            let function = function.borrow();
+            let function = function.downcast_ref::<Function>().expect("a builtin.function");
+            function.body().entry_block_ref().expect("a function with a body")
+        };
+        let mut env = Env {
+            values: HashMap::new(),
+            machine: &mut *machine,
+        };
+        bind_arguments(&mut env, body, &arguments);
+        match run_block(&mut env, body) {
+            Flow::Return(values) => return Outcome::Values(values),
+            Flow::Trap => return Outcome::Trap,
+            // A tail call replaces the function that made it.
+            Flow::TailCall(callee, values) => {
+                function = callee;
+                arguments = values;
+            }
+            Flow::End(_) => panic!("the body of a function ended in `wasm.end`"),
+            Flow::Br(depth, _) => panic!("a `wasm.br` left the function, {depth} labels past it"),
+        }
     }
 }
 
+/// The function that the `builtin.call` or `builtin.tail_call` `op` names.
+fn callee_of(op: &runic_ir::Operation) -> OperationRef {
+    let resolved = if let Some(call) = op.downcast_ref::<Call>() {
+        call.callee().resolve_callable()
+    } else {
+        op.downcast_ref::<TailCall>().expect("a call").callee().resolve_callable()
+    };
+    resolved
+        .expect("the callee resolves")
+        .target()
+        .as_function()
+        .expect("the callee is a function")
+        .as_operation_ref()
+}
+
 /// Defines the arguments of `block` as `values`.
-fn bind_arguments(env: &mut Env, block: BlockRef, values: &[Val]) {
+fn bind_arguments(env: &mut Env<'_>, block: BlockRef, values: &[Val]) {
     let arguments = block.borrow().argument_values().collect::<Vec<_>>();
     assert_eq!(arguments.len(), values.len(), "the block takes {} arguments", arguments.len());
     for (argument, value) in arguments.into_iter().zip(values) {
@@ -288,7 +400,7 @@ fn leave(env: &mut Env, op: OperationRef, flow: Flow) -> Option<Flow> {
 
 /// Runs one operation; `Some` when it ends the block.
 fn step(env: &mut Env, op: OperationRef) -> Option<Flow> {
-    env.fuel = env.fuel.checked_sub(1).unwrap_or_else(|| {
+    env.machine.fuel = env.machine.fuel.checked_sub(1).unwrap_or_else(|| {
         panic!("the evaluator ran out of fuel after {FUEL} operations: an endless loop?")
     });
     let name = format!("{}", op.borrow().name());
@@ -301,6 +413,66 @@ fn step(env: &mut Env, op: OperationRef) -> Option<Flow> {
             env.define(op, &[Val::new(value.unsigned() as u64, value.width())]);
         }
         "wasm.unreachable" => return Some(Flow::Trap),
+        "builtin.call" => {
+            let callee = callee_of(&op.borrow());
+            match run_in(env.machine, callee, &operands) {
+                Outcome::Values(values) => env.define(op, &values),
+                Outcome::Trap => return Some(Flow::Trap),
+            }
+        }
+        "builtin.tail_call" => {
+            return Some(Flow::TailCall(callee_of(&op.borrow()), operands));
+        }
+        "wasm.data_addr" => {
+            let op_ref = op.borrow();
+            let data = op_ref.downcast_ref::<wasm::DataAddr>().expect("a wasm.data_addr");
+            let name = data.data().path().name().as_str().to_string();
+            let base = *env
+                .machine
+                .data
+                .get(&name)
+                .unwrap_or_else(|| panic!("the test assigned no address to `@{name}`"));
+            let address = i64::from(base) + data.offset_value();
+            env.define(op, &[Val::i32(address as u32)]);
+        }
+        "wasm.load" => {
+            let op_ref = op.borrow();
+            let load = op_ref.downcast_ref::<wasm::Load>().expect("a wasm.load");
+            let (width, float) = op_ref
+                .results()
+                .iter()
+                .next()
+                .and_then(|result| number_type(result.borrow().ty()))
+                .expect("a load of a number");
+            let size = load.get_storage().bytes().unwrap_or(u64::from(width / 8));
+            let extension = *load.get_extension();
+            let offset = load.get_memarg().offset();
+            let Some(raw) = env.machine.read(operands[0].bits, offset, size) else {
+                return Some(Flow::Trap);
+            };
+            let bits = if extension == wasm::Extension::Signed && size * 8 < u64::from(width) {
+                let shift = 64 - size * 8;
+                (((raw << shift) as i64) >> shift) as u64
+            } else {
+                raw
+            };
+            let value = if float {
+                Val::float_bits(bits, width)
+            } else {
+                Val::new(bits, width)
+            };
+            env.define(op, &[value]);
+        }
+        "wasm.store" => {
+            let op_ref = op.borrow();
+            let store = op_ref.downcast_ref::<wasm::Store>().expect("a wasm.store");
+            let value = operands[1];
+            let size = store.get_storage().bytes().unwrap_or(u64::from(value.width / 8));
+            let offset = store.get_memarg().offset();
+            if !env.machine.store(operands[0].bits, offset, size, value.bits) {
+                return Some(Flow::Trap);
+            }
+        }
         "builtin.ret" => return Some(Flow::Return(operands)),
         "wasm.end" => return Some(Flow::End(operands)),
         "wasm.br" => {
@@ -1006,4 +1178,69 @@ fn a_return_nested_in_constructs_leaves_the_function() {
 fn an_endless_loop_runs_out_of_fuel() {
     let body = "wasm.loop {\n    wasm.br 0 : ();\n} : () -> ();\nbuiltin.ret %c : (i32);";
     run_body("%c: i32", body, &[Val::i32(0)]);
+}
+
+/// Runs the function `@f` of `text` on `machine`.
+fn run_on(machine: &mut Machine, text: &str, arguments: &[Val]) -> Outcome {
+    let (_context, _module, function) = function_of(text);
+    run_in(machine, function, arguments)
+}
+
+#[test]
+fn stores_and_loads_are_little_endian_and_extend_narrow_storage() {
+    let text = "wasm.memory public @__linear_memory : 1;\nbuiltin.function public \
+                extern(\"wasm\") @f(%a: i32, %v: i32) -> (i32, i32, i32) {\n    wasm.store \
+                @__linear_memory, %a, %v as i16;\n    %u = wasm.load @__linear_memory, %a as i8 \
+                unsigned : i32;\n    %s = wasm.load @__linear_memory, %a as i8 signed : i32;\n    \
+                %w = wasm.load @__linear_memory, %a : i32;\n    builtin.ret %u, %s, %w : (i32, \
+                i32, i32);\n};";
+    let mut machine = Machine::new(32);
+    machine.write(4, &[0xff; 4]);
+    let outcome = run_on(&mut machine, text, &[Val::i32(4), Val::i32(0x1_8180)]);
+    // The two low bytes are stored, low byte first; the bytes above are what was there.
+    assert_eq!(&machine.memory[4..8], [0x80, 0x81, 0xff, 0xff]);
+    assert_eq!(
+        outcome,
+        Outcome::Values(vec![Val::i32(0x80), Val::i32(0xffff_ff80), Val::i32(0xffff_8180)])
+    );
+}
+
+#[test]
+fn an_access_that_ends_past_the_memory_traps() {
+    let text = "wasm.memory public @__linear_memory : 1;\nbuiltin.function public \
+                extern(\"wasm\") @f(%a: i32) -> i32 {\n    %w = wasm.load @__linear_memory, %a : \
+                i32;\n    builtin.ret %w : (i32);\n};";
+    let mut machine = Machine::new(32);
+    assert_eq!(run_on(&mut machine, text, &[Val::i32(28)]), Outcome::Values(vec![Val::i32(0)]));
+    assert_eq!(run_on(&mut machine, text, &[Val::i32(29)]), Outcome::Trap);
+    assert_eq!(run_on(&mut machine, text, &[Val::i32(u32::MAX)]), Outcome::Trap);
+}
+
+#[test]
+fn a_call_runs_the_function_it_names_and_gives_its_results() {
+    let text = "builtin.function public extern(\"wasm\") @twice(%x: i32) -> i32 {\n    %r = \
+                wasm.add %x, %x;\n    builtin.ret %r : (i32);\n};\nbuiltin.function public \
+                extern(\"wasm\") @f(%x: i32) -> i32 {\n    %a = builtin.call @twice(%x) : \
+                extern(\"wasm\") (i32) -> i32;\n    %b = builtin.call @twice(%a) : \
+                extern(\"wasm\") (i32) -> i32;\n    builtin.ret %b : (i32);\n};";
+    assert_eq!(run_text(text, &[Val::i32(5)]), Outcome::Values(vec![Val::i32(20)]));
+}
+
+#[test]
+fn a_tail_call_replaces_the_function_that_made_it() {
+    let text =
+        "builtin.function public extern(\"wasm\") @f(%n: i32, %acc: i32) -> i32 {\n    %zero = \
+         wasm.const 0 : i32;\n    %done = wasm.eq %n, %zero;\n    wasm.if %done then {\n        \
+         builtin.ret %acc : (i32);\n    } else {\n        %one = wasm.const 1 : i32;\n        %m \
+         = wasm.sub %n, %one;\n        %a = wasm.add %acc, %n;\n        builtin.tail_call @f(%m, \
+         %a) : extern(\"wasm\") (i32, i32) -> i32;\n    } : (i32) -> ();\n    \
+         wasm.unreachable;\n};";
+    assert_eq!(
+        run_text(text, &[Val::i32(10), Val::i32(0)]),
+        Outcome::Values(vec![Val::i32(55)])
+    );
+    assert_eq!(
+        run_text(text, &[Val::i32(1000), Val::i32(0)]),
+        Outcome::Values(vec![Val::i32(500_500)])
+    );
 }

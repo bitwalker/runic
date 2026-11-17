@@ -1,0 +1,87 @@
+// RUN: runic-opt %s -p 'cfg-to-scf{exits=in-place},wasm-lower-frames,convert-to-wasm,wasm-verify-form' --split-input-file | filecheck %s
+// RUN: runic-opt %s -p 'canonicalizer,cse,sccp,canonicalizer,dce,cfg-to-scf{exits=in-place},wasm-lower-frames,convert-to-wasm,wasm-verify-form' --split-input-file | filecheck %s --check-prefix=OPT
+
+// A whole program of narrow integers, through the lowering to Wasm form (see `programs.runic` for
+// how it is run).
+
+// Narrow integers (`i8`, `i16`, `i1`) through arithmetic, comparisons and a `cf.select`. Each
+// is carried zero-extended in an `i32`: the sum of two `i8` is masked with 255, the `i16` sum
+// with 65535, the unsigned comparison needs nothing more, and the signed one sign-extends both
+// operands in place first. `@calls` calls a callee of each convention: under `extern("C")` the
+// argument is masked at the entry, the sext-marked parameter is sign-extended, and the result is
+// masked unless it is marked zext; under `extern("wasm")` nothing is masked or extended. The
+// unit test of the crate runs `@narrow` on inputs whose results are stated by hand. The
+// optimizer merges the two equal sums.
+//
+// OPT-LABEL: builtin.module public @narrow
+// OPT: @narrow(
+// OPT: [[SUM:%[0-9]+]] = wasm.add
+// OPT-NEXT: wasm.const 255 : i32;
+// OPT-NEXT: [[LOW:%[0-9]+]] = wasm.and [[SUM]], {{.*}}
+// OPT-NEXT: wasm.lt_u [[LOW]], {{.*}}
+// OPT-NEXT: [[SIGNED:%[0-9]+]] = wasm.extend8_s [[LOW]];
+// OPT-NEXT: wasm.extend8_s {{.*}}
+// OPT-NEXT: wasm.lt_s [[SIGNED]], {{.*}}
+// CHECK-LABEL: builtin.module public @narrow attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+// CHECK-NEXT: builtin.function public extern("wasm") @narrow([[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32, [[V2:%[0-9]+]]: i32) -> (i32, i32, i32) {
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.add [[V0]], [[V1]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.and [[V3]], [[V4]];
+// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.lt_u [[V5]], [[V0]];
+// CHECK-NEXT: [[V7:%[0-9]+]] = wasm.const 0 : i32;
+// CHECK-NEXT: [[V8:%[0-9]+]] = wasm.add [[V0]], [[V1]];
+// CHECK-NEXT: [[V9:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V10:%[0-9]+]] = wasm.and [[V8]], [[V9]];
+// CHECK-NEXT: [[V11:%[0-9]+]] = wasm.extend8_s [[V10]];
+// CHECK-NEXT: [[V12:%[0-9]+]] = wasm.extend8_s [[V7]];
+// CHECK-NEXT: [[V13:%[0-9]+]] = wasm.lt_s [[V11]], [[V12]];
+// CHECK-NEXT: [[V14:%[0-9]+]] = wasm.const 1000 : i32;
+// CHECK-NEXT: [[V15:%[0-9]+]] = wasm.add [[V2]], [[V14]];
+// CHECK-NEXT: [[V16:%[0-9]+]] = wasm.const 65535 : i32;
+// CHECK-NEXT: [[V17:%[0-9]+]] = wasm.and [[V15]], [[V16]];
+// CHECK-NEXT: [[V18:%[0-9]+]] = wasm.select [[V6]], [[V17]], [[V2]];
+// CHECK-NEXT: builtin.ret [[V18]], [[V6]], [[V13]] : (i32, i32, i32);
+// CHECK-NEXT: };
+// CHECK-NEXT: builtin.function public extern("C") @c_plain(i32, i32) -> i32;
+// CHECK-NEXT: builtin.function public extern("C") @c_marked(i32 { extend = #builtin.sext }, i32 { extend = #builtin.zext }) -> (i32 { extend = #builtin.zext });
+// CHECK-NEXT: builtin.function public extern("wasm") @w_plain(i32, i32) -> i32;
+// CHECK-NEXT: builtin.function public extern("C") @calls([[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32, [[V2:%[0-9]+]]: i32) -> (i32, i32, i32) {
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.and [[V0]], [[V3]];
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.const 65535 : i32;
+// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.and [[V1]], [[V5]];
+// CHECK-NEXT: [[V7:%[0-9]+]] = wasm.const 1 : i32;
+// CHECK-NEXT: [[V8:%[0-9]+]] = wasm.and [[V2]], [[V7]];
+// CHECK-NEXT: [[V9:%[0-9]+]] = builtin.call @c_plain([[V4]], [[V6]]) : extern("C") (i32, i32) -> i32;
+// CHECK-NEXT: [[V10:%[0-9]+]] = wasm.const 1 : i32;
+// CHECK-NEXT: [[V11:%[0-9]+]] = wasm.and [[V9]], [[V10]];
+// CHECK-NEXT: [[V12:%[0-9]+]] = wasm.extend8_s [[V4]];
+// CHECK-NEXT: [[V13:%[0-9]+]] = builtin.call @c_marked([[V12]], [[V8]]) : extern("C") (i32 { extend = #builtin.sext }, i32 { extend = #builtin.zext }) -> (i32 { extend = #builtin.zext });
+// CHECK-NEXT: [[V14:%[0-9]+]] = builtin.call @w_plain([[V4]], [[V8]]) : extern("wasm") (i32, i32) -> i32;
+// CHECK-NEXT: builtin.ret [[V11]], [[V13]], [[V14]] : (i32, i32, i32);
+// CHECK-NEXT: };
+// CHECK-NEXT: };
+builtin.module public @narrow attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("wasm") @narrow(%a: i8, %b: i8, %h: i16) -> (i16, i1, i1) {
+        %s = arith.add %a, %b;
+        %carry = arith.cmpi ult %s, %a;
+        %zero = arith.constant 0 : i8;
+        %again = arith.add %a, %b;
+        %neg = arith.cmpi slt %again, %zero;
+        %k = arith.constant 1000 : i16;
+        %hk = arith.add %h, %k;
+        %r = cf.select %carry, %hk, %h;
+        builtin.ret %r, %carry, %neg : (i16, i1, i1);
+    };
+
+    builtin.function public extern("C") @c_plain(i8, i16) -> i1;
+    builtin.function public extern("C") @c_marked(i8 { extend = #builtin.sext }, i1 { extend = #builtin.zext }) -> (i8 { extend = #builtin.zext });
+    builtin.function public extern("wasm") @w_plain(i8, i1) -> i16;
+
+    builtin.function public extern("C") @calls(%a: i8, %h: i16, %f: i1) -> (i1, i8, i16) {
+        %p = builtin.call @c_plain(%a, %h) : extern("C") (i8, i16) -> i1;
+        %m = builtin.call @c_marked(%a, %f) : extern("C") (i8 { extend = #builtin.sext }, i1 { extend = #builtin.zext }) -> (i8 { extend = #builtin.zext });
+        %w = builtin.call @w_plain(%a, %f) : extern("wasm") (i8, i1) -> i16;
+        builtin.ret %p, %m, %w : (i1, i8, i16);
+    };
+};

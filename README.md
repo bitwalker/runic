@@ -41,9 +41,8 @@ The workspace has nineteen members:
 | `runic-opt` | `tools/runic-opt` | the IR-to-IR command-line tool, which also runs a compilation through the harness (below) |
 | `runic-expect-test` | `tools/expect-test` | snapshot testing for the Rust tests |
 
-The directories `crates/eval` and `crates/dialects/wasm` hold an evaluator and a WebAssembly
-dialect from before Runic was split out of an earlier compiler, kept, not built: they are not
-workspace members, and they are not tested.
+The directory `crates/eval` holds an evaluator from before Runic was split out of an earlier
+compiler, kept, not built: it is not a workspace member, and it is not tested.
 
 ## Building
 
@@ -60,7 +59,7 @@ builds every member. The tool alone:
 
 ```sh
 cargo build -p runic-opt   # target/debug/runic-opt
-cargo make runic-opt       # with the `toy` feature, copied to bin/runic-opt
+cargo make runic-opt       # with the `toy` and `wasm` features, copied to bin/runic-opt
 cargo make toyc            # the example compiler, copied to bin/toyc
 ```
 
@@ -102,7 +101,9 @@ one for textual IR), or a command line that writes `--target`, `--backend`, `--s
 input is compiled by `runic-compile` instead of being parsed as IR, and the exit code is 0 or 1
 as for IR. `--list-stages` lists the registered frontends and backends. With the cargo feature
 `toy` (which `cargo make runic-opt` turns on), the tool registers the toy language `calc` and the
-toy machines `stackvm` and `altvm`, so that the path can be run and tested.
+toy machines `stackvm` and `altvm`, so that the path can be run and tested. With the feature `wasm`
+(also on in `cargo make runic-opt`) it registers the `wasm` dialect and the passes `convert-to-wasm`,
+`wasm-lower-frames` and `wasm-verify-form` of `runic-codegen-wasm`.
 
 ### Tracing
 

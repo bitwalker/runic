@@ -10,34 +10,91 @@
 //! (`builtin.global_variable`, `wasm.global`, `wasm.memory`, ...) are not function bodies, and are
 //! left as they are.
 //!
-//! **Carried form.** Each generic type is carried in a Wasm value type ([carrier]):
+//! **Carried form.** Each generic type is carried in a Wasm value type ([carrier]), and wherever a
+//! value exists the bits of its carrier above its width are zero:
 //!
-//! * `i32`, `i64`, `f32`, `f64`, `!wasm.funcref` and `!wasm.externref` are themselves;
-//! * an integer `iN` with `N < 32` is carried in an `i32`, one with `32 < N < 64` in an `i64`,
-//!   **zero-extended**: wherever the value exists, the bits above `N` are zero;
-//! * `isize`, a pointer in address space 0 (typed or opaque) and a value of a function type are
-//!   carried in an `i32`;
-//! * nothing else has a carrier: an integer wider than 64 bits, an aggregate, a pointer in another
-//!   address space. `convert-to-wasm` reports the operation that holds a value of one; for a wide
-//!   integer the message says that integers wider than 64 bits are not lowered yet.
+//! | generic type | carried in |
+//! |---|---|
+//! | `i1` to `i31`, `i33` to `i63` | `i32`, `i64`, zero-extended |
+//! | `i32`, `i64`, `f32`, `f64`, `!wasm.funcref`, `!wasm.externref` | themselves |
+//! | `isize` | `i32` |
+//! | a pointer in address space 0, typed or opaque | `i32`, an address in linear memory |
+//! | a value of a function type | `i32`, an index in the indirect-function table |
+//! | an integer wider than 64 bits, an aggregate, a pointer in another address space | nothing |
 //!
-//! Every pattern of `convert-to-wasm` keeps that invariant, through the helpers of [carried]. The
-//! calling conventions say what crosses a call: under `extern("wasm")` both sides rely on carried
-//! form; under `extern("C")` nothing is assumed that the signature does not say (see
-//! [convert::calls]).
+//! `convert-to-wasm` reports the operation that holds a value that has no carrier; for a wide
+//! integer the message says that integers wider than 64 bits are not lowered yet. Every pattern of
+//! `convert-to-wasm` keeps the invariant, through the helpers of [carried].
+//!
+//! **The calling conventions.** `extern("wasm")` and `extern("C")` are lowered (see
+//! [convert::calls]); any other is an error. Under `extern("wasm")` both sides of a call rely on
+//! carried form and nothing is masked or extended. Under `extern("C")` nothing is assumed that the
+//! signature does not say: a function masks each narrow parameter not marked `zext` at its entry
+//! and sign-extends each narrow result marked `sext` at each return, and a call sign-extends each
+//! argument of a narrow `sext` parameter and masks each narrow result not marked `zext`.
 //!
 //! A value of a function type is the index of the function in the module's indirect-function
 //! table; an indirect call calls through that table.
 //!
-//! **The passes, in order.** [add_lowering_passes] adds them to a pass manager:
+//! **The passes, in order.** [add_lowering_passes] adds them to a pass manager. The examples show
+//! the operations they change:
 //!
 //! 1. `cfg-to-scf{exits=in-place}` (`runic-dialect-scf`): unstructured control flow becomes
 //!    structured, and each return and tail call stays where it is.
+//!
+//!    ```text
+//!    cf.cond_br %c ^yes, ^no : (i1);
+//!    ^yes:
+//!        builtin.ret %v : (i32);
+//!    ^no:
+//!        builtin.tail_call @g(%w) : extern("C") (i32) -> i32;
+//!    ```
+//!
+//!    becomes
+//!
+//!    ```text
+//!    scf.if %c then {
+//!        builtin.ret %v : (i32);
+//!    } else {
+//!        builtin.tail_call @g(%w) : extern("C") (i32) -> i32;
+//!    } : (i1) -> ();
+//!    ub.unreachable;
+//!    ```
+//!
 //! 2. [`wasm-lower-frames`](LowerFrames): every `mem.alloca` gets a slot in a frame on the shadow
-//!    stack, addressed from the stack pointer.
+//!    stack, addressed from the stack pointer, which each return and tail call restores.
+//!
+//!    ```text
+//!    %p = mem.alloca i32;
+//!    ...
+//!    builtin.ret %v : (i32);
+//!    ```
+//!
+//!    becomes (a frame of 16 bytes: the slot is at offset 0)
+//!
+//!    ```text
+//!    %sp = wasm.global_get @__stack_pointer : i32;
+//!    %size = wasm.const 16 : i32;
+//!    %fp = wasm.sub %sp, %size;
+//!    wasm.global_set @__stack_pointer, %fp;
+//!    %p = builtin.unrealized_conversion_cast %fp : i32 to ptr<i32>;
+//!    ...
+//!    wasm.global_set @__stack_pointer, %sp;
+//!    builtin.ret %v : (i32);
+//!    ```
+//!
 //! 3. [`convert-to-wasm`](ConvertToWasm): generic operations and types become `wasm` operations
-//!    and Wasm value types, in a full dialect conversion of each module.
-//! 4. [`wasm-verify-form`](VerifyForm): checks the result; changes nothing.
+//!    and Wasm value types, in a full dialect conversion of each module. Under `extern("wasm")`,
+//!    `%s = arith.add %a, %b` of two `i8` becomes
+//!
+//!    ```text
+//!    %t = wasm.add %a, %b;
+//!    %k = wasm.const 255 : i32;
+//!    %s = wasm.and %t, %k;
+//!    ```
+//!
+//! 4. [`wasm-verify-form`](VerifyForm): checks the result; changes nothing. An operation or a value
+//!    that is not in Wasm form is an error that names it and the pass that should have removed it.
 //!
 //! The lowering needs a data layout in scope, little-endian with 32-bit pointers and `isize`
 //! ([WasmTarget]).
@@ -45,8 +102,17 @@
 //! **The well-known symbols.** Lowered code names the linear memory, the function table and the
 //! stack pointer by symbol: `wasm.memory @__linear_memory`, `wasm.table
 //! @__indirect_function_table` of `!wasm.funcref` and `wasm.global @__stack_pointer : mut i32`.
-//! [symbols] finds each in a module, or declares it there as an import from `env` whose link name
-//! is its own name.
+//! [symbols] finds each in a module, or declares it there as a private import from `env`, with the
+//! link names `__linear_memory`, `__indirect_function_table` and `__stack_pointer` (each is its
+//! own name, not its path in the module).
+//!
+//! **What is not lowered.** Integers wider than 64 bits, aggregates as values, address spaces other
+//! than 0, a `mem.alloca` in a loop, big-endian layouts and 64-bit pointers are errors, and so are
+//! the operations that need an earlier pass (`mem.alloca` without `wasm-lower-frames`, `cf.br`,
+//! `cf.cond_br` and `cf.switch` without `cfg-to-scf`). A return or tail call inside a loop is
+//! dispatched after the loop, and the message of a `cf.assert` is dropped. The README of the crate
+//! lists them with their diagnostics, and the unit test `tests::coverage` fails for a source
+//! operation that is neither lowered nor listed.
 
 #![no_std]
 #![deny(warnings)]

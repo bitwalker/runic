@@ -1,0 +1,252 @@
+// RUN: runic-opt %s -p 'cfg-to-scf{exits=in-place},wasm-lower-frames,convert-to-wasm,wasm-verify-form' --split-input-file | filecheck %s
+// RUN: runic-opt %s -p 'canonicalizer,cse,sccp,canonicalizer,dce,cfg-to-scf{exits=in-place},wasm-lower-frames,convert-to-wasm,wasm-verify-form' --split-input-file | filecheck %s --check-prefix=OPT
+
+// Whole programs through the lowering to Wasm form, written in generic IR in CFG form: `cf`
+// branches, `arith`, `mem` and `builtin`, under the 32-bit data layout. Each is run twice. The
+// first run is the four passes of the lowering, `cfg-to-scf{exits=in-place}`,
+// `wasm-lower-frames`, `convert-to-wasm` and `wasm-verify-form` (what
+// `runic_codegen_wasm::add_lowering_passes` adds), and its output is checked in full. The second
+// run is the default optimization pipeline, `canonicalizer,cse,sccp,canonicalizer,dce`, in front
+// of those four: it must still end in Wasm form (the last pass checks that), and it checks the
+// shapes the optimizer simplifies. The unit tests of the crate evaluate the lowered form of the
+// programs `@sum` and `@machine` on inputs whose results are stated by hand.
+// The programs of `programs-memory.runic` and `programs-narrow.runic` follow.
+
+// A loop that sums an array in memory: a `mem.gep` with an index, a load and an accumulator, the
+// loop in CFG form with its header taking the index and the sum. `cfg-to-scf` makes it a loop
+// whose body is an `scf.if` and a dispatch on whether it continues, and `convert-to-wasm` a
+// `wasm.loop`; the address of an element is the base plus the index times 4. (The loop carries
+// values only the structuring uses: its exit flag and the constants it chooses between.) The
+// optimizer hoists the constant 1 of the increment out of the body, so no constant stands
+// between the two additions of the body.
+//
+// OPT-LABEL: builtin.module public @sum
+// OPT: wasm.loop
+// OPT: wasm.const 4 : i32;
+// OPT-NEXT: wasm.mul
+// OPT-NEXT: wasm.add
+// OPT-NEXT: wasm.load @__linear_memory
+// OPT-NEXT: wasm.add
+// OPT-NEXT: wasm.add
+// OPT-NEXT: wasm.end
+// CHECK-LABEL: builtin.module public @sum attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+// CHECK-NEXT: wasm.memory private declaration @__linear_memory : 0 attributes { link_name = #builtin.string<"__linear_memory"> };
+// CHECK-NEXT: builtin.function public extern("C") @sum([[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.const 1 : i32;
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.const 0 : i32;
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.const 0 : i32;
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.const 0 : i32;
+// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.const 1 : i32;
+// CHECK-NEXT: [[V7:%[0-9]+]] = wasm.const 0 : i32;
+// CHECK-NEXT: [[V8:%[0-9]+]] = wasm.const 0 : i32;
+// CHECK-NEXT: [[V9:%[0-9]+]] = wasm.const 0 : i32;
+// CHECK-NEXT: [[V10:%[0-9]+]], [[V11:%[0-9]+]], [[V12:%[0-9]+]] = wasm.loop [[V9]], [[V8]], [[V3]] {
+// CHECK-NEXT: [[B13:\^block[0-9]+]]([[V14:%[0-9]+]]: i32, [[V15:%[0-9]+]]: i32, [[V16:%[0-9]+]]: i32):
+// CHECK-NEXT: [[V17:%[0-9]+]] = wasm.ge_u [[V14]], [[V1]];
+// CHECK-NEXT: [[V18:%[0-9]+]], [[V19:%[0-9]+]], [[V20:%[0-9]+]], [[V21:%[0-9]+]] = wasm.if [[V17]] then {
+// CHECK-NEXT: wasm.end [[V4]], [[V3]], [[V2]], [[V5]] : (i32, i32, i32, i32);
+// CHECK-NEXT: } else {
+// CHECK-NEXT: [[V22:%[0-9]+]] = wasm.const 4 : i32;
+// CHECK-NEXT: [[V23:%[0-9]+]] = wasm.mul [[V14]], [[V22]];
+// CHECK-NEXT: [[V24:%[0-9]+]] = wasm.add [[V0]], [[V23]];
+// CHECK-NEXT: [[V25:%[0-9]+]] = wasm.load @__linear_memory, [[V24]] : i32;
+// CHECK-NEXT: [[V26:%[0-9]+]] = wasm.add [[V15]], [[V25]];
+// CHECK-NEXT: [[V27:%[0-9]+]] = wasm.const 1 : i32;
+// CHECK-NEXT: [[V28:%[0-9]+]] = wasm.add [[V14]], [[V27]];
+// CHECK-NEXT: wasm.end [[V28]], [[V26]], [[V7]], [[V6]] : (i32, i32, i32, i32);
+// CHECK-NEXT: } : (i32) -> (i32, i32, i32, i32);
+// CHECK-NEXT: wasm.if [[V21]] then {
+// CHECK-NEXT: wasm.br 1 [[V18]], [[V19]], [[V15]] : (i32, i32, i32);
+// CHECK-NEXT: } : (i32) -> ();
+// CHECK-NEXT: wasm.end [[V18]], [[V19]], [[V15]] : (i32, i32, i32);
+// CHECK-NEXT: } : (i32, i32, i32) -> (i32, i32, i32);
+// CHECK-NEXT: builtin.ret [[V12]] : (i32);
+// CHECK-NEXT: };
+// CHECK-NEXT: };
+builtin.module public @sum attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @sum(%p: ptr<i32>, %n: isize) -> i32 {
+        %zero = arith.constant 0 : i32;
+        %first = arith.constant 0 : isize;
+        cf.br ^head(%first, %zero : isize, i32);
+    ^head(%i: isize, %acc: i32):
+        %done = arith.cmpi uge %i, %n;
+        cf.cond_br %done ^exit, ^body : (i1);
+    ^body:
+        %q = mem.gep %p, %i;
+        %v = mem.load %q;
+        %acc2 = arith.add %acc, %v;
+        %one = arith.constant 1 : isize;
+        %i2 = arith.add %i, %one;
+        cf.br ^head(%i2, %acc2 : isize, i32);
+    ^exit:
+        builtin.ret %acc : (i32);
+    };
+};
+
+// -----
+
+// A function with three kinds of exit behind a `cf.switch`: two tail calls and a return. They
+// stay where they are, in the arms of a chain of two `wasm.if`s, and the function ends in
+// `wasm.unreachable`, which no path reaches. The optimizer merges the two equal additions and
+// removes the unused product.
+//
+// OPT-LABEL: builtin.module public @exits
+// OPT: @dispatch(
+// OPT: [[SUM:%[0-9]+]] = wasm.add
+// OPT-NEXT: wasm.add [[SUM]], [[SUM]]
+// OPT-NOT: wasm.mul
+// OPT: wasm.unreachable
+// CHECK-LABEL: builtin.module public @exits attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+// CHECK-NEXT: builtin.function public extern("C") @on_zero(i32) -> i32;
+// CHECK-NEXT: builtin.function public extern("C") @on_one(i32) -> i32;
+// CHECK-NEXT: builtin.function public extern("C") @dispatch([[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.const 0 : i32;
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.eq [[V0]], [[V2]];
+// CHECK-NEXT: wasm.if [[V3]] then {
+// CHECK-NEXT: builtin.tail_call @on_zero([[V1]]) : extern("C") (i32) -> i32;
+// CHECK-NEXT: } else {
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.const 1 : i32;
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.eq [[V0]], [[V4]];
+// CHECK-NEXT: wasm.if [[V5]] then {
+// CHECK-NEXT: builtin.tail_call @on_one([[V1]]) : extern("C") (i32) -> i32;
+// CHECK-NEXT: } else {
+// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.const 7 : i32;
+// CHECK-NEXT: [[V7:%[0-9]+]] = wasm.add [[V1]], [[V6]];
+// CHECK-NEXT: [[V8:%[0-9]+]] = wasm.add [[V1]], [[V6]];
+// CHECK-NEXT: [[V9:%[0-9]+]] = wasm.mul [[V1]], [[V1]];
+// CHECK-NEXT: [[V10:%[0-9]+]] = wasm.add [[V7]], [[V8]];
+// CHECK-NEXT: builtin.ret [[V10]] : (i32);
+// CHECK-NEXT: } : (i32) -> ();
+// CHECK-NEXT: wasm.end : ();
+// CHECK-NEXT: } : (i32) -> ();
+// CHECK-NEXT: wasm.unreachable;
+// CHECK-NEXT: };
+// CHECK-NEXT: };
+builtin.module public @exits attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @on_zero(i32) -> i32;
+    builtin.function public extern("C") @on_one(i32) -> i32;
+
+    builtin.function public extern("C") @dispatch(%tag: i32, %x: i32) -> i32 {
+        cf.switch %tag [#builtin.i32<0> -> ^zero, #builtin.i32<1> -> ^one], ^other : (i32);
+    ^zero:
+        builtin.tail_call @on_zero(%x) : extern("C") (i32) -> i32;
+    ^one:
+        builtin.tail_call @on_one(%x) : extern("C") (i32) -> i32;
+    ^other:
+        %k = arith.constant 7 : i32;
+        %a = arith.add %x, %k;
+        %b = arith.add %x, %k;
+        %unused = arith.mul %x, %x;
+        %r = arith.add %a, %b;
+        builtin.ret %r : (i32);
+    };
+};
+
+// -----
+
+// A state machine of three functions, in the shape compiled Erlang has: each takes a process and
+// an argument and returns a flag and an argument under `extern("wasm")`, tests a bit of the
+// argument with `arith.band` and `arith.cmpi`, and ends each path in a tail call or in a return
+// of two values. `@state_a` (bit 0 clear: add 1 and go to `@state_b`; else return true) -> `@state_b`
+// (bit 1 clear: add 2 and go to `@state_c`; else return false) -> `@state_c` (bit 2 clear: add 4
+// and go to `@state_a`; else return false). An `i1` is an `i32` in the signature, and the tail
+// calls are `builtin.tail_call` in the arms of a `wasm.if`.
+//
+// OPT-LABEL: builtin.module public @machine
+// OPT: @state_a(
+// OPT: builtin.tail_call @state_b
+// OPT: builtin.ret
+// OPT: @state_b(
+// OPT: builtin.tail_call @state_c
+// OPT: builtin.ret
+// OPT: @state_c(
+// OPT: builtin.tail_call @state_a
+// OPT: builtin.ret
+// OPT-NOT: unrealized_conversion_cast
+// CHECK-LABEL: builtin.module public @machine attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+// CHECK-NEXT: builtin.function public extern("wasm") @state_a([[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i64) -> (i32, i64) {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.const 1 : i64;
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.and [[V1]], [[V2]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.const 0 : i64;
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.eq [[V3]], [[V4]];
+// CHECK-NEXT: wasm.if [[V5]] then {
+// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.add [[V1]], [[V2]];
+// CHECK-NEXT: builtin.tail_call @state_b([[V0]], [[V6]]) : extern("wasm") (i32, i64) -> (i32, i64);
+// CHECK-NEXT: } else {
+// CHECK-NEXT: [[V7:%[0-9]+]] = wasm.const 1 : i32;
+// CHECK-NEXT: builtin.ret [[V7]], [[V1]] : (i32, i64);
+// CHECK-NEXT: } : (i32) -> ();
+// CHECK-NEXT: wasm.unreachable;
+// CHECK-NEXT: };
+// CHECK-NEXT: builtin.function public extern("wasm") @state_b([[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i64) -> (i32, i64) {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.const 2 : i64;
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.and [[V1]], [[V2]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.const 0 : i64;
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.eq [[V3]], [[V4]];
+// CHECK-NEXT: wasm.if [[V5]] then {
+// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.add [[V1]], [[V2]];
+// CHECK-NEXT: builtin.tail_call @state_c([[V0]], [[V6]]) : extern("wasm") (i32, i64) -> (i32, i64);
+// CHECK-NEXT: } else {
+// CHECK-NEXT: [[V7:%[0-9]+]] = wasm.const 0 : i32;
+// CHECK-NEXT: builtin.ret [[V7]], [[V1]] : (i32, i64);
+// CHECK-NEXT: } : (i32) -> ();
+// CHECK-NEXT: wasm.unreachable;
+// CHECK-NEXT: };
+// CHECK-NEXT: builtin.function public extern("wasm") @state_c([[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i64) -> (i32, i64) {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.const 4 : i64;
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.and [[V1]], [[V2]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.const 0 : i64;
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.eq [[V3]], [[V4]];
+// CHECK-NEXT: wasm.if [[V5]] then {
+// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.add [[V1]], [[V2]];
+// CHECK-NEXT: builtin.tail_call @state_a([[V0]], [[V6]]) : extern("wasm") (i32, i64) -> (i32, i64);
+// CHECK-NEXT: } else {
+// CHECK-NEXT: [[V7:%[0-9]+]] = wasm.const 0 : i32;
+// CHECK-NEXT: builtin.ret [[V7]], [[V1]] : (i32, i64);
+// CHECK-NEXT: } : (i32) -> ();
+// CHECK-NEXT: wasm.unreachable;
+// CHECK-NEXT: };
+// CHECK-NEXT: };
+builtin.module public @machine attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("wasm") @state_a(%proc: i32, %arg: i64) -> (i1, i64) {
+        %bit = arith.constant 1 : i64;
+        %low = arith.band %arg, %bit;
+        %zero = arith.constant 0 : i64;
+        %even = arith.cmpi eq %low, %zero;
+        cf.cond_br %even ^advance, ^done : (i1);
+    ^advance:
+        %next = arith.add %arg, %bit;
+        builtin.tail_call @state_b(%proc, %next) : extern("wasm") (i32, i64) -> (i1, i64);
+    ^done:
+        %yes = arith.constant 1 : i1;
+        builtin.ret %yes, %arg : (i1, i64);
+    };
+
+    builtin.function public extern("wasm") @state_b(%proc: i32, %arg: i64) -> (i1, i64) {
+        %bit = arith.constant 2 : i64;
+        %low = arith.band %arg, %bit;
+        %zero = arith.constant 0 : i64;
+        %clear = arith.cmpi eq %low, %zero;
+        cf.cond_br %clear ^advance, ^done : (i1);
+    ^advance:
+        %next = arith.add %arg, %bit;
+        builtin.tail_call @state_c(%proc, %next) : extern("wasm") (i32, i64) -> (i1, i64);
+    ^done:
+        %no = arith.constant 0 : i1;
+        builtin.ret %no, %arg : (i1, i64);
+    };
+
+    builtin.function public extern("wasm") @state_c(%proc: i32, %arg: i64) -> (i1, i64) {
+        %bit = arith.constant 4 : i64;
+        %low = arith.band %arg, %bit;
+        %zero = arith.constant 0 : i64;
+        %clear = arith.cmpi eq %low, %zero;
+        cf.cond_br %clear ^advance, ^done : (i1);
+    ^advance:
+        %next = arith.add %arg, %bit;
+        builtin.tail_call @state_a(%proc, %next) : extern("wasm") (i32, i64) -> (i1, i64);
+    ^done:
+        %no = arith.constant 0 : i1;
+        builtin.ret %no, %arg : (i1, i64);
+    };
+};
