@@ -59,7 +59,8 @@ const CHECKPOINTS: &[CheckpointDecl] = &[
 #[derive(clap::Args, Debug, Clone, PartialEq, Eq)]
 pub struct WasmOptions {
     /// The size in bytes of the shadow stack, which takes the start of linear memory and grows
-    /// down from the initial value of the stack pointer `__stack_pointer`; a multiple of 16.
+    /// down from the initial value of the stack pointer `__stack_pointer`; a positive multiple of
+    /// 16.
     #[arg(long, value_name = "BYTES", default_value_t = DEFAULT_STACK_SIZE)]
     pub stack_size: u32,
 }

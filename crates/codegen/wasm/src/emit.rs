@@ -4,7 +4,11 @@
 //! the operation it is given into one unit linked by link name, lays out its memory and table
 //! ([layout]: the shadow stack, the data, the fixed segments, the table slots, and definitions of
 //! the memory, stack pointer and table the lowering imports), writes the module and validates it.
-//! The module needs no host: it defines its memory, its stack and its function table.
+//! The memory, stack pointer and function table the lowering declares (imports from `env` of
+//! `__linear_memory`, `__stack_pointer` and `__indirect_function_table`) are defined by the layout
+//! and never imported, so a module of lowered generic IR needs no host for them. A memory or a
+//! table the unit declares under a link name of its own is an import, like any other declaration
+//! with no definition.
 //!
 //! The emitter builds a [module description](desc::ModuleDesc), in which every reference from a
 //! body, a constant expression or data to another entity is a recorded [fix-up](desc::Fixup), not
@@ -40,8 +44,9 @@ use runic_ir::{OperationRef, Report};
 /// How a module is emitted.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EmitOptions {
-    /// The size of the shadow stack, in bytes: a multiple of 16. The layout reserves it from
-    /// address 0 when it defines the stack pointer.
+    /// The size of the shadow stack, in bytes: a positive multiple of 16, which the layout checks
+    /// whether or not the unit uses the stack. The layout reserves it from address 0 when it
+    /// defines the stack pointer.
     pub stack_size: u32,
     /// Whether the module carries a `name` section.
     pub names: bool,

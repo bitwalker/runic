@@ -1,5 +1,6 @@
 //! The layout of linear memory and of the indirect function table (decision 2 of the plan): what
-//! a linker does for one unit, so that the module the writer makes needs no host.
+//! a linker does for one unit, so that the memory, the stack and the function table the lowering
+//! declares need no host.
 //!
 //! [layout] turns the unit's description into its final form and gives the [Resolved] the writer
 //! needs: the address of every data entry that has one and the slot of every function in the
@@ -9,27 +10,42 @@
 //! 0 ............ stack size   the shadow stack, growing down (an overflow traps instead of
 //!                             overwriting data); `__stack_pointer` starts at the stack size
 //! stack size ... data end     every builtin.global_variable laid out, aligned by its type
-//! data end ..... heap base    rounded up to 16
+//! (fixed)                     each builtin.segment at its offset, above the stack, outside the data
+//! .............. heap base    the end of the data or of the highest segment, rounded up to 16
 //! ```
 //!
 //! **The well-known symbols.** A memory, a table or a global that is an import from `env` with the
 //! field `__linear_memory`, `__indirect_function_table` or `__stack_pointer` (what the lowering
-//! declares) becomes a definition. One the unit defines itself is left as it is.
+//! declares) becomes a definition: those three are never imported. One the unit defines itself is
+//! left as it is. A memory or a table the unit declares under another link name stays an import,
+//! and is the memory the data is placed in, or a table the unit's own `wasm.elem`s fill.
 //!
-//! **The stack.** It is reserved only when the layout defines `__stack_pointer`: the
-//! [stack size](EmitOptions::stack_size) bytes from address 0, which must be a multiple of 16, and
-//! the stack pointer, a `mut i32`, starts at that size. Otherwise no stack is reserved and data
-//! starts at 1024, so that no data has the address 0.
+//! **The stack size** ([EmitOptions::stack_size], `--wasm-stack-size`) must be a positive multiple
+//! of 16, whether or not the unit uses the stack: 0 would put data at the address 0. **The
+//! stack** is reserved only when the layout defines `__stack_pointer`: that many bytes from
+//! address 0, and the stack pointer, a `mut i32`, starts at that size. Otherwise no stack is
+//! reserved and data starts at 1024, so that no data has the address 0.
 //!
 //! **Data.** The entries with the placement [DataPlacement::Layout] are laid out in this order:
 //! those with no `section`, as written; then each section in order of first appearance, its
 //! members as written. Each entry is at a multiple of its alignment; a section starts at a
 //! multiple of the largest alignment among its members. The data ends where the last entry ends
 //! (at the start of the data when there is none). An entry whose bytes are all zero and that has no
-//! fix-up gets no segment: linear memory starts zeroed.
+//! fix-up gets no segment: linear memory starts zeroed. An entry that would end beyond 4 GiB is an
+//! error naming its global variable.
+//!
+//! **Fixed segments.** A `builtin.segment` with bytes is an active segment at its offset. One that
+//! overlaps the stack, the laid-out data, or another fixed segment is an error naming it (and the
+//! other segment). A segment with no bytes gets no segment and takes no part in those checks (an
+//! empty active segment beyond the memory would trap at instantiation).
+//!
+//! **The heap base** is the end of everything static, the end of the data or of the highest fixed
+//! segment, whichever is higher, rounded up to 16, so that a heap that starts there overwrites
+//! neither. One that no 32-bit address holds is an error naming the global variable or segment
+//! placed last.
 //!
 //! **Linker-defined data symbols.** An undefined data symbol named `__data_end` is the end of the
-//! data; `__heap_base` is that rounded up to 16; `__start_<s>` and `__stop_<s>` are the start of
+//! laid-out data; `__heap_base` is the heap base; `__start_<s>` and `__stop_<s>` are the start of
 //! the section `s` and the end of its last member, and a section with no member is an error naming
 //! the declaration. Each is a [DataPlacement::Symbol]: an address and no segment. Any other
 //! undefined data symbol is an error: a core module cannot import data.
@@ -38,27 +54,24 @@
 //! passive segment, with no address. Naming it also by `wasm.data_addr`, or taking its address with
 //! `builtin.global_symbol` in another global variable's initializer, is an error naming both.
 //!
-//! **Fixed segments.** A `builtin.segment` is an active segment at its offset with its bytes. One
-//! that overlaps the stack, the laid-out data, or another fixed segment is an error naming it (and
-//! the other segment).
-//!
-//! **The memory.** The pages needed are the end of everything above (the heap base, or the end of
-//! the highest fixed segment when that is higher) rounded up to 64 KiB pages; more than 4 GiB is
-//! an error. When the layout defines the memory, that many pages are its minimum (or the
-//! minimum the declaration states, if it is larger), it has no maximum, and it is exported as
-//! `memory` unless the unit already has an export of that name. A memory the unit defines or
-//! imports otherwise keeps its limits; when something is placed in it (a stack, laid-out data or a
-//! fixed segment), a minimum below the pages needed is an error naming the memory and the number.
-//! A unit with data and no memory at all gets `__linear_memory` defined as above.
+//! **The memory.** The pages needed are the heap base rounded up to 64 KiB pages. When the layout
+//! defines the memory, that many pages are its minimum (or the minimum the declaration states, if
+//! it is larger), it has no maximum, and it is exported as `memory` unless the unit already has an
+//! export of that name. A memory the unit defines or imports otherwise keeps its limits; when
+//! something is placed in it (a stack, laid-out data or a fixed segment), a minimum below the pages
+//! needed is an error naming the memory and the number. A unit with data and no memory at all gets
+//! `__linear_memory` defined as above.
 //!
 //! **The table.** Every function that is the target of a [FixupKind::TableSlot] fix-up gets a
 //! slot, from 1, in order of first appearance: function bodies by id, then the initializers of
 //! globals, then data, the fix-ups of each by offset. Slot 0 stays empty, so that a null function
 //! pointer traps. When the layout defines the table, it is a `funcref` table whose minimum and
 //! maximum are both one more than the number of slots, with one active element segment at offset
-//! 1 (none when there are no slots). When there are slots to give and the unit has no such table,
-//! the layout defines one. A table named `__indirect_function_table` that the unit lays out itself
-//! cannot take slots: when there are slots to give, it is an error naming it.
+//! 1 (none when there are no slots), and a `wasm.elem` of the unit into it is an error naming the
+//! `wasm.elem`: a unit that fills `__indirect_function_table` must define it. When there are slots
+//! to give and the unit has no such table, the layout defines one. A table named
+//! `__indirect_function_table` that the unit lays out itself cannot take slots: when there are
+//! slots to give, it is an error naming it.
 
 use alloc::{
     format,
@@ -108,22 +121,32 @@ const MEMORY_EXPORT: &str = "memory";
 /// (see the module docs for the rules). An error names the operation the rule it breaks is about.
 pub fn layout(unit: &mut Unit, options: &EmitOptions) -> Result<Resolved, Report> {
     let mut resolved = Resolved::new();
+    // The stack size is checked whether or not the unit uses the stack.
+    let stack_pointer = well_known_global(unit);
+    check_stack_size(unit, stack_pointer, options.stack_size)?;
     let linker = linker_symbols(unit)?;
     passive(unit)?;
 
     // The stack, when the layout defines the stack pointer.
-    let stack_pointer = well_known_global(unit);
     let stack = match stack_pointer {
         Some(id) => Some(stack(unit, id, options.stack_size)?),
         None => None,
     };
     let data_start = stack.map_or(DATA_BASE_WITHOUT_STACK, u64::from);
 
-    // Data.
+    // Data, then the fixed segments, and the heap base above both.
     let placed = place_data(unit, data_start, &mut resolved)?;
-    let heap_base = align_up(placed.end, STACK_ALIGNMENT);
+    let fixed = fixed_segments(unit, stack, data_start, placed.end)?;
+    let (static_end, last) = match fixed {
+        Some((end, op)) if end > placed.end => (end, Some(op)),
+        _ => (
+            placed.end,
+            placed.last.map(|id| unit.data_op(id).expect("a definition has an origin")),
+        ),
+    };
+    let heap_base = align_up(static_end, STACK_ALIGNMENT);
     if heap_base > u64::from(u32::MAX) {
-        return Err(too_large(heap_base));
+        return Err(heap_base_too_large(static_end, heap_base, last));
     }
     for (id, symbol) in &linker {
         let address = match symbol {
@@ -143,15 +166,8 @@ pub fn layout(unit: &mut Unit, options: &EmitOptions) -> Result<Resolved, Report
         resolved.set_data_address(*id, address as u32);
     }
 
-    // Fixed segments.
-    let fixed_end = fixed_segments(unit, stack, data_start, placed.end)?;
-
-    // The memory.
-    let end = heap_base.max(fixed_end);
-    if end > MEMORY_LIMIT {
-        return Err(too_large(end));
-    }
-    let pages = end.div_ceil(PAGE_SIZE) as u32;
+    // The memory: the heap base is the end of everything static.
+    let pages = heap_base.div_ceil(PAGE_SIZE) as u32;
     let occupied = stack.is_some()
         || unit.desc.data().iter().any(|entry| {
             matches!(entry.placement, DataPlacement::Layout | DataPlacement::Fixed(_))
@@ -174,13 +190,68 @@ pub fn layout(unit: &mut Unit, options: &EmitOptions) -> Result<Resolved, Report
     Ok(resolved)
 }
 
-/// The error of a unit whose stack and data need `end` bytes, beyond what a 32-bit memory
-/// addresses.
-fn too_large(end: u64) -> Report {
-    Report::msg(format!(
-        "the unit's stack and data need {end} bytes of linear memory, beyond the 4 GiB a 32-bit \
-         memory addresses"
-    ))
+/// The error of a heap base that no 32-bit address can hold: everything static ends at `end`,
+/// which rounds up to `heap_base`; `last` is the global variable or `builtin.segment` that ends
+/// there, when there is one.
+fn heap_base_too_large(end: u64, heap_base: u64, last: Option<OperationRef>) -> Report {
+    let message = format!(
+        "the heap base does not fit a 32-bit linear memory: the unit's static data ends at {end}, \
+         and the heap base, rounded up to 16, would be {heap_base}, beyond the last address \
+         4294967295"
+    );
+    match last {
+        Some(op) => {
+            let op = op.borrow();
+            let what = if op.is::<Segment>() {
+                "segment"
+            } else {
+                "global variable"
+            };
+            report!(
+                message: (message),
+                labels: [primary(
+                    op.span(),
+                    format!(
+                        "this {what} is placed last and ends at {end}, leaving no address for the \
+                         heap base"
+                    )
+                )],
+            )
+        }
+        None => Report::msg(message),
+    }
+}
+
+/// Checks the stack size `size` (`--wasm-stack-size`), whether or not the unit uses the stack: a
+/// positive multiple of 16. The error is labelled on the stack pointer `stack_pointer` when the
+/// layout defines one.
+fn check_stack_size(unit: &Unit, stack_pointer: Option<GlobalId>, size: u32) -> Result<(), Report> {
+    let message = if size == 0 {
+        String::from(
+            "the stack size 0 (`--wasm-stack-size`) is not positive: data would start at the \
+             address 0, which a null pointer has",
+        )
+    } else if u64::from(size) % STACK_ALIGNMENT != 0 {
+        format!(
+            "the stack size {size} (`--wasm-stack-size`) is not a multiple of 16, the alignment \
+             of the stack"
+        )
+    } else {
+        return Ok(());
+    };
+    match stack_pointer.and_then(|id| unit.global_op(id)) {
+        Some(op) => {
+            let op = op.borrow();
+            Err(report!(
+                message: (message),
+                labels: [primary(
+                    op.span(),
+                    "the stack this stack pointer points into is laid out with that size"
+                )],
+            ))
+        }
+        None => Err(Report::msg(message)),
+    }
 }
 
 /// A linker-defined data symbol.
@@ -321,7 +392,7 @@ fn is_well_known(import: Option<&Import>, field: &str) -> bool {
 }
 
 /// The size of the stack the layout reserves for the stack pointer `id`, or the error that the
-/// stack pointer is not a `mut i32` or that `size` is not a multiple of 16.
+/// stack pointer is not a `mut i32`. `size` is checked already ([check_stack_size]).
 fn stack(unit: &Unit, id: GlobalId, size: u32) -> Result<u32, Report> {
     let global = &unit.desc.globals()[id.index() as usize];
     let op = unit.global_op(id).expect("an import has a declaration");
@@ -332,18 +403,6 @@ fn stack(unit: &Unit, id: GlobalId, size: u32) -> Result<u32, Report> {
             labels: [primary(
                 op.span(),
                 "this declares `__stack_pointer`, which the layout defines, with another type"
-            )],
-        ));
-    }
-    if u64::from(size) % STACK_ALIGNMENT != 0 {
-        return Err(report!(
-            message: (format!(
-                "the stack size {size} (`--wasm-stack-size`) is not a multiple of 16, the \
-                 alignment of the stack"
-            )),
-            labels: [primary(
-                op.span(),
-                "the stack this stack pointer points into is laid out with that size"
             )],
         ));
     }
@@ -359,6 +418,8 @@ fn align_up(value: u64, align: u64) -> u64 {
 struct Placed {
     /// The end of the data.
     end: u64,
+    /// The entry placed last, when there is one.
+    last: Option<DataId>,
     /// Each section with members: its name, its start and the end of its last member.
     sections: Vec<(String, u64, u64)>,
 }
@@ -390,6 +451,7 @@ fn place_data(unit: &Unit, start: u64, resolved: &mut Resolved) -> Result<Placed
         }
     }
     let mut address = start;
+    let mut last = None;
     let mut place = |index: usize, address: &mut u64| -> Result<(), Report> {
         let entry = &entries[index];
         *address = align_up(*address, u64::from(entry.align.max(1)));
@@ -404,6 +466,7 @@ fn place_data(unit: &Unit, start: u64, resolved: &mut Resolved) -> Result<Placed
         }
         resolved.set_data_address(DataId::new(index as u32), *address as u32);
         *address = end;
+        last = Some(DataId::new(index as u32));
         Ok(())
     };
     for index in plain {
@@ -421,21 +484,24 @@ fn place_data(unit: &Unit, start: u64, resolved: &mut Resolved) -> Result<Placed
     }
     Ok(Placed {
         end: address,
+        last,
         sections: bounds,
     })
 }
 
-/// Adds each `builtin.segment` to the description as an entry at its fixed offset, or the error
-/// of one that overlaps the stack (`0..stack`), the laid-out data (`data_start..data_end`) or
-/// another segment. Gives the end of the highest segment (0 when there is none).
+/// Adds each `builtin.segment` with bytes to the description as an entry at its fixed offset, or
+/// the error of one that overlaps the stack (`0..stack`), the laid-out data
+/// (`data_start..data_end`) or another segment. A segment with no bytes gets no entry and takes
+/// no part in the checks of overlap. Gives the end of the highest segment and the segment, when
+/// there is one with bytes.
 fn fixed_segments(
     unit: &mut Unit,
     stack: Option<u32>,
     data_start: u64,
     data_end: u64,
-) -> Result<u64, Report> {
+) -> Result<Option<(u64, OperationRef)>, Report> {
     let mut placed: Vec<(OperationRef, u64, u64)> = Vec::new();
-    let mut highest = 0;
+    let mut highest: Option<(u64, OperationRef)> = None;
     for op in unit.segments().to_vec() {
         let borrowed = op.borrow();
         let segment = borrowed.downcast_ref::<Segment>().expect("a builtin.segment");
@@ -454,42 +520,44 @@ fn fixed_segments(
                  memory"
             )));
         }
-        if !bytes.is_empty() {
-            if let Some(stack) = stack
-                && start < u64::from(stack)
-            {
-                return Err(overlap(format!(
-                    "this segment holds the bytes {start}..{end}, and the shadow stack is at \
-                     0..{stack}"
-                )));
-            }
-            if data_end > data_start && start < data_end && end > data_start {
-                return Err(overlap(format!(
-                    "this segment holds the bytes {start}..{end}, and the global variables are \
-                     laid out at {data_start}..{data_end}"
-                )));
-            }
-            if let Some((other, other_start, other_end)) = placed
-                .iter()
-                .find(|(_, other_start, other_end)| start < *other_end && end > *other_start)
-            {
-                let other = other.borrow();
-                return Err(report!(
-                    message: "two `builtin.segment`s overlap",
-                    labels: [
-                        primary(
-                            borrowed.span(),
-                            format!("this segment holds the bytes {start}..{end}")
-                        ),
-                        context(
-                            other.span(),
-                            format!("this one holds the bytes {other_start}..{other_end}")
-                        ),
-                    ],
-                ));
-            }
-            placed.push((op, start, end));
-            highest = highest.max(end);
+        if bytes.is_empty() {
+            // An empty active segment past the end of memory traps at instantiation, and one
+            // within it writes nothing: it is left out.
+            continue;
+        }
+        if let Some(stack) = stack
+            && start < u64::from(stack)
+        {
+            return Err(overlap(format!(
+                "this segment holds the bytes {start}..{end}, and the shadow stack is at \
+                 0..{stack}"
+            )));
+        }
+        if data_end > data_start && start < data_end && end > data_start {
+            return Err(overlap(format!(
+                "this segment holds the bytes {start}..{end}, and the global variables are laid \
+                 out at {data_start}..{data_end}"
+            )));
+        }
+        if let Some((other, other_start, other_end)) = placed
+            .iter()
+            .find(|(_, other_start, other_end)| start < *other_end && end > *other_start)
+        {
+            let other = other.borrow();
+            return Err(report!(
+                message: "two `builtin.segment`s overlap",
+                labels: [
+                    primary(borrowed.span(), format!("this segment holds the bytes {start}..{end}")),
+                    context(
+                        other.span(),
+                        format!("this one holds the bytes {other_start}..{other_end}")
+                    ),
+                ],
+            ));
+        }
+        placed.push((op, start, end));
+        if highest.is_none_or(|(highest, _)| end > highest) {
+            highest = Some((end, op));
         }
         drop(borrowed);
         unit.desc.add_data(DataEntry {
@@ -592,6 +660,25 @@ fn table(unit: &mut Unit, resolved: &mut Resolved) -> Result<(), Report> {
                         "this declares `__indirect_function_table`, which the layout defines, \
                          with another element type"
                     )],
+                ));
+            }
+            if let Some((elem, _)) = unit.elements().iter().find(|(_, table)| *table == id) {
+                let (elem, op) =
+                    (elem.borrow(), unit.table_op(id).expect("an import has a declaration"));
+                let op = op.borrow();
+                return Err(report!(
+                    message: "a `wasm.elem` cannot fill the function table the backend lays out",
+                    labels: [
+                        primary(
+                            elem.span(),
+                            "this fills `__indirect_function_table`, whose size and slots the \
+                             backend lays out itself; a unit that fills that table must define it"
+                        ),
+                        context(
+                            op.span(),
+                            "this declares `__indirect_function_table`, which the layout defines"
+                        ),
+                    ],
                 ));
             }
             let table = unit.desc.table_mut(id);

@@ -18,11 +18,14 @@ version the checks are written against.
 cargo make test-run
 ```
 
-builds `runic-opt` into `bin/`, installs `wasmtime-cli` 50.0.2 with `cargo install --locked` when
-no `wasmtime` of that version is installed (it builds from source, once, and needs the network),
-prints the `wasmtime` it found and its version, and runs the suite. A missing `wasmtime` or another
-version fails the task with one line naming the version wanted. `cargo make wasmtime` installs it
-alone. `cargo make test-all` runs this suite after `tests/lit`.
+builds `runic-opt` into `bin/`, makes sure `wasmtime-cli` 50.0.2 is what cargo has installed,
+prints the `wasmtime` it found and its version, and runs the suite. When cargo has no `wasmtime-cli`
+installed, or another version of it, the task runs `cargo install --force --locked --version 50.0.2
+wasmtime-cli`: it builds from source, once, needs the network, and **replaces another installed
+version**. The check that fails the task with one line naming the version wanted applies after
+that, when the `wasmtime` first on the `PATH` is not the one cargo installed (another
+installation earlier on the `PATH`, of another version) or there is none. `cargo make wasmtime`
+does the install alone. `cargo make test-all` runs this suite after `tests/lit`.
 
 One test, or the suite, by hand, from the repository root. `litcheck` gives its tests the
 directories of `--path` in front of its own `PATH`, so `wasmtime` is found where `cargo install`

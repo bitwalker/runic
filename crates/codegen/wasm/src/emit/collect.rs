@@ -5,7 +5,9 @@
 //! `builtin.module`) and takes every `builtin.module` under it at any depth, the root included: a
 //! nested module is a namespace, not a separate binary. More than one `builtin.component` under
 //! the root is an error, since each component becomes its own binary, which this backend does not
-//! produce yet. The operations a module directly holds become entries of the [ModuleDesc], in the
+//! produce yet. So is an entity that a `builtin.component` or a `builtin.world` holds directly, not
+//! inside a module (a function, an alias, a global variable, a `builtin.segment` or a `wasm`
+//! entity): component-level entities are not emitted yet. The operations a module directly holds become entries of the [ModuleDesc], in the
 //! order the modules and their symbols are written:
 //!
 //! - `builtin.function`: a function, its type from its signature (every parameter and result a
@@ -32,14 +34,16 @@
 //! - A declaration of link name `L` is the same entity as the definition of `L`, when there is one
 //!   that other modules may name. Its kind must be the declaration's, and its type must satisfy
 //!   the declaration's: for a function, the same Wasm function type; for a global, the same value
-//!   type and mutability; for a table, the same element type; for a table or a memory, limits
+//!   type and mutability; for a global variable, the same type; for a table, the same element type; for a table or a memory, limits
 //!   within the declaration's (a minimum at least the declaration's, and a maximum at most the
 //!   declaration's when it has one). Otherwise it is an error naming both.
 //! - A declaration of a function, global, table or memory with no such definition is an import:
 //!   from the module [import_module] gives (`env` by default), with the field `L`. All
 //!   declarations with one module, field and kind are one import, and their types must be equal,
-//!   or it is an error naming two of them. A declared global variable with no definition is one
-//!   undefined data symbol per link name.
+//!   or it is an error naming two of them. One module and field declared as two kinds is an error
+//!   naming both declarations: a host module exports one entity under a name, so no host could
+//!   provide both. A declared global variable with no definition is one undefined data symbol per
+//!   link name, and its declarations must agree in type the same way.
 //! - A reference by path resolves through the IR ([SymbolRefAttr::resolve], or
 //!   [SymbolRefAttr::resolve_callable] for a function, which follows aliases), whichever module
 //!   holds the target, then through a declaration to the entity it stands for.
@@ -110,6 +114,7 @@ pub struct Unit {
     origins: Origins,
     undefined_data: Vec<DataId>,
     segments: Vec<OperationRef>,
+    elements: Vec<(OperationRef, TableId)>,
     data_uses: FxHashMap<DataId, DataUses>,
 }
 
@@ -174,6 +179,12 @@ impl Unit {
         &self.segments
     }
 
+    /// The `wasm.elem`s of the unit, in the order they are written, each with the table it
+    /// fills. Each is an active element segment of the description.
+    pub fn elements(&self) -> &[(OperationRef, TableId)] {
+        &self.elements
+    }
+
     /// The first `wasm.memory_init` or `wasm.data_drop` of the unit (in a function body) that
     /// names the data entry `id`, which makes it a passive segment.
     pub fn passive_use(&self, id: DataId) -> Option<OperationRef> {
@@ -231,6 +242,7 @@ pub fn collect(
         origins: collector.origins,
         undefined_data: collector.undefined_data,
         segments: collector.segments,
+        elements: collector.elements,
         data_uses: collector.resolver.data_uses,
     })
 }
@@ -252,8 +264,16 @@ fn entities_of(root: OperationRef) -> Result<Vec<OperationRef>, Report> {
         if borrowed.is::<World>() || borrowed.is::<Module>() {
             return WalkResult::Continue(());
         }
-        if borrowed.parent_op().is_some_and(|parent| parent.borrow().is::<Module>()) {
+        let Some(parent) = borrowed.parent_op() else {
+            return WalkResult::Skip;
+        };
+        let parent = parent.borrow();
+        if parent.is::<Module>() {
             ops.push(op);
+        } else if (parent.is::<Component>() || parent.is::<World>())
+            && what(&borrowed) != What::Other
+        {
+            return WalkResult::Break(outside_a_module(&borrowed, &parent));
         }
         WalkResult::Skip
     });
@@ -261,6 +281,30 @@ fn entities_of(root: OperationRef) -> Result<Vec<OperationRef>, Report> {
         WalkResult::Break(report) => Err(report),
         _ => Ok(ops),
     }
+}
+
+/// The error of an entity `op` (a function, an alias, a global variable, a `builtin.segment` or
+/// a `wasm` entity) that `parent`, a `builtin.component` or a `builtin.world`, holds directly.
+fn outside_a_module(op: &Operation, parent: &Operation) -> Report {
+    let what = match op.as_symbol() {
+        Some(symbol) => format!("`{}` @{}", op.name(), symbol.name()),
+        None => format!("a `{}`", op.name()),
+    };
+    report!(
+        message: (format!(
+            "{what} is held by a `{}`, not by a `builtin.module`: component-level entities are \
+             not emitted yet",
+            parent.name()
+        )),
+        labels: [
+            primary(
+                op.span(),
+                "this is outside every `builtin.module`, and only the entities of modules are \
+                 emitted"
+            ),
+            context(parent.span(), format!("this `{}` holds it", parent.name())),
+        ],
+    )
 }
 
 /// The error of a second component `second` under the root, `first` being the first.
@@ -366,7 +410,8 @@ enum Shape {
     Global(ValType, bool),
     Table(RefType, Limits),
     Memory(Limits),
-    Data,
+    /// A global variable, of its type.
+    Data(runic_ir::Type),
 }
 
 impl Shape {
@@ -376,7 +421,7 @@ impl Shape {
             Self::Global(..) => Kind::Global,
             Self::Table(..) => Kind::Table,
             Self::Memory(_) => Kind::Memory,
-            Self::Data => Kind::Data,
+            Self::Data(_) => Kind::Data,
         }
     }
 
@@ -391,7 +436,7 @@ impl Shape {
                 format!("{} {}", val_type_text(ValType::from(*element)), limits_text(*limits))
             }
             Self::Memory(limits) => format!("{} pages", limits_text(*limits)),
-            Self::Data => String::from("data"),
+            Self::Data(ty) => ty.to_string(),
         }
     }
 
@@ -586,7 +631,10 @@ fn shape_of(op: &Operation) -> Result<Shape, Report> {
             let memory = op.downcast_ref::<wasm::Memory>().expect("a wasm.memory");
             Ok(Shape::Memory(limits(op, *memory.get_limits())?))
         }
-        What::Data => Ok(Shape::Data),
+        What::Data => {
+            let variable = op.downcast_ref::<GlobalVariable>().expect("a builtin.global_variable");
+            Ok(Shape::Data(*variable.get_ty()))
+        }
         _ => Err(unsupported(op, "it is not an entity a declaration can name")),
     }
 }
@@ -724,10 +772,13 @@ struct Collector {
     names: FxHashMap<String, (Kind, OperationRef)>,
     /// The first declaration of each import, by kind, module and field.
     imports: FxHashMap<(Kind, String, String), OperationRef>,
+    /// The kind and first declaration of each import field, by module and field.
+    fields: FxHashMap<(String, String), (Kind, OperationRef)>,
     /// The first declaration of each undefined data symbol, by link name.
     undefined: FxHashMap<String, OperationRef>,
     undefined_data: Vec<DataId>,
     segments: Vec<OperationRef>,
+    elements: Vec<(OperationRef, TableId)>,
     pending: Vec<Pending>,
 }
 
@@ -851,7 +902,7 @@ impl Collector {
                     entity,
                 }))
             }
-            Shape::Data => {
+            Shape::Data(_) => {
                 self.origins.data.push(op);
                 Id::Data(self.desc.add_data(DataEntry {
                     name,
@@ -910,6 +961,32 @@ impl Collector {
             match self.imports.get(&key).copied() {
                 Some(first) => Some(first),
                 None => {
+                    let field = (module.clone(), link_name.clone());
+                    if let Some((kind, other)) = self.fields.get(&field).copied() {
+                        let other = other.borrow();
+                        return Err(report!(
+                            message: (format!(
+                                "the import `{module}.{link_name}` is declared as {} and as {}: \
+                                 no host module can provide both under one name",
+                                kind.noun(),
+                                shape.kind().noun()
+                            )),
+                            labels: [
+                                primary(
+                                    borrowed.span(),
+                                    format!(
+                                        "this declares `{module}.{link_name}` as {}",
+                                        shape.kind().noun()
+                                    )
+                                ),
+                                context(
+                                    other.span(),
+                                    format!("this declares it as {}", kind.noun())
+                                ),
+                            ],
+                        ));
+                    }
+                    self.fields.insert(field, (shape.kind(), op));
                     let id =
                         self.define(op, borrowed, shape, Some(Import::new(module, link_name)))?;
                     self.imports.insert(key, op);
@@ -1031,7 +1108,12 @@ impl Collector {
                 Shape::Table(table.element, table.limits)
             }
             Id::Memory(id) => Shape::Memory(self.desc.memories()[id.index() as usize].limits),
-            Id::Data(_) => Shape::Data,
+            Id::Data(id) => {
+                let op = self.origins.data[id.index() as usize].borrow();
+                let variable =
+                    op.downcast_ref::<GlobalVariable>().expect("a builtin.global_variable");
+                Shape::Data(*variable.get_ty())
+            }
         }
     }
 
@@ -1105,6 +1187,7 @@ impl Collector {
                     offset: elem.offset_value(),
                     functions,
                 });
+                self.elements.push((op, table));
             }
             _ => {}
         }

@@ -42,6 +42,7 @@ mod emit {
     mod module;
     mod plan;
     mod programs;
+    mod random;
     mod sections;
     mod support;
     mod unit;

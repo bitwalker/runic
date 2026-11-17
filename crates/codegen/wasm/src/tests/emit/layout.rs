@@ -443,6 +443,36 @@ fn a_stack_size_that_is_not_a_multiple_of_16_is_an_error_naming_the_option() {
     );
 }
 
+#[test]
+fn a_stack_size_that_is_not_a_multiple_of_16_is_an_error_when_nothing_uses_the_stack() {
+    // No function has a frame, so the layout reserves no stack; the option is checked all the
+    // same.
+    let error = failure_with(&[module("m", &[&constant("word", "i32", "1", "")])], &stack_of(8));
+    assert_mentions(
+        &error,
+        &[
+            "the stack size 8 (`--wasm-stack-size`) is not a multiple of 16, the alignment of the \
+             stack",
+        ],
+    );
+}
+
+#[test]
+fn a_stack_size_of_0_is_an_error_since_data_would_start_at_address_0() {
+    let message = "the stack size 0 (`--wasm-stack-size`) is not positive: data would start at \
+                   the address 0, which a null pointer has";
+    let error = failure_with(
+        &[module("m", &[&framed("framed"), &constant("word", "i32", "1", "")])],
+        &stack_of(0),
+    );
+    assert_mentions(
+        &error,
+        &[message, "the stack this stack pointer points into is laid out with that size"],
+    );
+    let error = failure_with(&[module("m", &[&constant("word", "i32", "1", "")])], &stack_of(0));
+    assert_mentions(&error, &[message]);
+}
+
 // ---- Sections and linker-defined symbols --------------------------------------------------------
 
 #[test]
@@ -598,6 +628,51 @@ fn a_bump_allocator_over_the_heap_base_grows_the_memory_and_writes_at_its_top() 
     assert_eq!(one(instance.call("alloc", &[Val::i32(16)])), u64::from(base as u32 + 100_000));
 }
 
+#[test]
+fn the_heap_base_is_above_a_fixed_segment_and_a_bump_allocation_leaves_the_segment_intact() {
+    let alloc = r#"builtin.function public extern("wasm") @alloc(%n: i32) -> i32 {
+    %p = wasm.global_get @next : i32;
+    %e = wasm.add %p, %n;
+    wasm.global_set @next, %e;
+    builtin.ret %p : (i32);
+} attributes { wasm.export_name = "alloc" };"#;
+    let fill = r#"builtin.function public extern("wasm") @fill(%a: i32, %n: i32) {
+    %v = wasm.const 0 : i32;
+    wasm.memory_fill @__linear_memory, %a, %v, %n;
+    builtin.ret;
+} attributes { wasm.export_name = "fill" };"#;
+    let emitted = emitted(&[module(
+        "m",
+        &[
+            MEMORY,
+            "builtin.segment <{ offset = #builtin.i64<2048>, data = #builtin.bytes<\"2a2a2a2a\"> \
+             }>;",
+            &constant("x", "i32", "7", ""),
+            "builtin.global_variable public @end : i8 attributes { link_name = \"__data_end\" };",
+            "builtin.global_variable public @heap : i8 attributes { link_name = \"__heap_base\" };",
+            "wasm.global private @next : mut i32 { %v = wasm.data_addr @heap; builtin.yield %v; };",
+            &address_of("end_at", "end"),
+            &address_of("heap_at", "heap"),
+            alloc,
+            fill,
+            &peek("peek"),
+        ],
+    )]);
+    let mut instance = emitted.run();
+    // The data ends after `@x`; the heap starts after the segment, at 2052 rounded up to 16.
+    assert_eq!(one(instance.call("end_at", &[])), 1028);
+    assert_eq!(one(instance.call("heap_at", &[])), 2064);
+    // Zero the 2 KiB the allocator gives first (from 1040, they would cover the segment): the
+    // segment is below them and keeps its bytes.
+    let base = one(instance.call("alloc", &[Val::i32(2048)]));
+    assert_eq!(base, 2064);
+    assert_eq!(
+        instance.call("fill", &[Val::i32(base as u32), Val::i32(2048)]),
+        Outcome::Values(Vec::new())
+    );
+    assert_eq!(one(instance.call("peek", &[Val::i32(2048)])), 0x2a2a_2a2a);
+}
+
 // ---- Zero, passive and fixed data ---------------------------------------------------------------
 
 #[test]
@@ -710,6 +785,24 @@ fn a_fixed_segment_high_in_memory_is_placed_and_the_memory_holds_it() {
         ],
     );
     assert_eq!(one(emitted.run().call("peek", &[Val::i32(200_000)])), 42);
+}
+
+#[test]
+fn an_empty_fixed_segment_has_no_data_segment_and_the_module_instantiates() {
+    // Far beyond the memory the module needs: as an active segment it would trap at
+    // instantiation.
+    let segment =
+        "builtin.segment <{ offset = #builtin.i64<1048576000>, data = #builtin.bytes<\"\"> }>;";
+    let f = "builtin.function public extern(\"C\") @f() -> i32 {\n    %x = arith.constant 1 : \
+             i32;\n    builtin.ret %x : (i32);\n} attributes { wasm.export_name = \"f\" };";
+    let module_of_f = emitted(&[module("m", &[segment, f])]);
+    let text = module_of_f.wat();
+    assert!(!text.contains("(data"), "{text}");
+    assert_eq!(one(module_of_f.run().call("f", &[])), 1);
+    // Nor does it overlap anything: one at the address of the data is no error.
+    let at_data = "builtin.segment <{ offset = #builtin.i64<1024>, data = #builtin.bytes<\"\"> }>;";
+    let text = emitted(&[module("m", &[MEMORY, at_data, &constant("word", "i32", "1", "")])]).wat();
+    assert_eq!(text.matches("(data ").count(), 1, "{text}");
 }
 
 #[test]
@@ -925,6 +1018,70 @@ fn a_func_index_with_a_function_table_the_unit_defines_is_an_error_naming_the_ta
     );
 }
 
+/// A module whose `wasm.elem` puts `@two` at `slot` of the function table the lowering declares,
+/// with a function that takes the slot of `@one`.
+fn elem_into_the_lowered_table(slot: u32) -> String {
+    module(
+        "m",
+        &[
+            TABLE,
+            &adder("one", 1),
+            &adder("two", 2),
+            &format!("wasm.elem private @init : @__indirect_function_table at {slot} [@two];"),
+            "builtin.function public extern(\"wasm\") @call1(%x: i32) -> i32 {\n    %k = \
+             wasm.func_index @one;\n    %r = wasm.call_indirect @__indirect_function_table, \
+             %k(%x) : extern(\"wasm\") (i32) -> i32;\n    builtin.ret %r : (i32);\n} attributes { \
+             wasm.export_name = \"call1\" };",
+        ],
+    )
+}
+
+#[test]
+fn a_wasm_elem_into_the_function_table_the_layout_defines_is_an_error_naming_it() {
+    // Inside the slots the layout gives (where its own segment would overwrite the entry) and
+    // past them (where the segment would fail at instantiation).
+    for slot in [1, 5] {
+        let error = failure(&[elem_into_the_lowered_table(slot)]);
+        assert_mentions(
+            &error,
+            &[
+                "a `wasm.elem` cannot fill the function table the backend lays out",
+                "this fills `__indirect_function_table`, whose size and slots the backend lays \
+                 out itself; a unit that fills that table must define it",
+                "this declares `__indirect_function_table`, which the layout defines",
+            ],
+        );
+    }
+}
+
+#[test]
+fn a_table_the_unit_defines_is_filled_by_its_own_wasm_elem_and_called_through() {
+    let call = "builtin.function public extern(\"wasm\") @call(%i: i32, %x: i32) -> i32 {\n    %r \
+                = wasm.call_indirect @t, %i(%x) : extern(\"wasm\") (i32) -> i32;\n    builtin.ret \
+                %r : (i32);\n} attributes { wasm.export_name = \"call\" };";
+    let emitted = emitted(&[module(
+        "m",
+        &[
+            "wasm.table public @t : 4 x !wasm.funcref;",
+            &adder("one", 1),
+            &adder("two", 2),
+            "wasm.elem private @init : @t at 2 [@two, @one];",
+            call,
+        ],
+    )]);
+    assert_mentions(
+        &emitted.wat(),
+        &[
+            "(table $m::t (;0;) 4 funcref)",
+            "(elem (;0;) (i32.const 2) func $m::two $m::one)",
+        ],
+    );
+    let mut instance = emitted.run();
+    assert_eq!(one(instance.call("call", &[Val::i32(2), Val::i32(10)])), 12);
+    assert_eq!(one(instance.call("call", &[Val::i32(3), Val::i32(10)])), 11);
+    assert_eq!(instance.call("call", &[Val::i32(1), Val::i32(10)]), Outcome::Trap);
+}
+
 // ---- Two modules --------------------------------------------------------------------------------
 
 #[test]
@@ -1015,14 +1172,42 @@ fn a_stack_pointer_or_a_function_table_declared_with_another_type_is_an_error() 
 }
 
 #[test]
-fn a_stack_and_data_beyond_4_gib_are_an_error() {
-    let data = constant("wide", "i64", "1", "");
-    let error = failure_with(&[module("m", &[&framed("framed"), &data])], &stack_of(0xffff_fff0));
+fn data_that_fits_4_gib_with_no_address_left_for_the_heap_base_is_an_error_naming_the_last_global()
+{
+    // The `i64` ends at 4294967288 and the `i128` exactly at 4 GiB: the data fits either way, and
+    // the heap base, rounded up to 16, is 4294967296, which no 32-bit address holds.
+    for (ty, end) in [("i64", 4_294_967_288u64), ("i128", 4_294_967_296)] {
+        let data = constant("wide", ty, "1", "");
+        let error =
+            failure_with(&[module("m", &[&framed("framed"), &data])], &stack_of(0xffff_fff0));
+        assert_mentions(
+            &error,
+            &[
+                &format!(
+                    "the heap base does not fit a 32-bit linear memory: the unit's static data \
+                     ends at {end}, and the heap base, rounded up to 16, would be 4294967296, \
+                     beyond the last address 4294967295"
+                ),
+                &format!(
+                    "this global variable is placed last and ends at {end}, leaving no address \
+                     for the heap base"
+                ),
+            ],
+        );
+    }
+}
+
+#[test]
+fn data_beyond_4_gib_is_an_error_naming_the_global_variable_that_does_not_fit() {
+    let wide = constant("wide", "i128", "1", "");
+    let word = constant("word", "i32", "1", "");
+    let error =
+        failure_with(&[module("m", &[&framed("framed"), &wide, &word])], &stack_of(0xffff_fff0));
     assert_mentions(
         &error,
         &[
-            "the unit's stack and data need 4294967296 bytes of linear memory, beyond the 4 GiB a \
-             32-bit memory addresses",
+            "the data of the unit does not fit the 4 GiB of a 32-bit linear memory",
+            "this global variable would end at 4294967300",
         ],
     );
 }

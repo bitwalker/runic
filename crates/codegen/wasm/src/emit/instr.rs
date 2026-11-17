@@ -2,8 +2,10 @@
 //!
 //! [stack_operands] gives the values an operation takes from the Wasm stack, in the order they are
 //! pushed (the first pushed first), which is the order of the operation's operands except for
-//! `wasm.select` (its condition is pushed last) and `wasm.call_indirect` and
-//! `wasm.return_call_indirect` (their index is pushed after the arguments). [encode] writes the
+//! five: `wasm.select` (its condition is pushed last), `wasm.call_indirect` and
+//! `wasm.return_call_indirect` (their index is pushed after the arguments), `wasm.if` (its
+//! condition is pushed after its inputs) and `wasm.br_table` (its index is pushed after the values
+//! it carries). [encode] writes the
 //! instruction of one operation through a [CodeWriter], chosen by the types of its operands and
 //! results; it writes only the instruction, never the operands.
 //!

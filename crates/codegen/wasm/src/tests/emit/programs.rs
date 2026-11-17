@@ -7,7 +7,8 @@
 //! the backend's `cse` and `dce` after it. Every call is made on a fresh instance, as each
 //! `wasmtime run --invoke` of the lit test is, and states the results the lit test checks, or the
 //! trap whose message it checks. So the programs are checked on a machine with no `wasmtime`, and
-//! by two engines where it is installed.
+//! by two engines where it is installed. Each call has the fuel of [super::super::exec::WASMI_FUEL]: a call that does
+//! not terminate fails with a message instead of hanging.
 
 use alloc::{string::String, vec, vec::Vec};
 
@@ -18,7 +19,10 @@ use runic_compile::{
 use runic_ir::testing::text::describe;
 use wasmi::TrapCode;
 
-use crate::backend::{TRIPLE, WasmBackend};
+use crate::{
+    backend::{TRIPLE, WasmBackend},
+    tests::exec::{did_not_terminate, fueled_engine, fueled_store, out_of_fuel},
+};
 
 const SUM: &str = include_str!("../../../../../../tests/run/wasm/sum.runic");
 const MACHINE: &str = include_str!("../../../../../../tests/run/wasm/machine.runic");
@@ -138,8 +142,8 @@ impl Program {
     /// Calls the export `name` of a fresh instance on `arguments`: the results, or the trap.
     #[track_caller]
     fn call(&self, name: &str, arguments: &[V]) -> Result<Vec<V>, TrapCode> {
-        let engine = wasmi::Engine::default();
-        let mut store = wasmi::Store::new(&engine, ());
+        let engine = fueled_engine();
+        let mut store = fueled_store(&engine);
         let mut linker = wasmi::Linker::<()>::new(&engine);
         if let Some(env) = &self.env {
             let module = wasmi::Module::new(&engine, &env[..])
@@ -163,6 +167,7 @@ impl Program {
             ty.results().iter().map(|ty| wasmi::Val::default(*ty)).collect::<Vec<_>>();
         match func.call(&mut store, &inputs, &mut outputs) {
             Ok(()) => Ok(outputs.iter().map(V::from_wasmi).collect()),
+            Err(error) if out_of_fuel(&store, &error) => did_not_terminate(name),
             Err(error) => Err(error.as_trap_code().unwrap_or_else(|| {
                 panic!("-O{}: running `{name}` failed without a trap: {error}", self.level)
             })),

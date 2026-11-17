@@ -46,9 +46,12 @@ runic-opt program.runic --target wasm32-unknown-unknown --wasm-stack-size 65536 
   `wasm.module` (alias `module`, a `.core.wasm` file), the binary, which is the default stop point.
   Both are the same bytes, emitted once and validated.
 - **Option**: `--wasm-stack-size <BYTES>`, the size of the shadow stack at the start of linear
-  memory and the initial value of `__stack_pointer`; a multiple of 16, 1 MiB by default.
-- With no debug information asked for (`--debug=none`), the module has no `name` section; it is
-  named after the unit otherwise, and each entity after its link name.
+  memory and the initial value of `__stack_pointer`; a positive multiple of 16, 1 MiB by default.
+  It is checked whether or not the unit uses the stack.
+- When the request asks for no debug information (`DebugInfo::None`, which a driver built on
+  `runic-driver` spells `-g=none`), the module has no `name` section; it is named after the unit
+  otherwise, and each entity after its link name. `runic-opt` has no flag for debug information:
+  its requests take the default, so its modules always have a `name` section.
 
 `runic-opt` compiles at `-O0`; a compiler built on the driver crate passes `-O`. What the emitter
 cannot emit fails the compilation with a diagnostic that names the operation. The programs of
@@ -67,7 +70,9 @@ placeholder with a recorded _fix-up_, which says what it names and how it is enc
 The layout then places the stack, the data and the table slots, and the complete-module writer
 assigns the index spaces (imports first, then definitions, in the order the IR has them),
 resolves every fix-up to its index, address or slot, and writes the module with `wasm-encoder`,
-with a `name` section and a `producers` section. The result is checked by `wasmparser` under the
+with three custom sections: `name` (left out when no debug information is asked for), `producers`
+(the tool and its version, as `processed-by`) and `target_features` (the features the module uses,
+when it uses any). The result is checked by `wasmparser` under the
 feature baseline before it is returned: a module that does not validate is a defect of the
 backend, reported with the validator's message and offset, and is never delivered.
 
@@ -131,10 +136,13 @@ the objects of one program:
 
 ### The layout
 
-The emitted module needs no host: it defines its memory, its stack pointer and its function table.
-The lowering declares them as imports from `env` (`__linear_memory`, `__stack_pointer`,
-`__indirect_function_table`), and the layout makes each a definition, as `wasm-ld --stack-first`
-does for one program:
+The lowering declares the memory, the stack pointer and the function table as imports from `env`
+(`__linear_memory`, `__stack_pointer`, `__indirect_function_table`), and the layout makes each a
+definition, as `wasm-ld --stack-first` does for one program. These three cannot be imported: the
+layout defines every import from `env` with one of those fields, so a module of generic IR needs
+no host for its memory, its stack or its table. A memory or a table that the unit declares under
+a link name of its own (IR written in Wasm form) is an import like any other declaration (below),
+and the layout places the data in that memory, whose minimum must hold it:
 
 ```
 0 ............ stack size   the shadow stack, growing down; `__stack_pointer` starts at the
@@ -142,22 +150,29 @@ does for one program:
                             overflow traps instead of overwriting data
 stack size ... data end     every builtin.global_variable, each aligned by its type: those with
                             no section first, then each section's members together
-data end ..... heap base    rounded up to 16
+(fixed)                     each builtin.segment at its own offset, above the stack and outside
+                            the data
+.............. heap base    the end of the data or of the highest segment, whichever is higher,
+                            rounded up to 16
 ```
 
 With no frame in the unit there is no stack, and the data starts at 1024, so that no data has the
-address 0. The memory has the pages that reach the heap base (or the end of a fixed
-`builtin.segment`, when higher) as its minimum and no maximum, and is exported as `memory`. Data
-whose bytes are all zero has an address and no segment. The table gives a slot, from 1, to every
-function a function value names; slot 0 stays empty, so that a call through a null function
-pointer traps, and the table is exactly as long as its slots.
+address 0. The heap base is the end of everything static, so a heap that starts there never
+overwrites a segment. A segment with no bytes is left out. The memory has the pages that reach the
+heap base as its minimum and no maximum, and is exported as `memory`. Data whose bytes are all zero
+has an address and no segment. The table gives a slot, from 1, to every function a function value
+names; slot 0 stays empty, so that a call through a null function pointer traps, and the table is
+exactly as long as its slots. A `wasm.elem` into that table is an error: a unit that fills
+`__indirect_function_table` itself must define it (and cannot then take slots with
+`wasm.func_index`). A table the unit defines is filled by its `wasm.elem`s as written.
 
 The linker-defined data symbols are declarations of `builtin.global_variable` with no definition:
-`__data_end` (the end of the data), `__heap_base` (that, rounded up to 16), and `__start_<s>` and
-`__stop_<s>` (the start of the section `s` and the end of its last member). Each is an address
-with no bytes. Any other declared global variable with no definition is an error: a core module
-cannot import data. A global variable named by `wasm.memory_init` or `wasm.data_drop` is a
-passive segment, with no address.
+`__data_end` (the end of the laid-out data), `__heap_base` (the heap base above), and
+`__start_<s>` and `__stop_<s>` (the start of the section `s` and the end of its last member). Each
+is an address with no bytes, and the declarations of one must agree in type, as a declaration of
+data the unit defines must agree with its definition. Any other declared global variable with no
+definition is an error: a core module cannot import data. A global variable named by
+`wasm.memory_init` or `wasm.data_drop` is a passive segment, with no address.
 
 ### Imports and exports
 
@@ -196,8 +211,9 @@ the address or slot `wasm.data_addr` and `wasm.func_index` give, written as an `
 ### What is not emitted yet
 
 Relocatable objects for `wasm-ld`; integers wider than 64 bits; components and `wasm32-wasip2` or
-`wasip3`; a choice of the feature set; importing the memory or the table in a complete module;
-exporting data; start functions and constructors; removing functions nothing reaches; DWARF. The
+`wasip3`, and the entities a `builtin.component` or a `builtin.world` holds outside every module
+(an error); a choice of the feature set; importing `__linear_memory`, `__stack_pointer` or
+`__indirect_function_table` (the layout defines them); exporting data; start functions and constructors; removing functions nothing reaches; DWARF. The
 unused results of a construct are dropped, not removed.
 
 ## Wasm form

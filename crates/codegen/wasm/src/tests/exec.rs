@@ -27,6 +27,9 @@
 //! of the globals the setup names; and that reuse never gives more locals. Every emitted module is
 //! validated before it runs.
 //!
+//! Every run under `wasmi` has [WASMI_FUEL] fuel, as the evaluator has its own: an emitted module
+//! that does not terminate fails the test with a message that says so, instead of hanging it.
+//!
 //! [run] and [run_in] are the evaluator's own two entry points with the emitted module run beside
 //! them: 6c's evaluated tests call these, so every evaluation they make is also a comparison.
 //! [run_in] takes the setup from the test's machine as it is before the run (its memory, which is
@@ -527,12 +530,48 @@ fn from_wasmi(value: &wasmi::Val) -> Val {
     }
 }
 
-/// Runs the export `name` of `assembled` on `arguments` with `wasmi`.
+/// The fuel `wasmi` gives each run of an emitted module, and each instance of a complete one for
+/// all its calls; `wasmi` spends about one unit per instruction. Running out fails the test with
+/// a message, so that a miscompiled loop fails instead of hanging. The call of the crate's tests
+/// that spends the most, the million tail calls of `tests/run/wasm/machine.runic`, uses about
+/// 6,000,000; a function the evaluator runs too, about 250,000 at most.
+pub(super) const WASMI_FUEL: u64 = 100_000_000;
+
+/// A `wasmi` engine that consumes fuel.
+pub(super) fn fueled_engine() -> wasmi::Engine {
+    let mut config = wasmi::Config::default();
+    config.consume_fuel(true);
+    wasmi::Engine::new(&config)
+}
+
+/// A store of `engine` with [WASMI_FUEL] fuel.
+pub(super) fn fueled_store(engine: &wasmi::Engine) -> wasmi::Store<()> {
+    let mut store = wasmi::Store::new(engine, ());
+    store.set_fuel(WASMI_FUEL).expect("the engine consumes fuel");
+    store
+}
+
+/// Whether the call that gave `error` in `store` ran out of fuel.
+pub(super) fn out_of_fuel(store: &wasmi::Store<()>, error: &wasmi::Error) -> bool {
+    error.as_trap_code() == Some(wasmi::TrapCode::OutOfFuel)
+        || store.get_fuel().is_ok_and(|fuel| fuel == 0)
+}
+
+/// The panic of a call of `name` that ran out of fuel.
+#[track_caller]
+pub(super) fn did_not_terminate(name: &str) -> ! {
+    panic!(
+        "the emitted module did not terminate: `{name}` ran {WASMI_FUEL} units of `wasmi` fuel \
+         without returning or trapping"
+    )
+}
+
+/// Runs the export `name` of `assembled` on `arguments` with `wasmi`, with [WASMI_FUEL] fuel.
 pub(super) fn run_wasmi(assembled: &Assembled, name: &str, arguments: &[Val]) -> Ran {
-    let engine = wasmi::Engine::default();
+    let engine = fueled_engine();
     let module = wasmi::Module::new(&engine, &assembled.bytes[..])
         .unwrap_or_else(|error| panic!("wasmi rejects the emitted module: {error}"));
-    let mut store = wasmi::Store::new(&engine, ());
+    let mut store = fueled_store(&engine);
     let mut linker = wasmi::Linker::<()>::new(&engine);
     for (field, ty) in &assembled.imports {
         let ty = wasmi::FuncType::new(
@@ -556,6 +595,7 @@ pub(super) fn run_wasmi(assembled: &Assembled, name: &str, arguments: &[Val]) ->
     let mut outputs = ty.results().iter().map(|ty| wasmi::Val::default(*ty)).collect::<Vec<_>>();
     let outcome = match func.call(&mut store, &inputs, &mut outputs) {
         Ok(()) => Outcome::Values(outputs.iter().map(from_wasmi).collect()),
+        Err(error) if out_of_fuel(&store, &error) => did_not_terminate(name),
         Err(error) if error.as_trap_code().is_some() => Outcome::Trap,
         Err(error) => panic!("running `{name}` failed without a trap: {error}"),
     };
@@ -798,10 +838,10 @@ impl Instance {
     /// panics with the reason.
     #[track_caller]
     pub fn new(bytes: &[u8]) -> Self {
-        let engine = wasmi::Engine::default();
+        let engine = fueled_engine();
         let module = wasmi::Module::new(&engine, bytes)
             .unwrap_or_else(|error| panic!("wasmi rejects the emitted module: {error}"));
-        let mut store = wasmi::Store::new(&engine, ());
+        let mut store = fueled_store(&engine);
         let instance = wasmi::Linker::<()>::new(&engine)
             .instantiate_and_start(&mut store, &module)
             .unwrap_or_else(|error| panic!("the emitted module does not instantiate: {error}"));
@@ -821,6 +861,7 @@ impl Instance {
             ty.results().iter().map(|ty| wasmi::Val::default(*ty)).collect::<Vec<_>>();
         match func.call(&mut self.store, &inputs, &mut outputs) {
             Ok(()) => Outcome::Values(outputs.iter().map(from_wasmi).collect()),
+            Err(error) if out_of_fuel(&self.store, &error) => did_not_terminate(name),
             Err(error) if error.as_trap_code().is_some() => Outcome::Trap,
             Err(error) => panic!("running `{name}` failed without a trap: {error}"),
         }

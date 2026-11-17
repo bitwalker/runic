@@ -759,6 +759,50 @@ fn a_value_teed_into_an_if_and_read_in_its_arm_agrees() {
     agree_on(&functions, &[(&[3, 4], &[15]), (&[0, 4], &[4]), (&[5, 0], &[0])]);
 }
 
+#[test]
+fn an_argument_of_an_arm_does_not_take_the_local_of_a_value_the_arm_s_first_operation_reads_last() {
+    // `%a` waits in a local and is read last by `%s`, the arm's first operation; `%p`, used twice,
+    // needs a local too, and is set at the arm's entry, before `%s` reads `%a`. Its range starts
+    // at the number of `%s`, where `%a`'s ends: the two overlap, and must not share a local.
+    let functions = f(
+        "(%x: i32, %y: i32) -> i32",
+        "%a = wasm.mul %x, %y;\n%r = wasm.if %x, %y then {\n^t(%p: i32):\n%s = wasm.add %a, \
+         %x;\n%t = wasm.mul %p, %p;\n%w = wasm.sub %s, %t;\nwasm.end %w : (i32);\n} else \
+         {\n^e(%q: i32):\nwasm.end %q : (i32);\n} : (i32, i32) -> (i32);\nbuiltin.ret %r : (i32);",
+    );
+    agree_on(
+        &functions,
+        &[
+            (&[3, 5], &[(18u32).wrapping_sub(25)]),
+            (&[0, 5], &[5]),
+            (&[2, 7], &[16u32.wrapping_sub(49)]),
+        ],
+    );
+}
+
+/// A loop that branches back to itself for ever.
+const ENDLESS: &str = "builtin.function public extern(\"wasm\") @f(%x: i32) -> i32 {\n%r = \
+                       wasm.loop %x {\n^l(%i: i32):\n%one = wasm.const 1 : i32;\n%j = wasm.add \
+                       %i, %one;\nwasm.br 0 %j : (i32);\n} : (i32) -> (i32);\nbuiltin.ret %r : \
+                       (i32);\n};";
+
+#[test]
+#[should_panic(
+    expected = "the emitted module did not terminate: `f` ran 100000000 units of `wasmi` fuel \
+                without returning or trapping"
+)]
+fn an_emitted_module_that_does_not_terminate_fails_with_a_message_and_does_not_hang() {
+    let (_context, module) = parse_module(&module_of(ENDLESS));
+    let function = function_named(module, "f");
+    crate::tests::exec::emitted(&Setup::default(), function, &[], &[Val::i32(0)]);
+}
+
+#[test]
+#[should_panic(expected = "the evaluator ran out of fuel after 1000000 operations")]
+fn a_program_that_does_not_terminate_under_agree_fails_with_the_evaluator_s_message() {
+    agree_on(ENDLESS, &[(&[0], &[0])]);
+}
+
 /// The lowered `@sum` of `tests/lit/codegen/wasm/programs.runic`, as the four passes leave it: a
 /// loop of three variables whose `if` gives four results.
 const SUM: &str = "wasm.memory private declaration @__linear_memory : 0;

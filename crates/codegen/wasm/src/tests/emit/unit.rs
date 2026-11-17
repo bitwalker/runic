@@ -783,6 +783,85 @@ fn two_declarations_of_one_import_that_disagree_are_an_error_naming_both() {
 }
 
 #[test]
+fn a_data_declaration_of_another_type_than_its_definition_is_an_error_naming_both() {
+    let error = error_of_world(&world_of(&[
+        &module(
+            "lib",
+            "builtin.global_variable public @val : i32 { %k = arith.constant 7 : i32; \
+             builtin.yield %k; };",
+        ),
+        &module(
+            "app",
+            "builtin.global_variable public @val : i64 attributes { link_name = \"lib::val\" \
+             };\nbuiltin.function public extern(\"wasm\") @get() -> i64 {\n    %a = \
+             wasm.data_addr @val;\n    %v = wasm.load @__linear_memory, %a : i64;\n    \
+             builtin.ret %v : (i64);\n};\nwasm.memory private declaration @__linear_memory : 0 \
+             attributes { link_name = \"__linear_memory\" };",
+        ),
+    ]));
+    assert_mentions(
+        &error,
+        &[
+            "the declaration of `lib::val` does not agree with its definition",
+            "this declares `lib::val` as `i64`",
+            "this defines it as `i32`",
+        ],
+    );
+    // Two declarations of one linker-defined data symbol, of two types.
+    let error = error_of_world(&world_of(&[
+        &module(
+            "a",
+            "builtin.global_variable public @heap : i8 attributes { link_name = \"__heap_base\" };",
+        ),
+        &module(
+            "b",
+            "builtin.global_variable public @heap : i32 attributes { link_name = \"__heap_base\" \
+             };",
+        ),
+    ]));
+    assert_mentions(
+        &error,
+        &[
+            "two declarations of `__heap_base` disagree in type",
+            "this declares `__heap_base` as `i32`",
+            "this declares it as `i8`",
+        ],
+    );
+}
+
+#[test]
+fn one_import_field_declared_as_two_kinds_is_an_error_naming_both() {
+    let error = error_of_world(&world_of(&[&module(
+        "m",
+        "builtin.function public extern(\"wasm\") @x() -> i32 attributes { link_name = \"x\" \
+         };\nwasm.global private declaration @gx : i32 attributes { link_name = \"x\" \
+         };\nbuiltin.function public extern(\"wasm\") @f() -> i32 {\n    %a = builtin.call @x() : \
+         extern(\"wasm\") () -> i32;\n    %b = wasm.global_get @gx : i32;\n    %r = wasm.add %a, \
+         %b;\n    builtin.ret %r : (i32);\n} attributes { wasm.export_name = \"f\" };",
+    )]));
+    assert_mentions(
+        &error,
+        &[
+            "the import `env.x` is declared as a function and as a global: no host module can \
+             provide both under one name",
+            "this declares `env.x` as a global",
+            "this declares it as a function",
+        ],
+    );
+    // Two modules of import are two fields.
+    let text = wat_of_world(&world_of(&[&module(
+        "m",
+        "builtin.function public extern(\"wasm\") @x() -> i32 attributes { link_name = \"x\" \
+         };\nwasm.global private declaration @gx : i32 attributes { link_name = \"x\", \
+         wasm.import_module = \"host\" };\nbuiltin.function public extern(\"wasm\") @f() -> i32 \
+         {\n    %a = builtin.call @x() : extern(\"wasm\") () -> i32;\n    %b = wasm.global_get \
+         @gx : i32;\n    %r = wasm.add %a, %b;\n    builtin.ret %r : (i32);\n} attributes { \
+         wasm.export_name = \"f\" };",
+    )]));
+    assert_mentions(&text, &["(import \"env\" \"x\" (func", "(import \"host\" \"x\" (global"]);
+}
+
+#[test]
 fn two_exports_of_one_name_are_an_error_naming_both() {
     let error = error_of_world(&world_of(&[&module(
         "m",
@@ -845,6 +924,45 @@ fn two_components_are_an_error_naming_the_second() {
             "this is the first",
         ],
     );
+}
+
+#[test]
+fn an_entity_held_by_a_component_or_a_world_and_not_by_a_module_is_an_error_naming_it() {
+    let function = "builtin.function public extern(\"wasm\") @f() -> i32 {\n    %k = wasm.const 1 \
+                    : i32;\n    builtin.ret %k : (i32);\n};";
+    // The verifier accepts each of these; nothing of them would be emitted.
+    let error = error_of_world(&format!(
+        "builtin.world {{\n    builtin.component public @acme::@app {{\n{function}\n{}\n}};\n}};",
+        module("m", "")
+    ));
+    assert_mentions(
+        &error,
+        &[
+            "`builtin.function` @f is held by a `builtin.component`, not by a `builtin.module`: \
+             component-level entities are not emitted yet",
+            "this is outside every `builtin.module`, and only the entities of modules are emitted",
+            "this `builtin.component` holds it",
+        ],
+    );
+    let error = error_of_world(&format!("builtin.world {{\n{function}\n{}\n}};", module("m", "")));
+    assert_mentions(
+        &error,
+        &["`builtin.function` @f is held by a `builtin.world`, not by a `builtin.module`"],
+    );
+    let error = error_of_world(
+        "builtin.world {\n    builtin.component public @acme::@app {\n    builtin.global_variable \
+         public @x : i32 { %k = arith.constant 1 : i32; builtin.yield %k; };\n    };\n};",
+    );
+    assert_mentions(
+        &error,
+        &["`builtin.global_variable` @x is held by a `builtin.component`, not by a \
+           `builtin.module`"],
+    );
+    let error = error_of_world(
+        "builtin.world {\n    builtin.component public @acme::@app {\n    wasm.global public @g : \
+         i32 { %v = wasm.const 1 : i32; builtin.yield %v; };\n    };\n};",
+    );
+    assert_mentions(&error, &["`wasm.global` @g is held by a `builtin.component`"]);
 }
 
 #[test]
