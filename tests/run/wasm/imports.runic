@@ -1,0 +1,42 @@
+// RUN: runic-opt --target wasm32-unknown-unknown %s -o %t.wasm
+// RUN: runic-opt --target wasm32-unknown-unknown %S/imports-env.runic -o %t.env.wasm
+// RUN: wasmtime run --preload env=%t.env.wasm --invoke scaled %t.wasm 10 2>/dev/null | filecheck %s --check-prefix=SCALED
+// RUN: wasmtime run --preload env=%t.env.wasm --invoke swapped %t.wasm 5 2>/dev/null | filecheck %s --check-prefix=SWAPPED
+// RUN: not wasmtime run --invoke scaled %t.wasm 10 2>&1 >/dev/null | filecheck %s --check-prefix=UNRESOLVED
+// RUN: runic-opt --target wasm32-unknown-unknown %s -p 'canonicalizer,cse,sccp,canonicalizer,dce' -o %t.opt.wasm
+// RUN: runic-opt --target wasm32-unknown-unknown %S/imports-env.runic -p 'canonicalizer,cse,sccp,canonicalizer,dce' -o %t.env.opt.wasm
+// RUN: wasmtime run --preload env=%t.env.opt.wasm --invoke scaled %t.opt.wasm 10 2>/dev/null | filecheck %s --check-prefix=SCALED
+// RUN: wasmtime run --preload env=%t.env.opt.wasm --invoke swapped %t.opt.wasm 5 2>/dev/null | filecheck %s --check-prefix=SWAPPED
+
+// Imports satisfied by a second emitted module. The two functions this module declares and does
+// not define are imports from `env`, with their link names as the fields; `imports-env.runic`,
+// compiled to a file of its own, exports them, and `wasmtime --preload env=..` instantiates it
+// first under the name `env`. `@scaled` returns `host_scale(x) + 1`; `@swapped` calls `host_swap`
+// with `x` and `x * 100` and returns the sum of its results. Without the preload, the import is
+// not resolved and the module is not instantiated.
+
+// SCALED: {{^}}31{{$}}
+// SWAPPED: {{^}}505{{$}}
+// UNRESOLVED: unknown import: `env::host_scale`
+
+builtin.module public @user {
+    builtin.function public extern("C") @host_scale(i32) -> i32 attributes { link_name = "host_scale" };
+    builtin.function public extern("wasm") @host_swap(i32, i64) -> (i64, i32) attributes { link_name = "host_swap" };
+
+    builtin.function public extern("C") @scaled(%x: i32) -> i32 {
+        %s = builtin.call @host_scale(%x) : extern("C") (i32) -> i32;
+        %one = arith.constant 1 : i32;
+        %r = arith.add %s, %one;
+        builtin.ret %r : (i32);
+    } attributes { wasm.export_name = "scaled" };
+
+    builtin.function public extern("C") @swapped(%x: i32) -> i64 {
+        %hundred = arith.constant 100 : i32;
+        %y = arith.mul %x, %hundred;
+        %wide = arith.sext %y <{ ty = i64 }>;
+        %b, %a = builtin.call @host_swap(%x, %wide) : extern("wasm") (i32, i64) -> (i64, i32);
+        %a_wide = arith.sext %a <{ ty = i64 }>;
+        %r = arith.add %b, %a_wide;
+        builtin.ret %r : (i64);
+    } attributes { wasm.export_name = "swapped" };
+};

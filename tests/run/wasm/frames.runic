@@ -1,0 +1,88 @@
+// RUN: runic-opt --target wasm32-unknown-unknown %s -o %t.wasm
+// RUN: wasmtime run --invoke locals %t.wasm 5 1 2>/dev/null | filecheck %s --check-prefix=EARLY
+// RUN: wasmtime run --invoke locals %t.wasm 5 0 2>/dev/null | filecheck %s --check-prefix=LATE
+// RUN: wasmtime run --invoke repeat %t.wasm 100000 2>/dev/null | filecheck %s --check-prefix=REPEAT
+// RUN: wasmtime run --invoke probe %t.wasm 2>/dev/null | filecheck %s --check-prefix=PROBE
+// RUN: runic-opt --target wasm32-unknown-unknown %s -p 'canonicalizer,cse,sccp,canonicalizer,dce' -o %t.opt.wasm
+// RUN: wasmtime run --invoke locals %t.opt.wasm 5 1 2>/dev/null | filecheck %s --check-prefix=EARLY
+// RUN: wasmtime run --invoke locals %t.opt.wasm 5 0 2>/dev/null | filecheck %s --check-prefix=LATE
+// RUN: wasmtime run --invoke repeat %t.opt.wasm 100000 2>/dev/null | filecheck %s --check-prefix=REPEAT
+// RUN: wasmtime run --invoke probe %t.opt.wasm 2>/dev/null | filecheck %s --check-prefix=PROBE
+
+// Locals in memory, on the shadow stack the backend lays out below the stack pointer's initial
+// value, 1048576. `@locals` (6c's program) keeps a `struct<i32, i64>` in its frame, stores `x`
+// and 9 in its fields, and passes a pointer to it to `@fill`, which doubles the first field and
+// returns the second plus one; `@locals` returns that at once when `early` is set (10), or adds
+// the first field to it after the `scf.if` the structuring makes (10 + 10 = 20): a return at each
+// depth, each restoring the stack pointer.
+//
+// `@repeat` calls `@locals` `n` times in a loop and returns the address of a local of `@probe`
+// before and after, and the sum of the results. A 16-byte frame left behind by each of 100,000
+// calls would take 1.6 MB, more than the stack holds; the address is the same both times, so
+// every call gave its frame back. `@probe` alone shows the address of its slot: the stack pointer
+// lowered by 16, the alignment of a frame.
+
+// EARLY: {{^}}10{{$}}
+// LATE: {{^}}20{{$}}
+// REPEAT: {{^}}1048560{{$}}
+// REPEAT-NEXT: {{^}}1048560{{$}}
+// REPEAT-NEXT: {{^}}1100000{{$}}
+// PROBE: {{^}}1048560{{$}}
+
+builtin.module public @frame {
+    builtin.function public extern("C") @fill(%s: ptr<struct<i32, i64>>) -> i32 {
+        %f0 = mem.gep %s, [0];
+        %f1 = mem.gep %s, [1];
+        %x = mem.load %f0;
+        %twice = arith.add %x, %x;
+        mem.store %twice, %f0;
+        %wide = mem.load %f1;
+        %low = arith.trunc %wide <{ ty = i32 }>;
+        %one = arith.constant 1 : i32;
+        %r = arith.add %low, %one;
+        builtin.ret %r : (i32);
+    };
+
+    builtin.function public extern("C") @locals(%x: i32, %early: i1) -> i32 {
+        %s = mem.alloca struct<i32, i64>;
+        %f0 = mem.gep %s, [0];
+        %f1 = mem.gep %s, [1];
+        mem.store %x, %f0;
+        %wide = arith.constant 9 : i64;
+        mem.store %wide, %f1;
+        %r = builtin.call @fill(%s) : extern("C") (ptr<struct<i32, i64>>) -> i32;
+        cf.cond_br %early ^leave, ^stay : (i1);
+    ^leave:
+        builtin.ret %r : (i32);
+    ^stay:
+        %v = mem.load %f0;
+        %sum = arith.add %v, %r;
+        builtin.ret %sum : (i32);
+    } attributes { wasm.export_name = "locals" };
+
+    builtin.function public extern("C") @probe() -> isize {
+        %slot = mem.alloca i32;
+        %address = mem.ptrtoint %slot;
+        builtin.ret %address : (isize);
+    } attributes { wasm.export_name = "probe" };
+
+    builtin.function public extern("C") @repeat(%n: i32) -> (isize, isize, i32) {
+        %before = builtin.call @probe() : extern("C") () -> isize;
+        %zero = arith.constant 0 : i32;
+        cf.br ^head(%zero, %zero : i32, i32);
+    ^head(%i: i32, %acc: i32):
+        %done = arith.cmpi uge %i, %n;
+        cf.cond_br %done ^exit, ^body : (i1);
+    ^body:
+        %one = arith.constant 1 : i32;
+        %early = arith.band %i, %one;
+        %flag = arith.trunc %early <{ ty = i1 }>;
+        %r = builtin.call @locals(%one, %flag) : extern("C") (i32, i1) -> i32;
+        %acc2 = arith.add %acc, %r;
+        %i2 = arith.add %i, %one;
+        cf.br ^head(%i2, %acc2 : i32, i32);
+    ^exit:
+        %after = builtin.call @probe() : extern("C") () -> isize;
+        builtin.ret %before, %after, %acc : (isize, isize, i32);
+    } attributes { wasm.export_name = "repeat" };
+};

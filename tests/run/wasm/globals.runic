@@ -1,0 +1,96 @@
+// RUN: runic-opt --target wasm32-unknown-unknown %s -o %t.wasm
+// RUN: wasmtime run --invoke bump %t.wasm 3 2>/dev/null | filecheck %s --check-prefix=BUMP
+// RUN: wasmtime run --invoke bump_thrice %t.wasm 3 2>/dev/null | filecheck %s --check-prefix=THRICE
+// RUN: wasmtime run --invoke follow %t.wasm 2>/dev/null | filecheck %s --check-prefix=FOLLOW
+// RUN: wasmtime run --invoke call_stored %t.wasm 21 2>/dev/null | filecheck %s --check-prefix=STORED
+// RUN: runic-opt --target wasm32-unknown-unknown %s -p 'canonicalizer,cse,sccp,canonicalizer,dce' -o %t.opt.wasm
+// RUN: wasmtime run --invoke bump %t.opt.wasm 3 2>/dev/null | filecheck %s --check-prefix=BUMP
+// RUN: wasmtime run --invoke bump_thrice %t.opt.wasm 3 2>/dev/null | filecheck %s --check-prefix=THRICE
+// RUN: wasmtime run --invoke follow %t.opt.wasm 2>/dev/null | filecheck %s --check-prefix=FOLLOW
+// RUN: wasmtime run --invoke call_stored %t.opt.wasm 21 2>/dev/null | filecheck %s --check-prefix=STORED
+
+// Global variables in linear memory, with the initial values the backend writes into data.
+//
+// `@bump` (6c's program) reads `@counter`, which starts at 5, adds to it, writes it back and
+// returns the old value and its address; `@bump_thrice` calls it three times in one instance and
+// returns the three old values and the final one, so each call sees the previous one's write.
+// `@pointer` holds the address of `@target` (7); `@follow` writes 8 through it and reads `@target`
+// back. `@stored` holds a function value, the table slot of `@double`, which the backend writes
+// into data; `@call_stored` loads it and calls through it. It is written in Wasm form
+// (`wasm.data_addr`, `wasm.load`, `wasm.call_indirect`, with the declarations of the memory and
+// the table the lowering names), since `mem.load` cannot read a function value: a function type
+// has no layout.
+
+// BUMP: {{^}}5{{$}}
+// BUMP-NEXT: {{^}}[[ADDRESS:[0-9]+]]{{$}}
+// THRICE: {{^}}5{{$}}
+// THRICE-NEXT: {{^}}8{{$}}
+// THRICE-NEXT: {{^}}11{{$}}
+// THRICE-NEXT: {{^}}14{{$}}
+// FOLLOW: {{^}}7{{$}}
+// FOLLOW-NEXT: {{^}}8{{$}}
+// STORED: {{^}}42{{$}}
+
+builtin.module public @global {
+    builtin.global_variable public @counter : i32 {
+        %five = arith.constant 5 : i32;
+        builtin.yield %five;
+    };
+
+    builtin.function public extern("wasm") @bump(%by: i32) -> (i32, ptr<i32>) {
+        %p = builtin.global_symbol @counter : ptr<i32>;
+        %old = mem.load %p;
+        %new = arith.add %old, %by;
+        mem.store %new, %p;
+        builtin.ret %old, %p : (i32, ptr<i32>);
+    } attributes { wasm.export_name = "bump" };
+
+    builtin.function public extern("wasm") @bump_thrice(%by: i32) -> (i32, i32, i32, i32) {
+        %a, %pa = builtin.call @bump(%by) : extern("wasm") (i32) -> (i32, ptr<i32>);
+        %b, %pb = builtin.call @bump(%by) : extern("wasm") (i32) -> (i32, ptr<i32>);
+        %c, %pc = builtin.call @bump(%by) : extern("wasm") (i32) -> (i32, ptr<i32>);
+        %now = mem.load %pc;
+        builtin.ret %a, %b, %c, %now : (i32, i32, i32, i32);
+    } attributes { wasm.export_name = "bump_thrice" };
+
+    builtin.global_variable private @target : i32 {
+        %seven = arith.constant 7 : i32;
+        builtin.yield %seven;
+    };
+
+    builtin.global_variable private @pointer : ptr<i32> {
+        %p = builtin.global_symbol @target : ptr<i32>;
+        builtin.yield %p;
+    };
+
+    builtin.function public extern("C") @follow() -> (i32, i32) {
+        %pp = builtin.global_symbol @pointer : ptr<ptr<i32>>;
+        %p = mem.load %pp;
+        %before = mem.load %p;
+        %eight = arith.constant 8 : i32;
+        mem.store %eight, %p;
+        %t = builtin.global_symbol @target : ptr<i32>;
+        %after = mem.load %t;
+        builtin.ret %before, %after : (i32, i32);
+    } attributes { wasm.export_name = "follow" };
+
+    builtin.function public extern("wasm") @double(%x: i32) -> i32 {
+        %r = arith.add %x, %x;
+        builtin.ret %r : (i32);
+    };
+
+    builtin.global_variable private @stored : (i32) -> i32 {
+        %f = builtin.function_ref @double : (i32) -> i32;
+        builtin.yield %f;
+    };
+
+    wasm.memory private declaration @__linear_memory : 0 attributes { link_name = "__linear_memory" };
+    wasm.table private declaration @__indirect_function_table : 0 x !wasm.funcref attributes { link_name = "__indirect_function_table" };
+
+    builtin.function public extern("wasm") @call_stored(%x: i32) -> i32 {
+        %a = wasm.data_addr @stored;
+        %f = wasm.load @__linear_memory, %a : i32;
+        %r = wasm.call_indirect @__indirect_function_table, %f(%x) : extern("wasm") (i32) -> i32;
+        builtin.ret %r : (i32);
+    } attributes { wasm.export_name = "call_stored" };
+};

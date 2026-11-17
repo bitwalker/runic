@@ -6,6 +6,10 @@ on it, and checks of what it prints. The suite is run by `litcheck` (a lit runne
 in one binary), which provides `filecheck` and `not` itself. The suite is written for `litcheck`
 0.5.0 or newer.
 
+Programs compiled to WebAssembly and run with `wasmtime` are a second suite, `tests/run`, with its
+own task (`cargo make test-run`), since its tests need the pinned `wasmtime`: see
+[`tests/run/README.md`](../run/README.md).
+
 ## Running it
 
 ```sh

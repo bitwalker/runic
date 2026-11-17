@@ -1,0 +1,51 @@
+// RUN: runic-opt --target wasm32-unknown-unknown %s -o %t.wasm
+// RUN: wasmtime run --invoke sum %t.wasm 0 2>/dev/null | filecheck %s --check-prefix=ZERO
+// RUN: wasmtime run --invoke sum %t.wasm 1 2>/dev/null | filecheck %s --check-prefix=ONE
+// RUN: wasmtime run --invoke sum %t.wasm 3 2>/dev/null | filecheck %s --check-prefix=THREE
+// RUN: wasmtime run --invoke sum %t.wasm 7 2>/dev/null | filecheck %s --check-prefix=SEVEN
+// RUN: wasmtime run --invoke sum %t.wasm 8 2>/dev/null | filecheck %s --check-prefix=ALL
+// RUN: runic-opt --target wasm32-unknown-unknown %s -p 'canonicalizer,cse,sccp,canonicalizer,dce' -o %t.opt.wasm
+// RUN: wasmtime run --invoke sum %t.opt.wasm 0 2>/dev/null | filecheck %s --check-prefix=ZERO
+// RUN: wasmtime run --invoke sum %t.opt.wasm 1 2>/dev/null | filecheck %s --check-prefix=ONE
+// RUN: wasmtime run --invoke sum %t.opt.wasm 3 2>/dev/null | filecheck %s --check-prefix=THREE
+// RUN: wasmtime run --invoke sum %t.opt.wasm 7 2>/dev/null | filecheck %s --check-prefix=SEVEN
+// RUN: wasmtime run --invoke sum %t.opt.wasm 8 2>/dev/null | filecheck %s --check-prefix=ALL
+
+// The sum of the first `n` words of an array held in a global variable: the loop of 6c's array
+// sum, over data the backend lays out at the address `builtin.global_symbol` gives. The words are
+// 1, 2, 4, .., 64 and -128 (`builtin.bytes` is written most significant byte first, so the hex
+// spells the last word first): the sum of the first `n` is `2^n - 1` below 8, and the sum of all
+// eight wraps to -1, which `wasmtime` prints signed.
+
+// ZERO: {{^}}0{{$}}
+// ONE: {{^}}1{{$}}
+// THREE: {{^}}7{{$}}
+// SEVEN: {{^}}127{{$}}
+// ALL: {{^}}-1{{$}}
+
+builtin.module public @sum {
+    builtin.global_variable private @numbers : array<i8; 32> {
+        %b = builtin.bytes "ffffff8000000040000000200000001000000008000000040000000200000001" : array<i8; 32>;
+        builtin.yield %b;
+    };
+
+    builtin.function public extern("C") @sum(%n: isize) -> i32 {
+        %base = builtin.global_symbol @numbers : ptr<array<i8; 32>>;
+        %p = mem.ptrcast %base : ptr<i32>;
+        %zero = arith.constant 0 : i32;
+        %first = arith.constant 0 : isize;
+        cf.br ^head(%first, %zero : isize, i32);
+    ^head(%i: isize, %acc: i32):
+        %done = arith.cmpi uge %i, %n;
+        cf.cond_br %done ^exit, ^body : (i1);
+    ^body:
+        %q = mem.gep %p, %i;
+        %v = mem.load %q;
+        %acc2 = arith.add %acc, %v;
+        %one = arith.constant 1 : isize;
+        %i2 = arith.add %i, %one;
+        cf.br ^head(%i2, %acc2 : isize, i32);
+    ^exit:
+        builtin.ret %acc : (i32);
+    } attributes { wasm.export_name = "sum" };
+};

@@ -32,6 +32,7 @@ mod emit {
 
     mod bodies;
     mod control;
+    mod coverage;
     mod errors;
     mod fixups;
     mod instructions;
@@ -40,6 +41,7 @@ mod emit {
     mod lowered;
     mod module;
     mod plan;
+    mod programs;
     mod sections;
     mod support;
     mod unit;

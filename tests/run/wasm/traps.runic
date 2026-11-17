@@ -1,0 +1,119 @@
+// RUN: runic-opt --target wasm32-unknown-unknown %s -o %t.wasm
+// RUN: wasmtime run --invoke sdiv_i8 %t.wasm -7 2 2>/dev/null | filecheck %s --check-prefix=I8
+// RUN: not wasmtime run --invoke sdiv_i8 %t.wasm -128 -1 2>&1 >/dev/null | filecheck %s --check-prefix=UNREACHABLE
+// RUN: wasmtime run --invoke sdiv_i32 %t.wasm -7 2 2>/dev/null | filecheck %s --check-prefix=I32
+// RUN: not wasmtime run --invoke sdiv_i32 %t.wasm -2147483648 -1 2>&1 >/dev/null | filecheck %s --check-prefix=OVERFLOW
+// RUN: wasmtime run --invoke sdiv_i64 %t.wasm -7 2 2>/dev/null | filecheck %s --check-prefix=I32
+// RUN: not wasmtime run --invoke sdiv_i64 %t.wasm -9223372036854775808 -1 2>&1 >/dev/null | filecheck %s --check-prefix=OVERFLOW
+// RUN: not wasmtime run --invoke udiv_i32 %t.wasm 7 0 2>&1 >/dev/null | filecheck %s --check-prefix=BYZERO
+// RUN: wasmtime run --invoke check %t.wasm 3 2>/dev/null | filecheck %s --check-prefix=CHECKED
+// RUN: not wasmtime run --invoke check %t.wasm 0 2>&1 >/dev/null | filecheck %s --check-prefix=UNREACHABLE
+// RUN: wasmtime run --invoke add_checked %t.wasm 2147483646 1 2>/dev/null | filecheck %s --check-prefix=SUM
+// RUN: not wasmtime run --invoke add_checked %t.wasm 2147483647 1 2>&1 >/dev/null | filecheck %s --check-prefix=UNREACHABLE
+// RUN: wasmtime run --invoke peek %t.wasm 1024 2>/dev/null | filecheck %s --check-prefix=PEEK
+// RUN: not wasmtime run --invoke peek %t.wasm -16 2>&1 >/dev/null | filecheck %s --check-prefix=MEMORY
+// RUN: wasmtime run --invoke call_through %t.wasm 1 21 2>/dev/null | filecheck %s --check-prefix=CALLED
+// RUN: not wasmtime run --invoke call_through %t.wasm 0 21 2>&1 >/dev/null | filecheck %s --check-prefix=NULL
+// RUN: not wasmtime run --invoke call_through %t.wasm 2 21 2>&1 >/dev/null | filecheck %s --check-prefix=TABLE
+// RUN: runic-opt --target wasm32-unknown-unknown %s -p 'canonicalizer,cse,sccp,canonicalizer,dce' -o %t.opt.wasm
+// RUN: wasmtime run --invoke sdiv_i8 %t.opt.wasm -7 2 2>/dev/null | filecheck %s --check-prefix=I8
+// RUN: not wasmtime run --invoke sdiv_i8 %t.opt.wasm -128 -1 2>&1 >/dev/null | filecheck %s --check-prefix=UNREACHABLE
+// RUN: wasmtime run --invoke sdiv_i32 %t.opt.wasm -7 2 2>/dev/null | filecheck %s --check-prefix=I32
+// RUN: not wasmtime run --invoke sdiv_i32 %t.opt.wasm -2147483648 -1 2>&1 >/dev/null | filecheck %s --check-prefix=OVERFLOW
+// RUN: wasmtime run --invoke sdiv_i64 %t.opt.wasm -7 2 2>/dev/null | filecheck %s --check-prefix=I32
+// RUN: not wasmtime run --invoke sdiv_i64 %t.opt.wasm -9223372036854775808 -1 2>&1 >/dev/null | filecheck %s --check-prefix=OVERFLOW
+// RUN: not wasmtime run --invoke udiv_i32 %t.opt.wasm 7 0 2>&1 >/dev/null | filecheck %s --check-prefix=BYZERO
+// RUN: wasmtime run --invoke check %t.opt.wasm 3 2>/dev/null | filecheck %s --check-prefix=CHECKED
+// RUN: not wasmtime run --invoke check %t.opt.wasm 0 2>&1 >/dev/null | filecheck %s --check-prefix=UNREACHABLE
+// RUN: wasmtime run --invoke add_checked %t.opt.wasm 2147483646 1 2>/dev/null | filecheck %s --check-prefix=SUM
+// RUN: not wasmtime run --invoke add_checked %t.opt.wasm 2147483647 1 2>&1 >/dev/null | filecheck %s --check-prefix=UNREACHABLE
+// RUN: wasmtime run --invoke peek %t.opt.wasm 1024 2>/dev/null | filecheck %s --check-prefix=PEEK
+// RUN: not wasmtime run --invoke peek %t.opt.wasm -16 2>&1 >/dev/null | filecheck %s --check-prefix=MEMORY
+// RUN: wasmtime run --invoke call_through %t.opt.wasm 1 21 2>/dev/null | filecheck %s --check-prefix=CALLED
+// RUN: not wasmtime run --invoke call_through %t.opt.wasm 0 21 2>&1 >/dev/null | filecheck %s --check-prefix=NULL
+// RUN: not wasmtime run --invoke call_through %t.opt.wasm 2 21 2>&1 >/dev/null | filecheck %s --check-prefix=TABLE
+
+// Traps, each with the message `wasmtime` prints on standard error (a trap exits with a status
+// that `not` takes as failure), and the same function on an input that does not trap.
+//
+// The minimum divided by -1 does not fit: at `i32` and `i64` the Wasm division traps with an
+// integer overflow; at `i8`, carried in an `i32`, the quotient 128 fits the carrier, and the
+// lowering's check of the quotient traps with `unreachable`, as `arith` requires. A division by
+// zero traps in the Wasm division. A failed `cf.assert` and a checked addition that overflows
+// trap with `unreachable`. A load at the address -16 (4294967280) is far outside the memory. A
+// function value is a slot of the function table: slot 1 holds `@double` (the only function a
+// `builtin.function_ref` names), slot 0 is empty, so that a null function pointer traps, and
+// slot 2 is past the end of the table.
+
+// I8: {{^}}253{{$}}
+// I32: {{^}}-3{{$}}
+// CHECKED: {{^}}3{{$}}
+// SUM: {{^}}2147483647{{$}}
+// PEEK: {{^}}42{{$}}
+// CALLED: {{^}}42{{$}}
+// UNREACHABLE: wasm trap: wasm `unreachable` instruction executed
+// OVERFLOW: wasm trap: integer overflow
+// BYZERO: wasm trap: integer divide by zero
+// MEMORY: wasm trap: out of bounds memory access
+// NULL: wasm trap: uninitialized element
+// TABLE: wasm trap: undefined element: out of bounds table access
+
+builtin.module public @traps {
+    builtin.function public extern("C") @sdiv_i8(%a: i8, %b: i8) -> i8 {
+        %r = arith.sdiv %a, %b;
+        builtin.ret %r : (i8);
+    } attributes { wasm.export_name = "sdiv_i8" };
+
+    builtin.function public extern("C") @sdiv_i32(%a: i32, %b: i32) -> i32 {
+        %r = arith.sdiv %a, %b;
+        builtin.ret %r : (i32);
+    } attributes { wasm.export_name = "sdiv_i32" };
+
+    builtin.function public extern("C") @sdiv_i64(%a: i64, %b: i64) -> i64 {
+        %r = arith.sdiv %a, %b;
+        builtin.ret %r : (i64);
+    } attributes { wasm.export_name = "sdiv_i64" };
+
+    builtin.function public extern("C") @udiv_i32(%a: i32, %b: i32) -> i32 {
+        %r = arith.udiv %a, %b;
+        builtin.ret %r : (i32);
+    } attributes { wasm.export_name = "udiv_i32" };
+
+    builtin.function public extern("C") @check(%x: i32) -> i32 {
+        %zero = arith.constant 0 : i32;
+        %nonzero = arith.cmpi ne %x, %zero;
+        cf.assert %nonzero, "x is not zero";
+        builtin.ret %x : (i32);
+    } attributes { wasm.export_name = "check" };
+
+    builtin.function public extern("C") @add_checked(%a: i32, %b: i32) -> i32 {
+        %r = arith.add %a, %b <{ overflow = #builtin.overflow<checked signed> }>;
+        builtin.ret %r : (i32);
+    } attributes { wasm.export_name = "add_checked" };
+
+    builtin.global_variable private @answer : i32 {
+        %v = arith.constant 42 : i32;
+        builtin.yield %v;
+    };
+
+    builtin.function public extern("C") @peek(%address: isize) -> i32 {
+        %p = mem.inttoptr %address : ptr<i32>;
+        %v = mem.load %p;
+        builtin.ret %v : (i32);
+    } attributes { wasm.export_name = "peek" };
+
+    builtin.function public extern("wasm") @double(%x: i32) -> i32 {
+        %r = arith.add %x, %x;
+        builtin.ret %r : (i32);
+    };
+
+    builtin.function public extern("wasm") @slot_of_double() -> ((i32) -> i32) {
+        %f = builtin.function_ref @double : (i32) -> i32;
+        builtin.ret %f : ((i32) -> i32);
+    } attributes { wasm.export_name = "slot_of_double" };
+
+    builtin.function public extern("wasm") @call_through(%f: (i32) -> i32, %x: i32) -> i32 {
+        %r = builtin.call_indirect %f(%x) : extern("wasm") (i32) -> i32;
+        builtin.ret %r : (i32);
+    } attributes { wasm.export_name = "call_through" };
+};

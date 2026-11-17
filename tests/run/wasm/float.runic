@@ -1,0 +1,108 @@
+// RUN: runic-opt --target wasm32-unknown-unknown %s -o %t.wasm
+// RUN: wasmtime run --invoke arith %t.wasm 1.5 -0.25 2>/dev/null | filecheck %s --check-prefix=ARITH
+// RUN: wasmtime run --invoke arith %t.wasm 1 0 2>/dev/null | filecheck %s --check-prefix=BYZERO
+// RUN: wasmtime run --invoke compare %t.wasm NaN 1 2>/dev/null | filecheck %s --check-prefix=NAN
+// RUN: wasmtime run --invoke compare %t.wasm 1 2 2>/dev/null | filecheck %s --check-prefix=ORDERED
+// RUN: wasmtime run --invoke to_int %t.wasm -1.5 2>/dev/null | filecheck %s --check-prefix=TONEG
+// RUN: wasmtime run --invoke to_int %t.wasm 1e10 2>/dev/null | filecheck %s --check-prefix=TOBIG
+// RUN: wasmtime run --invoke to_int %t.wasm NaN 2>/dev/null | filecheck %s --check-prefix=TONAN
+// RUN: wasmtime run --invoke from_int %t.wasm -1 2>/dev/null | filecheck %s --check-prefix=FROM
+// RUN: wasmtime run --invoke widths %t.wasm 0.1 2>/dev/null | filecheck %s --check-prefix=WIDTHS
+// RUN: runic-opt --target wasm32-unknown-unknown %s -p 'canonicalizer,cse,sccp,canonicalizer,dce' -o %t.opt.wasm
+// RUN: wasmtime run --invoke arith %t.opt.wasm 1.5 -0.25 2>/dev/null | filecheck %s --check-prefix=ARITH
+// RUN: wasmtime run --invoke arith %t.opt.wasm 1 0 2>/dev/null | filecheck %s --check-prefix=BYZERO
+// RUN: wasmtime run --invoke compare %t.opt.wasm NaN 1 2>/dev/null | filecheck %s --check-prefix=NAN
+// RUN: wasmtime run --invoke compare %t.opt.wasm 1 2 2>/dev/null | filecheck %s --check-prefix=ORDERED
+// RUN: wasmtime run --invoke to_int %t.opt.wasm -1.5 2>/dev/null | filecheck %s --check-prefix=TONEG
+// RUN: wasmtime run --invoke to_int %t.opt.wasm 1e10 2>/dev/null | filecheck %s --check-prefix=TOBIG
+// RUN: wasmtime run --invoke to_int %t.opt.wasm NaN 2>/dev/null | filecheck %s --check-prefix=TONAN
+// RUN: wasmtime run --invoke from_int %t.opt.wasm -1 2>/dev/null | filecheck %s --check-prefix=FROM
+// RUN: wasmtime run --invoke widths %t.opt.wasm 0.1 2>/dev/null | filecheck %s --check-prefix=WIDTHS
+
+// Floats. `@arith` adds, subtracts, multiplies, divides and negates `f64`s (a division by zero
+// is an infinity, not a trap). `@compare` compares `f32`s with `oeq`, `olt`, `une`, `uno` and
+// `ord`: every ordered predicate is false when an operand is a NaN, and every unordered one
+// true. `@to_int` converts an `f64` with `fptosi` and `fptoui` to `i32` and `i64`, which saturate
+// (a negative value is 0 unsigned, 1e10 is the largest `i32`, and a NaN is 0); the unsigned
+// largest `i32` prints as -1, since `wasmtime` prints an `i32` signed. `@from_int` converts the
+// `i32` -1 with `sitofp` and `uitofp`. `@widths` truncates an `f64` to `f32` and extends it back:
+// 0.1 is not exact in either. `wasmtime` prints a float as Rust's `{}` does: `-6`, `inf`, `NaN`.
+
+// ARITH: {{^}}1.25{{$}}
+// ARITH-NEXT: {{^}}1.75{{$}}
+// ARITH-NEXT: {{^}}-0.375{{$}}
+// ARITH-NEXT: {{^}}-6{{$}}
+// ARITH-NEXT: {{^}}-1.5{{$}}
+// BYZERO: {{^}}1{{$}}
+// BYZERO-NEXT: {{^}}1{{$}}
+// BYZERO-NEXT: {{^}}0{{$}}
+// BYZERO-NEXT: {{^}}inf{{$}}
+// BYZERO-NEXT: {{^}}-1{{$}}
+// NAN: {{^}}0{{$}}
+// NAN-NEXT: {{^}}0{{$}}
+// NAN-NEXT: {{^}}1{{$}}
+// NAN-NEXT: {{^}}1{{$}}
+// NAN-NEXT: {{^}}0{{$}}
+// ORDERED: {{^}}0{{$}}
+// ORDERED-NEXT: {{^}}1{{$}}
+// ORDERED-NEXT: {{^}}1{{$}}
+// ORDERED-NEXT: {{^}}0{{$}}
+// ORDERED-NEXT: {{^}}1{{$}}
+// TONEG: {{^}}-1{{$}}
+// TONEG-NEXT: {{^}}0{{$}}
+// TONEG-NEXT: {{^}}-1{{$}}
+// TONEG-NEXT: {{^}}0{{$}}
+// TOBIG: {{^}}2147483647{{$}}
+// TOBIG-NEXT: {{^}}-1{{$}}
+// TOBIG-NEXT: {{^}}10000000000{{$}}
+// TOBIG-NEXT: {{^}}10000000000{{$}}
+// TONAN: {{^}}0{{$}}
+// TONAN-NEXT: {{^}}0{{$}}
+// TONAN-NEXT: {{^}}0{{$}}
+// TONAN-NEXT: {{^}}0{{$}}
+// FROM: {{^}}-1{{$}}
+// FROM-NEXT: {{^}}4294967295{{$}}
+// FROM-NEXT: {{^}}-1{{$}}
+// WIDTHS: {{^}}0.1{{$}}
+// WIDTHS-NEXT: {{^}}0.10000000149011612{{$}}
+
+builtin.module public @float {
+    builtin.function public extern("C") @arith(%a: f64, %b: f64) -> (f64, f64, f64, f64, f64) {
+        %sum = arith.addf %a, %b;
+        %difference = arith.subf %a, %b;
+        %product = arith.mulf %a, %b;
+        %quotient = arith.divf %a, %b;
+        %negated = arith.negf %a;
+        builtin.ret %sum, %difference, %product, %quotient, %negated : (f64, f64, f64, f64, f64);
+    } attributes { wasm.export_name = "arith" };
+
+    builtin.function public extern("C") @compare(%a: f32, %b: f32) -> (i1, i1, i1, i1, i1) {
+        %oeq = arith.cmpf oeq %a, %b;
+        %olt = arith.cmpf olt %a, %b;
+        %une = arith.cmpf une %a, %b;
+        %uno = arith.cmpf uno %a, %b;
+        %ord = arith.cmpf ord %a, %b;
+        builtin.ret %oeq, %olt, %une, %uno, %ord : (i1, i1, i1, i1, i1);
+    } attributes { wasm.export_name = "compare" };
+
+    builtin.function public extern("C") @to_int(%a: f64) -> (i32, i32, i64, i64) {
+        %s32 = arith.fptosi %a <{ ty = i32 }>;
+        %u32 = arith.fptoui %a <{ ty = i32 }>;
+        %s64 = arith.fptosi %a <{ ty = i64 }>;
+        %u64 = arith.fptoui %a <{ ty = i64 }>;
+        builtin.ret %s32, %u32, %s64, %u64 : (i32, i32, i64, i64);
+    } attributes { wasm.export_name = "to_int" };
+
+    builtin.function public extern("C") @from_int(%a: i32) -> (f64, f64, f32) {
+        %signed = arith.sitofp %a <{ ty = f64 }>;
+        %unsigned = arith.uitofp %a <{ ty = f64 }>;
+        %narrow = arith.sitofp %a <{ ty = f32 }>;
+        builtin.ret %signed, %unsigned, %narrow : (f64, f64, f32);
+    } attributes { wasm.export_name = "from_int" };
+
+    builtin.function public extern("C") @widths(%a: f64) -> (f32, f64) {
+        %narrow = arith.fptrunc %a <{ ty = f32 }>;
+        %wide = arith.fpext %narrow <{ ty = f64 }>;
+        builtin.ret %narrow, %wide : (f32, f64);
+    } attributes { wasm.export_name = "widths" };
+};

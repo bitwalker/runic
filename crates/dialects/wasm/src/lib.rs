@@ -4,9 +4,9 @@
 //! (`builtin.local_variable`), and its data is `builtin.global_variable`. The dialect adds what a
 //! Wasm module has beyond those: operations that mirror the numeric, reference, memory, table and
 //! global instructions, and module-level operations for memories, tables, globals and tags. It
-//! follows release 3.0 of the WebAssembly core specification. Nothing lowers to the dialect and
-//! nothing emits a binary from it: it prints, parses, verifies, and is handled by the generic
-//! passes.
+//! follows release 3.0 of the WebAssembly core specification. It prints, parses, verifies, and is
+//! handled by the generic passes; `runic-codegen-wasm` lowers generic IR to it and emits a binary
+//! module from it.
 //!
 //! **Names.** One operation stands for each family of instructions that differ only by their
 //! type: `i32.div_s` is `wasm.div_s` on an `i32`, and so is `i64.div_s` on an `i64`. A dot of a
@@ -183,7 +183,8 @@
 //! second region only passes its operands through, which the text leaves out.
 //!
 //! `br_if` is not an operation. It is an `if` whose first region holds a `br` and whose second
-//! passes through (a later stage's emitter writes that shape as `br_if`):
+//! passes through (the emitter of `runic-codegen-wasm` writes that shape as `br_if` when the `if`
+//! and its `br` carry no values, and as the `if` it is otherwise):
 //!
 //! ```text,ignore
 //! wasm.block %a {

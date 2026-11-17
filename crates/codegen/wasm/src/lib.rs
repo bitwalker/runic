@@ -1,4 +1,5 @@
-//! The lowering of generic IR to Wasm form, the input of the WebAssembly backend.
+//! The WebAssembly backend: the lowering of generic IR to Wasm form, the emitter that makes a
+//! binary core module of it, and the backend `wasm` of the compile harness that runs both.
 //!
 //! **Wasm form.** A function in Wasm form is a `builtin.function` whose body is made of `wasm`
 //! operations (see `runic-dialect-wasm`) and of five builtin ones: `builtin.call`,
@@ -133,12 +134,70 @@
 //! lists them with their diagnostics, and the unit test `tests::coverage` fails for a source
 //! operation that is neither lowered nor listed.
 //!
-//! **The emitter.** [emit] turns a module in Wasm form into a binary core WebAssembly module. It
-//! first builds a [module description](emit::desc::ModuleDesc), in which every reference between
-//! entities is a recorded fix-up; the [complete-module writer](emit::write::write_module) assigns
-//! the index spaces, resolves the fix-ups and writes the binary with `wasm-encoder`, and
-//! [emit::validate::validate] checks it with `wasmparser` under the backend's feature baseline.
-//! With the `std` feature, [text::print] renders a module in the text format with `wasmprinter`.
+//! **The emitter.** [emit::emit_module] turns a `builtin.world`, `builtin.component` or
+//! `builtin.module` in Wasm form into the bytes of a validated core WebAssembly module. It first
+//! builds a [module description](emit::desc::ModuleDesc), in which nothing is an index: every
+//! reference from a body, a constant expression or data to another entity (a function, a global, a
+//! table, a type, a data address, a table slot) is a placeholder with a recorded
+//! [fix-up](emit::desc::Fixup). The [layout](emit::layout) places the stack, the data and the table
+//! slots; the [complete-module writer](emit::write::write_module) assigns the index spaces, resolves
+//! the fix-ups and writes the binary with `wasm-encoder`; and [emit::validate::validate] checks it
+//! with `wasmparser` under the [feature baseline](emit::validate::baseline) (mutable globals, sign
+//! extension, saturating conversions, bulk memory, multi-value, reference types, tail calls). A
+//! module that does not validate is a defect of the backend, reported and never delivered; what
+//! the baseline excludes (a second memory, `wasm.tag`, an extended constant expression) is an error
+//! naming the operation.
+//!
+//! Code is written in the order of the IR ([emit::plan]): a value used once, by the next operation,
+//! stays on the Wasm stack; a constant is written again at each use; any other value waits in a
+//! local, reused by type ([emit::locals]). `%s = wasm.add %x, %y; %p = wasm.mul %s, %k; %d =
+//! wasm.sub %p, %s` with `%k = wasm.const 3 : i32` is
+//!
+//! ```text
+//! local.get 0
+//! local.get 1
+//! i32.add
+//! local.set 2
+//! local.get 2
+//! i32.const 3
+//! i32.mul
+//! local.get 2
+//! i32.sub
+//! ```
+//!
+//! **One compilation, one module.** Every `builtin.module` under the root is part of the one module
+//! emitted, linked by link name ([emit::collect]): a declaration is the definition of its link name
+//! when the unit has one, and an import (from `env`, or the module `wasm.import_module` names, with
+//! the link name as the field) otherwise. Only what `wasm.export_name` names is exported. The
+//! module needs no host: the layout defines the memory, the stack pointer and the function table
+//! the lowering declares as imports from `env`. With a frame in the unit, linear memory is
+//!
+//! ```text
+//! 0 ............ stack size   the shadow stack, growing down from `__stack_pointer`
+//! stack size ... data end     every builtin.global_variable, aligned by its type
+//! data end ..... heap base    rounded up to 16
+//! ```
+//!
+//! and the data starts at 1024 without one. The undefined data symbols `__data_end`,
+//! `__heap_base`, `__start_<s>` and `__stop_<s>` are addresses the layout gives. Table slots start
+//! at 1, so that a null function pointer traps. A global variable's initializer is folded to
+//! bytes ([emit::data]): constants, the address of another global variable, the slot of a
+//! function, or an operation whose fold gives one of those.
+//!
+//! **The backend.** With the `std` feature, [WasmBackend] is the backend `wasm` of `runic-compile`
+//! for `wasm32-unknown-unknown` ([backend]): it states the data layout of the C ABI of wasm32, adds
+//! the four passes of the lowering (with `cse` and `dce` before `wasm-verify-form` above `-O0`),
+//! and emits at the checkpoints `wasm.wat` (the text, through [text::print] and `wasmprinter`) and
+//! `wasm.module` (the binary, the default stop point), with the option `--wasm-stack-size`:
+//!
+//! ```text
+//! runic-opt program.runic --target wasm32-unknown-unknown -o program.core.wasm
+//! runic-opt program.runic --target wasm32-unknown-unknown --stop-after wat
+//! wasmtime run --invoke main program.core.wasm
+//! ```
+//!
+//! Not emitted yet: relocatable objects, integers wider than 64 bits, components, start functions,
+//! exported data and DWARF. The README of the crate says more of each part.
 
 #![no_std]
 #![deny(warnings)]

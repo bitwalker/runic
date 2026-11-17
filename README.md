@@ -11,8 +11,9 @@ The IR has a textual form, written in files with the extension `.runic`, in two 
 and printed: a custom form, defined per operation, and a generic form that every operation has.
 
 What exists today is the core IR, its dialects and passes, the compiler harness and the command
-line a compiler embeds, and `runic-opt`. No workspace member is a frontend or a backend of a real
-language or target: a compiler built on Runic brings its own. The toy language and machines the
+line a compiler embeds, `runic-opt`, and one backend for a real target, WebAssembly
+(`wasm32-unknown-unknown`). No workspace member is a frontend of a real language: a compiler built
+on Runic brings its own. The toy language and machines the
 harness is tested against are part of `runic-compile`, behind its `testing` feature.
 
 ## The crates
@@ -28,7 +29,7 @@ The workspace has nineteen members:
 | `runic-dialect-mem` | `crates/dialects/mem` | byte-addressed memory, typed and opaque pointers |
 | `runic-dialect-ub` | `crates/dialects/ub` | undefined behaviour (`ub.poison`, `ub.unreachable`) |
 | `runic-dialect-wasm` | `crates/dialects/wasm` | WebAssembly's instructions as SSA operations (numeric, memory, global, table and reference operations, indirect calls, structured control flow with `wasm.block`, `wasm.loop`, `wasm.if`, `wasm.br` and `wasm.br_table`) and module-level operations for memories, tables, globals, element segments and tags |
-| `runic-codegen-wasm` | `crates/codegen/wasm` | the lowering of generic IR to Wasm form, the input of the WebAssembly backend: the passes `convert-to-wasm` (a dialect conversion to `wasm` operations and Wasm value types, with the `"wasm"` and `"C"` calling conventions), `wasm-lower-frames` and `wasm-verify-form`, and the pipeline that runs them after `cfg-to-scf` |
+| `runic-codegen-wasm` | `crates/codegen/wasm` | the WebAssembly backend: the lowering of generic IR to Wasm form (the passes `convert-to-wasm`, a dialect conversion to `wasm` operations and Wasm value types with the `"wasm"` and `"C"` calling conventions, `wasm-lower-frames` and `wasm-verify-form`, run after `cfg-to-scf`), the emitter that makes a validated binary core module of it (linking the modules of a compilation, laying out memory, the stack and the function table), and the backend `wasm` of the harness for `wasm32-unknown-unknown` |
 | `runic-analysis` | `crates/analysis` | the data-flow analysis framework and its analyses |
 | `runic-transform` | `crates/transform` | transformation passes and utilities |
 | `runic-compile` | `crates/compile` | the compiler harness: a request that says what one compilation is asked to do, the stages it runs through (frontends, the optimization pipeline, backends), the checkpoints and outputs, and the toy language `calc` and machines `stackvm` and `altvm` behind the `testing` feature |
@@ -102,8 +103,35 @@ input is compiled by `runic-compile` instead of being parsed as IR, and the exit
 as for IR. `--list-stages` lists the registered frontends and backends. With the cargo feature
 `toy` (which `cargo make runic-opt` turns on), the tool registers the toy language `calc` and the
 toy machines `stackvm` and `altvm`, so that the path can be run and tested. With the feature `wasm`
-(also on in `cargo make runic-opt`) it registers the `wasm` dialect and the passes `convert-to-wasm`,
-`wasm-lower-frames` and `wasm-verify-form` of `runic-codegen-wasm`.
+(also on in `cargo make runic-opt`) it registers the `wasm` dialect, the passes `convert-to-wasm`,
+`wasm-lower-frames` and `wasm-verify-form` of `runic-codegen-wasm`, and its backend `wasm`.
+
+### Compiling to WebAssembly
+
+A program in textual IR whose functions use `arith`, `cf`, `mem` and `builtin`, with the functions
+to export named by `wasm.export_name`:
+
+```
+builtin.module public @first {
+    builtin.function public extern("C") @add(%a: i32, %b: i32) -> i32 {
+        %r = arith.add %a, %b;
+        builtin.ret %r : (i32);
+    } attributes { wasm.export_name = "add" };
+};
+```
+
+compiles to a core WebAssembly module with `--target wasm32-unknown-unknown`, which runs under any
+engine, such as [`wasmtime`](https://wasmtime.dev) (`cargo make wasmtime` installs the version the
+tests use):
+
+```console
+$ bin/runic-opt first.runic --target wasm32-unknown-unknown -o first.core.wasm
+$ wasmtime run --invoke add first.core.wasm 2 40 2>/dev/null
+42
+```
+
+`--stop-after wat` prints the module as text instead. The backend, the layout of the module and
+what it does not emit yet are described in [`crates/codegen/wasm/README.md`](crates/codegen/wasm/README.md).
 
 ### Tracing
 
@@ -210,25 +238,28 @@ as a prefix: the field `keep_subtractions` of `stackvm` is `-Z stackvm-keep-subt
 
 ## Testing
 
-There are two test suites, the Rust tests and the lit suite, and unit tests of the Python scripts
-in `tools/`:
+There are three test suites, the Rust tests, the lit suite and the run suite, and unit tests of
+the Python scripts in `tools/`:
 
 ```sh
 cargo test --workspace     # the Rust tests
 cargo make test            # the Rust tests under cargo-nextest, and the tests of the Python scripts in tools/
 cargo make test-lit        # builds runic-opt and toyc into bin/ and runs the lit suite in tests/lit
-cargo make test-all        # the two above, then removes old build output from target/
+cargo make test-run        # builds runic-opt, installs wasmtime 50.0.2, runs the programs in tests/run
+cargo make test-all        # the three above, then removes old build output from target/
 ```
 
-`cargo make test` installs `cargo-nextest`, and `cargo make test-lit` installs `litcheck`, when
-they are missing (this needs the network). At its end, `cargo make test-all` deletes old
+`cargo make test` installs `cargo-nextest`, `cargo make test-lit` installs `litcheck`, and
+`cargo make test-run` installs `wasmtime-cli` 50.0.2 (a build from source, once), when they are
+missing (this needs the network). At its end, `cargo make test-all` deletes old
 build output from `target/` (`tools/sweep-target.py`): in `target/debug`, what the workspace's build
 and tests no longer use and is older than a day (`--age`); in the directories it cannot check (other
 profiles, such as `test-release`, and nested caches), whatever is older than 14 days
 (`--cache-age`), in use or not. Set `RUNIC_SKIP_SWEEP` to skip that. The lit suite has two areas for the harness:
 `tests/lit/harness/` runs `runic-opt` on `calc` programs and with `--target`, and `tests/lit/toyc/`
 runs `toyc`. How the lit suite is written and run, and how to run one test or one directory, is in
-[`tests/lit/README.md`](tests/lit/README.md).
+[`tests/lit/README.md`](tests/lit/README.md); the run suite, whole programs compiled to WebAssembly
+and run with `wasmtime`, is described in [`tests/run/README.md`](tests/run/README.md).
 
 How to contribute, and the lint and format commands, are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 

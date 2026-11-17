@@ -1,0 +1,114 @@
+// RUN: runic-opt --target wasm32-unknown-unknown %s -o %t.wasm
+// RUN: wasmtime run --invoke machine %t.wasm 7 0 2>/dev/null | filecheck %s --check-prefix=FROM0
+// RUN: wasmtime run --invoke machine %t.wasm 7 1 2>/dev/null | filecheck %s --check-prefix=FROM1
+// RUN: wasmtime run --invoke machine %t.wasm 7 2 2>/dev/null | filecheck %s --check-prefix=FROM2
+// RUN: wasmtime run --invoke machine %t.wasm 7 4 2>/dev/null | filecheck %s --check-prefix=FROM4
+// RUN: wasmtime run --invoke machine %t.wasm 7 -8 2>/dev/null | filecheck %s --check-prefix=FROMM8
+// RUN: wasmtime run --invoke countdown %t.wasm 1000000 0 2>/dev/null | filecheck %s --check-prefix=COUNTDOWN
+// RUN: not wasmtime run --invoke count_by_calls %t.wasm 1000000 0 2>&1 >/dev/null | filecheck %s --check-prefix=EXHAUSTED
+// RUN: runic-opt --target wasm32-unknown-unknown %s -p 'canonicalizer,cse,sccp,canonicalizer,dce' -o %t.opt.wasm
+// RUN: wasmtime run --invoke machine %t.opt.wasm 7 0 2>/dev/null | filecheck %s --check-prefix=FROM0
+// RUN: wasmtime run --invoke machine %t.opt.wasm 7 1 2>/dev/null | filecheck %s --check-prefix=FROM1
+// RUN: wasmtime run --invoke machine %t.opt.wasm 7 2 2>/dev/null | filecheck %s --check-prefix=FROM2
+// RUN: wasmtime run --invoke machine %t.opt.wasm 7 4 2>/dev/null | filecheck %s --check-prefix=FROM4
+// RUN: wasmtime run --invoke machine %t.opt.wasm 7 -8 2>/dev/null | filecheck %s --check-prefix=FROMM8
+// RUN: wasmtime run --invoke countdown %t.opt.wasm 1000000 0 2>/dev/null | filecheck %s --check-prefix=COUNTDOWN
+// RUN: not wasmtime run --invoke count_by_calls %t.opt.wasm 1000000 0 2>&1 >/dev/null | filecheck %s --check-prefix=EXHAUSTED
+
+// The state machine of 6c's programs, in the shape compiled Erlang has: three functions under
+// `extern("wasm")` that each take a process and an argument, `(i32, i64)`, test one bit of the
+// argument, and either set it and tail-call the next state or return two results, a flag and the
+// argument (an `i1` is an `i32` in the signature). `@state_a` (bit 0 clear: add 1 and go to
+// `@state_b`; else return true) -> `@state_b` (bit 1 clear: add 2 and go to `@state_c`; else
+// return false) -> `@state_c` (bit 2 clear: add 4 and go to `@state_a`; else return false).
+// `wasmtime` prints the two results on two lines.
+//
+// `@countdown` tail-calls itself a million times, adding each count, and returns the sum
+// 500000500000: a tail call does not grow the stack. `@count_by_calls` is the same function with
+// an ordinary call, and exhausts the stack.
+
+// FROM0: {{^}}1{{$}}
+// FROM0-NEXT: {{^}}7{{$}}
+// FROM1: {{^}}1{{$}}
+// FROM1-NEXT: {{^}}1{{$}}
+// FROM2: {{^}}0{{$}}
+// FROM2-NEXT: {{^}}3{{$}}
+// FROM4: {{^}}0{{$}}
+// FROM4-NEXT: {{^}}7{{$}}
+// FROMM8: {{^}}1{{$}}
+// FROMM8-NEXT: {{^}}-1{{$}}
+// COUNTDOWN: {{^}}500000500000{{$}}
+// EXHAUSTED: wasm trap: call stack exhausted
+
+builtin.module public @machine {
+    builtin.function public extern("wasm") @state_a(%proc: i32, %arg: i64) -> (i1, i64) {
+        %bit = arith.constant 1 : i64;
+        %low = arith.band %arg, %bit;
+        %zero = arith.constant 0 : i64;
+        %even = arith.cmpi eq %low, %zero;
+        cf.cond_br %even ^advance, ^done : (i1);
+    ^advance:
+        %next = arith.add %arg, %bit;
+        builtin.tail_call @state_b(%proc, %next) : extern("wasm") (i32, i64) -> (i1, i64);
+    ^done:
+        %yes = arith.constant 1 : i1;
+        builtin.ret %yes, %arg : (i1, i64);
+    } attributes { wasm.export_name = "machine" };
+
+    builtin.function public extern("wasm") @state_b(%proc: i32, %arg: i64) -> (i1, i64) {
+        %bit = arith.constant 2 : i64;
+        %low = arith.band %arg, %bit;
+        %zero = arith.constant 0 : i64;
+        %clear = arith.cmpi eq %low, %zero;
+        cf.cond_br %clear ^advance, ^done : (i1);
+    ^advance:
+        %next = arith.add %arg, %bit;
+        builtin.tail_call @state_c(%proc, %next) : extern("wasm") (i32, i64) -> (i1, i64);
+    ^done:
+        %no = arith.constant 0 : i1;
+        builtin.ret %no, %arg : (i1, i64);
+    };
+
+    builtin.function public extern("wasm") @state_c(%proc: i32, %arg: i64) -> (i1, i64) {
+        %bit = arith.constant 4 : i64;
+        %low = arith.band %arg, %bit;
+        %zero = arith.constant 0 : i64;
+        %clear = arith.cmpi eq %low, %zero;
+        cf.cond_br %clear ^advance, ^done : (i1);
+    ^advance:
+        %next = arith.add %arg, %bit;
+        builtin.tail_call @state_a(%proc, %next) : extern("wasm") (i32, i64) -> (i1, i64);
+    ^done:
+        %no = arith.constant 0 : i1;
+        builtin.ret %no, %arg : (i1, i64);
+    };
+
+    builtin.function public extern("wasm") @countdown(%n: i32, %acc: i64) -> i64 {
+        %zero = arith.constant 0 : i32;
+        %done = arith.cmpi eq %n, %zero;
+        cf.cond_br %done ^exit, ^again : (i1);
+    ^again:
+        %wide = arith.zext %n <{ ty = i64 }>;
+        %acc2 = arith.add %acc, %wide;
+        %one = arith.constant 1 : i32;
+        %n2 = arith.sub %n, %one;
+        builtin.tail_call @countdown(%n2, %acc2) : extern("wasm") (i32, i64) -> i64;
+    ^exit:
+        builtin.ret %acc : (i64);
+    } attributes { wasm.export_name = "countdown" };
+
+    builtin.function public extern("wasm") @count_by_calls(%n: i32, %acc: i64) -> i64 {
+        %zero = arith.constant 0 : i32;
+        %done = arith.cmpi eq %n, %zero;
+        cf.cond_br %done ^exit, ^again : (i1);
+    ^again:
+        %wide = arith.zext %n <{ ty = i64 }>;
+        %acc2 = arith.add %acc, %wide;
+        %one = arith.constant 1 : i32;
+        %n2 = arith.sub %n, %one;
+        %r = builtin.call @count_by_calls(%n2, %acc2) : extern("wasm") (i32, i64) -> i64;
+        builtin.ret %r : (i64);
+    ^exit:
+        builtin.ret %acc : (i64);
+    } attributes { wasm.export_name = "count_by_calls" };
+};

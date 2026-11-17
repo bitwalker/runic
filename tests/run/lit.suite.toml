@@ -1,0 +1,7 @@
+name = "run"
+patterns = ["*.runic"]
+
+# Without `pipefail`, a RUN line `wasmtime .. | filecheck %s` passes whenever filecheck does, even
+# when wasmtime fails: the status of a pipeline would be that of its last command.
+[format.shtest]
+pipefail = true

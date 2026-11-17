@@ -1,0 +1,24 @@
+// RUN: runic-opt --target wasm32-unknown-unknown %s -o %t.wasm
+// RUN: wasmtime run --invoke host_scale %t.wasm 14 2>/dev/null | filecheck %s --check-prefix=SCALE
+// RUN: wasmtime run --invoke host_swap %t.wasm 1 -2 2>/dev/null | filecheck %s --check-prefix=SWAP
+
+// The module `imports.runic` imports from `env`: it exports `host_scale`, three times its
+// argument, and `host_swap`, its two arguments in the other order (under `extern("wasm")`, with
+// two results). `imports.runic` compiles this file to a module of its own and runs with it
+// preloaded under the name `env`; here it runs alone.
+
+// SCALE: {{^}}42{{$}}
+// SWAP: {{^}}-2{{$}}
+// SWAP-NEXT: {{^}}1{{$}}
+
+builtin.module public @provider {
+    builtin.function public extern("C") @scale(%x: i32) -> i32 {
+        %three = arith.constant 3 : i32;
+        %r = arith.mul %x, %three;
+        builtin.ret %r : (i32);
+    } attributes { wasm.export_name = "host_scale" };
+
+    builtin.function public extern("wasm") @swap(%a: i32, %b: i64) -> (i64, i32) {
+        builtin.ret %b, %a : (i64, i32);
+    } attributes { wasm.export_name = "host_swap" };
+};

@@ -384,7 +384,7 @@ args = ["audit"]
 [tasks.test-all]
 category = "Test"
 description = "Runs the complete set of compiler tests"
-run_task = { name = ["test-sweep", "test-coverage-script", "test-rust", "test-lit"], fork = true, cleanup_task = "sweep-flow" }
+run_task = { name = ["test-sweep", "test-coverage-script", "test-rust", "test-lit", "test-run"], fork = true, cleanup_task = "sweep-flow" }
 
 [tasks.test]
 category = "Test"
@@ -456,6 +456,33 @@ args = [
 ]
 dependencies = ["litcheck", "runic-opt", "toyc"]
 
+[tasks.test-run]
+category = "Test"
+description = "Builds runic-opt into bin and runs the run suite of tests/run, whose programs are compiled to Wasm and run with the pinned wasmtime"
+# litcheck gives its tests the directories of `--path` in front of the `PATH` it was started
+# with; the directory of the `wasmtime` checked here comes first, so it is the one the tests run.
+env = { RUNIC_WASMTIME_VERSION = "50.0.2" }
+script_runner = "bash"
+script = ['''
+set -euo pipefail
+wanted="wasmtime ${RUNIC_WASMTIME_VERSION}"
+if ! wasmtime=$(command -v wasmtime); then
+    echo "the run suite needs ${wanted} (cargo make wasmtime), and no wasmtime is on the PATH" >&2
+    exit 1
+fi
+version=$("${wasmtime}" --version | cut -d' ' -f1-2)
+echo "${wasmtime}: ${version}"
+if [[ "${version}" != "${wanted}" ]]; then
+    echo "the run suite needs ${wanted} (cargo make wasmtime), and ${wasmtime} is ${version}" >&2
+    exit 1
+fi
+exec litcheck lit run --verbose \
+    --path "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/bin" \
+    --path "$(dirname "${wasmtime}")" \
+    "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/tests/run"
+''']
+dependencies = ["litcheck", "runic-opt", "wasmtime"]
+
 [tasks.lit]
 category = "Test"
 description = "Builds runic-opt and toyc into bin and runs `litcheck lit` with the arguments given"
@@ -478,6 +505,18 @@ category = "Test"
 description = "Set up the litcheck utility"
 # The version the lit suite (tests/lit) is written for.
 install_crate = { crate_name = "litcheck", binary = "litcheck", min_version = "0.5.0", test_arg = "--help" }
+
+[tasks.wasmtime]
+category = "Test"
+description = "Set up the wasmtime command line at the version the run suite (tests/run) is written for"
+# An exact `version` makes cargo-make compare the version recorded in `$CARGO_HOME/.crates.toml`
+# (or printed by `wasmtime --version`) with this one, and install with
+# `cargo install --force --locked --version 50.0.2 wasmtime-cli` when it is missing or differs:
+# another installed version is replaced. The build is from crates.io sources and takes a while once;
+# it runs in cargo's own temporary directory, not in the workspace's `target`, and that is removed
+# when the install finishes.
+env = { CARGO_TARGET_DIR = { unset = true } }
+install_crate = { crate_name = "wasmtime-cli", binary = "wasmtime", test_arg = "--version", version = "50.0.2" }
 
 [tasks.docs]
 category = "Documentation"

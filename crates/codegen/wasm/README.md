@@ -1,9 +1,15 @@
 # runic-codegen-wasm
 
-The lowering of generic Runic IR (the dialects `arith`, `cf`, `mem`, `scf`, `ub` and `builtin`)
-to _Wasm form_, the input of the WebAssembly backend. The result of the lowering is IR, checked as
-text; the emitter and the backend `wasm` (see [The backend](#the-backend)) make a binary module of
-it.
+The WebAssembly backend of Runic: the lowering of generic Runic IR (the dialects `arith`, `cf`,
+`mem`, `scf`, `ub` and `builtin`) to _Wasm form_, the emitter that makes a binary core
+WebAssembly module of lowered IR, and the backend `wasm` of the compile harness that runs both.
+
+```sh
+runic-opt program.runic --target wasm32-unknown-unknown -o program.core.wasm
+wasmtime run --invoke main program.core.wasm 1 2
+```
+
+The lowering alone, as passes (its result is IR, checked as text):
 
 ```rust
 let mut passes = PassManager::on::<Module>(context.clone(), Nesting::Implicit);
@@ -26,21 +32,173 @@ runic-opt program.runic -p 'cfg-to-scf{exits=in-place},wasm-lower-frames,convert
 runic-opt program.runic --target wasm32-unknown-unknown -o program.core.wasm
 runic-opt program.runic --target wasm32-unknown-unknown --stop-after wat
 runic-opt program.runic --target wasm32-unknown-unknown --emit wat=program.wat --emit module=program.core.wasm
+runic-opt program.runic --target wasm32-unknown-unknown --wasm-stack-size 65536 -o program.core.wasm
 ```
 
 - **Data layout**: the C ABI of wasm32: little-endian, pointers and `isize` of 32 bits, `i8`,
   `i16`, `i32`, `i64` and `i128` aligned to 1, 2, 4, 8 and 16 bytes, `f32` to 4 and `f64` to 8.
+  A module that states no `data_layout` takes this one.
 - **Passes**: `cfg-to-scf{exits=in-place}`, `wasm-lower-frames`, `convert-to-wasm`, then `cse` and
-  `dce` when the optimization level is above `0`, then `wasm-verify-form`.
+  `dce` when the optimization level is above `0`, then `wasm-verify-form`. `cse` and `dce` remove
+  repeated and dead operations; they do not remove the unused results of a `wasm.if` or a
+  `wasm.loop` (the flags `cfg-to-scf` leaves), which the emitter drops.
 - **Checkpoints**, in order: `wasm.wat` (alias `wat`, a `.wat` file), the text of the module, and
   `wasm.module` (alias `module`, a `.core.wasm` file), the binary, which is the default stop point.
   Both are the same bytes, emitted once and validated.
 - **Option**: `--wasm-stack-size <BYTES>`, the size of the shadow stack at the start of linear
   memory and the initial value of `__stack_pointer`; a multiple of 16, 1 MiB by default.
 - With no debug information asked for (`--debug=none`), the module has no `name` section; it is
-  named after the unit otherwise.
+  named after the unit otherwise, and each entity after its link name.
 
-What the emitter cannot emit fails the compilation with a diagnostic that names the operation.
+`runic-opt` compiles at `-O0`; a compiler built on the driver crate passes `-O`. What the emitter
+cannot emit fails the compilation with a diagnostic that names the operation. The programs of
+`tests/run` are compiled this way and run with `wasmtime` (`cargo make test-run`).
+
+## The emitter
+
+`emit::emit_module` takes a `builtin.world`, a `builtin.component` or a `builtin.module` in Wasm
+form and returns the bytes of a validated core module. It first builds a _module description_
+(`emit::desc::ModuleDesc`): the types, imports, functions, tables, memories, globals, exports,
+element segments and data of the module, and the encoded body of each function. Nothing in the
+description is an index: every reference from a body, a constant expression or data to another
+entity (a function, a global, a table, a type, a data address, a table slot) is written as a
+placeholder with a recorded _fix-up_, which says what it names and how it is encoded.
+
+The layout then places the stack, the data and the table slots, and the complete-module writer
+assigns the index spaces (imports first, then definitions, in the order the IR has them),
+resolves every fix-up to its index, address or slot, and writes the module with `wasm-encoder`,
+with a `name` section and a `producers` section. The result is checked by `wasmparser` under the
+feature baseline before it is returned: a module that does not validate is a defect of the
+backend, reported with the validator's message and offset, and is never delivered.
+
+### Where values wait
+
+Code is written in the order of the IR; nothing is moved. In each block, a value used once, by the
+next operation, as the operand that operation pushes last at that point, stays on the Wasm stack
+(the operations form expression trees). A constant (`wasm.const`, `wasm.constf`, `wasm.ref_null`,
+`wasm.data_addr`, `wasm.func_index`) is written again at each use. Any other value is set into a
+local after its instruction, or kept with `local.tee` when it also stays on the stack, and read
+with `local.get` at each use; an unused result is dropped. Locals are reused by type once a value
+is dead. This function:
+
+```
+builtin.function public extern("C") @f(%x: i32, %y: i32) -> i32 {
+    %s = wasm.add %x, %y;
+    %k = wasm.const 3 : i32;
+    %p = wasm.mul %s, %k;
+    %d = wasm.sub %p, %s;
+    %r = wasm.add %d, %k;
+    builtin.ret %r : (i32);
+} attributes { wasm.export_name = "f" };
+```
+
+is emitted as (`--stop-after wat`):
+
+```
+(func $m::f (;0;) (type 0) (param i32 i32) (result i32)
+  (local i32)
+  local.get 0
+  local.get 1
+  i32.add
+  local.set 2
+  local.get 2
+  i32.const 3
+  i32.mul
+  local.get 2
+  i32.sub
+  i32.const 3
+  i32.add
+)
+```
+
+`%s` has two users, so it waits in a local; `%p` and `%d` stay on the stack; `%k` is written at
+both of its uses. A structured construct (`wasm.block`, `wasm.loop`, `wasm.if`) takes its inputs
+from the stack, a value used inside a loop that was defined outside it keeps its local until the
+loop ends, and an `if` whose region is one `br` with no values is written as `br_if`.
+
+### One compilation, one module
+
+Every `builtin.module` under the root, at any depth, is part of the one module emitted: a nested
+module is a namespace, not a separate binary. The modules are linked by link name (a symbol's
+`link_name`, or its absolute path, such as `m::f`, when it has none), as a linker would link
+the objects of one program:
+
+- two definitions that other modules may name (`public` or `internal`) with one link name are an
+  error naming both;
+- a declaration is the definition of its link name when the unit has one, and its kind and type
+  must agree with it;
+- a declaration with no definition is an import (below).
+
+### The layout
+
+The emitted module needs no host: it defines its memory, its stack pointer and its function table.
+The lowering declares them as imports from `env` (`__linear_memory`, `__stack_pointer`,
+`__indirect_function_table`), and the layout makes each a definition, as `wasm-ld --stack-first`
+does for one program:
+
+```
+0 ............ stack size   the shadow stack, growing down; `__stack_pointer` starts at the
+                            stack size (`--wasm-stack-size`, 1 MiB by default), so that an
+                            overflow traps instead of overwriting data
+stack size ... data end     every builtin.global_variable, each aligned by its type: those with
+                            no section first, then each section's members together
+data end ..... heap base    rounded up to 16
+```
+
+With no frame in the unit there is no stack, and the data starts at 1024, so that no data has the
+address 0. The memory has the pages that reach the heap base (or the end of a fixed
+`builtin.segment`, when higher) as its minimum and no maximum, and is exported as `memory`. Data
+whose bytes are all zero has an address and no segment. The table gives a slot, from 1, to every
+function a function value names; slot 0 stays empty, so that a call through a null function
+pointer traps, and the table is exactly as long as its slots.
+
+The linker-defined data symbols are declarations of `builtin.global_variable` with no definition:
+`__data_end` (the end of the data), `__heap_base` (that, rounded up to 16), and `__start_<s>` and
+`__stop_<s>` (the start of the section `s` and the end of its last member). Each is an address
+with no bytes. Any other declared global variable with no definition is an error: a core module
+cannot import data. A global variable named by `wasm.memory_init` or `wasm.data_drop` is a
+passive segment, with no address.
+
+### Imports and exports
+
+A function, a global, a table or a memory that is declared and not defined in the unit is an
+import, from the module `wasm.import_module` names (`env` when nothing does), with its link name
+as the field. Only what `wasm.export_name` names is exported, under each of its names (a symbol
+being `public` exports nothing); an import may be exported, and so may an alias, as its target.
+Two exports of one name are an error naming both. `wasmtime run --preload env=env.core.wasm`
+satisfies the imports of a module from another emitted module.
+
+### What a data initializer may hold
+
+A `builtin.global_variable`'s initializer is generic code that nothing lowers, ending in
+`builtin.yield`. The emitter computes the yielded value without changing the IR: a constant
+(`arith.constant`, `arith.constantf`, `builtin.bytes`), the address of another global variable
+(`builtin.global_symbol`), the table slot of a function (`builtin.function_ref`), or any operation
+whose fold gives a constant from those (an `arith.add` of two constants, say). The value becomes
+bytes by the global's type under the data layout: an integer little-endian in `size_of` bytes, a
+float in its 4 or 8 bytes, bytes as they are (`builtin.bytes "0a0b"` is written most significant
+first, so its bytes in memory are `0b 0a`), an address or a slot in 4 bytes. Anything else is an
+error naming the operation and the global. A function value in data is read in Wasm form
+(`wasm.load ... : i32`): `mem.load` cannot read one, as a function type has no layout.
+
+### The feature baseline
+
+The emitter uses, and the validator accepts, the features `wasm32-unknown-unknown` has by default
+in rustc and tail calls: mutable globals, sign extension, saturating float-to-integer conversions,
+bulk memory, multi-value, reference types and tail calls. A module that would need anything else
+is an error naming the operation before anything is written: a second memory (multiple
+memories), a `wasm.tag` (exception handling), and a `wasm.global` initializer that computes
+(`wasm.add`, `wasm.sub`, `wasm.mul`: extended constant expressions) or reads a global the module
+defines (the constant expressions of GC). A global's initializer is one instruction:
+`wasm.const`, `wasm.constf`, `wasm.ref_null`, `wasm.ref_func`, `wasm.global_get` of an import, or
+the address or slot `wasm.data_addr` and `wasm.func_index` give, written as an `i32.const`.
+
+### What is not emitted yet
+
+Relocatable objects for `wasm-ld`; integers wider than 64 bits; components and `wasm32-wasip2` or
+`wasip3`; a choice of the feature set; importing the memory or the table in a complete module;
+exporting data; start functions and constructors; removing functions nothing reaches; DWARF. The
+unused results of a construct are dropped, not removed.
 
 ## Wasm form
 
@@ -285,5 +443,10 @@ The limits that are not per operation:
   behaviour they stand for.
 
 The unit tests of the crate evaluate the lowered numeric code, structured control and whole
-programs with an evaluator written from the WebAssembly specification (release 3.0); the lit tests
-of `tests/lit/codegen/wasm` check the lowered text.
+programs with an evaluator written from the WebAssembly specification (release 3.0), and run the
+module the emitter makes of the same code under `wasmi`, which must agree with it. The lit tests of
+`tests/lit/codegen/wasm` check the lowered text, those of `tests/lit/codegen/wasm/emit` the text of
+emitted modules, and the programs of `tests/run/wasm` run under `wasmtime` (and under `wasmi` in
+the unit tests, `tests::emit::programs`). `tests::emit::coverage` requires every operation of the
+`wasm` dialect to be in a module that is emitted and validates, except `wasm.tag`, which is an
+error by design.

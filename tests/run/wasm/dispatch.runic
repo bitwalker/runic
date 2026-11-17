@@ -1,0 +1,49 @@
+// RUN: runic-opt --target wasm32-unknown-unknown %s -o %t.wasm
+// RUN: wasmtime run --invoke dispatch %t.wasm 0 5 2>/dev/null | filecheck %s --check-prefix=ZERO
+// RUN: wasmtime run --invoke dispatch %t.wasm 1 5 2>/dev/null | filecheck %s --check-prefix=ONE
+// RUN: wasmtime run --invoke dispatch %t.wasm 2 5 2>/dev/null | filecheck %s --check-prefix=OTHER
+// RUN: wasmtime run --invoke dispatch %t.wasm -1 -7 2>/dev/null | filecheck %s --check-prefix=NEGATIVE
+// RUN: runic-opt --target wasm32-unknown-unknown %s -p 'canonicalizer,cse,sccp,canonicalizer,dce' -o %t.opt.wasm
+// RUN: wasmtime run --invoke dispatch %t.opt.wasm 0 5 2>/dev/null | filecheck %s --check-prefix=ZERO
+// RUN: wasmtime run --invoke dispatch %t.opt.wasm 1 5 2>/dev/null | filecheck %s --check-prefix=ONE
+// RUN: wasmtime run --invoke dispatch %t.opt.wasm 2 5 2>/dev/null | filecheck %s --check-prefix=OTHER
+// RUN: wasmtime run --invoke dispatch %t.opt.wasm -1 -7 2>/dev/null | filecheck %s --check-prefix=NEGATIVE
+
+// The function of 6c's programs with three kinds of exit behind a `cf.switch`: a tail call to
+// `@on_zero` (times ten) for the tag 0, a tail call to `@on_one` (minus one) for the tag 1, and a
+// return of `(x + 7) + (x + 7)` for any other tag. The structured function ends in
+// `wasm.unreachable`, which no path reaches; the product nothing uses is computed and dropped.
+
+// ZERO: {{^}}50{{$}}
+// ONE: {{^}}4{{$}}
+// OTHER: {{^}}24{{$}}
+// NEGATIVE: {{^}}0{{$}}
+
+builtin.module public @exits {
+    builtin.function public extern("C") @on_zero(%x: i32) -> i32 {
+        %ten = arith.constant 10 : i32;
+        %r = arith.mul %x, %ten;
+        builtin.ret %r : (i32);
+    };
+
+    builtin.function public extern("C") @on_one(%x: i32) -> i32 {
+        %one = arith.constant 1 : i32;
+        %r = arith.sub %x, %one;
+        builtin.ret %r : (i32);
+    };
+
+    builtin.function public extern("C") @dispatch(%tag: i32, %x: i32) -> i32 {
+        cf.switch %tag [#builtin.i32<0> -> ^zero, #builtin.i32<1> -> ^one], ^other : (i32);
+    ^zero:
+        builtin.tail_call @on_zero(%x) : extern("C") (i32) -> i32;
+    ^one:
+        builtin.tail_call @on_one(%x) : extern("C") (i32) -> i32;
+    ^other:
+        %k = arith.constant 7 : i32;
+        %a = arith.add %x, %k;
+        %b = arith.add %x, %k;
+        %unused = arith.mul %x, %x;
+        %r = arith.add %a, %b;
+        builtin.ret %r : (i32);
+    } attributes { wasm.export_name = "dispatch" };
+};
