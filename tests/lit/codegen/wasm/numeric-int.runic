@@ -1,0 +1,1023 @@
+// RUN: runic-opt %s -p 'convert-to-wasm,wasm-verify-form' --split-input-file --verify-diagnostics | filecheck %s
+
+// The lowering of the integer operations of `arith`, of `cf.select` and of `ub.poison`, at `i8` (a
+// narrow width, carried in an `i32`), `i32`, `i40` (carried in an `i64`) and `i64`.
+//
+// Carried form: a value of `iN` is zero-extended to `N` bits in its carrier. Each rule keeps that:
+//   * `add`, `sub`, `mul`, `neg`, `shl`: the Wasm operation, then a mask of `N` bits (none at the
+//     width of the carrier);
+//   * `band`, `bor`, `bxor`, `udiv`, `urem`, `shr`: the Wasm operation alone;
+//   * `bnot`: `xor` with `2^N - 1`;
+//   * `sdiv`, `srem`, `ashr`, the signed comparisons: sign-extend the operands from `N` (nothing at
+//     the width of the carrier), then the signed Wasm operation; `sdiv`, `srem`, `ashr` mask after;
+//   * `trunc`: `wrap` when the carrier narrows, then a mask; `zext`: `extend_u` when the carrier
+//     widens; `sext`: sign-extend from `N`, `extend_s` when the carrier widens, then a mask.
+// A shift amount of `N` or more is undefined in `arith`; the mask keeps carried form anyway.
+// `arith.sdiv` of the minimum value by -1 traps in `arith`; below the carrier's width the lowering
+// does not trap and gives the minimum value, which `arith` allows.
+//
+// An operation that no integer pattern lowers (here a rotate, left to the patterns of bit counts and
+// rotates) is reported by the conversion, which names it.
+
+// CHECK-LABEL: @add_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.add [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.and [[V2]], [[V3]];
+// CHECK-NEXT: builtin.ret [[V4]] : (i32);
+
+// CHECK-LABEL: @sub_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.sub [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.and [[V2]], [[V3]];
+// CHECK-NEXT: builtin.ret [[V4]] : (i32);
+
+// CHECK-LABEL: @mul_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.mul [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.and [[V2]], [[V3]];
+// CHECK-NEXT: builtin.ret [[V4]] : (i32);
+
+// CHECK-LABEL: @add_unchecked_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.add [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.and [[V2]], [[V3]];
+// CHECK-NEXT: builtin.ret [[V4]] : (i32);
+
+// CHECK-LABEL: @band_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.and [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @bor_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.or [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @bxor_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.xor [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @udiv_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.div_u [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @urem_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.rem_u [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @sdiv_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.extend8_s [[V0]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.extend8_s [[V1]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.div_s [[V2]], [[V3]];
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.and [[V4]], [[V5]];
+// CHECK-NEXT: builtin.ret [[V6]] : (i32);
+
+// CHECK-LABEL: @srem_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.extend8_s [[V0]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.extend8_s [[V1]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.rem_s [[V2]], [[V3]];
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.and [[V4]], [[V5]];
+// CHECK-NEXT: builtin.ret [[V6]] : (i32);
+
+// CHECK-LABEL: @shl_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.shl [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.and [[V2]], [[V3]];
+// CHECK-NEXT: builtin.ret [[V4]] : (i32);
+
+// CHECK-LABEL: @shr_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.shr_u [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @ashr_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.extend8_s [[V0]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.shr_s [[V2]], [[V1]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.and [[V3]], [[V4]];
+// CHECK-NEXT: builtin.ret [[V5]] : (i32);
+
+// CHECK-LABEL: @cmp_eq_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.eq [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @cmp_ult_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.lt_u [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @cmp_slt_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.extend8_s [[V0]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.extend8_s [[V1]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.lt_s [[V2]], [[V3]];
+// CHECK-NEXT: builtin.ret [[V4]] : (i32);
+
+// CHECK-LABEL: @cmp_sge_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.extend8_s [[V0]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.extend8_s [[V1]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.ge_s [[V2]], [[V3]];
+// CHECK-NEXT: builtin.ret [[V4]] : (i32);
+
+// CHECK-LABEL: @bnot_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.xor [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @neg_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.const 0 : i32;
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.sub [[V1]], [[V0]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.and [[V2]], [[V3]];
+// CHECK-NEXT: builtin.ret [[V4]] : (i32);
+
+// CHECK-LABEL: @add_i32(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.add [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @sub_i32(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.sub [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @mul_i32(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.mul [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @add_unchecked_i32(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.add [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @band_i32(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.and [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @bor_i32(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.or [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @bxor_i32(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.xor [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @udiv_i32(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.div_u [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @urem_i32(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.rem_u [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @sdiv_i32(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.div_s [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @srem_i32(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.rem_s [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @shl_i32(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.shl [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @shr_i32(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.shr_u [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @ashr_i32(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.shr_s [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @cmp_eq_i32(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.eq [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @cmp_ult_i32(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.lt_u [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @cmp_slt_i32(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.lt_s [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @cmp_sge_i32(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.ge_s [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @bnot_i32(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.const -1 : i32;
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.xor [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @neg_i32(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.const 0 : i32;
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.sub [[V1]], [[V0]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @add_i40(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.add [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.const 1099511627775 : i64;
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.and [[V2]], [[V3]];
+// CHECK-NEXT: builtin.ret [[V4]] : (i64);
+
+// CHECK-LABEL: @sub_i40(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.sub [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.const 1099511627775 : i64;
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.and [[V2]], [[V3]];
+// CHECK-NEXT: builtin.ret [[V4]] : (i64);
+
+// CHECK-LABEL: @mul_i40(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.mul [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.const 1099511627775 : i64;
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.and [[V2]], [[V3]];
+// CHECK-NEXT: builtin.ret [[V4]] : (i64);
+
+// CHECK-LABEL: @add_unchecked_i40(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.add [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.const 1099511627775 : i64;
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.and [[V2]], [[V3]];
+// CHECK-NEXT: builtin.ret [[V4]] : (i64);
+
+// CHECK-LABEL: @band_i40(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.and [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i64);
+
+// CHECK-LABEL: @bor_i40(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.or [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i64);
+
+// CHECK-LABEL: @bxor_i40(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.xor [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i64);
+
+// CHECK-LABEL: @udiv_i40(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.div_u [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i64);
+
+// CHECK-LABEL: @urem_i40(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.rem_u [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i64);
+
+// CHECK-LABEL: @sdiv_i40(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.const 24 : i64;
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.shl [[V0]], [[V2]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.shr_s [[V3]], [[V2]];
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.const 24 : i64;
+// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.shl [[V1]], [[V5]];
+// CHECK-NEXT: [[V7:%[0-9]+]] = wasm.shr_s [[V6]], [[V5]];
+// CHECK-NEXT: [[V8:%[0-9]+]] = wasm.div_s [[V4]], [[V7]];
+// CHECK-NEXT: [[V9:%[0-9]+]] = wasm.const 1099511627775 : i64;
+// CHECK-NEXT: [[V10:%[0-9]+]] = wasm.and [[V8]], [[V9]];
+// CHECK-NEXT: builtin.ret [[V10]] : (i64);
+
+// CHECK-LABEL: @srem_i40(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.const 24 : i64;
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.shl [[V0]], [[V2]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.shr_s [[V3]], [[V2]];
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.const 24 : i64;
+// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.shl [[V1]], [[V5]];
+// CHECK-NEXT: [[V7:%[0-9]+]] = wasm.shr_s [[V6]], [[V5]];
+// CHECK-NEXT: [[V8:%[0-9]+]] = wasm.rem_s [[V4]], [[V7]];
+// CHECK-NEXT: [[V9:%[0-9]+]] = wasm.const 1099511627775 : i64;
+// CHECK-NEXT: [[V10:%[0-9]+]] = wasm.and [[V8]], [[V9]];
+// CHECK-NEXT: builtin.ret [[V10]] : (i64);
+
+// CHECK-LABEL: @shl_i40(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.shl [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.const 1099511627775 : i64;
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.and [[V2]], [[V3]];
+// CHECK-NEXT: builtin.ret [[V4]] : (i64);
+
+// CHECK-LABEL: @shr_i40(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.shr_u [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i64);
+
+// CHECK-LABEL: @ashr_i40(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.const 24 : i64;
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.shl [[V0]], [[V2]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.shr_s [[V3]], [[V2]];
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.shr_s [[V4]], [[V1]];
+// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.const 1099511627775 : i64;
+// CHECK-NEXT: [[V7:%[0-9]+]] = wasm.and [[V5]], [[V6]];
+// CHECK-NEXT: builtin.ret [[V7]] : (i64);
+
+// CHECK-LABEL: @cmp_eq_i40(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.eq [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @cmp_ult_i40(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.lt_u [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @cmp_slt_i40(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.const 24 : i64;
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.shl [[V0]], [[V2]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.shr_s [[V3]], [[V2]];
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.const 24 : i64;
+// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.shl [[V1]], [[V5]];
+// CHECK-NEXT: [[V7:%[0-9]+]] = wasm.shr_s [[V6]], [[V5]];
+// CHECK-NEXT: [[V8:%[0-9]+]] = wasm.lt_s [[V4]], [[V7]];
+// CHECK-NEXT: builtin.ret [[V8]] : (i32);
+
+// CHECK-LABEL: @cmp_sge_i40(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.const 24 : i64;
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.shl [[V0]], [[V2]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.shr_s [[V3]], [[V2]];
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.const 24 : i64;
+// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.shl [[V1]], [[V5]];
+// CHECK-NEXT: [[V7:%[0-9]+]] = wasm.shr_s [[V6]], [[V5]];
+// CHECK-NEXT: [[V8:%[0-9]+]] = wasm.ge_s [[V4]], [[V7]];
+// CHECK-NEXT: builtin.ret [[V8]] : (i32);
+
+// CHECK-LABEL: @bnot_i40(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.const 1099511627775 : i64;
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.xor [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i64);
+
+// CHECK-LABEL: @neg_i40(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.const 0 : i64;
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.sub [[V1]], [[V0]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.const 1099511627775 : i64;
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.and [[V2]], [[V3]];
+// CHECK-NEXT: builtin.ret [[V4]] : (i64);
+
+// CHECK-LABEL: @add_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.add [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i64);
+
+// CHECK-LABEL: @sub_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.sub [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i64);
+
+// CHECK-LABEL: @mul_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.mul [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i64);
+
+// CHECK-LABEL: @add_unchecked_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.add [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i64);
+
+// CHECK-LABEL: @band_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.and [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i64);
+
+// CHECK-LABEL: @bor_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.or [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i64);
+
+// CHECK-LABEL: @bxor_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.xor [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i64);
+
+// CHECK-LABEL: @udiv_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.div_u [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i64);
+
+// CHECK-LABEL: @urem_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.rem_u [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i64);
+
+// CHECK-LABEL: @sdiv_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.div_s [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i64);
+
+// CHECK-LABEL: @srem_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.rem_s [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i64);
+
+// CHECK-LABEL: @shl_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.shl [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i64);
+
+// CHECK-LABEL: @shr_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.shr_u [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i64);
+
+// CHECK-LABEL: @ashr_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.shr_s [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i64);
+
+// CHECK-LABEL: @cmp_eq_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.eq [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @cmp_ult_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.lt_u [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @cmp_slt_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.lt_s [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @cmp_sge_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.ge_s [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @bnot_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.const -1 : i64;
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.xor [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i64);
+
+// CHECK-LABEL: @neg_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.const 0 : i64;
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.sub [[V1]], [[V0]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i64);
+
+// CHECK-LABEL: @trunc_i64_to_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64) -> i32 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.wrap [[V0]] <{ ty = #builtin.type<i32> }>;
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.and [[V1]], [[V2]];
+// CHECK-NEXT: builtin.ret [[V3]] : (i32);
+
+// CHECK-LABEL: @trunc_i40_to_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64) -> i32 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.wrap [[V0]] <{ ty = #builtin.type<i32> }>;
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.and [[V1]], [[V2]];
+// CHECK-NEXT: builtin.ret [[V3]] : (i32);
+
+// CHECK-LABEL: @trunc_i64_to_i40(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.const 1099511627775 : i64;
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.and [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i64);
+
+// CHECK-LABEL: @zext_i8_to_i32(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: builtin.ret [[V0]] : (i32);
+
+// CHECK-LABEL: @zext_i8_to_i40(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32) -> i64 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.extend_u [[V0]] <{ ty = #builtin.type<i64> }>;
+// CHECK-NEXT: builtin.ret [[V1]] : (i64);
+
+// CHECK-LABEL: @zext_i32_to_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32) -> i64 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.extend_u [[V0]] <{ ty = #builtin.type<i64> }>;
+// CHECK-NEXT: builtin.ret [[V1]] : (i64);
+
+// CHECK-LABEL: @sext_i8_to_i32(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.extend8_s [[V0]];
+// CHECK-NEXT: builtin.ret [[V1]] : (i32);
+
+// CHECK-LABEL: @sext_i8_to_i40(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32) -> i64 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.extend8_s [[V0]];
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.extend_s [[V1]] <{ ty = #builtin.type<i64> }>;
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.const 1099511627775 : i64;
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.and [[V2]], [[V3]];
+// CHECK-NEXT: builtin.ret [[V4]] : (i64);
+
+// CHECK-LABEL: @sext_i32_to_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32) -> i64 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.extend_s [[V0]] <{ ty = #builtin.type<i64> }>;
+// CHECK-NEXT: builtin.ret [[V1]] : (i64);
+
+// CHECK-LABEL: @sext_i8_to_i16(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.extend8_s [[V0]];
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.const 65535 : i32;
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.and [[V1]], [[V2]];
+// CHECK-NEXT: builtin.ret [[V3]] : (i32);
+
+// CHECK-LABEL: @zext_or_trunc_i64_to_isize(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64) -> i32 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.wrap [[V0]] <{ ty = #builtin.type<i32> }>;
+// CHECK-NEXT: builtin.ret [[V1]] : (i32);
+
+// CHECK-LABEL: @sext_or_trunc_i8_to_isize(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.extend8_s [[V0]];
+// CHECK-NEXT: builtin.ret [[V1]] : (i32);
+
+// CHECK-LABEL: @sext_or_trunc_isize_to_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32) -> i64 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.extend_s [[V0]] <{ ty = #builtin.type<i64> }>;
+// CHECK-NEXT: builtin.ret [[V1]] : (i64);
+
+// CHECK-LABEL: @zext_or_trunc_isize_to_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.and [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @select_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32, [[V2:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.select [[V0]], [[V1]], [[V2]];
+// CHECK-NEXT: builtin.ret [[V3]] : (i32);
+
+// CHECK-LABEL: @select_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i64, [[V2:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.select [[V0]], [[V1]], [[V2]];
+// CHECK-NEXT: builtin.ret [[V3]] : (i64);
+
+// CHECK-LABEL: @poison_i8(
+// CHECK-SAME: ) -> i32 {
+// CHECK-NEXT: [[V0:%[0-9]+]] = wasm.const 0 : i32;
+// CHECK-NEXT: builtin.ret [[V0]] : (i32);
+
+// CHECK-LABEL: @poison_i40(
+// CHECK-SAME: ) -> i64 {
+// CHECK-NEXT: [[V0:%[0-9]+]] = wasm.const 0 : i64;
+// CHECK-NEXT: builtin.ret [[V0]] : (i64);
+
+// CHECK-LABEL: @poison_f32(
+// CHECK-SAME: ) -> f32 {
+// CHECK-NEXT: [[V0:%[0-9]+]] = wasm.constf 0.0 : f32;
+// CHECK-NEXT: builtin.ret [[V0]] : (f32);
+
+// CHECK-LABEL: @poison_ptr(
+// CHECK-SAME: ) -> i32 {
+// CHECK-NEXT: [[V0:%[0-9]+]] = wasm.const 0 : i32;
+// CHECK-NEXT: builtin.ret [[V0]] : (i32);
+
+builtin.module public @m attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("wasm") @add_i8(%a: i8, %b: i8) -> i8 {
+        %r = arith.add %a, %b;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @sub_i8(%a: i8, %b: i8) -> i8 {
+        %r = arith.sub %a, %b;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @mul_i8(%a: i8, %b: i8) -> i8 {
+        %r = arith.mul %a, %b;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @add_unchecked_i8(%a: i8, %b: i8) -> i8 {
+        %r = arith.add %a, %b <{ overflow = #builtin.overflow<unchecked signed> }>;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @band_i8(%a: i8, %b: i8) -> i8 {
+        %r = arith.band %a, %b;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @bor_i8(%a: i8, %b: i8) -> i8 {
+        %r = arith.bor %a, %b;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @bxor_i8(%a: i8, %b: i8) -> i8 {
+        %r = arith.bxor %a, %b;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @udiv_i8(%a: i8, %b: i8) -> i8 {
+        %r = arith.udiv %a, %b;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @urem_i8(%a: i8, %b: i8) -> i8 {
+        %r = arith.urem %a, %b;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @sdiv_i8(%a: i8, %b: i8) -> i8 {
+        %r = arith.sdiv %a, %b;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @srem_i8(%a: i8, %b: i8) -> i8 {
+        %r = arith.srem %a, %b;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @shl_i8(%a: i8, %b: i8) -> i8 {
+        %r = arith.shl %a, %b;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @shr_i8(%a: i8, %b: i8) -> i8 {
+        %r = arith.shr %a, %b;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @ashr_i8(%a: i8, %b: i8) -> i8 {
+        %r = arith.ashr %a, %b;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @cmp_eq_i8(%a: i8, %b: i8) -> i1 {
+        %r = arith.cmpi eq %a, %b;
+        builtin.ret %r : (i1);
+    };
+    builtin.function public extern("wasm") @cmp_ult_i8(%a: i8, %b: i8) -> i1 {
+        %r = arith.cmpi ult %a, %b;
+        builtin.ret %r : (i1);
+    };
+    builtin.function public extern("wasm") @cmp_slt_i8(%a: i8, %b: i8) -> i1 {
+        %r = arith.cmpi slt %a, %b;
+        builtin.ret %r : (i1);
+    };
+    builtin.function public extern("wasm") @cmp_sge_i8(%a: i8, %b: i8) -> i1 {
+        %r = arith.cmpi sge %a, %b;
+        builtin.ret %r : (i1);
+    };
+    builtin.function public extern("wasm") @bnot_i8(%a: i8) -> i8 {
+        %r = arith.bnot %a;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @neg_i8(%a: i8) -> i8 {
+        %r = arith.neg %a;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @add_i32(%a: i32, %b: i32) -> i32 {
+        %r = arith.add %a, %b;
+        builtin.ret %r : (i32);
+    };
+    builtin.function public extern("wasm") @sub_i32(%a: i32, %b: i32) -> i32 {
+        %r = arith.sub %a, %b;
+        builtin.ret %r : (i32);
+    };
+    builtin.function public extern("wasm") @mul_i32(%a: i32, %b: i32) -> i32 {
+        %r = arith.mul %a, %b;
+        builtin.ret %r : (i32);
+    };
+    builtin.function public extern("wasm") @add_unchecked_i32(%a: i32, %b: i32) -> i32 {
+        %r = arith.add %a, %b <{ overflow = #builtin.overflow<unchecked signed> }>;
+        builtin.ret %r : (i32);
+    };
+    builtin.function public extern("wasm") @band_i32(%a: i32, %b: i32) -> i32 {
+        %r = arith.band %a, %b;
+        builtin.ret %r : (i32);
+    };
+    builtin.function public extern("wasm") @bor_i32(%a: i32, %b: i32) -> i32 {
+        %r = arith.bor %a, %b;
+        builtin.ret %r : (i32);
+    };
+    builtin.function public extern("wasm") @bxor_i32(%a: i32, %b: i32) -> i32 {
+        %r = arith.bxor %a, %b;
+        builtin.ret %r : (i32);
+    };
+    builtin.function public extern("wasm") @udiv_i32(%a: i32, %b: i32) -> i32 {
+        %r = arith.udiv %a, %b;
+        builtin.ret %r : (i32);
+    };
+    builtin.function public extern("wasm") @urem_i32(%a: i32, %b: i32) -> i32 {
+        %r = arith.urem %a, %b;
+        builtin.ret %r : (i32);
+    };
+    builtin.function public extern("wasm") @sdiv_i32(%a: i32, %b: i32) -> i32 {
+        %r = arith.sdiv %a, %b;
+        builtin.ret %r : (i32);
+    };
+    builtin.function public extern("wasm") @srem_i32(%a: i32, %b: i32) -> i32 {
+        %r = arith.srem %a, %b;
+        builtin.ret %r : (i32);
+    };
+    builtin.function public extern("wasm") @shl_i32(%a: i32, %b: i32) -> i32 {
+        %r = arith.shl %a, %b;
+        builtin.ret %r : (i32);
+    };
+    builtin.function public extern("wasm") @shr_i32(%a: i32, %b: i32) -> i32 {
+        %r = arith.shr %a, %b;
+        builtin.ret %r : (i32);
+    };
+    builtin.function public extern("wasm") @ashr_i32(%a: i32, %b: i32) -> i32 {
+        %r = arith.ashr %a, %b;
+        builtin.ret %r : (i32);
+    };
+    builtin.function public extern("wasm") @cmp_eq_i32(%a: i32, %b: i32) -> i1 {
+        %r = arith.cmpi eq %a, %b;
+        builtin.ret %r : (i1);
+    };
+    builtin.function public extern("wasm") @cmp_ult_i32(%a: i32, %b: i32) -> i1 {
+        %r = arith.cmpi ult %a, %b;
+        builtin.ret %r : (i1);
+    };
+    builtin.function public extern("wasm") @cmp_slt_i32(%a: i32, %b: i32) -> i1 {
+        %r = arith.cmpi slt %a, %b;
+        builtin.ret %r : (i1);
+    };
+    builtin.function public extern("wasm") @cmp_sge_i32(%a: i32, %b: i32) -> i1 {
+        %r = arith.cmpi sge %a, %b;
+        builtin.ret %r : (i1);
+    };
+    builtin.function public extern("wasm") @bnot_i32(%a: i32) -> i32 {
+        %r = arith.bnot %a;
+        builtin.ret %r : (i32);
+    };
+    builtin.function public extern("wasm") @neg_i32(%a: i32) -> i32 {
+        %r = arith.neg %a;
+        builtin.ret %r : (i32);
+    };
+    builtin.function public extern("wasm") @add_i40(%a: i40, %b: i40) -> i40 {
+        %r = arith.add %a, %b;
+        builtin.ret %r : (i40);
+    };
+    builtin.function public extern("wasm") @sub_i40(%a: i40, %b: i40) -> i40 {
+        %r = arith.sub %a, %b;
+        builtin.ret %r : (i40);
+    };
+    builtin.function public extern("wasm") @mul_i40(%a: i40, %b: i40) -> i40 {
+        %r = arith.mul %a, %b;
+        builtin.ret %r : (i40);
+    };
+    builtin.function public extern("wasm") @add_unchecked_i40(%a: i40, %b: i40) -> i40 {
+        %r = arith.add %a, %b <{ overflow = #builtin.overflow<unchecked signed> }>;
+        builtin.ret %r : (i40);
+    };
+    builtin.function public extern("wasm") @band_i40(%a: i40, %b: i40) -> i40 {
+        %r = arith.band %a, %b;
+        builtin.ret %r : (i40);
+    };
+    builtin.function public extern("wasm") @bor_i40(%a: i40, %b: i40) -> i40 {
+        %r = arith.bor %a, %b;
+        builtin.ret %r : (i40);
+    };
+    builtin.function public extern("wasm") @bxor_i40(%a: i40, %b: i40) -> i40 {
+        %r = arith.bxor %a, %b;
+        builtin.ret %r : (i40);
+    };
+    builtin.function public extern("wasm") @udiv_i40(%a: i40, %b: i40) -> i40 {
+        %r = arith.udiv %a, %b;
+        builtin.ret %r : (i40);
+    };
+    builtin.function public extern("wasm") @urem_i40(%a: i40, %b: i40) -> i40 {
+        %r = arith.urem %a, %b;
+        builtin.ret %r : (i40);
+    };
+    builtin.function public extern("wasm") @sdiv_i40(%a: i40, %b: i40) -> i40 {
+        %r = arith.sdiv %a, %b;
+        builtin.ret %r : (i40);
+    };
+    builtin.function public extern("wasm") @srem_i40(%a: i40, %b: i40) -> i40 {
+        %r = arith.srem %a, %b;
+        builtin.ret %r : (i40);
+    };
+    builtin.function public extern("wasm") @shl_i40(%a: i40, %b: i40) -> i40 {
+        %r = arith.shl %a, %b;
+        builtin.ret %r : (i40);
+    };
+    builtin.function public extern("wasm") @shr_i40(%a: i40, %b: i40) -> i40 {
+        %r = arith.shr %a, %b;
+        builtin.ret %r : (i40);
+    };
+    builtin.function public extern("wasm") @ashr_i40(%a: i40, %b: i40) -> i40 {
+        %r = arith.ashr %a, %b;
+        builtin.ret %r : (i40);
+    };
+    builtin.function public extern("wasm") @cmp_eq_i40(%a: i40, %b: i40) -> i1 {
+        %r = arith.cmpi eq %a, %b;
+        builtin.ret %r : (i1);
+    };
+    builtin.function public extern("wasm") @cmp_ult_i40(%a: i40, %b: i40) -> i1 {
+        %r = arith.cmpi ult %a, %b;
+        builtin.ret %r : (i1);
+    };
+    builtin.function public extern("wasm") @cmp_slt_i40(%a: i40, %b: i40) -> i1 {
+        %r = arith.cmpi slt %a, %b;
+        builtin.ret %r : (i1);
+    };
+    builtin.function public extern("wasm") @cmp_sge_i40(%a: i40, %b: i40) -> i1 {
+        %r = arith.cmpi sge %a, %b;
+        builtin.ret %r : (i1);
+    };
+    builtin.function public extern("wasm") @bnot_i40(%a: i40) -> i40 {
+        %r = arith.bnot %a;
+        builtin.ret %r : (i40);
+    };
+    builtin.function public extern("wasm") @neg_i40(%a: i40) -> i40 {
+        %r = arith.neg %a;
+        builtin.ret %r : (i40);
+    };
+    builtin.function public extern("wasm") @add_i64(%a: i64, %b: i64) -> i64 {
+        %r = arith.add %a, %b;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @sub_i64(%a: i64, %b: i64) -> i64 {
+        %r = arith.sub %a, %b;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @mul_i64(%a: i64, %b: i64) -> i64 {
+        %r = arith.mul %a, %b;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @add_unchecked_i64(%a: i64, %b: i64) -> i64 {
+        %r = arith.add %a, %b <{ overflow = #builtin.overflow<unchecked signed> }>;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @band_i64(%a: i64, %b: i64) -> i64 {
+        %r = arith.band %a, %b;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @bor_i64(%a: i64, %b: i64) -> i64 {
+        %r = arith.bor %a, %b;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @bxor_i64(%a: i64, %b: i64) -> i64 {
+        %r = arith.bxor %a, %b;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @udiv_i64(%a: i64, %b: i64) -> i64 {
+        %r = arith.udiv %a, %b;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @urem_i64(%a: i64, %b: i64) -> i64 {
+        %r = arith.urem %a, %b;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @sdiv_i64(%a: i64, %b: i64) -> i64 {
+        %r = arith.sdiv %a, %b;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @srem_i64(%a: i64, %b: i64) -> i64 {
+        %r = arith.srem %a, %b;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @shl_i64(%a: i64, %b: i64) -> i64 {
+        %r = arith.shl %a, %b;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @shr_i64(%a: i64, %b: i64) -> i64 {
+        %r = arith.shr %a, %b;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @ashr_i64(%a: i64, %b: i64) -> i64 {
+        %r = arith.ashr %a, %b;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @cmp_eq_i64(%a: i64, %b: i64) -> i1 {
+        %r = arith.cmpi eq %a, %b;
+        builtin.ret %r : (i1);
+    };
+    builtin.function public extern("wasm") @cmp_ult_i64(%a: i64, %b: i64) -> i1 {
+        %r = arith.cmpi ult %a, %b;
+        builtin.ret %r : (i1);
+    };
+    builtin.function public extern("wasm") @cmp_slt_i64(%a: i64, %b: i64) -> i1 {
+        %r = arith.cmpi slt %a, %b;
+        builtin.ret %r : (i1);
+    };
+    builtin.function public extern("wasm") @cmp_sge_i64(%a: i64, %b: i64) -> i1 {
+        %r = arith.cmpi sge %a, %b;
+        builtin.ret %r : (i1);
+    };
+    builtin.function public extern("wasm") @bnot_i64(%a: i64) -> i64 {
+        %r = arith.bnot %a;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @neg_i64(%a: i64) -> i64 {
+        %r = arith.neg %a;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @trunc_i64_to_i8(%a: i64) -> i8 {
+        %r = arith.trunc %a <{ ty = i8 }>;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @trunc_i40_to_i8(%a: i40) -> i8 {
+        %r = arith.trunc %a <{ ty = i8 }>;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @trunc_i64_to_i40(%a: i64) -> i40 {
+        %r = arith.trunc %a <{ ty = i40 }>;
+        builtin.ret %r : (i40);
+    };
+    builtin.function public extern("wasm") @zext_i8_to_i32(%a: i8) -> i32 {
+        %r = arith.zext %a <{ ty = i32 }>;
+        builtin.ret %r : (i32);
+    };
+    builtin.function public extern("wasm") @zext_i8_to_i40(%a: i8) -> i40 {
+        %r = arith.zext %a <{ ty = i40 }>;
+        builtin.ret %r : (i40);
+    };
+    builtin.function public extern("wasm") @zext_i32_to_i64(%a: i32) -> i64 {
+        %r = arith.zext %a <{ ty = i64 }>;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @sext_i8_to_i32(%a: i8) -> i32 {
+        %r = arith.sext %a <{ ty = i32 }>;
+        builtin.ret %r : (i32);
+    };
+    builtin.function public extern("wasm") @sext_i8_to_i40(%a: i8) -> i40 {
+        %r = arith.sext %a <{ ty = i40 }>;
+        builtin.ret %r : (i40);
+    };
+    builtin.function public extern("wasm") @sext_i32_to_i64(%a: i32) -> i64 {
+        %r = arith.sext %a <{ ty = i64 }>;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @sext_i8_to_i16(%a: i8) -> i16 {
+        %r = arith.sext %a <{ ty = i16 }>;
+        builtin.ret %r : (i16);
+    };
+    builtin.function public extern("wasm") @zext_or_trunc_i64_to_isize(%a: i64) -> isize {
+        %r = arith.zext_or_trunc %a <{ ty = isize }>;
+        builtin.ret %r : (isize);
+    };
+    builtin.function public extern("wasm") @sext_or_trunc_i8_to_isize(%a: i8) -> isize {
+        %r = arith.sext_or_trunc %a <{ ty = isize }>;
+        builtin.ret %r : (isize);
+    };
+    builtin.function public extern("wasm") @sext_or_trunc_isize_to_i64(%a: isize) -> i64 {
+        %r = arith.sext_or_trunc %a <{ ty = i64 }>;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @zext_or_trunc_isize_to_i8(%a: isize) -> i8 {
+        %r = arith.zext_or_trunc %a <{ ty = i8 }>;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @select_i8(%c: i1, %a: i8, %b: i8) -> i8 {
+        %r = cf.select %c, %a, %b;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @select_i64(%c: i1, %a: i64, %b: i64) -> i64 {
+        %r = cf.select %c, %a, %b;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @poison_i8() -> i8 {
+        %r = ub.poison <{ value = #ub.poison<i8> }>;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @poison_i40() -> i40 {
+        %r = ub.poison <{ value = #ub.poison<i40> }>;
+        builtin.ret %r : (i40);
+    };
+    builtin.function public extern("wasm") @poison_f32() -> f32 {
+        %r = ub.poison <{ value = #ub.poison<f32> }>;
+        builtin.ret %r : (f32);
+    };
+    builtin.function public extern("wasm") @poison_ptr() -> ptr<i8> {
+        %r = ub.poison <{ value = #ub.poison<ptr<i8>> }>;
+        builtin.ret %r : (ptr<i8>);
+    };
+};
+
+// -----
+
+// expected-error@unknown {{failed to legalize operation 'arith.rotl'}}
+builtin.module public @left_to_other_patterns attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("wasm") @rotl(%a: i32, %b: i32) -> i32 {
+        %r = arith.rotl %a, %b;
+        builtin.ret %r : (i32);
+    };
+};

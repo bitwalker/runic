@@ -1,6 +1,7 @@
 //! The pass `convert-to-wasm`: the dialect conversion of generic IR to Wasm form.
 
 pub mod calls;
+pub mod int;
 
 use alloc::{format, string::String, vec::Vec};
 use core::fmt;
@@ -179,9 +180,10 @@ pub fn conversion_target(
 pub fn populate_patterns(
     patterns: &mut ConversionPatternSet,
     converter: &TypeConverter,
-    _target: &WasmTarget,
+    target: &WasmTarget,
 ) -> Result<(), Report> {
     calls::populate(patterns, converter)?;
+    int::populate(patterns, converter, target)?;
     Ok(())
 }
 

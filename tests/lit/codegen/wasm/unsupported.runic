@@ -4,10 +4,10 @@
 // converted, with the value and the operation that holds it; an operation that no pattern
 // converts is reported by the full conversion, which names it (with no location).
 
-// expected-error@unknown {{failed to legalize operation 'arith.add'}}
+// expected-error@unknown {{failed to legalize operation 'arith.rotl'}}
 builtin.module public @no_pattern attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
     builtin.function public extern("C") @f(%x: i32) -> i32 {
-        %y = arith.add %x, %x;
+        %y = arith.rotl %x, %x;
         builtin.ret %y : (i32);
     };
 };
