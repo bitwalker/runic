@@ -1,0 +1,381 @@
+// RUN: runic-opt %s -p 'convert-to-wasm,wasm-verify-form' | filecheck %s
+
+// The lowering of the float operations of `arith`: arithmetic, each of the sixteen predicates of
+// `arith.cmpf`, and the conversions.
+//
+//   * `addf`, `subf`, `mulf`, `divf`, `negf`: the Wasm instruction (`wasm.neg` flips the sign bit);
+//   * `cmpf`: `oeq ogt oge olt ole une` are `eq gt ge lt le ne`; `one` is `lt or gt`, `ord` is
+//     `eq` of each operand with itself, both true, `uno` is `ne` of each with itself, either
+//     true; `ueq` is the `eqz` of `one`; `ugt uge ult ule` are the `eqz` of `le lt ge gt`; `false`
+//     and `true` are constants;
+//   * `fptosi`, `fptoui`: the saturating `trunc_sat_s`, `trunc_sat_u` to the carrier (never a trap,
+//     where `arith` gives poison), then a mask to `N` bits;
+//   * `sitofp`: sign extension from `N` bits, then `convert_s`; `uitofp`: `convert_u`;
+//   * `fpext`, `fptrunc`, `bitcast`: `promote`, `demote`, `reinterpret`.
+
+// CHECK-LABEL: @addf_f32(
+// CHECK-SAME: [[V0:%[0-9]+]]: f32, [[V1:%[0-9]+]]: f32) -> f32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.add [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (f32);
+
+// CHECK-LABEL: @subf_f64(
+// CHECK-SAME: [[V0:%[0-9]+]]: f64, [[V1:%[0-9]+]]: f64) -> f64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.sub [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (f64);
+
+// CHECK-LABEL: @mulf_f32(
+// CHECK-SAME: [[V0:%[0-9]+]]: f32, [[V1:%[0-9]+]]: f32) -> f32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.mul [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (f32);
+
+// CHECK-LABEL: @divf_f64(
+// CHECK-SAME: [[V0:%[0-9]+]]: f64, [[V1:%[0-9]+]]: f64) -> f64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.div [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (f64);
+
+// CHECK-LABEL: @negf_f32(
+// CHECK-SAME: [[V0:%[0-9]+]]: f32) -> f32 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.neg [[V0]];
+// CHECK-NEXT: builtin.ret [[V1]] : (f32);
+
+// CHECK-LABEL: @cmpf_false(
+// CHECK-SAME: [[V0:%[0-9]+]]: f32, [[V1:%[0-9]+]]: f32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.const 0 : i32;
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @cmpf_oeq(
+// CHECK-SAME: [[V0:%[0-9]+]]: f32, [[V1:%[0-9]+]]: f32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.eq [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @cmpf_ogt(
+// CHECK-SAME: [[V0:%[0-9]+]]: f32, [[V1:%[0-9]+]]: f32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.gt [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @cmpf_oge(
+// CHECK-SAME: [[V0:%[0-9]+]]: f32, [[V1:%[0-9]+]]: f32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.ge [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @cmpf_olt(
+// CHECK-SAME: [[V0:%[0-9]+]]: f32, [[V1:%[0-9]+]]: f32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.lt [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @cmpf_ole(
+// CHECK-SAME: [[V0:%[0-9]+]]: f32, [[V1:%[0-9]+]]: f32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.le [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @cmpf_one(
+// CHECK-SAME: [[V0:%[0-9]+]]: f32, [[V1:%[0-9]+]]: f32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.lt [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.gt [[V0]], [[V1]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.or [[V2]], [[V3]];
+// CHECK-NEXT: builtin.ret [[V4]] : (i32);
+
+// CHECK-LABEL: @cmpf_ord(
+// CHECK-SAME: [[V0:%[0-9]+]]: f32, [[V1:%[0-9]+]]: f32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.eq [[V0]], [[V0]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.eq [[V1]], [[V1]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.and [[V2]], [[V3]];
+// CHECK-NEXT: builtin.ret [[V4]] : (i32);
+
+// CHECK-LABEL: @cmpf_ueq(
+// CHECK-SAME: [[V0:%[0-9]+]]: f32, [[V1:%[0-9]+]]: f32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.lt [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.gt [[V0]], [[V1]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.or [[V2]], [[V3]];
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.eqz [[V4]];
+// CHECK-NEXT: builtin.ret [[V5]] : (i32);
+
+// CHECK-LABEL: @cmpf_ugt(
+// CHECK-SAME: [[V0:%[0-9]+]]: f32, [[V1:%[0-9]+]]: f32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.le [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.eqz [[V2]];
+// CHECK-NEXT: builtin.ret [[V3]] : (i32);
+
+// CHECK-LABEL: @cmpf_uge(
+// CHECK-SAME: [[V0:%[0-9]+]]: f32, [[V1:%[0-9]+]]: f32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.lt [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.eqz [[V2]];
+// CHECK-NEXT: builtin.ret [[V3]] : (i32);
+
+// CHECK-LABEL: @cmpf_ult(
+// CHECK-SAME: [[V0:%[0-9]+]]: f32, [[V1:%[0-9]+]]: f32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.ge [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.eqz [[V2]];
+// CHECK-NEXT: builtin.ret [[V3]] : (i32);
+
+// CHECK-LABEL: @cmpf_ule(
+// CHECK-SAME: [[V0:%[0-9]+]]: f32, [[V1:%[0-9]+]]: f32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.gt [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.eqz [[V2]];
+// CHECK-NEXT: builtin.ret [[V3]] : (i32);
+
+// CHECK-LABEL: @cmpf_une(
+// CHECK-SAME: [[V0:%[0-9]+]]: f32, [[V1:%[0-9]+]]: f32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.ne [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @cmpf_uno(
+// CHECK-SAME: [[V0:%[0-9]+]]: f32, [[V1:%[0-9]+]]: f32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.ne [[V0]], [[V0]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.ne [[V1]], [[V1]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.or [[V2]], [[V3]];
+// CHECK-NEXT: builtin.ret [[V4]] : (i32);
+
+// CHECK-LABEL: @cmpf_true(
+// CHECK-SAME: [[V0:%[0-9]+]]: f32, [[V1:%[0-9]+]]: f32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.const 1 : i32;
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @cmpf_olt_f64(
+// CHECK-SAME: [[V0:%[0-9]+]]: f64, [[V1:%[0-9]+]]: f64) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.lt [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i32);
+
+// CHECK-LABEL: @fptosi_f32_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: f32) -> i32 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.trunc_sat_s [[V0]] <{ ty = #builtin.type<i32> }>;
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.and [[V1]], [[V2]];
+// CHECK-NEXT: builtin.ret [[V3]] : (i32);
+
+// CHECK-LABEL: @fptosi_f64_i32(
+// CHECK-SAME: [[V0:%[0-9]+]]: f64) -> i32 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.trunc_sat_s [[V0]] <{ ty = #builtin.type<i32> }>;
+// CHECK-NEXT: builtin.ret [[V1]] : (i32);
+
+// CHECK-LABEL: @fptosi_f64_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: f64) -> i64 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.trunc_sat_s [[V0]] <{ ty = #builtin.type<i64> }>;
+// CHECK-NEXT: builtin.ret [[V1]] : (i64);
+
+// CHECK-LABEL: @fptosi_f32_isize(
+// CHECK-SAME: [[V0:%[0-9]+]]: f32) -> i32 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.trunc_sat_s [[V0]] <{ ty = #builtin.type<i32> }>;
+// CHECK-NEXT: builtin.ret [[V1]] : (i32);
+
+// CHECK-LABEL: @fptoui_f64_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: f64) -> i32 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.trunc_sat_u [[V0]] <{ ty = #builtin.type<i32> }>;
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.and [[V1]], [[V2]];
+// CHECK-NEXT: builtin.ret [[V3]] : (i32);
+
+// CHECK-LABEL: @fptoui_f32_i40(
+// CHECK-SAME: [[V0:%[0-9]+]]: f32) -> i64 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.trunc_sat_u [[V0]] <{ ty = #builtin.type<i64> }>;
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.const 1099511627775 : i64;
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.and [[V1]], [[V2]];
+// CHECK-NEXT: builtin.ret [[V3]] : (i64);
+
+// CHECK-LABEL: @fptoui_f32_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: f32) -> i64 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.trunc_sat_u [[V0]] <{ ty = #builtin.type<i64> }>;
+// CHECK-NEXT: builtin.ret [[V1]] : (i64);
+
+// CHECK-LABEL: @sitofp_i8_f32(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32) -> f32 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.extend8_s [[V0]];
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.convert_s [[V1]] <{ ty = #builtin.type<f32> }>;
+// CHECK-NEXT: builtin.ret [[V2]] : (f32);
+
+// CHECK-LABEL: @sitofp_i40_f64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64) -> f64 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.const 24 : i64;
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.shl [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.shr_s [[V2]], [[V1]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.convert_s [[V3]] <{ ty = #builtin.type<f64> }>;
+// CHECK-NEXT: builtin.ret [[V4]] : (f64);
+
+// CHECK-LABEL: @sitofp_i64_f32(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64) -> f32 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.convert_s [[V0]] <{ ty = #builtin.type<f32> }>;
+// CHECK-NEXT: builtin.ret [[V1]] : (f32);
+
+// CHECK-LABEL: @uitofp_i8_f64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32) -> f64 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.convert_u [[V0]] <{ ty = #builtin.type<f64> }>;
+// CHECK-NEXT: builtin.ret [[V1]] : (f64);
+
+// CHECK-LABEL: @uitofp_i32_f32(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32) -> f32 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.convert_u [[V0]] <{ ty = #builtin.type<f32> }>;
+// CHECK-NEXT: builtin.ret [[V1]] : (f32);
+
+// CHECK-LABEL: @fpext(
+// CHECK-SAME: [[V0:%[0-9]+]]: f32) -> f64 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.promote [[V0]] <{ ty = #builtin.type<f64> }>;
+// CHECK-NEXT: builtin.ret [[V1]] : (f64);
+
+// CHECK-LABEL: @fptrunc(
+// CHECK-SAME: [[V0:%[0-9]+]]: f64) -> f32 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.demote [[V0]] <{ ty = #builtin.type<f32> }>;
+// CHECK-NEXT: builtin.ret [[V1]] : (f32);
+
+// CHECK-LABEL: @bitcast_f32_i32(
+// CHECK-SAME: [[V0:%[0-9]+]]: f32) -> i32 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.reinterpret [[V0]] <{ ty = #builtin.type<i32> }>;
+// CHECK-NEXT: builtin.ret [[V1]] : (i32);
+
+// CHECK-LABEL: @bitcast_i64_f64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64) -> f64 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.reinterpret [[V0]] <{ ty = #builtin.type<f64> }>;
+// CHECK-NEXT: builtin.ret [[V1]] : (f64);
+builtin.module public @m attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("wasm") @addf_f32(%a: f32, %b: f32) -> f32 {
+        %r = arith.addf %a, %b;
+        builtin.ret %r : (f32);
+    };
+    builtin.function public extern("wasm") @subf_f64(%a: f64, %b: f64) -> f64 {
+        %r = arith.subf %a, %b;
+        builtin.ret %r : (f64);
+    };
+    builtin.function public extern("wasm") @mulf_f32(%a: f32, %b: f32) -> f32 {
+        %r = arith.mulf %a, %b;
+        builtin.ret %r : (f32);
+    };
+    builtin.function public extern("wasm") @divf_f64(%a: f64, %b: f64) -> f64 {
+        %r = arith.divf %a, %b;
+        builtin.ret %r : (f64);
+    };
+    builtin.function public extern("wasm") @negf_f32(%a: f32) -> f32 {
+        %r = arith.negf %a;
+        builtin.ret %r : (f32);
+    };
+    builtin.function public extern("wasm") @cmpf_false(%a: f32, %b: f32) -> i1 {
+        %r = arith.cmpf false %a, %b;
+        builtin.ret %r : (i1);
+    };
+    builtin.function public extern("wasm") @cmpf_oeq(%a: f32, %b: f32) -> i1 {
+        %r = arith.cmpf oeq %a, %b;
+        builtin.ret %r : (i1);
+    };
+    builtin.function public extern("wasm") @cmpf_ogt(%a: f32, %b: f32) -> i1 {
+        %r = arith.cmpf ogt %a, %b;
+        builtin.ret %r : (i1);
+    };
+    builtin.function public extern("wasm") @cmpf_oge(%a: f32, %b: f32) -> i1 {
+        %r = arith.cmpf oge %a, %b;
+        builtin.ret %r : (i1);
+    };
+    builtin.function public extern("wasm") @cmpf_olt(%a: f32, %b: f32) -> i1 {
+        %r = arith.cmpf olt %a, %b;
+        builtin.ret %r : (i1);
+    };
+    builtin.function public extern("wasm") @cmpf_ole(%a: f32, %b: f32) -> i1 {
+        %r = arith.cmpf ole %a, %b;
+        builtin.ret %r : (i1);
+    };
+    builtin.function public extern("wasm") @cmpf_one(%a: f32, %b: f32) -> i1 {
+        %r = arith.cmpf one %a, %b;
+        builtin.ret %r : (i1);
+    };
+    builtin.function public extern("wasm") @cmpf_ord(%a: f32, %b: f32) -> i1 {
+        %r = arith.cmpf ord %a, %b;
+        builtin.ret %r : (i1);
+    };
+    builtin.function public extern("wasm") @cmpf_ueq(%a: f32, %b: f32) -> i1 {
+        %r = arith.cmpf ueq %a, %b;
+        builtin.ret %r : (i1);
+    };
+    builtin.function public extern("wasm") @cmpf_ugt(%a: f32, %b: f32) -> i1 {
+        %r = arith.cmpf ugt %a, %b;
+        builtin.ret %r : (i1);
+    };
+    builtin.function public extern("wasm") @cmpf_uge(%a: f32, %b: f32) -> i1 {
+        %r = arith.cmpf uge %a, %b;
+        builtin.ret %r : (i1);
+    };
+    builtin.function public extern("wasm") @cmpf_ult(%a: f32, %b: f32) -> i1 {
+        %r = arith.cmpf ult %a, %b;
+        builtin.ret %r : (i1);
+    };
+    builtin.function public extern("wasm") @cmpf_ule(%a: f32, %b: f32) -> i1 {
+        %r = arith.cmpf ule %a, %b;
+        builtin.ret %r : (i1);
+    };
+    builtin.function public extern("wasm") @cmpf_une(%a: f32, %b: f32) -> i1 {
+        %r = arith.cmpf une %a, %b;
+        builtin.ret %r : (i1);
+    };
+    builtin.function public extern("wasm") @cmpf_uno(%a: f32, %b: f32) -> i1 {
+        %r = arith.cmpf uno %a, %b;
+        builtin.ret %r : (i1);
+    };
+    builtin.function public extern("wasm") @cmpf_true(%a: f32, %b: f32) -> i1 {
+        %r = arith.cmpf true %a, %b;
+        builtin.ret %r : (i1);
+    };
+    builtin.function public extern("wasm") @cmpf_olt_f64(%a: f64, %b: f64) -> i1 {
+        %r = arith.cmpf olt %a, %b;
+        builtin.ret %r : (i1);
+    };
+    builtin.function public extern("wasm") @fptosi_f32_i8(%a: f32) -> i8 {
+        %r = arith.fptosi %a <{ ty = i8 }>;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @fptosi_f64_i32(%a: f64) -> i32 {
+        %r = arith.fptosi %a <{ ty = i32 }>;
+        builtin.ret %r : (i32);
+    };
+    builtin.function public extern("wasm") @fptosi_f64_i64(%a: f64) -> i64 {
+        %r = arith.fptosi %a <{ ty = i64 }>;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @fptosi_f32_isize(%a: f32) -> isize {
+        %r = arith.fptosi %a <{ ty = isize }>;
+        builtin.ret %r : (isize);
+    };
+    builtin.function public extern("wasm") @fptoui_f64_i8(%a: f64) -> i8 {
+        %r = arith.fptoui %a <{ ty = i8 }>;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @fptoui_f32_i40(%a: f32) -> i40 {
+        %r = arith.fptoui %a <{ ty = i40 }>;
+        builtin.ret %r : (i40);
+    };
+    builtin.function public extern("wasm") @fptoui_f32_i64(%a: f32) -> i64 {
+        %r = arith.fptoui %a <{ ty = i64 }>;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @sitofp_i8_f32(%a: i8) -> f32 {
+        %r = arith.sitofp %a <{ ty = f32 }>;
+        builtin.ret %r : (f32);
+    };
+    builtin.function public extern("wasm") @sitofp_i40_f64(%a: i40) -> f64 {
+        %r = arith.sitofp %a <{ ty = f64 }>;
+        builtin.ret %r : (f64);
+    };
+    builtin.function public extern("wasm") @sitofp_i64_f32(%a: i64) -> f32 {
+        %r = arith.sitofp %a <{ ty = f32 }>;
+        builtin.ret %r : (f32);
+    };
+    builtin.function public extern("wasm") @uitofp_i8_f64(%a: i8) -> f64 {
+        %r = arith.uitofp %a <{ ty = f64 }>;
+        builtin.ret %r : (f64);
+    };
+    builtin.function public extern("wasm") @uitofp_i32_f32(%a: i32) -> f32 {
+        %r = arith.uitofp %a <{ ty = f32 }>;
+        builtin.ret %r : (f32);
+    };
+    builtin.function public extern("wasm") @fpext(%a: f32) -> f64 {
+        %r = arith.fpext %a <{ ty = f64 }>;
+        builtin.ret %r : (f64);
+    };
+    builtin.function public extern("wasm") @fptrunc(%a: f64) -> f32 {
+        %r = arith.fptrunc %a <{ ty = f32 }>;
+        builtin.ret %r : (f32);
+    };
+    builtin.function public extern("wasm") @bitcast_f32_i32(%a: f32) -> i32 {
+        %r = arith.bitcast %a <{ ty = i32 }>;
+        builtin.ret %r : (i32);
+    };
+    builtin.function public extern("wasm") @bitcast_i64_f64(%a: i64) -> f64 {
+        %r = arith.bitcast %a <{ ty = f64 }>;
+        builtin.ret %r : (f64);
+    };
+};

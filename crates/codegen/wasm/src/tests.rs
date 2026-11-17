@@ -15,7 +15,9 @@ use runic_ir::{
 };
 
 mod carried;
+mod composed;
 mod eval;
+mod float;
 mod int;
 mod pipeline;
 mod symbols;

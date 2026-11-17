@@ -3,9 +3,11 @@
 //! evaluator ([super::eval]) on a set of edge values, and the result is compared with `arith`'s
 //! own arithmetic (the `Int` operations its folds call).
 //!
-//! A case is declared by [check] (one operation at one type) and the helpers below it: [binary],
-//! [unary], [casts]. The reference of a case is a closure from the operands, as `Int`s of the
-//! operand type's width, to an [Expect].
+//! A case is declared by [check] (one operation at one type, on every tuple of candidate lists),
+//! or [check_tuples] (an operation with any number of results, on explicit tuples), and the
+//! helpers below them: [binary], [unary], [casts]. The reference of a case is a closure from the
+//! operands, as `Int`s of the operand type's width, to an [Expect] (one per result for
+//! [check_tuples]). The other test modules of the numeric patterns declare their cases with these.
 //!
 //! Every result is also checked for the carried-form invariant: no bit at or above `N` is set.
 
@@ -21,26 +23,26 @@ use super::{
 use crate::{convert::convert_module, verify_wasm_form};
 
 /// The widths every operation is tried at, besides `isize`.
-const WIDTHS: [u32; 8] = [1, 7, 8, 16, 31, 32, 33, 64];
+pub(super) const WIDTHS: [u32; 9] = [1, 7, 8, 16, 31, 32, 33, 63, 64];
 
 /// An integer type under test.
 #[derive(Clone, Debug)]
-struct Ty {
+pub(super) struct Ty {
     /// As written: `i8`, `isize`.
-    name: String,
+    pub name: String,
     /// Its width in bits; 32 for `isize`.
-    n: u32,
+    pub n: u32,
 }
 
 impl Ty {
-    fn int(n: u32) -> Self {
+    pub fn int(n: u32) -> Self {
         Self {
             name: format!("i{n}"),
             n,
         }
     }
 
-    fn isize() -> Self {
+    pub fn isize() -> Self {
         Self {
             name: String::from("isize"),
             n: 32,
@@ -48,19 +50,19 @@ impl Ty {
     }
 
     /// The width of the carrier: 32 up to `i32` and `isize`, 64 above.
-    fn carrier(&self) -> u32 {
+    pub fn carrier(&self) -> u32 {
         if self.n <= 32 { 32 } else { 64 }
     }
 }
 
 /// The types an operation is tried at: each width, and `isize`.
-fn types() -> Vec<Ty> {
+pub(super) fn types() -> Vec<Ty> {
     WIDTHS.iter().map(|n| Ty::int(*n)).chain([Ty::isize()]).collect()
 }
 
 /// What `arith` says an operation gives on some operands.
 #[derive(Clone, Debug)]
-enum Expect {
+pub(super) enum Expect {
     /// This value.
     Value(Int),
     /// The operation traps.
@@ -71,7 +73,7 @@ enum Expect {
 
 /// The edge values of the width `n`: 0, 1, 2, the maximum, the maximum less 1, the signed minimum,
 /// the signed minimum plus 1, and the two alternating bit patterns.
-fn edges(n: u32) -> Vec<Int> {
+pub(super) fn edges(n: u32) -> Vec<Int> {
     let max = Int::all_ones(n);
     let min = Int::signed_min(n);
     let bits: BTreeSet<u128> = [
@@ -93,14 +95,14 @@ fn edges(n: u32) -> Vec<Int> {
 
 /// The shift amounts tried at the width `n`: every value from 0 to `n - 1`, and the edge values
 /// (some of which are `n` or more, where `arith` leaves the result undefined).
-fn amounts(n: u32) -> Vec<Int> {
+pub(super) fn amounts(n: u32) -> Vec<Int> {
     let mut bits: BTreeSet<u128> = (0..u128::from(n)).collect();
     bits.extend(edges(n).into_iter().map(Int::unsigned));
     bits.into_iter().map(|bits| Int::from_bits(n, bits)).collect()
 }
 
 /// The tuples that take one of each of `candidates`, in order.
-fn product(candidates: &[Vec<Int>]) -> Vec<Vec<Int>> {
+pub(super) fn product<T: Copy>(candidates: &[Vec<T>]) -> Vec<Vec<T>> {
     let mut tuples = vec![Vec::new()];
     for list in candidates {
         let mut next = Vec::new();
@@ -117,36 +119,64 @@ fn product(candidates: &[Vec<Int>]) -> Vec<Vec<Int>> {
 }
 
 /// A function `@f` lowered by `convert-to-wasm`, with what keeps it alive.
-struct Lowered {
+pub(super) struct Lowered {
     _module: ModuleRef,
-    function: OperationRef,
+    /// The lowered `builtin.function`.
+    pub function: OperationRef,
 }
 
 /// The names of the parameters of a case.
 const PARAMETERS: [&str; 3] = ["a", "b", "c"];
 
-/// Builds a module with one `extern("wasm")` function `@f(params) -> result` that holds `body`
-/// (the text of the operation that defines `%r`), under the 32-bit data layout, converts it with
-/// `convert-to-wasm` and verifies the result with `wasm-verify-form`.
-fn lower(
-    context: &Rc<Context>,
-    params: &[&Ty],
-    result: &Ty,
-    body: &str,
-) -> Result<Lowered, Report> {
+/// The text of a module with one `extern("wasm")` function `@f` whose parameters `%a`, `%b`, ...
+/// have the types `params`, whose results have the types `results`, and whose body is the
+/// operation `body`, which defines the values `%r` (one result) or `%r0`, `%r1`, ... (several),
+/// followed by a `builtin.ret` of them; under the 32-bit data layout.
+pub(super) fn module_text(params: &[&str], results: &[&str], body: &str) -> String {
     let parameters = params
         .iter()
         .enumerate()
-        .map(|(index, ty)| format!("%{}: {}", PARAMETERS[index], ty.name))
+        .map(|(index, ty)| format!("%{}: {ty}", PARAMETERS[index]))
         .collect::<Vec<_>>()
         .join(", ");
-    let text = format!(
-            "builtin.module public @m attributes {{ data_layout = #builtin.data_layout<little, \
-             ptr = 32> }} {{\n    builtin.function public extern(\"wasm\") @f({parameters}) -> {} \
-             {{\n        %r = {body};\n        builtin.ret %r : ({});\n    }};\n}};",
-            result.name, result.name
-        );
-    let module = parse_module_in(context, &text)?;
+    let names = if results.len() == 1 {
+        vec![String::from("%r")]
+    } else {
+        (0..results.len()).map(|index| format!("%r{index}")).collect()
+    };
+    let names = names.join(", ");
+    let types = results.join(", ");
+    let defined = if results.is_empty() {
+        format!("{body};\n")
+    } else {
+        format!("{names} = {body};\n")
+    };
+    let signature = match results {
+        [] => String::new(),
+        [one] => format!(" -> {one}"),
+        _ => format!(" -> ({types})"),
+    };
+    let ret = if results.is_empty() {
+        String::from("builtin.ret;")
+    } else {
+        format!("builtin.ret {names} : ({types});")
+    };
+    format!(
+        "builtin.module public @m attributes {{ data_layout = #builtin.data_layout<little, ptr = \
+         32> }} {{\n    builtin.function public extern(\"wasm\") @f({parameters}){signature} \
+         {{\n        {defined}        {ret}\n    }};\n}};"
+    )
+}
+
+/// Builds the module of [module_text], converts it with `convert-to-wasm` and verifies the result
+/// with `wasm-verify-form`.
+pub(super) fn lower_text(
+    context: &Rc<Context>,
+    params: &[&str],
+    results: &[&str],
+    body: &str,
+) -> Result<Lowered, Report> {
+    let module = parse_module_in(context, &module_text(params, results, body))?;
     convert_module(module)?;
     module.borrow().as_operation().recursively_verify()?;
     verify_wasm_form(module.as_operation_ref())?;
@@ -157,6 +187,18 @@ fn lower(
         _module: module,
         function,
     })
+}
+
+/// [lower_text] of a function `@f(params) -> result` whose body is `body`, the text of the
+/// operation that defines `%r`.
+pub(super) fn lower(
+    context: &Rc<Context>,
+    params: &[&Ty],
+    result: &Ty,
+    body: &str,
+) -> Result<Lowered, Report> {
+    let params = params.iter().map(|ty| ty.name.as_str()).collect::<Vec<_>>();
+    lower_text(context, &params, &[result.name.as_str()], body)
 }
 
 /// The operands as `type: value` pairs, for a failure message.
@@ -175,7 +217,7 @@ fn describe_operands(params: &[&Ty], operands: &[Int]) -> String {
 ///
 /// `what` names the case in a failure.
 #[track_caller]
-fn check(
+pub(super) fn check(
     context: &Rc<Context>,
     what: &str,
     params: &[&Ty],
@@ -184,48 +226,79 @@ fn check(
     candidates: &[Vec<Int>],
     reference: impl Fn(&[Int]) -> Expect,
 ) -> usize {
-    let lowered = lower(context, params, result, body)
+    check_tuples(context, what, params, &[result], body, &product(candidates), |operands| {
+        vec![reference(operands)]
+    })
+}
+
+/// Lowers `body`, an operation of the parameters `params` that gives one value of each of
+/// `results`, and checks the lowered function against `reference` on each of `tuples` (one value
+/// per parameter). `reference` gives one [Expect] per result; the function must trap exactly when
+/// one of them is [Expect::Trap]. Returns the number of evaluations.
+///
+/// Every result is checked for the carried-form invariant. `what` names the case in a failure.
+#[track_caller]
+pub(super) fn check_tuples(
+    context: &Rc<Context>,
+    what: &str,
+    params: &[&Ty],
+    results: &[&Ty],
+    body: &str,
+    tuples: &[Vec<Int>],
+    reference: impl Fn(&[Int]) -> Vec<Expect>,
+) -> usize {
+    let param_names = params.iter().map(|ty| ty.name.as_str()).collect::<Vec<_>>();
+    let result_names = results.iter().map(|ty| ty.name.as_str()).collect::<Vec<_>>();
+    let lowered = lower_text(context, &param_names, &result_names, body)
         .unwrap_or_else(|report| panic!("{what} `{body}`: {}", describe(&report)));
     let mut count = 0;
-    for operands in product(candidates) {
+    for operands in tuples {
         let arguments = operands
             .iter()
             .zip(params)
             .map(|(value, ty)| Val::new(value.unsigned() as u64, ty.carrier()))
             .collect::<Vec<_>>();
         let outcome = run(lowered.function, &arguments);
-        let at = || format!("{what} `{body}` at ({})", describe_operands(params, &operands));
-        let expected = reference(&operands);
-        match (&outcome, &expected) {
-            (Outcome::Trap, Expect::Trap) => {}
-            (Outcome::Values(values), expected) => {
-                let [value] = values.as_slice() else {
-                    panic!("{}: returned {values:?}", at());
-                };
-                assert_eq!(value.width, result.carrier(), "{}: the carrier of the result", at());
-                // The invariant of carried form: no bit at or above `N` is set.
-                assert_eq!(
-                    u128::from(value.bits) >> result.n,
-                    0,
-                    "{}: the result {:#x} has bits at or above {}",
-                    at(),
-                    value.bits,
-                    result.n
-                );
-                match expected {
-                    Expect::Value(expected) => assert_eq!(
-                        u128::from(value.bits),
-                        expected.unsigned(),
-                        "{}: wrong value",
+        let at = || format!("{what} `{body}` at ({})", describe_operands(params, operands));
+        let expected = reference(operands);
+        assert_eq!(expected.len(), results.len(), "{}: the reference", at());
+        let traps = expected.iter().any(|expect| matches!(expect, Expect::Trap));
+        match &outcome {
+            Outcome::Trap if traps => {}
+            Outcome::Trap => panic!("{}: trapped, but arith says {expected:?}", at()),
+            Outcome::Values(values) if traps => {
+                panic!("{}: arith traps, but the lowered code gave {values:?}", at())
+            }
+            Outcome::Values(values) => {
+                assert_eq!(values.len(), results.len(), "{}: returned {values:?}", at());
+                for (index, ((value, ty), expected)) in
+                    values.iter().zip(results).zip(&expected).enumerate()
+                {
+                    assert_eq!(
+                        value.width,
+                        ty.carrier(),
+                        "{}: the carrier of result {index}",
                         at()
-                    ),
-                    Expect::Undefined => {}
-                    Expect::Trap => {
-                        panic!("{}: arith traps, but the lowered code gave {value:?}", at())
+                    );
+                    // The invariant of carried form: no bit at or above `N` is set.
+                    assert_eq!(
+                        u128::from(value.bits) >> ty.n,
+                        0,
+                        "{}: result {index}, {:#x}, has bits at or above {}",
+                        at(),
+                        value.bits,
+                        ty.n
+                    );
+                    if let Expect::Value(expected) = expected {
+                        assert_eq!(
+                            u128::from(value.bits),
+                            expected.unsigned(),
+                            "{}: wrong value of result {index}",
+                            at()
+                        );
                     }
                 }
             }
-            (Outcome::Trap, expected) => panic!("{}: trapped, but arith says {expected:?}", at()),
         }
         count += 1;
     }
@@ -382,26 +455,6 @@ fn add_sub_and_mul_in_the_wrapping_and_unchecked_modes_match_arith() {
         }
     }
     assert!(count > 3000, "{count}");
-}
-
-#[test]
-fn a_checked_operation_has_no_pattern_here() {
-    let context = context();
-    for name in ["add", "sub", "mul"] {
-        for sign in ["signed", "unsigned"] {
-            let body =
-                format!("arith.{name} %a, %b <{{ overflow = #builtin.overflow<checked {sign}> }}>");
-            let ty = Ty::int(32);
-            let error = lower(&context, &[&ty, &ty], &ty, &body)
-                .err()
-                .map(|report| describe(&report))
-                .expect("a checked operation is not lowered");
-            assert!(
-                error.contains(&format!("failed to legalize operation 'arith.{name}'")),
-                "{error}"
-            );
-        }
-    }
 }
 
 #[test]
@@ -571,22 +624,5 @@ fn poison_of_an_integer_is_a_value_that_keeps_carried_form() {
     for ty in types() {
         let body = format!("ub.poison <{{ value = #ub.poison<{}> }}>", ty.name);
         check(&context, "ub.poison", &[], &ty, &body, &[], |_| Expect::Undefined);
-    }
-}
-
-#[test]
-fn the_operations_left_to_other_patterns_are_reported() {
-    let context = context();
-    let ty = Ty::int(32);
-    for (name, body) in [
-        ("arith.rotl", "arith.rotl %a, %b"),
-        ("arith.min", "arith.min %a, %b <{ signedness = #builtin.signedness<signed> }>"),
-        ("arith.clz", "arith.clz %a"),
-    ] {
-        let error = lower(&context, &[&ty, &ty], &ty, body)
-            .err()
-            .map(|report| describe(&report))
-            .expect("not lowered by the integer patterns");
-        assert!(error.contains(&format!("failed to legalize operation '{name}'")), "{error}");
     }
 }

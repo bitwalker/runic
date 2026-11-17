@@ -3,36 +3,57 @@
 //!
 //! [run] executes one `builtin.function` whose body is `wasm` operations and ends in
 //! `builtin.ret`, on argument values, and gives the values it returns or [Outcome::Trap]. A value
-//! is its bit pattern in a `u64` and the width of its type (32 or 64): [Val].
+//! is its bit pattern in a `u64`, the width of its type (32 or 64) and whether it is a float:
+//! [Val].
 //!
-//! The operations it knows are the integer operations of the `wasm` dialect that lowered integer
-//! code uses, `wasm.if` with `wasm.end`, `wasm.unreachable` and `builtin.ret`. An operation it
-//! does not know panics with a message that names it: a test never skips one silently.
+//! The operations it knows are the integer and float operations of the `wasm` dialect that
+//! lowered numeric code uses, `wasm.if` with `wasm.end`, `wasm.unreachable` and `builtin.ret`. An
+//! operation it does not know panics with a message that names it: a test never skips one
+//! silently.
+//!
+//! Floats follow the specification's "Floating-Point Operations": IEEE 754 arithmetic rounding to
+//! nearest, ties to even, which Rust's `f32` and `f64` arithmetic and its `as` conversions between
+//! integers and floats implement; the saturating truncations are Rust's `as` from a float to an
+//! integer, which saturates and gives 0 for a NaN, as `trunc_sat` does. Where the specification
+//! leaves a NaN's sign and payload to the engine, the bits given here are Rust's, and a test
+//! compares a NaN result only as being a NaN ([Val::is_nan]).
 
 use alloc::{format, string::String, vec::Vec};
 use std::collections::HashMap;
 
 use runic_dialect_wasm as wasm;
-use runic_ir::{BlockRef, OperationRef, RegionRef, ValueRef, dialects::builtin::Function};
+use runic_ir::{
+    BlockRef, OperationRef, RegionRef, Type, Value, ValueRef, dialects::builtin::Function,
+};
 
-use crate::types::carrier_width;
-
-/// A Wasm integer value: the bits of an `i32` or an `i64` in the low `width` bits of `bits`.
+/// A Wasm number: the bits of an `i32`, an `i64`, an `f32` or an `f64` in the low `width` bits of
+/// `bits`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(super) struct Val {
     /// The bit pattern; the bits at or above `width` are zero.
     pub bits: u64,
     /// 32 or 64.
     pub width: u32,
+    /// Whether the value is a float (`f32`, `f64`) rather than an integer.
+    pub float: bool,
 }
 
 impl Val {
-    /// The value of the low `width` bits of `bits`.
+    /// The integer of the low `width` bits of `bits`.
     pub fn new(bits: u64, width: u32) -> Self {
         assert!(width == 32 || width == 64, "a Wasm integer is 32 or 64 bits wide");
         Self {
             bits: bits & mask(width),
             width,
+            float: false,
+        }
+    }
+
+    /// The float of the low `width` bits of `bits`.
+    pub fn float_bits(bits: u64, width: u32) -> Self {
+        Self {
+            float: true,
+            ..Self::new(bits, width)
         }
     }
 
@@ -46,6 +67,26 @@ impl Val {
         Self::new(bits, 64)
     }
 
+    /// The `f32` `value`.
+    pub fn f32(value: f32) -> Self {
+        Self::float_bits(u64::from(value.to_bits()), 32)
+    }
+
+    /// The `f64` `value`.
+    pub fn f64(value: f64) -> Self {
+        Self::float_bits(value.to_bits(), 64)
+    }
+
+    /// Whether the value is a float NaN.
+    pub fn is_nan(self) -> bool {
+        self.float
+            && if self.width == 32 {
+                self.as_f32().is_nan()
+            } else {
+                self.as_f64().is_nan()
+            }
+    }
+
     /// The value read as a signed number.
     fn signed(self) -> i64 {
         if self.width == 32 {
@@ -53,6 +94,37 @@ impl Val {
         } else {
             self.bits as i64
         }
+    }
+
+    /// The bits read as an `f32`.
+    fn as_f32(self) -> f32 {
+        f32::from_bits(self.bits as u32)
+    }
+
+    /// The bits read as an `f64`.
+    fn as_f64(self) -> f64 {
+        f64::from_bits(self.bits)
+    }
+
+    /// The float value, widened to an `f64` (exactly, for an `f32`).
+    fn as_float(self) -> f64 {
+        if self.width == 32 {
+            f64::from(self.as_f32())
+        } else {
+            self.as_f64()
+        }
+    }
+}
+
+/// The width of the Wasm number type `ty` and whether it is a float, or `None` for any other type.
+fn number_type(ty: Type) -> Option<(u32, bool)> {
+    match ty.integer_width() {
+        Some(width @ (32 | 64)) => Some((width, false)),
+        Some(_) => None,
+        None => match ty.as_float().map(|float| float.bits()) {
+            Some(width @ (32 | 64)) => Some((width, true)),
+            _ => None,
+        },
     }
 }
 
@@ -147,11 +219,10 @@ fn bind_arguments(env: &mut Env, block: BlockRef, values: &[Val]) {
     for (argument, value) in arguments.into_iter().zip(values) {
         let ty = argument.borrow().ty();
         assert_eq!(
-            carrier_width(ty),
-            Some(value.width),
-            "the argument `{}` of type `{ty}` was given a value of {} bits",
+            number_type(ty),
+            Some((value.width, value.float)),
+            "the argument `{}` of type `{ty}` was given {value:?}",
             argument.borrow(),
-            value.width
         );
         env.values.insert(argument, *value);
     }
@@ -206,13 +277,122 @@ fn step(env: &mut Env, op: OperationRef) -> Option<Flow> {
                 other => return Some(other),
             }
         }
-        _ => match compute(&name, &operands) {
-            Some(Some(value)) => env.define(op, &[value]),
-            Some(None) => return Some(Flow::Trap),
-            None => panic!("the evaluator does not know `{name}`"),
-        },
+        "wasm.constf" => {
+            let op_ref = op.borrow();
+            let constant = op_ref.downcast_ref::<wasm::ConstF>().expect("a wasm.constf");
+            let value = *constant.get_value();
+            env.define(op, &[Val::float_bits(value.bits(), value.width())]);
+        }
+        _ => {
+            let result = op
+                .borrow()
+                .results()
+                .iter()
+                .next()
+                .and_then(|result| number_type(result.borrow().ty()));
+            let float = name != "wasm.select"
+                && (operands.first().is_some_and(|a| a.float)
+                    || result.is_some_and(|(_, float)| float));
+            let value = if float {
+                compute_float(&name, &operands, result)
+            } else {
+                compute(&name, &operands)
+            };
+            match value {
+                Some(Some(value)) => env.define(op, &[value]),
+                Some(None) => return Some(Flow::Trap),
+                None => panic!("the evaluator does not know `{name}`"),
+            }
+        }
     }
     None
+}
+
+/// The result of the float operation `name` on `operands`, or of a conversion from or to a float,
+/// whose result has the width and kind `result`: `None` if the evaluator does not know it. No
+/// float operation traps.
+fn compute_float(name: &str, operands: &[Val], result: Option<(u32, bool)>) -> Option<Option<Val>> {
+    let a = *operands.first()?;
+    let b = operands.get(1).copied();
+    let w = a.width;
+    let flag = |value: bool| Some(Some(Val::i32(u32::from(value))));
+    // `fadd`, `fsub`, `fmul`, `fdiv`: computed in the operands' width, rounding to nearest, ties
+    // to even.
+    let arithmetic = |f32_op: fn(f32, f32) -> f32, f64_op: fn(f64, f64) -> f64, b: Val| {
+        Some(Some(if w == 32 {
+            Val::f32(f32_op(a.as_f32(), b.as_f32()))
+        } else {
+            Val::f64(f64_op(a.as_f64(), b.as_f64()))
+        }))
+    };
+    match (name, b) {
+        ("wasm.add", Some(b)) => arithmetic(|x, y| x + y, |x, y| x + y, b),
+        ("wasm.sub", Some(b)) => arithmetic(|x, y| x - y, |x, y| x - y, b),
+        ("wasm.mul", Some(b)) => arithmetic(|x, y| x * y, |x, y| x * y, b),
+        ("wasm.div", Some(b)) => arithmetic(|x, y| x / y, |x, y| x / y, b),
+        // `fneg`: the operand with its sign bit flipped, a NaN included.
+        ("wasm.neg", None) => Some(Some(Val::float_bits(a.bits ^ (1u64 << (w - 1)), w))),
+        // The comparisons are IEEE 754's: a NaN is unordered with everything, `-0` equals `+0`.
+        // Both widths compare as `f64`, which holds an `f32` exactly.
+        ("wasm.eq", Some(b)) => flag(a.as_float() == b.as_float()),
+        ("wasm.ne", Some(b)) => flag(a.as_float() != b.as_float()),
+        ("wasm.lt", Some(b)) => flag(a.as_float() < b.as_float()),
+        ("wasm.gt", Some(b)) => flag(a.as_float() > b.as_float()),
+        ("wasm.le", Some(b)) => flag(a.as_float() <= b.as_float()),
+        ("wasm.ge", Some(b)) => flag(a.as_float() >= b.as_float()),
+        // `trunc_sat_s`, `trunc_sat_u`: toward zero, saturating at the bounds of the result, and 0
+        // for a NaN; Rust's `as` from a float to an integer is exactly this.
+        ("wasm.trunc_sat_s", None) => {
+            let (rw, _) = result?;
+            let value = a.as_float();
+            Some(Some(if rw == 32 {
+                Val::i32(value as i32 as u32)
+            } else {
+                Val::i64(value as i64 as u64)
+            }))
+        }
+        ("wasm.trunc_sat_u", None) => {
+            let (rw, _) = result?;
+            let value = a.as_float();
+            Some(Some(if rw == 32 {
+                Val::i32(value as u32)
+            } else {
+                Val::i64(value as u64)
+            }))
+        }
+        // `convert_s`, `convert_u`: the integer rounded to nearest, ties to even, in one rounding.
+        ("wasm.convert_s", None) => {
+            let (rw, _) = result?;
+            let value = a.signed();
+            Some(Some(if rw == 32 {
+                Val::f32(value as f32)
+            } else {
+                Val::f64(value as f64)
+            }))
+        }
+        ("wasm.convert_u", None) => {
+            let (rw, _) = result?;
+            Some(Some(if rw == 32 {
+                Val::f32(a.bits as f32)
+            } else {
+                Val::f64(a.bits as f64)
+            }))
+        }
+        // `promote` is exact; `demote` rounds to nearest, ties to even.
+        ("wasm.promote", None) => Some(Some(Val::f64(f64::from(a.as_f32())))),
+        ("wasm.demote", None) => Some(Some(Val::f32(a.as_f64() as f32))),
+        // `reinterpret`: the same bits, of the other kind.
+        ("wasm.reinterpret", None) => {
+            let (rw, float) = result?;
+            assert_eq!(rw, w, "`reinterpret` keeps the width");
+            Some(Some(Val {
+                bits: a.bits,
+                width: w,
+                float,
+            }))
+        }
+        _ => None,
+    }
 }
 
 /// The result of the pure operation `name` on `operands`: `None` if the evaluator does not know
@@ -495,11 +675,176 @@ fn if_runs_the_region_the_condition_picks_and_unreachable_traps() {
 }
 
 #[test]
-#[should_panic(expected = "the evaluator does not know `wasm.reinterpret`")]
+#[should_panic(expected = "the evaluator does not know `wasm.sqrt`")]
 fn an_operation_the_evaluator_does_not_know_is_a_failure_that_names_it() {
     run_text(
-        "builtin.function public extern(\"wasm\") @f(%a: i32) -> f32 {\n    %r = wasm.reinterpret \
-         %a <{ ty = f32 }>;\n    builtin.ret %r : (f32);\n};",
-        &[Val::i32(0)],
+        "builtin.function public extern(\"wasm\") @f(%a: f32) -> f32 {\n    %r = wasm.sqrt \
+         %a;\n    builtin.ret %r : (f32);\n};",
+        &[Val::f32(4.0)],
+    );
+}
+
+/// The result of `wasm.{op}` on the `ty`s `a` and `b`, a value of type `result`.
+fn float_binary(op: &str, ty: &str, result: &str, a: Val, b: Val) -> Outcome {
+    run_text(
+        &format!(
+            "builtin.function public extern(\"wasm\") @f(%a: {ty}, %b: {ty}) -> {result} {{\n    \
+             %r = wasm.{op} %a, %b;\n    builtin.ret %r : ({result});\n}};"
+        ),
+        &[a, b],
+    )
+}
+
+/// The result of the conversion `wasm.{op}` of `value`, of type `from`, to `to`.
+fn conversion(op: &str, from: &str, to: &str, value: Val) -> Outcome {
+    run_text(
+        &format!(
+            "builtin.function public extern(\"wasm\") @f(%a: {from}) -> {to} {{\n    %r = \
+             wasm.{op} %a <{{ ty = {to} }}>;\n    builtin.ret %r : ({to});\n}};"
+        ),
+        &[value],
+    )
+}
+
+/// The one value of `outcome`.
+#[track_caller]
+fn single(outcome: Outcome) -> Val {
+    match outcome {
+        Outcome::Values(values) if values.len() == 1 => values[0],
+        other => panic!("expected one value, got {other:?}"),
+    }
+}
+
+#[test]
+fn float_arithmetic_rounds_in_the_width_of_its_operands() {
+    // `2^24 + 1` is not an `f32`: the sum rounds to `2^24` there, and is exact in an `f64`.
+    let sum = float_binary("add", "f32", "f32", Val::f32(16_777_216.0), Val::f32(1.0));
+    assert_eq!(single(sum), Val::f32(16_777_216.0));
+    let sum = float_binary("add", "f64", "f64", Val::f64(16_777_216.0), Val::f64(1.0));
+    assert_eq!(single(sum), Val::f64(16_777_217.0));
+    let difference = float_binary("sub", "f64", "f64", Val::f64(0.5), Val::f64(2.0));
+    assert_eq!(single(difference), Val::f64(-1.5));
+    let product = float_binary("mul", "f32", "f32", Val::f32(1.5), Val::f32(-2.0));
+    assert_eq!(single(product), Val::f32(-3.0));
+}
+
+#[test]
+fn float_division_by_zero_is_an_infinity_or_a_nan_and_does_not_trap() {
+    let quotient = float_binary("div", "f64", "f64", Val::f64(1.0), Val::f64(-0.0));
+    assert_eq!(single(quotient), Val::f64(f64::NEG_INFINITY));
+    let quotient = float_binary("div", "f32", "f32", Val::f32(0.0), Val::f32(0.0));
+    assert!(single(quotient).is_nan());
+    let difference =
+        float_binary("sub", "f64", "f64", Val::f64(f64::INFINITY), Val::f64(f64::INFINITY));
+    assert!(single(difference).is_nan());
+}
+
+#[test]
+fn neg_flips_the_sign_bit_of_every_value_a_nan_included() {
+    let neg = |value: Val, ty: &str| {
+        single(run_text(
+            &format!(
+                "builtin.function public extern(\"wasm\") @f(%a: {ty}) -> {ty} {{\n    %r = \
+                 wasm.neg %a;\n    builtin.ret %r : ({ty});\n}};"
+            ),
+            &[value],
+        ))
+    };
+    assert_eq!(neg(Val::f32(0.0), "f32"), Val::f32(-0.0));
+    assert_eq!(neg(Val::float_bits(0x7fc0_0001, 32), "f32"), Val::float_bits(0xffc0_0001, 32));
+    assert_eq!(neg(Val::f64(-2.5), "f64"), Val::f64(2.5));
+}
+
+#[test]
+fn float_comparisons_are_unordered_with_a_nan_and_equate_the_zeros() {
+    let nan = Val::f64(f64::NAN);
+    let compare = |op: &str, a: Val, b: Val| float_binary(op, "f64", "i32", a, b);
+    for op in ["eq", "lt", "gt", "le", "ge"] {
+        assert_eq!(compare(op, nan, Val::f64(1.0)), ok32(0), "{op}");
+        assert_eq!(compare(op, nan, nan), ok32(0), "{op}");
+    }
+    assert_eq!(compare("ne", nan, nan), ok32(1));
+    assert_eq!(compare("eq", Val::f64(-0.0), Val::f64(0.0)), ok32(1));
+    assert_eq!(compare("lt", Val::f64(-0.0), Val::f64(0.0)), ok32(0));
+    assert_eq!(compare("le", Val::f64(1.0), Val::f64(1.0)), ok32(1));
+    let less = float_binary("lt", "f32", "i32", Val::f32(f32::NEG_INFINITY), Val::f32(-3.0e38));
+    assert_eq!(less, ok32(1));
+}
+
+#[test]
+fn saturating_truncation_saturates_and_gives_zero_for_a_nan() {
+    let sat = |op: &str, from: &str, to: &str, value: Val| single(conversion(op, from, to, value));
+    assert_eq!(sat("trunc_sat_s", "f32", "i32", Val::f32(f32::NAN)), Val::i32(0));
+    assert_eq!(sat("trunc_sat_s", "f32", "i32", Val::f32(3.0e9)), Val::i32(0x7fff_ffff));
+    assert_eq!(sat("trunc_sat_s", "f64", "i32", Val::f64(-3.0e9)), Val::i32(0x8000_0000));
+    assert_eq!(sat("trunc_sat_s", "f64", "i64", Val::f64(-2.5)), Val::i64((-2i64) as u64));
+    assert_eq!(sat("trunc_sat_u", "f64", "i32", Val::f64(-1.5)), Val::i32(0));
+    assert_eq!(sat("trunc_sat_u", "f64", "i32", Val::f64(4.5e9)), Val::i32(u32::MAX));
+    assert_eq!(sat("trunc_sat_u", "f32", "i64", Val::f32(f32::INFINITY)), Val::i64(u64::MAX));
+    assert_eq!(sat("trunc_sat_u", "f64", "i64", Val::f64(255.9)), Val::i64(255));
+}
+
+#[test]
+fn integer_to_float_conversions_read_the_sign_and_round_to_nearest_even() {
+    let convert =
+        |op: &str, from: &str, to: &str, value: Val| single(conversion(op, from, to, value));
+    assert_eq!(convert("convert_s", "i32", "f32", Val::i32(u32::MAX)), Val::f32(-1.0));
+    assert_eq!(
+        convert("convert_u", "i32", "f32", Val::i32(u32::MAX)),
+        Val::f32(4_294_967_296.0)
+    );
+    // `2^53 + 1` is halfway between two `f64`s: it rounds to the even one, `2^53`.
+    let tie = (1u64 << 53) + 1;
+    assert_eq!(
+        convert("convert_s", "i64", "f64", Val::i64(tie)),
+        Val::f64(9_007_199_254_740_992.0)
+    );
+    // `2^24 + 3` rounds up to `2^24 + 4` in an `f32`, the even neighbour.
+    assert_eq!(
+        convert("convert_u", "i64", "f32", Val::i64((1 << 24) + 3)),
+        Val::f32(16_777_220.0)
+    );
+    assert_eq!(
+        convert("convert_u", "i64", "f64", Val::i64(u64::MAX)),
+        Val::f64(18_446_744_073_709_551_616.0)
+    );
+}
+
+#[test]
+fn promotion_is_exact_and_demotion_rounds() {
+    let convert =
+        |op: &str, from: &str, to: &str, value: Val| single(conversion(op, from, to, value));
+    assert_eq!(convert("promote", "f32", "f64", Val::f32(0.1)), Val::f64(f64::from(0.1f32)));
+    assert_eq!(convert("demote", "f64", "f32", Val::f64(1.0e300)), Val::f32(f32::INFINITY));
+    assert_eq!(convert("demote", "f64", "f32", Val::f64(0.1)), Val::f32(0.1));
+    assert!(convert("demote", "f64", "f32", Val::f64(f64::NAN)).is_nan());
+}
+
+#[test]
+fn reinterpret_keeps_the_bits_and_changes_the_kind() {
+    let convert =
+        |from: &str, to: &str, value: Val| single(conversion("reinterpret", from, to, value));
+    assert_eq!(convert("f32", "i32", Val::f32(1.0)), Val::i32(0x3f80_0000));
+    assert_eq!(
+        convert("i64", "f64", Val::i64(0x7ff8_0000_0000_0001)),
+        Val::float_bits(0x7ff8_0000_0000_0001, 64)
+    );
+}
+
+#[test]
+fn constf_gives_its_bits() {
+    let text = "builtin.function public extern(\"wasm\") @f() -> f64 {\n    %r = wasm.constf -1.5 \
+                : f64;\n    builtin.ret %r : (f64);\n};";
+    assert_eq!(single(run_text(text, &[])), Val::f64(-1.5));
+}
+
+#[test]
+fn a_function_returns_each_of_its_values_in_order() {
+    let text =
+        "builtin.function public extern(\"wasm\") @f(%a: i32, %b: f32) -> (f32, i32) {\n    \
+         builtin.ret %b, %a : (f32, i32);\n};";
+    assert_eq!(
+        run_text(text, &[Val::i32(7), Val::f32(2.5)]),
+        Outcome::Values(alloc::vec![Val::f32(2.5), Val::i32(7)])
     );
 }

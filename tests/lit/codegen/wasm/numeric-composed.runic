@@ -1,0 +1,753 @@
+// RUN: runic-opt %s -p 'convert-to-wasm,wasm-verify-form' | filecheck %s
+
+// The lowering of the composed integer operations of `arith` and of `cf.assert`, at `i8` (carried
+// in an `i32` below its width) and `i64` (the width of its carrier), and at `i32` and `i7` where
+// the lowering differs. Every result is zero-extended to `N` bits, the overflow flag included.
+//
+//   * `*_overflowing`, and `add`, `sub`, `mul` in a `checked` mode: the overflow flag `o` and the
+//     wrapped result. Below the carrier's width a sum or a difference is exact in the carrier (of
+//     the operands sign-extended, for signed) and is compared with the range; at it, the sign-bit
+//     identities. A product is exact in the carrier when `2N <= W` (`i8`), in an `i64` for an
+//     `i32`; an `i64` product is tested by an unsigned division of the largest magnitude that fits
+//     by one operand's magnitude, whose divisor is made 1 when it is 0, so it cannot trap. A
+//     checked operation traps with `wasm.unreachable` in a `wasm.if` on `o`;
+//   * `min`, `max`: `select` on the comparison (of the operands sign-extended, for signed);
+//   * `udivrem`, `sdivrem`: the two divisions (`sdivrem` sign-extends and masks);
+//   * `rotl`, `rotr`: the Wasm rotate at the carrier's width; below it the amount modulo `N` (an
+//     `and` for a power of two, `rem_u` otherwise), two shifts, an `or` and a mask;
+//   * `popcnt`; `clz` less the `W - N` bits above `N`; `ctz` of `x | 2^N`; `clo` and `cto` on the
+//     complement in `N` bits (`cto` with bit `N` set, in the same `xor`);
+//   * `cf.assert`: a `wasm.if` whose second region traps; the message is dropped.
+
+// CHECK-LABEL: @add_overflowing_signed_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> (i32, i32) {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.extend8_s [[V0]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.extend8_s [[V1]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.add [[V2]], [[V3]];
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.extend8_s [[V4]];
+// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.ne [[V4]], [[V5]];
+// CHECK-NEXT: [[V7:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V8:%[0-9]+]] = wasm.and [[V4]], [[V7]];
+// CHECK-NEXT: builtin.ret [[V6]], [[V8]] : (i32, i32);
+
+// CHECK-LABEL: @add_overflowing_signed_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> (i32, i64) {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.add [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.xor [[V2]], [[V0]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.xor [[V2]], [[V1]];
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.and [[V3]], [[V4]];
+// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.const 0 : i64;
+// CHECK-NEXT: [[V7:%[0-9]+]] = wasm.lt_s [[V5]], [[V6]];
+// CHECK-NEXT: builtin.ret [[V7]], [[V2]] : (i32, i64);
+
+// CHECK-LABEL: @add_overflowing_unsigned_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> (i32, i32) {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.add [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.gt_u [[V2]], [[V3]];
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.and [[V2]], [[V3]];
+// CHECK-NEXT: builtin.ret [[V4]], [[V5]] : (i32, i32);
+
+// CHECK-LABEL: @add_overflowing_unsigned_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> (i32, i64) {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.add [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.lt_u [[V2]], [[V0]];
+// CHECK-NEXT: builtin.ret [[V3]], [[V2]] : (i32, i64);
+
+// CHECK-LABEL: @sub_overflowing_signed_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> (i32, i32) {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.extend8_s [[V0]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.extend8_s [[V1]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.sub [[V2]], [[V3]];
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.extend8_s [[V4]];
+// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.ne [[V4]], [[V5]];
+// CHECK-NEXT: [[V7:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V8:%[0-9]+]] = wasm.and [[V4]], [[V7]];
+// CHECK-NEXT: builtin.ret [[V6]], [[V8]] : (i32, i32);
+
+// CHECK-LABEL: @sub_overflowing_signed_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> (i32, i64) {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.sub [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.xor [[V0]], [[V1]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.xor [[V0]], [[V2]];
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.and [[V3]], [[V4]];
+// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.const 0 : i64;
+// CHECK-NEXT: [[V7:%[0-9]+]] = wasm.lt_s [[V5]], [[V6]];
+// CHECK-NEXT: builtin.ret [[V7]], [[V2]] : (i32, i64);
+
+// CHECK-LABEL: @sub_overflowing_unsigned_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> (i32, i32) {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.lt_u [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.sub [[V0]], [[V1]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.and [[V3]], [[V4]];
+// CHECK-NEXT: builtin.ret [[V2]], [[V5]] : (i32, i32);
+
+// CHECK-LABEL: @sub_overflowing_unsigned_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> (i32, i64) {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.lt_u [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.sub [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]], [[V3]] : (i32, i64);
+
+// CHECK-LABEL: @mul_overflowing_signed_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> (i32, i32) {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.extend8_s [[V0]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.extend8_s [[V1]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.mul [[V2]], [[V3]];
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.extend8_s [[V4]];
+// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.ne [[V4]], [[V5]];
+// CHECK-NEXT: [[V7:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V8:%[0-9]+]] = wasm.and [[V4]], [[V7]];
+// CHECK-NEXT: builtin.ret [[V6]], [[V8]] : (i32, i32);
+
+// CHECK-LABEL: @mul_overflowing_signed_i32(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> (i32, i32) {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.extend_s [[V0]] <{ ty = #builtin.type<i64> }>;
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.extend_s [[V1]] <{ ty = #builtin.type<i64> }>;
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.mul [[V2]], [[V3]];
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.extend32_s [[V4]];
+// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.ne [[V4]], [[V5]];
+// CHECK-NEXT: [[V7:%[0-9]+]] = wasm.wrap [[V4]] <{ ty = #builtin.type<i32> }>;
+// CHECK-NEXT: builtin.ret [[V6]], [[V7]] : (i32, i32);
+
+// CHECK-LABEL: @mul_overflowing_signed_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> (i32, i64) {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.const 63 : i64;
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.shr_s [[V0]], [[V2]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.shr_s [[V1]], [[V2]];
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.xor [[V0]], [[V3]];
+// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.sub [[V5]], [[V3]];
+// CHECK-NEXT: [[V7:%[0-9]+]] = wasm.xor [[V1]], [[V4]];
+// CHECK-NEXT: [[V8:%[0-9]+]] = wasm.sub [[V7]], [[V4]];
+// CHECK-NEXT: [[V9:%[0-9]+]] = wasm.xor [[V3]], [[V4]];
+// CHECK-NEXT: [[V10:%[0-9]+]] = wasm.const 9223372036854775807 : i64;
+// CHECK-NEXT: [[V11:%[0-9]+]] = wasm.sub [[V10]], [[V9]];
+// CHECK-NEXT: [[V12:%[0-9]+]] = wasm.eqz [[V6]];
+// CHECK-NEXT: [[V13:%[0-9]+]] = wasm.const 1 : i64;
+// CHECK-NEXT: [[V14:%[0-9]+]] = wasm.select [[V12]], [[V13]], [[V6]];
+// CHECK-NEXT: [[V15:%[0-9]+]] = wasm.div_u [[V11]], [[V14]];
+// CHECK-NEXT: [[V16:%[0-9]+]] = wasm.gt_u [[V8]], [[V15]];
+// CHECK-NEXT: [[V17:%[0-9]+]] = wasm.mul [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V16]], [[V17]] : (i32, i64);
+
+// CHECK-LABEL: @mul_overflowing_unsigned_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> (i32, i32) {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.mul [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.gt_u [[V2]], [[V3]];
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.and [[V2]], [[V3]];
+// CHECK-NEXT: builtin.ret [[V4]], [[V5]] : (i32, i32);
+
+// CHECK-LABEL: @mul_overflowing_unsigned_i32(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> (i32, i32) {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.extend_u [[V0]] <{ ty = #builtin.type<i64> }>;
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.extend_u [[V1]] <{ ty = #builtin.type<i64> }>;
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.mul [[V2]], [[V3]];
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.const 4294967295 : i64;
+// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.gt_u [[V4]], [[V5]];
+// CHECK-NEXT: [[V7:%[0-9]+]] = wasm.wrap [[V4]] <{ ty = #builtin.type<i32> }>;
+// CHECK-NEXT: builtin.ret [[V6]], [[V7]] : (i32, i32);
+
+// CHECK-LABEL: @mul_overflowing_unsigned_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> (i32, i64) {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.const -1 : i64;
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.eqz [[V0]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.const 1 : i64;
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.select [[V3]], [[V4]], [[V0]];
+// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.div_u [[V2]], [[V5]];
+// CHECK-NEXT: [[V7:%[0-9]+]] = wasm.gt_u [[V1]], [[V6]];
+// CHECK-NEXT: [[V8:%[0-9]+]] = wasm.mul [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V7]], [[V8]] : (i32, i64);
+
+// CHECK-LABEL: @add_checked_signed_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.extend8_s [[V0]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.extend8_s [[V1]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.add [[V2]], [[V3]];
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.extend8_s [[V4]];
+// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.ne [[V4]], [[V5]];
+// CHECK-NEXT: [[V7:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V8:%[0-9]+]] = wasm.and [[V4]], [[V7]];
+// CHECK-NEXT: wasm.if [[V6]] then {
+// CHECK-NEXT: wasm.unreachable;
+// CHECK-NEXT: } : (i32) -> ();
+// CHECK-NEXT: builtin.ret [[V8]] : (i32);
+
+// CHECK-LABEL: @add_checked_signed_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.add [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.xor [[V2]], [[V0]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.xor [[V2]], [[V1]];
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.and [[V3]], [[V4]];
+// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.const 0 : i64;
+// CHECK-NEXT: [[V7:%[0-9]+]] = wasm.lt_s [[V5]], [[V6]];
+// CHECK-NEXT: wasm.if [[V7]] then {
+// CHECK-NEXT: wasm.unreachable;
+// CHECK-NEXT: } : (i32) -> ();
+// CHECK-NEXT: builtin.ret [[V2]] : (i64);
+
+// CHECK-LABEL: @add_checked_unsigned_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.add [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.gt_u [[V2]], [[V3]];
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.and [[V2]], [[V3]];
+// CHECK-NEXT: wasm.if [[V4]] then {
+// CHECK-NEXT: wasm.unreachable;
+// CHECK-NEXT: } : (i32) -> ();
+// CHECK-NEXT: builtin.ret [[V5]] : (i32);
+
+// CHECK-LABEL: @add_checked_unsigned_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.add [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.lt_u [[V2]], [[V0]];
+// CHECK-NEXT: wasm.if [[V3]] then {
+// CHECK-NEXT: wasm.unreachable;
+// CHECK-NEXT: } : (i32) -> ();
+// CHECK-NEXT: builtin.ret [[V2]] : (i64);
+
+// CHECK-LABEL: @sub_checked_signed_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.extend8_s [[V0]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.extend8_s [[V1]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.sub [[V2]], [[V3]];
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.extend8_s [[V4]];
+// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.ne [[V4]], [[V5]];
+// CHECK-NEXT: [[V7:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V8:%[0-9]+]] = wasm.and [[V4]], [[V7]];
+// CHECK-NEXT: wasm.if [[V6]] then {
+// CHECK-NEXT: wasm.unreachable;
+// CHECK-NEXT: } : (i32) -> ();
+// CHECK-NEXT: builtin.ret [[V8]] : (i32);
+
+// CHECK-LABEL: @sub_checked_signed_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.sub [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.xor [[V0]], [[V1]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.xor [[V0]], [[V2]];
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.and [[V3]], [[V4]];
+// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.const 0 : i64;
+// CHECK-NEXT: [[V7:%[0-9]+]] = wasm.lt_s [[V5]], [[V6]];
+// CHECK-NEXT: wasm.if [[V7]] then {
+// CHECK-NEXT: wasm.unreachable;
+// CHECK-NEXT: } : (i32) -> ();
+// CHECK-NEXT: builtin.ret [[V2]] : (i64);
+
+// CHECK-LABEL: @sub_checked_unsigned_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.lt_u [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.sub [[V0]], [[V1]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.and [[V3]], [[V4]];
+// CHECK-NEXT: wasm.if [[V2]] then {
+// CHECK-NEXT: wasm.unreachable;
+// CHECK-NEXT: } : (i32) -> ();
+// CHECK-NEXT: builtin.ret [[V5]] : (i32);
+
+// CHECK-LABEL: @sub_checked_unsigned_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.lt_u [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.sub [[V0]], [[V1]];
+// CHECK-NEXT: wasm.if [[V2]] then {
+// CHECK-NEXT: wasm.unreachable;
+// CHECK-NEXT: } : (i32) -> ();
+// CHECK-NEXT: builtin.ret [[V3]] : (i64);
+
+// CHECK-LABEL: @mul_checked_signed_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.extend8_s [[V0]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.extend8_s [[V1]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.mul [[V2]], [[V3]];
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.extend8_s [[V4]];
+// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.ne [[V4]], [[V5]];
+// CHECK-NEXT: [[V7:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V8:%[0-9]+]] = wasm.and [[V4]], [[V7]];
+// CHECK-NEXT: wasm.if [[V6]] then {
+// CHECK-NEXT: wasm.unreachable;
+// CHECK-NEXT: } : (i32) -> ();
+// CHECK-NEXT: builtin.ret [[V8]] : (i32);
+
+// CHECK-LABEL: @mul_checked_signed_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.const 63 : i64;
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.shr_s [[V0]], [[V2]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.shr_s [[V1]], [[V2]];
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.xor [[V0]], [[V3]];
+// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.sub [[V5]], [[V3]];
+// CHECK-NEXT: [[V7:%[0-9]+]] = wasm.xor [[V1]], [[V4]];
+// CHECK-NEXT: [[V8:%[0-9]+]] = wasm.sub [[V7]], [[V4]];
+// CHECK-NEXT: [[V9:%[0-9]+]] = wasm.xor [[V3]], [[V4]];
+// CHECK-NEXT: [[V10:%[0-9]+]] = wasm.const 9223372036854775807 : i64;
+// CHECK-NEXT: [[V11:%[0-9]+]] = wasm.sub [[V10]], [[V9]];
+// CHECK-NEXT: [[V12:%[0-9]+]] = wasm.eqz [[V6]];
+// CHECK-NEXT: [[V13:%[0-9]+]] = wasm.const 1 : i64;
+// CHECK-NEXT: [[V14:%[0-9]+]] = wasm.select [[V12]], [[V13]], [[V6]];
+// CHECK-NEXT: [[V15:%[0-9]+]] = wasm.div_u [[V11]], [[V14]];
+// CHECK-NEXT: [[V16:%[0-9]+]] = wasm.gt_u [[V8]], [[V15]];
+// CHECK-NEXT: [[V17:%[0-9]+]] = wasm.mul [[V0]], [[V1]];
+// CHECK-NEXT: wasm.if [[V16]] then {
+// CHECK-NEXT: wasm.unreachable;
+// CHECK-NEXT: } : (i32) -> ();
+// CHECK-NEXT: builtin.ret [[V17]] : (i64);
+
+// CHECK-LABEL: @mul_checked_unsigned_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.mul [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.gt_u [[V2]], [[V3]];
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.and [[V2]], [[V3]];
+// CHECK-NEXT: wasm.if [[V4]] then {
+// CHECK-NEXT: wasm.unreachable;
+// CHECK-NEXT: } : (i32) -> ();
+// CHECK-NEXT: builtin.ret [[V5]] : (i32);
+
+// CHECK-LABEL: @mul_checked_unsigned_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.const -1 : i64;
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.eqz [[V0]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.const 1 : i64;
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.select [[V3]], [[V4]], [[V0]];
+// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.div_u [[V2]], [[V5]];
+// CHECK-NEXT: [[V7:%[0-9]+]] = wasm.gt_u [[V1]], [[V6]];
+// CHECK-NEXT: [[V8:%[0-9]+]] = wasm.mul [[V0]], [[V1]];
+// CHECK-NEXT: wasm.if [[V7]] then {
+// CHECK-NEXT: wasm.unreachable;
+// CHECK-NEXT: } : (i32) -> ();
+// CHECK-NEXT: builtin.ret [[V8]] : (i64);
+
+// CHECK-LABEL: @min_signed_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.extend8_s [[V0]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.extend8_s [[V1]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.lt_s [[V2]], [[V3]];
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.select [[V4]], [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V5]] : (i32);
+
+// CHECK-LABEL: @min_signed_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.lt_s [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.select [[V2]], [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V3]] : (i64);
+
+// CHECK-LABEL: @min_unsigned_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.lt_u [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.select [[V2]], [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V3]] : (i32);
+
+// CHECK-LABEL: @min_unsigned_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.lt_u [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.select [[V2]], [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V3]] : (i64);
+
+// CHECK-LABEL: @max_signed_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.extend8_s [[V0]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.extend8_s [[V1]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.gt_s [[V2]], [[V3]];
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.select [[V4]], [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V5]] : (i32);
+
+// CHECK-LABEL: @max_signed_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.gt_s [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.select [[V2]], [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V3]] : (i64);
+
+// CHECK-LABEL: @max_unsigned_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.gt_u [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.select [[V2]], [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V3]] : (i32);
+
+// CHECK-LABEL: @max_unsigned_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.gt_u [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.select [[V2]], [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V3]] : (i64);
+
+// CHECK-LABEL: @udivrem_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> (i32, i32) {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.div_u [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.rem_u [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]], [[V3]] : (i32, i32);
+
+// CHECK-LABEL: @udivrem_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> (i64, i64) {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.div_u [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.rem_u [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]], [[V3]] : (i64, i64);
+
+// CHECK-LABEL: @sdivrem_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> (i32, i32) {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.extend8_s [[V0]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.extend8_s [[V1]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.div_s [[V2]], [[V3]];
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.and [[V4]], [[V5]];
+// CHECK-NEXT: [[V7:%[0-9]+]] = wasm.rem_s [[V2]], [[V3]];
+// CHECK-NEXT: [[V8:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V9:%[0-9]+]] = wasm.and [[V7]], [[V8]];
+// CHECK-NEXT: builtin.ret [[V6]], [[V9]] : (i32, i32);
+
+// CHECK-LABEL: @sdivrem_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> (i64, i64) {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.div_s [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.rem_s [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]], [[V3]] : (i64, i64);
+
+// CHECK-LABEL: @rotl_i7(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.const 7 : i32;
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.rem_u [[V1]], [[V2]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.sub [[V2]], [[V3]];
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.shl [[V0]], [[V3]];
+// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.shr_u [[V0]], [[V4]];
+// CHECK-NEXT: [[V7:%[0-9]+]] = wasm.or [[V5]], [[V6]];
+// CHECK-NEXT: [[V8:%[0-9]+]] = wasm.const 127 : i32;
+// CHECK-NEXT: [[V9:%[0-9]+]] = wasm.and [[V7]], [[V8]];
+// CHECK-NEXT: builtin.ret [[V9]] : (i32);
+
+// CHECK-LABEL: @rotl_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.const 8 : i32;
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.const 7 : i32;
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.and [[V1]], [[V3]];
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.sub [[V2]], [[V4]];
+// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.shl [[V0]], [[V4]];
+// CHECK-NEXT: [[V7:%[0-9]+]] = wasm.shr_u [[V0]], [[V5]];
+// CHECK-NEXT: [[V8:%[0-9]+]] = wasm.or [[V6]], [[V7]];
+// CHECK-NEXT: [[V9:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V10:%[0-9]+]] = wasm.and [[V8]], [[V9]];
+// CHECK-NEXT: builtin.ret [[V10]] : (i32);
+
+// CHECK-LABEL: @rotl_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.rotl [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i64);
+
+// CHECK-LABEL: @rotr_i7(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.const 7 : i32;
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.rem_u [[V1]], [[V2]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.sub [[V2]], [[V3]];
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.shl [[V0]], [[V4]];
+// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.shr_u [[V0]], [[V3]];
+// CHECK-NEXT: [[V7:%[0-9]+]] = wasm.or [[V5]], [[V6]];
+// CHECK-NEXT: [[V8:%[0-9]+]] = wasm.const 127 : i32;
+// CHECK-NEXT: [[V9:%[0-9]+]] = wasm.and [[V7]], [[V8]];
+// CHECK-NEXT: builtin.ret [[V9]] : (i32);
+
+// CHECK-LABEL: @rotr_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.const 8 : i32;
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.const 7 : i32;
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.and [[V1]], [[V3]];
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.sub [[V2]], [[V4]];
+// CHECK-NEXT: [[V6:%[0-9]+]] = wasm.shl [[V0]], [[V5]];
+// CHECK-NEXT: [[V7:%[0-9]+]] = wasm.shr_u [[V0]], [[V4]];
+// CHECK-NEXT: [[V8:%[0-9]+]] = wasm.or [[V6]], [[V7]];
+// CHECK-NEXT: [[V9:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V10:%[0-9]+]] = wasm.and [[V8]], [[V9]];
+// CHECK-NEXT: builtin.ret [[V10]] : (i32);
+
+// CHECK-LABEL: @rotr_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64, [[V1:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.rotr [[V0]], [[V1]];
+// CHECK-NEXT: builtin.ret [[V2]] : (i64);
+
+// CHECK-LABEL: @popcnt_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.popcnt [[V0]];
+// CHECK-NEXT: builtin.ret [[V1]] : (i32);
+
+// CHECK-LABEL: @popcnt_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.popcnt [[V0]];
+// CHECK-NEXT: builtin.ret [[V1]] : (i64);
+
+// CHECK-LABEL: @clz_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.clz [[V0]];
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.const 24 : i32;
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.sub [[V1]], [[V2]];
+// CHECK-NEXT: builtin.ret [[V3]] : (i32);
+
+// CHECK-LABEL: @clz_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.clz [[V0]];
+// CHECK-NEXT: builtin.ret [[V1]] : (i64);
+
+// CHECK-LABEL: @ctz_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.const 256 : i32;
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.or [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.ctz [[V2]];
+// CHECK-NEXT: builtin.ret [[V3]] : (i32);
+
+// CHECK-LABEL: @ctz_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.ctz [[V0]];
+// CHECK-NEXT: builtin.ret [[V1]] : (i64);
+
+// CHECK-LABEL: @clo_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.const 255 : i32;
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.xor [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.clz [[V2]];
+// CHECK-NEXT: [[V4:%[0-9]+]] = wasm.const 24 : i32;
+// CHECK-NEXT: [[V5:%[0-9]+]] = wasm.sub [[V3]], [[V4]];
+// CHECK-NEXT: builtin.ret [[V5]] : (i32);
+
+// CHECK-LABEL: @clo_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.const -1 : i64;
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.xor [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.clz [[V2]];
+// CHECK-NEXT: builtin.ret [[V3]] : (i64);
+
+// CHECK-LABEL: @cto_i8(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32) -> i32 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.const 511 : i32;
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.xor [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.ctz [[V2]];
+// CHECK-NEXT: builtin.ret [[V3]] : (i32);
+
+// CHECK-LABEL: @cto_i64(
+// CHECK-SAME: [[V0:%[0-9]+]]: i64) -> i64 {
+// CHECK-NEXT: [[V1:%[0-9]+]] = wasm.const -1 : i64;
+// CHECK-NEXT: [[V2:%[0-9]+]] = wasm.xor [[V0]], [[V1]];
+// CHECK-NEXT: [[V3:%[0-9]+]] = wasm.ctz [[V2]];
+// CHECK-NEXT: builtin.ret [[V3]] : (i64);
+
+// CHECK-LABEL: @assert(
+// CHECK-SAME: [[V0:%[0-9]+]]: i32) {
+// CHECK-NEXT: wasm.if [[V0]] then {
+// CHECK-NEXT: wasm.end : ();
+// CHECK-NEXT: } else {
+// CHECK-NEXT: wasm.unreachable;
+// CHECK-NEXT: } : (i32) -> ();
+// CHECK-NEXT: builtin.ret;
+builtin.module public @m attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("wasm") @add_overflowing_signed_i8(%a: i8, %b: i8) -> (i1, i8) {
+        %r0, %r1 = arith.add_overflowing %a, %b <{ signedness = #builtin.signedness<signed> }>;
+        builtin.ret %r0, %r1 : (i1, i8);
+    };
+    builtin.function public extern("wasm") @add_overflowing_signed_i64(%a: i64, %b: i64) -> (i1, i64) {
+        %r0, %r1 = arith.add_overflowing %a, %b <{ signedness = #builtin.signedness<signed> }>;
+        builtin.ret %r0, %r1 : (i1, i64);
+    };
+    builtin.function public extern("wasm") @add_overflowing_unsigned_i8(%a: i8, %b: i8) -> (i1, i8) {
+        %r0, %r1 = arith.add_overflowing %a, %b <{ signedness = #builtin.signedness<unsigned> }>;
+        builtin.ret %r0, %r1 : (i1, i8);
+    };
+    builtin.function public extern("wasm") @add_overflowing_unsigned_i64(%a: i64, %b: i64) -> (i1, i64) {
+        %r0, %r1 = arith.add_overflowing %a, %b <{ signedness = #builtin.signedness<unsigned> }>;
+        builtin.ret %r0, %r1 : (i1, i64);
+    };
+    builtin.function public extern("wasm") @sub_overflowing_signed_i8(%a: i8, %b: i8) -> (i1, i8) {
+        %r0, %r1 = arith.sub_overflowing %a, %b <{ signedness = #builtin.signedness<signed> }>;
+        builtin.ret %r0, %r1 : (i1, i8);
+    };
+    builtin.function public extern("wasm") @sub_overflowing_signed_i64(%a: i64, %b: i64) -> (i1, i64) {
+        %r0, %r1 = arith.sub_overflowing %a, %b <{ signedness = #builtin.signedness<signed> }>;
+        builtin.ret %r0, %r1 : (i1, i64);
+    };
+    builtin.function public extern("wasm") @sub_overflowing_unsigned_i8(%a: i8, %b: i8) -> (i1, i8) {
+        %r0, %r1 = arith.sub_overflowing %a, %b <{ signedness = #builtin.signedness<unsigned> }>;
+        builtin.ret %r0, %r1 : (i1, i8);
+    };
+    builtin.function public extern("wasm") @sub_overflowing_unsigned_i64(%a: i64, %b: i64) -> (i1, i64) {
+        %r0, %r1 = arith.sub_overflowing %a, %b <{ signedness = #builtin.signedness<unsigned> }>;
+        builtin.ret %r0, %r1 : (i1, i64);
+    };
+    builtin.function public extern("wasm") @mul_overflowing_signed_i8(%a: i8, %b: i8) -> (i1, i8) {
+        %r0, %r1 = arith.mul_overflowing %a, %b <{ signedness = #builtin.signedness<signed> }>;
+        builtin.ret %r0, %r1 : (i1, i8);
+    };
+    builtin.function public extern("wasm") @mul_overflowing_signed_i32(%a: i32, %b: i32) -> (i1, i32) {
+        %r0, %r1 = arith.mul_overflowing %a, %b <{ signedness = #builtin.signedness<signed> }>;
+        builtin.ret %r0, %r1 : (i1, i32);
+    };
+    builtin.function public extern("wasm") @mul_overflowing_signed_i64(%a: i64, %b: i64) -> (i1, i64) {
+        %r0, %r1 = arith.mul_overflowing %a, %b <{ signedness = #builtin.signedness<signed> }>;
+        builtin.ret %r0, %r1 : (i1, i64);
+    };
+    builtin.function public extern("wasm") @mul_overflowing_unsigned_i8(%a: i8, %b: i8) -> (i1, i8) {
+        %r0, %r1 = arith.mul_overflowing %a, %b <{ signedness = #builtin.signedness<unsigned> }>;
+        builtin.ret %r0, %r1 : (i1, i8);
+    };
+    builtin.function public extern("wasm") @mul_overflowing_unsigned_i32(%a: i32, %b: i32) -> (i1, i32) {
+        %r0, %r1 = arith.mul_overflowing %a, %b <{ signedness = #builtin.signedness<unsigned> }>;
+        builtin.ret %r0, %r1 : (i1, i32);
+    };
+    builtin.function public extern("wasm") @mul_overflowing_unsigned_i64(%a: i64, %b: i64) -> (i1, i64) {
+        %r0, %r1 = arith.mul_overflowing %a, %b <{ signedness = #builtin.signedness<unsigned> }>;
+        builtin.ret %r0, %r1 : (i1, i64);
+    };
+    builtin.function public extern("wasm") @add_checked_signed_i8(%a: i8, %b: i8) -> i8 {
+        %r = arith.add %a, %b <{ overflow = #builtin.overflow<checked signed> }>;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @add_checked_signed_i64(%a: i64, %b: i64) -> i64 {
+        %r = arith.add %a, %b <{ overflow = #builtin.overflow<checked signed> }>;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @add_checked_unsigned_i8(%a: i8, %b: i8) -> i8 {
+        %r = arith.add %a, %b <{ overflow = #builtin.overflow<checked unsigned> }>;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @add_checked_unsigned_i64(%a: i64, %b: i64) -> i64 {
+        %r = arith.add %a, %b <{ overflow = #builtin.overflow<checked unsigned> }>;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @sub_checked_signed_i8(%a: i8, %b: i8) -> i8 {
+        %r = arith.sub %a, %b <{ overflow = #builtin.overflow<checked signed> }>;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @sub_checked_signed_i64(%a: i64, %b: i64) -> i64 {
+        %r = arith.sub %a, %b <{ overflow = #builtin.overflow<checked signed> }>;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @sub_checked_unsigned_i8(%a: i8, %b: i8) -> i8 {
+        %r = arith.sub %a, %b <{ overflow = #builtin.overflow<checked unsigned> }>;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @sub_checked_unsigned_i64(%a: i64, %b: i64) -> i64 {
+        %r = arith.sub %a, %b <{ overflow = #builtin.overflow<checked unsigned> }>;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @mul_checked_signed_i8(%a: i8, %b: i8) -> i8 {
+        %r = arith.mul %a, %b <{ overflow = #builtin.overflow<checked signed> }>;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @mul_checked_signed_i64(%a: i64, %b: i64) -> i64 {
+        %r = arith.mul %a, %b <{ overflow = #builtin.overflow<checked signed> }>;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @mul_checked_unsigned_i8(%a: i8, %b: i8) -> i8 {
+        %r = arith.mul %a, %b <{ overflow = #builtin.overflow<checked unsigned> }>;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @mul_checked_unsigned_i64(%a: i64, %b: i64) -> i64 {
+        %r = arith.mul %a, %b <{ overflow = #builtin.overflow<checked unsigned> }>;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @min_signed_i8(%a: i8, %b: i8) -> i8 {
+        %r = arith.min %a, %b <{ signedness = #builtin.signedness<signed> }>;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @min_signed_i64(%a: i64, %b: i64) -> i64 {
+        %r = arith.min %a, %b <{ signedness = #builtin.signedness<signed> }>;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @min_unsigned_i8(%a: i8, %b: i8) -> i8 {
+        %r = arith.min %a, %b <{ signedness = #builtin.signedness<unsigned> }>;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @min_unsigned_i64(%a: i64, %b: i64) -> i64 {
+        %r = arith.min %a, %b <{ signedness = #builtin.signedness<unsigned> }>;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @max_signed_i8(%a: i8, %b: i8) -> i8 {
+        %r = arith.max %a, %b <{ signedness = #builtin.signedness<signed> }>;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @max_signed_i64(%a: i64, %b: i64) -> i64 {
+        %r = arith.max %a, %b <{ signedness = #builtin.signedness<signed> }>;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @max_unsigned_i8(%a: i8, %b: i8) -> i8 {
+        %r = arith.max %a, %b <{ signedness = #builtin.signedness<unsigned> }>;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @max_unsigned_i64(%a: i64, %b: i64) -> i64 {
+        %r = arith.max %a, %b <{ signedness = #builtin.signedness<unsigned> }>;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @udivrem_i8(%a: i8, %b: i8) -> (i8, i8) {
+        %r0, %r1 = arith.udivrem %a, %b;
+        builtin.ret %r0, %r1 : (i8, i8);
+    };
+    builtin.function public extern("wasm") @udivrem_i64(%a: i64, %b: i64) -> (i64, i64) {
+        %r0, %r1 = arith.udivrem %a, %b;
+        builtin.ret %r0, %r1 : (i64, i64);
+    };
+    builtin.function public extern("wasm") @sdivrem_i8(%a: i8, %b: i8) -> (i8, i8) {
+        %r0, %r1 = arith.sdivrem %a, %b;
+        builtin.ret %r0, %r1 : (i8, i8);
+    };
+    builtin.function public extern("wasm") @sdivrem_i64(%a: i64, %b: i64) -> (i64, i64) {
+        %r0, %r1 = arith.sdivrem %a, %b;
+        builtin.ret %r0, %r1 : (i64, i64);
+    };
+    builtin.function public extern("wasm") @rotl_i7(%a: i7, %b: i7) -> i7 {
+        %r = arith.rotl %a, %b;
+        builtin.ret %r : (i7);
+    };
+    builtin.function public extern("wasm") @rotl_i8(%a: i8, %b: i8) -> i8 {
+        %r = arith.rotl %a, %b;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @rotl_i64(%a: i64, %b: i64) -> i64 {
+        %r = arith.rotl %a, %b;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @rotr_i7(%a: i7, %b: i7) -> i7 {
+        %r = arith.rotr %a, %b;
+        builtin.ret %r : (i7);
+    };
+    builtin.function public extern("wasm") @rotr_i8(%a: i8, %b: i8) -> i8 {
+        %r = arith.rotr %a, %b;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @rotr_i64(%a: i64, %b: i64) -> i64 {
+        %r = arith.rotr %a, %b;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @popcnt_i8(%a: i8) -> i8 {
+        %r = arith.popcnt %a;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @popcnt_i64(%a: i64) -> i64 {
+        %r = arith.popcnt %a;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @clz_i8(%a: i8) -> i8 {
+        %r = arith.clz %a;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @clz_i64(%a: i64) -> i64 {
+        %r = arith.clz %a;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @ctz_i8(%a: i8) -> i8 {
+        %r = arith.ctz %a;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @ctz_i64(%a: i64) -> i64 {
+        %r = arith.ctz %a;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @clo_i8(%a: i8) -> i8 {
+        %r = arith.clo %a;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @clo_i64(%a: i64) -> i64 {
+        %r = arith.clo %a;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @cto_i8(%a: i8) -> i8 {
+        %r = arith.cto %a;
+        builtin.ret %r : (i8);
+    };
+    builtin.function public extern("wasm") @cto_i64(%a: i64) -> i64 {
+        %r = arith.cto %a;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @assert(%c: i1) {
+        cf.assert %c, "the message is dropped";
+        builtin.ret;
+    };
+};

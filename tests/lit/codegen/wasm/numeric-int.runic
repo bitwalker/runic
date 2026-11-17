@@ -16,8 +16,8 @@
 // `arith.sdiv` of the minimum value by -1 traps in `arith`; below the carrier's width the lowering
 // does not trap and gives the minimum value, which `arith` allows.
 //
-// An operation that no integer pattern lowers (here a rotate, left to the patterns of bit counts and
-// rotates) is reported by the conversion, which names it.
+// An operation that no pattern lowers (here a load, left to the patterns of memory) is reported by
+// the conversion, which names it.
 
 // CHECK-LABEL: @add_i8(
 // CHECK-SAME: [[V0:%[0-9]+]]: i32, [[V1:%[0-9]+]]: i32) -> i32 {
@@ -1014,10 +1014,10 @@ builtin.module public @m attributes { data_layout = #builtin.data_layout<little,
 
 // -----
 
-// expected-error@unknown {{failed to legalize operation 'arith.rotl'}}
+// expected-error@unknown {{failed to legalize operation 'mem.load'}}
 builtin.module public @left_to_other_patterns attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
-    builtin.function public extern("wasm") @rotl(%a: i32, %b: i32) -> i32 {
-        %r = arith.rotl %a, %b;
+    builtin.function public extern("wasm") @load(%p: ptr<i32>) -> i32 {
+        %r = mem.load %p;
         builtin.ret %r : (i32);
     };
 };

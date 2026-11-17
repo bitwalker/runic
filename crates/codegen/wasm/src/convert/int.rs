@@ -17,12 +17,12 @@
 //!   not trapping is one of the outcomes `arith` allows. For `N = W` Wasm traps too. A division by
 //!   zero traps in both.
 //! * **Overflow.** `unchecked` overflow is undefined, so the wrapping operation refines it. A
-//!   `checked` operation has no pattern here.
+//!   `checked` operation is lowered by the patterns of [composed](super::composed).
 //! * **`srem`.** The minimum value remainder -1 is 0 in both.
 //!
-//! The operations left to the float and bit-counting patterns, the `checked` modes, the
-//! `_overflowing` family, `min`/`max`, `udivrem`/`sdivrem` and rotates have no pattern in this
-//! module: the conversion reports them.
+//! The float operations are lowered by [float](super::float); the `checked` modes, the
+//! `_overflowing` family, `min`/`max`, `udivrem`/`sdivrem`, the rotates and the bit counts by
+//! [composed](super::composed).
 
 use alloc::vec::Vec;
 
