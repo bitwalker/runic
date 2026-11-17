@@ -90,6 +90,40 @@
 //! a converted block are not converted with it: unless a pattern converts them, the result fails
 //! verification, which names the edge.
 //!
+//! # Building structured operations
+//!
+//! A pattern may build an operation with regions and move into it the bodies of the operation it
+//! replaces. [ConversionPatternRewriter::create_block] adds a block, of argument types the pattern
+//! gives (taken as legal), to a region of an operation the pattern created.
+//! [ConversionPatternRewriter::inline_block_before] and
+//! [ConversionPatternRewriter::inline_block_at_end] move every operation of a block, in order, to
+//! before an operation or to the end of a block, and erase the emptied block.
+//!
+//! - **What may move where.** The block moved is a block of the operation the pattern was given,
+//!   or of an operation nested in it (which the pattern is expected to replace or erase as well).
+//!   It goes into a block of an operation the pattern created, at any depth, or into a block that
+//!   holds the operation the pattern was given. Anything else is an error, raised before anything
+//!   changes, as is a block that a branch targets, a destination that is the block itself or nested
+//!   in it, and a move that would leave operations after a branch.
+//! - **Block arguments.** Each argument of the moved block is replaced by the values the pattern
+//!   gives for it: one value, several (1:N), or none when its type converts to no type. A range
+//!   that is not one value of the argument's own type must have the types the pattern's converter
+//!   gives the argument, and its users are given a source cast of the range, placed before the
+//!   moved operations: the relation [SignatureConversion::remap_input] makes. So a user converted
+//!   later is given the values, and a user that stays reads the cast, which the converter's
+//!   materializations realize.
+//! - **What is converted.** A moved operation is not one the pattern created: it is not checked
+//!   against the pattern's generated operations, and it is converted once, with every operation
+//!   nested in it, after the operation that now holds it and before the operations nested in it.
+//!   One that the walk of the collected order has not reached yet is converted when the walk
+//!   reaches it (it was nested in the operation the pattern was given, so it comes later in the
+//!   walk); one the walk would not reach (moved out of a recursively legal operation) is converted
+//!   after the pattern, with what the pattern created, in pre-order. The terminator of a moved
+//!   block moves too and is converted like the rest, unless the pattern erases or replaces it.
+//! - **What a pattern must not do.** Moves are not undone: a pattern that moves a block and then
+//!   answers `Ok(false)` or `Err` breaks the pattern contract, and is reported as for any other
+//!   change.
+//!
 //! # Changes in place
 //!
 //! [ConversionPatternRewriter::modify_op_in_place] runs a closure on the operation and records it
@@ -134,7 +168,7 @@
 //! The driver visits the operations under the root in the order it collected them (a pre-order
 //! walk that does not enter a recursively legal operation). The pattern applications that follow
 //! from one of them, to the operation itself, to what the patterns insert or change in place while
-//! it is legalized, and to the operation again while it stays illegal, are counted, and the count
+//! it is legalized (and what they move that the walk does not reach), and to the operation again while it stays illegal, are counted, and the count
 //! starts again at the next operation. More than
 //! [ConversionConfig::with_max_rewrites_per_operation] (1,024 by default) is an error that names
 //! the operation and the pattern: the limit stops a pattern that never ends, not a large program.
@@ -161,7 +195,8 @@
 //! A pattern may rely on: being offered only an operation the target does not call legal; its
 //! operands being given as described above, under its own type converter; the casts it causes
 //! being realized by its own converter's callbacks; the operations it creates being legalized
-//! after it succeeds; and the patterns rooted at one operation being tried in order of the
+//! after it succeeds; the operations it moves being converted once, after the operation that now
+//! holds them; and the patterns rooted at one operation being tried in order of the
 //! estimated length of their path to legal operations, then benefit.
 //!
 //! A pattern may not rely on: the order in which operations are offered (it is a pre-order walk,

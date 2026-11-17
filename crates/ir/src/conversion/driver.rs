@@ -212,6 +212,7 @@ fn run_conversion(
             changed: false,
             converted_ops: 0,
         },
+        unvisited: FxHashSet::default(),
     };
 
     driver.run()?;
@@ -228,12 +229,17 @@ struct ConversionDriver<'a> {
     state: ConversionState,
     config: ConversionConfig,
     result: ConversionResult,
+    /// The operations of the collected order the walk has not reached yet. A moved operation that
+    /// is here is converted when the walk reaches it, not where it was moved.
+    unvisited: FxHashSet<OperationRef>,
 }
 
 impl ConversionDriver<'_> {
     fn run(&mut self) -> Result<(), Report> {
         let ops = self.collect_conversion_order()?;
+        self.unvisited = ops.iter().copied().collect();
         for op in ops {
+            self.unvisited.remove(&op);
             self.legalize_from(op)?;
         }
 
@@ -272,11 +278,11 @@ impl ConversionDriver<'_> {
     }
 
     /// Legalizes `first`, an operation of the collected order, and what follows from it: when a
-    /// pattern applies to an operation, the operations it inserted and those it changed in place
-    /// are legalized, in that order, and then the operation is offered again while it is still in
-    /// the IR and not accepted. This is a depth-first walk kept on an explicit stack, so neither
-    /// the number of applications to one operation nor the length of a chain of uses grows the
-    /// call stack.
+    /// pattern applies to an operation, the operations it inserted, those it changed in place, and
+    /// those it moved that nothing else legalizes ([Self::moved_ops_to_legalize]) are legalized,
+    /// in that order, and then the operation is offered again while it is still in the IR and not
+    /// accepted. This is a depth-first walk kept on an explicit stack, so neither the number of
+    /// applications to one operation nor the length of a chain of uses grows the call stack.
     ///
     /// The users a replacement redirected to a cast are not legalized here: each is legalized in
     /// its turn, in the order the operations were collected, and one that was already visited
@@ -299,12 +305,44 @@ impl ConversionDriver<'_> {
             let Some(mutations) = self.apply_one_pattern(op, &mut budget)? else {
                 continue;
             };
+            let moved = self.moved_ops_to_legalize(&mutations, &pending);
             pending.push(op);
+            pending.extend(moved.into_iter().rev());
             pending.extend(
                 mutations.inserted_ops().iter().chain(mutations.in_place_ops()).rev().copied(),
             );
         }
         Ok(())
+    }
+
+    /// The operations a pattern moved ([TrackedMutations::moved_ops]), and those nested in them,
+    /// that nothing else legalizes: each that is not still to be reached by the walk of the
+    /// collected order and is not waiting in `pending`, in pre-order, without entering a
+    /// recursively legal operation. A moved operation that the walk still reaches is legalized
+    /// there, after the operation that holds it (which is before it in the walk, or which the
+    /// pattern created and is legalized first).
+    fn moved_ops_to_legalize(
+        &self,
+        mutations: &TrackedMutations,
+        pending: &[OperationRef],
+    ) -> Vec<OperationRef> {
+        let mut ops = vec![];
+        for moved in mutations.moved_ops() {
+            if !self.is_live(*moved) {
+                continue;
+            }
+            let _ = moved.borrow().prewalk(|op: &crate::Operation| {
+                if self.target.is_recursively_legal(op) {
+                    return WalkResult::<()>::Skip;
+                }
+                let op = op.as_operation_ref();
+                if !self.unvisited.contains(&op) && !pending.contains(&op) {
+                    ops.push(op);
+                }
+                WalkResult::<()>::Continue(())
+            });
+        }
+        ops
     }
 
     /// Offers `op` to its candidate patterns, in order, until one applies. Returns what the
@@ -349,6 +387,7 @@ impl ConversionDriver<'_> {
                 self.state.clone(),
             );
             rewriter.inherit_inline_call_chain(op);
+            rewriter.set_matched_op(op);
             if op.parent().is_some() {
                 rewriter.set_insertion_point_before(op);
             }

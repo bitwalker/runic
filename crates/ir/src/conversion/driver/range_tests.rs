@@ -33,6 +33,7 @@ use crate::{
 
 mod error_tests;
 mod in_place_tests;
+mod inline_tests;
 mod partial_tests;
 mod random_conversions;
 mod signature_tests;

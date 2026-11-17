@@ -35,8 +35,8 @@ impl MatchFailure {
 
 /// Mutations observed while applying a conversion pattern.
 ///
-/// The conversion driver uses this summary to legalize the operations a pattern inserted or
-/// changed in place after it succeeds. The lists contain each operation at most once, while
+/// The conversion driver uses this summary to legalize the operations a pattern inserted, changed
+/// in place or moved after it succeeds. The lists contain each operation at most once, while
 /// `mutation_count` counts all listener notifications.
 #[derive(Default)]
 pub struct TrackedMutations {
@@ -46,6 +46,7 @@ pub struct TrackedMutations {
     erased_ops: Vec<OperationRef>,
     materialized_ops: Vec<OperationRef>,
     in_place_ops: Vec<OperationRef>,
+    moved_ops: Vec<OperationRef>,
     block_mutations: usize,
     mutation_count: usize,
 }
@@ -89,6 +90,17 @@ impl TrackedMutations {
     #[inline]
     pub fn in_place_ops(&self) -> &[OperationRef] {
         &self.in_place_ops
+    }
+
+    /// Return the operations the pattern moved out of a block it inlined
+    /// ([ConversionPatternRewriter::inline_block_before],
+    /// [ConversionPatternRewriter::inline_block_at_end]), in the order they were moved. An
+    /// operation the pattern created and then moved is an inserted operation
+    /// ([Self::inserted_ops]), not a moved one. The operations nested in a moved operation moved
+    /// with it and are not listed.
+    #[inline]
+    pub fn moved_ops(&self) -> &[OperationRef] {
+        &self.moved_ops
     }
 
     /// Return the number of block insertion/erasure notifications observed.
@@ -146,6 +158,8 @@ pub(super) struct ConversionState {
 struct ConversionTrackingListener {
     mutations: RefCell<TrackedMutations>,
     state: ConversionState,
+    /// The operations of the block being inlined: their insertion is a move.
+    moving: RefCell<FxHashSet<OperationRef>>,
 }
 
 impl ConversionTrackingListener {
@@ -153,6 +167,7 @@ impl ConversionTrackingListener {
         Self {
             mutations: RefCell::new(TrackedMutations::default()),
             state,
+            moving: RefCell::new(FxHashSet::default()),
         }
     }
 
@@ -167,6 +182,16 @@ impl ConversionTrackingListener {
     fn record_inserted_op(&self, op: OperationRef) {
         let mut mutations = self.mutations.borrow_mut();
         push_unique(&mut mutations.inserted_ops, op);
+        mutations.mutation_count += 1;
+    }
+
+    /// Records the move of `op` out of a block being inlined; an operation the pattern created is
+    /// left among the inserted operations.
+    fn record_moved_op(&self, op: OperationRef) {
+        let mut mutations = self.mutations.borrow_mut();
+        if !mutations.inserted_ops.contains(&op) {
+            push_unique(&mut mutations.moved_ops, op);
+        }
         mutations.mutation_count += 1;
     }
 
@@ -211,7 +236,11 @@ impl Listener for ConversionTrackingListener {
     }
 
     fn notify_operation_inserted(&self, op: OperationRef, _prev: ProgramPoint) {
-        self.record_inserted_op(op);
+        if self.moving.borrow().contains(&op) {
+            self.record_moved_op(op);
+        } else {
+            self.record_inserted_op(op);
+        }
     }
 
     fn notify_block_inserted(
@@ -268,6 +297,9 @@ pub struct ConversionPatternRewriter {
     tracking: Rc<ConversionTrackingListener>,
     type_converter: Option<Rc<TypeConverter>>,
     state: ConversionState,
+    /// The operation the driver gave the pattern, whose blocks (and those nested in it) the
+    /// pattern may inline.
+    matched: Option<OperationRef>,
     match_failures: Vec<MatchFailure>,
 }
 
@@ -304,8 +336,14 @@ impl ConversionPatternRewriter {
             tracking,
             type_converter,
             state,
+            matched: None,
             match_failures: Vec::new(),
         }
+    }
+
+    /// Set the operation the pattern is given, whose blocks the pattern may inline.
+    pub(super) fn set_matched_op(&mut self, op: OperationRef) {
+        self.matched = Some(op);
     }
 
     /// Set the debug metadata inherited during this conversion attempt.
@@ -340,6 +378,18 @@ impl ConversionPatternRewriter {
     #[inline]
     pub fn set_insertion_point_after(&mut self, op: OperationRef) {
         self.inner.set_insertion_point_after(op);
+    }
+
+    /// Set the insertion point to the start of `block`.
+    #[inline]
+    pub fn set_insertion_point_to_start(&mut self, block: BlockRef) {
+        self.inner.set_insertion_point_to_start(block);
+    }
+
+    /// Set the insertion point to the end of `block`.
+    #[inline]
+    pub fn set_insertion_point_to_end(&mut self, block: BlockRef) {
+        self.inner.set_insertion_point_to_end(block);
     }
 
     /// Create a new operation at the current insertion point.
@@ -901,6 +951,284 @@ impl ConversionPatternRewriter {
         Ok(changed)
     }
 
+    /// Create a block at the end of `region`, with arguments of `argument_types`, and set the
+    /// insertion point to the end of it. Returns the block.
+    ///
+    /// `region` must be a region of an operation this pattern created (not a cast the driver
+    /// made). The pattern is building converted IR, so the argument types are taken as legal and
+    /// are not asked of the type converter. The new block counts as a mutation. A region of any
+    /// other operation, or of none, is an error, raised before anything changes.
+    pub fn create_block(
+        &mut self,
+        region: RegionRef,
+        argument_types: &[Type],
+    ) -> Result<BlockRef, Report> {
+        let parent = region.borrow().parent();
+        let Some(parent) = parent else {
+            return Err(Report::msg(
+                "a block can be created only in a region of an operation the pattern created, and \
+                 this region belongs to no operation",
+            ));
+        };
+        if !self.created(parent) {
+            return Err(Report::msg(format!(
+                "a block can be created only in a region of an operation the pattern created, but \
+                 this region is of '{}', which the pattern did not create",
+                parent.borrow().name()
+            )));
+        }
+        Ok(self.inner.create_block(region, None, argument_types))
+    }
+
+    /// Move every operation of `source`, in order, to before `before`, replace each argument of
+    /// `source` by the values given for it, and erase `source`.
+    ///
+    /// This is [Self::inline_block_at_end], with the operations placed before `before` in its
+    /// block instead of at the end of a block; there `source` must not end in a branch (the
+    /// operations after it would be unreachable). The checks and the replacement of the arguments
+    /// are those of [Self::inline_block_at_end].
+    pub fn inline_block_before(
+        &mut self,
+        source: BlockRef,
+        before: OperationRef,
+        argument_values: &[&[ValueRef]],
+    ) -> Result<(), Report> {
+        let Some(destination) = before.parent() else {
+            return Err(Report::msg(format!(
+                "a block cannot be inlined before '{}', which is in no block",
+                before.borrow().name()
+            )));
+        };
+        self.inline_block(source, destination, Some(before), argument_values)
+    }
+
+    /// Move every operation of `source`, in order, to the end of `destination`, replace each
+    /// argument of `source` by the values given for it, and erase `source`.
+    ///
+    /// `argument_values` holds one range per argument of `source`: one value, several (when the
+    /// argument's type converts to several types), or none (when it converts to no type). A range
+    /// that is one value of the argument's own type replaces the argument. Any other range must
+    /// have exactly the types the pattern's type converter gives the argument, and when the
+    /// argument has users they are given a many-to-one `builtin.unrealized_conversion_cast` of
+    /// the range back to the argument's type, placed before the moved operations: the same
+    /// relation a signature conversion makes for an argument remapped to values
+    /// ([SignatureConversion::remap_input]). So a user converted later is given the values, and
+    /// one that stays reads the cast, which is realized by the converter's materializations. The
+    /// values must dominate the place the operations move to; one defined in `source` is an
+    /// error, and nothing else is checked.
+    ///
+    /// `source` must be a block of the operation the pattern was given, or of an operation nested
+    /// in it, and must not be the successor of a branch. `destination` must be a block of an
+    /// operation the pattern created (at any depth), or a block that holds the operation the
+    /// pattern was given (directly or through the operations around it); it must not be `source`
+    /// or a block nested in it, and must not end in a branch. These rules keep the moved
+    /// operations in the order the driver converts: each moved operation, and each operation
+    /// nested in it, is converted once, after the operation that now holds it.
+    ///
+    /// The terminator of `source` moves like any other operation; a pattern that does not want it
+    /// erases or replaces it afterwards. The moves and the erasure of `source` count as mutations,
+    /// so a pattern that inlines a block and then answers `Ok(false)` or `Err` breaks the pattern
+    /// contract. An insertion point in `source` moves to the end of the inlined operations; any
+    /// other insertion point is kept.
+    ///
+    /// An error is raised before anything changes when this rewriter was not given an operation
+    /// by the driver, when `source` or `destination` breaks the rules above, for the wrong number
+    /// of ranges, a range that holds an argument of `source` or a value defined in it, a range of
+    /// other types than the converter gives the argument, and a cast that is needed when the
+    /// pattern has no type converter.
+    pub fn inline_block_at_end(
+        &mut self,
+        source: BlockRef,
+        destination: BlockRef,
+        argument_values: &[&[ValueRef]],
+    ) -> Result<(), Report> {
+        self.inline_block(source, destination, None, argument_values)
+    }
+
+    /// [Self::inline_block_before] (`Some(before)`, which is in `destination`) and
+    /// [Self::inline_block_at_end] (`None`).
+    fn inline_block(
+        &mut self,
+        source: BlockRef,
+        destination: BlockRef,
+        before: Option<OperationRef>,
+        argument_values: &[&[ValueRef]],
+    ) -> Result<(), Report> {
+        let Some(matched) = self.matched else {
+            return Err(Report::msg(
+                "a block can be inlined only by a pattern the conversion driver applies, which is \
+                 given the operation whose blocks it may inline",
+            ));
+        };
+        let matched_name = matched.borrow().name();
+        let describe = |block: BlockRef| match block.borrow().parent_op() {
+            Some(parent) => format!("a block of '{}'", parent.borrow().name()),
+            None => String::from("a block of no operation"),
+        };
+        let source_name = describe(source);
+
+        // Check everything before changing anything.
+        let source_parent = source.borrow().parent_op();
+        if !source_parent.is_some_and(|parent| is_within(parent, matched)) {
+            return Err(Report::msg(format!(
+                "a pattern may inline only a block of the operation it is given, \
+                 '{matched_name}', or of an operation nested in it, but the block is {source_name}"
+            )));
+        }
+        if source.borrow().has_predecessors() {
+            return Err(Report::msg(format!(
+                "{source_name} is the successor of a branch and cannot be inlined"
+            )));
+        }
+        if is_block_within(destination, source) {
+            return Err(Report::msg(format!(
+                "{source_name} cannot be inlined into itself or into a block nested in it"
+            )));
+        }
+        let destination_name = describe(destination);
+        let in_created = {
+            let mut current = destination.borrow().parent_op();
+            let mut found = false;
+            while let Some(op) = current {
+                if self.created(op) {
+                    found = true;
+                    break;
+                }
+                current = op.parent_op();
+            }
+            found
+        };
+        let holds_matched =
+            matched.parent().is_some_and(|block| is_block_within(block, destination));
+        if !in_created && !holds_matched {
+            return Err(Report::msg(format!(
+                "a pattern may inline a block only into a block of an operation it created or \
+                 into a block that holds the operation it is given, '{matched_name}', but the \
+                 destination is {destination_name}, which is neither"
+            )));
+        }
+        match before {
+            None if destination.borrow().has_successors() => {
+                return Err(Report::msg(format!(
+                    "{source_name} cannot be inlined at the end of {destination_name}, which ends \
+                     in a branch"
+                )));
+            }
+            Some(before) if source.borrow().has_successors() => {
+                return Err(Report::msg(format!(
+                    "{source_name} ends in a branch and cannot be inlined before '{}': the \
+                     operations after it would be unreachable",
+                    before.borrow().name()
+                )));
+            }
+            _ => {}
+        }
+        let arguments = source.borrow().argument_values().collect::<SmallVec<[ValueRef; 4]>>();
+        if arguments.len() != argument_values.len() {
+            return Err(Report::msg(format!(
+                "{source_name} has {} arguments, but it is inlined with {} ranges of values for \
+                 them",
+                arguments.len(),
+                argument_values.len()
+            )));
+        }
+        let context = self.inner.context_rc();
+        let mut needs_cast = SmallVec::<[bool; 4]>::new();
+        for (index, (argument, range)) in arguments.iter().zip(argument_values).enumerate() {
+            if let Some(value) = range.iter().find(|value| arguments.contains(value)) {
+                return Err(Report::msg(format!(
+                    "argument {index} of {source_name} is replaced by '{}', an argument of the \
+                     same block, which is erased with it",
+                    value.borrow()
+                )));
+            }
+            if let Some(value) = range.iter().find(|value| is_defined_in(**value, source)) {
+                return Err(Report::msg(format!(
+                    "argument {index} of {source_name} is replaced by '{}', a value defined in \
+                     the block or in a region nested in it, which does not dominate the \
+                     operations it holds",
+                    value.borrow()
+                )));
+            }
+            let old_ty = argument.borrow().ty();
+            let used = argument.borrow().is_used();
+            if let [value] = range
+                && value.borrow().ty() == old_ty
+            {
+                needs_cast.push(false);
+                continue;
+            }
+            let range_types = types_of(range);
+            match self.type_converter.as_ref() {
+                Some(converter) => {
+                    let expected = converter.convert_value(&context, *argument);
+                    if range_types != expected {
+                        return Err(Report::msg(format!(
+                            "argument {index} of {source_name} has type '{old_ty}', which the \
+                             type converter converts to {}, but it is replaced by values of types \
+                             {}",
+                            type_list(&expected),
+                            type_list(&range_types)
+                        )));
+                    }
+                }
+                None if used => {
+                    return Err(Report::msg(format!(
+                        "argument {index} of {source_name} of type '{old_ty}' is replaced by \
+                         values of types {}, which needs a cast, and the pattern has no type \
+                         converter",
+                        type_list(&range_types)
+                    )));
+                }
+                None => {}
+            }
+            needs_cast.push(used);
+        }
+
+        let saved = *self.inner.insertion_point();
+        let at = before.map_or_else(|| ProgramPoint::at_end_of(destination), ProgramPoint::before);
+        for ((argument, range), cast) in arguments.iter().zip(argument_values).zip(&needs_cast) {
+            if !argument.borrow().is_used() {
+                continue;
+            }
+            let replacement = if *cast {
+                self.inner.set_insertion_point(at);
+                let (old_ty, span) = {
+                    let argument = argument.borrow();
+                    (argument.ty(), argument.span())
+                };
+                let (_, outputs) =
+                    self.insert_cast(CastKind::Source, range.iter().copied(), [old_ty], span)?;
+                outputs[0]
+            } else {
+                range[0]
+            };
+            self.inner.replace_all_uses_of_value_with(*argument, replacement);
+        }
+
+        *self.tracking.moving.borrow_mut() =
+            source.borrow().body().iter().map(|op| op.as_operation_ref()).collect();
+        let ignored = SmallVec::<[Option<ValueRef>; 4]>::from_elem(None, arguments.len());
+        self.inner.inline_block_before(source, destination, before, &ignored);
+        self.tracking.moving.borrow_mut().clear();
+
+        let restore = match saved {
+            ProgramPoint::Block { block, .. } if block == source => at,
+            _ => saved,
+        };
+        self.inner.set_insertion_point(restore);
+        Ok(())
+    }
+
+    /// Whether this pattern created `op` (inserted it, not as a cast the driver made) and it is
+    /// still in the IR.
+    fn created(&self, op: OperationRef) -> bool {
+        let mutations = self.tracking.mutations.borrow();
+        op.parent().is_some()
+            && mutations.inserted_ops.contains(&op)
+            && !mutations.materialized_ops.contains(&op)
+    }
+
     /// Erase an operation with no remaining uses.
     ///
     /// Callers are responsible for ensuring the operation can be erased without leaving invalid
@@ -975,6 +1303,30 @@ fn is_defined_in(value: ValueRef, block: BlockRef) -> bool {
     let mut current = value.borrow().parent_block();
     while let Some(candidate) = current {
         if candidate == block {
+            return true;
+        }
+        current = candidate.borrow().parent_op().and_then(|op| op.parent());
+    }
+    false
+}
+
+/// Whether `op` is `ancestor` or nested in it, at any depth.
+fn is_within(op: OperationRef, ancestor: OperationRef) -> bool {
+    let mut current = Some(op);
+    while let Some(candidate) = current {
+        if candidate == ancestor {
+            return true;
+        }
+        current = candidate.parent_op();
+    }
+    false
+}
+
+/// Whether `block` is `ancestor` or nested in an operation of it, at any depth.
+fn is_block_within(block: BlockRef, ancestor: BlockRef) -> bool {
+    let mut current = Some(block);
+    while let Some(candidate) = current {
+        if candidate == ancestor {
             return true;
         }
         current = candidate.borrow().parent_op().and_then(|op| op.parent());
