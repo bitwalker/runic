@@ -643,6 +643,27 @@ fn summarize_top_counts(
         .join(", ")
 }
 
+/// Represents an analysis that has derived facts at a specific program point from the state of
+/// another analysis, that has since changed. As a result, the dependent analysis must be re-applied
+/// at that program point to determine if the state changes have any effect on the state of its
+/// previous analysis.
+#[derive(Copy, Clone)]
+pub struct QueuedAnalysis {
+    /// The dependent program point
+    pub point: ProgramPoint,
+    /// The dependent analysis
+    pub analysis: NonNull<dyn DataFlowAnalysis>,
+}
+
+impl Eq for QueuedAnalysis {}
+
+impl PartialEq for QueuedAnalysis {
+    fn eq(&self, other: &Self) -> bool {
+        self.point == other.point
+            && core::ptr::addr_eq(self.analysis.as_ptr(), other.analysis.as_ptr())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::{format, string::ToString};
@@ -673,26 +694,5 @@ mod tests {
     fn summarize_top_counts_handles_many_unique_names() {
         let summary = summarize_top_counts((0..4096).rev().map(|index| format!("item{index:04}")));
         assert_eq!(summary, "item0000=1, item0001=1, item0002=1, item0003=1, item0004=1");
-    }
-}
-
-/// Represents an analysis that has derived facts at a specific program point from the state of
-/// another analysis, that has since changed. As a result, the dependent analysis must be re-applied
-/// at that program point to determine if the state changes have any effect on the state of its
-/// previous analysis.
-#[derive(Copy, Clone)]
-pub struct QueuedAnalysis {
-    /// The dependent program point
-    pub point: ProgramPoint,
-    /// The dependent analysis
-    pub analysis: NonNull<dyn DataFlowAnalysis>,
-}
-
-impl Eq for QueuedAnalysis {}
-
-impl PartialEq for QueuedAnalysis {
-    fn eq(&self, other: &Self) -> bool {
-        self.point == other.point
-            && core::ptr::addr_eq(self.analysis.as_ptr(), other.analysis.as_ptr())
     }
 }

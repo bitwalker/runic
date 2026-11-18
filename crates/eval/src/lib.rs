@@ -1,5 +1,4 @@
 #![no_std]
-#![feature(debug_closure_helpers)]
 #![deny(warnings)]
 
 #[cfg(any(feature = "std", test))]
@@ -13,16 +12,16 @@ mod evaluator;
 mod tests;
 mod value;
 
-use runic_ir::{
-    dialects::{builtin, debuginfo},
-    inventory,
-};
 use runic_dialect_arith as arith;
 use runic_dialect_cf as cf;
 use runic_dialect_hir as hir;
 use runic_dialect_scf as scf;
 use runic_dialect_ub as ub;
 use runic_dialect_wasm as wasm;
+use runic_ir::{
+    dialects::{builtin, debuginfo},
+    inventory,
+};
 
 pub use self::{
     eval::{ControlFlowEffect, Eval, Initialize},

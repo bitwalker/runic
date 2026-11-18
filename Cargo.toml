@@ -33,11 +33,10 @@ exclude = [
 
 [workspace.package]
 version = "0.1.0"
-rust-version = "1.99"
+rust-version = "1.102"
 authors = ["Paul Schoenfelder"]
 description = "An MLIR-inspired compiler framework"
 repository = "https://github.com/bitwalker/runic"
-homepage = "https://github.com/bitwalker/runic"
 documentation = "https://github.com/bitwalker/runic"
 categories = ["compilers"]
 keywords = ["compiler"]

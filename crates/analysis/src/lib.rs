@@ -1,7 +1,6 @@
 #![no_std]
-#![feature(allocator_api)]
+#![feature(allocator_ext)]
 #![feature(coerce_unsized)]
-#![feature(debug_closure_helpers)]
 #![feature(ptr_metadata)]
 #![feature(specialization)]
 #![feature(unsize)]

@@ -1,5 +1,4 @@
 #![no_std]
-#![feature(allocator_api)]
 #![feature(auto_traits)]
 #![feature(negative_impls)]
 #![feature(coerce_unsized)]
@@ -11,7 +10,6 @@
 #![feature(slice_ptr_get)]
 #![feature(specialization)]
 #![feature(rustc_attrs)]
-#![feature(debug_closure_helpers)]
 #![feature(trait_alias)]
 #![feature(try_trait_v2)]
 #![feature(try_trait_v2_residual)]

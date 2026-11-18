@@ -465,9 +465,9 @@ fn xcheck_with(
             return Err(fail(format!("a converted type remains: {held}")));
         }
     }
-    check_model(&context, module, &case.model).map_err(&fail)?;
-    check_symbol_uses(module).map_err(&fail)?;
-    compare_all(module, case, &externs, &expected, bounds).map_err(&fail)?;
+    check_model(&context, module, &case.model).map_err(fail)?;
+    check_symbol_uses(module).map_err(fail)?;
+    compare_all(module, case, &externs, &expected, bounds).map_err(fail)?;
 
     let again = convert(&context, module)
         .map_err(|err| fail(format!("the second conversion failed: {}", describe(&err))))?;
