@@ -34,9 +34,10 @@ const FLOAT: &str = include_str!("../../../../../../tests/run/wasm/float.runic")
 const TRAPS: &str = include_str!("../../../../../../tests/run/wasm/traps.runic");
 const IMPORTS: &str = include_str!("../../../../../../tests/run/wasm/imports.runic");
 const IMPORTS_ENV: &str = include_str!("../../../../../../tests/run/wasm/imports-env.runic");
+const DISPATCH_TABLE: &str = include_str!("../../../../../../tests/run/wasm/dispatch-table.runic");
 
 /// Each program by its file name.
-const PROGRAMS: [(&str, &str); 10] = [
+const PROGRAMS: [(&str, &str); 11] = [
     ("sum.runic", SUM),
     ("machine.runic", MACHINE),
     ("dispatch.runic", DISPATCH),
@@ -47,6 +48,7 @@ const PROGRAMS: [(&str, &str); 10] = [
     ("traps.runic", TRAPS),
     ("imports.runic", IMPORTS),
     ("imports-env.runic", IMPORTS_ENV),
+    ("dispatch-table.runic", DISPATCH_TABLE),
 ];
 
 /// The two levels each program is compiled at.
@@ -265,6 +267,18 @@ fn global_variables_are_read_and_written_across_calls_and_a_function_value_in_da
         program.gives("bump_thrice", &[i32(3)], &[i32(5), i32(8), i32(11), i32(14)]);
         program.gives("follow", &[], &[i32(7), i32(8)]);
         program.gives("call_stored", &[i32(21)], &[i32(42)]);
+    }
+}
+
+#[test]
+fn a_dispatch_table_in_a_section_is_walked_between_its_bounds_and_called_through() {
+    for program in at_each_level(DISPATCH_TABLE) {
+        for (id, result) in [(10, 6), (20, 10), (30, -5), (40, 25), (50, -1)] {
+            program.gives("lookup", &[i32(id), i64(5)], &[i64(result)]);
+        }
+        program.gives("count", &[], &[i32(4)]);
+        program.gives("count2", &[], &[i32(1)]);
+        program.gives("lookup2", &[i64(7)], &[i64(14)]);
     }
 }
 

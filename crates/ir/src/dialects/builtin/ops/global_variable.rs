@@ -25,10 +25,10 @@ pub type GlobalVariableRef = UnsafeIntrusiveEntityRef<GlobalVariable>;
 ///
 /// A global variable with an initializer is a definition; one without is a declaration
 /// ([Symbol::is_declaration]) of a global variable defined elsewhere, and has no bytes of its own.
-/// A definition whose bytes are zero states them, with zero bytes or a zero constant. The
-/// initializer is a region of one block that computes the data, a [Bytes](super::Bytes) for
-/// example, and ends with a [Yield](super::Yield) of the value of the global, which has the
-/// declared type of the global:
+/// A definition whose bytes are zero states them, with a [Zero](super::Zero), zero bytes or a zero
+/// constant. The initializer is a region of one block that computes the data, a
+/// [Bytes](super::Bytes) for example, and ends with a [Yield](super::Yield) of the value of the
+/// global, which has the declared type of the global:
 ///
 /// ```text
 /// builtin.global_variable public @data : array<i8; 2> {
@@ -39,9 +39,34 @@ pub type GlobalVariableRef = UnsafeIntrusiveEntityRef<GlobalVariable>;
 ///
 /// The initializer is ordinary code: the yield uses the value, so what computes it is live, and
 /// any other operation of the region that nothing uses is dead. It computes a constant: no
-/// operation of it has effects (one that declares none has unknown effects, which count). A struct
-/// or an array value is an [Aggregate](super::Aggregate) of its elements, and a zeroed one a
-/// [Zero](super::Zero).
+/// operation of it has effects (one that declares none has unknown effects, which count), so it
+/// reads and writes no memory. What it may hold:
+///
+/// * a constant (`arith.constant`, `arith.constantf`, a [Bytes](super::Bytes)), or an operation
+///   that folds to one from constants;
+/// * the zero of a type, a [Zero](super::Zero);
+/// * the address of a global variable, a [GlobalSymbol], moved by a constant offset with
+///   `mem.gep`, or cast with `mem.ptrcast`, or to and from an integer as wide as the pointer;
+/// * a function value, a [FunctionReference](super::FunctionReference), where the data layout
+///   gives function values a size (`fn = 32`);
+/// * a struct or an array of these, an [Aggregate](super::Aggregate) of its elements, nested as
+///   deep as the type is:
+///
+/// ```text
+/// builtin.global_variable private @entry : struct<i32, ptr<i8>, (i64) -> i64> {
+///     %id = arith.constant 10 : i32;
+///     %p = builtin.global_symbol @data : ptr<array<i8; 2>>;
+///     %q = mem.gep %p, [1];
+///     %f = builtin.function_ref @double : (i64) -> i64;
+///     %e = builtin.aggregate %id, %q, %f : struct<i32, ptr<i8>, (i64) -> i64>;
+///     builtin.yield %e;
+/// };
+/// ```
+///
+/// The verifier asks only that the initializer ends in a yield of the global's type and has no
+/// effects; what a backend places in memory is what `runic_dialect_mem::evaluate_initializer`
+/// computes, which all backends share. It refuses arithmetic on an address (an offset is written
+/// with `mem.gep`) and an operation that does not fold.
 ///
 /// Global variables, like functions, may also be assigned a visibility. This is only used when
 /// resolving symbol uses, and imposes no access restrictions on the code generated from them.

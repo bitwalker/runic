@@ -2,9 +2,13 @@
 //!
 //! A [DataLayoutSpec] states the endianness, the pointer of each address space, the alignments of
 //! integers and floats, and, where function values are bytes in memory, their size and alignment
-//! (a [FunctionSpec], `fn = 32` in the text). Without that entry a function type has no layout:
-//! a target whose function references are not bytes in memory (Wasm GC, say) leaves it out. An operation implementing [DataLayoutOpInterface] states one in its
-//! attribute [DATA_LAYOUT_ATTR]:
+//! (a [FunctionSpec], `fn = 32` in the text: a multiple of 8 from 8 to 64 bits, aligned to its
+//! size in bytes, or to what `align` states, which a size that is not 8 times a power of two
+//! needs). With that entry a function type has a layout, so a function value is loaded, stored,
+//! measured and placed in a global variable's initializer as a pointer is (a table index on Wasm,
+//! an address elsewhere). Without it a function type has no layout: a target whose function
+//! references are not bytes in memory (Wasm GC, say) leaves it out. An operation implementing
+//! [DataLayoutOpInterface] states one in its attribute [DATA_LAYOUT_ATTR]:
 //!
 //! ```text
 //! builtin.module public @m attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {

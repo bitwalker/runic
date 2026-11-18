@@ -101,6 +101,7 @@ and results; a test there fails when a file of `wasm/` has no test.
 | `narrow.runic` | `i1`, `i8` and `i16` arithmetic, comparisons and selects under both calling conventions: wrapping, masking at the entry, sign extension |
 | `frames.runic` | a struct in a frame, a pointer to it passed to a callee, returns at two depths, and 100,000 calls in a row that leave the stack pointer where it was |
 | `globals.runic` | a global variable read and written across calls, a pointer in a global, a function value in data called indirectly |
+| `dispatch-table.runic` | a dispatch table of structs built with `builtin.aggregate`, each an id, an arity and a function, in a named section: walked from `__start_dispatch` to `__stop_dispatch`, the function value loaded with `mem.load` and called through; a second section stays apart |
 | `float.runic` | float arithmetic, comparisons with a NaN, conversions both ways, the saturating ones included |
 | `traps.runic` | each trap the lowering produces, with the message `wasmtime` prints |
 | `imports.runic`, `imports-env.runic` | imports from `env` satisfied by a second emitted module |

@@ -36,8 +36,9 @@ runic-opt program.runic --target wasm32-unknown-unknown --wasm-stack-size 65536 
 ```
 
 - **Data layout**: the C ABI of wasm32: little-endian, pointers and `isize` of 32 bits, `i8`,
-  `i16`, `i32`, `i64` and `i128` aligned to 1, 2, 4, 8 and 16 bytes, `f32` to 4 and `f64` to 8.
-  A module that states no `data_layout` takes this one.
+  `i16`, `i32`, `i64` and `i128` aligned to 1, 2, 4, 8 and 16 bytes, `f32` to 4 and `f64` to 8,
+  and a function value of 32 bits aligned to 4 (`fn = 32`: its index in the function table). A
+  module that states no `data_layout` takes this one.
 - **Passes**: `cfg-to-scf{exits=in-place}`, `wasm-lower-frames`, `convert-to-wasm`, then `cse` and
   `dce` when the optimization level is above `0`, then `wasm-verify-form`. `cse` and `dce` remove
   repeated and dead operations; they do not remove the unused results of a `wasm.if` or a
@@ -186,15 +187,118 @@ satisfies the imports of a module from another emitted module.
 ### What a data initializer may hold
 
 A `builtin.global_variable`'s initializer is generic code that nothing lowers, ending in
-`builtin.yield`. The emitter computes the yielded value without changing the IR: a constant
-(`arith.constant`, `arith.constantf`, `builtin.bytes`), the address of another global variable
-(`builtin.global_symbol`), the table slot of a function (`builtin.function_ref`), or any operation
-whose fold gives a constant from those (an `arith.add` of two constants, say). The value becomes
-bytes by the global's type under the data layout: an integer little-endian in `size_of` bytes, a
-float in its 4 or 8 bytes, bytes as they are (`builtin.bytes "0a0b"` is written most significant
-first, so its bytes in memory are `0b 0a`), an address or a slot in 4 bytes. Anything else is an
-error naming the operation and the global. A function value in data is read in Wasm form
-(`wasm.load ... : i32`): `mem.load` cannot read one, as a function type has no layout.
+`builtin.yield`; it holds no operation with effects (the verifier of `builtin.global_variable`
+refuses a `mem.load` there, say). The emitter gives the global the bytes that the `mem` dialect's
+evaluator, `runic_dialect_mem::evaluate_initializer`, computes from it under the data layout of
+the module, without changing the IR: bytes, and relocations where they hold an address or a
+function value, which the layout resolves to the address of a global variable or the slot of a
+function in the table. The yielded value is made of:
+
+| part | written as | in memory |
+|---|---|---|
+| a constant | `arith.constant`, `arith.constantf`, `builtin.bytes`, or an operation whose fold gives a constant from constants (`arith.add` of two, `mem.sizeof`) | an integer little-endian in `size_of` its type bytes, a float in its 4 or 8, bytes as they are (`builtin.bytes "0a0b"` is written most significant first, so its bytes in memory are `0b 0a`) |
+| a zero | `builtin.zero` of any type with a layout | `size_of` zero bytes; a global that is wholly zero has an address and no segment, whatever its size |
+| an address | `builtin.global_symbol @g`, then `mem.gep` with a constant index and path, `mem.ptrcast`, `mem.ptrtoint` to `isize` and `mem.inttoptr` back | 4 bytes, the address of `@g` plus the offset the geps add |
+| a function | `builtin.function_ref @f`, `@f` a function, a declaration or an alias | 4 bytes, the slot of `@f` in `__indirect_function_table` (`fn = 32`, below) |
+| an aggregate | `builtin.aggregate` of any of these, nested, into a `struct` or an `array` | each element at the offset the layout gives it; padding is zero |
+
+What is refused, each an error that names the global and the operation:
+
+- **arithmetic on an address**, such as `arith.add` of `mem.ptrtoint @g` and 4 (``arithmetic on an
+  address cannot be placed: write the offset with `mem.gep` ``): an address is only known as a
+  relocation, which has a target and an addend, so an offset is written with `mem.gep`;
+- an operation that **does not fold** to a constant (`arith.udiv` by 0: `` `arith.udiv` does not
+  fold to a constant ``), or that computes with a function value;
+- a value that **does not fit** its type (an `isize` constant of 2^40: `` `arith.constant` gives
+  1099511627776, which does not fit `isize` of 4 bytes ``), and an address cast to an integer of
+  another width than the pointer's;
+- a type with no layout;
+- a passive segment (a global named by `wasm.memory_init` or `wasm.data_drop`) that holds an
+  address or a function value: what `memory.init` copies is not relocated.
+
+A dispatch table is an array of such structs, or, as here, structs in a section of their own that
+the layout places together, which a loop walks from `__start_dispatch` to `__stop_dispatch` (the
+program `tests/run/wasm/dispatch-table.runic` runs a larger one):
+
+```
+builtin.module public @table {
+    builtin.function public extern("wasm") @double(%x: i64) -> i64 {
+        %r = arith.add %x, %x;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("wasm") @square(%x: i64) -> i64 {
+        %r = arith.mul %x, %x;
+        builtin.ret %r : (i64);
+    };
+    builtin.global_variable private @entry_double : struct<i32, i32, (i64) -> i64> {
+        %id = arith.constant 20 : i32;
+        %arity = arith.constant 1 : i32;
+        %f = builtin.function_ref @double : (i64) -> i64;
+        %e = builtin.aggregate %id, %arity, %f : struct<i32, i32, (i64) -> i64>;
+        builtin.yield %e;
+    } attributes { section = "dispatch" };
+    builtin.global_variable private @entry_square : struct<i32, i32, (i64) -> i64> {
+        %id = arith.constant 40 : i32;
+        %arity = arith.constant 1 : i32;
+        %f = builtin.function_ref @square : (i64) -> i64;
+        %e = builtin.aggregate %id, %arity, %f : struct<i32, i32, (i64) -> i64>;
+        builtin.yield %e;
+    } attributes { section = "dispatch" };
+    builtin.global_variable public @start : struct<i32, i32, (i64) -> i64> attributes { link_name = "__start_dispatch" };
+    builtin.global_variable public @stop : struct<i32, i32, (i64) -> i64> attributes { link_name = "__stop_dispatch" };
+    builtin.function public extern("C") @lookup(%id: i32, %x: i64) -> i64 {
+        %s = builtin.global_symbol @start : ptr<struct<i32, i32, (i64) -> i64>>;
+        %e = builtin.global_symbol @stop : ptr<struct<i32, i32, (i64) -> i64>>;
+        %si = mem.ptrtoint %s;
+        %ei = mem.ptrtoint %e;
+        cf.br ^head(%si : isize);
+    ^head(%at: isize):
+        %done = arith.cmpi uge %at, %ei;
+        cf.cond_br %done ^miss, ^body : (i1);
+    ^body:
+        %entry = mem.inttoptr %at : ptr<struct<i32, i32, (i64) -> i64>>;
+        %idp = mem.gep %entry, [0];
+        %entry_id = mem.load %idp;
+        %found = arith.cmpi eq %entry_id, %id;
+        cf.cond_br %found ^call, ^next : (i1);
+    ^next:
+        %size = mem.sizeof struct<i32, i32, (i64) -> i64>;
+        %at2 = arith.add %at, %size;
+        cf.br ^head(%at2 : isize);
+    ^call:
+        %fp = mem.gep %entry, [2];
+        %f = mem.load %fp;
+        %r = builtin.call_indirect %f(%x) : extern("wasm") (i64) -> i64;
+        builtin.ret %r : (i64);
+    ^miss:
+        %minus_one = arith.constant -1 : i64;
+        builtin.ret %minus_one : (i64);
+    } attributes { wasm.export_name = "lookup" };
+};
+```
+
+Each entry is 12 bytes: the id, the arity and the slot of the function. With no frame in the unit
+the data starts at 1024, and the module holds
+
+```
+(table $__indirect_function_table (;0;) 3 3 funcref)
+(elem (;0;) (i32.const 1) func $table::double $table::square)
+(data $table::entry_double (;0;) (i32.const 1024) "\14\00\00\00\01\00\00\00\01\00\00\00")
+(data $table::entry_square (;1;) (i32.const 1036) "(\00\00\00\01\00\00\00\02\00\00\00")
+```
+
+so that `wasmtime run --invoke lookup table.core.wasm 40 5` prints 25, and an id that is not in
+the table gives -1.
+
+### Function values in memory
+
+The backend's data layout states `fn = 32`: a function value is 32 bits aligned to 4 in memory,
+its index in `__indirect_function_table`, as its carrier is an `i32`. So a function type has a
+layout: `mem.load` and `mem.store` move a function value as an `i32`, `mem.sizeof`,
+`mem.alignof`, `mem.offsetof` and `mem.gep` measure and step through a struct that holds one, and
+an initializer places one. A module that states its own data layout must state the same, or none:
+the harness refuses a module whose layout is not the target's, and the lowering refuses any other
+width (`` `convert-to-wasm` needs a function value of 32 bits, `fn = 32` in the data layout ``).
 
 ### The feature baseline
 
@@ -439,9 +543,10 @@ The limits that are not per operation:
 - **32-bit little-endian only.** The data layout must be little-endian with 32-bit pointers and
   `isize`: 64-bit memories (memory64) are not modelled, and a missing or different layout is an
   error.
-- **A value of a function type is not stored with `mem.store`**: the `mem` verifier rejects it,
-  as a function type has no layout. A function value reaches memory as an `i32` that the frontend
-  converts itself, or travels in locals and arguments.
+- **Function values in memory need `fn = 32`.** The backend's data layout states it, so
+  `mem.load` and `mem.store` move a function value as its 32-bit table index; a data layout with
+  function values of another width is an error, and one with no `fn` entry gives a function type
+  no layout, so the `mem` verifier refuses the access.
 - **An `scf.break` that names a `wasm.loop` written before the lowering is an error**: leaving such
   a loop with its results has no `wasm.br` (a `wasm.br` to a loop goes back to its top).
 - **A global variable's initializer is data**, and is not converted: `convert-to-wasm` and

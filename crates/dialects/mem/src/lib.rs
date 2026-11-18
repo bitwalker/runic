@@ -51,15 +51,25 @@
 //! or fill of the constant length 0 is erased.
 //!
 //! **Initializers.** [evaluate_initializer] gives what a `builtin.global_variable`'s initializer
-//! denotes under a data layout, for every backend: the global's bytes ([Initializer]), with a
-//! [Relocation] wherever they hold the address of another global variable plus a constant, or a
-//! function value ([Target]). It reads constants through the operations' own folds, the zero of a
-//! type (`builtin.zero`), structs and arrays built with `builtin.aggregate`, addresses built with
-//! `builtin.global_symbol`, `mem.gep` with a constant index, `mem.ptrcast`, and `mem.ptrtoint` and
-//! `mem.inttoptr` between a pointer and an integer exactly as wide, and `builtin.function_ref`,
-//! which needs the layout's `fn` entry. It does not change the IR. Arithmetic on an address is an
-//! error: an offset is written with `mem.gep`. A wholly zero global has no bytes, and is recognised
-//! without building them.
+//! denotes under a data layout, for every backend: the global's bytes ([Initializer]: its size,
+//! its alignment and its bytes), with a [Relocation] wherever they hold the address of another
+//! global variable plus a constant ([Target::Data]) or a function value ([Target::Function], the
+//! function an alias leads to). The bytes under a relocation are zero; a backend writes there what
+//! the target resolves to (an address, a table slot, a relocation of an object file). It reads
+//! constants through the operations' own folds, the zero of a type (`builtin.zero`), structs and
+//! arrays built with `builtin.aggregate`, addresses built with `builtin.global_symbol`, `mem.gep`
+//! with a constant index, `mem.ptrcast`, and `mem.ptrtoint` and `mem.inttoptr` between a pointer
+//! and an integer exactly as wide, and `builtin.function_ref`, which needs the layout's `fn`
+//! entry. It does not change the IR. An initializer holds no operation with effects (the verifier
+//! of `builtin.global_variable` says so), so nothing it evaluates reads or writes memory. Refused,
+//! with an error whose primary label is on the operation that defines the value: arithmetic on an
+//! address (an offset is written with `mem.gep`), an operation that does not fold to a constant or
+//! that computes with a function value, a value that does not fit its type, a cast between a
+//! pointer and an integer of another width, and a type with no layout; a declaration has no
+//! initializer to evaluate. A wholly zero global has no bytes, and is recognised without building
+//! them. The layout passed places the values; the folds read their own,
+//! [DataLayout::closest](runic_ir::DataLayout::closest) of the operation, which is the same when
+//! the caller passes the layout in scope of the global.
 
 #![no_std]
 #![feature(specialization)]

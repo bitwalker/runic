@@ -106,8 +106,11 @@
 //! 4. [`wasm-verify-form`](VerifyForm): checks the result; changes nothing. An operation or a value
 //!    that is not in Wasm form is an error that names it and the pass that should have removed it.
 //!
-//! The lowering needs a data layout in scope, little-endian with 32-bit pointers and `isize`
-//! ([WasmTarget]).
+//! The lowering needs a data layout in scope, little-endian with 32-bit pointers and `isize`, and
+//! with function values of 32 bits or no `fn` entry ([WasmTarget]). Under `fn = 32`, which the
+//! backend's layout states, a function value in memory is its 32-bit index in the function table:
+//! `mem.load` and `mem.store` move it as an `i32`, and `mem.gep` and the size operations step
+//! through a struct that holds one.
 //!
 //! **The well-known symbols.** Lowered code names the linear memory, the function table and the
 //! stack pointer by symbol: `wasm.memory @__linear_memory`, `wasm.table
@@ -181,8 +184,16 @@
 //! and the data starts at 1024 without one. The undefined data symbols `__data_end`,
 //! `__heap_base`, `__start_<s>` and `__stop_<s>` are addresses the layout gives. Table slots start
 //! at 1, so that a null function pointer traps. A global variable's initializer becomes bytes
-//! through the `mem` dialect's evaluator ([emit::data]): constants, zeros, the address of a global
-//! variable plus a constant, the slot of a function, and structs and arrays of those.
+//! through the `mem` dialect's evaluator, [runic_dialect_mem::evaluate_initializer], which every
+//! backend shares ([emit::data]): constants and what folds to one, `builtin.zero`, the address of
+//! a global variable plus a constant offset (`builtin.global_symbol` and `mem.gep`), the slot of a
+//! function (`builtin.function_ref`), and structs and arrays of those (`builtin.aggregate`). The
+//! layout writes each address and slot into the bytes. Arithmetic on an address, an operation that
+//! does not fold, and an address or a slot in a passive segment are errors naming the global. A
+//! dispatch table of `struct<i32, i32, (i64) -> i64>` entries in one section, walked from
+//! `__start_<s>` to `__stop_<s>` and called through with `mem.load` and `builtin.call_indirect`,
+//! is a program of the run suite (`tests/run/wasm/dispatch-table.runic`); the README of the crate
+//! shows it.
 //!
 //! **The backend.** With the `std` feature, [WasmBackend] is the backend `wasm` of `runic-compile`
 //! for `wasm32-unknown-unknown` ([backend]): it states the data layout of the C ABI of wasm32, adds

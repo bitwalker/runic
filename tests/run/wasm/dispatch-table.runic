@@ -1,0 +1,180 @@
+// RUN: runic-opt --target wasm32-unknown-unknown %s -o %t.wasm
+// RUN: wasmtime run --invoke lookup %t.wasm 10 5 2>/dev/null | filecheck %s --check-prefix=TEN
+// RUN: wasmtime run --invoke lookup %t.wasm 20 5 2>/dev/null | filecheck %s --check-prefix=TWENTY
+// RUN: wasmtime run --invoke lookup %t.wasm 30 5 2>/dev/null | filecheck %s --check-prefix=THIRTY
+// RUN: wasmtime run --invoke lookup %t.wasm 40 5 2>/dev/null | filecheck %s --check-prefix=FORTY
+// RUN: wasmtime run --invoke lookup %t.wasm 50 5 2>/dev/null | filecheck %s --check-prefix=MISS
+// RUN: wasmtime run --invoke count %t.wasm 2>/dev/null | filecheck %s --check-prefix=COUNT
+// RUN: wasmtime run --invoke count2 %t.wasm 2>/dev/null | filecheck %s --check-prefix=COUNT2
+// RUN: wasmtime run --invoke lookup2 %t.wasm 7 2>/dev/null | filecheck %s --check-prefix=SECOND
+// RUN: runic-opt --target wasm32-unknown-unknown %s -p 'canonicalizer,cse,sccp,canonicalizer,dce' -o %t.opt.wasm
+// RUN: wasmtime run --invoke lookup %t.opt.wasm 10 5 2>/dev/null | filecheck %s --check-prefix=TEN
+// RUN: wasmtime run --invoke lookup %t.opt.wasm 20 5 2>/dev/null | filecheck %s --check-prefix=TWENTY
+// RUN: wasmtime run --invoke lookup %t.opt.wasm 30 5 2>/dev/null | filecheck %s --check-prefix=THIRTY
+// RUN: wasmtime run --invoke lookup %t.opt.wasm 40 5 2>/dev/null | filecheck %s --check-prefix=FORTY
+// RUN: wasmtime run --invoke lookup %t.opt.wasm 50 5 2>/dev/null | filecheck %s --check-prefix=MISS
+// RUN: wasmtime run --invoke count %t.opt.wasm 2>/dev/null | filecheck %s --check-prefix=COUNT
+// RUN: wasmtime run --invoke count2 %t.opt.wasm 2>/dev/null | filecheck %s --check-prefix=COUNT2
+// RUN: wasmtime run --invoke lookup2 %t.opt.wasm 7 2>/dev/null | filecheck %s --check-prefix=SECOND
+
+// A dispatch table in a named data section, found and called through at run time, in generic IR.
+//
+// Each entry is a `struct<i32, i32, (i64) -> i64>`: an id, an arity and a function, built with
+// `builtin.aggregate` in the initializer of a global variable in the section `dispatch`. The
+// backend evaluates each initializer to 12 bytes: the id, the arity, and the table slot of the
+// function, which its data layout gives 32 bits (`fn = 32`). The four entries are not adjacent in
+// the source (a global of another section and a function lie between them); the layout places
+// the members of a section together, so `__start_dispatch` and `__stop_dispatch`, which the
+// layout defines, bound exactly the four. `@lookup` walks from the one to the other by the entry
+// size (`mem.sizeof`), compares the id, and on a match loads the function value with `mem.load`
+// and calls it with `builtin.call_indirect`; a miss gives -1. `@count` is the number of entries,
+// the distance between the bounds divided by the entry size. The section `other` holds one entry
+// that reuses `@double`: `@count2` is 1, and `@lookup2` calls through it, so the two sections stay
+// apart. `@lookup 40 5` is 25: `@square` of 5.
+
+// TEN: {{^}}6{{$}}
+// TWENTY: {{^}}10{{$}}
+// THIRTY: {{^}}-5{{$}}
+// FORTY: {{^}}25{{$}}
+// MISS: {{^}}-1{{$}}
+// COUNT: {{^}}4{{$}}
+// COUNT2: {{^}}1{{$}}
+// SECOND: {{^}}14{{$}}
+
+builtin.module public @table {
+    builtin.function public extern("wasm") @add_one(%x: i64) -> i64 {
+        %one = arith.constant 1 : i64;
+        %r = arith.add %x, %one;
+        builtin.ret %r : (i64);
+    };
+
+    builtin.function public extern("wasm") @double(%x: i64) -> i64 {
+        %r = arith.add %x, %x;
+        builtin.ret %r : (i64);
+    };
+
+    builtin.function public extern("wasm") @negate(%x: i64) -> i64 {
+        %zero = arith.constant 0 : i64;
+        %r = arith.sub %zero, %x;
+        builtin.ret %r : (i64);
+    };
+
+    builtin.function public extern("wasm") @square(%x: i64) -> i64 {
+        %r = arith.mul %x, %x;
+        builtin.ret %r : (i64);
+    };
+
+    builtin.global_variable private @entry_add_one : struct<i32, i32, (i64) -> i64> {
+        %id = arith.constant 10 : i32;
+        %arity = arith.constant 1 : i32;
+        %f = builtin.function_ref @add_one : (i64) -> i64;
+        %e = builtin.aggregate %id, %arity, %f : struct<i32, i32, (i64) -> i64>;
+        builtin.yield %e;
+    } attributes { section = "dispatch" };
+
+    builtin.global_variable private @entry_double : struct<i32, i32, (i64) -> i64> {
+        %id = arith.constant 20 : i32;
+        %arity = arith.constant 1 : i32;
+        %f = builtin.function_ref @double : (i64) -> i64;
+        %e = builtin.aggregate %id, %arity, %f : struct<i32, i32, (i64) -> i64>;
+        builtin.yield %e;
+    } attributes { section = "dispatch" };
+
+    // Not in the section: the layout places it before every section.
+    builtin.global_variable private @calls : i32 {
+        %zero = arith.constant 0 : i32;
+        builtin.yield %zero;
+    };
+
+    builtin.global_variable private @entry_negate : struct<i32, i32, (i64) -> i64> {
+        %id = arith.constant 30 : i32;
+        %arity = arith.constant 1 : i32;
+        %f = builtin.function_ref @negate : (i64) -> i64;
+        %e = builtin.aggregate %id, %arity, %f : struct<i32, i32, (i64) -> i64>;
+        builtin.yield %e;
+    } attributes { section = "dispatch" };
+
+    // The other table, of one entry, in a section of its own.
+    builtin.global_variable private @other_double : struct<i32, i32, (i64) -> i64> {
+        %id = arith.constant 7 : i32;
+        %arity = arith.constant 1 : i32;
+        %f = builtin.function_ref @double : (i64) -> i64;
+        %e = builtin.aggregate %id, %arity, %f : struct<i32, i32, (i64) -> i64>;
+        builtin.yield %e;
+    } attributes { section = "other" };
+
+    builtin.function public extern("C") @count() -> i32 {
+        %s = builtin.global_symbol @start : ptr<struct<i32, i32, (i64) -> i64>>;
+        %e = builtin.global_symbol @stop : ptr<struct<i32, i32, (i64) -> i64>>;
+        %si = mem.ptrtoint %s;
+        %ei = mem.ptrtoint %e;
+        %bytes = arith.sub %ei, %si;
+        %size = mem.sizeof struct<i32, i32, (i64) -> i64>;
+        %n = arith.udiv %bytes, %size;
+        %r = arith.zext_or_trunc %n <{ ty = i32 }>;
+        builtin.ret %r : (i32);
+    } attributes { wasm.export_name = "count" };
+
+    builtin.global_variable private @entry_square : struct<i32, i32, (i64) -> i64> {
+        %id = arith.constant 40 : i32;
+        %arity = arith.constant 1 : i32;
+        %f = builtin.function_ref @square : (i64) -> i64;
+        %e = builtin.aggregate %id, %arity, %f : struct<i32, i32, (i64) -> i64>;
+        builtin.yield %e;
+    } attributes { section = "dispatch" };
+
+    // The bounds of the sections, which the layout defines: addresses with no bytes.
+    builtin.global_variable public @start : struct<i32, i32, (i64) -> i64> attributes { link_name = "__start_dispatch" };
+    builtin.global_variable public @stop : struct<i32, i32, (i64) -> i64> attributes { link_name = "__stop_dispatch" };
+    builtin.global_variable public @start2 : struct<i32, i32, (i64) -> i64> attributes { link_name = "__start_other" };
+    builtin.global_variable public @stop2 : struct<i32, i32, (i64) -> i64> attributes { link_name = "__stop_other" };
+
+    builtin.function public extern("C") @lookup(%id: i32, %x: i64) -> i64 {
+        %s = builtin.global_symbol @start : ptr<struct<i32, i32, (i64) -> i64>>;
+        %e = builtin.global_symbol @stop : ptr<struct<i32, i32, (i64) -> i64>>;
+        %si = mem.ptrtoint %s;
+        %ei = mem.ptrtoint %e;
+        cf.br ^head(%si : isize);
+    ^head(%at: isize):
+        %done = arith.cmpi uge %at, %ei;
+        cf.cond_br %done ^miss, ^body : (i1);
+    ^body:
+        %entry = mem.inttoptr %at : ptr<struct<i32, i32, (i64) -> i64>>;
+        %idp = mem.gep %entry, [0];
+        %entry_id = mem.load %idp;
+        %found = arith.cmpi eq %entry_id, %id;
+        cf.cond_br %found ^call, ^next : (i1);
+    ^next:
+        %size = mem.sizeof struct<i32, i32, (i64) -> i64>;
+        %at2 = arith.add %at, %size;
+        cf.br ^head(%at2 : isize);
+    ^call:
+        %fp = mem.gep %entry, [2];
+        %f = mem.load %fp;
+        %r = builtin.call_indirect %f(%x) : extern("wasm") (i64) -> i64;
+        builtin.ret %r : (i64);
+    ^miss:
+        %minus_one = arith.constant -1 : i64;
+        builtin.ret %minus_one : (i64);
+    } attributes { wasm.export_name = "lookup" };
+
+    builtin.function public extern("C") @count2() -> i32 {
+        %s = builtin.global_symbol @start2 : ptr<struct<i32, i32, (i64) -> i64>>;
+        %e = builtin.global_symbol @stop2 : ptr<struct<i32, i32, (i64) -> i64>>;
+        %si = mem.ptrtoint %s;
+        %ei = mem.ptrtoint %e;
+        %bytes = arith.sub %ei, %si;
+        %size = mem.sizeof struct<i32, i32, (i64) -> i64>;
+        %n = arith.udiv %bytes, %size;
+        %r = arith.zext_or_trunc %n <{ ty = i32 }>;
+        builtin.ret %r : (i32);
+    } attributes { wasm.export_name = "count2" };
+
+    builtin.function public extern("C") @lookup2(%x: i64) -> i64 {
+        %s = builtin.global_symbol @start2 : ptr<struct<i32, i32, (i64) -> i64>>;
+        %fp = mem.gep %s, [2];
+        %f = mem.load %fp;
+        %r = builtin.call_indirect %f(%x) : extern("wasm") (i64) -> i64;
+        builtin.ret %r : (i64);
+    } attributes { wasm.export_name = "lookup2" };
+};

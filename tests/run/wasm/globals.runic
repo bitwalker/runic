@@ -16,10 +16,8 @@
 // returns the three old values and the final one, so each call sees the previous one's write.
 // `@pointer` holds the address of `@target` (7); `@follow` writes 8 through it and reads `@target`
 // back. `@stored` holds a function value, the table slot of `@double`, which the backend writes
-// into data; `@call_stored` loads it and calls through it. It is written in Wasm form
-// (`wasm.data_addr`, `wasm.load`, `wasm.call_indirect`, with the declarations of the memory and
-// the table the lowering names), since `mem.load` cannot read a function value: a function type
-// has no layout.
+// into data in the 32 bits its data layout gives a function value (`fn = 32`); `@call_stored`
+// loads it with `mem.load` and calls through it with `builtin.call_indirect`.
 
 // BUMP: {{^}}5{{$}}
 // BUMP-NEXT: {{^}}[[ADDRESS:[0-9]+]]{{$}}
@@ -84,13 +82,10 @@ builtin.module public @global {
         builtin.yield %f;
     };
 
-    wasm.memory private declaration @__linear_memory : 0 attributes { link_name = "__linear_memory" };
-    wasm.table private declaration @__indirect_function_table : 0 x !wasm.funcref attributes { link_name = "__indirect_function_table" };
-
     builtin.function public extern("wasm") @call_stored(%x: i32) -> i32 {
-        %a = wasm.data_addr @stored;
-        %f = wasm.load @__linear_memory, %a : i32;
-        %r = wasm.call_indirect @__indirect_function_table, %f(%x) : extern("wasm") (i32) -> i32;
+        %a = builtin.global_symbol @stored : ptr<(i32) -> i32>;
+        %f = mem.load %a;
+        %r = builtin.call_indirect %f(%x) : extern("wasm") (i32) -> i32;
         builtin.ret %r : (i32);
     } attributes { wasm.export_name = "call_stored" };
 };
