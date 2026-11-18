@@ -1,0 +1,55 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// The entry `wasm.start` marks the start function: it is written with the unit attribute, on a
+// `builtin.function` definition that takes no parameters and gives no results.
+builtin.module public @start_ok {
+    builtin.function public extern("C") @init() {
+        builtin.ret;
+    } attributes { wasm.start = #builtin.unit };
+};
+
+// -----
+
+builtin.module public @start_declaration {
+    builtin.function public extern("C") @init() attributes { wasm.start = #builtin.unit }; // expected-error {{`wasm.start` marks the start function, which the module runs, but `builtin.function @init` is a declaration: the start function is a definition}}
+};
+
+// -----
+
+builtin.module public @start_parameter {
+    builtin.function public extern("C") @init(%x: i32) { // expected-error {{`wasm.start` marks the start function, which takes no parameters and gives no results, but `builtin.function @init` takes 1 and gives 0}}
+        builtin.ret;
+    } attributes { wasm.start = #builtin.unit };
+};
+
+// -----
+
+builtin.module public @start_result {
+    builtin.function public extern("C") @init() -> i32 { // expected-error {{`wasm.start` marks the start function, which takes no parameters and gives no results, but `builtin.function @init` takes 0 and gives 1}}
+        %v = wasm.const 0 : i32;
+        builtin.ret %v : (i32);
+    } attributes { wasm.start = #builtin.unit };
+};
+
+// -----
+
+builtin.module public @start_on_a_global {
+    wasm.global private @g : mut i32 { // expected-error {{`wasm.start` marks the start function, but `wasm.global @g` is not a function: only a `builtin.function` is one}}
+        %v = wasm.const 0 : i32;
+        builtin.yield %v;
+    } attributes { wasm.start = #builtin.unit };
+};
+
+// -----
+
+builtin.module public @start_on_data {
+    builtin.global_variable public @d : i32 attributes { wasm.start = #builtin.unit }; // expected-error {{`wasm.start` marks the start function, but `builtin.global_variable @d` is not a function: only a `builtin.function` is one}}
+};
+
+// -----
+
+builtin.module public @start_with_a_value {
+    builtin.function public extern("C") @init() { // expected-error {{`wasm.start` marks the start function and takes no value: it is written `wasm.start = #builtin.unit`, but this is #builtin.bool<true>}}
+        builtin.ret;
+    } attributes { wasm.start = #builtin.bool<true> };
+};

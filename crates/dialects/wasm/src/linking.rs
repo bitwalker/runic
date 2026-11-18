@@ -1,5 +1,5 @@
-//! The dictionary entries that mark imports and exports: `wasm.import_module` and
-//! `wasm.export_name`.
+//! The dictionary entries that mark imports and exports, `wasm.import_module` and
+//! `wasm.export_name`, and the one that marks the start function, `wasm.start`.
 //!
 //! They are discardable attributes of the operations a Wasm module imports and exports: a
 //! `builtin.function`, a [Global], a [Memory], a [Table] or a [Tag]. An import is a declaration:
@@ -12,6 +12,12 @@
 //! one included, as in Wasm. A `builtin.global_variable` is data in linear
 //! memory, and Wasm neither imports nor exports it.
 //!
+//! `wasm.start` marks the function a module runs once before anything else: its value is the unit
+//! attribute (`attributes { wasm.start = #builtin.unit }`), and it is written on a
+//! `builtin.function` definition that takes no parameters and gives no results. How the start
+//! function is run is the emitter's: a complete module exports it as `_initialize`, and a
+//! relocatable object registers it with the linker as an init function.
+//!
 //! The dialect checks the entries on any operation (see
 //! [WasmDialect](crate::WasmDialect)'s `verify_operation_attribute`).
 
@@ -22,7 +28,7 @@ use runic_ir::{
     diagnostics::report,
     dialects::builtin::{
         Function, GlobalVariable,
-        attributes::{ListAttr, StringAttr},
+        attributes::{ListAttr, StringAttr, UnitAttr},
     },
     interner,
 };
@@ -36,6 +42,10 @@ pub const IMPORT_MODULE: &str = "wasm.import_module";
 /// The name of the entry that gives the name an entity is exported under: a string, or an array of
 /// distinct strings, each of which may be empty.
 pub const EXPORT_NAME: &str = "wasm.export_name";
+
+/// The name of the entry that marks the start function of a module: the unit attribute
+/// (`#builtin.unit`), on a `builtin.function` definition with no parameters and no results.
+pub const START: &str = "wasm.start";
 
 /// The module an import comes from when the declaration has no [IMPORT_MODULE] entry.
 pub const DEFAULT_IMPORT_MODULE: &str = "env";
@@ -103,6 +113,13 @@ pub fn export_names(op: &Operation) -> SmallVec<[CompactString; 1]> {
     names
 }
 
+/// Whether `op` carries the entry [START], whatever its value: whether it is marked as the start
+/// function. The dialect's verifier checks that only a `builtin.function` definition with no
+/// parameters and no results carries it, with the unit attribute as its value.
+pub fn is_start(op: &Operation) -> bool {
+    op.get_attribute(interner::Symbol::intern(START)).is_some()
+}
+
 /// The strings of `attr`, if it is an array of strings.
 fn string_entries(attr: &AttributeRef) -> Option<Vec<CompactString>> {
     let list = attr.borrow();
@@ -132,8 +149,9 @@ fn describe(op: &Operation) -> String {
     }
 }
 
-/// Checks the entry `name`, whose value is `attr`, of the dictionary of `op`: a `wasm.import_module`
-/// or a `wasm.export_name` entry, or an unknown key of the dialect.
+/// Checks the entry `name`, whose value is `attr`, of the dictionary of `op`: a
+/// `wasm.import_module`, `wasm.export_name` or `wasm.start` entry, or an unknown key of the
+/// dialect.
 pub(crate) fn verify_entry(
     op: &Operation,
     name: interner::Symbol,
@@ -142,11 +160,13 @@ pub(crate) fn verify_entry(
     match name.as_str() {
         IMPORT_MODULE => verify_import_module(op, attr),
         EXPORT_NAME => verify_export_name(op, attr),
+        START => verify_start(op, attr),
         other => Err(invalid(
             op,
             format!(
                 "`{other}` is not an attribute of the `wasm` dialect: it knows `{IMPORT_MODULE}` \
-                 and `{EXPORT_NAME}`"
+                 and `{EXPORT_NAME}`, which mark imports and exports, and `{START}`, which marks \
+                 the start function"
             ),
         )),
     }
@@ -223,6 +243,54 @@ fn verify_export_name(op: &Operation, attr: &AttributeRef) -> Result<(), Report>
             format!(
                 "`{EXPORT_NAME}` marks an export, but {} is not one: Wasm exports functions, \
                  globals, memories, tables and tags ({LINKABLE})",
+                describe(op)
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// `wasm.start` is the unit attribute, on a `builtin.function` definition whose signature has no
+/// parameters and no results.
+fn verify_start(op: &Operation, attr: &AttributeRef) -> Result<(), Report> {
+    if attr.borrow().downcast_ref::<UnitAttr>().is_none() {
+        return Err(invalid(
+            op,
+            format!(
+                "`{START}` marks the start function and takes no value: it is written `{START} = \
+                 #builtin.unit`, but this is {}",
+                print_attribute(op, attr)
+            ),
+        ));
+    }
+    let Some(function) = op.downcast_ref::<Function>() else {
+        return Err(invalid(
+            op,
+            format!(
+                "`{START}` marks the start function, but {} is not a function: only a \
+                 `builtin.function` is one",
+                describe(op)
+            ),
+        ));
+    };
+    if is_declaration(op) {
+        return Err(invalid(
+            op,
+            format!(
+                "`{START}` marks the start function, which the module runs, but {} is a \
+                 declaration: the start function is a definition",
+                describe(op)
+            ),
+        ));
+    }
+    let signature = function.get_signature();
+    let (params, results) = (signature.params().len(), signature.results().len());
+    if params != 0 || results != 0 {
+        return Err(invalid(
+            op,
+            format!(
+                "`{START}` marks the start function, which takes no parameters and gives no \
+                 results, but {} takes {params} and gives {results}",
                 describe(op)
             ),
         ));

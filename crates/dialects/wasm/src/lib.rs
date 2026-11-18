@@ -121,6 +121,11 @@
 //! operation, and rejects any other key that begins with `wasm.`. The field name of an import is
 //! the symbol's effective link name.
 //!
+//! **The start function.** The entry `wasm.start` (see [START] and [is_start]), written
+//! `wasm.start = #builtin.unit`, marks a `builtin.function` definition with no parameters and no
+//! results as the function the module runs once before anything else. The dialect checks where it
+//! is written; that a compilation has at most one is the emitter's to check.
+//!
 //! **What is not checked.** What a module as a whole must satisfy is for a later stage, and the
 //! emitter has to satisfy it:
 //!
@@ -247,7 +252,10 @@ pub use self::{
     attributes::{Limits, LimitsAttr, MemArg, MemArgAttr, Mutability, MutabilityAttr},
     builders::WasmOpBuilder,
     effects::{GlobalsResource, LinearMemoryResource, TablesResource},
-    linking::{DEFAULT_IMPORT_MODULE, EXPORT_NAME, IMPORT_MODULE, export_names, import_module},
+    linking::{
+        DEFAULT_IMPORT_MODULE, EXPORT_NAME, IMPORT_MODULE, START, export_names, import_module,
+        is_start,
+    },
     ops::*,
     types::{
         ExternRefType, FloatType, FuncRefType, I32, I64, IntType, NumType, RefType, ValType,
@@ -276,7 +284,8 @@ impl Dialect for WasmDialect {
 
     /// Checks the dictionary entries of any operation whose key begins with `wasm.`:
     /// `wasm.import_module` and `wasm.export_name`, which mark imports and exports (see
-    /// [import_module] and [export_names]). Any other `wasm.` key is an error.
+    /// [import_module] and [export_names]), and `wasm.start`, which marks the start function (see
+    /// [is_start]). Any other `wasm.` key is an error.
     fn verify_operation_attribute(
         &self,
         op: &Operation,

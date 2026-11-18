@@ -931,6 +931,77 @@ fn another_key_of_the_dialect_is_rejected_and_names_the_ones_it_knows() {
 }
 
 #[test]
+fn the_start_function_is_marked_with_the_unit_attribute_and_prints_as_written() {
+    let (_context, module) = module_of(
+        "builtin.function public extern(\"C\") @init() {
+            builtin.ret;
+         } attributes { wasm.start = #builtin.unit };
+         builtin.function public extern(\"C\") @other() {
+            builtin.ret;
+         };",
+    );
+    assert!(is_start(&symbol(&module, "init").borrow()));
+    assert!(!is_start(&symbol(&module, "other").borrow()));
+    let text = text_of(&module);
+    assert!(text.contains("} attributes { wasm.start = #builtin.unit };"), "{text}");
+    // What is printed parses again to the same text
+    let (_context, again) = parse_text(&text).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(text_of(&again), text);
+}
+
+#[test]
+fn the_start_function_is_a_definition_with_no_parameters_and_no_results() {
+    rejected(
+        "builtin.function public extern(\"C\") @init() attributes { wasm.start = #builtin.unit };",
+        "`wasm.start` marks the start function, which the module runs, but `builtin.function \
+         @init` is a declaration: the start function is a definition",
+    );
+    rejected(
+        "builtin.function public extern(\"C\") @init(%x: i32) {
+            builtin.ret;
+         } attributes { wasm.start = #builtin.unit };",
+        "`wasm.start` marks the start function, which takes no parameters and gives no results, \
+         but `builtin.function @init` takes 1 and gives 0",
+    );
+    rejected(
+        "builtin.function public extern(\"C\") @init() -> i32 {
+            %v = wasm.const 0 : i32;
+            builtin.ret %v : (i32);
+         } attributes { wasm.start = #builtin.unit };",
+        "`wasm.start` marks the start function, which takes no parameters and gives no results, \
+         but `builtin.function @init` takes 0 and gives 1",
+    );
+}
+
+#[test]
+fn the_start_entry_on_anything_but_a_function_or_with_a_value_is_rejected() {
+    rejected(
+        "wasm.global private @g : mut i32 { %v = wasm.const 0 : i32; builtin.yield %v; } \
+         attributes { wasm.start = #builtin.unit };",
+        "`wasm.start` marks the start function, but `wasm.global @g` is not a function: only a \
+         `builtin.function` is one",
+    );
+    rejected(
+        "builtin.global_variable public @d : i32 attributes { wasm.start = #builtin.unit };",
+        "`wasm.start` marks the start function, but `builtin.global_variable @d` is not a function",
+    );
+    rejected(
+        "builtin.function public extern(\"C\") @init() {
+            builtin.ret;
+         } attributes { wasm.start = #builtin.bool<true> };",
+        "`wasm.start` marks the start function and takes no value: it is written `wasm.start = \
+         #builtin.unit`, but this is #builtin.bool<true>",
+    );
+    // An unknown key's message names the start entry beside the others
+    rejected(
+        "wasm.memory public @m : 1 attributes { wasm.begin = #builtin.unit };",
+        "`wasm.begin` is not an attribute of the `wasm` dialect: it knows `wasm.import_module` \
+         and `wasm.export_name`, which mark imports and exports, and `wasm.start`, which marks \
+         the start function",
+    );
+}
+
+#[test]
 fn the_entries_are_checked_in_the_generic_form_too() {
     let memory = |declaration: bool, entry: &str| {
         module_text(&format!(

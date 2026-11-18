@@ -46,6 +46,7 @@ mod emit {
     mod random;
     mod sections;
     mod support;
+    mod symbols;
     mod unit;
 }
 mod eval;

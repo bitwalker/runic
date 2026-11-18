@@ -1,0 +1,38 @@
+// RUN: runic-opt --target wasm32-unknown-unknown %s -o %t.wasm
+// RUN: wasmtime run --invoke read %t.wasm 1 2>/dev/null | filecheck %s --check-prefix=READ
+// RUN: runic-opt --target wasm32-unknown-unknown %s -p 'canonicalizer,cse,sccp,canonicalizer,dce' -o %t.opt.wasm
+// RUN: wasmtime run --invoke read %t.opt.wasm 1 2>/dev/null | filecheck %s --check-prefix=READ
+
+// A start function, marked with `wasm.start`. The backend exports it as `_initialize`, the
+// convention of a WASI reactor, and writes no start section; `wasmtime` calls `_initialize`
+// itself once it has instantiated the module, before the export it is asked to invoke.
+//
+// `@state` starts at 7 in data, and `@init` adds 35 to it, so `@read` sees 42 only after
+// `@init` has run, and once: a second run would give 77. `@read` adds its `i8` argument, so
+// `read 1` prints 43.
+
+// READ: {{^}}43{{$}}
+
+builtin.module public @start {
+    builtin.global_variable public @state : i32 {
+        %seven = arith.constant 7 : i32;
+        builtin.yield %seven;
+    };
+
+    builtin.function public extern("C") @init() {
+        %p = builtin.global_symbol @state : ptr<i32>;
+        %old = mem.load %p;
+        %step = arith.constant 35 : i32;
+        %new = arith.add %old, %step;
+        mem.store %new, %p;
+        builtin.ret;
+    } attributes { wasm.start = #builtin.unit };
+
+    builtin.function public extern("C") @read(%k: i8) -> i32 {
+        %p = builtin.global_symbol @state : ptr<i32>;
+        %v = mem.load %p;
+        %w = arith.zext %k <{ ty = i32 }>;
+        %r = arith.add %v, %w;
+        builtin.ret %r : (i32);
+    } attributes { wasm.export_name = "read" };
+};

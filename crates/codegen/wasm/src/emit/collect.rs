@@ -65,6 +65,25 @@
 //!
 //! A module may hold at most one memory, definitions and imports together: a second is an error
 //! naming both, as multiple memories are outside the backend's feature set.
+//!
+//! **Symbols.** The unit records what a linker symbol of each entity needs and the description
+//! does not hold, for the object writer; the complete-module writer reads none of it. The
+//! [binding](Binding) of each function, global, table and data entry follows from the visibility
+//! of the operation it was made from (`public` a global symbol, `internal` a hidden one, `private` a
+//! local one), and is that of an undefined symbol for an import or an undefined data symbol. An
+//! import *names its host* when its first declaration is written with `wasm.import_module`; one
+//! written without it is the linker's to resolve. A data entry with a `section` is *retained*
+//! ([Unit::is_retained]): a named section exists to be found by name. [Unit::function_export]
+//! gives the export name of a function.
+//!
+//! **The start function.** A function definition written with `wasm.start` ([wasm::is_start]) is
+//! the unit's start function ([Unit::start]); a second one is an error naming both. A complete
+//! module exports it as `_initialize` ([Unit::export_start]), the convention of a WASI reactor,
+//! and has no start section.
+//!
+//! **What an object cannot express.** [Unit::check_object] refuses, with a diagnostic naming the
+//! operation, what a complete module allows and a relocatable object has no form for (see its
+//! docs). Only the object path runs it.
 
 use alloc::{
     format,
@@ -72,7 +91,7 @@ use alloc::{
     vec::Vec,
 };
 
-use runic_dialect_wasm::{self as wasm, export_names, import_module};
+use runic_dialect_wasm::{self as wasm, IMPORT_MODULE, export_names, import_module};
 use runic_ir::{
     Forward, FxHashMap, Operation, OperationRef, RawWalk, Report, Spanned, SymbolRef, Visibility,
     WalkResult,
@@ -92,9 +111,9 @@ use super::{
     body::{BodyConfig, encode_function},
     constexpr, data,
     desc::{
-        ConstExpr, DataEntry, DataId, DataPlacement, ElemSegment, Entity, Export, ExportTarget,
-        Feature, FuncId, FuncType, Function, FunctionBody, Global, GlobalId, Import, Limits,
-        Memory, MemoryId, ModuleDesc, RefType, Table, TableId, ValType,
+        Binding, ConstExpr, DataEntry, DataId, DataPlacement, ElemSegment, Entity, Export,
+        ExportTarget, Feature, FixupKind, FuncId, FuncType, Function, FunctionBody, Global,
+        GlobalId, Import, Limits, Memory, MemoryId, ModuleDesc, RefType, Table, TableId, ValType,
     },
     instr::{Entities, record_type_features, unsupported, val_type},
 };
@@ -116,6 +135,26 @@ pub struct Unit {
     segments: Vec<OperationRef>,
     elements: Vec<(OperationRef, TableId)>,
     data_uses: FxHashMap<DataId, DataUses>,
+    bindings: Bindings,
+    start: Option<FuncId>,
+    host_conflict: Option<(OperationRef, OperationRef)>,
+    exported: FxHashMap<String, OperationRef>,
+}
+
+/// The name a complete module exports its start function under: the convention of a WASI
+/// reactor, whose embedder calls it once after instantiating the module.
+pub const START_EXPORT: &str = "_initialize";
+
+/// The name of the function table the linker defines.
+const INDIRECT_FUNCTION_TABLE: &str = crate::symbols::INDIRECT_FUNCTION_TABLE;
+
+/// The binding of each entity of the description that has a symbol, by id.
+#[derive(Debug, Default)]
+struct Bindings {
+    functions: Vec<Binding>,
+    globals: Vec<Binding>,
+    tables: Vec<Binding>,
+    data: Vec<Binding>,
 }
 
 /// The first operations of the unit that name a data entry, by how they name it.
@@ -197,6 +236,359 @@ impl Unit {
     pub fn address_use(&self, id: DataId) -> Option<OperationRef> {
         self.data_uses.get(&id).and_then(|uses| uses.address)
     }
+
+    /// The binding of the symbol of the function `id`: from the visibility of its definition, or
+    /// [Binding::Undefined] for an import. `None` for a function the unit did not collect.
+    pub fn function_binding(&self, id: FuncId) -> Option<Binding> {
+        self.bindings.functions.get(id.index() as usize).copied()
+    }
+
+    /// The binding of the symbol of the global `id`, as [Self::function_binding] says.
+    pub fn global_binding(&self, id: GlobalId) -> Option<Binding> {
+        self.bindings.globals.get(id.index() as usize).copied()
+    }
+
+    /// The binding of the symbol of the table `id`, as [Self::function_binding] says.
+    pub fn table_binding(&self, id: TableId) -> Option<Binding> {
+        self.bindings.tables.get(id.index() as usize).copied()
+    }
+
+    /// The binding of the symbol of the data entry `id`: from the visibility of its definition, or
+    /// [Binding::Undefined] (which never names a host) for an undefined data symbol. `None` for an
+    /// entry the unit did not collect (one the layout adds).
+    pub fn data_binding(&self, id: DataId) -> Option<Binding> {
+        self.bindings.data.get(id.index() as usize).copied()
+    }
+
+    /// Whether the data entry `id` is retained: it is defined by the unit and has a `section`.
+    /// The linker keeps a retained entry's segment although no live symbol names it, as a section
+    /// whose members are found between `__start_<s>` and `__stop_<s>` needs.
+    pub fn is_retained(&self, id: DataId) -> bool {
+        self.data_binding(id).is_some_and(|binding| !binding.is_undefined())
+            && self
+                .desc
+                .data()
+                .get(id.index() as usize)
+                .is_some_and(|entry| entry.section.is_some())
+    }
+
+    /// The name the function `id` is exported under, when it is exported: the first of its export
+    /// names. [Self::check_object] refuses a function with more than one.
+    pub fn function_export(&self, id: FuncId) -> Option<&str> {
+        self.desc.export_names(ExportTarget::Function(id)).next()
+    }
+
+    /// The operation whose `wasm.export_name` gives the export `name`, or the start function for
+    /// [START_EXPORT] once [Self::export_start] has exported it. `None` for a name the unit does
+    /// not export (or one the layout adds, such as `memory`).
+    pub fn export_op(&self, name: &str) -> Option<OperationRef> {
+        self.exported.get(name).copied()
+    }
+
+    /// The start function of the unit: the function definition written with `wasm.start`, when
+    /// there is one. A unit has at most one.
+    pub fn start(&self) -> Option<FuncId> {
+        self.start
+    }
+
+    /// Exports the start function, when the unit has one, as [START_EXPORT] (`_initialize`), as
+    /// a complete module does; a unit that already exports that name is the error that two
+    /// exports have one name, naming both. A complete module has no start section: its embedder
+    /// calls `_initialize`.
+    pub fn export_start(&mut self) -> Result<(), Report> {
+        let Some(start) = self.start else {
+            return Ok(());
+        };
+        let op = self.function_op(start).expect("the start function has a definition");
+        if let Some(first) = self.exported.get(START_EXPORT) {
+            let (op, first) = (op.borrow(), first.borrow());
+            return Err(two_exports(
+                START_EXPORT,
+                &op,
+                format!(
+                    "this is the start function, {}, which a complete module exports as \
+                     `{START_EXPORT}`",
+                    symbol_name(&op)
+                ),
+                &first,
+            ));
+        }
+        self.exported.insert(String::from(START_EXPORT), op);
+        self.desc.add_export(Export {
+            name: String::from(START_EXPORT),
+            target: ExportTarget::Function(start),
+        });
+        Ok(())
+    }
+}
+
+impl Unit {
+    /// Checks that a relocatable object can express the unit, or gives the error of the first
+    /// construct it cannot, naming the operation. A complete module expresses each of them; an
+    /// object leaves the function table, the data's addresses and the memory to the linker, which
+    /// does not do what they need:
+    ///
+    /// - a `wasm.elem` (the linker ignores the element segments of its inputs);
+    /// - a `builtin.segment` (the linker places every data segment; there is no fixed address);
+    /// - a passive data entry, labelled on the `wasm.memory_init` or `wasm.data_drop` that names
+    ///   it (the linker makes every segment active, and has no relocation for a segment index);
+    /// - a `wasm.global` whose initializer names another entity (there is no relocation in the
+    ///   global section);
+    /// - a memory the unit defines (the linker defines the memory);
+    /// - a table the unit defines whose symbol name or link name is `__indirect_function_table`
+    ///   (the linker defines that table, and refuses an object that defines it);
+    /// - a function exported under more than one name (an object exports a function under one);
+    /// - a global, a table or a memory exported under a name other than its link name (an object
+    ///   marks such a symbol exported under its own name only);
+    /// - an import whose declarations disagree on whether it names its host (it would be both a
+    ///   host import and the linker's to resolve).
+    ///
+    /// A table slot with an addend has no relocation either, and none arises: the code writes a
+    /// slot only for `wasm.func_index`, which has no offset, and the evaluator gives a function in
+    /// data no addend (a debug assertion holds each to it).
+    pub fn check_object(&self) -> Result<(), Report> {
+        if let Some((elem, _)) = self.elements.first() {
+            let elem = elem.borrow();
+            return Err(cannot_express(
+                format!("a relocatable object cannot express {}", described(&elem)),
+                &elem,
+                "this fills a table at slots it fixes, and the linker ignores the element \
+                 segments of an object: it lays out the function table itself",
+            ));
+        }
+        if let Some(segment) = self.segments.first() {
+            let segment = segment.borrow();
+            let offset =
+                segment.downcast_ref::<Segment>().map_or(0, |segment| segment.offset_in_bytes());
+            return Err(cannot_express(
+                String::from("a relocatable object cannot express a `builtin.segment`"),
+                &segment,
+                format!(
+                    "this places bytes at the address {offset}, and the linker places every data \
+                     segment of an object itself: there is no data at a fixed address"
+                ),
+            ));
+        }
+        for index in 0..self.desc.data().len() {
+            let id = DataId::new(index as u32);
+            if let Some(passive) = self.passive_use(id) {
+                let passive = passive.borrow();
+                let name = &self.desc.data()[index].name;
+                return Err(cannot_express(
+                    format!(
+                        "a relocatable object cannot express passive data: `{}` names `{name}` as \
+                         a passive segment",
+                        passive.name()
+                    ),
+                    &passive,
+                    format!(
+                        "this names `{name}` as a passive data segment, and the linker makes \
+                         every data segment of an object active, with no relocation for a segment \
+                         index"
+                    ),
+                ));
+            }
+        }
+        for (index, global) in self.desc.globals().iter().enumerate() {
+            let Some(fixup) = global.entity.definition().and_then(|expr| expr.fixups.first())
+            else {
+                continue;
+            };
+            let op = self.global_op(GlobalId::new(index as u32)).expect("a global has an origin");
+            let op = op.borrow();
+            return Err(cannot_express(
+                format!(
+                    "a relocatable object cannot express {}, whose initializer names another \
+                     entity",
+                    described(&op)
+                ),
+                &op,
+                format!(
+                    "the initializer of this global holds {}, and an object has no relocation in \
+                     the global section",
+                    self.fixup_target(fixup.kind)
+                ),
+            ));
+        }
+        for (index, memory) in self.desc.memories().iter().enumerate() {
+            if memory.entity.is_import() {
+                continue;
+            }
+            let op = self.memory_op(MemoryId::new(index as u32)).expect("a memory has an origin");
+            let op = op.borrow();
+            return Err(cannot_express(
+                format!(
+                    "a relocatable object cannot express a memory it defines, {}",
+                    described(&op)
+                ),
+                &op,
+                "this defines a memory, and the linker defines the memory of the module it links: \
+                 an object imports it as `env.__linear_memory`",
+            ));
+        }
+        for (index, table) in self.desc.tables().iter().enumerate() {
+            if table.entity.is_import() {
+                continue;
+            }
+            let op = self.table_op(TableId::new(index as u32)).expect("a table has an origin");
+            let op = op.borrow();
+            let symbol = op.as_symbol().map(|symbol| symbol.name().to_string());
+            if table.name != INDIRECT_FUNCTION_TABLE
+                && symbol.as_deref() != Some(INDIRECT_FUNCTION_TABLE)
+            {
+                continue;
+            }
+            return Err(cannot_express(
+                format!(
+                    "a relocatable object cannot define the function table \
+                     `{INDIRECT_FUNCTION_TABLE}`"
+                ),
+                &op,
+                format!(
+                    "this defines `{INDIRECT_FUNCTION_TABLE}`, which the linker defines itself: \
+                     it refuses an object that defines it"
+                ),
+            ));
+        }
+        for index in 0..self.desc.functions().len() {
+            let id = FuncId::new(index as u32);
+            let mut names = self.desc.export_names(ExportTarget::Function(id));
+            let (Some(first), Some(second)) = (names.next(), names.next()) else {
+                continue;
+            };
+            let op = self
+                .export_op(second)
+                .or_else(|| self.function_op(id))
+                .expect("an export of the unit has an origin");
+            let op = op.borrow();
+            let function = &self.desc.function(id).name;
+            return Err(cannot_express(
+                format!(
+                    "a relocatable object cannot express the function `{function}` exported under \
+                     two names, `{first}` and `{second}`"
+                ),
+                &op,
+                format!(
+                    "this exports `{function}` as `{second}`, and it is exported as `{first}`: an \
+                     object exports a function under one name"
+                ),
+            ));
+        }
+        for export in self.desc.exports() {
+            let (what, link_name) = match export.target {
+                ExportTarget::Function(_) => continue,
+                ExportTarget::Global(id) => {
+                    ("global", &self.desc.globals()[id.index() as usize].name)
+                }
+                ExportTarget::Table(id) => ("table", &self.desc.tables()[id.index() as usize].name),
+                ExportTarget::Memory(id) => {
+                    ("memory", &self.desc.memories()[id.index() as usize].name)
+                }
+            };
+            if export.name == *link_name {
+                continue;
+            }
+            let Some(op) = self.export_op(&export.name) else {
+                continue;
+            };
+            let op = op.borrow();
+            return Err(cannot_express(
+                format!(
+                    "a relocatable object cannot express the export `{}` of the {what} \
+                     `{link_name}` under another name",
+                    export.name
+                ),
+                &op,
+                format!(
+                    "this exports the {what} `{link_name}` as `{}`, and an object marks a {what} \
+                     exported only under its own link name",
+                    export.name
+                ),
+            ));
+        }
+        if let Some((declaration, first)) = self.host_conflict {
+            let (declaration, first) = (declaration.borrow(), first.borrow());
+            let link_name = name_of_entity(&declaration);
+            let says = |op: &Operation| {
+                if names_host(op) {
+                    format!(
+                        "names the host module `{}` with `{IMPORT_MODULE}`, so the linker imports \
+                         `{link_name}` from it",
+                        import_module(op).map_or_else(String::new, |module| module.to_string())
+                    )
+                } else {
+                    format!(
+                        "has no `{IMPORT_MODULE}`, so the linker resolves `{link_name}` to a \
+                         definition of another object"
+                    )
+                }
+            };
+            return Err(report!(
+                message: (format!(
+                    "a relocatable object cannot express the import `{link_name}`: its \
+                     declarations disagree on whether it names its host"
+                )),
+                labels: [
+                    primary(declaration.span(), format!("this declaration {}", says(&declaration))),
+                    context(first.span(), format!("the first declaration {}", says(&first))),
+                ],
+            ));
+        }
+        Ok(())
+    }
+
+    /// What a fix-up of the kind `kind` stands for, by the name of its target, for a message.
+    fn fixup_target(&self, kind: FixupKind) -> String {
+        let function = |id: FuncId| &self.desc.function(id).name;
+        match kind {
+            FixupKind::FunctionIndex(id) => {
+                format!("a reference to the function `{}`", function(id))
+            }
+            FixupKind::TableSlot(id) => {
+                format!("the table slot of the function `{}`", function(id))
+            }
+            FixupKind::GlobalIndex(id) => {
+                format!("the global `{}`", self.desc.globals()[id.index() as usize].name)
+            }
+            FixupKind::TableNumber(id) => {
+                format!("the table `{}`", self.desc.tables()[id.index() as usize].name)
+            }
+            FixupKind::MemoryAddr(id) | FixupKind::DataIndex(id) => {
+                format!("the address of `{}`", self.desc.data()[id.index() as usize].name)
+            }
+            FixupKind::TypeIndex(_) | FixupKind::BlockType(_) => String::from("a type index"),
+        }
+    }
+}
+
+/// The error that a relocatable object cannot express `op`: the message `message`, and the
+/// primary label `label` on `op`.
+fn cannot_express(message: String, op: &Operation, label: impl Into<String>) -> Report {
+    let label: String = label.into();
+    report!(
+        message: (message),
+        labels: [primary(op.span(), label)],
+    )
+}
+
+/// The operation `op` for a message: `` `wasm.elem` @e ``.
+fn described(op: &Operation) -> String {
+    format!("`{}` {}", op.name(), symbol_name(op))
+}
+
+/// The error of two exports named `name`: `op` exports it, as `label` says, and `first` exported
+/// it first.
+fn two_exports(name: &str, op: &Operation, label: String, first: &Operation) -> Report {
+    report!(
+        message: (format!("two exports are named `{name}`")),
+        labels: [
+            primary(op.span(), label),
+            context(
+                first.span(),
+                format!("this exports {} as `{name}` first", symbol_name(first))
+            ),
+        ],
+    )
 }
 
 /// The error of a declared global variable `op` that links to no definition: a core module cannot
@@ -244,6 +636,10 @@ pub fn collect(
         segments: collector.segments,
         elements: collector.elements,
         data_uses: collector.resolver.data_uses,
+        bindings: collector.bindings,
+        start: collector.start.map(|(id, _)| id),
+        host_conflict: collector.host_conflict,
+        exported: collector.exported,
     })
 }
 
@@ -500,6 +896,20 @@ fn symbol_name(op: &Operation) -> String {
 /// Whether `op` is a declaration.
 fn is_declaration(op: &Operation) -> bool {
     op.as_symbol().is_some_and(|symbol| symbol.is_declaration())
+}
+
+/// The binding of the symbol of `op`, a definition, from its visibility.
+fn binding_of(op: &Operation) -> Binding {
+    match op.as_symbol().map(|symbol| symbol.visibility()) {
+        Some(Visibility::Public) => Binding::Global,
+        Some(Visibility::Internal) => Binding::Hidden,
+        Some(Visibility::Private) | None => Binding::Local,
+    }
+}
+
+/// Whether the declaration `op` names its host: it is written with `wasm.import_module`.
+fn names_host(op: &Operation) -> bool {
+    op.get_attribute(runic_ir::interner::Symbol::intern(IMPORT_MODULE)).is_some()
 }
 
 /// Whether other modules may name `op`: its visibility is `public` or `internal`.
@@ -815,6 +1225,14 @@ struct Collector {
     segments: Vec<OperationRef>,
     elements: Vec<(OperationRef, TableId)>,
     pending: Vec<Pending>,
+    bindings: Bindings,
+    /// The start function and its definition.
+    start: Option<(FuncId, OperationRef)>,
+    /// The first declaration of an import that disagrees with the import's first declaration on
+    /// whether it names its host, and that first declaration.
+    host_conflict: Option<(OperationRef, OperationRef)>,
+    /// The operation that gives each export, by name.
+    exported: FxHashMap<String, OperationRef>,
 }
 
 impl Collector {
@@ -873,22 +1291,61 @@ impl Collector {
                 if is_declaration(&borrowed) {
                     self.declare(op, &borrowed, shape)
                 } else {
-                    let id = self.define(op, &borrowed, shape, None)?;
+                    let id = self.define(op, &borrowed, shape, None, binding_of(&borrowed))?;
                     self.resolver.ids.insert(op, id);
+                    if let Id::Function(id) = id
+                        && wasm::is_start(&borrowed)
+                    {
+                        self.start_function(id, op, &borrowed)?;
+                    }
                     Ok(())
                 }
             }
         }
     }
 
-    /// Adds the entity `op` of type `shape` to the description: a definition when `import` is
-    /// `None`, else that import (or, for data, an undefined data symbol).
+    /// Records the function definition `op`, of id `id`, as the start function; a second one is an
+    /// error naming both.
+    fn start_function(
+        &mut self,
+        id: FuncId,
+        op: OperationRef,
+        borrowed: &Operation,
+    ) -> Result<(), Report> {
+        if let Some((_, first)) = self.start {
+            let first = first.borrow();
+            return Err(report!(
+                message: "the unit has two start functions: a compilation has at most one",
+                labels: [
+                    primary(
+                        borrowed.span(),
+                        format!(
+                            "this marks {} as the start function with `{}`",
+                            symbol_name(borrowed),
+                            wasm::START
+                        )
+                    ),
+                    context(
+                        first.span(),
+                        format!("{} is the start function already", symbol_name(&first))
+                    ),
+                ],
+            ));
+        }
+        self.start = Some((id, op));
+        Ok(())
+    }
+
+    /// Adds the entity `op` of type `shape` to the description, with the binding `binding`: a
+    /// definition when `import` is `None`, else that import (or, for data, an undefined data
+    /// symbol).
     fn define(
         &mut self,
         op: OperationRef,
         borrowed: &Operation,
         shape: Shape,
         import: Option<Import>,
+        binding: Binding,
     ) -> Result<Id, Report> {
         let name = match &import {
             Some(import) => import.field.clone(),
@@ -903,6 +1360,7 @@ impl Collector {
                     None => Entity::Definition(FunctionBody::default()),
                 };
                 self.origins.functions.push(op);
+                self.bindings.functions.push(binding);
                 Id::Function(self.desc.add_function(Function { ty, name, entity }))
             }
             Shape::Global(ty, mutable) => {
@@ -911,6 +1369,7 @@ impl Collector {
                     None => Entity::Definition(ConstExpr::default()),
                 };
                 self.origins.globals.push(op);
+                self.bindings.globals.push(binding);
                 Id::Global(self.desc.add_global(Global {
                     ty,
                     mutable,
@@ -921,6 +1380,7 @@ impl Collector {
             Shape::Table(element, limits) => {
                 let entity = import.map_or(Entity::Definition(()), Entity::Import);
                 self.origins.tables.push(op);
+                self.bindings.tables.push(binding);
                 Id::Table(self.desc.add_table(Table {
                     element,
                     limits,
@@ -939,6 +1399,7 @@ impl Collector {
             }
             Shape::Data(_) => {
                 self.origins.data.push(op);
+                self.bindings.data.push(binding);
                 Id::Data(self.desc.add_data(DataEntry {
                     name,
                     size: 0,
@@ -1023,8 +1484,16 @@ impl Collector {
                         ));
                     }
                     self.fields.insert(field, (shape.kind(), op));
-                    let id =
-                        self.define(op, borrowed, shape, Some(Import::new(module, link_name)))?;
+                    let binding = Binding::Undefined {
+                        names_host: names_host(borrowed),
+                    };
+                    let id = self.define(
+                        op,
+                        borrowed,
+                        shape,
+                        Some(Import::new(module, link_name)),
+                        binding,
+                    )?;
                     self.imports.insert(key, op);
                     self.resolver.ids.insert(op, id);
                     return Ok(());
@@ -1050,12 +1519,18 @@ impl Collector {
                         ],
                     ));
                 }
+                if self.host_conflict.is_none()
+                    && names_host(borrowed) != names_host(&first.borrow())
+                {
+                    self.host_conflict = Some((op, first));
+                }
                 let id = self.resolver.ids[&first];
                 self.resolver.ids.insert(op, id);
             }
             None => {
                 // A stub named by the link name (an effective link name exists: it was found).
-                let id = self.define(op, borrowed, shape, None)?;
+                let binding = Binding::Undefined { names_host: false };
+                let id = self.define(op, borrowed, shape, None, binding)?;
                 let Id::Data(data) = id else {
                     unreachable!("a data shape gives a data entry");
                 };
@@ -1204,6 +1679,14 @@ impl Collector {
                     unreachable!("every definition has an id");
                 };
                 let init = data::evaluate(&op.borrow(), &mut self.resolver)?;
+                // A table slot has no addend in the tool conventions; the evaluator gives a
+                // function's slot none.
+                debug_assert!(
+                    init.fixups.iter().all(|fixup| {
+                        !matches!(fixup.kind, FixupKind::TableSlot(_)) || fixup.addend == 0
+                    }),
+                    "a table slot with an addend in data"
+                );
                 let entry = self.desc.data_mut(id);
                 entry.size = init.size;
                 entry.bytes = init.bytes;
@@ -1233,7 +1716,7 @@ impl Collector {
 
     /// The exports `wasm.export_name` gives, in order; two of one name are an error naming both.
     fn exports(&mut self, ops: &[OperationRef]) -> Result<(), Report> {
-        let mut exported: FxHashMap<String, OperationRef> = FxHashMap::default();
+        let exported = &mut self.exported;
         for op in ops {
             let borrowed = op.borrow();
             let names = export_names(&borrowed);
@@ -1258,19 +1741,8 @@ impl Collector {
                 let name = name.to_string();
                 if let Some(first) = exported.get(&name) {
                     let first = first.borrow();
-                    return Err(report!(
-                        message: (format!("two exports are named `{name}`")),
-                        labels: [
-                            primary(
-                                borrowed.span(),
-                                format!("this exports {} as `{name}`", symbol_name(&borrowed))
-                            ),
-                            context(
-                                first.span(),
-                                format!("this exports {} as `{name}` first", symbol_name(&first))
-                            ),
-                        ],
-                    ));
+                    let label = format!("this exports {} as `{name}`", symbol_name(&borrowed));
+                    return Err(two_exports(&name, &borrowed, label, &first));
                 }
                 exported.insert(name.clone(), *op);
                 self.desc.add_export(Export { name, target });

@@ -209,8 +209,19 @@
 //! wasmtime run --invoke main program.core.wasm
 //! ```
 //!
-//! Not emitted yet: relocatable objects, integers wider than 64 bits, components, start functions,
-//! exported data and DWARF. The README of the crate says more of each part.
+//! **The start function and the object.** A function definition written with `wasm.start =
+//! #builtin.unit` is the unit's start function, at most one per compilation: a complete module
+//! exports it as `_initialize`, the convention of a WASI reactor, and has no start section, so its
+//! embedder calls it once after instantiating the module (`wasmtime run` does so itself). The
+//! emitter's second end, [emit::emit_object], is for a relocatable object that `wasm-ld` links: it
+//! collects the same unit, records for each entity what its linker symbol needs (its binding from
+//! its visibility, whether an import names its host or is the linker's to resolve, which data a
+//! named section retains, a function's export name), and refuses with a diagnostic naming the
+//! operation what an object cannot express ([emit::collect::Unit::check_object]); the object
+//! writer itself is not built yet.
+//!
+//! Not emitted yet: relocatable objects, integers wider than 64 bits, components, exported data
+//! and DWARF. The README of the crate says more of each part.
 
 #![no_std]
 #![deny(warnings)]

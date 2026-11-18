@@ -21,7 +21,10 @@ use wasmi::TrapCode;
 
 use crate::{
     backend::{TRIPLE, WasmBackend},
-    tests::exec::{did_not_terminate, fueled_engine, fueled_store, out_of_fuel},
+    tests::{
+        eval::{Outcome, Val},
+        exec::{Instance, did_not_terminate, fueled_engine, fueled_store, out_of_fuel},
+    },
 };
 
 const SUM: &str = include_str!("../../../../../../tests/run/wasm/sum.runic");
@@ -35,9 +38,10 @@ const TRAPS: &str = include_str!("../../../../../../tests/run/wasm/traps.runic")
 const IMPORTS: &str = include_str!("../../../../../../tests/run/wasm/imports.runic");
 const IMPORTS_ENV: &str = include_str!("../../../../../../tests/run/wasm/imports-env.runic");
 const DISPATCH_TABLE: &str = include_str!("../../../../../../tests/run/wasm/dispatch-table.runic");
+const START: &str = include_str!("../../../../../../tests/run/wasm/start.runic");
 
 /// Each program by its file name.
-const PROGRAMS: [(&str, &str); 11] = [
+const PROGRAMS: [(&str, &str); 12] = [
     ("sum.runic", SUM),
     ("machine.runic", MACHINE),
     ("dispatch.runic", DISPATCH),
@@ -49,6 +53,7 @@ const PROGRAMS: [(&str, &str); 11] = [
     ("imports.runic", IMPORTS),
     ("imports-env.runic", IMPORTS_ENV),
     ("dispatch-table.runic", DISPATCH_TABLE),
+    ("start.runic", START),
 ];
 
 /// The two levels each program is compiled at.
@@ -362,6 +367,28 @@ fn an_import_from_env_is_satisfied_by_a_second_emitted_module() {
         };
         program.gives("scaled", &[i32(10)], &[i32(31)]);
         program.gives("swapped", &[i32(5)], &[i64(505)]);
+    }
+}
+
+#[test]
+fn the_start_function_runs_once_when_initialize_is_called_and_not_before() {
+    for level in LEVELS {
+        let bytes = compiled(START, level);
+        // `wasmtime` calls `_initialize` itself before the export it invokes; `wasmi` does not,
+        // so the test calls it, and shows that instantiating alone runs nothing
+        let mut instance = Instance::new(&bytes);
+        assert_eq!(
+            instance.call("read", &[Val::i32(1)]),
+            Outcome::Values(vec![Val::i32(8)]),
+            "-O{level}: before `_initialize`"
+        );
+        let mut instance = Instance::new(&bytes);
+        assert_eq!(instance.call("_initialize", &[]), Outcome::Values(Vec::new()), "-O{level}");
+        assert_eq!(
+            instance.call("read", &[Val::i32(1)]),
+            Outcome::Values(vec![Val::i32(43)]),
+            "-O{level}: after `_initialize`"
+        );
     }
 }
 

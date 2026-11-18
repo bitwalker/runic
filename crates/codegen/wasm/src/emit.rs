@@ -1,9 +1,13 @@
 //! The emitter: lowered IR in Wasm form becomes a binary core WebAssembly module.
 //!
-//! [emit_module] is the entry point. It [collects](collect::collect) every `builtin.module` under
-//! the operation it is given into one unit linked by link name, lays out its memory and table
-//! ([layout]: the shadow stack, the data, the fixed segments, the table slots, and definitions of
-//! the memory, stack pointer and table the lowering imports), writes the module and validates it.
+//! The emitter has two ends over one [collected](collect::collect) unit: every `builtin.module`
+//! under the operation it is given, linked by link name. [emit_module] gives a complete module: it
+//! exports the unit's start function as `_initialize` ([collect::Unit::export_start]), lays out
+//! its memory and table ([layout]: the shadow stack, the data, the fixed segments, the table
+//! slots, and definitions of the memory, stack pointer and table the lowering imports), writes the
+//! module and validates it. [emit_object] gives a relocatable object, which leaves that layout to
+//! the linker: it never runs [layout], and refuses what an object cannot express
+//! ([collect::Unit::check_object]).
 //! The memory, stack pointer and function table the lowering declares (imports from `env` of
 //! `__linear_memory`, `__stack_pointer` and `__indirect_function_table`) are defined by the layout
 //! and never imported, so a module of lowered generic IR needs no host for them. A memory or a
@@ -73,10 +77,30 @@ impl Default for EmitOptions {
 /// [collect]), and its functions must be in Wasm form. What cannot be emitted is an error naming
 /// the operation; a module that does not validate is reported as a defect of the backend and is
 /// not returned.
+///
+/// The unit's start function, when it has one, is exported as `_initialize`; the module has no
+/// start section, and its embedder calls `_initialize` once after instantiating it (`wasmtime`
+/// does so itself).
 pub fn emit_module(root: OperationRef, options: &EmitOptions) -> Result<Vec<u8>, Report> {
     let mut unit = collect::collect(root, options, &body::BodyConfig::default())?;
+    unit.export_start()?;
     let resolved = layout::layout(&mut unit, options)?;
     let bytes = write::write_module(&unit.desc, &resolved)?;
     validate::validate(&bytes)?;
     Ok(bytes)
+}
+
+/// A relocatable object for the unit under `root`.
+///
+/// `root` is what [emit_module] takes. The unit is collected as for a module, and what an object
+/// cannot express is an error naming the operation ([collect::Unit::check_object]); the layout is
+/// the linker's and never runs. The object writer is not built in this version: once the check
+/// passes, the result is an error that says so.
+pub fn emit_object(root: OperationRef, options: &EmitOptions) -> Result<Vec<u8>, Report> {
+    let unit = collect::collect(root, options, &body::BodyConfig::default())?;
+    unit.check_object()?;
+    Err(Report::msg(
+        "the relocatable object writer is not built yet: the unit can be emitted as a complete \
+         module",
+    ))
 }

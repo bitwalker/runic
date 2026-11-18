@@ -1,0 +1,39 @@
+// RUN: runic-opt %s --target wasm32-unknown-unknown --stop-after wat | filecheck %s
+
+// A start function, marked with `wasm.start`, is exported as `_initialize`, the convention of a
+// WASI reactor: the module has no start section, and its embedder calls `_initialize` once after
+// instantiating it (`wasmtime` does so itself). The export is added after those that
+// `wasm.export_name` gives, and before the memory's.
+
+// CHECK-LABEL: (module $start
+// CHECK-NOT: (start
+// CHECK: (export "read" (func $start::read))
+// CHECK-NEXT: (export "_initialize" (func $start::init))
+// CHECK-NEXT: (export "memory" (memory $__linear_memory))
+// CHECK-NOT: (start
+// CHECK: (func $start::init (;0;) (type 0)
+// CHECK-NOT: (start
+
+builtin.module public @start {
+    builtin.global_variable public @state : i32 {
+        %seven = arith.constant 7 : i32;
+        builtin.yield %seven;
+    };
+
+    builtin.function public extern("C") @init() {
+        %p = builtin.global_symbol @state : ptr<i32>;
+        %old = mem.load %p;
+        %step = arith.constant 35 : i32;
+        %new = arith.add %old, %step;
+        mem.store %new, %p;
+        builtin.ret;
+    } attributes { wasm.start = #builtin.unit };
+
+    builtin.function public extern("C") @read(%k: i8) -> i32 {
+        %p = builtin.global_symbol @state : ptr<i32>;
+        %v = mem.load %p;
+        %w = arith.zext %k <{ ty = i32 }>;
+        %r = arith.add %v, %w;
+        builtin.ret %r : (i32);
+    } attributes { wasm.export_name = "read" };
+};

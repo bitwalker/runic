@@ -177,6 +177,40 @@ impl Import {
     }
 }
 
+/// The binding a linker symbol of an entity has in a relocatable object: where the symbol is
+/// visible, or that the unit leaves it undefined.
+///
+/// It follows from the visibility of the operation the entity was made from: `public` is
+/// [Binding::Global], `internal` is [Binding::Hidden] and `private` is [Binding::Local]. An entity
+/// the unit declares and does not define is [Binding::Undefined], whatever the visibility of its
+/// declarations. The complete-module writer does not read it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Binding {
+    /// A global symbol: other objects of a link may name it, and the linker may export it.
+    Global,
+    /// A global symbol with hidden visibility: other objects of a link may name it, and the linker
+    /// never exports it.
+    Hidden,
+    /// A local symbol: only the object itself names it, so two objects may each have one of the
+    /// name.
+    Local,
+    /// An undefined symbol, which something else of the link defines.
+    Undefined {
+        /// Whether the declaration names its host (it is written with `wasm.import_module`): the
+        /// linker then passes it through as an import from that module, under its field name.
+        /// Otherwise the linker resolves it to a definition of another object, and the link fails
+        /// when there is none. Always `false` for data, which Wasm does not import.
+        names_host: bool,
+    },
+}
+
+impl Binding {
+    /// Whether the binding is that of an undefined symbol.
+    pub const fn is_undefined(self) -> bool {
+        matches!(self, Self::Undefined { .. })
+    }
+}
+
 /// An entity is either imported or defined by the module; `D` is what a definition holds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Entity<D> {
@@ -645,7 +679,14 @@ impl CodeWriter<'_> {
 
     /// Appends an `i32.const` whose operand is a placeholder for `kind` plus `addend`, and records
     /// the fix-up.
+    ///
+    /// A [FixupKind::TableSlot] has addend zero: a table slot has no addend in the tool
+    /// conventions, and no operation names a slot with an offset.
     pub fn fixup_i32_const(&mut self, kind: FixupKind, addend: i32) -> &mut Self {
+        debug_assert!(
+            !matches!(kind, FixupKind::TableSlot(_)) || addend == 0,
+            "a table slot with the addend {addend}"
+        );
         self.code.push(0x41);
         self.placeholder(kind, addend)
     }
@@ -869,5 +910,13 @@ impl ModuleDesc {
     /// The exports, in order of addition.
     pub fn exports(&self) -> &[Export] {
         &self.exports
+    }
+
+    /// The names `target` is exported under, in order of addition: none when it is not exported.
+    pub fn export_names(&self, target: ExportTarget) -> impl Iterator<Item = &str> {
+        self.exports
+            .iter()
+            .filter(move |export| export.target == target)
+            .map(|export| export.name.as_str())
     }
 }
