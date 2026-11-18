@@ -1,0 +1,37 @@
+// RUN: runic-opt --target wasm32-unknown-unknown --stop-after object %s -o %t.o
+// RUN: rustc --edition 2024 --target wasm32-unknown-unknown --crate-type cdylib -O %S/rt/heap.rs -C link-arg=%t.o -C link-arg=--fatal-warnings -o %t.wasm
+// RUN: wasmtime run --invoke same_heap_base %t.wasm 2>/dev/null | filecheck %s --check-prefix=YES
+// RUN: wasmtime run --invoke same_data_end %t.wasm 2>/dev/null | filecheck %s --check-prefix=YES
+// RUN: wasmtime run --invoke ordered %t.wasm 2>/dev/null | filecheck %s --check-prefix=YES
+// RUN: runic-opt --target wasm32-unknown-unknown --stop-after object %s -p 'canonicalizer,cse,sccp,canonicalizer,dce' -o %t.opt.o
+// RUN: rustc --edition 2024 --target wasm32-unknown-unknown --crate-type cdylib -O %S/rt/heap.rs -C link-arg=%t.opt.o -C link-arg=--fatal-warnings -o %t.opt.wasm
+// RUN: wasmtime run --invoke same_heap_base %t.opt.wasm 2>/dev/null | filecheck %s --check-prefix=YES
+// RUN: wasmtime run --invoke same_data_end %t.opt.wasm 2>/dev/null | filecheck %s --check-prefix=YES
+// RUN: wasmtime run --invoke ordered %t.opt.wasm 2>/dev/null | filecheck %s --check-prefix=YES
+
+// The linker's symbols `__heap_base` and `__data_end` read from compiled code. Each is a global
+// variable declared and not defined, under the symbol's name, which the linker defines as an
+// address: `@heap_base` and `@data_end` return the addresses. The runtime `rt/heap.rs` declares
+// the same symbols and checks that the object sees the addresses Rust sees, and that they are
+// in order: `rustc` links with the stack first, so the data begins after its 1 MiB, Rust's own
+// static is among the data, below `__data_end`, and the heap begins at or after that. Each check
+// prints 1.
+
+// YES: {{^}}1{{$}}
+
+builtin.module public @heap {
+    builtin.global_variable public @heap_start : i8 attributes { link_name = "__heap_base" };
+    builtin.global_variable public @data_stop : i8 attributes { link_name = "__data_end" };
+
+    builtin.function public extern("C") @heap_base() -> isize {
+        %p = builtin.global_symbol @heap_start : ptr<i8>;
+        %a = mem.ptrtoint %p;
+        builtin.ret %a : (isize);
+    } attributes { link_name = "heap_base" };
+
+    builtin.function public extern("C") @data_end() -> isize {
+        %p = builtin.global_symbol @data_stop : ptr<i8>;
+        %a = mem.ptrtoint %p;
+        builtin.ret %a : (isize);
+    } attributes { link_name = "data_end" };
+};

@@ -1,0 +1,64 @@
+// RUN: runic-opt --target wasm32-unknown-unknown --stop-after object %s -o %t.o
+// RUN: rustc --edition 2024 --target wasm32-unknown-unknown --crate-type cdylib -O %S/rt/memory.rs -C link-arg=%t.o -C link-arg=--fatal-warnings -o %t.wasm
+// RUN: wasmtime run --invoke counter %t.wasm 2>/dev/null | filecheck %s --check-prefix=COUNTER
+// RUN: wasmtime run --invoke shared %t.wasm 2>/dev/null | filecheck %s --check-prefix=SHARED
+// RUN: wasmtime run --invoke third %t.wasm 2>/dev/null | filecheck %s --check-prefix=THIRD
+// RUN: runic-opt --target wasm32-unknown-unknown --stop-after object %s -p 'canonicalizer,cse,sccp,canonicalizer,dce' -o %t.opt.o
+// RUN: rustc --edition 2024 --target wasm32-unknown-unknown --crate-type cdylib -O %S/rt/memory.rs -C link-arg=%t.opt.o -C link-arg=--fatal-warnings -o %t.opt.wasm
+// RUN: wasmtime run --invoke counter %t.opt.wasm 2>/dev/null | filecheck %s --check-prefix=COUNTER
+// RUN: wasmtime run --invoke shared %t.opt.wasm 2>/dev/null | filecheck %s --check-prefix=SHARED
+// RUN: wasmtime run --invoke third %t.opt.wasm 2>/dev/null | filecheck %s --check-prefix=THIRD
+
+// One memory for compiled code and Rust. A global variable declared and not defined is a symbol
+// the link resolves: here, to a Rust `static`. A global variable the object defines is one Rust
+// declares in an `extern` block.
+//
+// `@rust_counter` is Rust's `static mut RUST_COUNTER` (`rt/memory.rs`), and `@bump_rust` adds 1
+// to it and returns the new value: Rust's `counter` sets it to 100 and calls `@bump_rust` twice,
+// and returns the first result times 1000 plus the value it then reads itself, 101102. `@shared`
+// is defined here with 40; Rust's `shared` adds 2 to it and returns what `@read_shared` reads,
+// 42. The data of `@third` is the address of Rust's `RUST_TABLE` plus 8, a relocation with an
+// addend that the linker resolves: `@read_third` loads the address and reads through it, and
+// finds the table's third element, 33.
+
+// COUNTER: {{^}}101102{{$}}
+// SHARED: {{^}}42{{$}}
+// THIRD: {{^}}33{{$}}
+
+builtin.module public @memory {
+    builtin.global_variable public @rust_counter : i32 attributes { link_name = "RUST_COUNTER" };
+    builtin.global_variable public @rust_table : array<i32; 4> attributes { link_name = "RUST_TABLE" };
+
+    builtin.global_variable public @shared : i64 {
+        %v = arith.constant 40 : i64;
+        builtin.yield %v;
+    } attributes { link_name = "SHARED" };
+
+    builtin.global_variable private @third : ptr<i32> {
+        %t = builtin.global_symbol @rust_table : ptr<array<i32; 4>>;
+        %q = mem.gep %t, [2];
+        builtin.yield %q;
+    };
+
+    builtin.function public extern("C") @bump_rust() -> i32 {
+        %p = builtin.global_symbol @rust_counter : ptr<i32>;
+        %old = mem.load %p;
+        %one = arith.constant 1 : i32;
+        %new = arith.add %old, %one;
+        mem.store %new, %p;
+        builtin.ret %new : (i32);
+    } attributes { link_name = "bump_rust" };
+
+    builtin.function public extern("C") @read_shared() -> i64 {
+        %p = builtin.global_symbol @shared : ptr<i64>;
+        %v = mem.load %p;
+        builtin.ret %v : (i64);
+    } attributes { link_name = "read_shared" };
+
+    builtin.function public extern("C") @read_third() -> i32 {
+        %pp = builtin.global_symbol @third : ptr<ptr<i32>>;
+        %p = mem.load %pp;
+        %v = mem.load %p;
+        builtin.ret %v : (i32);
+    } attributes { link_name = "read_third" };
+};

@@ -1,0 +1,22 @@
+// RUN: runic-opt --target wasm32-unknown-unknown %s -o %t.wasm
+// RUN: not wasmtime run --invoke watch %t.wasm 2>&1 >/dev/null | filecheck %s --check-prefix=UNRESOLVED
+
+// The host of `export-global.runic`: a complete module that imports the mutable global `level`
+// and the function `raise` from `rt`, the linked module. `@watch` reads the global, calls
+// `raise(10)`, reads it again, and returns both. `export-global.runic` preloads the linked
+// module under the name `rt`; alone, this module does not instantiate.
+
+// UNRESOLVED: unknown import: `rt::raise`
+
+builtin.module public @export_global_host {
+    wasm.global private declaration @level : mut i32 attributes { link_name = "level", wasm.import_module = "rt" };
+    builtin.function public extern("C") @raise(i32) attributes { link_name = "raise", wasm.import_module = "rt" };
+
+    builtin.function public extern("C") @watch() -> (i32, i32) {
+        %before = wasm.global_get @level : i32;
+        %ten = arith.constant 10 : i32;
+        builtin.call @raise(%ten) : extern("C") (i32) -> ();
+        %after = wasm.global_get @level : i32;
+        builtin.ret %before, %after : (i32, i32);
+    } attributes { wasm.export_name = "watch" };
+};

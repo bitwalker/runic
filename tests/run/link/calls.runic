@@ -1,0 +1,51 @@
+// RUN: runic-opt --target wasm32-unknown-unknown --stop-after object %s -o %t.o
+// RUN: rustc --edition 2024 --target wasm32-unknown-unknown --crate-type cdylib -O %S/rt/calls.rs -C link-arg=%t.o -C link-arg=--fatal-warnings -o %t.wasm
+// RUN: wasmtime run --invoke round_trip %t.wasm -3 10 2.5 2>/dev/null | filecheck %s --check-prefix=SMALL
+// RUN: wasmtime run --invoke round_trip %t.wasm 100 27 0 2>/dev/null | filecheck %s --check-prefix=WRAPS
+// RUN: wasmtime run --invoke round_trip %t.wasm 0 -1000 -2.75 2>/dev/null | filecheck %s --check-prefix=NEGATIVE
+// RUN: not rustc --edition 2024 --target wasm32-unknown-unknown --crate-type cdylib -O --cfg mismatch %S/rt/calls.rs -C link-arg=%t.o -C link-arg=--fatal-warnings -o %t.mismatch.wasm 2>&1 | filecheck %s --check-prefix=MISMATCH
+// RUN: runic-opt --target wasm32-unknown-unknown --stop-after object %s -p 'canonicalizer,cse,sccp,canonicalizer,dce' -o %t.opt.o
+// RUN: rustc --edition 2024 --target wasm32-unknown-unknown --crate-type cdylib -O %S/rt/calls.rs -C link-arg=%t.opt.o -C link-arg=--fatal-warnings -o %t.opt.wasm
+// RUN: wasmtime run --invoke round_trip %t.opt.wasm -3 10 2.5 2>/dev/null | filecheck %s --check-prefix=SMALL
+// RUN: wasmtime run --invoke round_trip %t.opt.wasm 100 27 0 2>/dev/null | filecheck %s --check-prefix=WRAPS
+// RUN: wasmtime run --invoke round_trip %t.opt.wasm 0 -1000 -2.75 2>/dev/null | filecheck %s --check-prefix=NEGATIVE
+
+// Calls in both directions between compiled code and Rust, under `extern("C")`, with a pointer,
+// an `i8`, an `i64` and an `f64` parameter and an `i8` result: the lowering carries the pointer
+// and the `i8` in an `i32`, so a signature that came out wrong would be a mismatch at the link,
+// or a trap. The runtime `rt/calls.rs` is linked with the object into a library by `rustc`.
+//
+// Rust's `i8` is signed, and the C convention of Wasm passes and returns it sign-extended to 32
+// bits (LLVM's `signext`): the IR says so with `extend = #builtin.sext` on each `i8`. An `i8`
+// with no mark is passed zero-extended, which is Rust's `u8`.
+//
+// Rust's `round_trip(b, x, f)` puts 5 in a cell on its stack and calls `@compiled_mix` with the
+// cell's address, `b` as an `i8`, `x` and `f`. `@compiled_mix` adds 100 to the cell and calls
+// Rust's `rust_mix` with the same arguments, which doubles the cell and returns `b + x + f` as an
+// `i8`; `@compiled_mix` adds 1 to that. `round_trip` returns the `i8` times 1000 plus the cell:
+// the cell is (5 + 100) * 2 = 210 each time. -3 + 10 + 2 + 1 is 10. 100 + 27 + 0 + 1 is 128, which
+// wraps to the `i8` -128. 0 - 1000 - 2 is -1002, the `i8` 22, plus 1 is 23.
+//
+// Every link is made with `--fatal-warnings`: `rust-lld` only warns when a function is called
+// with a signature that differs from its definition, and replaces the call with a trap. The
+// runtime built with `--cfg mismatch` declares `compiled_mix` with an `f32`, and the link fails.
+
+// SMALL: {{^}}10210{{$}}
+// WRAPS: {{^}}-127790{{$}}
+// NEGATIVE: {{^}}23210{{$}}
+// MISMATCH: rust-lld: error: function signature mismatch: compiled_mix
+
+builtin.module public @calls {
+    builtin.function public extern("C") @rust_mix(ptr<i32>, i8 { extend = #builtin.sext }, i64, f64) -> (i8 { extend = #builtin.sext }) attributes { link_name = "rust_mix" };
+
+    builtin.function public extern("C") @compiled_mix(%cell: ptr<i32>, %b: i8 { extend = #builtin.sext }, %x: i64, %f: f64) -> (i8 { extend = #builtin.sext }) {
+        %old = mem.load %cell;
+        %hundred = arith.constant 100 : i32;
+        %new = arith.add %old, %hundred;
+        mem.store %new, %cell;
+        %r = builtin.call @rust_mix(%cell, %b, %x, %f) : extern("C") (ptr<i32>, i8 { extend = #builtin.sext }, i64, f64) -> (i8 { extend = #builtin.sext });
+        %one = arith.constant 1 : i8;
+        %s = arith.add %r, %one;
+        builtin.ret %s : (i8);
+    } attributes { link_name = "compiled_mix" };
+};

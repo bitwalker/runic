@@ -458,9 +458,14 @@ dependencies = ["litcheck", "runic-opt", "toyc"]
 
 [tasks.test-run]
 category = "Test"
-description = "Builds runic-opt into bin and runs the run suite of tests/run, whose programs are compiled to Wasm and run with the pinned wasmtime"
+description = "Builds runic-opt into bin and runs the run suite of tests/run, whose programs are compiled to Wasm and run with the pinned wasmtime, and linked with Rust by the pinned toolchain"
 # litcheck gives its tests the directories of `--path` in front of the `PATH` it was started
 # with; the directory of the `wasmtime` checked here comes first, so it is the one the tests run.
+#
+# The tests of tests/run/link run `rustc` with `RUSTUP_TOOLCHAIN` set by that directory's
+# `lit.local.toml`, which restates the channel `rust-toolchain.toml` pins: the task fails with one
+# line when the two differ, when rustup does not have that toolchain, or when the toolchain lacks
+# the target `wasm32-unknown-unknown`. `RUSTUP_AUTO_INSTALL=0`: rustup installs nothing here.
 env = { RUNIC_WASMTIME_VERSION = "50.0.2" }
 script_runner = "bash"
 script = ['''
@@ -476,6 +481,23 @@ if [[ "${version}" != "${wanted}" ]]; then
     echo "the run suite needs ${wanted} (cargo make wasmtime), and ${wasmtime} is ${version}" >&2
     exit 1
 fi
+root="${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
+pinned=$(sed -n 's/^channel *= *"\([^"]*\)".*/\1/p' "${root}/rust-toolchain.toml")
+local_config="tests/run/link/lit.local.toml"
+suite=$(sed -n 's/.*RUSTUP_TOOLCHAIN *= *"\([^"]*\)".*/\1/p' "${root}/${local_config}")
+if [[ "${suite}" != "${pinned}" ]]; then
+    echo "${local_config} sets RUSTUP_TOOLCHAIN to \"${suite}\", and rust-toolchain.toml pins \"${pinned}\": they must be the same" >&2
+    exit 1
+fi
+if ! libdir=$(RUSTUP_TOOLCHAIN="${pinned}" RUSTUP_AUTO_INSTALL=0 rustc --print target-libdir --target wasm32-unknown-unknown 2>/dev/null); then
+    echo "the run suite needs the toolchain ${pinned} that rust-toolchain.toml pins, and rustup does not have it" >&2
+    exit 1
+fi
+if [[ ! -d "${libdir}" ]]; then
+    echo "the run suite needs the target wasm32-unknown-unknown of ${pinned} (rustup target add --toolchain ${pinned} wasm32-unknown-unknown), and it is not installed" >&2
+    exit 1
+fi
+echo "rustc: $(RUSTUP_TOOLCHAIN="${pinned}" rustc --version)"
 exec litcheck lit run --verbose \
     --path "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/bin" \
     --path "$(dirname "${wasmtime}")" \

@@ -1,0 +1,13 @@
+// RUN: rustc --version > %t.suite
+// RUN: cd %S && env -u RUSTUP_TOOLCHAIN rustc --version > %t.repository
+// RUN: diff %t.suite %t.repository
+// RUN: rustc --version | filecheck %s
+
+// The `rustc` of this directory's RUN lines is the repository's pinned one, whatever the user's
+// default toolchain is. `litcheck` runs RUN lines in a temporary directory, where
+// `rust-toolchain.toml` is not seen; `lit.local.toml` names the toolchain in `RUSTUP_TOOLCHAIN`.
+// The first line asks the `rustc` the tests use for its version, the second the `rustc` rustup
+// chooses inside the repository without that variable, which is the one `rust-toolchain.toml`
+// pins; the two are the same. The toolchain is a nightly.
+
+// CHECK: {{^}}rustc {{[0-9.]+}}-nightly (

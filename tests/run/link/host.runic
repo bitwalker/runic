@@ -1,0 +1,37 @@
+// RUN: runic-opt --target wasm32-unknown-unknown --stop-after object %s -o %t.o
+// RUN: runic-opt --target wasm32-unknown-unknown %S/host-env.runic -o %t.host.wasm
+// RUN: rustc --edition 2024 --target wasm32-unknown-unknown --crate-type cdylib -O %S/rt/host.rs -C link-arg=%t.o -C link-arg=--fatal-warnings -o %t.wasm
+// RUN: wasmtime run --preload host=%t.host.wasm --invoke hosted %t.wasm 14 2>/dev/null | filecheck %s --check-prefix=HOSTED
+// RUN: not wasmtime run --invoke hosted %t.wasm 14 2>&1 >/dev/null | filecheck %s --check-prefix=UNRESOLVED
+// RUN: not rustc --edition 2024 --target wasm32-unknown-unknown --crate-type cdylib -O --cfg bare %S/rt/host.rs -C link-arg=%t.o -C link-arg=--fatal-warnings -o %t.bare.wasm 2>&1 | filecheck %s --check-prefix=UNDEFINED
+// RUN: runic-opt --target wasm32-unknown-unknown --stop-after object %s -p 'canonicalizer,cse,sccp,canonicalizer,dce' -o %t.opt.o
+// RUN: rustc --edition 2024 --target wasm32-unknown-unknown --crate-type cdylib -O %S/rt/host.rs -C link-arg=%t.opt.o -C link-arg=--fatal-warnings -o %t.opt.wasm
+// RUN: wasmtime run --preload host=%t.host.wasm --invoke hosted %t.opt.wasm 14 2>/dev/null | filecheck %s --check-prefix=HOSTED
+
+// The two kinds of declaration an object has for a function it does not define.
+//
+// `@host_triple` has `wasm.import_module = "host"`: it is a host import, which the linker passes
+// through to the linked module as the import `host.triple` with no option. `host-env.runic` is a
+// complete module compiled from IR that exports `triple`; `wasmtime --preload host=..` gives it
+// to the linked module as `host`. Without it, the linked module does not instantiate.
+//
+// `@helper` has no `wasm.import_module`: it is an undefined symbol, which the runtime or another
+// object must define. `rt/host.rs` defines it; built with `--cfg bare`, the runtime does not, and
+// the link fails with the linker's message naming it.
+//
+// `@use_host(x)` is `triple(helper(x))`: (14 + 1000) * 3 = 3042.
+
+// HOSTED: {{^}}3042{{$}}
+// UNRESOLVED: unknown import: `host::triple`
+// UNDEFINED: rust-lld: error: {{.*}}: undefined symbol: helper
+
+builtin.module public @host {
+    builtin.function public extern("C") @host_triple(i32) -> i32 attributes { link_name = "triple", wasm.import_module = "host" };
+    builtin.function public extern("C") @helper(i32) -> i32 attributes { link_name = "helper" };
+
+    builtin.function public extern("C") @use_host(%x: i32) -> i32 {
+        %h = builtin.call @helper(%x) : extern("C") (i32) -> i32;
+        %r = builtin.call @host_triple(%h) : extern("C") (i32) -> i32;
+        builtin.ret %r : (i32);
+    } attributes { link_name = "use_host" };
+};

@@ -1,0 +1,35 @@
+// RUN: runic-opt --target wasm32-unknown-unknown --stop-after object %s -o %t.o
+// RUN: runic-opt --target wasm32-unknown-unknown %S/export-global-host.runic -o %t.host.wasm
+// RUN: rustc --edition 2024 --target wasm32-unknown-unknown --crate-type cdylib -O %S/rt/global.rs -C link-arg=%t.o -C link-arg=--fatal-warnings -o %t.wasm
+// RUN: wasmtime run --preload rt=%t.wasm --invoke watch %t.host.wasm 2>/dev/null | filecheck %s --check-prefix=WATCH
+// RUN: runic-opt --target wasm32-unknown-unknown --stop-after object %s -p 'canonicalizer,cse,sccp,canonicalizer,dce' -o %t.opt.o
+// RUN: rustc --edition 2024 --target wasm32-unknown-unknown --crate-type cdylib -O %S/rt/global.rs -C link-arg=%t.opt.o -C link-arg=--fatal-warnings -o %t.opt.wasm
+// RUN: wasmtime run --preload rt=%t.opt.wasm --invoke watch %t.host.wasm 2>/dev/null | filecheck %s --check-prefix=WATCH
+
+// A Wasm global that the object exports is exported from the linked module, under its name, and
+// the host reads it. `@level` is a mutable `i32` global holding 5, with the export name `level`,
+// its link name (an object exports an entity only under its link name): its symbol is marked
+// exported, and the linker exports it with no option, as it does a function. `@raise_level` adds
+// to it; Rust's `raise` (`rt/global.rs`) calls that.
+//
+// The host `export-global-host.runic` imports the global `level` and the function `raise` from
+// the linked module, preloaded as `rt`: it reads the global (5), calls `raise(10)`, and reads it
+// again (15). The import is of a mutable global, so the host sees the one global the linked
+// module changes, not a copy.
+
+// WATCH: {{^}}5{{$}}
+// WATCH-NEXT: {{^}}15{{$}}
+
+builtin.module public @export_global {
+    wasm.global public @level : mut i32 {
+        %v = wasm.const 5 : i32;
+        builtin.yield %v;
+    } attributes { link_name = "level", wasm.export_name = "level" };
+
+    builtin.function public extern("C") @raise_level(%by: i32) {
+        %old = wasm.global_get @level : i32;
+        %new = arith.add %old, %by;
+        wasm.global_set @level, %new;
+        builtin.ret;
+    } attributes { link_name = "raise_level" };
+};

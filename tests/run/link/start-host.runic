@@ -1,0 +1,22 @@
+// RUN: runic-opt --target wasm32-unknown-unknown %s -o %t.wasm
+// RUN: not wasmtime run --invoke drive %t.wasm 2>&1 >/dev/null | filecheck %s --check-prefix=UNRESOLVED
+
+// The host of `start.runic`: a complete module that imports the linked module's exports `init`
+// and `counts` from `rt`, and calls them one after the other in one instance, as an embedder
+// would: `init`, then `counts` three times, and returns the last count. `start.runic` preloads
+// the linked module under the name `rt`; alone, this module does not instantiate.
+
+// UNRESOLVED: unknown import: `rt::init`
+
+builtin.module public @start_host {
+    builtin.function public extern("C") @init() attributes { link_name = "init", wasm.import_module = "rt" };
+    builtin.function public extern("C") @counts() -> i32 attributes { link_name = "counts", wasm.import_module = "rt" };
+
+    builtin.function public extern("C") @drive() -> i32 {
+        builtin.call @init() : extern("C") () -> ();
+        %a = builtin.call @counts() : extern("C") () -> i32;
+        %b = builtin.call @counts() : extern("C") () -> i32;
+        %c = builtin.call @counts() : extern("C") () -> i32;
+        builtin.ret %c : (i32);
+    } attributes { wasm.export_name = "drive" };
+};

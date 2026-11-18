@@ -1,0 +1,65 @@
+// RUN: runic-opt --target wasm32-unknown-unknown --stop-after object %s -o %t.o
+// RUN: rustc --edition 2024 --target wasm32-unknown-unknown --crate-type cdylib -O %S/rt/machine.rs -C link-arg=%t.o -C link-arg=--fatal-warnings -o %t.wasm
+// RUN: wasmtime run --invoke machine %t.wasm 1000000 2>/dev/null | filecheck %s --check-prefix=EVEN
+// RUN: wasmtime run --invoke machine %t.wasm 999999 2>/dev/null | filecheck %s --check-prefix=ODD
+// RUN: wasmtime run --invoke machine %t.wasm 0 2>/dev/null | filecheck %s --check-prefix=ZERO
+// RUN: runic-opt --target wasm32-unknown-unknown --stop-after object %s -p 'canonicalizer,cse,sccp,canonicalizer,dce' -o %t.opt.o
+// RUN: rustc --edition 2024 --target wasm32-unknown-unknown --crate-type cdylib -O %S/rt/machine.rs -C link-arg=%t.opt.o -C link-arg=--fatal-warnings -o %t.opt.wasm
+// RUN: wasmtime run --invoke machine %t.opt.wasm 1000000 2>/dev/null | filecheck %s --check-prefix=EVEN
+// RUN: wasmtime run --invoke machine %t.opt.wasm 999999 2>/dev/null | filecheck %s --check-prefix=ODD
+// RUN: wasmtime run --invoke machine %t.opt.wasm 0 2>/dev/null | filecheck %s --check-prefix=ZERO
+
+// Compiled code of the shape compiled Erlang has, entered from Rust. `@even` and `@odd` are
+// `(i32, i64) -> (i1, i64)` under `extern("wasm")`: a count of steps left and an accumulator in,
+// a flag and the accumulator out. While steps are left, each adds the count to the accumulator
+// and tail-calls the other with one step fewer; at zero `@even` returns true and `@odd` false.
+// The object uses `return_call`, and the linker accepts it beside Rust's objects, which do not.
+//
+// Rust (`rt/machine.rs`) cannot call a function of two results; it calls `@run_machine`, an
+// `extern("C")` wrapper that calls `@even(k, 0)` and returns the accumulator, negated when the
+// flag is false. For a million steps that is a million tail calls on one stack, and the sum
+// 1 + .. + 1000000 = 500000500000; for 999999, the flag is false and the sum 499999500000.
+
+// EVEN: {{^}}500000500000{{$}}
+// ODD: {{^}}-499999500000{{$}}
+// ZERO: {{^}}0{{$}}
+
+builtin.module public @machine {
+    builtin.function private extern("wasm") @even(%k: i32, %acc: i64) -> (i1, i64) {
+        %zero = arith.constant 0 : i32;
+        %done = arith.cmpi eq %k, %zero;
+        cf.cond_br %done ^stop, ^step : (i1);
+    ^step:
+        %wide = arith.zext %k <{ ty = i64 }>;
+        %acc2 = arith.add %acc, %wide;
+        %one = arith.constant 1 : i32;
+        %k2 = arith.sub %k, %one;
+        builtin.tail_call @odd(%k2, %acc2) : extern("wasm") (i32, i64) -> (i1, i64);
+    ^stop:
+        %yes = arith.constant 1 : i1;
+        builtin.ret %yes, %acc : (i1, i64);
+    };
+
+    builtin.function private extern("wasm") @odd(%k: i32, %acc: i64) -> (i1, i64) {
+        %zero = arith.constant 0 : i32;
+        %done = arith.cmpi eq %k, %zero;
+        cf.cond_br %done ^stop, ^step : (i1);
+    ^step:
+        %wide = arith.zext %k <{ ty = i64 }>;
+        %acc2 = arith.add %acc, %wide;
+        %one = arith.constant 1 : i32;
+        %k2 = arith.sub %k, %one;
+        builtin.tail_call @even(%k2, %acc2) : extern("wasm") (i32, i64) -> (i1, i64);
+    ^stop:
+        %no = arith.constant 0 : i1;
+        builtin.ret %no, %acc : (i1, i64);
+    };
+
+    builtin.function public extern("C") @run_machine(%k: i32) -> i64 {
+        %zero = arith.constant 0 : i64;
+        %flag, %acc = builtin.call @even(%k, %zero) : extern("wasm") (i32, i64) -> (i1, i64);
+        %negated = arith.sub %zero, %acc;
+        %r = cf.select %flag, %acc, %negated;
+        builtin.ret %r : (i64);
+    } attributes { link_name = "run_machine" };
+};

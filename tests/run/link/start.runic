@@ -1,0 +1,56 @@
+// RUN: runic-opt --target wasm32-unknown-unknown --stop-after object %s -o %t.o
+// RUN: runic-opt --target wasm32-unknown-unknown %S/start-host.runic -o %t.host.wasm
+// RUN: rustc --edition 2024 --target wasm32-unknown-unknown --crate-type cdylib -O %S/rt/start.rs -C link-arg=%t.o -C link-arg=--fatal-warnings -o %t.wasm
+// RUN: wasmtime run --preload rt=%t.wasm --invoke drive %t.host.wasm 2>/dev/null | filecheck %s --check-prefix=ONCE
+// RUN: wasmtime run --invoke counts %t.wasm 2>/dev/null | filecheck %s --check-prefix=NEVER
+// RUN: rustc --edition 2024 --target wasm32-unknown-unknown --crate-type cdylib -O --cfg wrapped %S/rt/start.rs -C link-arg=%t.o -C link-arg=--fatal-warnings -o %t.wrapped.wasm
+// RUN: wasmtime run --preload rt=%t.wrapped.wasm --invoke drive %t.host.wasm 2>/dev/null | filecheck %s --check-prefix=EVERY
+// RUN: wasmtime run --invoke counts %t.wrapped.wasm 2>/dev/null | filecheck %s --check-prefix=FIRST
+// RUN: runic-opt --target wasm32-unknown-unknown --stop-after object %s -p 'canonicalizer,cse,sccp,canonicalizer,dce' -o %t.opt.o
+// RUN: rustc --edition 2024 --target wasm32-unknown-unknown --crate-type cdylib -O %S/rt/start.rs -C link-arg=%t.opt.o -C link-arg=--fatal-warnings -o %t.opt.wasm
+// RUN: wasmtime run --preload rt=%t.opt.wasm --invoke drive %t.host.wasm 2>/dev/null | filecheck %s --check-prefix=ONCE
+// RUN: rustc --edition 2024 --target wasm32-unknown-unknown --crate-type cdylib -O --cfg wrapped %S/rt/start.rs -C link-arg=%t.opt.o -C link-arg=--fatal-warnings -o %t.opt.wrapped.wasm
+// RUN: wasmtime run --preload rt=%t.opt.wrapped.wasm --invoke drive %t.host.wasm 2>/dev/null | filecheck %s --check-prefix=EVERY
+
+// A start function in an object, beside a constructor of the Rust runtime's own. In an object,
+// the function marked `wasm.start` is an init function, as Rust's `.init_array` entry is: the
+// linker's `__wasm_call_ctors` calls both. Nothing calls `__wasm_call_ctors` on
+// `wasm32-unknown-unknown` unless the runtime does. (On the WASI targets the export
+// `_initialize`, which wasi-libc's `crt1-reactor.o` defines and `wasmtime` calls when it
+// instantiates the module, does what `init` does here.)
+//
+// `@start` adds 1 to `@starts`, `OBJECT_STARTS` in Rust; `rust_start`, Rust's constructor, adds
+// 1 to `RUST_STARTS`; `counts` gives the first times 10 plus the second. The host
+// `start-host.runic` calls the linked module's exports one after the other in one instance:
+// `init`, then `counts` three times.
+//
+// The runtime `rt/start.rs` exports `init`, which calls `__wasm_call_ctors`. Naming it tells the
+// linker that the runtime runs the constructors, so the exports are left as they are: after
+// `init`, both have run exactly once however many exports are called, and the host sees 11.
+// Without `init`, nothing runs them: `counts` alone is 0.
+//
+// Built with `--cfg wrapped`, the runtime's `init` does nothing and nothing names
+// `__wasm_call_ctors`. The linker then wraps every export so that it calls `__wasm_call_ctors`
+// first, on every call: after the host's four calls each constructor has run four times, 44, and
+// `counts` alone is 11.
+
+// ONCE: {{^}}11{{$}}
+// NEVER: {{^}}0{{$}}
+// EVERY: {{^}}44{{$}}
+// FIRST: {{^}}11{{$}}
+
+builtin.module public @start {
+    builtin.global_variable public @starts : i32 {
+        %zero = arith.constant 0 : i32;
+        builtin.yield %zero;
+    } attributes { link_name = "OBJECT_STARTS" };
+
+    builtin.function private extern("C") @start() {
+        %p = builtin.global_symbol @starts : ptr<i32>;
+        %old = mem.load %p;
+        %one = arith.constant 1 : i32;
+        %new = arith.add %old, %one;
+        mem.store %new, %p;
+        builtin.ret;
+    } attributes { wasm.start = #builtin.unit };
+};

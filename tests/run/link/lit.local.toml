@@ -1,0 +1,7 @@
+# The tests of this directory link objects with runtimes written in Rust, by `rustc`. `litcheck`
+# runs RUN lines in a temporary directory, where the repository's `rust-toolchain.toml` is not
+# seen, so a bare `rustc` would be the user's default toolchain. `RUSTUP_TOOLCHAIN` makes it the
+# pinned one. It restates the channel of `rust-toolchain.toml`: `cargo make test-run` fails with
+# one line when the two differ. `RUSTUP_AUTO_INSTALL = "0"` keeps rustup from installing a
+# toolchain that is missing; the link then fails instead.
+env = { RUSTUP_TOOLCHAIN = "nightly-2026-09-01", RUSTUP_AUTO_INSTALL = "0" }

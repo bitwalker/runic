@@ -1,0 +1,16 @@
+// RUN: runic-opt --target wasm32-unknown-unknown %s -o %t.wasm
+// RUN: wasmtime run --invoke triple %t.wasm 14 2>/dev/null | filecheck %s --check-prefix=TRIPLE
+
+// The host of `host.runic`: a complete module, compiled from IR by the module route, that
+// exports `triple`, three times its argument. `host.runic` preloads it under the name `host`;
+// here it runs alone.
+
+// TRIPLE: {{^}}42{{$}}
+
+builtin.module public @host_env {
+    builtin.function public extern("C") @triple(%x: i32) -> i32 {
+        %three = arith.constant 3 : i32;
+        %r = arith.mul %x, %three;
+        builtin.ret %r : (i32);
+    } attributes { wasm.export_name = "triple" };
+};

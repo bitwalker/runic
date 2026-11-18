@@ -1,0 +1,42 @@
+// RUN: runic-opt --target wasm32-unknown-unknown --stop-after object %s -o %t.o
+// RUN: rustc --edition 2024 --target wasm32-unknown-unknown --crate-type cdylib -O %S/rt/dispatch.rs -C link-arg=%t.o -C link-arg=--fatal-warnings -o %t.wasm
+// RUN: wasmtime run --invoke count %t.wasm 2>/dev/null | filecheck %s --check-prefix=COUNT
+// RUN: wasmtime run --invoke call %t.wasm 4 5 2>/dev/null | filecheck %s --check-prefix=FOUR
+// RUN: wasmtime run --invoke call %t.wasm 1 5 2>/dev/null | filecheck %s --check-prefix=MISS
+
+// The second object of `dispatch.runic`'s table: two more entries in the section `dispatch`.
+// Here it is linked alone with the same runtime: the section holds its own two entries, and the
+// ids of the other object's entries are not found.
+
+// COUNT: {{^}}2{{$}}
+// FOUR: {{^}}25{{$}}
+// MISS: {{^}}-1{{$}}
+
+builtin.module public @dispatch_more {
+    builtin.function private extern("C") @negate(%x: i64) -> i64 {
+        %zero = arith.constant 0 : i64;
+        %r = arith.sub %zero, %x;
+        builtin.ret %r : (i64);
+    };
+
+    builtin.function private extern("C") @square(%x: i64) -> i64 {
+        %r = arith.mul %x, %x;
+        builtin.ret %r : (i64);
+    };
+
+    builtin.global_variable private @entry_negate : struct<i32, i32, (i64) -> i64> {
+        %id = arith.constant 3 : i32;
+        %arity = arith.constant 3 : i32;
+        %f = builtin.function_ref @negate : (i64) -> i64;
+        %e = builtin.aggregate %id, %arity, %f : struct<i32, i32, (i64) -> i64>;
+        builtin.yield %e;
+    } attributes { section = "dispatch" };
+
+    builtin.global_variable private @entry_square : struct<i32, i32, (i64) -> i64> {
+        %id = arith.constant 4 : i32;
+        %arity = arith.constant 4 : i32;
+        %f = builtin.function_ref @square : (i64) -> i64;
+        %e = builtin.aggregate %id, %arity, %f : struct<i32, i32, (i64) -> i64>;
+        builtin.yield %e;
+    } attributes { section = "dispatch" };
+};

@@ -1,0 +1,50 @@
+// RUN: runic-opt --target wasm32-unknown-unknown --stop-after object %s -o %t.o
+// RUN: rustc --edition 2024 --target wasm32-unknown-unknown --crate-type cdylib -O %S/rt/stack.rs -C link-arg=%t.o -C link-arg=--fatal-warnings -o %t.wasm
+// RUN: wasmtime run --invoke twice %t.wasm 3 2>/dev/null | filecheck %s --check-prefix=TWICE
+// RUN: wasmtime run --invoke depth %t.wasm 10 2>/dev/null | filecheck %s --check-prefix=DEPTH
+// RUN: wasmtime run --invoke depth %t.wasm 0 2>/dev/null | filecheck %s --check-prefix=ZERO
+// RUN: wasmtime run --invoke layout %t.wasm 2>/dev/null | filecheck %s --check-prefix=LAYOUT
+// RUN: runic-opt --target wasm32-unknown-unknown --stop-after object %s -p 'canonicalizer,cse,sccp,canonicalizer,dce' -o %t.opt.o
+// RUN: rustc --edition 2024 --target wasm32-unknown-unknown --crate-type cdylib -O %S/rt/stack.rs -C link-arg=%t.opt.o -C link-arg=--fatal-warnings -o %t.opt.wasm
+// RUN: wasmtime run --invoke twice %t.opt.wasm 3 2>/dev/null | filecheck %s --check-prefix=TWICE
+// RUN: wasmtime run --invoke depth %t.opt.wasm 10 2>/dev/null | filecheck %s --check-prefix=DEPTH
+// RUN: wasmtime run --invoke depth %t.opt.wasm 0 2>/dev/null | filecheck %s --check-prefix=ZERO
+// RUN: wasmtime run --invoke layout %t.opt.wasm 2>/dev/null | filecheck %s --check-prefix=LAYOUT
+
+// One stack for compiled code and Rust. The object imports the stack pointer the linker defines,
+// the one Rust's code uses for what it keeps in memory, so frames of both kinds nest on it.
+//
+// `@framed(n)` has a frame of one `i32` slot: it stores 1000 there, passes the slot's address to
+// Rust's `fill(slot, n)` (`rt/stack.rs`), which writes `10 n` through it, then reads the slot
+// and returns what it holds plus what `fill` returned. For `n > 0` `fill` calls `@framed(n - 1)`
+// while an array of its own is on the stack, and checks the array afterwards (-1000000 if it
+// changed). Each level reads back its own `10 n`: were a frame of one side placed over a frame of
+// the other, a level would read what a deeper level wrote. So `framed(n)` is 10 (n + .. + 1):
+// `depth 10` is 550, `depth 0` is 0, and `twice 3`, `framed(3)` twice in a row from Rust, is 120.
+// `layout` is 1: the slot `@slot_address` allocates is below Rust's frame and near it, and at
+// the same address when called again, since the first call gave its frame back.
+
+// TWICE: {{^}}120{{$}}
+// DEPTH: {{^}}550{{$}}
+// ZERO: {{^}}0{{$}}
+// LAYOUT: {{^}}1{{$}}
+
+builtin.module public @stack {
+    builtin.function public extern("C") @fill(ptr<i32>, i32) -> i32 attributes { link_name = "fill" };
+
+    builtin.function public extern("C") @framed(%n: i32) -> i32 {
+        %slot = mem.alloca i32;
+        %sentinel = arith.constant 1000 : i32;
+        mem.store %sentinel, %slot;
+        %r = builtin.call @fill(%slot, %n) : extern("C") (ptr<i32>, i32) -> i32;
+        %mine = mem.load %slot;
+        %sum = arith.add %mine, %r;
+        builtin.ret %sum : (i32);
+    } attributes { link_name = "framed" };
+
+    builtin.function public extern("C") @slot_address() -> isize {
+        %slot = mem.alloca i32;
+        %address = mem.ptrtoint %slot;
+        builtin.ret %address : (isize);
+    } attributes { link_name = "slot_address" };
+};

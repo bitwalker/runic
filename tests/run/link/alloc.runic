@@ -1,0 +1,50 @@
+// RUN: runic-opt --target wasm32-unknown-unknown --stop-after object %s -o %t.o
+// RUN: rustc --edition 2024 --target wasm32-unknown-unknown --crate-type cdylib -O %S/rt/alloc.rs -C link-arg=%t.o -C link-arg=--fatal-warnings -o %t.wasm
+// RUN: wasmtime run --invoke squares %t.wasm 10 2>/dev/null | filecheck %s --check-prefix=TEN
+// RUN: wasmtime run --invoke squares %t.wasm 100000 2>/dev/null | filecheck %s --check-prefix=MANY
+// RUN: wasmtime run --invoke squares %t.wasm 0 2>/dev/null | filecheck %s --check-prefix=NONE
+// RUN: runic-opt --target wasm32-unknown-unknown --stop-after object %s -p 'canonicalizer,cse,sccp,canonicalizer,dce' -o %t.opt.o
+// RUN: rustc --edition 2024 --target wasm32-unknown-unknown --crate-type cdylib -O %S/rt/alloc.rs -C link-arg=%t.opt.o -C link-arg=--fatal-warnings -o %t.opt.wasm
+// RUN: wasmtime run --invoke squares %t.opt.wasm 10 2>/dev/null | filecheck %s --check-prefix=TEN
+// RUN: wasmtime run --invoke squares %t.opt.wasm 100000 2>/dev/null | filecheck %s --check-prefix=MANY
+// RUN: wasmtime run --invoke squares %t.opt.wasm 0 2>/dev/null | filecheck %s --check-prefix=NONE
+
+// Compiled code that calls back into a runtime with `std` to allocate. `rt/alloc.rs` is linked
+// with Rust's standard library and its allocator, which grows the memory the object shares.
+//
+// `@fill_squares(n)` asks Rust's `make_vec` for a vector of `n` `i64`s, which returns a pointer
+// to its first element; it stores `i * i` at each element `i`, computing the address with
+// `mem.gep`, then gives the pointer back to Rust's `sum_vec`, which sums the elements and frees
+// the vector. 0 + 1 + 4 + .. + 81 is 285. A hundred thousand elements are 800000 bytes, more than
+// the memory holds when the module starts, so the allocator grows it; their sum is
+// 99999 * 100000 * 199999 / 6. No elements sum to 0.
+
+// TEN: {{^}}285{{$}}
+// MANY: {{^}}333328333350000{{$}}
+// NONE: {{^}}0{{$}}
+
+builtin.module public @alloc {
+    builtin.function public extern("C") @make_vec(i32) -> ptr<i64> attributes { link_name = "make_vec" };
+    builtin.function public extern("C") @sum_vec(ptr<i64>, i32) -> i64 attributes { link_name = "sum_vec" };
+
+    builtin.function public extern("C") @fill_squares(%n: i32) -> i64 {
+        %v = builtin.call @make_vec(%n) : extern("C") (i32) -> ptr<i64>;
+        %zero = arith.constant 0 : i32;
+        cf.br ^head(%zero : i32);
+    ^head(%i: i32):
+        %done = arith.cmpi uge %i, %n;
+        cf.cond_br %done ^exit, ^body : (i1);
+    ^body:
+        %wide = arith.zext %i <{ ty = i64 }>;
+        %square = arith.mul %wide, %wide;
+        %at = arith.zext_or_trunc %i <{ ty = isize }>;
+        %element = mem.gep %v, %at, [];
+        mem.store %square, %element;
+        %one = arith.constant 1 : i32;
+        %i2 = arith.add %i, %one;
+        cf.br ^head(%i2 : i32);
+    ^exit:
+        %sum = builtin.call @sum_vec(%v, %n) : extern("C") (ptr<i64>, i32) -> i64;
+        builtin.ret %sum : (i64);
+    } attributes { link_name = "fill_squares" };
+};

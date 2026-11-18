@@ -1,0 +1,72 @@
+// RUN: runic-opt --target wasm32-unknown-unknown --stop-after object %s -o %t.o
+// RUN: runic-opt --target wasm32-unknown-unknown --stop-after object %S/dispatch-more.runic -o %t.more.o
+// RUN: rustc --edition 2024 --target wasm32-unknown-unknown --crate-type cdylib -O %S/rt/dispatch.rs -C link-arg=%t.o -C link-arg=%t.more.o -C link-arg=--fatal-warnings -o %t.wasm
+// RUN: wasmtime run --invoke count %t.wasm 2>/dev/null | filecheck %s --check-prefix=COUNT
+// RUN: wasmtime run --invoke arities %t.wasm 2>/dev/null | filecheck %s --check-prefix=ARITIES
+// RUN: wasmtime run --invoke call %t.wasm 1 5 2>/dev/null | filecheck %s --check-prefix=ONE
+// RUN: wasmtime run --invoke call %t.wasm 2 5 2>/dev/null | filecheck %s --check-prefix=TWO
+// RUN: wasmtime run --invoke call %t.wasm 3 5 2>/dev/null | filecheck %s --check-prefix=THREE
+// RUN: wasmtime run --invoke call %t.wasm 4 5 2>/dev/null | filecheck %s --check-prefix=FOUR
+// RUN: wasmtime run --invoke call %t.wasm 9 5 2>/dev/null | filecheck %s --check-prefix=MISS
+// RUN: runic-opt --target wasm32-unknown-unknown --stop-after object %s -p 'canonicalizer,cse,sccp,canonicalizer,dce' -o %t.opt.o
+// RUN: runic-opt --target wasm32-unknown-unknown --stop-after object %S/dispatch-more.runic -p 'canonicalizer,cse,sccp,canonicalizer,dce' -o %t.more.opt.o
+// RUN: rustc --edition 2024 --target wasm32-unknown-unknown --crate-type cdylib -O %S/rt/dispatch.rs -C link-arg=%t.opt.o -C link-arg=%t.more.opt.o -C link-arg=--fatal-warnings -o %t.opt.wasm
+// RUN: wasmtime run --invoke count %t.opt.wasm 2>/dev/null | filecheck %s --check-prefix=COUNT
+// RUN: wasmtime run --invoke arities %t.opt.wasm 2>/dev/null | filecheck %s --check-prefix=ARITIES
+// RUN: wasmtime run --invoke call %t.opt.wasm 1 5 2>/dev/null | filecheck %s --check-prefix=ONE
+// RUN: wasmtime run --invoke call %t.opt.wasm 2 5 2>/dev/null | filecheck %s --check-prefix=TWO
+// RUN: wasmtime run --invoke call %t.opt.wasm 3 5 2>/dev/null | filecheck %s --check-prefix=THREE
+// RUN: wasmtime run --invoke call %t.opt.wasm 4 5 2>/dev/null | filecheck %s --check-prefix=FOUR
+// RUN: wasmtime run --invoke call %t.opt.wasm 9 5 2>/dev/null | filecheck %s --check-prefix=MISS
+
+// A dispatch table whose entries come from two objects, found and called through by Rust.
+//
+// This file and `dispatch-more.runic` each contribute two `struct<i32, i32, (i64) -> i64>`
+// entries, an id, an arity and a function, to the data section `dispatch`. The linker puts the
+// two objects' segments of that name together, in the order of the command line, and defines
+// `__start_dispatch` and `__stop_dispatch` around them. The runtime `rt/dispatch.rs` declares the
+// two bounds, views what lies between them as a slice of a `#[repr(C)]` struct whose third field
+// is an `extern "C" fn(i64) -> i64`, and calls the function of the entry with an id it is given.
+// Nothing in either object names an entry: they are in the link because a global variable in a
+// named section is retained.
+//
+// `count` is 4, the entries of both objects; `arities` is 1 + 2 + 3 + 4. With 5, the entry 1
+// (`@add_one`, here) gives 6, 2 (`@double`, here) 10, 3 (`@negate`, there) -5, 4 (`@square`,
+// there) 25, and an id no entry has -1.
+
+// COUNT: {{^}}4{{$}}
+// ARITIES: {{^}}10{{$}}
+// ONE: {{^}}6{{$}}
+// TWO: {{^}}10{{$}}
+// THREE: {{^}}-5{{$}}
+// FOUR: {{^}}25{{$}}
+// MISS: {{^}}-1{{$}}
+
+builtin.module public @dispatch {
+    builtin.function private extern("C") @add_one(%x: i64) -> i64 {
+        %one = arith.constant 1 : i64;
+        %r = arith.add %x, %one;
+        builtin.ret %r : (i64);
+    };
+
+    builtin.function private extern("C") @double(%x: i64) -> i64 {
+        %r = arith.add %x, %x;
+        builtin.ret %r : (i64);
+    };
+
+    builtin.global_variable private @entry_add_one : struct<i32, i32, (i64) -> i64> {
+        %id = arith.constant 1 : i32;
+        %arity = arith.constant 1 : i32;
+        %f = builtin.function_ref @add_one : (i64) -> i64;
+        %e = builtin.aggregate %id, %arity, %f : struct<i32, i32, (i64) -> i64>;
+        builtin.yield %e;
+    } attributes { section = "dispatch" };
+
+    builtin.global_variable private @entry_double : struct<i32, i32, (i64) -> i64> {
+        %id = arith.constant 2 : i32;
+        %arity = arith.constant 2 : i32;
+        %f = builtin.function_ref @double : (i64) -> i64;
+        %e = builtin.aggregate %id, %arity, %f : struct<i32, i32, (i64) -> i64>;
+        builtin.yield %e;
+    } attributes { section = "dispatch" };
+};
