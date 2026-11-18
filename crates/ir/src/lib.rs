@@ -98,8 +98,8 @@ pub use self::{
     itertools::IteratorExt,
     layout::{
         AggregateType, Align, DATA_LAYOUT_ATTR, DataLayout, DataLayoutOpInterface, DataLayoutSpec,
-        Endianness, FieldsShape, InvalidDataLayout, Layout, LayoutError, PointerSpec, TypeLayout,
-        element_at, set_data_layout_spec,
+        Endianness, FieldsShape, FunctionSpec, InvalidDataLayout, Layout, LayoutError, PointerSpec,
+        TypeLayout, element_at, set_data_layout_spec,
     },
     patterns::{Rewriter, RewriterExt},
     program_point::{Position, ProgramPoint},

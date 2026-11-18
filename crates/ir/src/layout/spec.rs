@@ -108,6 +108,45 @@ impl PointerSpec {
     }
 }
 
+/// The representation of a value of a function type in memory: what a function reference, such
+/// as the result of `builtin.function_ref`, is when it is stored.
+///
+/// A specification gives one only where function values are bytes in memory (on
+/// `wasm32-unknown-unknown`, the index of the function in a table, held in an `i32`). A target
+/// whose function references are not bytes in memory, such as one using Wasm GC references,
+/// gives none, and a function type then has no layout.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FunctionSpec {
+    /// The size of a function value, in bits: a multiple of 8 from 8 to 64.
+    pub size_bits: u32,
+    /// The alignment of a function value.
+    pub align: Align,
+}
+
+impl FunctionSpec {
+    /// A function value of `size_bits` bits, aligned to its size in bytes: what `fn = N` states.
+    /// `None` if `size_bits / 8` is not an alignment (`size_bits` is not 8 times a power of
+    /// two); the size itself is checked when the entry enters a specification.
+    pub fn sized(size_bits: u32) -> Option<FunctionSpec> {
+        if !size_bits.is_multiple_of(8) {
+            return None;
+        }
+        let align = Align::from_bytes(u64::from(size_bits / 8))?;
+        Some(FunctionSpec { size_bits, align })
+    }
+
+    /// True if a function value may be `size_bits` bits: a multiple of 8 from 8 to 64, as a
+    /// pointer may.
+    pub(crate) fn is_valid_size(size_bits: u32) -> bool {
+        PointerSpec::is_valid_size(size_bits)
+    }
+
+    /// The alignment `fn = N` implies for a function value of this size, if it implies one.
+    pub(crate) fn shorthand_align(&self) -> Option<Align> {
+        FunctionSpec::sized(self.size_bits).map(|sized| sized.align)
+    }
+}
+
 /// Why a [DataLayoutSpec] cannot be built as asked.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -123,6 +162,8 @@ pub enum InvalidDataLayout {
     },
     /// An integer alignment is given for `width` bits, which is not the width of an integer type.
     IntegerWidth { width: u32 },
+    /// A function value is `bits` bits, which is not a multiple of 8 from 8 to 64.
+    FunctionSize { bits: u32 },
 }
 
 impl fmt::Display for InvalidDataLayout {
@@ -147,6 +188,9 @@ impl fmt::Display for InvalidDataLayout {
                 "an integer alignment is given for {width} bits: expected a width from 1 to {}",
                 IntegerType::MAX_WIDTH
             ),
+            Self::FunctionSize { bits } => {
+                write!(f, "a function value is {bits} bits: expected a multiple of 8 from 8 to 64")
+            }
         }
     }
 }
@@ -165,7 +209,8 @@ type PointerTable = SmallVec<[(u32, PointerSpec); 2]>;
 type IntegerTable = SmallVec<[(u32, Align); 8]>;
 
 /// How values of the builtin types are laid out in byte-addressed memory: the endianness, the
-/// pointer of each address space, and the alignments of integers and floats.
+/// pointer of each address space, the representation of a function value if there is one, and
+/// the alignments of integers and floats.
 ///
 /// A specification is a plain value; an operation states one with a
 /// [DataLayoutAttr](crate::dialects::builtin::attributes::DataLayoutAttr). It holds its answers
@@ -175,11 +220,14 @@ type IntegerTable = SmallVec<[(u32, Align); 8]>;
 /// * an integer of a width without an entry has the alignment of the smallest listed width at
 ///   least as wide, else of the widest listed; the listed widths start as
 ///   `i8 = 1, i16 = 2, i32 = 4, i64 = 8, i128 = 16` (bytes);
-/// * `f32` and `f64` are aligned to 4 and 8 bytes.
+/// * `f32` and `f64` are aligned to 4 and 8 bytes;
+/// * a function value has no representation ([Self::function] is `None`), so a function type has
+///   no layout: a target whose function values are bytes in memory states one with
+///   [Self::with_function].
 ///
 /// Two specifications are equal, and hash alike, exactly when they answer every query alike: the
-/// endianness, both float alignments, the pointer of every address space and the alignment of
-/// every integer width. Which entries were given to build them makes no difference. The integer
+/// endianness, both float alignments, the function value, the pointer of every address space and
+/// the alignment of every integer width. Which entries were given to build them makes no difference. The integer
 /// alignments are compared as a step function of the width: the last width and alignment of each
 /// run of widths with one alignment, except the last run, and the alignment of the last run.
 #[derive(Clone, Debug)]
@@ -191,6 +239,8 @@ pub struct DataLayoutSpec {
     integers: IntegerTable,
     f32_align: Align,
     f64_align: Align,
+    /// The representation of a function value, if function values are bytes in memory.
+    function: Option<FunctionSpec>,
 }
 
 impl DataLayoutSpec {
@@ -206,6 +256,7 @@ impl DataLayoutSpec {
             integers: IntegerTable::from_slice(&DEFAULT_INTEGER_ALIGNS),
             f32_align: DEFAULT_F32_ALIGN,
             f64_align: DEFAULT_F64_ALIGN,
+            function: None,
         })
     }
 
@@ -251,6 +302,18 @@ impl DataLayoutSpec {
         self
     }
 
+    /// This specification with function values represented as `function`, replacing the entry
+    /// it has if it has one.
+    pub fn with_function(mut self, function: FunctionSpec) -> Result<Self, InvalidDataLayout> {
+        if !FunctionSpec::is_valid_size(function.size_bits) {
+            return Err(InvalidDataLayout::FunctionSize {
+                bits: function.size_bits,
+            });
+        }
+        self.function = Some(function);
+        Ok(self)
+    }
+
     pub fn endianness(&self) -> Endianness {
         self.endianness
     }
@@ -283,6 +346,12 @@ impl DataLayoutSpec {
     /// The width of `isize`, in bits: the index width of address space 0.
     pub fn isize_width(&self) -> u32 {
         self.pointers[0].1.index_bits
+    }
+
+    /// The representation of a function value, or `None` if function values are not bytes in
+    /// memory under this specification, which is the default.
+    pub fn function(&self) -> Option<FunctionSpec> {
+        self.function
     }
 
     /// The pointer entries that differ from address space 0, after address space 0 itself.
@@ -399,6 +468,7 @@ impl PartialEq for DataLayoutSpec {
         self.endianness == other.endianness
             && self.f32_align == other.f32_align
             && self.f64_align == other.f64_align
+            && self.function == other.function
             && self.distinct_pointers().eq(other.distinct_pointers())
             && self.integer_steps() == other.integer_steps()
     }
@@ -411,6 +481,7 @@ impl Hash for DataLayoutSpec {
         self.endianness.hash(state);
         self.f32_align.hash(state);
         self.f64_align.hash(state);
+        self.function.hash(state);
         for entry in self.distinct_pointers() {
             entry.hash(state);
         }

@@ -2,7 +2,8 @@ use alloc::rc::Rc;
 use core::cell::RefCell;
 
 use super::{
-    Align, DataLayoutSpec, Endianness, Layout, LayoutError, PointerSpec, TypeLayout, element_at,
+    Align, DataLayoutSpec, Endianness, FunctionSpec, Layout, LayoutError, PointerSpec, TypeLayout,
+    element_at,
 };
 use crate::{
     Context, FxHashMap, FxHashSet, Op, Operation, Report, diagnostics::Spanned,
@@ -271,6 +272,11 @@ impl DataLayout {
     /// The width of `isize`, in bits: the index width of address space 0.
     pub fn isize_width(&self) -> u32 {
         self.spec().isize_width()
+    }
+
+    /// The representation of a function value, or `None` if a function type has no layout.
+    pub fn function(&self) -> Option<FunctionSpec> {
+        self.spec().function()
     }
 }
 

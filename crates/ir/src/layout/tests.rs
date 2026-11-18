@@ -220,6 +220,92 @@ fn an_invalid_pointer_or_integer_width_is_rejected() {
     assert!(little32().with_integer_align(IntegerType::MAX_WIDTH, Align::ONE).is_ok());
 }
 
+#[test]
+fn a_function_value_has_no_representation_by_default() {
+    assert_eq!(little32().function(), None);
+    let big = DataLayoutSpec::new(Endianness::Big, PointerSpec::sized(64).unwrap()).unwrap();
+    assert_eq!(big.function(), None);
+}
+
+#[test]
+fn a_function_entry_is_set_and_read_back() {
+    let sized = FunctionSpec::sized(32).unwrap();
+    assert_eq!(
+        sized,
+        FunctionSpec {
+            size_bits: 32,
+            align: align(4)
+        }
+    );
+    let spec = little32().with_function(sized).unwrap();
+    assert_eq!(spec.function(), Some(sized));
+    // The other answers are unchanged
+    assert_eq!(spec.pointer(0), little32().pointer(0));
+    assert_eq!(spec.integer_align(64), little32().integer_align(64));
+
+    // A second entry replaces the first
+    let aligned = FunctionSpec {
+        size_bits: 32,
+        align: align(8),
+    };
+    let spec = spec.with_function(aligned).unwrap();
+    assert_eq!(spec.function(), Some(aligned));
+    assert_eq!(FunctionSpec::sized(64).unwrap().align, align(8));
+    assert_eq!(FunctionSpec::sized(8).unwrap().align, Align::ONE);
+    // 24 bits imply no alignment, and 12 are not whole bytes
+    assert_eq!(FunctionSpec::sized(24), None);
+    assert_eq!(FunctionSpec::sized(12), None);
+}
+
+#[test]
+fn specifications_differing_only_in_the_function_entry_are_not_equal() {
+    let base = little32();
+    let fn32 = base.clone().with_function(FunctionSpec::sized(32).unwrap()).unwrap();
+    let fn64 = base.clone().with_function(FunctionSpec::sized(64).unwrap()).unwrap();
+    let fn32_align8 = base
+        .clone()
+        .with_function(FunctionSpec {
+            size_bits: 32,
+            align: align(8),
+        })
+        .unwrap();
+    assert_ne!(base, fn32);
+    assert_ne!(fn32, base);
+    assert_ne!(fn32, fn64);
+    assert_ne!(fn32, fn32_align8);
+    assert_ne!(hash_of(&base), hash_of(&fn32));
+    // Equal entries, set in either order with other entries, are equal
+    assert_same(
+        &fn32.clone().with_integer_align(64, align(4)).unwrap(),
+        &base
+            .with_integer_align(64, align(4))
+            .unwrap()
+            .with_function(FunctionSpec::sized(32).unwrap())
+            .unwrap(),
+    );
+}
+
+#[test]
+fn an_invalid_function_width_is_rejected() {
+    let function = |size_bits| FunctionSpec {
+        size_bits,
+        align: Align::ONE,
+    };
+    for bits in [0, 4, 12, 63, 72, 128, u32::MAX] {
+        assert_eq!(
+            little32().with_function(function(bits)),
+            Err(InvalidDataLayout::FunctionSize { bits })
+        );
+    }
+    assert_eq!(
+        InvalidDataLayout::FunctionSize { bits: 12 }.to_string(),
+        "a function value is 12 bits: expected a multiple of 8 from 8 to 64"
+    );
+    for bits in [8, 16, 24, 32, 40, 64] {
+        assert!(little32().with_function(function(bits)).is_ok(), "{bits}");
+    }
+}
+
 // --- Step 2: the attribute -----------------------------------------------------------------------
 
 fn context() -> Rc<Context> {
@@ -323,6 +409,108 @@ fn printing_is_canonical() {
         let spec = parse_spec(&context, &format!("#builtin.data_layout<{written}>")).unwrap();
         assert_eq!(print_spec(&context, &spec), format!("#builtin.data_layout<{printed}>"));
     }
+}
+
+#[test]
+fn the_function_entry_round_trips_in_its_canonical_position() {
+    let context = context();
+    let fn32 = little32().with_function(FunctionSpec::sized(32).unwrap()).unwrap();
+    let text = "#builtin.data_layout<little, ptr = 32, fn = 32>";
+    let spec = parse_spec(&context, text).unwrap();
+    assert_same(&spec, &fn32);
+    assert_eq!(print_spec(&context, &spec), text);
+
+    let text = "#builtin.data_layout<little, ptr = 32, fn = 32 align 8>";
+    let spec = parse_spec(&context, text).unwrap();
+    assert_eq!(
+        spec.function(),
+        Some(FunctionSpec {
+            size_bits: 32,
+            align: align(8)
+        })
+    );
+    assert_eq!(print_spec(&context, &spec), text);
+
+    // After the pointers, before the integers and floats
+    let text =
+        "#builtin.data_layout<big, ptr = 64, ptr<1> = 32, fn = 24 align 4, i64 = 4, f64 = 4>";
+    let spec = parse_spec(&context, text).unwrap();
+    assert_eq!(print_spec(&context, &spec), text);
+    assert_same(&parse_spec(&context, &print_spec(&context, &spec)).unwrap(), &spec);
+}
+
+#[test]
+fn a_function_entry_written_elsewhere_prints_canonically() {
+    let context = context();
+    let cases = [
+        ("little, fn = 32, ptr = 32", "little, ptr = 32, fn = 32"),
+        ("little, i64 = 4, fn = 64, ptr = 32", "little, ptr = 32, fn = 64, i64 = 4"),
+        (
+            "little, ptr = 32, f32 = 2, fn = 16 align 2",
+            "little, ptr = 32, fn = 16, f32 = 2",
+        ),
+        (
+            "big, fn = 32 align 1, ptr<2> = 16, ptr = 64",
+            "big, ptr = 64, ptr<2> = 16, fn = 32 align 1",
+        ),
+    ];
+    for (written, printed) in cases {
+        let spec = parse_spec(&context, &format!("#builtin.data_layout<{written}>")).unwrap();
+        assert_eq!(print_spec(&context, &spec), format!("#builtin.data_layout<{printed}>"));
+    }
+}
+
+#[test]
+fn a_rejected_function_entry_is_a_diagnostic() {
+    let context = context();
+    let cases = [
+        (
+            "#builtin.data_layout<little, ptr = 32, fn = 32, fn = 32>",
+            "given more than once",
+        ),
+        (
+            "#builtin.data_layout<little, ptr = 32, fn = 32, fn = 64>",
+            "given more than once",
+        ),
+        (
+            "#builtin.data_layout<little, ptr = 32, fn = 12>",
+            "a function value is 12 bits: expected a multiple of 8 from 8 to 64",
+        ),
+        (
+            "#builtin.data_layout<little, ptr = 32, fn = 128>",
+            "a function value is 128 bits: expected a multiple of 8 from 8 to 64",
+        ),
+        (
+            "#builtin.data_layout<little, ptr = 32, fn = 24>",
+            "a function value of 24 bits has no implied alignment",
+        ),
+        (
+            "#builtin.data_layout<little, ptr = 32, fn = 32 align 3>",
+            "expected a power of two",
+        ),
+        ("#builtin.data_layout<little, ptr = 32, fn = 32 index 32>", ""),
+        ("#builtin.data_layout<little, ptr = 32, fn>", ""),
+        ("#builtin.data_layout<little, fn = 32>", "gives the pointer of address space 0"),
+        (
+            "#builtin.data_layout<little, ptr = 32, isize = 4>",
+            "expected `ptr`, `ptr<N>`, `fn`, an integer type or a float type",
+        ),
+    ];
+    for (text, expected) in cases {
+        let err = parse_spec(&context, text).expect_err(text);
+        assert!(err.contains(expected), "{text}: expected `{expected}` in: {err}");
+    }
+    // The diagnostic of a repeated entry is labelled at the second
+    let layout = "#builtin.data_layout<little, ptr = 32, fn = 32, fn = 32 align 8>";
+    let source = module_source(layout);
+    let config = ParserConfig::new(context.clone());
+    let err = parse::parse_any(config, "layout.runic", source.clone())
+        .into_result()
+        .unwrap_err();
+    let ranges = crate::testing::label_ranges(err.as_diagnostic());
+    let start = source.find("fn = 32 align").unwrap();
+    let end = start + "fn = 32 align 8".len();
+    assert_eq!(ranges.iter().map(|r| (r.start, r.end)).collect::<Vec<_>>(), [(start, end)]);
 }
 
 /// The seeds the randomized round trip runs: `LAYOUT_TEST_SEED` if set, else a fixed one.
@@ -989,7 +1177,11 @@ fn a_layout_error_names_the_type_as_it_prints() {
     let cx = &*context;
     let fn_ty = cx.function_type([cx.i32()], [cx.i32()]);
     let error = data_layout(&context, LITTLE_32).layout_of(fn_ty).unwrap_err();
-    assert_eq!(error.to_string(), "type '(i32) -> i32' has no representation in memory");
+    assert_eq!(
+        error.to_string(),
+        "type '(i32) -> i32' has no representation in memory: a function value has a layout only \
+         where the data layout states one, as in `fn = 32`"
+    );
     let report = crate::Report::from(error.clone());
     assert_eq!(report.to_string(), error.to_string());
 
@@ -1019,6 +1211,70 @@ fn a_layout_error_names_the_type_as_it_prints() {
         LayoutError::DiscriminantsCollide(cx.i8()).to_string(),
         "type 'i8' has two discriminants that are one value in the 'isize' of the data layout"
     );
+}
+
+#[test]
+fn a_function_type_is_laid_out_as_the_function_entry_says() {
+    let context = context();
+    let cx = &*context;
+    let fn_ty = cx.function_type([cx.i32()], [cx.i32()]);
+    let other_fn = cx.function_type([], []);
+    let s = parse_ty(&context, "struct<i8, (i32) -> i32, i64>");
+    let array = parse_ty(&context, "array<(i32) -> i32; 3>");
+
+    let layout = data_layout(&context, "little, ptr = 32, fn = 32");
+    assert_eq!(size_align(&layout, fn_ty), Ok((4, 4)));
+    assert_eq!(size_align(&layout, other_fn), Ok((4, 4)));
+    assert_eq!(*layout.layout_of(fn_ty).unwrap().fields(), FieldsShape::Scalar);
+    assert_eq!(shape(&layout, s), Ok((16, 8, alloc::vec![0, 4, 8])));
+    assert_eq!(layout.offset_of(s, &[1]), Ok((4, fn_ty)));
+    assert_eq!(size_align(&layout, array), Ok((12, 4)));
+    assert_eq!(layout.offset_of(array, &[2]), Ok((8, fn_ty)));
+
+    let layout = data_layout(&context, "little, ptr = 32, fn = 64");
+    assert_eq!(size_align(&layout, fn_ty), Ok((8, 8)));
+    assert_eq!(shape(&layout, s), Ok((24, 8, alloc::vec![0, 8, 16])));
+    assert_eq!(size_align(&layout, array), Ok((24, 8)));
+
+    // A stated alignment; the size is rounded up to it
+    let layout = data_layout(&context, "little, ptr = 32, fn = 32 align 8");
+    assert_eq!(size_align(&layout, fn_ty), Ok((8, 8)));
+    let layout = data_layout(&context, "little, ptr = 32, fn = 24 align 1");
+    assert_eq!(size_align(&layout, fn_ty), Ok((3, 1)));
+    assert_eq!(shape(&layout, s), Ok((16, 8, alloc::vec![0, 1, 8])));
+    assert!(layout.is_idle());
+}
+
+#[test]
+fn without_a_function_entry_a_function_type_and_what_holds_it_have_no_layout() {
+    let context = context();
+    let cx = &*context;
+    let fn_ty = cx.function_type([cx.i32()], [cx.i32()]);
+    let s = parse_ty(&context, "struct<i8, (i32) -> i32, i64>");
+    let array = parse_ty(&context, "array<(i32) -> i32; 3>");
+    for text in [LITTLE_32, LITTLE_64, BIG_64] {
+        let layout = data_layout(&context, text);
+        assert_eq!(layout.function(), None);
+        for ty in [fn_ty, s, array] {
+            assert_eq!(layout.layout_of(ty), Err(LayoutError::NoLayout(fn_ty)), "{text}: {ty}");
+            assert_eq!(layout.size_of(ty), Err(LayoutError::NoLayout(fn_ty)), "{text}: {ty}");
+            assert_eq!(layout.align_of(ty), Err(LayoutError::NoLayout(fn_ty)), "{text}: {ty}");
+        }
+        assert_eq!(layout.offset_of(s, &[1]), Err(LayoutError::NoLayout(fn_ty)), "{text}");
+        // A pointer to a function value still has the pointer's layout
+        assert!(size_align(&layout, cx.ptr_type(fn_ty)).is_ok());
+        assert!(layout.is_idle());
+    }
+    // The message says how to state the entry
+    let error = data_layout(&context, LITTLE_32).layout_of(s).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "type '(i32) -> i32' has no representation in memory: a function value has a layout only \
+         where the data layout states one, as in `fn = 32`"
+    );
+    // Other types without a layout say nothing of it
+    let error = data_layout(&context, LITTLE_32).layout_of(cx.never_type()).unwrap_err();
+    assert_eq!(error.to_string(), "type 'never' has no representation in memory");
 }
 
 mod test_types {

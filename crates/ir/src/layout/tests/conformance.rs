@@ -58,6 +58,8 @@ struct Model {
     integers: BTreeMap<u32, u64>,
     f32: u64,
     f64: u64,
+    /// A function value: size in bits, alignment in bytes, if the specification has one.
+    function: Option<(u32, u64)>,
 }
 
 impl Model {
@@ -86,6 +88,12 @@ impl Model {
     fn float(&self, bits: u32) -> (u64, u64) {
         let align = if bits == 32 { self.f32 } else { self.f64 };
         (round_up(u64::from(bits / 8), align), align)
+    }
+
+    /// `(size, align)` of a function value, if it has one.
+    fn function_layout(&self) -> Option<(u64, u64)> {
+        self.function
+            .map(|(size, align)| (round_up(u64::from(size).div_ceil(8), align), align))
     }
 
     fn pointer_layout(&self, addrspace: u32) -> (u64, u64) {
@@ -120,6 +128,7 @@ impl Model {
         self.big == other.big
             && self.f32 == other.f32
             && self.f64 == other.f64
+            && self.function == other.function
             && spaces.iter().all(|space| self.pointer(*space) == other.pointer(*space))
             && widths
                 .iter()
@@ -148,6 +157,15 @@ impl Model {
         }
         steps.push(Box::new(|spec| spec.with_float_align(FloatType::F32, align(self.f32))));
         steps.push(Box::new(|spec| spec.with_float_align(FloatType::F64, align(self.f64))));
+        if let Some((size_bits, bytes)) = self.function {
+            steps.push(Box::new(move |spec| {
+                spec.with_function(FunctionSpec {
+                    size_bits,
+                    align: align(bytes),
+                })
+                .unwrap()
+            }));
+        }
         while !steps.is_empty() {
             let step = steps.swap_remove(rng.below(steps.len() as u64) as usize);
             spec = step(spec);
@@ -189,6 +207,14 @@ impl Model {
         if self.f64 != 8 || rng.below(2) == 0 {
             entries.push(format!("f64 = {}", self.f64));
         }
+        if let Some((size, bytes)) = self.function {
+            let implied = u64::from(size / 8).is_power_of_two() && u64::from(size / 8) == bytes;
+            let mut entry = format!("fn = {size}");
+            if !implied || rng.below(2) == 0 {
+                entry.push_str(&format!(" align {bytes}"));
+            }
+            entries.push(entry);
+        }
         let mut text = String::from(if self.big { "big" } else { "little" });
         while !entries.is_empty() {
             let entry = entries.swap_remove(rng.below(entries.len() as u64) as usize);
@@ -222,6 +248,21 @@ fn random_model_pointer(rng: &mut Rng) -> (u32, u64, u32) {
         _ => size,
     };
     (size, bytes, index)
+}
+
+/// A function value, often absent: size in bits, alignment in bytes.
+fn random_model_function(rng: &mut Rng) -> Option<(u32, u64)> {
+    if rng.below(3) == 0 {
+        return None;
+    }
+    let size = 8 * (1 + rng.below(8) as u32);
+    let implied = u64::from(size / 8);
+    let bytes = if implied.is_power_of_two() && rng.below(3) != 0 {
+        implied
+    } else {
+        random_align_bytes(rng)
+    };
+    Some((size, bytes))
 }
 
 fn random_model_width(rng: &mut Rng) -> u32 {
@@ -261,14 +302,16 @@ fn random_model(rng: &mut Rng) -> Model {
         integers,
         f32: float(rng, 4),
         f64: float(rng, 8),
+        function: random_model_function(rng),
     }
 }
 
 /// `model` with one change, which may or may not change an answer.
 fn mutated(rng: &mut Rng, model: &Model) -> Model {
     let mut model = model.clone();
-    match rng.below(8) {
+    match rng.below(9) {
         0 => model.big = !model.big,
+        8 => model.function = random_model_function(rng),
         1 => model.f32 = random_align_bytes(rng),
         2 => model.f64 = random_align_bytes(rng),
         3 => {
@@ -316,6 +359,11 @@ fn assert_answers(spec: &DataLayoutSpec, model: &Model, what: &str) {
     assert_eq!(spec.float_align(FloatType::F32).bytes(), model.f32, "{what}");
     assert_eq!(spec.float_align(FloatType::F64).bytes(), model.f64, "{what}");
     assert_eq!(spec.isize_width(), model.isize_width(), "{what}");
+    assert_eq!(
+        spec.function().map(|function| (function.size_bits, function.align.bytes())),
+        model.function,
+        "{what}"
+    );
     let mut spaces: Vec<u32> = model.pointers.keys().copied().collect();
     spaces.extend([0, 1, 2, 3, 9, 77, u32::MAX - 1, u32::MAX]);
     for space in spaces {
@@ -462,6 +510,17 @@ const MALFORMED: &[&str] = &[
     "#builtin.data_layout<little, ptr = 32, struct<i8> = 4>",
     "#builtin.data_layout<little, ptr = 32, array<i8; 2> = 4>",
     "#builtin.data_layout<little, ptr = 32, (i32) -> i32 = 4>",
+    "#builtin.data_layout<little, ptr = 32, fn>",
+    "#builtin.data_layout<little, ptr = 32, fn =>",
+    "#builtin.data_layout<little, ptr = 32, fn = 0>",
+    "#builtin.data_layout<little, ptr = 32, fn = 12>",
+    "#builtin.data_layout<little, ptr = 32, fn = 24>",
+    "#builtin.data_layout<little, ptr = 32, fn = 72>",
+    "#builtin.data_layout<little, ptr = 32, fn = 32 align 3>",
+    "#builtin.data_layout<little, ptr = 32, fn = 32 index 32>",
+    "#builtin.data_layout<little, ptr = 32, fn = 32, fn = 32>",
+    "#builtin.data_layout<little, ptr = 32, fn<1> = 32>",
+    "#builtin.data_layout<little, fn = 32>",
     "#builtin.data_layout<little, ptr = 32, ? = 4>",
     "#builtin.data_layout<little, ptr = 32, never = 4>",
     "#builtin.data_layout<little, ptr = 32, 8 = 1>",
@@ -509,6 +568,8 @@ const FRAGMENTS: &[&str] = &[
     "ptr",
     "ptr<1>",
     "ptr<",
+    "fn",
+    "fn = 32",
     "align",
     "index",
     "little",
@@ -763,6 +824,8 @@ fn scalars_follow_the_table_under_random_specifications() {
             assert_eq!(size_align(&layout, cx.f32()), Ok(model.float(32)), "{model:?}");
             assert_eq!(size_align(&layout, cx.f64()), Ok(model.float(64)), "{model:?}");
             let function = cx.function_type([cx.i32()], [cx.i32()]);
+            let expected = model.function_layout().ok_or(LayoutError::NoLayout(function));
+            assert_eq!(size_align(&layout, function), expected, "{function} {model:?}");
             for space in [0, 1, 2, 3, 9, 77, u32::MAX] {
                 let expected = Ok(model.pointer_layout(space));
                 for pointee in [None, Some(cx.i8()), Some(function), Some(cx.never_type())] {
@@ -2172,7 +2235,20 @@ fn different_specifications_keep_their_answers_apart() {
                 assert_eq!(wide, Err(LayoutError::DiscriminantTooWide(types[1])), "{model:?}");
             }
             assert!(layout.layout_of(types[2]).is_ok());
-            assert!(matches!(layout.layout_of(types[3]), Err(LayoutError::NoLayout(_))));
+            match model.function_layout() {
+                Some((fs, fa)) => {
+                    let align = i8a.max(fa);
+                    let end = round_up(i8s, fa) + fs;
+                    assert_eq!(
+                        size_align(&layout, types[3]),
+                        Ok((round_up(end, align), align)),
+                        "round {round}: {model:?}"
+                    );
+                }
+                None => {
+                    assert!(matches!(layout.layout_of(types[3]), Err(LayoutError::NoLayout(_))))
+                }
+            }
         }
     }
 }

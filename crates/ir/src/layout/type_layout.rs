@@ -1,7 +1,7 @@
-use alloc::boxed::Box;
+use alloc::{boxed::Box, format, string::String};
 
 use super::{Align, DataLayout};
-use crate::{Report, types::Type};
+use crate::{Report, dialects::builtin::types::FunctionType, types::Type};
 
 /// Where the parts of a value lie within it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,9 +80,11 @@ impl Layout {
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum LayoutError {
-    /// The type, or a type it holds by value, does not implement [TypeLayout]: a function type,
-    /// `?` or `never`, for instance. It names the innermost type without a layout.
-    #[error("type '{0}' has no representation in memory")]
+    /// The type, or a type it holds by value, has no representation in memory: `?` or `never`,
+    /// which do not implement [TypeLayout], or a function type under a specification without a
+    /// [FunctionSpec](super::FunctionSpec). It names the innermost type without a layout. For a
+    /// function type the message says how to state the entry.
+    #[error("{}", no_layout_message(.0))]
     NoLayout(Type),
     /// The type holds itself by value, or holds by value a type that does.
     #[error("type '{0}' has infinite size: it holds itself by value, or a type that does")]
@@ -103,6 +105,18 @@ pub enum LayoutError {
         "type '{0}' has two discriminants that are one value in the 'isize' of the data layout"
     )]
     DiscriminantsCollide(Type),
+}
+
+/// The message of [LayoutError::NoLayout] for `ty`.
+fn no_layout_message(ty: &Type) -> String {
+    let mut message = format!("type '{ty}' has no representation in memory");
+    if ty.downcast_ref::<FunctionType>().is_some() {
+        message.push_str(
+            ": a function value has a layout only where the data layout states one, as in `fn = \
+             32`",
+        );
+    }
+    message
 }
 
 impl From<LayoutError> for Report {

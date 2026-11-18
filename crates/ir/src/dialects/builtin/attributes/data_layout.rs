@@ -13,7 +13,7 @@ use crate::{
         types::{FloatType, IntegerType, PointerType},
     },
     formatter::const_text,
-    layout::{Align, DataLayoutSpec, Endianness, InvalidDataLayout, PointerSpec},
+    layout::{Align, DataLayoutSpec, Endianness, FunctionSpec, InvalidDataLayout, PointerSpec},
     parse::{ParseResult, Parser, ParserError, ParserExt},
     print::AsmPrinter,
 };
@@ -21,23 +21,29 @@ use crate::{
 /// A [DataLayoutSpec], as an operation states it in its attribute
 /// [DATA_LAYOUT_ATTR](crate::layout::DATA_LAYOUT_ATTR).
 ///
-/// Text: the endianness, then entries keyed by a type, written as the type is. Widths are in bits,
-/// alignments in bytes:
+/// Text: the endianness, then entries keyed by a type, written as the type is, or by `fn`. Widths
+/// are in bits, alignments in bytes:
 ///
 /// ```text
 /// #builtin.data_layout<little, ptr = 32>
+/// #builtin.data_layout<little, ptr = 32, fn = 32>
 /// #builtin.data_layout<big, ptr = 64, ptr<1> = 64 align 8 index 32, i64 = 4, i128 = 8, f64 = 4>
 /// ```
 ///
 /// * `ptr = S` (or `ptr<N> = S` for address space `N`) is a pointer of `S` bits, aligned to `S / 8`
 ///   bytes, with an index of `S` bits; `align A` and `index I` after the size state the alignment
 ///   and the index width. The pointer of address space 0 is required.
+/// * `fn = S` is a value of a function type (a function reference, as `builtin.function_ref`
+///   gives) of `S` bits, aligned to `S / 8` bytes; `align A` after the size states the alignment.
+///   Without it a function type has no layout: a target whose function references are not bytes
+///   in memory leaves it out.
 /// * `iN = A` aligns integers of `N` bits to `A` bytes; `f32 = A` and `f64 = A` align the floats.
 ///
 /// The printed text is canonical: specifications that answer every query alike (and so are
 /// equal) print the same text, and the text parses back to an equal specification. It lists the
 /// endianness; the pointers by address space (leaving out an address space other than 0 that has
-/// the pointer of 0, and an `align` or `index` equal to what the size implies); integer entries by
+/// the pointer of 0, and an `align` or `index` equal to what the size implies); `fn` if the
+/// specification has it (leaving out an `align` equal to what the size implies); integer entries by
 /// ascending width; then `f32` and `f64` if they differ from their defaults. The integer entries
 /// are the specification's alignment at the last width of each run of widths with one alignment
 /// but the last run, at each default width, and at the first width of the last run when no
@@ -86,6 +92,16 @@ impl AttrPrinter for DataLayoutAttr {
                 printer.print_decimal_integer(pointer.index_bits);
             }
         }
+        if let Some(function) = spec.function() {
+            *printer += const_text(", ");
+            printer.print_keyword("fn");
+            *printer += const_text(" = ");
+            printer.print_decimal_integer(function.size_bits);
+            if function.shorthand_align() != Some(function.align) {
+                *printer += const_text(" align ");
+                printer.print_decimal_integer(function.align.bytes());
+            }
+        }
         for (width, align) in spec.printed_integers() {
             let key = printer.context().int_type(width);
             print_key(printer, key);
@@ -113,6 +129,7 @@ fn print_key(printer: &mut AsmPrinter<'_>, key: Type) {
 #[derive(Copy, Clone, PartialEq, Eq)]
 enum Key {
     Pointer(u32),
+    Function,
     Integer(u32),
     Float(FloatType),
 }
@@ -126,6 +143,7 @@ struct Entry {
 
 enum EntryValue {
     Pointer(PointerSpec),
+    Function(FunctionSpec),
     Align(Align),
 }
 
@@ -161,6 +179,7 @@ impl AttrParser for DataLayoutAttr {
                 (Key::Pointer(addrspace), EntryValue::Pointer(pointer)) => {
                     spec.with_pointer(addrspace, pointer)
                 }
+                (Key::Function, EntryValue::Function(function)) => spec.with_function(function),
                 (Key::Integer(width), EntryValue::Align(align)) => {
                     spec.with_integer_align(width, align)
                 }
@@ -190,22 +209,27 @@ fn parse_endianness(parser: &mut dyn Parser<'_>) -> ParseResult<Endianness> {
     Err(invalid(span, "a data layout starts with its endianness: `little` or `big`"))
 }
 
-/// Reads `key '=' value`.
+/// Reads `key '=' value`, the key a type or `fn`.
 fn parse_entry(parser: &mut dyn Parser<'_>) -> ParseResult<Entry> {
     let start = next_token_span(parser)?.range().start();
-    let ty = parser.parse_type()?.into_inner();
-    let key = entry_key(ty).ok_or_else(|| {
-        invalid(
-            span_from(parser, start),
-            &format!(
-                "`{ty}` is not a data layout key: expected `ptr`, `ptr<N>`, an integer type or a \
-                 float type"
-            ),
-        )
-    })?;
+    let key = if parser.parse_optional_custom_keyword("fn")?.is_some() {
+        Key::Function
+    } else {
+        let ty = parser.parse_type()?.into_inner();
+        entry_key(ty).ok_or_else(|| {
+            invalid(
+                span_from(parser, start),
+                &format!(
+                    "`{ty}` is not a data layout key: expected `ptr`, `ptr<N>`, `fn`, an integer \
+                     type or a float type"
+                ),
+            )
+        })?
+    };
     parser.parse_equal()?;
     let value = match key {
         Key::Pointer(_) => EntryValue::Pointer(parse_pointer(parser, start)?),
+        Key::Function => EntryValue::Function(parse_function(parser, start)?),
         Key::Integer(_) | Key::Float(_) => EntryValue::Align(parse_align(parser)?),
     };
     Ok(Entry {
@@ -258,6 +282,31 @@ fn parse_pointer(parser: &mut dyn Parser<'_>, start: u32) -> ParseResult<Pointer
         align,
         index_bits,
     })
+}
+
+/// Reads `size ('align' bytes)?`, of the function entry starting at `start`.
+fn parse_function(parser: &mut dyn Parser<'_>, start: u32) -> ParseResult<FunctionSpec> {
+    let size_bits = parser.parse_decimal_integer::<u32>()?.into_inner();
+    let align = if parser.parse_optional_custom_keyword("align")?.is_some() {
+        Some(parse_align(parser)?)
+    } else {
+        None
+    };
+    let align = match align.or_else(|| FunctionSpec::sized(size_bits).map(|sized| sized.align)) {
+        Some(align) => align,
+        // The size is invalid: the specification reports it
+        None if !FunctionSpec::is_valid_size(size_bits) => Align::ONE,
+        None => {
+            return Err(invalid(
+                span_from(parser, start),
+                &format!(
+                    "a function value of {size_bits} bits has no implied alignment ({size_bits} / \
+                     8 bytes is not a power of two): give one with `align`"
+                ),
+            ));
+        }
+    };
+    Ok(FunctionSpec { size_bits, align })
 }
 
 /// Reads an alignment in bytes: a power of two from 1 to 32768.

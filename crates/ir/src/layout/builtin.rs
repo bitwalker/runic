@@ -5,7 +5,8 @@ use alloc::vec::Vec;
 use super::{AggregateType, Align, DataLayout, FieldsShape, Layout, LayoutError, TypeLayout};
 use crate::{
     dialects::builtin::types::{
-        ArrayType, EnumType, FloatType, IntegerType, IsizeType, PointerType, StructRepr, StructType,
+        ArrayType, EnumType, FloatType, FunctionType, IntegerType, IsizeType, PointerType,
+        StructRepr, StructType,
     },
     types::Type,
 };
@@ -54,6 +55,20 @@ impl TypeLayout for PointerType {
             .align_up(u64::from(pointer.size_bits.div_ceil(8)))
             .expect("8 bytes fit a u64 at any alignment");
         Ok(Layout::scalar(size, pointer.align))
+    }
+}
+
+/// A function value is laid out as the specification's [FunctionSpec](super::FunctionSpec) says,
+/// its bytes rounded up to its alignment. Under a specification without one, a function type has
+/// no layout ([LayoutError::NoLayout]). The parameter and result types are not examined.
+impl TypeLayout for FunctionType {
+    fn layout(&self, ty: Type, layout: &DataLayout) -> Result<Layout, LayoutError> {
+        let function = layout.function().ok_or(LayoutError::NoLayout(ty))?;
+        let size = function
+            .align
+            .align_up(u64::from(function.size_bits.div_ceil(8)))
+            .expect("8 bytes fit a u64 at any alignment");
+        Ok(Layout::scalar(size, function.align))
     }
 }
 

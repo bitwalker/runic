@@ -1,0 +1,41 @@
+// RUN: runic-opt %s | filecheck %s
+// RUN: runic-opt %s --verify-roundtrip | filecheck %s
+// RUN: runic-opt %s --print-generic | runic-opt - --verify-roundtrip
+
+// A data layout with `fn = 32` gives a value of a function type a layout: 4 bytes aligned to 4.
+// Under it a function value is loaded and stored, a struct with a function field is stepped into
+// with `mem.gep` and measured with `mem.sizeof`. The entry prints after the pointers and before
+// the integers, whatever position it is written in, and `align` only where it is not what the size
+// implies. The type a load reads through the typed pointer `mem.gep` gives is its pointee, and
+// is not printed.
+// CHECK: builtin.module public @data_layout_function {
+builtin.module public @data_layout_function {
+    // CHECK-NEXT: builtin.module public @functions attributes { data_layout = #builtin.data_layout<little, ptr = 32, fn = 32, i64 = 4> } {
+    // CHECK-NEXT: builtin.function public extern("C") @f(
+    // CHECK-SAME: [[P:%[0-9]+]]: ptr<(i32) -> i32>, [[S:%[0-9]+]]: ptr<struct<i8, (i32) -> i32, i64>>, [[V:%[0-9]+]]: (i32) -> i32) -> isize {
+    // CHECK-NEXT: [[X:%[0-9]+]] = mem.load [[P]];
+    // CHECK-NEXT: mem.store [[V]], [[P]];
+    // CHECK-NEXT: [[FIELD:%[0-9]+]] = mem.gep [[S]], [1];
+    // CHECK-NEXT: [[Y:%[0-9]+]] = mem.load [[FIELD]];
+    // CHECK-NEXT: mem.store [[X]], [[FIELD]];
+    // CHECK-NEXT: [[SIZE:%[0-9]+]] = mem.sizeof struct<i8, (i32) -> i32, i64>;
+    // CHECK-NEXT: builtin.ret [[SIZE]] : (isize);
+    // CHECK-NEXT: };
+    // CHECK-NEXT: };
+    builtin.module public @functions attributes { data_layout = #builtin.data_layout<little, i64 = 4, fn = 32 align 4, ptr = 32> } {
+        builtin.function public extern("C") @f(%p: ptr<(i32) -> i32>, %s: ptr<struct<i8, (i32) -> i32, i64>>, %v: (i32) -> i32) -> isize {
+            %x = mem.load %p;
+            mem.store %v, %p;
+            %field = mem.gep %s, [1];
+            %y = mem.load %field : (i32) -> i32;
+            mem.store %x, %field;
+            %size = mem.sizeof struct<i8, (i32) -> i32, i64>;
+            builtin.ret %size : (isize);
+        };
+    };
+
+    // A stated alignment other than the implied one is kept.
+    // CHECK-NEXT: builtin.module public @aligned attributes { data_layout = #builtin.data_layout<big, ptr = 64, fn = 32 align 8> } { };
+    builtin.module public @aligned attributes { data_layout = #builtin.data_layout<big, fn = 32 align 8, ptr = 64> } {
+    };
+};

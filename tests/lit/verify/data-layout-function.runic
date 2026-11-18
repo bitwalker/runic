@@ -1,0 +1,54 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// A function type has a layout where the data layout states one with `fn`: under `fn = 32`, a load
+// and a store of a function value, a `mem.gep` to the function field of a struct and a
+// `mem.sizeof` of that struct verify. Under a data layout without `fn`, each of them is rejected
+// with a message that says how to state the entry.
+
+builtin.module public @with_fn attributes { data_layout = #builtin.data_layout<little, ptr = 32, fn = 32> } {
+    builtin.function public extern("C") @f(%p: ptr<(i32) -> i32>, %s: ptr<struct<i8, (i32) -> i32, i64>>, %v: (i32) -> i32) -> isize {
+        %x = mem.load %p;
+        mem.store %v, %p;
+        %field = mem.gep %s, [1];
+        %y = mem.load %field;
+        mem.store %x, %field;
+        %size = mem.sizeof struct<i8, (i32) -> i32, i64>;
+        builtin.ret %size : (isize);
+    };
+};
+
+// -----
+
+builtin.module public @load attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @f(%p: ptr<(i32) -> i32>) {
+        %x = mem.load %p; // expected-error {{the type read, `(i32) -> i32`, has no layout under the data layout in scope: type '(i32) -> i32' has no representation in memory: a function value has a layout only where the data layout states one, as in `fn = 32`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+builtin.module public @store attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @f(%p: ptr<(i32) -> i32>, %v: (i32) -> i32) {
+        mem.store %v, %p; // expected-error {{the type written, `(i32) -> i32`, has no layout under the data layout in scope: type '(i32) -> i32' has no representation in memory: a function value has a layout only where the data layout states one, as in `fn = 32`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+builtin.module public @gep attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @f(%s: ptr<struct<i8, (i32) -> i32, i64>>) {
+        %field = mem.gep %s, [1]; // expected-error {{the type the element is selected in, `struct<i8, (i32) -> i32, i64>`, has no layout under the data layout in scope: type '(i32) -> i32' has no representation in memory: a function value has a layout only where the data layout states one, as in `fn = 32`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+builtin.module public @sizeof attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @f() -> isize {
+        %size = mem.sizeof struct<i8, (i32) -> i32, i64>; // expected-error {{the type measured, `struct<i8, (i32) -> i32, i64>`, has no layout under the data layout in scope: type '(i32) -> i32' has no representation in memory: a function value has a layout only where the data layout states one, as in `fn = 32`}}
+        builtin.ret %size : (isize);
+    };
+};

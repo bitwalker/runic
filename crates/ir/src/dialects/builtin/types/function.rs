@@ -4,6 +4,7 @@ use core::fmt::{self, Write};
 use crate::{
     derive::DialectType,
     dialects::builtin::BuiltinDialect,
+    layout::TypeLayout,
     types::{Type, TypeFormatter, TypePrinter},
 };
 
@@ -12,7 +13,7 @@ use crate::{
 /// A single result prints without parentheses unless it is itself a function type; no result or
 /// several results print parenthesised. It carries no calling convention.
 #[derive(Debug, PartialEq, Eq, Hash, DialectType)]
-#[ty(dialect = BuiltinDialect, name = "function")]
+#[ty(dialect = BuiltinDialect, name = "function", implements(TypeLayout))]
 pub struct FunctionType {
     params: Box<[Type]>,
     results: Box<[Type]>,
