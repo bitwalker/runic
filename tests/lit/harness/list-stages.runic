@@ -18,5 +18,6 @@
 // CHECK-NEXT:   ir.lowered -> .lowered.runic
 // CHECK-NEXT:   stackvm.asm (alias asm) -> .svm
 // CHECK-NEXT:   altvm.out -> .alt
+// CHECK-NEXT:   wasm.object (alias object) -> .o
 // CHECK-NEXT:   wasm.wat (alias wat) -> .wat
 // CHECK-NEXT:   wasm.module (alias module) -> .core.wasm

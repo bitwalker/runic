@@ -39,6 +39,7 @@ fn the_wasm_backend_and_its_checkpoints_are_listed_exactly_when_the_wasm_feature
     let stdout = String::from_utf8(output.stdout).unwrap();
     for line in [
         "  wasm: wasm32-unknown-unknown",
+        "  wasm.object (alias object) -> .o",
         "  wasm.wat (alias wat) -> .wat",
         "  wasm.module (alias module) -> .core.wasm",
     ] {

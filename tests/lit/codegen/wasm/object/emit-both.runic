@@ -1,0 +1,24 @@
+// RUN: runic-opt %s --target wasm32-unknown-unknown --emit object=%t.o --emit module=%t.core.wasm
+// RUN: filecheck %s --check-prefix=OBJECT --input-file %t.o
+// RUN: filecheck %s --check-prefix=MODULE --input-file %t.core.wasm
+// RUN: runic-opt %s --target wasm32-unknown-unknown -o %t.alone.core.wasm
+// RUN: cmp %t.core.wasm %t.alone.core.wasm
+// RUN: runic-opt %s --target wasm32-unknown-unknown --emit object=%t.o --emit wat=%t.wat
+// RUN: filecheck %s --check-prefix=TEXT --input-file %t.wat
+
+// An object and a module asked for beside each other come from one compilation, each to its
+// file: the object has the `linking` section and the module has none, and the module is the very
+// bytes a compilation that asks for no object gives (`cmp`). The text is that of the module.
+
+// OBJECT: {{^\x00asm\x01\x00\x00\x00}}
+// OBJECT: linking
+// MODULE: {{^\x00asm\x01\x00\x00\x00}}
+// MODULE-NOT: linking
+// TEXT: (module $emit-both
+// TEXT: (export "twice" (func $m::twice))
+builtin.module public @m {
+    builtin.function public extern("C") @twice(%x: i32) -> i32 {
+        %r = arith.add %x, %x;
+        builtin.ret %r : (i32);
+    } attributes { wasm.export_name = "twice" };
+};

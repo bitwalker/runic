@@ -43,7 +43,11 @@ runic-opt program.runic --target wasm32-unknown-unknown --wasm-stack-size 65536 
   `dce` when the optimization level is above `0`, then `wasm-verify-form`. `cse` and `dce` remove
   repeated and dead operations; they do not remove the unused results of a `wasm.if` or a
   `wasm.loop` (the flags `cfg-to-scf` leaves), which the emitter drops.
-- **Checkpoints**, in order: `wasm.wat` (alias `wat`, a `.wat` file), the text of the module, and
+- **Checkpoints**, in order: `wasm.object` (alias `object`, an `.o` file), a relocatable object
+  for `wasm-ld`, written only when the request stops there or asks for an output there
+  (`--stop-after object`, `--emit object=FILE`); the object is collected from the world on its own,
+  so a request for the module alone is never refused for what an object cannot express, and
+  `--wasm-stack-size` does not apply to it (the linker sets the stack); `wasm.wat` (alias `wat`, a `.wat` file), the text of the module, and
   `wasm.module` (alias `module`, a `.core.wasm` file), the binary, which is the default stop point.
   Both are the same bytes, emitted once and validated.
 - **Option**: `--wasm-stack-size <BYTES>`, the size of the shadow stack at the start of linear

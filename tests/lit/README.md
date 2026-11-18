@@ -129,6 +129,10 @@ codegen/wasm/emit/    the backend `wasm`: modules compiled by `runic-opt --targe
                       point, whose magic bytes filecheck matches as escapes (binary.runic).
                       `runic-opt` compiles at `-O0` with the default debug information; the other
                       levels are covered by the crate's unit tests
+codegen/wasm/object/  the checkpoint `wasm.object`, a relocatable object: its first bytes at
+                      `--stop-after object` (stop-after.runic), each case the object check
+                      refuses (refusals.runic) and an object beside the module of one
+                      compilation (emit-both.runic)
 analysis/             analyses, through the test passes
 tool/                 options and behaviour of runic-opt itself
 harness/              runic-opt's harness path: an input a frontend reads (`*.calc`) or a

@@ -1,0 +1,25 @@
+// RUN: runic-opt %s --target wasm32-unknown-unknown --stop-after object | filecheck %s
+// RUN: runic-opt %s --target wasm32-unknown-unknown --stop-after object -o %t.o
+// RUN: filecheck %s --input-file %t.o
+// RUN: runic-opt %s --target wasm32-unknown-unknown --stop-after object --wasm-stack-size 4096 | filecheck %s
+// RUN: runic-opt %s --target wasm32-unknown-unknown --emit object=%t.emit.o
+// RUN: filecheck %s --input-file %t.emit.o
+// RUN: runic-opt %s --target wasm32-unknown-unknown | filecheck %s --check-prefix=MODULE
+
+// `--stop-after object` ends the compilation at the relocatable object, which is written to
+// standard output or to `-o`, or with `--emit object=FILE` beside the default stop point. An
+// object is a Wasm module: it starts with the magic bytes `\0asm` and the version 1 (filecheck
+// reads the bytes as they are, and the pattern spells them as escapes), and it carries a custom
+// section `linking`, which a complete module does not. `--wasm-stack-size` is accepted and has no
+// meaning for an object: the linker sets the stack. The default stop point is still the module.
+
+// CHECK: {{^\x00asm\x01\x00\x00\x00}}
+// CHECK: linking
+// MODULE: {{^\x00asm\x01\x00\x00\x00}}
+// MODULE-NOT: linking
+builtin.module public @m {
+    builtin.function public extern("C") @twice(%x: i32) -> i32 {
+        %r = arith.add %x, %x;
+        builtin.ret %r : (i32);
+    } attributes { wasm.export_name = "twice" };
+};

@@ -5,6 +5,10 @@
 //! delivered at two checkpoints, in this order: [WAT] (`wasm.wat`, alias `wat`), its text
 //! rendered by [crate::text::print], and [MODULE] (`wasm.module`, alias `module`),
 //! the binary itself in a `.core.wasm` file. Both hold the same bytes, emitted once.
+//!
+//! The checkpoint [OBJECT] (`wasm.object`, alias `object`) comes before them: a relocatable
+//! object for `wasm-ld`, written with [emit_object] only when the request stops at it or asks for
+//! an output there.
 
 use std::{boxed::Box, io, string::String, vec, vec::Vec};
 
@@ -21,12 +25,17 @@ use runic_transform::{CommonSubexpressionElimination, DeadCodeElimination};
 
 use crate::{
     LOWERING_PASSES, add_lowering_pass,
-    emit::{EmitOptions, emit_module},
+    emit::{EmitOptions, emit_module, emit_object},
     text, verify_form,
 };
 
 /// The one target of the backend: 32-bit WebAssembly, with no operating system.
 pub const TRIPLE: &str = "wasm32-unknown-unknown";
+
+/// The checkpoint of the relocatable object, alias `object`, in files with the extension `o`:
+/// first on the backend's route. The object is produced only when the request stops here or asks
+/// for an output here.
+pub const OBJECT: CheckpointId = CheckpointId::new("wasm.object");
 
 /// The checkpoint of the module's text, alias `wat`, in files with the extension `wat`.
 pub const WAT: CheckpointId = CheckpointId::new("wasm.wat");
@@ -40,6 +49,12 @@ pub const MODULE: CheckpointId = CheckpointId::new("wasm.module");
 pub const DEFAULT_STACK_SIZE: u32 = 1024 * 1024;
 
 const CHECKPOINTS: &[CheckpointDecl] = &[
+    CheckpointDecl {
+        id: OBJECT,
+        aliases: &["object"],
+        extension: "o",
+        render: render_object as Render,
+    },
     CheckpointDecl {
         id: WAT,
         aliases: &["wat"],
@@ -60,7 +75,8 @@ const CHECKPOINTS: &[CheckpointDecl] = &[
 pub struct WasmOptions {
     /// The size in bytes of the shadow stack, which takes the start of linear memory and grows
     /// down from the initial value of the stack pointer `__stack_pointer`; a positive multiple of
-    /// 16.
+    /// 16. A relocatable object (`--stop-after object`) accepts the option and ignores it: the
+    /// linker sets the stack.
     #[arg(long, value_name = "BYTES", default_value_t = DEFAULT_STACK_SIZE)]
     pub stack_size: u32,
 }
@@ -87,6 +103,10 @@ impl Default for WasmOptions {
 ///   with the stack size of [WasmOptions], a `name` section unless the request asks for no debug
 ///   information, and the unit's name as the module's name. It then reaches [WAT] and [MODULE]
 ///   with those bytes. What the emitter cannot emit fails the compilation with its diagnostic.
+/// - When the request stops at [OBJECT] or asks for an output there, it first reaches [OBJECT]
+///   with a relocatable object ([emit_object]), collected from the world on its own, so that
+///   a request for the module alone is never refused for what an object cannot express. A request
+///   that stops at [OBJECT] runs no further.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct WasmBackend;
 
@@ -140,7 +160,17 @@ impl Backend for WasmBackend {
             names: session.request().debug != DebugInfo::None,
             module_name: Some(String::from(session.name())),
         };
-        let bytes = emit_module(world.as_operation_ref(), &options)?;
+        let root = world.as_operation_ref();
+        let goal = session.goal();
+        if goal.stop_after() == OBJECT || goal.output_at(OBJECT).is_some() {
+            // The object is written from a unit of its own: a unit collected for it is checked
+            // for it, and laying a unit out for a module changes it, so the two do not share one.
+            let object = emit_object(root, &options)?;
+            if let Flow::Break(stopped) = checkpoints.reach(OBJECT, object)? {
+                return Ok(Flow::Break(stopped));
+            }
+        }
+        let bytes = emit_module(root, &options)?;
         let bytes = match checkpoints.reach(WAT, bytes)? {
             Flow::Continue(bytes) => bytes,
             Flow::Break(stopped) => return Ok(Flow::Break(stopped)),
@@ -177,6 +207,15 @@ fn module_bytes(artifact: &Artifact) -> Result<&[u8], Report> {
             artifact.checkpoint()
         ))
     })
+}
+
+/// Writes the object at `artifact` to `out`, as it is.
+fn render_object(
+    artifact: &Artifact,
+    _session: &Session<'_>,
+    out: &mut dyn io::Write,
+) -> Result<(), Report> {
+    write(artifact, out, module_bytes(artifact)?)
 }
 
 /// Writes the text of the module at `artifact` to `out`.

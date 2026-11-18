@@ -217,10 +217,11 @@
 //! collects the same unit, records for each entity what its linker symbol needs (its binding from
 //! its visibility, whether an import names its host or is the linker's to resolve, which data a
 //! named section retains, a function's export name), and refuses with a diagnostic naming the
-//! operation what an object cannot express ([emit::collect::Unit::check_object]); the object
-//! writer itself is not built yet.
+//! operation what an object cannot express ([emit::collect::Unit::check_object]). The backend
+//! writes the object at the checkpoint `wasm.object` (alias `object`) when the request stops there
+//! or asks for an output there, and never otherwise.
 //!
-//! Not emitted yet: relocatable objects, integers wider than 64 bits, components, exported data
+//! Not emitted yet: integers wider than 64 bits, components, exported data
 //! and DWARF. The README of the crate says more of each part.
 
 #![no_std]

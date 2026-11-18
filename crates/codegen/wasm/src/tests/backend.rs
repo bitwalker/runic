@@ -70,6 +70,17 @@ const REPEATED: &str = r#"builtin.module public @demo {
     } attributes { wasm.export_name = "f" };
 };"#;
 
+/// A function with a pointer parameter, whose signature the lowering changes, beside a table
+/// and an element segment: a complete module holds them, and an object cannot express the
+/// segment.
+const WITH_ELEM: &str = r#"builtin.module public @demo {
+    wasm.table private @tab : 4 x !wasm.funcref;
+    builtin.function public extern("C") @callee(%x: i32) -> i32 {
+        builtin.ret %x : (i32);
+    };
+    wasm.elem private @init : @tab at 1 [@callee];
+};"#;
+
 /// Two functions exported under one name: the emitter's error.
 const DUPLICATE_EXPORTS: &str = r#"builtin.module public @demo {
     builtin.function public extern("C") @a() -> i32 {
@@ -233,7 +244,11 @@ fn the_backend_supports_exactly_wasm32_unknown_unknown() {
         .collect();
     assert_eq!(
         checkpoints,
-        [("wasm.wat", &["wat"][..], "wat"), ("wasm.module", &["module"][..], "core.wasm")]
+        [
+            ("wasm.object", &["object"][..], "o"),
+            ("wasm.wat", &["wat"][..], "wat"),
+            ("wasm.module", &["module"][..], "core.wasm")
+        ]
     );
 }
 
@@ -459,4 +474,102 @@ fn a_target_the_backend_does_not_support_is_refused_by_the_harness() {
         error,
         "no backend supports the target 'wasm32-wasip2'; the targets are 'wasm32-unknown-unknown'"
     );
+}
+
+/// The sections of `bytes`, read as a module: the names of its custom sections, and whether it
+/// has a `linking` section.
+#[track_caller]
+fn assert_object(bytes: &[u8]) {
+    assert_eq!(&bytes[..8], b"\0asm\x01\0\0\0");
+    assert!(
+        custom_sections(bytes).iter().any(|name| name == "linking"),
+        "no linking section"
+    );
+}
+
+#[test]
+fn stopping_at_object_gives_a_relocatable_object_and_runs_no_further() {
+    let mut request = request(FRAME, &["object"]);
+    request.stop_after = Some("object".into());
+    let compilation = compile(request);
+    succeeded(&compilation);
+    let reached: Vec<_> = compilation.reached().iter().map(|id| id.as_str()).collect();
+    assert_eq!(reached, ["ir.translated", "ir.optimized", "ir.lowered", "wasm.object"]);
+    let [Emitted::Memory { checkpoint, bytes }] = compilation.emitted() else {
+        panic!("one output, to memory: {:?}", compilation.emitted());
+    };
+    assert_eq!(checkpoint.as_str(), "wasm.object");
+    assert_object(bytes);
+    assert!(Parser::new(0).parse_all(bytes).all(|payload| payload.is_ok()));
+}
+
+#[test]
+fn the_default_stop_point_writes_no_object() {
+    let compilation = compile(request(FRAME, &["module"]));
+    succeeded(&compilation);
+    let reached: Vec<_> = compilation.reached().iter().map(|id| id.as_str()).collect();
+    assert!(!reached.contains(&"wasm.object"), "{reached:?}");
+    let module = memory(&compilation, "wasm.module");
+    assert!(!custom_sections(&module).iter().any(|name| name == "linking"));
+}
+
+#[test]
+fn an_object_beside_the_module_leaves_the_module_as_it_is() {
+    let compilation = compile(request(FRAME, &["object", "module"]));
+    succeeded(&compilation);
+    assert_object(&memory(&compilation, "wasm.object"));
+    let module = memory(&compilation, "wasm.module");
+    validate(&module).unwrap();
+    assert_eq!(module, module_of(request(FRAME, &["module"])));
+}
+
+#[test]
+fn the_stack_size_option_does_not_change_an_object() {
+    let object = |stack_size: Option<u32>| {
+        let mut request = request(FRAME, &["object"]);
+        request.stop_after = Some("object".into());
+        if let Some(stack_size) = stack_size {
+            request.set_options(WasmOptions { stack_size });
+        }
+        let compilation = compile(request);
+        succeeded(&compilation);
+        memory(&compilation, "wasm.object")
+    };
+    assert_eq!(object(None), object(Some(4096)));
+}
+
+#[test]
+fn a_unit_with_an_element_segment_is_a_module_and_is_refused_as_an_object() {
+    let module = module_of(request(WITH_ELEM, &["module"]));
+    validate(&module).unwrap();
+
+    let compilation = compile(request(WITH_ELEM, &["module"]));
+    succeeded(&compilation);
+
+    let mut stopping = request(WITH_ELEM, &["object"]);
+    stopping.stop_after = Some("object".into());
+    let compilation = compile(stopping);
+    assert!(!compilation.succeeded());
+    let error = error_of(&compilation);
+    assert!(error.contains("a relocatable object cannot express"), "{error}");
+    assert!(error.contains("wasm.elem"), "{error}");
+    assert!(
+        error.contains("the linker ignores the element segments of an object"),
+        "{error}"
+    );
+    assert!(compilation.emitted().is_empty());
+
+    // Beside the module, the refusal fails the compilation too: the object was asked for.
+    let compilation = compile(request(WITH_ELEM, &["object", "module"]));
+    assert!(!compilation.succeeded());
+}
+
+#[test]
+fn the_alias_object_names_the_checkpoint() {
+    let by_alias = compile(request(FRAME, &["object"]));
+    succeeded(&by_alias);
+    let by_id = compile(request(FRAME, &["wasm.object"]));
+    succeeded(&by_id);
+    assert_object(&memory(&by_alias, "wasm.object"));
+    assert_eq!(memory(&by_alias, "wasm.object"), memory(&by_id, "wasm.object"));
 }

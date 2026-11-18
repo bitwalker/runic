@@ -1,0 +1,150 @@
+// RUN: runic-opt %s --target wasm32-unknown-unknown --stop-after object --split-input-file --verify-diagnostics
+// RUN: not runic-opt %s --target wasm32-unknown-unknown --stop-after object --split-input-file 2>&1 | filecheck %s
+
+// What a relocatable object cannot express is refused with a diagnostic that names the
+// operation, and nothing is written; the same unit compiles to a complete module. Each case is
+// its own input (`--split-input-file`). The second run shows each diagnostic with its label.
+
+// CHECK: error: a relocatable object cannot express `wasm.elem` @e
+// CHECK: {{\^+}} this fills a table at slots it fixes, and the linker ignores the element segments of an object: it lays out the function table itself
+// CHECK: error: a relocatable object cannot express a `builtin.segment`
+// CHECK: {{\^+}} this places bytes at the address 2048, and the linker places every data segment of an object itself: there is no data at a fixed address
+// CHECK: error: a relocatable object cannot express passive data: `wasm.memory_init` names `passive::bytes` as a passive segment
+// CHECK: {{\^+}} this names `passive::bytes` as a passive data segment, and the linker makes every data segment of an object active, with no relocation for a segment index
+// CHECK: error: a relocatable object cannot express passive data: `wasm.data_drop` names `drop::bytes` as a passive segment
+// CHECK: {{\^+}} this names `drop::bytes` as a passive data segment, and the linker makes every data segment of an object active, with no relocation for a segment index
+// CHECK: error: a relocatable object cannot express `wasm.global` @g, whose initializer names another entity
+// CHECK: {{\^+}} the initializer of this global holds the address of `init::d`, and an object has no relocation in the global section
+// CHECK: error: a relocatable object cannot express a memory it defines, `wasm.memory` @mem
+// CHECK: {{\^+}} this defines a memory, and the linker defines the memory of the module it links: an object imports it as `env.__linear_memory`
+// CHECK: error: a relocatable object cannot define the function table `__indirect_function_table`
+// CHECK: {{\^+}} this defines `__indirect_function_table`, which the linker defines itself: it refuses an object that defines it
+// CHECK: error: a relocatable object cannot define the stack pointer `__stack_pointer`
+// CHECK: {{\^+}} this defines `__stack_pointer`, which the linker defines itself: the link fails with a duplicate symbol
+// CHECK: error: a relocatable object cannot express `wasm.ref_func` `@callee`
+// CHECK: {{\^+}} this takes a reference to a function, which Wasm requires the module to declare, and the linker declares no function for `ref.func`: the linked module would not validate
+// CHECK: error: a relocatable object cannot express the function `names::f` exported under two names, `one` and `two`
+// CHECK: {{\^+}} this exports `names::f` as `two`, and it is exported as `one`: an object exports a function under one name
+// CHECK: error: a relocatable object cannot express the export `x` of the global `g` under another name
+// CHECK: {{\^+}} this exports the global `g` as `x`, and an object marks a global exported only under its own link name
+// CHECK: error: a relocatable object cannot express the export `x` of the table `t` under another name
+// CHECK: {{\^+}} this exports the table `t` as `x`, and an object marks a table exported only under its own link name
+// CHECK: error: a relocatable object cannot express the export `x` of the memory `__linear_memory` under another name
+// CHECK: {{\^+}} this exports the memory `__linear_memory` as `x`, and an object marks a memory exported only under its own link name
+// CHECK: error: a relocatable object cannot express the import `g`: its declarations disagree on whether it names its host
+// CHECK: {{-+}} the first declaration has no `wasm.import_module`, so the linker resolves `g` to a definition of another object
+// CHECK: {{\^+}} this declaration names the host module `env` with `wasm.import_module`, so the linker imports `g` from it
+
+builtin.module public @elem {
+    wasm.table private @tab : 1 x !wasm.funcref;
+    builtin.function public extern("C") @f(%x: i32) -> i32 {
+        builtin.ret %x : (i32);
+    };
+    wasm.elem private @e : @tab at 0 [@f]; // expected-error {{a relocatable object cannot express `wasm.elem` @e}}
+};
+
+// -----
+
+builtin.module public @segment {
+    wasm.memory private declaration @__linear_memory : 0 attributes { link_name = "__linear_memory" };
+    builtin.segment <{ offset = #builtin.i64<2048>, data = #builtin.bytes<"2a2a2a2a"> }>; // expected-error {{a relocatable object cannot express a `builtin.segment`}}
+};
+
+// -----
+
+builtin.module public @passive {
+    wasm.memory private declaration @__linear_memory : 0 attributes { link_name = "__linear_memory" };
+    builtin.global_variable private @bytes : i32 { %v = arith.constant 1 : i32; builtin.yield %v; };
+    builtin.function public extern("wasm") @copy(%d: i32) {
+        %s = wasm.const 0 : i32;
+        %n = wasm.const 4 : i32;
+        wasm.memory_init @__linear_memory, @bytes, %d, %s, %n; // expected-error {{a relocatable object cannot express passive data: `wasm.memory_init` names `passive::bytes` as a passive segment}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+builtin.module public @drop {
+    wasm.memory private declaration @__linear_memory : 0 attributes { link_name = "__linear_memory" };
+    builtin.global_variable private @bytes : i32 { %v = arith.constant 1 : i32; builtin.yield %v; };
+    builtin.function public extern("wasm") @drop() {
+        wasm.data_drop @bytes; // expected-error {{a relocatable object cannot express passive data: `wasm.data_drop` names `drop::bytes` as a passive segment}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+builtin.module public @init {
+    builtin.global_variable public @d : i32 { %v = arith.constant 1 : i32; builtin.yield %v; };
+    wasm.global private @g : i32 { %v = wasm.data_addr @d; builtin.yield %v; }; // expected-error {{a relocatable object cannot express `wasm.global` @g, whose initializer names another entity}}
+};
+
+// -----
+
+builtin.module public @memory {
+    wasm.memory public @mem : 1; // expected-error {{a relocatable object cannot express a memory it defines, `wasm.memory` @mem}}
+};
+
+// -----
+
+builtin.module public @table {
+    wasm.table private @__indirect_function_table : 1 x !wasm.funcref; // expected-error {{a relocatable object cannot define the function table `__indirect_function_table`}}
+};
+
+// -----
+
+builtin.module public @sp {
+    wasm.global public @sp : i32 { %v = wasm.const 0 : i32; builtin.yield %v; } attributes { link_name = "__stack_pointer" }; // expected-error {{a relocatable object cannot define the stack pointer `__stack_pointer`}}
+};
+
+// -----
+
+builtin.module public @refs {
+    builtin.function public extern("wasm") @callee(%x: i32) -> i32 {
+        builtin.ret %x : (i32);
+    };
+    builtin.function public extern("wasm") @f() -> i32 {
+        %r = wasm.ref_func @callee; // expected-error {{a relocatable object cannot express `wasm.ref_func` `@callee`}}
+        %z = wasm.ref_is_null %r;
+        builtin.ret %z : (i32);
+    };
+};
+
+// -----
+
+builtin.module public @names {
+    builtin.function public extern("C") @f(%x: i32) -> i32 { // expected-error {{a relocatable object cannot express the function `names::f` exported under two names, `one` and `two`}}
+        builtin.ret %x : (i32);
+    } attributes { wasm.export_name = ["one", "two"] };
+};
+
+// -----
+
+builtin.module public @renamed {
+    wasm.global private @g : i32 { %v = wasm.const 0 : i32; builtin.yield %v; } attributes { link_name = "g", wasm.export_name = "x" }; // expected-error {{a relocatable object cannot express the export `x` of the global `g` under another name}}
+};
+
+// -----
+
+builtin.module public @renamed_table {
+    wasm.table private declaration @t : 1 x !wasm.funcref attributes { link_name = "t", wasm.export_name = "x" }; // expected-error {{a relocatable object cannot express the export `x` of the table `t` under another name}}
+};
+
+// -----
+
+builtin.module public @renamed_memory {
+    wasm.memory private declaration @__linear_memory : 0 attributes { link_name = "__linear_memory", wasm.export_name = "x" }; // expected-error {{a relocatable object cannot express the export `x` of the memory `__linear_memory` under another name}}
+};
+
+// -----
+
+builtin.world {
+    builtin.module public @a {
+        builtin.function public extern("wasm") @f() attributes { link_name = "g" };
+    };
+    builtin.module public @b {
+        builtin.function public extern("wasm") @f() attributes { link_name = "g", wasm.import_module = "env" }; // expected-error {{a relocatable object cannot express the import `g`: its declarations disagree on whether it names its host}}
+    };
+};
