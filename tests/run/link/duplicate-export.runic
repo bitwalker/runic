@@ -1,0 +1,23 @@
+// RUN: runic-opt --target wasm32-unknown-unknown --stop-after object %s -o %t.o
+// RUN: rustc --edition 2024 --target wasm32-unknown-unknown --crate-type cdylib -O %S/rt/duplicate.rs -C link-arg=%t.o -C link-arg=--fatal-warnings -o %t.wasm
+// RUN: not wasmtime run --invoke shown %t.wasm 5 2>&1 | filecheck %s --check-prefix=REJECTED
+
+// Two exports of one name across a link: the linker does not check them.
+//
+// This object exports `@f` as `shown`, and the runtime `rt/duplicate.rs` exports a Rust function
+// named `shown`. The backend sees one object and cannot know; `wasm-ld` links both exports, with
+// `--fatal-warnings`, without a warning, and the module it writes does not validate: `wasmtime`
+// refuses it. The test pins the linker's behaviour: when it fails, the linker has started to
+// check, and the caveat in the crate's README ("The linker exports what the object marks") goes.
+// The optimization pipeline changes nothing the test is about, so it runs once.
+
+// REJECTED: duplicate export name `shown` already defined
+
+builtin.module public @duplicate {
+    builtin.function public extern("C") @f(%x: i8) -> i32 {
+        %w = arith.zext %x <{ ty = i32 }>;
+        %one = arith.constant 1 : i32;
+        %r = arith.add %w, %one;
+        builtin.ret %r : (i32);
+    } attributes { wasm.export_name = "shown" };
+};

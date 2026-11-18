@@ -34,6 +34,24 @@
 // CHECK: error: a relocatable object cannot express the import `g`: its declarations disagree on whether it names its host
 // CHECK: {{-+}} the first declaration has no `wasm.import_module`, so the linker resolves `g` to a definition of another object
 // CHECK: {{\^+}} this declaration names the host module `env` with `wasm.import_module`, so the linker imports `g` from it
+// CHECK: error: a relocatable object cannot express the section `.bss.mine` of the global variable `bss::d`
+// CHECK: {{\^+}} this puts `bss::d` in the section `.bss.mine`, and the linker writes no bytes for a section whose name starts with `.bss`: its contents would link to zeros
+// CHECK: error: a relocatable object cannot express the section `.tdata.x` of the global variable `tls::d`
+// CHECK: {{\^+}} this puts `tls::d` in the section `.tdata.x`, and the linker treats a section whose name starts with `.tdata` or `.tbss` as thread-local data, which the backend does not emit
+// CHECK: error: a relocatable object cannot express `__start_a.b`: the linker defines no bounds for the section `a.b`
+// CHECK: {{\^+}} this declares the start of the section `a.b`, and the linker defines `__start_<s>` and `__stop_<s>` only for a section whose name is a C identifier: letters, digits and `_`, not starting with a digit
+// CHECK: error: a relocatable object cannot express the memory import `host.mem`
+// CHECK: {{\^+}} this names the host module `host` with `wasm.import_module`, and the linker provides the memory itself: an object imports it as `env.__linear_memory`, and the linker exports it as `memory`
+// CHECK: error: a relocatable object cannot express the memory import `env.mem`
+// CHECK: {{\^+}} this declares the memory `mem`, and the linker provides the memory itself: an object imports it as `env.__linear_memory`, and the linker exports it as `memory`
+// CHECK: error: a relocatable object cannot express the export `__linear_memory` of the memory `__linear_memory`
+// CHECK: {{\^+}} this exports the memory as `__linear_memory`, and the linker provides and exports the memory itself, as `memory`
+// CHECK: error: a relocatable object cannot express the export `hosted` of the function `hosted`, which it does not define
+// CHECK: {{\^+}} this exports the function `hosted`, which the unit declares and does not define, and the linker exports only what an object defines
+// CHECK: error: a relocatable object cannot express the export `hg` of the global `hg`, which it does not define
+// CHECK: {{\^+}} this exports the global `hg`, which the unit declares and does not define, and the linker exports only what an object defines
+// CHECK: error: a relocatable object cannot express the alias `al` of a function it does not define
+// CHECK: {{\^+}} this defines `al` for a function the unit does not define, and an object defines a symbol only for a function it defines
 
 builtin.module public @elem {
     wasm.table private @tab : 1 x !wasm.funcref;
@@ -147,4 +165,60 @@ builtin.world {
     builtin.module public @b {
         builtin.function public extern("wasm") @f() attributes { link_name = "g", wasm.import_module = "env" }; // expected-error {{a relocatable object cannot express the import `g`: its declarations disagree on whether it names its host}}
     };
+};
+
+// -----
+
+builtin.module public @bss {
+    builtin.global_variable private @d : i32 { %v = arith.constant 42 : i32; builtin.yield %v; } attributes { section = ".bss.mine" }; // expected-error {{a relocatable object cannot express the section `.bss.mine` of the global variable `bss::d`}}
+};
+
+// -----
+
+builtin.module public @tls {
+    builtin.global_variable private @d : i32 { %v = arith.constant 42 : i32; builtin.yield %v; } attributes { section = ".tdata.x" }; // expected-error {{a relocatable object cannot express the section `.tdata.x` of the global variable `tls::d`}}
+};
+
+// -----
+
+builtin.module public @bounds {
+    builtin.global_variable private @e : i32 { %v = arith.constant 42 : i32; builtin.yield %v; } attributes { section = "a.b" };
+    builtin.global_variable public @start : i32 attributes { link_name = "__start_a.b" }; // expected-error {{a relocatable object cannot express `__start_a.b`: the linker defines no bounds for the section `a.b`}}
+};
+
+// -----
+
+builtin.module public @hosted_memory {
+    wasm.memory public declaration @mem : 1 attributes { link_name = "mem", wasm.import_module = "host" }; // expected-error {{a relocatable object cannot express the memory import `host.mem`}}
+};
+
+// -----
+
+builtin.module public @other_memory {
+    wasm.memory public declaration @mem : 1 attributes { link_name = "mem" }; // expected-error {{a relocatable object cannot express the memory import `env.mem`}}
+};
+
+// -----
+
+builtin.module public @exported_memory {
+    wasm.memory private declaration @__linear_memory : 0 attributes { link_name = "__linear_memory", wasm.export_name = "__linear_memory" }; // expected-error {{a relocatable object cannot express the export `__linear_memory` of the memory `__linear_memory`}}
+};
+
+// -----
+
+builtin.module public @exported_function_import {
+    builtin.function public extern("wasm") @hosted(i32) -> i32 attributes { link_name = "hosted", wasm.import_module = "host", wasm.export_name = "hosted" }; // expected-error {{a relocatable object cannot express the export `hosted` of the function `hosted`, which it does not define}}
+};
+
+// -----
+
+builtin.module public @exported_global_import {
+    wasm.global private declaration @hg : i32 attributes { link_name = "hg", wasm.export_name = "hg" }; // expected-error {{a relocatable object cannot express the export `hg` of the global `hg`, which it does not define}}
+};
+
+// -----
+
+builtin.module public @alias {
+    builtin.function public extern("wasm") @ext(i32) -> i32 attributes { link_name = "ext" };
+    builtin.function_alias public @al -> @ext attributes { link_name = "al" }; // expected-error {{a relocatable object cannot express the alias `al` of a function it does not define}}
 };

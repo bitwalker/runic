@@ -14,8 +14,9 @@
 //! data-count or `name` section: the linker builds the output's names from the symbols.
 //!
 //! **Imports.** The memory is always the import `env.__linear_memory`, with as many pages as the
-//! object's data needs (its provisional size rounded up), and has no symbol; a memory the unit
-//! declares is not imported under its own name. Then every function, table and global the unit
+//! object's data needs (its provisional size rounded up), and has no symbol; the object check
+//! admits only a memory the unit declares as that import, naming no host, and exported under no
+//! name (the linker exports the memory as `memory`). Then every function, table and global the unit
 //! declares and does not define, from its module and field. The function table
 //! `env.__indirect_function_table` is imported only when a fix-up needs it: a table number that
 //! names it, or a table slot of a function. It is added when a table slot needs it and the unit
@@ -44,7 +45,10 @@
 //! **The symbol table** has one symbol for every function, every global, every table of the
 //! object and every data entry, defined or not, in this order: the functions in description
 //! order, then the globals, then the tables in the object's order (an added function table last),
-//! then the data entries in description order. A symbol's binding gives its flags: a global
+//! then the data entries in description order. Last comes one function symbol for each `public` or
+//! `internal` `builtin.function_alias` ([Unit::aliases]), in the order written: the function index
+//! of its target, its own link name and the binding of its own visibility, so that several
+//! symbols name one function, as LLVM writes an alias. A symbol's binding gives its flags: a global
 //! symbol none, a hidden one `VISIBILITY_HIDDEN`, a local one `BINDING_LOCAL`, an undefined one
 //! `UNDEFINED`, with `EXPLICIT_NAME` when it names its host (so that the linker imports it from
 //! that module). A function with an export name is `EXPORTED`, and the export section holds that
@@ -979,6 +983,20 @@ pub fn write_object(unit: &Unit) -> Result<Vec<u8>, WriteError> {
             Some(binding) => binding_flags(binding),
         };
         symbols.data(flags, &entry.name, definition);
+    }
+    // An alias that other modules may name: a second symbol of its target's function, under its
+    // own name, as LLVM writes an alias. The object check refuses one whose target is not defined.
+    for alias in unit.aliases() {
+        let index = alias
+            .target
+            .and_then(|id| plan.functions.get(id.index() as usize))
+            .ok_or_else(|| WriteError::UnknownEntity {
+                site: Site::Alias(alias.name.clone()),
+                entity: alias
+                    .target
+                    .map_or_else(|| String::from("no function"), |id| id.to_string()),
+            })?;
+        symbols.function(binding_flags(alias.binding), *index, Some(&alias.name));
     }
 
     // The `linking` section: the symbol table, the segment info, the init functions.

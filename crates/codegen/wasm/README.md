@@ -31,7 +31,7 @@ runic-opt program.runic -p 'cfg-to-scf{exits=in-place},wasm-lower-frames,convert
 ```sh
 runic-opt program.runic --target wasm32-unknown-unknown -o program.core.wasm
 runic-opt program.runic --target wasm32-unknown-unknown --stop-after wat
-runic-opt program.runic --target wasm32-unknown-unknown --emit wat=program.wat --emit module=program.core.wasm
+runic-opt program.runic --target wasm32-unknown-unknown --emit wat=program.wat -o program.core.wasm
 runic-opt program.runic --target wasm32-unknown-unknown --stop-after object -o program.o
 runic-opt program.runic --target wasm32-unknown-unknown --wasm-stack-size 65536 -o program.core.wasm
 ```
@@ -48,12 +48,13 @@ runic-opt program.runic --target wasm32-unknown-unknown --wasm-stack-size 65536 
   for `wasm-ld`, written only when the request stops there or asks for an output there
   (`--stop-after object`, `--emit object=FILE`); the object is collected from the world on its own,
   so a request for the module alone is never refused for what an object cannot express, and
-  `--wasm-stack-size` does not apply to it (the linker sets the stack); `wasm.wat` (alias `wat`, a `.wat` file), the text of the module, and
+  `--wasm-stack-size` does not change it (the linker sets the stack); `wasm.wat` (alias `wat`, a `.wat` file), the text of the module, and
   `wasm.module` (alias `module`, a `.core.wasm` file), the binary, which is the default stop point.
   Both are the same bytes, emitted once and validated.
 - **Option**: `--wasm-stack-size <BYTES>`, the size of the shadow stack at the start of linear
   memory and the initial value of `__stack_pointer`; a positive multiple of 16, 1 MiB by default.
-  It is checked whether or not the unit uses the stack.
+  It is checked whatever is asked for, whether or not the unit uses the stack: a value that is not
+  valid is the same error when the request asks for an object, which the option does not change.
 - When the request asks for no debug information (`DebugInfo::None`, which a driver built on
   `runic-driver` spells `-g=none`), the module has no `name` section; it is named after the unit
   otherwise, and each entity after its link name. `runic-opt` has no flag for debug information:
@@ -359,13 +360,15 @@ for an output there:
 
 ```sh
 runic-opt program.runic --target wasm32-unknown-unknown --stop-after object -o program.o
-runic-opt program.runic --target wasm32-unknown-unknown --emit object=program.o --emit module=program.core.wasm
+runic-opt program.runic --target wasm32-unknown-unknown --emit object=program.o -o program.core.wasm
 ```
 
-One compilation gives one object, as it gives one module, and the default stop point is still the
-module. A request that wants only the module never writes an object, and so is never refused for
-what an object cannot express. `--wasm-stack-size` does not apply to an object: the linker sets
-the stack.
+The second writes the object to `program.o` and the module, the default stop point, to `-o`
+(without `-o`, the module's bytes go to standard output). One compilation gives one object, as it
+gives one module, and the default stop point is still the module. A request that wants only the
+module never writes an object, and so is never refused for what an object cannot express.
+`--wasm-stack-size` does not change an object, since the linker sets the stack, but a value that
+is not valid is the error it is for a module.
 
 ### Linking an object with Rust
 
@@ -414,15 +417,19 @@ wasmtime run --invoke scaled scaled.wasm 5 2>/dev/null
 
 The last command prints 115 (5 times 3, plus 100). The same link without `rustc`, with the linker
 of the toolchain's sysroot (`rustc --print sysroot`; its `lib/rustlib/<host>/bin/rust-lld`) and the
-runtime compiled to an object (`rustc --crate-type cdylib --emit obj=rt.o rt.rs`):
+runtime compiled to an object of its own:
 
 ```sh
+rustc --target wasm32-unknown-unknown -O --crate-type cdylib --emit obj=rt.o rt.rs
 rust-lld -flavor wasm --no-entry --stack-first -z stack-size=65536 --fatal-warnings \
     rt.o scaled.o -o direct.wasm
 wasmtime run --invoke scaled direct.wasm 5 2>/dev/null
 ```
 
-prints 115 as well. The runtime may use `std`, as `tests/run/link/rt/alloc.rs` does; then only the
+prints 115 as well. `-O` is there because it turns off Rust's overflow checks: without it, the
+`x + 100` of `rt.o` calls `core`'s overflow panic, which only the `rustc` route links, and the link
+stops with `undefined symbol: core::panicking::panic_const::panic_const_add_overflow`.
+`-C overflow-checks=off` in place of `-O` links too. The runtime may use `std`, as `tests/run/link/rt/alloc.rs` does; then only the
 `rustc` route is practical, since the standard library's objects are linked by `rustc`. Whatever
 the route:
 
@@ -432,7 +439,17 @@ the route:
 - **The linker exports what the object marks.** A function is exported when it has
   `wasm.export_name` (above), and a Wasm global that has one is too; the memory is exported as
   `memory`. A `public` function with no export name is exported by neither, and
-  `-C link-arg=--export=<name>` exports it.
+  `-C link-arg=--export=<name>` exports it. **Export names must be unique across the whole link**,
+  the runtime's own exports included (a Rust `cdylib` exports each `#[no_mangle]` function under
+  its name): the linker does not check them, even with `--fatal-warnings`, and two exports of one
+  name link into a module that does not validate (`wasmtime` refuses it: ``duplicate export name
+  `shown` already defined``). The backend sees one object and cannot tell; a downstream compiler
+  keeps its export names unique, and validates the linked module (`tests/run/link/duplicate-export.runic`
+  pins the linker's behaviour).
+- **Objects that import one function agree on naming its host.** A declaration with
+  `wasm.import_module` in one object and one without it in another are, to the linker, a host
+  import and an undefined symbol of one name, and the link fails with `import module mismatch`.
+  Within one unit the object check refuses the same disagreement.
 - **A signed narrow integer is marked** `extend = #builtin.sext` ([The calling
   conventions](#the-calling-conventions)).
 - **A runtime for `wasm32-unknown-unknown`** that has constructors, or that the object gives a
@@ -453,7 +470,8 @@ the linked module exports the entity under.
 | a definition, `public` | global; the linker exports nothing for it unless the entity has an export name |
 | a definition, `internal` | global and hidden: other objects of the link see it, the linker never exports it |
 | a definition, `private` | local: two objects may each define a private `@helper` |
-| a function, global or table with `wasm.export_name` (a function; a global or table only under its own link name) | exported; a `private` one is hidden instead of local, since the linker exports no local symbol |
+| a function, global or table the unit defines, with `wasm.export_name` (a function; a global or table only under its own link name) | exported; a `private` one is hidden instead of local, since the linker exports no local symbol. A declaration the unit does not define cannot be exported, nor can the memory ([What has no object form](#what-has-no-object-form)) |
+| a `builtin.function_alias`, `public` or `internal` | a second function symbol of its target, under the alias's link name, global or hidden by its own visibility: another object calls the function by either name. A `private` alias has no symbol |
 | a declaration with no definition in the unit, and no `wasm.import_module` | undefined: a definition in the runtime or another object resolves it, and the link fails (`undefined symbol: helper`) when nothing does |
 | a declaration with `wasm.import_module` (any module, `env` included) | a host import: undefined, with an explicit name, so the linker passes it through as an import from that module with no option |
 | a declaration of a global variable with no definition | an undefined data symbol: another object's data, or one the linker defines (`__heap_base`, `__data_end`, `__start_<section>`, `__stop_<section>`) |
@@ -461,7 +479,8 @@ the linked module exports the entity under.
 The declarations of one import must agree on whether they name a host. The memory, the stack pointer
 and the function table are not symbols of the unit: every object imports `env.__linear_memory`,
 `env.__stack_pointer` and, when something needs it, `env.__indirect_function_table`, and the linker
-defines them. A unit may not define any of them ([What has no object form](#what-has-no-object-form)).
+defines them. A unit may not define any of them, nor declare another memory, nor import the memory
+from a host it names, nor export it ([What has no object form](#what-has-no-object-form)).
 
 The functions of a module `@rules` show the rules:
 
@@ -475,7 +494,7 @@ builtin.function private extern("C") @hidden_export(%x: i32) -> i32 { ... } attr
 ```
 
 and `llvm-readobj --symbols` of the sysroot (`lib/rustlib/<host>/bin/llvm-readobj`) prints, in the
-order of the symbol table (functions, globals, tables, then data):
+order of the symbol table (functions, globals, tables, data, then aliases):
 
 ```
 from_rust            FUNCTION  UNDEFINED                       ImportModule: env
@@ -505,7 +524,11 @@ exists to be found by name, so every one is retained. The linker puts the same-n
 objects together, in the order of the command line, and defines `__start_<section>` and
 `__stop_<section>` around them; `tests/run/link/dispatch.runic` and `dispatch-more.runic`
 contribute entries of one dispatch table from two objects, which `rt/dispatch.rs` finds between
-the bounds and calls through. The segments of the global variables of that module (`@plain` with a value, `@zeros` all zero,
+the bounds and calls through. The linker gives some names a meaning of its own, so a `section` may
+not start with `.bss` (it writes no bytes for such a segment: its contents would link to zeros),
+`.tdata` or `.tbss` (it takes them for thread-local data); and it defines `__start_<section>` and
+`__stop_<section>` only for a name that is a C identifier (letters, digits and `_`, not starting
+with a digit), so a unit that declares the bounds of `a.b` is refused. The segments of the global variables of that module (`@plain` with a value, `@zeros` all zero,
 `@entry` in the section `entries`), from `wasm-tools dump`:
 
 ```
@@ -580,6 +603,12 @@ compiles to a complete module. Each row is a case of `tests/lit/codegen/wasm/obj
 | a function with two export names | marks a symbol exported under one name | a relocatable object cannot express the function `f` exported under two names, `one` and `two` |
 | a global, table or memory exported under a name other than its link name | marks such a symbol exported only under its own name | a relocatable object cannot express the export `x` of the global `g` under another name |
 | declarations of one import that disagree on `wasm.import_module` | cannot tell a host import from an undefined symbol | a relocatable object cannot express the import `g`: its declarations disagree on whether it names its host |
+| a global variable in a `section` whose name starts with `.bss`, `.tdata` or `.tbss` | writes no bytes for a `.bss` segment, so its contents link to zeros; takes `.tdata` and `.tbss` for thread-local data | a relocatable object cannot express the section `.bss.mine` of the global variable `bss::d` |
+| a declaration of `__start_<s>` or `__stop_<s>` where `s` is not a C identifier | defines the bounds only of a section named like a C identifier | a relocatable object cannot express `__start_a.b`: the linker defines no bounds for the section `a.b` |
+| a declared memory other than `env.__linear_memory`, or one that names its host | provides the memory itself, imported as `env.__linear_memory`, and exports it as `memory` | a relocatable object cannot express the memory import `host.mem` |
+| `wasm.export_name` on the memory | exports the memory itself, as `memory` | a relocatable object cannot express the export `__linear_memory` of the memory `__linear_memory` |
+| `wasm.export_name` on a function, global or table the unit declares and does not define | exports only what an object defines | a relocatable object cannot express the export `hosted` of the function `hosted`, which it does not define |
+| a `public` or `internal` `builtin.function_alias` of a function the unit does not define | has no function for the alias's symbol to name | a relocatable object cannot express the alias `al` of a function it does not define |
 | data that ends beyond 4 GiB | a 32-bit memory cannot hold it | the data of the unit does not fit the 4 GiB of a 32-bit linear memory |
 
 A frontend that needs a function table filled at fixed slots, or data at a fixed address, writes a
@@ -630,8 +659,16 @@ were checked on 2026-11-17 on six toolchains (the nightlies 2026-04-30, 2026-09-
 
 - **A `#[link_section]` static lands in a data segment of that name** with the pinned nightly,
   stable 1.100.0 and nightly 2026-11-17; stable 1.98 puts it only in a custom section, outside
-  the range from `__start_<section>` to `__stop_<section>`. Rust can always read such a section; it
-  contributes to one from 1.100 on.
+  the range from `__start_<section>` to `__stop_<section>`. Rust can always read and walk such a
+  section, whatever its entries hold. From 1.100 on it can contribute to one, but **only entries
+  with no pointer in them**: on the Wasm targets a `#[link_section]` static must be plain bytes,
+  and the pinned nightly refuses one that holds a function pointer or a reference with
+  ``error: statics with a custom `#[link_section]` must be a simple list of bytes on the wasm
+  target with no extra levels of indirection such as references``. So an entry of a dispatch
+  table `{id, arity, function}` cannot be written in Rust: a Rust function reaches a section
+  through an object the frontend writes (whose entry names the Rust function), or through a table
+  Rust builds at run time. `tests/run/link/section-rust.runic` shows both: a pointer-free Rust
+  entry found beside the object's, and the refusal.
 - **A library on the WASI targets has the export `_initialize`**, which calls `__wasm_call_ctors`
   once: it is linked with wasi-libc's `crt1-reactor.o` from nightly 2026-09-01 and stable 1.100.
   Up to stable 1.98 such a library is linked with `--no-entry` only, and the linker wraps every
@@ -699,7 +736,7 @@ calls too.
   parameter that is not marked `zext` at its entry, and sign-extends each narrow result marked
   `sext` at each return. A call sign-extends each argument whose parameter is narrow and marked
   `sext`, and masks each narrow result that is not marked `zext`. A tail call and an indirect call
-  follow the same rules.
+  follow the same rules; an indirect call takes the marks from its own signature (below).
 
 The integers of the IR are signless, so a frontend states the signedness of a narrow integer that
 crosses `extern("C")`: a C `signed char` or a Rust `i8` is written `i8 { extend = #builtin.sext }`
@@ -718,6 +755,21 @@ builtin.function public extern("C") @compiled_mix(%cell: ptr<i32>, %b: i8 { exte
 
 With the marks removed from that file, the runtime's `round_trip 100 27 0` printed 128210 where
 it prints -127790 with them.
+
+For an indirect call the marks go on the signature of `builtin.call_indirect`: a function type,
+the type of a function value, cannot carry them (`(i8 { extend = #builtin.sext }) -> i32` is a
+syntax error). A function that calls a Rust callback of type `extern "C" fn(i8) -> i32`:
+
+```
+builtin.function public extern("C") @apply(%f: (i8) -> i32, %x: i8 { extend = #builtin.sext }) -> i32 {
+    %r = builtin.call_indirect %f(%x) : extern("C") (i8 { extend = #builtin.sext }) -> i32;
+    builtin.ret %r : (i32);
+} attributes { link_name = "apply" };
+```
+
+linked with a runtime whose export `run(x)` is `apply(widen, x as i8)`, `widen` being
+`x as i32`, gives -100 for -100. With the mark removed from the call's signature (the parameter
+`%x` keeps its own), the argument reaches Rust zero-extended, and `run` gives 156.
 
 ## The well-known symbols
 

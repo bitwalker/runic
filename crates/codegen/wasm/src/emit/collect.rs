@@ -19,7 +19,9 @@
 //!   [DataPlacement::Layout]; a definition's bytes, alignment and fix-ups are its initializer's
 //!   ([data::evaluate]), and the layout gives it its place. A declaration that links to no
 //!   definition is an *undefined data symbol* ([Unit::undefined_data]), a stub with no bytes;
-//! - `builtin.function_alias`: no entity of its own: a use of it is a use of its target;
+//! - `builtin.function_alias`: no entity of its own: a use of it is a use of its target; one that
+//!   other modules may name is recorded ([Unit::aliases]) for the object writer, which gives it a
+//!   symbol;
 //! - `builtin.segment`: remembered for the layout ([Unit::segments]);
 //! - `wasm.tag`: an error (exceptions are not emitted).
 //!
@@ -140,6 +142,23 @@ pub struct Unit {
     host_conflict: Option<(OperationRef, OperationRef)>,
     exported: FxHashMap<String, OperationRef>,
     ref_func: Option<OperationRef>,
+    aliases: Vec<AliasSymbol>,
+}
+
+/// A `builtin.function_alias` that other modules may name (its visibility is `public` or
+/// `internal`): a definition of a function under the alias's link name, standing for its target.
+/// A complete module needs nothing of it; an object writes a function symbol for it.
+#[derive(Clone, Debug)]
+pub struct AliasSymbol {
+    /// The `builtin.function_alias`.
+    pub op: OperationRef,
+    /// The effective link name of the alias.
+    pub name: String,
+    /// The binding of its symbol, from its visibility: [Binding::Global] or [Binding::Hidden].
+    pub binding: Binding,
+    /// The function of the unit its target is, through every alias and declaration; `None` when
+    /// the target resolves to no function of the unit.
+    pub target: Option<FuncId>,
 }
 
 /// The name a complete module exports its start function under: the convention of a WASI
@@ -151,6 +170,12 @@ const INDIRECT_FUNCTION_TABLE: &str = crate::symbols::INDIRECT_FUNCTION_TABLE;
 
 /// The name of the stack pointer the linker defines.
 const STACK_POINTER: &str = crate::symbols::STACK_POINTER;
+
+/// The name of the memory every object imports, from [ENV].
+const LINEAR_MEMORY: &str = crate::symbols::LINEAR_MEMORY;
+
+/// The module the linker's memory is imported from, and of an import that names no other.
+const ENV: &str = "env";
 
 /// The binding of each entity of the description that has a symbol, by id.
 #[derive(Debug, Default)]
@@ -295,6 +320,13 @@ impl Unit {
         self.start
     }
 
+    /// The `builtin.function_alias`es of the unit that other modules may name, in the order they
+    /// are written. A `private` alias is not among them: only its own module names it, through
+    /// its target.
+    pub fn aliases(&self) -> &[AliasSymbol] {
+        &self.aliases
+    }
+
     /// Exports the start function, when the unit has one, as [START_EXPORT] (`_initialize`), as
     /// a complete module does; a unit that already exports that name is the error that two
     /// exports have one name, naming both. A complete module has no start section: its embedder
@@ -349,7 +381,20 @@ impl Unit {
     /// - a global, a table or a memory exported under a name other than its link name (an object
     ///   marks such a symbol exported under its own name only);
     /// - an import whose declarations disagree on whether it names its host (it would be both a
-    ///   host import and the linker's to resolve).
+    ///   host import and the linker's to resolve);
+    /// - a global variable the unit defines in a `section` whose name starts with `.bss` (the
+    ///   linker writes no bytes for it, so its contents link to zeros), `.tdata` or `.tbss` (the
+    ///   linker treats it as thread-local data), labelled on the global variable;
+    /// - a declaration of `__start_<s>` or `__stop_<s>` where `s` is not a C identifier (letters,
+    ///   digits and `_`, not starting with a digit): the linker defines the bounds of no other
+    ///   section;
+    /// - a memory import other than `env.__linear_memory`, or one that names its host (the linker
+    ///   provides the memory, and exports it as `memory`);
+    /// - an export of a function, global or table the unit declares and does not define, labelled
+    ///   on the operation that exports it (the linker exports only what an object defines);
+    /// - an export of the memory (the linker exports it, as `memory`);
+    /// - a `public` or `internal` `builtin.function_alias` whose target is not a function the unit
+    ///   defines (an object defines the alias's symbol at its target's function).
     ///
     /// A table slot with an addend has no relocation either, and none arises: the code writes a
     /// slot only for `wasm.func_index`, which has no offset, and the evaluator gives a function in
@@ -574,6 +619,169 @@ impl Unit {
                 ],
             ));
         }
+        self.check_object_linking()
+    }
+
+    /// The refusals of [Self::check_object] of what an object can write and the linker gives
+    /// another meaning or ignores: sections the linker treats specially, the bounds of a section
+    /// it defines none for, a memory other than its own, exports of what the object does not
+    /// define or of the memory, and aliases of a function the unit does not define.
+    fn check_object_linking(&self) -> Result<(), Report> {
+        for (index, entry) in self.desc.data().iter().enumerate() {
+            let id = DataId::new(index as u32);
+            let Some(section) = entry.section.as_deref() else {
+                continue;
+            };
+            if self.data_binding(id).is_none_or(Binding::is_undefined) {
+                continue;
+            }
+            let Some(does) = linker_section(section) else {
+                continue;
+            };
+            let op = self.data_op(id).expect("a data entry has an origin");
+            let op = op.borrow();
+            let name = &entry.name;
+            return Err(cannot_express(
+                format!(
+                    "a relocatable object cannot express the section `{section}` of the global \
+                     variable `{name}`"
+                ),
+                &op,
+                format!("this puts `{name}` in the section `{section}`, and the linker {does}"),
+            ));
+        }
+        for id in &self.undefined_data {
+            let name = &self.desc.data()[id.index() as usize].name;
+            let bound = name
+                .strip_prefix("__start_")
+                .map(|section| ("start", section))
+                .or_else(|| name.strip_prefix("__stop_").map(|section| ("end", section)));
+            let Some((bound, section)) = bound else {
+                continue;
+            };
+            if is_c_identifier(section) {
+                continue;
+            }
+            let op = self.data_op(*id).expect("an undefined data symbol has an origin");
+            let op = op.borrow();
+            return Err(cannot_express(
+                format!(
+                    "a relocatable object cannot express `{name}`: the linker defines no bounds \
+                     for the section `{section}`"
+                ),
+                &op,
+                format!(
+                    "this declares the {bound} of the section `{section}`, and the linker defines \
+                     `__start_<s>` and `__stop_<s>` only for a section whose name is a C \
+                     identifier: letters, digits and `_`, not starting with a digit"
+                ),
+            ));
+        }
+        for (index, memory) in self.desc.memories().iter().enumerate() {
+            let Some(import) = memory.entity.import() else {
+                continue;
+            };
+            let op = self.memory_op(MemoryId::new(index as u32)).expect("a memory has an origin");
+            let op = op.borrow();
+            let host = names_host(&op);
+            if !host && import.module == ENV && import.field == LINEAR_MEMORY {
+                continue;
+            }
+            let declares = if host {
+                format!("names the host module `{}` with `{IMPORT_MODULE}`", import.module)
+            } else {
+                format!("declares the memory `{}`", import.field)
+            };
+            return Err(cannot_express(
+                format!(
+                    "a relocatable object cannot express the memory import `{}.{}`",
+                    import.module, import.field
+                ),
+                &op,
+                format!(
+                    "this {declares}, and the linker provides the memory itself: an object \
+                     imports it as `{ENV}.{LINEAR_MEMORY}`, and the linker exports it as `memory`"
+                ),
+            ));
+        }
+        for export in self.desc.exports() {
+            let (what, name, undefined) = match export.target {
+                ExportTarget::Function(id) => {
+                    let function = self.desc.function(id);
+                    ("function", &function.name, function.entity.is_import())
+                }
+                ExportTarget::Global(id) => {
+                    let global = &self.desc.globals()[id.index() as usize];
+                    ("global", &global.name, global.entity.is_import())
+                }
+                ExportTarget::Table(id) => {
+                    let table = &self.desc.tables()[id.index() as usize];
+                    ("table", &table.name, table.entity.is_import())
+                }
+                ExportTarget::Memory(_) => continue,
+            };
+            if !undefined {
+                continue;
+            }
+            let Some(op) = self.export_op(&export.name) else {
+                continue;
+            };
+            let op = op.borrow();
+            return Err(cannot_express(
+                format!(
+                    "a relocatable object cannot express the export `{}` of the {what} `{name}`, \
+                     which it does not define",
+                    export.name
+                ),
+                &op,
+                format!(
+                    "this exports the {what} `{name}`, which the unit declares and does not \
+                     define, and the linker exports only what an object defines"
+                ),
+            ));
+        }
+        for export in self.desc.exports() {
+            let ExportTarget::Memory(id) = export.target else {
+                continue;
+            };
+            let Some(op) = self.export_op(&export.name) else {
+                continue;
+            };
+            let op = op.borrow();
+            let link_name = &self.desc.memories()[id.index() as usize].name;
+            return Err(cannot_express(
+                format!(
+                    "a relocatable object cannot express the export `{}` of the memory \
+                     `{link_name}`",
+                    export.name
+                ),
+                &op,
+                format!(
+                    "this exports the memory as `{}`, and the linker provides and exports the \
+                     memory itself, as `memory`",
+                    export.name
+                ),
+            ));
+        }
+        for alias in &self.aliases {
+            let defined = alias.target.is_some_and(|id| !self.desc.function(id).entity.is_import());
+            if defined {
+                continue;
+            }
+            let op = alias.op.borrow();
+            let name = &alias.name;
+            return Err(cannot_express(
+                format!(
+                    "a relocatable object cannot express the alias `{name}` of a function it does \
+                     not define"
+                ),
+                &op,
+                format!(
+                    "this defines `{name}` for a function the unit does not define, and an object \
+                     defines a symbol only for a function it defines"
+                ),
+            ));
+        }
         Ok(())
     }
 
@@ -599,6 +807,33 @@ impl Unit {
             FixupKind::TypeIndex(_) | FixupKind::BlockType(_) => String::from("a type index"),
         }
     }
+}
+
+/// What the linker does with a data segment named `section` that the object cannot leave to it,
+/// for a message, or `None` when it treats the name as any other: a name that starts with `.bss`
+/// links to zeros, and one that starts with `.tdata` or `.tbss` is thread-local data.
+fn linker_section(section: &str) -> Option<&'static str> {
+    if section.starts_with(".bss") {
+        Some(
+            "writes no bytes for a section whose name starts with `.bss`: its contents would link \
+             to zeros",
+        )
+    } else if section.starts_with(".tdata") || section.starts_with(".tbss") {
+        Some(
+            "treats a section whose name starts with `.tdata` or `.tbss` as thread-local data, \
+             which the backend does not emit",
+        )
+    } else {
+        None
+    }
+}
+
+/// Whether `name` is a C identifier: letters, digits and `_`, not starting with a digit, and not
+/// empty. The linker defines `__start_<s>` and `__stop_<s>` only for such a section `s`.
+fn is_c_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars.next().is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// The error that a relocatable object cannot express `op`: the message `message`, and the
@@ -663,6 +898,7 @@ pub fn collect(
         collector.entry(*op)?;
     }
     collector.link()?;
+    collector.aliases(&ops)?;
     collector.check_memories()?;
     for op in &ops {
         collector.contents(*op, config)?;
@@ -681,6 +917,7 @@ pub fn collect(
         host_conflict: collector.host_conflict,
         exported: collector.exported,
         ref_func: collector.resolver.first_ref_func,
+        aliases: collector.aliases,
     })
 }
 
@@ -1279,6 +1516,8 @@ struct Collector {
     host_conflict: Option<(OperationRef, OperationRef)>,
     /// The operation that gives each export, by name.
     exported: FxHashMap<String, OperationRef>,
+    /// The aliases that other modules may name.
+    aliases: Vec<AliasSymbol>,
 }
 
 impl Collector {
@@ -1648,6 +1887,31 @@ impl Collector {
                 ));
             }
             pending = waiting;
+        }
+        Ok(())
+    }
+
+    /// Records each `builtin.function_alias` of `ops` that other modules may name, with the
+    /// function its target is (once every declaration is linked).
+    fn aliases(&mut self, ops: &[OperationRef]) -> Result<(), Report> {
+        for op in ops {
+            let borrowed = op.borrow();
+            if what(&borrowed) != What::Alias
+                || is_declaration(&borrowed)
+                || !other_modules_may_name(&borrowed)
+            {
+                continue;
+            }
+            let target = match canonical(*op).and_then(|target| self.resolver.ids.get(&target)) {
+                Some(Id::Function(id)) => Some(*id),
+                _ => None,
+            };
+            self.aliases.push(AliasSymbol {
+                op: *op,
+                name: link_name_of(&borrowed)?,
+                binding: binding_of(&borrowed),
+                target,
+            });
         }
         Ok(())
     }

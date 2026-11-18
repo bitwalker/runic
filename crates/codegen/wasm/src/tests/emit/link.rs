@@ -3,8 +3,11 @@
 //! and objects that call each other, share data and functions, contribute to one section, have
 //! start functions, and leave symbols for the linker to resolve.
 //!
-//! Every link is `rust-lld -flavor wasm --no-entry --stack-first -z stack-size=65536 <extra>
-//! 0.o 1.o ... -o linked.wasm` ([link]), in a temporary directory, and the output is validated.
+//! Every link is `rust-lld -flavor wasm --no-entry --stack-first -z stack-size=65536
+//! --fatal-warnings <extra> 0.o 1.o ... -o linked.wasm` ([link]), in a temporary directory, and the
+//! output is validated: a warning of the linker (a call whose signature differs from the
+//! definition's, which it replaces with a trap) fails the test. Only the test of a link that
+//! fails leaves `--fatal-warnings` out ([link_allowing_warnings]).
 
 use alloc::{format, string::String, vec, vec::Vec};
 use std::{path::PathBuf, process::Command};
@@ -35,6 +38,9 @@ const STACK_SIZE: u32 = 65_536;
 /// What every link of these tests passes to the linker: no entry point, the stack first, and a
 /// stack of [STACK_SIZE] bytes.
 const LINK_ARGS: [&str; 4] = ["--no-entry", "--stack-first", "-z", "stack-size=65536"];
+
+/// What turns every warning of the linker into a failed link.
+const FATAL_WARNINGS: &str = "--fatal-warnings";
 
 /// The output of `command`, or the panic that says it did not run.
 #[track_caller]
@@ -68,8 +74,17 @@ fn linker() -> PathBuf {
 }
 
 /// The objects `objects`, written in that order to a temporary directory (`0.o`, `1.o`, ...),
-/// linked with [LINK_ARGS] and `extra`: the linked module, validated, or the linker's message.
+/// linked with [LINK_ARGS], [FATAL_WARNINGS] and `extra`: the linked module, validated, or the
+/// linker's message.
 pub(super) fn link(objects: &[&[u8]], extra: &[&str]) -> Result<Vec<u8>, String> {
+    let mut args = vec![FATAL_WARNINGS];
+    args.extend_from_slice(extra);
+    link_allowing_warnings(objects, &args)
+}
+
+/// The objects `objects` linked as [link] links them, but without [FATAL_WARNINGS]: for the test
+/// of a link that fails.
+fn link_allowing_warnings(objects: &[&[u8]], extra: &[&str]) -> Result<Vec<u8>, String> {
     let directory = tempfile::tempdir().expect("a temporary directory");
     let mut command = Command::new(linker());
     command.args(["-flavor", "wasm"]).args(LINK_ARGS).args(extra);
@@ -935,6 +950,10 @@ fn private_functions_of_one_name_do_not_collide_and_internal_ones_are_shared_but
             "builtin.function public extern(\"C\") @named(%x: i32) -> i32 {
             builtin.ret %x : (i32);
         } attributes { wasm.export_name = \"renamed\" };",
+            "builtin.function public extern(\"C\") @plain(%x: i32) -> i32 {
+            %r = builtin.call @shared(%x) : extern(\"C\") (i32) -> i32;
+            builtin.ret %r : (i32);
+        } attributes { link_name = \"plain\" };",
         ],
     )]);
     let user = object_of(&[module(
@@ -953,6 +972,13 @@ fn private_functions_of_one_name_do_not_collide_and_internal_ones_are_shared_but
     let mut instance = Instance::new(&bytes);
     instance.gives("use", &[i32(41)], &[i32(42)]);
     instance.gives("renamed", &[i32(5)], &[i32(5)]);
+    // `--export-dynamic` exports every symbol other objects may name and that is not hidden: the
+    // public `plain` is exported under its link name, and the internal `shared` still is not.
+    let bytes = linked(&[&provider, &user], &["--export-dynamic"]);
+    let exported = exports(&bytes);
+    assert!(exported.iter().any(|name| name == "plain"), "{exported:?}");
+    assert!(!exported.iter().any(|name| name == "shared"), "{exported:?}");
+    Instance::new(&bytes).gives("plain", &[i32(1)], &[i32(2)]);
 }
 
 #[test]
@@ -983,7 +1009,7 @@ fn an_undefined_symbol_fails_the_link_unless_it_names_its_host() {
         } attributes { wasm.export_name = \"f\" };",
         ],
     )]);
-    let message = link(&[&object], &[]).expect_err("the link fails");
+    let message = link_allowing_warnings(&[&object], &[]).expect_err("the link fails");
     assert!(message.contains("undefined symbol: missing"), "{message}");
 
     let object = object_of(&[module(
@@ -1141,4 +1167,124 @@ fn the_linker_refuses_nothing_the_object_check_lets_through_in_these_tests() {
         message.contains("cannot define the stack pointer `__stack_pointer`"),
         "{message}"
     );
+}
+
+// ---- Aliases and sections ---------------------------------------------------------------------
+
+/// A module `a` that defines the internal `target`, `(i8) -> i32` (twice its byte, unsigned, plus
+/// 1), with a public alias `al` and an internal alias `inner` of it, the second through the first.
+fn aliased() -> Vec<u8> {
+    object_of(&[module(
+        "a",
+        &[
+            "builtin.function internal extern(\"C\") @target(%x: i8) -> i32 {
+            %w = arith.zext %x <{ ty = i32 }>;
+            %d = arith.add %w, %w;
+            %one = arith.constant 1 : i32;
+            %r = arith.add %d, %one;
+            builtin.ret %r : (i32);
+        };",
+            "builtin.function_alias public @al -> @target attributes { link_name = \"al\" };",
+            "builtin.function_alias internal @inner -> @al attributes { link_name = \"inner\" };",
+        ],
+    )])
+}
+
+#[test]
+fn another_object_calls_a_function_by_the_name_of_its_alias() {
+    let user = object_of(&[module(
+        "b",
+        &[
+            "builtin.function public extern(\"C\") @al(i8) -> i32 attributes { link_name = \"al\" \
+             };",
+            "builtin.function public extern(\"C\") @inner(i8) -> i32 attributes { link_name = \
+             \"inner\" };",
+            "builtin.function public extern(\"C\") @use(%x: i8) -> i32 {
+            %a = builtin.call @al(%x) : extern(\"C\") (i8) -> i32;
+            %b = builtin.call @inner(%x) : extern(\"C\") (i8) -> i32;
+            %k = arith.constant 1000 : i32;
+            %s = arith.mul %a, %k;
+            %r = arith.add %s, %b;
+            builtin.ret %r : (i32);
+        } attributes { wasm.export_name = \"use\" };",
+        ],
+    )]);
+    let provider = aliased();
+    for order in [[&provider[..], &user[..]], [&user[..], &provider[..]]] {
+        let bytes = linked(&order, &[]);
+        // Neither alias is exported: an alias's symbol is not, and the target has no export name.
+        assert_eq!(exports(&bytes), ["memory", "use"]);
+        // 200 is the byte 200, unsigned: 401 through each name.
+        Instance::new(&bytes).gives("use", &[i32(200)], &[i32(401_401)]);
+    }
+}
+
+#[test]
+fn a_function_value_in_data_named_by_its_alias_is_called_through_the_table() {
+    let user = object_of(&[module(
+        "b",
+        &[
+            "builtin.function public extern(\"C\") @al(i8) -> i32 attributes { link_name = \"al\" \
+             };",
+            "builtin.global_variable private @stored : (i8) -> i32 {
+            %f = builtin.function_ref @al : (i8) -> i32;
+            builtin.yield %f;
+        };",
+            "builtin.function public extern(\"C\") @call_stored(%x: i8) -> i32 {
+            %a = builtin.global_symbol @stored : ptr<(i8) -> i32>;
+            %f = mem.load %a;
+            %r = builtin.call_indirect %f(%x) : extern(\"C\") (i8) -> i32;
+            builtin.ret %r : (i32);
+        } attributes { wasm.export_name = \"call_stored\" };",
+        ],
+    )]);
+    let bytes = linked(&[&aliased(), &user], &[]);
+    Instance::new(&bytes).gives("call_stored", &[i32(5)], &[i32(11)]);
+}
+
+#[test]
+fn members_of_one_section_of_different_alignments_are_each_read_through_their_own_symbol() {
+    // In one segment `mixed`: the byte at 0, the `i64` at 8, the `i16` at 16. Each is read by its
+    // own symbol, from the object that defines it and from another.
+    let owner = object_of(&[module(
+        "a",
+        &[
+            "builtin.global_variable public @small : i8 { %v = arith.constant 7 : i8; \
+             builtin.yield %v; } attributes { link_name = \"small\", section = \"mixed\" };",
+            "builtin.global_variable public @wide : i64 { %v = arith.constant 81985529216486895 : \
+             i64; builtin.yield %v; } attributes { link_name = \"wide\", section = \"mixed\" };",
+            "builtin.global_variable public @half : i16 { %v = arith.constant -3 : i16; \
+             builtin.yield %v; } attributes { link_name = \"half\", section = \"mixed\" };",
+            "builtin.function public extern(\"C\") @own_wide() -> i64 {
+            %p = builtin.global_symbol @wide : ptr<i64>;
+            %v = mem.load %p;
+            builtin.ret %v : (i64);
+        } attributes { wasm.export_name = \"own_wide\" };",
+        ],
+    )]);
+    let reader = object_of(&[module(
+        "b",
+        &[
+            "builtin.global_variable public @small : i8 attributes { link_name = \"small\" };",
+            "builtin.global_variable public @wide : i64 attributes { link_name = \"wide\" };",
+            "builtin.global_variable public @half : i16 attributes { link_name = \"half\" };",
+            "builtin.function public extern(\"C\") @read() -> (i32, i64, i32) {
+            %ps = builtin.global_symbol @small : ptr<i8>;
+            %s = mem.load %ps;
+            %sw = arith.zext %s <{ ty = i32 }>;
+            %pw = builtin.global_symbol @wide : ptr<i64>;
+            %w = mem.load %pw;
+            %ph = builtin.global_symbol @half : ptr<i16>;
+            %h = mem.load %ph;
+            %hw = arith.sext %h <{ ty = i32 }>;
+            builtin.ret %sw, %w, %hw : (i32, i64, i32);
+        } attributes { wasm.export_name = \"read\" };",
+        ],
+    )]);
+    for order in [[&owner[..], &reader[..]], [&reader[..], &owner[..]]] {
+        let bytes = linked(&order, &[]);
+        let mut instance = Instance::new(&bytes);
+        instance.gives("read", &[], &[i32(7), i64(0x0123_4567_89ab_cdef), i32(-3)]);
+        instance.gives("own_wide", &[], &[i64(0x0123_4567_89ab_cdef)]);
+    }
 }

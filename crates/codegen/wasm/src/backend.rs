@@ -75,8 +75,8 @@ const CHECKPOINTS: &[CheckpointDecl] = &[
 pub struct WasmOptions {
     /// The size in bytes of the shadow stack, which takes the start of linear memory and grows
     /// down from the initial value of the stack pointer `__stack_pointer`; a positive multiple of
-    /// 16. A relocatable object (`--stop-after object`) accepts the option and ignores it: the
-    /// linker sets the stack.
+    /// 16, checked whatever is asked for. A relocatable object (`--stop-after object`) is not
+    /// changed by it: the linker sets the stack.
     #[arg(long, value_name = "BYTES", default_value_t = DEFAULT_STACK_SIZE)]
     pub stack_size: u32,
 }

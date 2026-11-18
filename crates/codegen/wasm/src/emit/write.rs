@@ -189,6 +189,8 @@ pub enum Site {
     Element(ElemId),
     /// An export, by its name.
     Export(String),
+    /// The symbol of a `builtin.function_alias` in an object, by the alias's link name.
+    Alias(String),
 }
 
 impl fmt::Display for Site {
@@ -199,6 +201,7 @@ impl fmt::Display for Site {
             Self::Data { id, name } => (id.to_string(), name),
             Self::Element(id) => return write!(f, "{id}"),
             Self::Export(name) => return write!(f, "the export `{name}`"),
+            Self::Alias(name) => return write!(f, "the alias `{name}`"),
         };
         if name.is_empty() {
             f.write_str(&what)

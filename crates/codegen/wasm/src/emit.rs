@@ -49,8 +49,8 @@ use runic_ir::{OperationRef, Report};
 /// How a module is emitted.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EmitOptions {
-    /// The size of the shadow stack, in bytes: a positive multiple of 16, which the layout checks
-    /// whether or not the unit uses the stack. The layout reserves it from address 0 when it
+    /// The size of the shadow stack, in bytes: a positive multiple of 16, which is checked
+    /// whether or not the unit uses the stack, for an object too. The layout reserves it from address 0 when it
     /// defines the stack pointer.
     pub stack_size: u32,
     /// Whether the module carries a `name` section.
@@ -97,10 +97,15 @@ pub fn emit_module(root: OperationRef, options: &EmitOptions) -> Result<Vec<u8>,
 /// `root` is what [emit_module] takes. The unit is collected as for a module, and what an object
 /// cannot express is an error naming the operation ([collect::Unit::check_object]), as is data
 /// that does not fit a 32-bit memory; the layout is the linker's and never runs, so the stack
-/// size of `options` and its names do not apply. The start function, when the unit has one, is
+/// size of `options` and its names do not change the object. The stack size is checked all the
+/// same, first, with the error a complete module gives for it: a value is valid or not whatever
+/// is asked for. The start function, when the unit has one, is
 /// the object's init function, which the linker's `__wasm_call_ctors` calls; it is not exported.
 /// An object that does not validate is reported as a defect of the backend and is not returned.
 pub fn emit_object(root: OperationRef, options: &EmitOptions) -> Result<Vec<u8>, Report> {
+    if let Some(message) = layout::stack_size_problem(options.stack_size) {
+        return Err(Report::msg(message));
+    }
     let unit = collect::collect(root, options, &body::BodyConfig::default())?;
     unit.check_object()?;
     object::check_data_size(&unit)?;

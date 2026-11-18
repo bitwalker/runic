@@ -94,6 +94,8 @@ struct Read {
     sections: Vec<String>,
     /// Each import: its module, field and kind.
     imports: Vec<(String, String, &'static str)>,
+    /// The minimum, in pages, of each memory import.
+    memory_pages: Vec<u64>,
     /// Each export: its name and the function's index.
     exports: Vec<(String, u32)>,
     symbols: Vec<Sym>,
@@ -166,7 +168,10 @@ fn read(bytes: &[u8]) -> Read {
                     let kind = match import.ty {
                         TypeRef::Func(_) => "func",
                         TypeRef::Table(_) => "table",
-                        TypeRef::Memory(_) => "memory",
+                        TypeRef::Memory(memory) => {
+                            read.memory_pages.push(memory.initial);
+                            "memory"
+                        }
                         TypeRef::Global(_) => "global",
                         _ => "other",
                     };
@@ -814,4 +819,62 @@ fn data_beyond_a_32_bit_memory_is_an_error_naming_the_global_variable() {
         ),
         "{error}"
     );
+}
+
+#[test]
+fn the_memory_import_has_as_many_pages_as_the_objects_data_needs() {
+    let function = "builtin.function public extern(\"wasm\") @f(%x: i32) -> i32 { builtin.ret %x \
+                    : (i32); } attributes { wasm.export_name = \"f\" };";
+    assert_eq!(read_object(&[module("m", &[function])]).memory_pages, [0]);
+    // A page and one byte of data, zero or not, and four bytes more: two pages.
+    let read = read_object(&[module(
+        "m",
+        &[
+            "builtin.global_variable private @zeros : array<i8; 65537> { %z = builtin.zero : \
+             array<i8; 65537>; builtin.yield %z; };",
+            "builtin.global_variable private @word : i32 { %v = arith.constant 9 : i32; \
+             builtin.yield %v; };",
+        ],
+    )]);
+    assert_eq!(read.imports, [memory()]);
+    assert_eq!(read.memory_pages, [2]);
+    let read = read_object(&[module(
+        "m",
+        &[
+            "builtin.global_variable private @page : array<i8; 65536> { %z = builtin.zero : \
+             array<i8; 65536>; builtin.yield %z; };",
+        ],
+    )]);
+    assert_eq!(read.memory_pages, [1]);
+}
+
+#[test]
+fn an_alias_other_modules_may_name_is_a_second_symbol_of_its_targets_function() {
+    let read = read_object(&[module(
+        "m",
+        &[
+            "builtin.function private extern(\"wasm\") @first(%x: i32) -> i32 { builtin.ret %x : \
+             (i32); };",
+            "builtin.function public extern(\"wasm\") @target(%x: i32) -> i32 { builtin.ret %x : \
+             (i32); } attributes { link_name = \"target\" };",
+            "builtin.function_alias public @al -> @target attributes { link_name = \"al\" };",
+            "builtin.function_alias internal @inner -> @al attributes { link_name = \"inner\" };",
+            "builtin.function_alias private @mine -> @first;",
+            "builtin.global_variable private @d : i32 { %v = arith.constant 1 : i32; \
+             builtin.yield %v; };",
+        ],
+    )]);
+    // After the data, in the order written: the target's index, the alias's own name and binding;
+    // a private alias has none.
+    assert_eq!(
+        read.symbols,
+        [
+            Sym::Func(LOCAL, 0, Some("m::first")),
+            Sym::Func(0, 1, Some("target")),
+            Sym::Data(LOCAL, "m::d", Some((0, 0, 4))),
+            Sym::Func(0, 1, Some("al")),
+            Sym::Func(HIDDEN, 1, Some("inner")),
+        ]
+    );
+    assert!(read.exports.is_empty());
 }

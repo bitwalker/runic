@@ -539,6 +539,35 @@ fn the_stack_size_option_does_not_change_an_object() {
 }
 
 #[test]
+fn a_stack_size_that_is_not_valid_is_the_same_error_for_an_object() {
+    for (stack_size, message) in [
+        (
+            100,
+            "the stack size 100 (`--wasm-stack-size`) is not a multiple of 16, the alignment of \
+             the stack",
+        ),
+        (
+            0,
+            "the stack size 0 (`--wasm-stack-size`) is not positive: data would start at the \
+             address 0, which a null pointer has",
+        ),
+    ] {
+        for checkpoints in [&["object"][..], &["object", "module"][..]] {
+            let mut request = request(FRAME, checkpoints);
+            if checkpoints.len() == 1 {
+                request.stop_after = Some("object".into());
+            }
+            request.set_options(WasmOptions { stack_size });
+            let compilation = compile(request);
+            assert!(!compilation.succeeded());
+            let error = error_of(&compilation);
+            assert!(error.contains(message), "{error}");
+            assert!(compilation.emitted().is_empty());
+        }
+    }
+}
+
+#[test]
 fn a_unit_with_an_element_segment_is_a_module_and_is_refused_as_an_object() {
     let module = module_of(request(WITH_ELEM, &["module"]));
     validate(&module).unwrap();

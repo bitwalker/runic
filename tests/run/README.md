@@ -143,7 +143,14 @@ it needs the standard library (`rt/alloc.rs`). Where a test needs a second runti
   It is a second statement of the pin: `test-run` fails with one line when the two differ, and
   `toolchain.runic` checks that the tests' `rustc` is the one rustup picks inside the repository.
   The pin matters: a `#[link_section]` static of Rust's lands in a data section of that name
-  from Rust 1.100 on; stable 1.98 left it out of the section's bounds.
+  from Rust 1.100 on; stable 1.98 left it out of the section's bounds (`section-rust.runic`
+  counts Rust's entry).
+- **Rust contributes only plain bytes to a section.** It can read and walk any section, but on the
+  Wasm targets `rustc` refuses a `#[link_section]` static that holds a pointer, a function's
+  included: ``error: statics with a custom `#[link_section]` must be a simple list of bytes on
+  the wasm target with no extra levels of indirection such as references`` (checked on the
+  pinned nightly by `section-rust.runic`). An entry that names a function, as a dispatch table's
+  does, comes from an object.
 - **A second module** of a test is a test of its own, with RUN lines that need nothing else, as
   in `wasm/`: `dispatch-more.runic` (a second object), and `host-env.runic`, `start-host.runic`
   and `export-global-host.runic` (complete modules that the test gives to `wasmtime --preload`).
@@ -164,3 +171,5 @@ it needs the standard library (`rt/alloc.rs`). Where a test needs a second runti
 | `heap.runic` | `__heap_base` and `__data_end` read from compiled code |
 | `start.runic`, `start-host.runic` | a start function (`wasm.start`) beside a Rust constructor in `.init_array`: run once by `__wasm_call_ctors` from the runtime's `init`, or before every export when nothing names it |
 | `export-global.runic`, `export-global-host.runic` | a Wasm global with an export name is exported from the linked module, and the host reads it |
+| `section-rust.runic` | Rust contributes a pointer-free entry to a section the object contributes to, and both Rust and compiled code count all three entries; an entry holding a function pointer is refused by `rustc` |
+| `duplicate-export.runic` | an export of the object and one of Rust's with the same name: the link succeeds, even with `--fatal-warnings`, and `wasmtime` refuses the module as not valid (the linker does not check export names) |

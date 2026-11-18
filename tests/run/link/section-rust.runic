@@ -1,0 +1,65 @@
+// RUN: runic-opt --target wasm32-unknown-unknown --stop-after object %s -o %t.o
+// RUN: rustc --edition 2024 --target wasm32-unknown-unknown --crate-type cdylib -O %S/rt/tally.rs -C link-arg=%t.o -C link-arg=--fatal-warnings -o %t.wasm
+// RUN: wasmtime run --invoke count %t.wasm 2>/dev/null | filecheck %s --check-prefix=COUNT
+// RUN: wasmtime run --invoke count_compiled %t.wasm 2>/dev/null | filecheck %s --check-prefix=COUNT
+// RUN: wasmtime run --invoke value %t.wasm 1 2>/dev/null | filecheck %s --check-prefix=ONE
+// RUN: wasmtime run --invoke value %t.wasm 2 2>/dev/null | filecheck %s --check-prefix=TWO
+// RUN: wasmtime run --invoke value %t.wasm 3 2>/dev/null | filecheck %s --check-prefix=RUST
+// RUN: wasmtime run --invoke value %t.wasm 4 2>/dev/null | filecheck %s --check-prefix=MISS
+// RUN: not rustc --edition 2024 --target wasm32-unknown-unknown --crate-type cdylib -O --cfg pointer %S/rt/tally.rs -C link-arg=%t.o -C link-arg=--fatal-warnings -o %t.pointer.wasm 2>&1 | filecheck %s --check-prefix=POINTER
+// RUN: runic-opt --target wasm32-unknown-unknown --stop-after object %s -p 'canonicalizer,cse,sccp,canonicalizer,dce' -o %t.opt.o
+// RUN: rustc --edition 2024 --target wasm32-unknown-unknown --crate-type cdylib -O %S/rt/tally.rs -C link-arg=%t.opt.o -C link-arg=--fatal-warnings -o %t.opt.wasm
+// RUN: wasmtime run --invoke count %t.opt.wasm 2>/dev/null | filecheck %s --check-prefix=COUNT
+// RUN: wasmtime run --invoke count_compiled %t.opt.wasm 2>/dev/null | filecheck %s --check-prefix=COUNT
+// RUN: wasmtime run --invoke value %t.opt.wasm 3 2>/dev/null | filecheck %s --check-prefix=RUST
+
+// A section that Rust and an object both contribute to.
+//
+// This object contributes two `struct<i32, i32>` entries, an id and a value, to the data section
+// `tally`; the runtime `rt/tally.rs` contributes a third of the same layout with
+// `#[link_section = "tally"]`. The linker puts the three together between `__start_tally` and
+// `__stop_tally`, and both Rust (`count`) and compiled code (`compiled_count`, here) count three.
+// `value` finds each entry by its id: 1 and 2 are this object's, 3 is Rust's.
+//
+// A Rust entry can be only plain bytes. Built with `--cfg pointer`, the runtime also puts an entry
+// holding a function pointer in the section, and `rustc` refuses it: on the Wasm targets, a static
+// in a named section must be a simple list of bytes. A Rust function reaches a section through an
+// object the frontend writes, or through a table Rust builds at run time.
+
+// COUNT: {{^}}3{{$}}
+// ONE: {{^}}10{{$}}
+// TWO: {{^}}20{{$}}
+// RUST: {{^}}300{{$}}
+// MISS: {{^}}-1{{$}}
+// POINTER: error: statics with a custom `#[link_section]` must be a simple list of bytes on the wasm target with no extra levels of indirection such as references
+
+builtin.module public @tally {
+    builtin.global_variable private @first : struct<i32, i32> {
+        %id = arith.constant 1 : i32;
+        %value = arith.constant 10 : i32;
+        %e = builtin.aggregate %id, %value : struct<i32, i32>;
+        builtin.yield %e;
+    } attributes { section = "tally" };
+
+    builtin.global_variable private @second : struct<i32, i32> {
+        %id = arith.constant 2 : i32;
+        %value = arith.constant 20 : i32;
+        %e = builtin.aggregate %id, %value : struct<i32, i32>;
+        builtin.yield %e;
+    } attributes { section = "tally" };
+
+    builtin.global_variable public @start : struct<i32, i32> attributes { link_name = "__start_tally" };
+    builtin.global_variable public @stop : struct<i32, i32> attributes { link_name = "__stop_tally" };
+
+    builtin.function public extern("C") @compiled_count() -> i32 {
+        %s = builtin.global_symbol @start : ptr<struct<i32, i32>>;
+        %e = builtin.global_symbol @stop : ptr<struct<i32, i32>>;
+        %si = mem.ptrtoint %s;
+        %ei = mem.ptrtoint %e;
+        %span = arith.sub %ei, %si;
+        %size = mem.sizeof struct<i32, i32>;
+        %n = arith.udiv %span, %size;
+        %r = arith.zext_or_trunc %n <{ ty = i32 }>;
+        builtin.ret %r : (i32);
+    } attributes { link_name = "compiled_count" };
+};

@@ -226,21 +226,31 @@ fn heap_base_too_large(end: u64, heap_base: u64, last: Option<OperationRef>) -> 
     }
 }
 
+/// What is wrong with the stack size `size` (`--wasm-stack-size`), as the message of its error, or
+/// `None` when it is a positive multiple of 16. The layout checks it for a complete module, and
+/// [super::emit_object] for an object, whose stack the linker sets: one value is valid or not
+/// whatever is asked for.
+pub fn stack_size_problem(size: u32) -> Option<String> {
+    if size == 0 {
+        Some(String::from(
+            "the stack size 0 (`--wasm-stack-size`) is not positive: data would start at the \
+             address 0, which a null pointer has",
+        ))
+    } else if u64::from(size) % STACK_ALIGNMENT != 0 {
+        Some(format!(
+            "the stack size {size} (`--wasm-stack-size`) is not a multiple of 16, the alignment \
+             of the stack"
+        ))
+    } else {
+        None
+    }
+}
+
 /// Checks the stack size `size` (`--wasm-stack-size`), whether or not the unit uses the stack: a
 /// positive multiple of 16. The error is labelled on the stack pointer `stack_pointer` when the
 /// layout defines one.
 fn check_stack_size(unit: &Unit, stack_pointer: Option<GlobalId>, size: u32) -> Result<(), Report> {
-    let message = if size == 0 {
-        String::from(
-            "the stack size 0 (`--wasm-stack-size`) is not positive: data would start at the \
-             address 0, which a null pointer has",
-        )
-    } else if u64::from(size) % STACK_ALIGNMENT != 0 {
-        format!(
-            "the stack size {size} (`--wasm-stack-size`) is not a multiple of 16, the alignment \
-             of the stack"
-        )
-    } else {
+    let Some(message) = stack_size_problem(size) else {
         return Ok(());
     };
     match stack_pointer.and_then(|id| unit.global_op(id)) {

@@ -233,7 +233,9 @@
 //!
 //! A declaration with no definition is an undefined symbol that the linker resolves, unless it
 //! is written with `wasm.import_module`, which makes it a host import. `public`, `internal` and
-//! `private` become a global, a hidden and a local symbol. Each global variable has a data segment
+//! `private` become a global, a hidden and a local symbol; a `public` or `internal` alias is a
+//! second symbol of its target's function. Export names must be unique across the whole link, the
+//! runtime's included: the linker does not check them. Each global variable has a data segment
 //! of its own, and those with one `section` are one segment of that name, which the linker retains
 //! and bounds with `__start_<section>` and `__stop_<section>`; each object's contribution is
 //! aligned on its own, so the entries of a section should share one alignment and have a size

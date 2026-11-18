@@ -748,3 +748,220 @@ fn an_object_exports_a_global_a_table_or_a_memory_only_under_its_link_name() {
     )]);
     unit.check_object().unwrap_or_else(|report| panic!("{}", describe(&report)));
 }
+
+#[test]
+fn an_object_cannot_express_a_section_whose_name_the_linker_gives_a_meaning() {
+    let bss = "writes no bytes for a section whose name starts with `.bss`: its contents would \
+               link to zeros";
+    let tls = "treats a section whose name starts with `.tdata` or `.tbss` as thread-local data, \
+               which the backend does not emit";
+    for (section, does) in [(".bss.mine", bss), (".bss", bss), (".tdata.x", tls), (".tbss", tls)] {
+        let attributes = format!(" attributes {{ section = \"{section}\" }}");
+        let error = refused(&[module("m", &[MEMORY, &word("private", "d", &attributes)])]);
+        assert_mentions(
+            &error,
+            &[
+                &format!(
+                    "a relocatable object cannot express the section `{section}` of the global \
+                     variable `m::d`"
+                ),
+                &format!("this puts `m::d` in the section `{section}`, and the linker {does}"),
+            ],
+        );
+    }
+    // A name the linker treats as any other's
+    for section in [".rodata.x", ".data.y", "a.b", "my_sec", "bss"] {
+        let attributes = format!(" attributes {{ section = \"{section}\" }}");
+        let (_context, unit) =
+            unit_of(&[module("m", &[MEMORY, &word("private", "d", &attributes)])]);
+        unit.check_object()
+            .unwrap_or_else(|report| panic!("{section}: {}", describe(&report)));
+    }
+}
+
+#[test]
+fn an_object_cannot_express_the_bounds_of_a_section_whose_name_is_not_a_c_identifier() {
+    for (section, symbol, bound) in [
+        ("a.b", "__start_a.b", "start"),
+        ("a.b", "__stop_a.b", "end"),
+        ("1abc", "__start_1abc", "start"),
+    ] {
+        let attributes = format!(" attributes {{ section = \"{section}\" }}");
+        let declaration = format!(
+            "builtin.global_variable public @bound : i32 attributes {{ link_name = \"{symbol}\" \
+             }};"
+        );
+        let error =
+            refused(&[module("m", &[MEMORY, &word("private", "e", &attributes), &declaration])]);
+        assert_mentions(
+            &error,
+            &[
+                &format!(
+                    "a relocatable object cannot express `{symbol}`: the linker defines no bounds \
+                     for the section `{section}`"
+                ),
+                &format!(
+                    "this declares the {bound} of the section `{section}`, and the linker defines \
+                     `__start_<s>` and `__stop_<s>` only for a section whose name is a C \
+                     identifier: letters, digits and `_`, not starting with a digit"
+                ),
+            ],
+        );
+    }
+    // A C identifier has its bounds
+    let (_context, unit) = unit_of(&[module(
+        "m",
+        &[
+            MEMORY,
+            &word("private", "e", " attributes { section = \"_ok_1\" }"),
+            "builtin.global_variable public @bound : i32 attributes { link_name = \
+             \"__start__ok_1\" };",
+        ],
+    )]);
+    unit.check_object().unwrap_or_else(|report| panic!("{}", describe(&report)));
+}
+
+#[test]
+fn an_object_cannot_export_what_the_unit_declares_and_does_not_define() {
+    for (item, what, name) in [
+        (
+            "builtin.function public extern(\"wasm\") @hosted(i32) -> i32 attributes { link_name \
+             = \"hosted\", wasm.import_module = \"host\", wasm.export_name = \"hosted\" };",
+            "function",
+            "hosted",
+        ),
+        (
+            "builtin.function public extern(\"wasm\") @elsewhere(i32) -> i32 attributes { \
+             link_name = \"elsewhere\", wasm.export_name = \"elsewhere\" };",
+            "function",
+            "elsewhere",
+        ),
+        (
+            "wasm.global private declaration @hg : i32 attributes { link_name = \"hg\", \
+             wasm.export_name = \"hg\" };",
+            "global",
+            "hg",
+        ),
+        (
+            "wasm.table private declaration @t : 1 x !wasm.funcref attributes { link_name = \
+             \"t\", wasm.export_name = \"t\" };",
+            "table",
+            "t",
+        ),
+    ] {
+        let error = refused(&[module("m", &[item])]);
+        assert_mentions(
+            &error,
+            &[
+                &format!(
+                    "a relocatable object cannot express the export `{name}` of the {what} \
+                     `{name}`, which it does not define"
+                ),
+                &format!(
+                    "this exports the {what} `{name}`, which the unit declares and does not \
+                     define, and the linker exports only what an object defines"
+                ),
+            ],
+        );
+    }
+    // A declaration whose definition is in another module of the unit exports the definition
+    let (_context, unit) =
+        unit_of(&[
+            module("a", &[&identity("public", "f", " attributes { link_name = \"f\" }")]),
+            module(
+                "b",
+                &["builtin.function public extern(\"wasm\") @f(i32) -> i32 attributes { \
+                   link_name = \"f\", wasm.export_name = \"f\" };"],
+            ),
+        ]);
+    unit.check_object().unwrap_or_else(|report| panic!("{}", describe(&report)));
+}
+
+#[test]
+fn an_object_cannot_express_a_memory_other_than_the_linkers_or_export_it() {
+    let linkers = "and the linker provides the memory itself: an object imports it as \
+                   `env.__linear_memory`, and the linker exports it as `memory`";
+    for (memory, import, declares) in [
+        (
+            "wasm.memory private declaration @__linear_memory : 0 attributes { link_name = \
+             \"__linear_memory\", wasm.import_module = \"env\" };",
+            "env.__linear_memory",
+            "names the host module `env` with `wasm.import_module`",
+        ),
+        (
+            "wasm.memory public declaration @mem : 1 attributes { link_name = \"mem\", \
+             wasm.import_module = \"host\" };",
+            "host.mem",
+            "names the host module `host` with `wasm.import_module`",
+        ),
+        (
+            "wasm.memory public declaration @mem : 1 attributes { link_name = \"mem\" };",
+            "env.mem",
+            "declares the memory `mem`",
+        ),
+    ] {
+        let error = refused(&[module("m", &[memory])]);
+        assert_mentions(
+            &error,
+            &[
+                &format!("a relocatable object cannot express the memory import `{import}`"),
+                &format!("this {declares}, {linkers}"),
+            ],
+        );
+    }
+    let error = refused(&[module(
+        "m",
+        &["wasm.memory private declaration @__linear_memory : 0 attributes { link_name = \
+           \"__linear_memory\", wasm.export_name = \"__linear_memory\" };"],
+    )]);
+    assert_mentions(
+        &error,
+        &[
+            "a relocatable object cannot express the export `__linear_memory` of the memory \
+             `__linear_memory`",
+            "this exports the memory as `__linear_memory`, and the linker provides and exports \
+             the memory itself, as `memory`",
+        ],
+    );
+}
+
+#[test]
+fn an_alias_other_modules_may_name_is_recorded_and_one_of_an_undefined_function_is_refused() {
+    let (_context, unit) = unit_of(&[module(
+        "m",
+        &[
+            &identity("public", "target", " attributes { link_name = \"target\" }"),
+            "builtin.function_alias public @al -> @target attributes { link_name = \"al\" };",
+            "builtin.function_alias internal @inner -> @al attributes { link_name = \"inner\" };",
+            "builtin.function_alias private @mine -> @target;",
+        ],
+    )]);
+    unit.check_object().unwrap_or_else(|report| panic!("{}", describe(&report)));
+    let target = function(&unit, "target");
+    let aliases = unit
+        .aliases()
+        .iter()
+        .map(|alias| (alias.name.as_str(), alias.binding, alias.target))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        aliases,
+        [("al", Binding::Global, Some(target)), ("inner", Binding::Hidden, Some(target))]
+    );
+
+    let error = refused(&[module(
+        "m",
+        &[
+            "builtin.function public extern(\"wasm\") @ext(i32) -> i32 attributes { link_name = \
+             \"ext\" };",
+            "builtin.function_alias public @al -> @ext attributes { link_name = \"al\" };",
+        ],
+    )]);
+    assert_mentions(
+        &error,
+        &[
+            "a relocatable object cannot express the alias `al` of a function it does not define",
+            "this defines `al` for a function the unit does not define, and an object defines a \
+             symbol only for a function it defines",
+        ],
+    );
+}
