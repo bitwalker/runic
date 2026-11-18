@@ -113,6 +113,7 @@ and results; a test there fails when a file of `wasm/` has no test.
 | `float.runic` | float arithmetic, comparisons with a NaN, conversions both ways, the saturating ones included |
 | `traps.runic` | each trap the lowering produces, with the message `wasmtime` prints |
 | `imports.runic`, `imports-env.runic` | imports from `env` satisfied by a second emitted module |
+| `start.runic` | a start function (`wasm.start`) that a complete module exports as `_initialize`, which `wasmtime` calls when it instantiates the module: `read` gives 42, not 7 |
 
 ## Linking with Rust: `link/`
 

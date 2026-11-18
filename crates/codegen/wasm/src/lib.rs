@@ -221,8 +221,31 @@
 //! writes the object at the checkpoint `wasm.object` (alias `object`) when the request stops there
 //! or asks for an output there, and never otherwise.
 //!
-//! Not emitted yet: integers wider than 64 bits, components, exported data
-//! and DWARF. The README of the crate says more of each part.
+//! **Linking an object.** An object is linked by `rustc` with a runtime written in Rust, passed as
+//! a linker argument, or by `rust-lld -flavor wasm` directly; `--fatal-warnings` makes a signature
+//! mismatch fail the link instead of becoming a trap:
+//!
+//! ```text
+//! runic-opt scaled.runic --target wasm32-unknown-unknown --stop-after object -o scaled.o
+//! rustc --edition 2024 --target wasm32-unknown-unknown --crate-type cdylib -O rt.rs \
+//!     -C link-arg=scaled.o -C link-arg=--fatal-warnings -o scaled.wasm
+//! ```
+//!
+//! A declaration with no definition is an undefined symbol that the linker resolves, unless it
+//! is written with `wasm.import_module`, which makes it a host import. `public`, `internal` and
+//! `private` become a global, a hidden and a local symbol. Each global variable has a data segment
+//! of its own, and those with one `section` are one segment of that name, which the linker retains
+//! and bounds with `__start_<section>` and `__stop_<section>`; each object's contribution is
+//! aligned on its own, so the entries of a section should share one alignment and have a size
+//! that is a multiple of it. A start function is an init function of the object, which the linker's
+//! `__wasm_call_ctors` calls: `_initialize` calls it on the WASI targets, and a runtime for
+//! `wasm32-unknown-unknown` calls it once itself, or the linker wraps every export to call it on
+//! every call. The README of the crate tabulates what has no object form, the features an object
+//! declares and the toolchains the tests assume.
+//!
+//! Not emitted yet: integers wider than 64 bits, components, exported data, DWARF, and, in
+//! objects, weak symbols, COMDAT groups, thread-local data, position-independent code and
+//! archives. The README of the crate says more of each part.
 
 #![no_std]
 #![deny(warnings)]

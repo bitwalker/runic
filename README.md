@@ -29,7 +29,7 @@ The workspace has nineteen members:
 | `runic-dialect-mem` | `crates/dialects/mem` | byte-addressed memory, typed and opaque pointers, and `evaluate_initializer`, which every backend shares: the bytes and relocations a global variable's initializer denotes |
 | `runic-dialect-ub` | `crates/dialects/ub` | undefined behaviour (`ub.poison`, `ub.unreachable`) |
 | `runic-dialect-wasm` | `crates/dialects/wasm` | WebAssembly's instructions as SSA operations (numeric, memory, global, table and reference operations, indirect calls, structured control flow with `wasm.block`, `wasm.loop`, `wasm.if`, `wasm.br` and `wasm.br_table`) and module-level operations for memories, tables, globals, element segments and tags |
-| `runic-codegen-wasm` | `crates/codegen/wasm` | the WebAssembly backend: the lowering of generic IR to Wasm form (the passes `convert-to-wasm`, a dialect conversion to `wasm` operations and Wasm value types with the `"wasm"` and `"C"` calling conventions, `wasm-lower-frames` and `wasm-verify-form`, run after `cfg-to-scf`), the emitter that makes a validated binary core module of it (linking the modules of a compilation, laying out memory, the stack and the function table), and the backend `wasm` of the harness for `wasm32-unknown-unknown` |
+| `runic-codegen-wasm` | `crates/codegen/wasm` | the WebAssembly backend: the lowering of generic IR to Wasm form (the passes `convert-to-wasm`, a dialect conversion to `wasm` operations and Wasm value types with the `"wasm"` and `"C"` calling conventions, `wasm-lower-frames` and `wasm-verify-form`, run after `cfg-to-scf`), the emitter that makes a validated binary core module of it (linking the modules of a compilation, laying out memory, the stack and the function table) or a relocatable object that `wasm-ld` links, and the backend `wasm` of the harness for `wasm32-unknown-unknown` |
 | `runic-analysis` | `crates/analysis` | the data-flow analysis framework and its analyses |
 | `runic-transform` | `crates/transform` | transformation passes and utilities |
 | `runic-compile` | `crates/compile` | the compiler harness: a request that says what one compilation is asked to do, the stages it runs through (frontends, the optimization pipeline, backends), the checkpoints and outputs, and the toy language `calc` and machines `stackvm` and `altvm` behind the `testing` feature |
@@ -130,8 +130,22 @@ $ wasmtime run --invoke add first.core.wasm 2 40 2>/dev/null
 42
 ```
 
-`--stop-after wat` prints the module as text instead. The backend, the layout of the module and
-what it does not emit yet are described in [`crates/codegen/wasm/README.md`](crates/codegen/wasm/README.md).
+`--stop-after wat` prints the module as text instead. The backend also writes a relocatable object,
+which the Rust toolchain's linker links with a runtime written in Rust (`--stop-after object`, or
+`--emit object=FILE` beside the module). For a unit `scaled.runic` that calls `rust_offset` and a
+runtime `rt.rs` that defines it (both are in the crate's README):
+
+```console
+$ bin/runic-opt scaled.runic --target wasm32-unknown-unknown --stop-after object -o scaled.o
+$ rustc --edition 2024 --target wasm32-unknown-unknown --crate-type cdylib -O rt.rs \
+    -C link-arg=scaled.o -C link-arg=--fatal-warnings -o scaled.wasm
+$ wasmtime run --invoke scaled scaled.wasm 5 2>/dev/null
+115
+```
+
+The backend, the layout of the module, the objects (symbols, segments, the start function, what
+has no object form) and what it does not emit yet are described in
+[`crates/codegen/wasm/README.md`](crates/codegen/wasm/README.md).
 
 ### Tracing
 

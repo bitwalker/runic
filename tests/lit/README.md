@@ -79,7 +79,8 @@ Directories are added with their first test.
 ```
 lit.suite.toml        the suite: name `runic`, files `*.runic` and `*.calc`, `pipefail = true`
 parse/                reading and printing IR
-verify/               the verifier's rules, one diagnostic per case
+verify/               the verifier's rules, one diagnostic per case (the start function's, in
+                      wasm-start.runic)
 roundtrip/            both forms read back
 dialects/<dialect>/   a dialect's folds (fold.runic) and canonicalization patterns (canonicalize.runic),
                       and the operations added after its parse test was written (tail-call.runic,
@@ -117,7 +118,8 @@ codegen/wasm/         the lowering to Wasm form (`runic-codegen-wasm`); every mo
                       programs; they read the text of these files
 codegen/wasm/emit/    the backend `wasm`: modules compiled by `runic-opt --target
                       wasm32-unknown-unknown`, checked as the text `--stop-after wat` prints
-                      (`wasmprinter`'s). Unlike the tests of the lowering, the modules state no
+                      (`wasmprinter`'s; start.runic: the start function exported as
+                      `_initialize`). Unlike the tests of the lowering, the modules state no
                       `data_layout`: they rely on the target's, which the harness states on the
                       world, since that layout is part of what is tested. A function's body is
                       checked in full. Functions of each shape (functions.runic), the memory, the
