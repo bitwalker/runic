@@ -30,6 +30,7 @@ use crate::*;
 mod elements;
 mod folds;
 mod fuzz;
+mod initializer;
 mod probes;
 
 /// The seed of a randomized test: `MEM_TEST_SEED` if set, else `default`. It is printed, so a

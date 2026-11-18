@@ -49,6 +49,17 @@
 //! the operand, and a cast of a cast becomes one cast; a `mem.gep` with neither index nor path
 //! folds to its base, and one without an index whose base is a `mem.gep` becomes one gep; a copy
 //! or fill of the constant length 0 is erased.
+//!
+//! **Initializers.** [evaluate_initializer] gives what a `builtin.global_variable`'s initializer
+//! denotes under a data layout, for every backend: the global's bytes ([Initializer]), with a
+//! [Relocation] wherever they hold the address of another global variable plus a constant, or a
+//! function value ([Target]). It reads constants through the operations' own folds, the zero of a
+//! type (`builtin.zero`), structs and arrays built with `builtin.aggregate`, addresses built with
+//! `builtin.global_symbol`, `mem.gep` with a constant index, `mem.ptrcast`, and `mem.ptrtoint` and
+//! `mem.inttoptr` between a pointer and an integer exactly as wide, and `builtin.function_ref`,
+//! which needs the layout's `fn` entry. It does not change the IR. Arithmetic on an address is an
+//! error: an offset is written with `mem.gep`. A wholly zero global has no bytes, and is recognised
+//! without building them.
 
 #![no_std]
 #![feature(specialization)]
@@ -65,6 +76,7 @@ extern crate std;
 mod attributes;
 mod builders;
 pub mod canonicalization;
+mod initializer;
 mod ops;
 #[cfg(test)]
 mod tests;
@@ -78,6 +90,7 @@ use runic_ir::{
 pub use self::{
     attributes::{Alignment, AlignmentAttr},
     builders::MemOpBuilder,
+    initializer::{Initializer, Relocation, Target, evaluate_initializer},
     ops::*,
 };
 
