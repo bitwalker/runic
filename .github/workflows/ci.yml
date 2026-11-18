@@ -66,7 +66,7 @@ jobs:
           rustup update --no-self-update
           rustc --version
       - name: Cache Cargo
-        uses: WarpBuilds/rust-cache@9d0cc3090d9c87de74ea67617b246e978735b1a1 # v2.9.1
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Cache for the clippy check; the test jobs use their own caches below
           shared-key: ${{ github.workflow }}-shared
@@ -121,7 +121,7 @@ jobs:
       - uses: ./.github/actions/cleanup-runner
       - *install-rust
       - name: Cache Cargo
-        uses: WarpBuilds/rust-cache@9d0cc3090d9c87de74ea67617b246e978735b1a1 # v2.9.1
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # NOTE: We use a different cache for the tests, so they can be run in parallel, but we
           # also share the cache for the tests for efficiency
@@ -160,7 +160,7 @@ jobs:
       - *install-rust
       - &restore-shared-tests-cache
         name: Cache Cargo
-        uses: WarpBuilds/rust-cache@9d0cc3090d9c87de74ea67617b246e978735b1a1 # v2.9.1
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # NOTE: We use a different cache for the tests, so they can be run in parallel, but we
           # also share the cache for the tests for efficiency
@@ -183,7 +183,7 @@ jobs:
       - uses: ./.github/actions/cleanup-runner
       - *install-rust
       - name: Cache Cargo
-        uses: WarpBuilds/rust-cache@9d0cc3090d9c87de74ea67617b246e978735b1a1 # v2.9.1
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # NOTE: We use a different cache for the these release checks
           shared-key: ${{ github.workflow }}-shared-release-checks
