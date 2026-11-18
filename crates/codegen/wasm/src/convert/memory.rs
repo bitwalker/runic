@@ -8,8 +8,10 @@
 //!   pointer) whose size `S` under the layout is 1, 2, 4 or 8 bytes and whose type has a carrier:
 //!   one `wasm.load` of the carrier, which reads `S` bytes (a narrow load, zero-extended, when `S`
 //!   is less than the carrier's size), then the mask of carried form when `T` is an integer `iN`
-//!   with `N < 8 * S` (an `i1` is one byte, masked to one bit). Any other `T` is an error
-//!   (see the pre-check of `convert-to-wasm`).
+//!   with `N < 8 * S` (an `i1` is one byte, masked to one bit). A function value is an `i32`, its
+//!   table slot, loaded as one where the data layout gives it 4 bytes (`fn = 32`); with no `fn`
+//!   entry it has no layout, and the error says to state one. Any other `T` is an error (see the
+//!   pre-check of `convert-to-wasm`).
 //! * **`mem.store`**: one `wasm.store` of the carried value, of `S` bytes. The carried value is
 //!   zero-extended, so the bytes written above `N` bits are zero.
 //! * The alignment of an access is the operation's `align` when it states one, else the layout's
@@ -131,6 +133,16 @@ pub(crate) fn access(
             }
             (Some(_), None) => format!("`{ty}` has no layout under the data layout in scope"),
         };
+        if ty.is_function() && size.is_none() {
+            return Err(report!(
+                message: (format!(
+                    "`{}` of `{ty}`: a function value is {verb} only where the data layout gives \
+                     it a size: state `fn = 32` in the data layout",
+                    op.name()
+                )),
+                labels: [primary(op.span(), label)],
+            ));
+        }
         return Err(report!(
             message: (format!(
                 "`{}` of `{ty}`: only a value that fits one Wasm {noun} is {verb}; {noun} its \

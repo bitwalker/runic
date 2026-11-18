@@ -73,6 +73,39 @@ const CASES: &[Case] = &[
         says: "the type has no Wasm value type to carry it",
     },
     Case {
+        what: "a builtin.aggregate in a function body",
+        functions: "builtin.function public extern(\"C\") @build(%x: i32) {\n    %s = \
+                    builtin.aggregate %x, %x : struct<i32, i32>;\n    builtin.ret;\n};",
+        verifies: true,
+        says: "`convert-to-wasm` cannot lower `builtin.aggregate`: an aggregate value in a \
+               function body is not lowered; it exists in memory or in a global variable's \
+               initializer",
+    },
+    Case {
+        what: "a builtin.zero of an aggregate type in a function body",
+        functions: "builtin.function public extern(\"C\") @zeros() {\n    %z = builtin.zero : \
+                    array<i64; 4>;\n    builtin.ret;\n};",
+        verifies: true,
+        says: "`convert-to-wasm` cannot lower `builtin.zero`: an aggregate value in a function \
+               body is not lowered; it exists in memory or in a global variable's initializer",
+    },
+    Case {
+        what: "a load of a function value under a layout with no `fn`",
+        functions: "builtin.function public extern(\"C\") @load(%p: ptr<(i32) -> i32>) {\n    %f \
+                    = mem.load %p;\n    builtin.ret;\n};",
+        verifies: false,
+        says: "`mem.load` of `(i32) -> i32`: a function value is loaded only where the data \
+               layout gives it a size: state `fn = 32` in the data layout",
+    },
+    Case {
+        what: "a store of a function value under a layout with no `fn`",
+        functions: "builtin.function public extern(\"C\") @store(%p: ptr<(i32) -> i32>, %f: (i32) \
+                    -> i32) {\n    mem.store %f, %p;\n    builtin.ret;\n};",
+        verifies: false,
+        says: "`mem.store` of `(i32) -> i32`: a function value is stored only where the data \
+               layout gives it a size: state `fn = 32` in the data layout",
+    },
+    Case {
         what: "a pointer in another address space",
         functions: "builtin.function public extern(\"C\") @space() -> ptr<i8, 1>;",
         verifies: true,
@@ -270,6 +303,10 @@ fn a_data_layout_the_lowering_does_not_take_is_reported_before_anything_changes(
         ("#builtin.data_layout<big, ptr = 32>", "needs a little-endian data layout"),
         ("#builtin.data_layout<little, ptr = 64>", "needs 32-bit pointers"),
         ("#builtin.data_layout<little, ptr = 32 index 16>", "needs a 32-bit `isize`"),
+        (
+            "#builtin.data_layout<little, ptr = 32, fn = 64>",
+            "needs a function value of 32 bits",
+        ),
     ] {
         let context = context();
         let text = format!(

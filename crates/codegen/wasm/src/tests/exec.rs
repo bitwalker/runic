@@ -371,6 +371,7 @@ pub(super) fn assemble(
             if let Some((_, bytes)) = setup.passive.iter().find(|(given, _)| *given == name) {
                 let id = desc.add_data(DataEntry {
                     name: name.clone(),
+                    size: bytes.len() as u64,
                     bytes: bytes.clone(),
                     align: 1,
                     section: None,
@@ -382,6 +383,7 @@ pub(super) fn assemble(
             } else if let Some((_, address)) = setup.data.iter().find(|(given, _)| *given == name) {
                 let id = desc.add_data(DataEntry {
                     name: name.clone(),
+                    size: 0,
                     bytes: Vec::new(),
                     align: 1,
                     section: None,
@@ -410,6 +412,7 @@ pub(super) fn assemble(
         for (address, bytes) in &setup.writes {
             desc.add_data(DataEntry {
                 name: String::new(),
+                size: bytes.len() as u64,
                 bytes: bytes.clone(),
                 align: 1,
                 section: None,

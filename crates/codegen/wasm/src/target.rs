@@ -8,8 +8,13 @@ use runic_ir::{DataLayout, Endianness, Operation, Report, Spanned, diagnostics::
 /// supports: 32-bit Wasm (memory64 is not modelled).
 pub const POINTER_WIDTH: u32 = 32;
 
+/// The width in bits of a function value in memory on the targets the lowering supports: an
+/// `i32`, the index of the function in the indirect function table.
+pub const FUNCTION_WIDTH: u32 = 32;
+
 /// What the lowering knows of its target: the data layout in scope of the operation it lowers,
-/// which is little-endian, with pointers in address space 0 and `isize` 32 bits wide.
+/// which is little-endian, with pointers in address space 0 and `isize` 32 bits wide, and with
+/// function values of 32 bits when it gives them a size (`fn = 32`).
 #[derive(Clone, Debug)]
 pub struct WasmTarget {
     layout: DataLayout,
@@ -19,7 +24,9 @@ impl WasmTarget {
     /// The target of `op`: the data layout in scope of it ([DataLayout::closest]).
     ///
     /// An error, with a label on `op`, when no data layout is in scope, when the one in scope is
-    /// big-endian, and when it does not give pointers in address space 0 and `isize` 32 bits.
+    /// big-endian, when it does not give pointers in address space 0 and `isize` 32 bits, and
+    /// when it gives function values another size than 32 bits. A layout with no `fn` entry is
+    /// accepted: a function value then has no layout, and is not loaded or stored.
     pub fn of(op: &Operation) -> Result<Self, Report> {
         let Some(layout) = DataLayout::closest(op) else {
             return Err(report!(
@@ -57,6 +64,23 @@ impl WasmTarget {
                 labels: [primary(
                     op.span(),
                     format!("the data layout in scope of this operation gives `isize` {isize} bits")
+                )],
+            ));
+        }
+        if let Some(function) = layout.function()
+            && function.size_bits != FUNCTION_WIDTH
+        {
+            let bits = function.size_bits;
+            return Err(report!(
+                message: "`convert-to-wasm` needs a function value of 32 bits, `fn = 32` in the \
+                          data layout: a function value is an `i32`, its index in the function \
+                          table",
+                labels: [primary(
+                    op.span(),
+                    format!(
+                        "the data layout in scope of this operation gives function values of \
+                         {bits} bits"
+                    )
                 )],
             ));
         }

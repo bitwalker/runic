@@ -1,4 +1,5 @@
-//! The patterns of the integer operations of `arith`, of `cf.select` and of `ub.poison`.
+//! The patterns of the integer operations of `arith`, of `cf.select`, of `ub.poison` and of
+//! `builtin.zero`.
 //!
 //! Each pattern reads the *original* type of its operation (`iN`, or `isize`, which is 32 bits),
 //! builds `wasm` operations on the carriers of the operands, and keeps carried form: the result is
@@ -37,7 +38,7 @@ use runic_ir::{
         ConversionPattern, ConversionPatternRewriter, ConversionPatternSet, ConvertedOperands,
         TypeConverter,
     },
-    dialects::builtin::attributes::Overflow,
+    dialects::builtin::{self, attributes::Overflow},
     patterns::{Pattern, PatternInfo},
 };
 
@@ -58,7 +59,7 @@ pub fn populate(
     _target: &WasmTarget,
 ) -> Result<(), Report> {
     let context = patterns.context();
-    let rules: [(Rule, &'static str); 23] = [
+    let rules: [(Rule, &'static str); 24] = [
         (Rule::Add, "wasm-arith-add"),
         (Rule::Sub, "wasm-arith-sub"),
         (Rule::Mul, "wasm-arith-mul"),
@@ -82,6 +83,7 @@ pub fn populate(
         (Rule::ZextOrTrunc, "wasm-arith-zext-or-trunc"),
         (Rule::Select, "wasm-cf-select"),
         (Rule::Poison, "wasm-ub-poison"),
+        (Rule::Zero, "wasm-builtin-zero"),
     ];
     for (rule, name) in rules {
         let info = match rule {
@@ -108,6 +110,7 @@ pub fn populate(
             Rule::ZextOrTrunc => info::<arith::ZextOrTrunc>(&context, name, rule),
             Rule::Select => info::<cf::Select>(&context, name, rule),
             Rule::Poison => info::<ub::Poison>(&context, name, rule),
+            Rule::Zero => info::<builtin::Zero>(&context, name, rule),
         };
         patterns.push(IntPattern {
             info,
@@ -184,6 +187,11 @@ enum Rule {
     Select,
     /// `ub.poison`: a zero of the carrier. Any value refines poison.
     Poison,
+    /// `builtin.zero` of a type with a carrier: the zero of the carrier (`wasm.const 0` of an
+    /// integer, `isize`, a pointer or a function value, whose zero is the null table slot;
+    /// `wasm.constf` positive zero of a float; `wasm.ref_null` of a reference type). An aggregate
+    /// has no carrier: the check of `convert-to-wasm` reports a `builtin.zero` of one.
+    Zero,
 }
 
 impl Rule {
@@ -271,7 +279,7 @@ impl Rule {
                 )
             }
             Rule::Select => names!(wasm::Select),
-            Rule::Poison => names!(wasm::Const, wasm::ConstF, wasm::RefNull),
+            Rule::Poison | Rule::Zero => names!(wasm::Const, wasm::ConstF, wasm::RefNull),
         }
     }
 }
@@ -361,7 +369,7 @@ impl IntPattern {
     ) -> Result<Option<ValueRef>, Report> {
         let span = source.span;
         let rule = self.rule;
-        if rule == Rule::Poison {
+        if matches!(rule, Rule::Poison | Rule::Zero) {
             let Some(carrier) = carrier(rw.context(), source.result_ty) else {
                 return Ok(None);
             };

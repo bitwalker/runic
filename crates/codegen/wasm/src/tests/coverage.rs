@@ -25,11 +25,8 @@ const SOURCE_DIALECTS: [&str; 5] = ["arith", "cf", "mem", "scf", "ub"];
 
 /// The operations of `builtin` that are not function-level: they are modules, symbols and data,
 /// which `convert-to-wasm` leaves as they are (a global's initializer is not converted), and the
-/// cast the conversion framework itself makes and removes. `builtin.aggregate` and `builtin.zero`
-/// are data here: in a function body `convert-to-wasm` reports each as an operation no pattern
-/// converts.
-const NOT_FUNCTION_LEVEL: [&str; 11] = [
-    "builtin.aggregate",
+/// cast the conversion framework itself makes and removes.
+const NOT_FUNCTION_LEVEL: [&str; 9] = [
     "builtin.bytes",
     "builtin.component",
     "builtin.function_alias",
@@ -39,7 +36,6 @@ const NOT_FUNCTION_LEVEL: [&str; 11] = [
     "builtin.unrealized_conversion_cast",
     "builtin.world",
     "builtin.yield",
-    "builtin.zero",
 ];
 
 /// An operation that `convert-to-wasm` reports instead of lowering, and how.
@@ -55,7 +51,17 @@ struct ByDesign {
 }
 
 /// The operations that are diagnostics by design when they reach `convert-to-wasm`.
-const BY_DESIGN: [ByDesign; 5] = [
+const BY_DESIGN: [ByDesign; 6] = [
+    ByDesign {
+        op: "builtin.aggregate",
+        body: "%a = arith.constant 1 : i32;\n%s = builtin.aggregate %a : \
+               struct<i32>;\nbuiltin.ret;",
+        reason: "an aggregate value is not one Wasm value: it exists in memory or in a global \
+                 variable's initializer",
+        says: "`convert-to-wasm` cannot lower `builtin.aggregate`: an aggregate value in a \
+               function body is not lowered; it exists in memory or in a global variable's \
+               initializer",
+    },
     ByDesign {
         op: "mem.alloca",
         body: "%p = mem.alloca i32;\nbuiltin.ret;",
@@ -338,6 +344,7 @@ fn value_programs(t: &str, add: &mut impl FnMut(String)) {
         "i1",
         "%r = arith.cmpi eq %a, %b;\nbuiltin.ret %r : (i1);",
     ));
+    add(function("", t, &format!("%r = builtin.zero : {t};\nbuiltin.ret %r : ({t});")));
 }
 
 /// The programs of the sweep: every source operation, for each class of type its verifier might
@@ -355,6 +362,9 @@ fn sweep_programs() -> Vec<String> {
         value_programs(t, &mut add);
     }
     add(function("%a: i1", "", "cf.assert %a, \"x\";\nbuiltin.ret;"));
+    for t in ["(i8) -> i8", "!wasm.funcref", "!wasm.externref"] {
+        add(function("", t, &format!("%r = builtin.zero : {t};\nbuiltin.ret %r : ({t});")));
+    }
     add(function(
         "%a: f32",
         "f64",
@@ -459,6 +469,10 @@ fn sweep_programs() -> Vec<String> {
     programs
 }
 
+/// The diagnostics by design that no pass before `convert-to-wasm` removes, so that no program of
+/// the sweep lowers them.
+const NEVER_LOWERED: [&str; 2] = ["builtin.aggregate", "scf.pending_exit"];
+
 /// The names of the operations `module` holds.
 fn operations_in(module: ModuleRef) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
@@ -493,7 +507,7 @@ fn every_source_operation_lowers_for_each_class_of_type_its_verifier_accepts() {
     assert!(failures.is_empty(), "these programs did not lower:\n{}", failures.join("\n\n"));
     let missing: Vec<String> = required(&context())
         .into_iter()
-        .filter(|name| name != "scf.pending_exit" && !lowered.contains(name))
+        .filter(|name| !NEVER_LOWERED.contains(&name.as_str()) && !lowered.contains(name))
         .collect();
     assert!(
         missing.is_empty(),

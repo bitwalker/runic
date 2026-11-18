@@ -13,7 +13,7 @@ use runic_compile::{
     OptionsDecl, Render, Session, Triple,
 };
 use runic_ir::{
-    Align, DataLayoutSpec, Endianness, PointerSpec, Report,
+    Align, DataLayoutSpec, Endianness, FunctionSpec, PointerSpec, Report,
     dialects::builtin::{WorldRef, types::FloatType},
     pass::OpPassManager,
 };
@@ -78,7 +78,8 @@ impl Default for WasmOptions {
 ///
 /// - Its data layout is that of the C ABI of wasm32 (the tool conventions' `BasicCABI.md`):
 ///   little-endian, pointers and `isize` of 32 bits aligned to 4, `i8`, `i16`, `i32`, `i64` and
-///   `i128` aligned to 1, 2, 4, 8 and 16 bytes, `f32` to 4 and `f64` to 8.
+///   `i128` aligned to 1, 2, 4, 8 and 16 bytes, `f32` to 4 and `f64` to 8, and a function value
+///   (`fn = 32`), its index in the indirect function table, of 32 bits aligned to 4.
 /// - It lowers the world with `cfg-to-scf{exits=in-place}`, `wasm-lower-frames` and
 ///   `convert-to-wasm`; then, when the request's optimization level is above none, `cse` and
 ///   `dce`, which remove what the lowering leaves dead or repeated; and last `wasm-verify-form`.
@@ -156,7 +157,10 @@ fn data_layout() -> Result<DataLayoutSpec, Report> {
     let invalid = |error| Report::msg(std::format!("the data layout is not valid: {error}"));
     let align = |bytes| Align::from_bytes(bytes).expect("a power of two is an alignment");
     let pointer = PointerSpec::sized(32).expect("32 bits is a pointer size");
-    let mut spec = DataLayoutSpec::new(Endianness::Little, pointer).map_err(invalid)?;
+    let function = FunctionSpec::sized(32).expect("32 bits is a function value's size");
+    let mut spec = DataLayoutSpec::new(Endianness::Little, pointer)
+        .and_then(|spec| spec.with_function(function))
+        .map_err(invalid)?;
     for (width, bytes) in [(8, 1), (16, 2), (32, 4), (64, 8), (128, 16)] {
         spec = spec.with_integer_align(width, align(bytes)).map_err(invalid)?;
     }

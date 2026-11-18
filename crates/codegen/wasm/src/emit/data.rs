@@ -2,314 +2,142 @@
 //! 4 of the plan).
 //!
 //! The initializer is generic code that nothing lowers, ending in `builtin.yield %v`. [evaluate]
-//! computes `%v` from the operation that defines it, without changing the IR:
+//! gives it to the `mem` dialect's evaluator ([evaluate_initializer]) under the data layout in
+//! scope of the global ([DataLayout::closest]), which places `%v` (a constant, a zero, the address
+//! of a global variable plus a constant, a function, or a struct or an array of those) in the bytes
+//! of the global's type. Every error about what an initializer holds is the evaluator's.
 //!
-//! - an operation that is a constant (`arith.constant`, `arith.constantf`, `builtin.bytes`: what
-//!   [matchers::constant] matches) gives its attribute;
-//! - `builtin.global_symbol @g` gives the address of the data entry of `g` (no offset), and
-//!   `builtin.function_ref @f` the slot of the function `f` in the indirect function table;
-//! - any other operation is folded through its own fold ([Foldable::fold_with]) with the values
-//!   of its operands that are attributes (an address or a slot is not one, so it is given as
-//!   unknown). A fold that gives an attribute gives the value; one that gives one of the
-//!   operation's operands gives the value of that operand. Anything else is the error that the
-//!   initializer is not a constant the backend can place, naming the operation and the global.
+//! What the evaluator gives becomes a data entry:
 //!
-//! The value becomes bytes by the global's type under the data layout in scope
-//! ([DataLayout::closest]):
-//!
-//! - an integer is `size_of` the type bytes, little-endian, zero-extended from its width; a value
-//!   wider than the bytes (an `isize` constant is 64 bits wide) must fit them as a signed or an
-//!   unsigned number;
-//! - a float is its 4 or 8 bytes, which must be `size_of` the type;
-//! - bytes must be exactly `size_of` the type long;
-//! - an address or a table slot is four placeholder bytes with a [FixupKind::MemoryAddr] or
-//!   [FixupKind::TableSlot] fix-up, for a global of a pointer type, a function type or `isize`
-//!   whose size is 4 bytes. A function type has no layout of its own: a value of one is a table
-//!   slot, carried in an `i32`, so it is given the size and alignment of a pointer in address
-//!   space 0.
-//!
-//! The entry's alignment is `align_of` the type. A value that does not fit the type, or a type
-//! whose size the layout cannot give, is an error naming the global.
+//! - its bytes, size and alignment are the entry's. Bytes that are all zero, with no relocation,
+//!   are the empty bytes of the evaluator ([Initializer::is_zero]): the entry has no bytes of its
+//!   own and gets no segment (linear memory starts zeroed), however large it is;
+//! - each relocation is a fix-up at its offset: the address of a global variable is a
+//!   [FixupKind::MemoryAddr] of the data entry of that global with the relocation's addend, and a
+//!   function is a [FixupKind::TableSlot] of that function. Each target is found through the
+//!   unit's linking, so a declaration that links to a definition in another module names the
+//!   definition's entry, and the function an alias leads to is the function. A fix-up in data is
+//!   four bytes: a relocation of any other size is an error naming the global. An addend is
+//!   added modulo 2^32, as the arithmetic of `mem.gep` on a 32-bit address wraps.
 
 use alloc::{format, string::String, vec::Vec};
 
+use runic_dialect_mem::{Initializer, Relocation, Target, evaluate_initializer};
 use runic_ir::{
-    AttributeRef, DataLayout, FoldResult, OpFoldResult, Operation, Report, SmallVec, Spanned, Type,
-    ValueRef,
-    attributes::IntegerLikeAttr,
-    diagnostics::report,
-    dialects::builtin::{
-        FunctionReference, GlobalSymbol, GlobalVariable,
-        attributes::{BytesAttr, FloatAttr},
-    },
-    matchers::{self, Matcher},
-    traits::Foldable,
+    DataLayout, Operation, OperationRef, Report, Spanned, diagnostics::report,
+    dialects::builtin::GlobalVariable,
 };
 
-use super::{
-    desc::{DATA_PLACEHOLDER, DataId, Fixup, FixupKind, FuncId},
-    instr::Entities,
-};
+use super::desc::{DATA_PLACEHOLDER, DataId, Fixup, FixupKind, FuncId};
 
-/// The bytes of a global variable, how they are aligned, and the fix-ups in them.
+/// The bytes of a global variable, their size, how they are aligned, and the fix-ups in them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DataInit {
-    /// The bytes, `size_of` the global's type long.
+    /// The size of the global, in bytes: `size_of` its type.
+    pub size: u64,
+    /// The bytes: empty when every byte is zero and there is no fix-up, otherwise exactly `size`
+    /// bytes, zero under each fix-up.
     pub bytes: Vec<u8>,
     /// The alignment of the global's address, in bytes: `align_of` its type.
     pub align: u32,
-    /// The fix-ups in `bytes`: at most one, at offset 0, for an address or a table slot.
+    /// The fix-ups in `bytes`, in ascending order of offset, each over four zero bytes.
     pub fixups: Vec<Fixup>,
 }
 
-/// What a value of an initializer is.
-#[derive(Clone)]
-enum Evaluated {
-    /// A constant.
-    Attribute(AttributeRef),
-    /// The address of a data entry.
-    Address(DataId),
-    /// The slot of a function in the indirect function table.
-    Slot(FuncId),
+/// The entities of the unit that the relocations of an initializer name.
+pub trait DataTargets {
+    /// The data entry of the global variable `target` (a definition, or a declaration that links
+    /// to one or is an undefined data symbol), whose address the initializer of `global` takes.
+    fn data_entry(&mut self, global: &Operation, target: OperationRef) -> Result<DataId, Report>;
+    /// The function `target` (what a `builtin.function_ref` resolves to, aliases followed), whose
+    /// table slot the initializer of `global` holds.
+    fn function(&mut self, global: &Operation, target: OperationRef) -> Result<FuncId, Report>;
 }
 
 /// The bytes of `global`, a `builtin.global_variable` definition, with the entities its
-/// initializer names found through `entities` (see the module docs).
-pub fn evaluate(global: &Operation, entities: &mut dyn Entities) -> Result<DataInit, Report> {
+/// relocations name found through `targets` (see the module docs).
+pub fn evaluate(global: &Operation, targets: &mut dyn DataTargets) -> Result<DataInit, Report> {
     let Some(variable) = global.downcast_ref::<GlobalVariable>() else {
         return Err(cannot_lay_out(global, String::from("it is not a `builtin.global_variable`")));
     };
-    let ty = *variable.get_ty();
     let Some(layout) = DataLayout::closest(global) else {
         return Err(cannot_lay_out(global, String::from("no data layout is in scope of it")));
     };
-    let Some(value) = variable.initializer_value() else {
+    let initializer = evaluate_initializer(variable, &layout)?;
+    let Initializer {
+        size,
+        align,
+        bytes,
+        relocations,
+    } = initializer;
+    let Ok(align) = u32::try_from(align) else {
         return Err(cannot_lay_out(
             global,
-            String::from("its initializer yields no value of its type"),
+            format!("its alignment of {align} bytes is beyond a 32-bit memory"),
         ));
     };
-    let mut evaluator = Evaluator {
-        global,
-        entities,
-        memo: Vec::new(),
-    };
-    let evaluated = evaluator.value(value)?;
-    let (size, align) = size_and_align(global, &layout, ty)?;
-    let mut init = DataInit {
-        bytes: Vec::new(),
+    let mut fixups = Vec::with_capacity(relocations.len());
+    for relocation in &relocations {
+        fixups.push(fixup(global, relocation, targets)?);
+    }
+    Ok(DataInit {
+        size,
+        bytes,
         align,
-        fixups: Vec::new(),
-    };
-    match evaluated {
-        Evaluated::Attribute(attribute) => {
-            init.bytes = attribute_bytes(global, ty, size, &attribute)?;
-        }
-        Evaluated::Address(data) => {
-            reference(global, ty, size, "an address", &mut init, FixupKind::MemoryAddr(data))?;
-        }
-        Evaluated::Slot(function) => {
-            reference(global, ty, size, "a table slot", &mut init, FixupKind::TableSlot(function))?;
-        }
-    }
-    Ok(init)
+        fixups,
+    })
 }
 
-/// The size and alignment of `ty` under `layout`, in bytes; a function type has those of a
-/// pointer in address space 0. An error naming `global` when the layout cannot give them.
-fn size_and_align(global: &Operation, layout: &DataLayout, ty: Type) -> Result<(u64, u32), Report> {
-    if ty.is_function() {
-        let pointer = layout.pointer(0);
-        return Ok((u64::from(pointer.size_bits / 8), pointer.align.bytes() as u32));
-    }
-    let laid_out = layout.layout_of(ty).map_err(|error| {
-        cannot_lay_out(
-            global,
-            format!("its type `{ty}` has no size under the data layout in scope: {error}"),
-        )
-    })?;
-    Ok((laid_out.size(), laid_out.align().bytes() as u32))
-}
-
-/// Four placeholder bytes and a fix-up of `kind` for `init`, when `ty` is a pointer, a function
-/// type or `isize` of 4 bytes; otherwise the error that the value (`what`) does not fit.
-fn reference(
+/// The fix-up of `relocation`, a relocation in the initializer of `global`.
+fn fixup(
     global: &Operation,
-    ty: Type,
-    size: u64,
-    what: &str,
-    init: &mut DataInit,
-    kind: FixupKind,
-) -> Result<(), Report> {
-    let holds = ty.is_pointer() || ty.is_function() || ty.is_isize();
-    if !holds || size != DATA_PLACEHOLDER.len() as u64 {
-        return Err(does_not_fit(
+    relocation: &Relocation,
+    targets: &mut dyn DataTargets,
+) -> Result<Fixup, Report> {
+    let what = match &relocation.target {
+        Target::Data(_) => "an address",
+        Target::Function(_) => "a function value",
+    };
+    if usize::from(relocation.size) != DATA_PLACEHOLDER.len() {
+        return Err(report!(
+            message: (format!(
+                "the global variable `{}` holds {what} of {} bytes, which the backend cannot place",
+                name(global),
+                relocation.size
+            )),
+            labels: [primary(
+                global.span(),
+                format!(
+                    "its initializer places {what} of {} bytes at offset {}; the backend writes \
+                     an address or a table slot in data as 4 bytes, as the data layout of wasm32 \
+                     gives them",
+                    relocation.size, relocation.offset
+                )
+            )],
+        ));
+    }
+    let Ok(offset) = u32::try_from(relocation.offset) else {
+        return Err(cannot_lay_out(
             global,
             format!(
-                "its initializer gives {what}, which is 4 bytes and is held only by a pointer, a \
-                 function type or `isize` of 4 bytes, and its type is `{ty}` of {size} bytes"
+                "its initializer places {what} at offset {}, beyond a 32-bit memory",
+                relocation.offset
             ),
         ));
-    }
-    init.bytes = DATA_PLACEHOLDER.to_vec();
-    init.fixups.push(Fixup {
-        offset: 0,
+    };
+    let (kind, addend) = match &relocation.target {
+        Target::Data(target) => {
+            let id = targets.data_entry(global, target.as_operation_ref())?;
+            // Addresses are 32 bits: the addend wraps as `mem.gep`'s arithmetic does.
+            (FixupKind::MemoryAddr(id), relocation.addend as i32)
+        }
+        Target::Function(target) => (FixupKind::TableSlot(targets.function(global, *target)?), 0),
+    };
+    Ok(Fixup {
+        offset,
         kind,
-        addend: 0,
-    });
-    Ok(())
-}
-
-/// The `size` bytes of the constant `attribute` for a global of type `ty`.
-fn attribute_bytes(
-    global: &Operation,
-    ty: Type,
-    size: u64,
-    attribute: &AttributeRef,
-) -> Result<Vec<u8>, Report> {
-    let attribute = attribute.borrow();
-    if let Some(int) = attribute.as_attr().as_trait::<dyn IntegerLikeAttr>() {
-        let int = int.as_int();
-        let bits = size.saturating_mul(8);
-        let fits = u64::from(int.width()) <= bits
-            || (bits < 128 && {
-                let value = int.signed();
-                let low = -(1i128 << (bits - 1).min(126));
-                let high = 1i128 << bits;
-                value >= low && value < high
-            });
-        if !fits {
-            return Err(does_not_fit(
-                global,
-                format!(
-                    "its initializer gives {}, and its type `{ty}` is {size} bytes",
-                    int.signed()
-                ),
-            ));
-        }
-        // An integer no wider than the bytes is written zero-extended; a wider one that fits is
-        // written as its low bytes.
-        let pattern = if u64::from(int.width()) <= bits {
-            int.unsigned()
-        } else {
-            int.signed() as u128
-        };
-        let mut bytes = Vec::with_capacity(size as usize);
-        for i in 0..size {
-            bytes.push(if i < 16 {
-                (pattern >> (8 * i)) as u8
-            } else {
-                0
-            });
-        }
-        return Ok(bytes);
-    }
-    if let Some(float) = attribute.downcast_ref::<FloatAttr>() {
-        let float = *float.as_value();
-        let width = u64::from(float.width() / 8);
-        if width != size {
-            return Err(does_not_fit(
-                global,
-                format!(
-                    "its initializer gives a {}-bit float, and its type `{ty}` is {size} bytes",
-                    float.width()
-                ),
-            ));
-        }
-        return Ok(float.bits().to_le_bytes()[..width as usize].to_vec());
-    }
-    if let Some(bytes) = attribute.downcast_ref::<BytesAttr>() {
-        let bytes = bytes.as_value().as_slice();
-        if bytes.len() as u64 != size {
-            return Err(does_not_fit(
-                global,
-                format!(
-                    "its initializer gives {} bytes, and its type `{ty}` is {size} bytes",
-                    bytes.len()
-                ),
-            ));
-        }
-        return Ok(bytes.to_vec());
-    }
-    Err(does_not_fit(
-        global,
-        format!(
-            "its initializer gives `{}`, which is not bytes, an integer or a float",
-            OpFoldResult::Attribute(attribute.as_attribute_ref())
-        ),
-    ))
-}
-
-/// Evaluates the values of one initializer.
-struct Evaluator<'a> {
-    global: &'a Operation,
-    entities: &'a mut dyn Entities,
-    /// The values evaluated so far.
-    memo: Vec<(ValueRef, Evaluated)>,
-}
-
-impl Evaluator<'_> {
-    /// What `value` is (see the module docs).
-    fn value(&mut self, value: ValueRef) -> Result<Evaluated, Report> {
-        if let Some((_, known)) = self.memo.iter().find(|(seen, _)| ValueRef::ptr_eq(seen, &value))
-        {
-            return Ok(known.clone());
-        }
-        let evaluated = self.compute(value)?;
-        self.memo.push((value, evaluated.clone()));
-        Ok(evaluated)
-    }
-
-    fn compute(&mut self, value: ValueRef) -> Result<Evaluated, Report> {
-        let Some(defining) = value.borrow().get_defining_op() else {
-            return Err(cannot_lay_out(
-                self.global,
-                String::from("its initializer uses a value no operation defines"),
-            ));
-        };
-        let op = defining.borrow();
-        if let Some(symbol) = op.downcast_ref::<GlobalSymbol>() {
-            return self.entities.data(&op, &symbol.symbol()).map(Evaluated::Address);
-        }
-        if let Some(reference) = op.downcast_ref::<FunctionReference>() {
-            return self.entities.function(&op, &reference.callee()).map(Evaluated::Slot);
-        }
-        if let Some(attribute) = matchers::constant().matches(&op) {
-            return Ok(Evaluated::Attribute(attribute));
-        }
-        let operands = op
-            .operands()
-            .iter()
-            .map(|operand| operand.borrow().as_value_ref())
-            .collect::<Vec<_>>();
-        let mut constants = Vec::with_capacity(operands.len());
-        for operand in &operands {
-            constants.push(match self.value(*operand)? {
-                Evaluated::Attribute(attribute) => Some(attribute),
-                Evaluated::Address(_) | Evaluated::Slot(_) => None,
-            });
-        }
-        let index = op
-            .results()
-            .iter()
-            .position(|result| ValueRef::ptr_eq(&result.borrow().as_value_ref(), &value));
-        let mut results = SmallVec::<[OpFoldResult; 1]>::new();
-        let folded = match op.fold_with(&constants, &mut results) {
-            FoldResult::Ok(()) => index.and_then(|index| results.into_iter().nth(index)),
-            FoldResult::InPlace | FoldResult::Failed => None,
-        };
-        match folded {
-            Some(OpFoldResult::Attribute(attribute)) => Ok(Evaluated::Attribute(attribute)),
-            Some(OpFoldResult::Value(folded))
-                if !ValueRef::ptr_eq(&folded, &value)
-                    && operands.iter().any(|operand| ValueRef::ptr_eq(operand, &folded)) =>
-            {
-                drop(op);
-                self.value(folded)
-            }
-            _ => Err(not_constant(&op, self.global)),
-        }
-    }
+        addend,
+    })
 }
 
 /// The name of the global variable `global` for a message: `@g`.
@@ -318,35 +146,6 @@ fn name(global: &Operation) -> String {
         Some(variable) => format!("@{}", variable.get_name().as_str()),
         None => format!("`{}`", global.name()),
     }
-}
-
-/// The error of an initializer whose value `op` defines and does not fold to a constant.
-fn not_constant(op: &Operation, global: &Operation) -> Report {
-    report!(
-        message: (format!(
-            "the initializer of the global variable `{}` is not a constant the backend can place",
-            name(global)
-        )),
-        labels: [
-            primary(
-                op.span(),
-                format!(
-                    "`{}` does not fold to a constant: the value of a global variable is bytes, \
-                     an integer, a float, the address of a global variable or a function",
-                    op.name()
-                )
-            ),
-            context(global.span(), "the global variable it initializes"),
-        ],
-    )
-}
-
-/// The error of a global variable `global` whose value does not fit its type, with `label`.
-fn does_not_fit(global: &Operation, label: String) -> Report {
-    report!(
-        message: (format!("the value of the global variable `{}` does not fit its type", name(global))),
-        labels: [primary(global.span(), label)],
-    )
 }
 
 /// The error of a global variable `global` that cannot be laid out, with `label`.

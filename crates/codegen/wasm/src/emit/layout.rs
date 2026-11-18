@@ -31,7 +31,8 @@
 //! members as written. Each entry is at a multiple of its alignment; a section starts at a
 //! multiple of the largest alignment among its members. The data ends where the last entry ends
 //! (at the start of the data when there is none). An entry whose bytes are all zero and that has no
-//! fix-up gets no segment: linear memory starts zeroed. An entry that would end beyond 4 GiB is an
+//! fix-up gets no segment: linear memory starts zeroed. It takes its size in memory all the same,
+//! and the evaluator gives it no bytes, so a zeroed megabyte costs nothing to emit. An entry that would end beyond 4 GiB is an
 //! error naming its global variable.
 //!
 //! **Fixed segments.** A `builtin.segment` with bytes is an active segment at its offset. One that
@@ -52,7 +53,10 @@
 //!
 //! **Passive data.** A global variable named by a `wasm.memory_init` or a `wasm.data_drop` is a
 //! passive segment, with no address. Naming it also by `wasm.data_addr`, or taking its address with
-//! `builtin.global_symbol` in another global variable's initializer, is an error naming both.
+//! `builtin.global_symbol` in another global variable's initializer, is an error naming both. So
+//! is a passive entry whose own initializer holds an address or a function: the program copies a
+//! passive segment where it likes, and the layout's addresses and table slots are not applied to
+//! it. A passive entry whose bytes are all zero has its zeros written out.
 //!
 //! **The memory.** The pages needed are the heap base rounded up to 64 KiB pages. When the layout
 //! defines the memory, that many pages are its minimum (or the minimum the declaration states, if
@@ -171,7 +175,7 @@ pub fn layout(unit: &mut Unit, options: &EmitOptions) -> Result<Resolved, Report
     let occupied = stack.is_some()
         || unit.desc.data().iter().any(|entry| {
             matches!(entry.placement, DataPlacement::Layout | DataPlacement::Fixed(_))
-                && !entry.bytes.is_empty()
+                && entry.size != 0
         });
     let has_data = unit.desc.data().iter().any(|entry| entry.placement != DataPlacement::Symbol);
     memory(unit, pages, occupied, has_data || stack.is_some())?;
@@ -372,9 +376,83 @@ fn passive(unit: &mut Unit) -> Result<(), Report> {
                 ],
             ));
         }
-        unit.desc.data_mut(id).placement = DataPlacement::Passive;
+        if let Some(fixup) = unit.desc.data()[index].fixups.first().copied() {
+            return Err(passive_fixup(unit, id, passive, &name, fixup));
+        }
+        let entry = unit.desc.data_mut(id);
+        if entry.bytes.is_empty() && entry.size != 0 {
+            // A passive segment is copied by the program: its zero bytes are written out.
+            let mut zeros = Vec::new();
+            let reserved = usize::try_from(entry.size)
+                .ok()
+                .filter(|_| entry.size <= MEMORY_LIMIT)
+                .is_some_and(|size| zeros.try_reserve_exact(size).is_ok());
+            if !reserved {
+                let size = entry.size;
+                let op = unit.data_op(id).expect("a definition has an origin");
+                let op = op.borrow();
+                return Err(report!(
+                    message: (format!(
+                        "the passive data segment `{name}` is {size} bytes, more than the backend \
+                         can hold"
+                    )),
+                    labels: [primary(
+                        op.span(),
+                        format!("this global variable is {size} bytes, and is a passive segment")
+                    )],
+                ));
+            }
+            zeros.resize(entry.size as usize, 0);
+            entry.bytes = zeros;
+        }
+        entry.placement = DataPlacement::Passive;
     }
     Ok(())
+}
+
+/// The error of the passive entry `id`, named `name` and made passive by `passive`, whose bytes
+/// hold `fixup`: a passive segment is copied by the program, so the addresses and table slots the
+/// layout gives are not written into it.
+fn passive_fixup(
+    unit: &Unit,
+    id: DataId,
+    passive: OperationRef,
+    name: &str,
+    fixup: super::desc::Fixup,
+) -> Report {
+    let what = match fixup.kind {
+        FixupKind::MemoryAddr(target) => {
+            format!("the address of `{}`", unit.desc.data()[target.index() as usize].name)
+        }
+        FixupKind::TableSlot(target) => {
+            format!("the function `{}`", unit.desc.function(target).name)
+        }
+        _ => String::from("a reference"),
+    };
+    let op = unit.data_op(id).expect("a definition has an origin");
+    let (op, passive) = (op.borrow(), passive.borrow());
+    report!(
+        message: (format!(
+            "the global variable `{name}` is a passive data segment and holds {what}, which the \
+             layout cannot write into a passive segment"
+        )),
+        labels: [
+            primary(
+                op.span(),
+                format!(
+                    "the initializer of this global variable places {what} at offset {}",
+                    fixup.offset
+                )
+            ),
+            context(
+                passive.span(),
+                format!(
+                    "this makes `{name}` a passive segment, copied by `memory.init`: the layout's \
+                     addresses and table slots are not applied to what it copies"
+                )
+            ),
+        ],
+    )
 }
 
 /// The global that is the import of `__stack_pointer` from `env`, which the layout defines.
@@ -455,7 +533,7 @@ fn place_data(unit: &Unit, start: u64, resolved: &mut Resolved) -> Result<Placed
     let mut place = |index: usize, address: &mut u64| -> Result<(), Report> {
         let entry = &entries[index];
         *address = align_up(*address, u64::from(entry.align.max(1)));
-        let end = *address + entry.bytes.len() as u64;
+        let end = address.saturating_add(entry.size);
         if end > MEMORY_LIMIT {
             let op = unit.data_op(DataId::new(index as u32)).expect("a definition has an origin");
             let op = op.borrow();
@@ -562,6 +640,7 @@ fn fixed_segments(
         drop(borrowed);
         unit.desc.add_data(DataEntry {
             name: String::new(),
+            size: bytes.len() as u64,
             bytes,
             align: 1,
             section: None,

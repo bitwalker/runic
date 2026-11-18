@@ -33,6 +33,7 @@ mod emit {
     mod bodies;
     mod control;
     mod coverage;
+    mod data;
     mod errors;
     mod fixups;
     mod instructions;

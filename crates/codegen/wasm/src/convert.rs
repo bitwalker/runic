@@ -19,17 +19,17 @@ use runic_dialect_scf::ScfDialect;
 use runic_dialect_ub::UndefinedBehaviorDialect;
 use runic_dialect_wasm::{self as wasm, MemoryRef, TableRef, WasmDialect};
 use runic_ir::{
-    Context, EntityMut, Forward, FxHashMap, FxHashSet, Operation, OperationName, OperationRef,
-    RawWalk, RegionExitKind, Report, Spanned, Symbol, Type, Value, WalkResult,
+    AggregateType, Context, EntityMut, Forward, FxHashMap, FxHashSet, Operation, OperationName,
+    OperationRef, RawWalk, RegionExitKind, Report, Spanned, Symbol, Type, Value, WalkResult,
     conversion::{
         ConversionConfig, ConversionPatternSet, ConversionTarget, DynamicLegalityResult,
         TypeConverter, add_builtin_legality_by_type, apply_full_conversion,
     },
     diagnostics::report,
     dialects::builtin::{
-        Call, CallIndirect, Component, Function, FunctionAlias, FunctionReference, GlobalVariable,
-        Module, ModuleRef, RetImm, Segment, TailCall, TailCallIndirect, UnrealizedConversionCast,
-        World, attributes::Signature,
+        Aggregate, Call, CallIndirect, Component, Function, FunctionAlias, FunctionReference,
+        GlobalVariable, Module, ModuleRef, RetImm, Segment, TailCall, TailCallIndirect,
+        UnrealizedConversionCast, World, Zero, attributes::Signature,
     },
     pass::{Pass, PassExecutionState, PostPassStatus},
 };
@@ -63,6 +63,8 @@ const DESCRIPTION: &str = "Converts generic operations and types to Wasm form: w
 ///    aggregate, a pointer in an address space other than 0. A function whose signature changes
 ///    and that an operation outside the module names is an error naming both (the builtin
 ///    function pattern refuses it). In a body:
+///    * a `builtin.aggregate`, and a `builtin.zero` of an aggregate type, is an error naming it: an
+///      aggregate value in a function body is not lowered;
 ///    * a `mem.alloca` is an error that says `wasm-lower-frames` must run first; a `mem.load` or
 ///      `mem.store` of a value that one Wasm access cannot read or write, and a `mem.gep`,
 ///      `mem.sizeof`, `mem.alignof` or `mem.offsetof` whose size or offset the layout does not
@@ -527,6 +529,7 @@ impl Check<'_> {
             if op_ref.is::<mem::Alloca>() {
                 return Err(memory::alloca_error(&op_ref));
             }
+            check_aggregate_value(&op_ref)?;
             if op_ref.is::<runic_dialect_cf::Br>()
                 || op_ref.is::<runic_dialect_cf::CondBr>()
                 || op_ref.is::<runic_dialect_cf::Switch>()
@@ -698,6 +701,37 @@ fn check_users_inside(function: OperationRef, root: OperationRef) -> Result<(), 
         }
     }
     Ok(())
+}
+
+/// An error naming `op` when it is a `builtin.aggregate`, or a `builtin.zero` of an aggregate type:
+/// an aggregate value in a function body is not lowered, since no Wasm value carries it. It exists
+/// in memory, loaded and stored field by field, or in a global variable's initializer, which is
+/// data.
+fn check_aggregate_value(op: &Operation) -> Result<(), Report> {
+    if !op.is::<Aggregate>() && !op.is::<Zero>() {
+        return Ok(());
+    }
+    let Some(result) = op.results().iter().next().map(|result| result.borrow().ty()) else {
+        return Ok(());
+    };
+    if op.is::<Zero>() && result.as_trait::<dyn AggregateType>().is_none() {
+        return Ok(());
+    }
+    Err(report!(
+        message: (format!(
+            "`{NAME}` cannot lower `{}`: an aggregate value in a function body is not lowered; it \
+             exists in memory or in a global variable's initializer",
+            op.name()
+        )),
+        labels: [primary(
+            op.span(),
+            format!(
+                "this `{}` gives a value of the aggregate type `{result}`, which no Wasm value \
+                 carries; store its fields with `mem.gep` and `mem.store` instead",
+                op.name()
+            )
+        )],
+    ))
 }
 
 /// An error naming `op`, a `builtin.unrealized_conversion_cast` written before the conversion,

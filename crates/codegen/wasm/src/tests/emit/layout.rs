@@ -314,7 +314,11 @@ fn a_function_pointer_in_data_is_loaded_and_called_indirectly() {
     %r = wasm.call_indirect @__indirect_function_table, %i(%x) : extern("wasm") (i32) -> i32;
     builtin.ret %r : (i32);
 } attributes { wasm.export_name = "call" };"#;
-    let emitted = emitted(&[module("m", &[MEMORY, TABLE, double, pointer, call])]);
+    // A function value has a size in memory where the layout gives it one: the backend's states
+    // `fn = 32`, and so does this module's.
+    let module = module("m", &[MEMORY, TABLE, double, pointer, call])
+        .replace("ptr = 32>", "ptr = 32, fn = 32>");
+    let emitted = emitted(&[module]);
     let text = emitted.wat();
     // The slot of `@double` is 1, in a table of two.
     assert_mentions(
@@ -1116,16 +1120,15 @@ fn two_modules_with_data_and_frames_share_one_memory_one_stack_pointer_and_one_t
 
 #[test]
 fn an_initializer_that_does_not_fold_is_an_error_naming_the_operation_and_the_global() {
-    let target = constant("target", "i32", "1", "");
-    let integer = "builtin.global_variable private @integer : isize { %p = builtin.global_symbol \
-                   @target : ptr<i32>; %i = mem.ptrtoint %p; builtin.yield %i; };";
-    let error = failure(&[module("m", &[&target, integer])]);
+    // A division by zero does not fold.
+    let integer = "builtin.global_variable private @integer : i32 { %a = arith.constant 1 : i32; \
+                   %z = arith.constant 0 : i32; %q = arith.udiv %a, %z; builtin.yield %q; };";
+    let error = failure(&[module("m", &[integer])]);
     assert_mentions(
         &error,
         &[
-            "the initializer of the global variable `@integer` is not a constant the backend can \
-             place",
-            "`mem.ptrtoint` does not fold to a constant",
+            "the initializer of `@integer` is not a constant that can be placed",
+            "`arith.udiv` does not fold to a constant",
             "the global variable it initializes",
         ],
     );
@@ -1138,8 +1141,8 @@ fn a_value_that_does_not_fit_its_global_is_an_error_naming_the_global() {
     assert_mentions(
         &error,
         &[
-            "the value of the global variable `@big` does not fit its type",
-            "its initializer gives 1099511627776, and its type `isize` is 4 bytes",
+            "the initializer of `@big` is not a constant that can be placed",
+            "`arith.constant` gives 1099511627776, which does not fit `isize` of 4 bytes",
         ],
     );
     // One that fits is written as its low bytes.

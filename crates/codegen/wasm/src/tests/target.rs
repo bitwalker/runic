@@ -68,3 +68,35 @@ fn a_layout_whose_isize_is_not_32_bits_is_an_error() {
     assert!(mentions(&error, "`convert-to-wasm` needs a 32-bit `isize`"), "{error}");
     assert!(mentions(&error, "gives `isize` 16 bits"), "{error}");
 }
+
+#[test]
+fn a_layout_with_32_bit_function_values_or_none_is_the_target() {
+    for layout in ["ptr = 32", "ptr = 32, fn = 32", "ptr = 32, fn = 32 align 8"] {
+        target_of(&format!(
+            "attributes {{ data_layout = #builtin.data_layout<little, {layout}> }}"
+        ))
+        .unwrap_or_else(|report| panic!("{layout}: {}", describe(&report)));
+    }
+}
+
+#[test]
+fn a_layout_whose_function_values_are_not_32_bits_is_an_error() {
+    let error = error_of(target_of(
+        "attributes { data_layout = #builtin.data_layout<little, ptr = 32, fn = 64> }",
+    ));
+    assert!(
+        mentions(
+            &error,
+            "`convert-to-wasm` needs a function value of 32 bits, `fn = 32` in the data layout: a \
+             function value is an `i32`, its index in the function table"
+        ),
+        "{error}"
+    );
+    assert!(
+        mentions(
+            &error,
+            "the data layout in scope of this operation gives function values of 64 bits"
+        ),
+        "{error}"
+    );
+}

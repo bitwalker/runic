@@ -1,0 +1,51 @@
+// RUN: runic-opt %s --target wasm32-unknown-unknown --split-input-file --verify-diagnostics
+// RUN: not runic-opt %s --target wasm32-unknown-unknown --split-input-file 2>&1 | filecheck %s
+
+// What the backend refuses in a global variable's initializer, with the diagnostic of the `mem`
+// dialect's evaluator, which names the operation and the global; the second run shows the labels.
+// The modules rely on the data layout of the target.
+
+// Arithmetic on an address: an offset is written with `mem.gep`.
+// CHECK: error: the initializer of `@tagged` is not a constant that can be placed
+// CHECK: the global variable it initializes
+// CHECK: arithmetic on an address cannot be placed: write the offset with `mem.gep`
+builtin.module public @arithmetic {
+    builtin.global_variable private @x : i32 {
+        %v = arith.constant 5 : i32;
+        builtin.yield %v;
+    };
+    builtin.global_variable private @tagged : isize {
+        %p = builtin.global_symbol @x : ptr<i32>;
+        %i = mem.ptrtoint %p;
+        %one = arith.constant 1 : isize;
+        // expected-error@+1 {{the initializer of `@tagged` is not a constant that can be placed}}
+        %t = arith.add %i, %one;
+        builtin.yield %t;
+    };
+};
+
+// -----
+
+// A passive segment, copied by `memory.init`, that holds an address: the program copies it where
+// it likes, so the layout's addresses are not applied to it.
+// CHECK: error: the global variable `passive::pointer` is a passive data segment and holds the address of `passive::x`, which the layout cannot write into a passive segment
+// CHECK: the initializer of this global variable places the address of `passive::x` at offset 0
+// CHECK: this makes `passive::pointer` a passive segment, copied by `memory.init`: the layout's addresses and table slots are not applied to what it copies
+builtin.module public @passive {
+    wasm.memory private declaration @__linear_memory : 0 attributes { link_name = "__linear_memory" };
+    builtin.global_variable private @x : i32 {
+        %v = arith.constant 5 : i32;
+        builtin.yield %v;
+    };
+    // expected-error@+1 {{the global variable `passive::pointer` is a passive data segment and holds the address of `passive::x`, which the layout cannot write into a passive segment}}
+    builtin.global_variable private @pointer : ptr<i32> {
+        %p = builtin.global_symbol @x : ptr<i32>;
+        builtin.yield %p;
+    };
+    builtin.function public extern("wasm") @copy(%d: i32) {
+        %s = wasm.const 0 : i32;
+        %n = wasm.const 4 : i32;
+        wasm.memory_init @__linear_memory, @pointer, %d, %s, %n;
+        builtin.ret;
+    } attributes { wasm.export_name = "copy" };
+};

@@ -358,7 +358,10 @@ pub enum DataPlacement {
 pub struct DataEntry {
     /// The entry's name in the `name` section; an empty name is not written.
     pub name: String,
-    /// The bytes.
+    /// The size of the entry in memory, in bytes.
+    pub size: u64,
+    /// The bytes: exactly `size` bytes, or none when every byte is zero and there is no fix-up
+    /// (a [DataPlacement::Layout] entry, which then has no segment, or a [DataPlacement::Symbol]).
     pub bytes: Vec<u8>,
     /// The alignment of the entry's address, in bytes (a power of two).
     pub align: u32,

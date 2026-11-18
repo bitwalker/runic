@@ -92,6 +92,7 @@ fn with_data_and_table(
     });
     let entry = desc.add_data(DataEntry {
         name: "entry".to_string(),
+        size: 4,
         bytes: vec![1, 2, 3, 4],
         align: 4,
         section: None,
@@ -128,6 +129,7 @@ fn an_address_and_a_table_slot_in_data_are_four_little_endian_bytes() {
     let (mut desc, resolved, entry, target) = with_data_and_table(0x0102_0304);
     let pointers = desc.add_data(DataEntry {
         name: "pointers".to_string(),
+        size: 10,
         bytes: vec![0xaa, 0, 0, 0, 0, 0, 0, 0, 0, 0xbb],
         align: 1,
         section: None,
@@ -275,6 +277,7 @@ fn an_index_in_data_is_a_write_error() {
     let (mut desc, resolved, _, target) = with_data_and_table(0);
     desc.add_data(DataEntry {
         name: "bad".to_string(),
+        size: 4,
         bytes: vec![0; 4],
         align: 4,
         section: None,

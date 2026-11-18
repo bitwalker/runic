@@ -1,0 +1,24 @@
+// RUN: runic-opt %s -p convert-to-wasm --no-verify --split-input-file --verify-diagnostics
+
+// Under a data layout with no `fn` entry a function type has no layout, so a function value is not
+// loaded or stored. The verifier refuses such a load or store first (`--no-verify` here gives the
+// module to the lowering as written), and the lowering's own refusal, made before anything is
+// converted, says what to state.
+
+builtin.module public @load attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @f(%p: ptr<(i64) -> i64>) {
+        // expected-error@+1 {{`mem.load` of `(i64) -> i64`: a function value is loaded only where the data layout gives it a size: state `fn = 32` in the data layout}}
+        %f = mem.load %p;
+        builtin.ret;
+    };
+};
+
+// -----
+
+builtin.module public @store attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @f(%p: ptr<(i64) -> i64>, %f: (i64) -> i64) {
+        // expected-error@+1 {{`mem.store` of `(i64) -> i64`: a function value is stored only where the data layout gives it a size: state `fn = 32` in the data layout}}
+        mem.store %f, %p;
+        builtin.ret;
+    };
+};

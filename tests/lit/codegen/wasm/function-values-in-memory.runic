@@ -1,0 +1,123 @@
+// RUN: runic-opt %s -p 'convert-to-wasm,wasm-verify-form' --split-input-file --verify-diagnostics | filecheck %s
+
+// A function value in memory, and `builtin.zero`, in Wasm form. Where the data layout gives a
+// function value a size (`fn = 32`, which the backend `wasm` states), a value of a function type is
+// an `i32`, its slot in the indirect function table, loaded and stored as one: a `mem.gep` to a
+// function field, and the measures of a type that holds one, ask the layout like any other.
+// `builtin.zero` is the zero of the carrier of its type: `wasm.const 0` of an integer, `isize`, a
+// pointer or a function value (the null slot, which traps when called), `wasm.constf` positive
+// zero of a float, `wasm.ref_null` of a reference type. An aggregate value is not lowered in a
+// function body, and a layout whose function values are not 32 bits is not the target's.
+
+// CHECK-LABEL: builtin.module public @values
+// CHECK-NEXT: wasm.table private declaration @__indirect_function_table
+// CHECK-NEXT: wasm.memory private declaration @__linear_memory
+builtin.module public @values attributes { data_layout = #builtin.data_layout<little, ptr = 32, fn = 32> } {
+    // A function value loaded, stored and called.
+    // CHECK-LABEL: @move(
+    // CHECK-SAME: [[FROM:%[0-9]+]]: i32, [[TO:%[0-9]+]]: i32, [[X:%[0-9]+]]: i64) -> i64 {
+    // CHECK-NEXT: [[F:%[0-9]+]] = wasm.load @__linear_memory, [[FROM]] : i32;
+    // CHECK-NEXT: wasm.store @__linear_memory, [[TO]], [[F]];
+    // CHECK-NEXT: [[R:%[0-9]+]] = wasm.call_indirect @__indirect_function_table, [[F]]([[X]]) : extern("C") (i64) -> i64;
+    // CHECK-NEXT: builtin.ret [[R]] : (i64);
+    builtin.function public extern("C") @move(%from: ptr<(i64) -> i64>, %to: ptr<(i64) -> i64>, %x: i64) -> i64 {
+        %f = mem.load %from;
+        mem.store %f, %to;
+        %r = builtin.call_indirect %f(%x) : extern("C") (i64) -> i64;
+        builtin.ret %r : (i64);
+    };
+
+    // A struct with a function field: 16 bytes, the function value at 4 and the `i64` at 8; a
+    // function value is aligned to 4.
+    // CHECK-LABEL: @field(
+    // CHECK-SAME: [[P:%[0-9]+]]: i32, [[I:%[0-9]+]]: i32) -> (i32, i32, i32, i32) {
+    // CHECK-NEXT: [[SIZE:%[0-9]+]] = wasm.const 16 : i32;
+    // CHECK-NEXT: [[STEP:%[0-9]+]] = wasm.mul [[I]], [[SIZE]];
+    // CHECK-NEXT: [[ELEMENT:%[0-9]+]] = wasm.add [[P]], [[STEP]];
+    // CHECK-NEXT: [[FOUR:%[0-9]+]] = wasm.const 4 : i32;
+    // CHECK-NEXT: [[Q:%[0-9]+]] = wasm.add [[ELEMENT]], [[FOUR]];
+    // CHECK-NEXT: [[F:%[0-9]+]] = wasm.load @__linear_memory, [[Q]] : i32;
+    // CHECK-NEXT: [[S:%[0-9]+]] = wasm.const 16 : i32;
+    // CHECK-NEXT: [[A:%[0-9]+]] = wasm.const 4 : i32;
+    // CHECK-NEXT: [[O:%[0-9]+]] = wasm.const 8 : i32;
+    // CHECK-NEXT: builtin.ret [[F]], [[S]], [[A]], [[O]] : (i32, i32, i32, i32);
+    builtin.function public extern("C") @field(%p: ptr<struct<i8, (i32) -> i32, i64>>, %i: isize) -> ((i32) -> i32, isize, isize, isize) {
+        %q = mem.gep %p, %i, [1];
+        %f = mem.load %q;
+        %s = mem.sizeof struct<i8, (i32) -> i32, i64>;
+        %a = mem.alignof (i32) -> i32;
+        %o = mem.offsetof struct<i8, (i32) -> i32, i64>, [2];
+        builtin.ret %f, %s, %a, %o : ((i32) -> i32, isize, isize, isize);
+    };
+
+    // CHECK-LABEL: @zeros()
+    // CHECK-SAME: -> (i32, i32, i64, i32, i32, i32, f32, f64, !wasm.funcref, !wasm.externref) {
+    // CHECK-NEXT: [[A:%[0-9]+]] = wasm.const 0 : i32;
+    // CHECK-NEXT: [[B:%[0-9]+]] = wasm.const 0 : i32;
+    // CHECK-NEXT: [[C:%[0-9]+]] = wasm.const 0 : i64;
+    // CHECK-NEXT: [[D:%[0-9]+]] = wasm.const 0 : i32;
+    // CHECK-NEXT: [[E:%[0-9]+]] = wasm.const 0 : i32;
+    // CHECK-NEXT: [[F:%[0-9]+]] = wasm.const 0 : i32;
+    // CHECK-NEXT: [[G:%[0-9]+]] = wasm.constf 0.0 : f32;
+    // CHECK-NEXT: [[H:%[0-9]+]] = wasm.constf 0.0 : f64;
+    // CHECK-NEXT: [[I:%[0-9]+]] = wasm.ref_null : !wasm.funcref;
+    // CHECK-NEXT: [[J:%[0-9]+]] = wasm.ref_null : !wasm.externref;
+    // CHECK-NEXT: builtin.ret [[A]], [[B]], [[C]], [[D]], [[E]], [[F]], [[G]], [[H]], [[I]], [[J]] : (i32, i32, i64, i32, i32, i32, f32, f64, !wasm.funcref, !wasm.externref);
+    builtin.function public extern("wasm") @zeros() -> (i8, i32, i64, isize, ptr<i8>, (i64) -> i64, f32, f64, !wasm.funcref, !wasm.externref) {
+        %a = builtin.zero : i8;
+        %b = builtin.zero : i32;
+        %c = builtin.zero : i64;
+        %d = builtin.zero : isize;
+        %e = builtin.zero : ptr<i8>;
+        %f = builtin.zero : (i64) -> i64;
+        %g = builtin.zero : f32;
+        %h = builtin.zero : f64;
+        %i = builtin.zero : !wasm.funcref;
+        %j = builtin.zero : !wasm.externref;
+        builtin.ret %a, %b, %c, %d, %e, %f, %g, %h, %i, %j : (i8, i32, i64, isize, ptr<i8>, (i64) -> i64, f32, f64, !wasm.funcref, !wasm.externref);
+    };
+};
+
+// -----
+
+// A function value of 64 bits is not the target's: it is an `i32` table index.
+// expected-error@+1 {{`convert-to-wasm` needs a function value of 32 bits, `fn = 32` in the data layout: a function value is an `i32`, its index in the function table}}
+builtin.module public @wide_functions attributes { data_layout = #builtin.data_layout<little, ptr = 32, fn = 64> } {
+    builtin.function public extern("C") @f() {
+        builtin.ret;
+    };
+};
+
+// -----
+
+// Without `fn`, a function type has no layout, and the verifier refuses a load of one, with what
+// to state (`function-values-without-fn.runic` shows the lowering's own refusal).
+builtin.module public @no_fn attributes { data_layout = #builtin.data_layout<little, ptr = 32> } {
+    builtin.function public extern("C") @f(%p: ptr<(i64) -> i64>) {
+        // expected-error@+1 {{a function value has a layout only where the data layout states one, as in `fn = 32`}}
+        %f = mem.load %p;
+        builtin.ret;
+    };
+};
+
+// -----
+
+// An aggregate value in a function body: it exists in memory or in a global variable's
+// initializer.
+builtin.module public @aggregate attributes { data_layout = #builtin.data_layout<little, ptr = 32, fn = 32> } {
+    builtin.function public extern("C") @f(%x: i32) {
+        // expected-error@+1 {{`convert-to-wasm` cannot lower `builtin.aggregate`: an aggregate value in a function body is not lowered; it exists in memory or in a global variable's initializer}}
+        %s = builtin.aggregate %x, %x : struct<i32, i32>;
+        builtin.ret;
+    };
+};
+
+// -----
+
+builtin.module public @zero_aggregate attributes { data_layout = #builtin.data_layout<little, ptr = 32, fn = 32> } {
+    builtin.function public extern("C") @f() {
+        // expected-error@+1 {{`convert-to-wasm` cannot lower `builtin.zero`: an aggregate value in a function body is not lowered; it exists in memory or in a global variable's initializer}}
+        %z = builtin.zero : array<i64; 4>;
+        builtin.ret;
+    };
+};

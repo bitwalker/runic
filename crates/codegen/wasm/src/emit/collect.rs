@@ -762,6 +762,41 @@ impl Entities for Resolver {
     }
 }
 
+impl data::DataTargets for Resolver {
+    fn data_entry(&mut self, global: &Operation, target: OperationRef) -> Result<DataId, Report> {
+        let Some(Id::Data(id)) = self.ids.get(&target).copied() else {
+            return Err(not_of_the_unit(global, target, Kind::Data));
+        };
+        self.data_uses
+            .entry(id)
+            .or_default()
+            .address
+            .get_or_insert(global.as_operation_ref());
+        Ok(id)
+    }
+
+    fn function(&mut self, global: &Operation, target: OperationRef) -> Result<FuncId, Report> {
+        match self.ids.get(&target).copied() {
+            Some(Id::Function(id)) => Ok(id),
+            _ => Err(not_of_the_unit(global, target, Kind::Function)),
+        }
+    }
+}
+
+/// The error, naming the global variable `global`, that its initializer names `target`, which is
+/// not an entity of the unit of the kind `kind`.
+fn not_of_the_unit(global: &Operation, target: OperationRef, kind: Kind) -> Report {
+    let target = target.borrow();
+    unsupported(
+        global,
+        format!(
+            "its initializer names {}, which is not {} of the unit",
+            symbol_name(&target),
+            kind.noun()
+        ),
+    )
+}
+
 /// The state of a collection.
 #[derive(Default)]
 struct Collector {
@@ -906,6 +941,7 @@ impl Collector {
                 self.origins.data.push(op);
                 Id::Data(self.desc.add_data(DataEntry {
                     name,
+                    size: 0,
                     bytes: Vec::new(),
                     align: 1,
                     section: section(borrowed).map(|section| section.to_string()),
@@ -1169,6 +1205,7 @@ impl Collector {
                 };
                 let init = data::evaluate(&op.borrow(), &mut self.resolver)?;
                 let entry = self.desc.data_mut(id);
+                entry.size = init.size;
                 entry.bytes = init.bytes;
                 entry.align = init.align;
                 entry.fixups = init.fixups;

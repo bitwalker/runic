@@ -1,0 +1,74 @@
+// RUN: runic-opt %s --target wasm32-unknown-unknown --stop-after wat | filecheck %s
+
+// A small dispatch table in data: an array of structs `{id, name, function}`, built in generic IR
+// with `builtin.aggregate`, whose initializer the backend evaluates to bytes and relocations. With
+// no frame in the unit there is no stack, and data starts at 1024: the names at 1024 and 1027, the
+// table at 1032 (aligned to 4). Each entry is 12 bytes: the id, the address of its name and the
+// table slot of its function, resolved where the relocations were. The functions get slots from 1,
+// in the order the initializer names them, in the function table the backend defines; the call
+// loads the function value with `mem.load` (4 bytes at offset 8 of the entry, as `fn = 32` in the
+// backend's data layout gives it) and calls through it. The module relies on the data layout of
+// the target.
+
+// CHECK-LABEL: (module $data-aggregates
+// CHECK: (table $__indirect_function_table (;0;) 3 3 funcref)
+// CHECK-NEXT: (memory $__linear_memory (;0;) 1)
+// CHECK-NEXT: (export "call" (func $dispatch::call))
+// CHECK-NEXT: (export "memory" (memory $__linear_memory))
+// CHECK-NEXT: (elem (;0;) (i32.const 1) func $dispatch::inc $dispatch::dbl)
+// CHECK-LABEL: (func $dispatch::call (;2;) (type 1) (param i32 i64) (result i64)
+// CHECK-NEXT: local.get 1
+// CHECK-NEXT: i32.const 1032
+// CHECK-NEXT: local.get 0
+// CHECK-NEXT: i32.const 12
+// CHECK-NEXT: i32.mul
+// CHECK-NEXT: i32.add
+// CHECK-NEXT: i32.const 8
+// CHECK-NEXT: i32.add
+// CHECK-NEXT: i32.load
+// CHECK-NEXT: call_indirect (type 0)
+// CHECK-NEXT: ){{$}}
+// CHECK-NEXT: (data $dispatch::name_inc (;0;) (i32.const 1024) "inc")
+// CHECK-NEXT: (data $dispatch::name_dbl (;1;) (i32.const 1027) "dbl")
+// CHECK-NEXT: (data $dispatch::entries (;2;) (i32.const 1032) "\07\00\00\00\00\04\00\00\01\00\00\00\09\00\00\00\03\04\00\00\02\00\00\00")
+builtin.module public @dispatch {
+    builtin.function public extern("C") @inc(%x: i64) -> i64 {
+        %one = arith.constant 1 : i64;
+        %r = arith.add %x, %one;
+        builtin.ret %r : (i64);
+    };
+    builtin.function public extern("C") @dbl(%x: i64) -> i64 {
+        %r = arith.add %x, %x;
+        builtin.ret %r : (i64);
+    };
+    builtin.global_variable private @name_inc : array<i8; 3> {
+        %b = builtin.bytes "636e69" : array<i8; 3>;
+        builtin.yield %b;
+    };
+    builtin.global_variable private @name_dbl : array<i8; 3> {
+        %b = builtin.bytes "6c6264" : array<i8; 3>;
+        builtin.yield %b;
+    };
+    builtin.global_variable private @entries : array<struct<i32, ptr<i8>, (i64) -> i64>; 2> {
+        %id0 = arith.constant 7 : i32;
+        %g0 = builtin.global_symbol @name_inc : ptr<array<i8; 3>>;
+        %n0 = mem.ptrcast %g0 : ptr<i8>;
+        %f0 = builtin.function_ref @inc : (i64) -> i64;
+        %e0 = builtin.aggregate %id0, %n0, %f0 : struct<i32, ptr<i8>, (i64) -> i64>;
+        %id1 = arith.constant 9 : i32;
+        %g1 = builtin.global_symbol @name_dbl : ptr<array<i8; 3>>;
+        %n1 = mem.ptrcast %g1 : ptr<i8>;
+        %f1 = builtin.function_ref @dbl : (i64) -> i64;
+        %e1 = builtin.aggregate %id1, %n1, %f1 : struct<i32, ptr<i8>, (i64) -> i64>;
+        %t = builtin.aggregate %e0, %e1 : array<struct<i32, ptr<i8>, (i64) -> i64>; 2>;
+        builtin.yield %t;
+    };
+    builtin.function public extern("C") @call(%i: isize, %x: i64) -> i64 {
+        %g = builtin.global_symbol @entries : ptr<array<struct<i32, ptr<i8>, (i64) -> i64>; 2>>;
+        %p = mem.ptrcast %g : ptr<struct<i32, ptr<i8>, (i64) -> i64>>;
+        %q = mem.gep %p, %i, [2];
+        %f = mem.load %q;
+        %r = builtin.call_indirect %f(%x) : extern("C") (i64) -> i64;
+        builtin.ret %r : (i64);
+    } attributes { wasm.export_name = "call" };
+};

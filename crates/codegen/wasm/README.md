@@ -417,6 +417,7 @@ it):
 | `cf.cond_br` | Wasm control flow is structured: `cfg-to-scf{exits=in-place}` runs first | the same |
 | `cf.switch` | Wasm control flow is structured: `cfg-to-scf{exits=in-place}` runs first | the same |
 | `scf.pending_exit` | `cfg-to-scf` makes it while it runs and removes it: it never verifies | `` `scf.pending_exit` is internal to `cfg-to-scf` and never appears in IR `` |
+| `builtin.aggregate` | an aggregate value is not one Wasm value: it exists in memory or in a global variable's initializer | `` `convert-to-wasm` cannot lower `builtin.aggregate`: an aggregate value in a function body is not lowered; it exists in memory or in a global variable's initializer `` (a `builtin.zero` of an aggregate type is the same error) |
 
 `scf.yield` and `scf.condition` are lowered with the `scf.if`, `scf.while` or `scf.index_switch`
 they end.

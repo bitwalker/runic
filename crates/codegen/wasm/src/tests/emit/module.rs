@@ -39,6 +39,7 @@ fn memory(desc: &mut ModuleDesc, name: &str, pages: u32) -> crate::emit::desc::M
 fn data(name: &str, bytes: &[u8], placement: DataPlacement) -> DataEntry {
     DataEntry {
         name: name.to_string(),
+        size: bytes.len() as u64,
         bytes: bytes.to_vec(),
         align: 1,
         section: None,

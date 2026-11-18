@@ -180,9 +180,9 @@
 //!
 //! and the data starts at 1024 without one. The undefined data symbols `__data_end`,
 //! `__heap_base`, `__start_<s>` and `__stop_<s>` are addresses the layout gives. Table slots start
-//! at 1, so that a null function pointer traps. A global variable's initializer is folded to
-//! bytes ([emit::data]): constants, the address of another global variable, the slot of a
-//! function, or an operation whose fold gives one of those.
+//! at 1, so that a null function pointer traps. A global variable's initializer becomes bytes
+//! through the `mem` dialect's evaluator ([emit::data]): constants, zeros, the address of a global
+//! variable plus a constant, the slot of a function, and structs and arrays of those.
 //!
 //! **The backend.** With the `std` feature, [WasmBackend] is the backend `wasm` of `runic-compile`
 //! for `wasm32-unknown-unknown` ([backend]): it states the data layout of the C ABI of wasm32, adds
@@ -236,7 +236,7 @@ pub use self::backend::WasmBackend;
 pub use self::{
     convert::ConvertToWasm,
     frames::LowerFrames,
-    target::{POINTER_WIDTH, WasmTarget},
+    target::{FUNCTION_WIDTH, POINTER_WIDTH, WasmTarget},
     types::{carrier, type_converter, width},
     verify_form::{VerifyForm, verify_wasm_form},
 };
