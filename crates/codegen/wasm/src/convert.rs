@@ -19,8 +19,9 @@ use runic_dialect_scf::ScfDialect;
 use runic_dialect_ub::UndefinedBehaviorDialect;
 use runic_dialect_wasm::{self as wasm, MemoryRef, TableRef, WasmDialect};
 use runic_ir::{
-    AggregateType, Context, EntityMut, Forward, FxHashMap, FxHashSet, Operation, OperationName,
-    OperationRef, RawWalk, RegionExitKind, Report, Spanned, Symbol, Type, Value, WalkResult,
+    AggregateType, Context, ElementRewrite, EntityMut, Forward, FxHashMap, FxHashSet, Operation,
+    OperationName, OperationRef, RawWalk, RegionExitKind, Report, Spanned, Symbol, Type, Value,
+    WalkResult,
     conversion::{
         ConversionConfig, ConversionPatternSet, ConversionTarget, DynamicLegalityResult,
         TypeConverter, add_builtin_legality_by_type, apply_full_conversion,
@@ -32,6 +33,8 @@ use runic_ir::{
         UnrealizedConversionCast, World, Zero, attributes::Signature,
     },
     pass::{Pass, PassExecutionState, PostPassStatus},
+    recursively_replace_elements_in,
+    types::TypeMapper,
 };
 
 use self::labels::Labels;
@@ -87,7 +90,10 @@ const DESCRIPTION: &str = "Converts generic operations and types to Wasm form: w
 ///
 ///    The `after` body of an `scf.while` whose `before` body does not end in `scf.condition` is
 ///    never entered, and the lowering drops it: it is not checked.
-/// 3. The well-known symbols the functions of each module name ([crate::symbols]): a module that
+/// 3. Every global variable is checked: each function type it holds (see step 2 of the conversion,
+///    below) whose parameter or result has no carrier is an error naming the global, the function
+///    type and the part (`check_data_signatures`).
+/// 4. The well-known symbols the functions of each module name ([crate::symbols]): a module that
 ///    holds another symbol of a well-known name that its functions need is an error.
 ///
 /// Then each module is converted:
@@ -97,7 +103,18 @@ const DESCRIPTION: &str = "Converts generic operations and types to Wasm form: w
 ///    creates an operation at the level of a module: the linear memory when an operation accesses
 ///    memory (a `mem.load`, `mem.store`, `mem.memcpy`, `mem.memmove` or `mem.memset`), the
 ///    indirect-function table when it makes an indirect call.
-/// 2. The module is converted by a full conversion ([apply_full_conversion]), verified after,
+/// 2. The function types in data follow the signatures. Every function type that a
+///    `builtin.global_variable` of the module (or of a module nested in it) holds, in its declared
+///    type and in the types of its initializer's operations and values, at any depth (in a struct,
+///    an array, a pointer), becomes the function type of its converted signature
+///    ([TypeConverter::convert_signature_type]), by the rule that converts a `builtin.function`'s
+///    own signature: so a `builtin.function_ref` in an initializer keeps the type of its callee,
+///    a global declared in one module and defined in another keep the same type, and the
+///    `builtin.global_symbol`s and `mem` casts of an initializer keep agreeing with the globals
+///    they name. Nothing else in a global changes: a pointer stays a pointer and an integer keeps
+///    its width, so the data's layout is the same (a function value has the layout's `fn` size,
+///    whatever its signature), and the initializer is not otherwise converted.
+/// 3. The module is converted by a full conversion ([apply_full_conversion]), verified after,
 ///    under the target that [populate_patterns] is written for: the `wasm` dialect is legal
 ///    except a `wasm.br` of the input whose label no longer names the construct it named; the
 ///    `arith`, `cf`, `mem`, `scf` and `ub` dialects are illegal; the builtin operations the
@@ -109,8 +126,9 @@ const DESCRIPTION: &str = "Converts generic operations and types to Wasm form: w
 ///    control flow read a value through one, which folds away; see [control]);
 ///    `builtin.module`, `builtin.function_alias`, `builtin.segment`
 ///    and `builtin.global_variable` are legal, and a global variable and a `wasm.global` are
-///    recursively legal: an initializer is data or a constant expression, not code, and is not
-///    converted. Every other operation is illegal.
+///    recursively legal: an initializer is data or a constant expression, not code, and no pattern
+///    converts it (step 2 has already given its function types their converted signatures). Every
+///    other operation is illegal.
 ///
 /// An error the conversion itself returns after the check (none is known on IR that verifies) is
 /// passed on, and nothing is rolled back after it.
@@ -249,13 +267,14 @@ impl Checked {
         let conversion_target = conversion_target(&context, &converter, &self.labels);
         let mut patterns = ConversionPatternSet::new(context.clone());
         populate_patterns(&mut patterns, &converter, &self.target, &symbols, &self.labels)?;
+        let data = convert_data_signatures(module_op, &converter)?;
         let result = apply_full_conversion(
             module_op,
             conversion_target,
             patterns,
             ConversionConfig::default(),
         )?;
-        Ok(result.changed() || symbols.declared())
+        Ok(result.changed() || symbols.declared() || data)
     }
 }
 
@@ -467,8 +486,14 @@ impl Check<'_> {
                     Err(error) => WalkResult::Break(error),
                 };
             }
-            let op = op.borrow();
-            if op.is::<GlobalVariable>() || op.is::<wasm::Global>() {
+            let is_global = op.borrow().is::<GlobalVariable>();
+            if is_global {
+                return match check_data_signatures(op) {
+                    Ok(()) => WalkResult::Skip,
+                    Err(error) => WalkResult::Break(error),
+                };
+            }
+            if op.borrow().is::<wasm::Global>() {
                 WalkResult::Skip
             } else {
                 WalkResult::Continue(())
@@ -778,6 +803,107 @@ fn check_region_arguments(
                 format!("argument {index} of block {block_index} of {name}")
             })?;
         }
+    }
+    Ok(())
+}
+
+/// The global variables under `root`, outside functions: those of a module and of the modules
+/// nested in it.
+fn global_variables(root: OperationRef) -> Vec<OperationRef> {
+    let mut globals = Vec::new();
+    let _ = root.raw_prewalk::<Forward, _, _>(|op: OperationRef| {
+        let op_ref = op.borrow();
+        if op_ref.is::<GlobalVariable>() {
+            globals.push(op);
+            return WalkResult::<()>::Skip;
+        }
+        if op_ref.is::<Function>() || op_ref.is::<wasm::Global>() {
+            WalkResult::Skip
+        } else {
+            WalkResult::Continue(())
+        }
+    });
+    globals
+}
+
+/// Gives every function type that a global variable under `root` holds (in its declared type and
+/// in the types of its initializer's operations and values, at any depth: in structs, arrays and
+/// pointers) the function type of its converted signature
+/// ([TypeConverter::convert_signature_type]), the rule by which a `builtin.function`'s own
+/// signature converts; whether anything changed. Nothing else in a global changes: a pointer
+/// stays a pointer and an integer keeps its width, so the layout of the data is the same, a
+/// function value having the layout's `fn` size whatever its signature.
+///
+/// [check_data_signatures] refuses, before anything changes, a function type whose parameters or
+/// results the conversion cannot give a carrier.
+fn convert_data_signatures(root: OperationRef, converter: &TypeConverter) -> Result<bool, Report> {
+    let globals = global_variables(root);
+    if globals.is_empty() {
+        return Ok(false);
+    }
+    let context = context_of(root);
+    let mapper = TypeMapper::new(&context, |context, ty| {
+        if ty.is_function() {
+            converter.convert_signature_type(context, ty)
+        } else {
+            ty
+        }
+    });
+    let mut rewrite = ElementRewrite::types(mapper);
+    let mut changed = false;
+    for global in globals {
+        changed |= recursively_replace_elements_in(global, &mut rewrite)?;
+    }
+    Ok(changed)
+}
+
+/// Checks the function types that the global variable `global` holds (see
+/// [convert_data_signatures]): an error, naming the global, when a parameter or result of one has
+/// no carrier ([carrier]), so that the type cannot be converted as a signature. The parameters and
+/// results of a function type are values; a function type held as one of them is a value of
+/// function type, carried in an `i32`, and is not itself converted as a signature.
+fn check_data_signatures(global: OperationRef) -> Result<(), Report> {
+    let context = context_of(global);
+    let name = {
+        let global = global.borrow();
+        let global = global.downcast_ref::<GlobalVariable>().expect("a builtin.global_variable");
+        format!("`@{}`", global.get_name().as_str())
+    };
+    let mut ops = Vec::new();
+    global.borrow().prewalk_all(|op: &Operation| ops.push(op.as_operation_ref()));
+    for op in ops {
+        let op = op.borrow();
+        let span = op.span();
+        let result = op.walk_types(&mut |_, ty| {
+            let Some(function) = ty.as_function() else {
+                return WalkResult::Continue(());
+            };
+            let parts = function
+                .params()
+                .iter()
+                .enumerate()
+                .map(|(index, param)| ("parameter", index, *param))
+                .chain(
+                    function
+                        .results()
+                        .iter()
+                        .enumerate()
+                        .map(|(index, result)| ("result", index, *result)),
+                );
+            for (role, index, part) in parts {
+                let checked = check_carried(&context, part, span, || {
+                    format!(
+                        "{role} {index} of the function type `{ty}`, which the global variable \
+                         {name} holds,"
+                    )
+                });
+                if let Err(error) = checked {
+                    return WalkResult::Break(error);
+                }
+            }
+            WalkResult::Skip
+        });
+        result.into_result()?;
     }
     Ok(())
 }

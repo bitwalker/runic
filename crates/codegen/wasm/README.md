@@ -210,7 +210,7 @@ What is refused, each an error that names the global and the operation:
 - an operation that **does not fold** to a constant (`arith.udiv` by 0: `` `arith.udiv` does not
   fold to a constant ``), or that computes with a function value;
 - a value that **does not fit** its type (an `isize` constant of 2^40: `` `arith.constant` gives
-  1099511627776, which does not fit `isize` of 4 bytes ``), and an address cast to an integer of
+  1099511627776, which does not fit `isize` of 32 bits ``), and an address cast to an integer of
   another width than the pointer's;
 - a type with no layout;
 - a passive segment (a global named by `wasm.memory_init` or `wasm.data_drop`) that holds an
@@ -550,7 +550,13 @@ The limits that are not per operation:
 - **An `scf.break` that names a `wasm.loop` written before the lowering is an error**: leaving such
   a loop with its results has no `wasm.br` (a `wasm.br` to a loop goes back to its top).
 - **A global variable's initializer is data**, and is not converted: `convert-to-wasm` and
-  `wasm-verify-form` leave the regions of `builtin.global_variable` and `wasm.global` as they are.
+  `wasm-verify-form` leave the regions of `builtin.global_variable` and `wasm.global` as they are,
+  with one exception. The functions an initializer names are lowered, and their signatures
+  convert (`(ptr<i32>) -> i32` becomes `(i32) -> i32`), so every function type a
+  `builtin.global_variable` holds, in its type and in its initializer, at any depth, becomes the
+  function type of its converted signature too, and nothing else in it changes: a pointer stays a
+  pointer, and the data's layout is the same. A function type in data whose parameter or result
+  has no carrier (an `i128`, say) is an error naming the global, given before anything changes.
 - **A `builtin.unrealized_conversion_cast` written before the lowering to a narrow integer** is an
   error: nothing says the bits of its input above the width are clear. `arith.trunc` makes one.
 - **An `isize` constant outside `-2^31 ..= 2^32 - 1`** (an `arith.constant` or a

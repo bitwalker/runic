@@ -700,7 +700,7 @@ fn an_integer_that_does_not_fit_its_type_is_an_error() {
         &error,
         &[
             "the initializer of `@g` is not a constant that can be placed",
-            "`arith.constant` gives 1099511627776, which does not fit `isize` of 4 bytes",
+            "`arith.constant` gives 1099511627776, which does not fit `isize` of 32 bits",
         ],
     );
 }
@@ -725,4 +725,232 @@ fn the_target_of_a_relocation_prints_its_symbol() {
     let init = parsed.initializer("g");
     assert_eq!(format!("{:?}", init.relocations[0].target), "Data(@target)");
     assert_eq!(format!("{:?}", parsed.function(0, 4, "callee").target), "Function(@callee)");
+}
+
+// ---- Shared zeros -------------------------------------------------------------------------------
+
+/// The body of `@g`: `width` copies of `leaf : leaf_ty` aggregated `levels` times, each level an
+/// array of `width` copies of the level below it, all sharing one value per level; with its type.
+fn shared_dag(leaf: &str, leaf_ty: &str, width: usize, levels: usize) -> (String, String) {
+    let mut body = format!("%l0 = {leaf} : {leaf_ty};\n");
+    let mut ty = String::from(leaf_ty);
+    for level in 1..=levels {
+        ty = format!("array<{ty}; {width}>");
+        let operands = vec![format!("%l{}", level - 1); width].join(", ");
+        body.push_str(&format!("%l{level} = builtin.aggregate {operands} : {ty};\n"));
+    }
+    body.push_str(&format!("%v = builtin.aggregate %l{levels} : array<{ty}; 1>;"));
+    (body, format!("array<{ty}; 1>"))
+}
+
+#[test]
+fn shared_zero_sized_bytes_are_placed_without_walking_every_path_to_them() {
+    // 1000^4 paths to one zero-sized constant: placing it walks none of them
+    let (body, ty) = shared_dag("builtin.bytes \"\"", "array<i8; 0>", 1000, 4);
+    let started = std::time::Instant::now();
+    let init = init_of(LITTLE32, &ty, &body);
+    let elapsed = started.elapsed();
+    assert_eq!((init.size, init.align), (0, 1));
+    assert!(init.is_zero(), "{init:?}");
+    assert!(elapsed < core::time::Duration::from_secs(2), "took {elapsed:?}");
+}
+
+#[test]
+fn shared_constant_zeros_are_known_zero_and_allocate_nothing() {
+    // 1000^4 copies of an `i64` 0: 8 * 10^12 zero bytes, never walked and never allocated
+    let (body, ty) = shared_dag("arith.constant 0", "i64", 1000, 4);
+    let started = std::time::Instant::now();
+    let init = init_of(LITTLE32, &ty, &body);
+    let elapsed = started.elapsed();
+    assert_eq!(init.size, 8 * 1000u64.pow(4));
+    assert!(init.is_zero(), "{init:?}");
+    assert_eq!(init.bytes.capacity(), 0);
+    assert!(elapsed < core::time::Duration::from_secs(2), "took {elapsed:?}");
+    // A zero float, a zero isize, a null pointer and zero bytes are known zero too
+    for (leaf, leaf_ty) in [
+        ("arith.constantf 0.0", "f64"),
+        ("arith.constant 0", "isize"),
+        ("builtin.bytes \"0000\"", "array<i8; 2>"),
+    ] {
+        let (body, ty) = shared_dag(leaf, leaf_ty, 1000, 3);
+        let init = init_of(LITTLE32, &ty, &body);
+        assert!(init.is_zero(), "{leaf}: {init:?}");
+        assert_eq!(init.bytes.capacity(), 0, "{leaf}");
+    }
+    // Negative zero is not zero bytes
+    let init = init_of(LITTLE32, "f64", "%v = arith.constantf -0.0 : f64;");
+    assert_eq!(init.bytes, (-0.0f64).to_bits().to_le_bytes());
+}
+
+// ---- isize, padded numbers ----------------------------------------------------------------------
+
+#[test]
+fn an_isize_constant_is_truncated_to_the_isize_width_and_zero_extended_to_its_size() {
+    // (layout, value, bytes)
+    let cases: [(&str, &str, &[u8]); 8] = [
+        // `isize` is 32 bits in 8 bytes
+        ("little, ptr = 32, i32 = 8", "-1", &[0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0]),
+        ("little, ptr = 32, i32 = 8", "4294967295", &[0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0]),
+        ("little, ptr = 32, i32 = 8", "-2", &[0xfe, 0xff, 0xff, 0xff, 0, 0, 0, 0]),
+        // and in big-endian order the padding comes first, as for an `i32`
+        ("big, ptr = 32, i32 = 8", "-1", &[0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff]),
+        ("big, ptr = 32, i32 = 8", "305419896", &[0, 0, 0, 0, 0x12, 0x34, 0x56, 0x78]),
+        // `isize` is 24 bits in 4 bytes
+        ("little, ptr = 24 align 4", "-1", &[0xff, 0xff, 0xff, 0]),
+        ("little, ptr = 24 align 4", "16777215", &[0xff, 0xff, 0xff, 0]),
+        ("big, ptr = 24 align 4", "-1", &[0, 0xff, 0xff, 0xff]),
+    ];
+    for (layout, value, expected) in cases {
+        let init = Parsed::new(layout, &constant("isize", value)).initializer("g");
+        assert_eq!(init.bytes, expected, "{layout}: {value}");
+    }
+    // An `i32` and an `i24` under the same layouts are placed the same way
+    let i32 = Parsed::new("little, ptr = 32, i32 = 8", &constant("i32", "-1")).initializer("g");
+    assert_eq!(i32.bytes, [0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0]);
+    let i24 = Parsed::new("little, ptr = 24 align 4", &constant("i24", "-1")).initializer("g");
+    assert_eq!(i24.bytes, [0xff, 0xff, 0xff, 0]);
+}
+
+#[test]
+fn an_isize_constant_that_does_not_fit_the_isize_width_is_an_error_whatever_its_size() {
+    for (layout, value, bits) in [
+        ("little, ptr = 32, i32 = 8", "4294967296", 32),
+        ("little, ptr = 32, i32 = 8", "-2147483649", 32),
+        ("big, ptr = 32, i32 = 8", "4294967296", 32),
+        ("little, ptr = 24 align 4", "16777216", 24),
+        ("little, ptr = 24 align 4", "-8388609", 24),
+    ] {
+        let error = Parsed::new(layout, &constant("isize", value)).error("g");
+        assert_mentions(
+            &error,
+            &[&format!(
+                "`arith.constant` gives {value}, which does not fit `isize` of {bits} bits"
+            )],
+        );
+    }
+}
+
+#[test]
+fn a_padded_float_is_its_bytes_and_zeros_on_the_side_of_its_most_significant_byte() {
+    let f32 = global("g", "f32", "%v = arith.constantf 1.5 : f32;");
+    let bits = 1.5f32.to_bits();
+    let little = Parsed::new("little, ptr = 32, f32 = 8", &f32).initializer("g");
+    assert_eq!((little.size, little.align), (8, 8));
+    let mut expected = bits.to_le_bytes().to_vec();
+    expected.extend([0; 4]);
+    assert_eq!(little.bytes, expected);
+    let big = Parsed::new("big, ptr = 32, f32 = 8", &f32).initializer("g");
+    let mut expected = vec![0; 4];
+    expected.extend(bits.to_be_bytes());
+    assert_eq!(big.bytes, expected);
+    // An `f64` of 16 bytes
+    let f64 = global("g", "f64", "%v = arith.constantf -2.25 : f64;");
+    let init = Parsed::new("little, ptr = 32, f64 = 16", &f64).initializer("g");
+    assert_eq!(init.size, 16);
+    assert_eq!(init.bytes[..8], (-2.25f64).to_bits().to_le_bytes());
+    assert_eq!(init.bytes[8..], [0; 8]);
+}
+
+#[test]
+fn bytes_over_padded_elements_are_an_error_that_says_the_layout_pads_them() {
+    let text = global("g", "array<i8; 4>", "%v = builtin.bytes \"04030201\" : array<i8; 4>;");
+    let error = Parsed::new("little, ptr = 32, i8 = 2", &text).error("g");
+    assert_mentions(
+        &error,
+        &[
+            "the initializer of `@g` is not a constant that can be placed",
+            "`builtin.bytes` gives 4 bytes, but `array<i8; 4>` is 8 bytes: the layout pads its \
+             elements (each `i8` takes 2 bytes), and bytes cannot be laid over padded elements",
+        ],
+    );
+}
+
+// ---- inttoptr of a constant ---------------------------------------------------------------------
+
+#[test]
+fn an_inttoptr_of_a_constant_is_a_pointer_with_that_value_and_no_relocation() {
+    let null =
+        init_of(LITTLE32, "ptr", "%i = arith.constant 0 : isize;\n%v = mem.inttoptr %i : ptr;");
+    assert_eq!((null.size, null.align), (4, 4));
+    assert!(null.is_zero(), "{null:?}");
+    let zero = init_of(
+        LITTLE32,
+        "ptr<i32>",
+        "%i = builtin.zero : isize;\n%v = mem.inttoptr %i : ptr<i32>;",
+    );
+    assert!(zero.is_zero(), "{zero:?}");
+    // An absolute address, in either byte order and in a struct
+    let body = "%i = arith.constant 4096 : isize;\n%v = mem.inttoptr %i : ptr;";
+    let init = init_of(LITTLE32, "ptr", body);
+    assert_eq!(init.bytes, [0x00, 0x10, 0, 0]);
+    assert!(init.relocations.is_empty());
+    assert_eq!(init_of("big, ptr = 32", "ptr", body).bytes, [0, 0, 0x10, 0x00]);
+    let ty = "struct<i8, ptr>";
+    let body = format!(
+        "%a = arith.constant 1 : i8;\n%i = arith.constant -16 : isize;\n%p = mem.inttoptr %i : \
+         ptr;\n%v = builtin.aggregate %a, %p : {ty};"
+    );
+    assert_eq!(init_of(LITTLE32, ty, &body).bytes, [1, 0, 0, 0, 0xf0, 0xff, 0xff, 0xff]);
+    // Under a 64-bit layout, eight bytes
+    let body = "%i = arith.constant -1 : isize;\n%v = mem.inttoptr %i : ptr;";
+    assert_eq!(init_of("little, ptr = 64", "ptr", body).bytes, [0xff; 8]);
+}
+
+#[test]
+fn an_inttoptr_of_a_constant_of_another_width_than_the_pointer_is_the_width_error() {
+    // A 32-bit `isize` to a 16-bit pointer of address space 1
+    let body = "%i = arith.constant 5 : isize;\n%v = mem.inttoptr %i : ptr<i8, 1>;";
+    let error =
+        Parsed::new("little, ptr = 32, ptr<1> = 16", &global("g", "ptr<i8, 1>", body)).error("g");
+    assert_mentions(
+        &error,
+        &[
+            "the initializer of `@g` is not a constant that can be placed",
+            "`mem.inttoptr` casts an address between `ptr<i8, 1>`, of 16 bits, and `isize` of 32 \
+             bits",
+        ],
+    );
+    // A constant the pointer's width does not hold
+    let body = "%i = arith.constant 4294967296 : isize;\n%v = mem.inttoptr %i : ptr;";
+    let error = Parsed::new("little, ptr = 32 index 32", &global("g", "ptr", body)).error("g");
+    assert_mentions(&error, &["does not fit"]);
+}
+
+// ---- Overlapping elements -----------------------------------------------------------------------
+
+/// The ranges of elements `(start, end)`, numbered in order.
+fn ranges(spans: &[(u64, u64)]) -> Vec<crate::initializer::ElementRange> {
+    spans
+        .iter()
+        .enumerate()
+        .map(|(index, (start, end))| crate::initializer::ElementRange {
+            index: index as u32,
+            start: *start,
+            end: *end,
+        })
+        .collect()
+}
+
+/// No type of the tree has elements that overlap (an enum, which would, is refused by
+/// `builtin.aggregate`'s verifier), so the check an aggregate's placement makes is tested on its
+/// own.
+#[test]
+fn the_check_of_overlapping_elements_finds_two_that_share_a_byte_in_any_order() {
+    use crate::initializer::first_overlap;
+    // A struct's fields, with padding between them: no overlap
+    assert_eq!(first_overlap(&mut ranges(&[(0, 1), (4, 8), (8, 10)])), None);
+    // Elements of size 0 share no byte, wherever they are
+    assert_eq!(first_overlap(&mut ranges(&[(0, 4), (2, 2), (4, 4), (4, 8)])), None);
+    assert_eq!(first_overlap(&mut ranges(&[])), None);
+    // A union-like type: two elements at offset 0
+    let found = first_overlap(&mut ranges(&[(0, 4), (0, 8)])).expect("an overlap");
+    assert_eq!((found.0.index, found.1.index), (0, 1));
+    // Out of order, and an element inside a wide one that an element between them ends before
+    let found = first_overlap(&mut ranges(&[(8, 12), (0, 16), (2, 4)])).expect("an overlap");
+    assert_eq!((found.0.index, found.1.index), (1, 2));
+    let found = first_overlap(&mut ranges(&[(0, 16), (2, 4), (10, 12)])).expect("an overlap");
+    assert_eq!((found.0.index, found.1.index), (0, 1));
+    // The second of three overlaps the third, not the first
+    let found = first_overlap(&mut ranges(&[(0, 2), (2, 6), (5, 7)])).expect("an overlap");
+    assert_eq!((found.0.index, found.1.index), (1, 2));
 }

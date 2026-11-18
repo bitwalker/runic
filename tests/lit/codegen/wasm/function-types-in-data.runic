@@ -1,0 +1,104 @@
+// RUN: runic-opt %s -p 'convert-to-wasm,wasm-verify-form' --split-input-file --verify-diagnostics | filecheck %s
+
+// The function types a global variable mentions, after `convert-to-wasm`. A global's initializer is
+// data, not code, and is not lowered; but the functions it names are, and their signatures
+// convert (`ptr<i32>` and `i8` are carried in `i32`). So every function type in a global, in its
+// declared type at any depth (in a struct, an array, a pointer) and in the types of its
+// initializer's values, becomes the function type of its converted signature, by the rule that
+// converts a function's own signature. Nothing else changes: a pointer stays a pointer, so the
+// layout of the data is the same. A function type in data whose parameter or result has no
+// carrier is refused before anything changes, naming the global.
+
+// CHECK-LABEL: builtin.module public @data
+builtin.module public @data attributes { data_layout = #builtin.data_layout<little, ptr = 32, fn = 32> } {
+    // CHECK: builtin.function public extern("C") @deref(%{{[0-9]+}}: i32) -> i32 {
+    builtin.function public extern("C") @deref(%p: ptr<i32>) -> i32 {
+        %v = mem.load %p;
+        builtin.ret %v : (i32);
+    };
+
+    // CHECK: builtin.function public extern("C") @inc8(%{{[0-9]+}}: i32) -> i32 {
+    builtin.function public extern("C") @inc8(%x: i8) -> i8 {
+        %one = arith.constant 1 : i8;
+        %r = arith.add %x, %one;
+        builtin.ret %r : (i8);
+    };
+
+    builtin.global_variable public @k : i32 {
+        %v = arith.constant 77 : i32;
+        builtin.yield %v;
+    };
+
+    // A lone function value: the global's type and the reference's type follow the callee's.
+    // CHECK-LABEL: builtin.global_variable public @f : (i32) -> i32 {
+    // CHECK-NEXT: builtin.function_ref @deref : (i32) -> i32;
+    builtin.global_variable public @f : (ptr<i32>) -> i32 {
+        %b = builtin.function_ref @deref : (ptr<i32>) -> i32;
+        builtin.yield %b;
+    };
+
+    // In a struct, an array and a pointer: every function type converts as a signature, and the
+    // pointers and the rest stay as they are.
+    // CHECK-LABEL: builtin.global_variable public @t : struct<(i32) -> i32, ptr<(i32) -> i32>, array<(i32) -> i32; 2>, ptr<i32>, isize> {
+    // CHECK-NEXT: builtin.function_ref @inc8 : (i32) -> i32;
+    // CHECK-NEXT: builtin.global_symbol @f : ptr<(i32) -> i32>;
+    // CHECK-NEXT: builtin.function_ref @deref : (i32) -> i32;
+    // CHECK-NEXT: builtin.zero : (i32) -> i32;
+    // CHECK-NEXT: builtin.aggregate %{{[0-9]+}}, %{{[0-9]+}} : array<(i32) -> i32; 2>;
+    // CHECK-NEXT: builtin.global_symbol @k : ptr<i32>;
+    // CHECK-NEXT: mem.ptrcast %{{[0-9]+}} : ptr<(i32) -> i32>;
+    // CHECK-NEXT: mem.ptrtoint %{{[0-9]+}};
+    // CHECK-NEXT: builtin.aggregate %{{[0-9]+}}, %{{[0-9]+}}, %{{[0-9]+}}, %{{[0-9]+}}, %{{[0-9]+}} : struct<(i32) -> i32, ptr<(i32) -> i32>, array<(i32) -> i32; 2>, ptr<i32>, isize>;
+    builtin.global_variable public @t : struct<(i8) -> i8, ptr<(ptr<i32>) -> i32>, array<(ptr<i32>) -> i32; 2>, ptr<i32>, isize> {
+        %a = builtin.function_ref @inc8 : (i8) -> i8;
+        %fp = builtin.global_symbol @f : ptr<(ptr<i32>) -> i32>;
+        %b = builtin.function_ref @deref : (ptr<i32>) -> i32;
+        %z = builtin.zero : (ptr<i32>) -> i32;
+        %arr = builtin.aggregate %b, %z : array<(ptr<i32>) -> i32; 2>;
+        %c = builtin.global_symbol @k : ptr<i32>;
+        %cast = mem.ptrcast %c : ptr<(ptr<i32>) -> i32>;
+        %i = mem.ptrtoint %cast;
+        %v = builtin.aggregate %a, %fp, %arr, %c, %i : struct<(i8) -> i8, ptr<(ptr<i32>) -> i32>, array<(ptr<i32>) -> i32; 2>, ptr<i32>, isize>;
+        builtin.yield %v;
+    };
+
+    // A declaration, which another module defines, converts by the same rule.
+    // CHECK-LABEL: builtin.global_variable public @ext : (i32) -> i32;
+    builtin.global_variable public @ext : (i16) -> isize;
+
+    // A body loads a function value with its old type and calls it: the load is of an `i32`, and
+    // the indirect call's signature converts as any call's.
+    // CHECK-LABEL: @run() -> i32 {
+    // CHECK: [[G:%[0-9]+]] = wasm.load @__linear_memory, %{{[0-9]+}} : i32;
+    // CHECK: [[P:%[0-9]+]] = wasm.load @__linear_memory, %{{[0-9]+}} : i32;
+    // CHECK: wasm.call_indirect @__indirect_function_table, [[G]]([[P]]) : extern("C") (i32) -> i32;
+    builtin.function public extern("C") @run() -> i32 {
+        %t = builtin.global_symbol @t : ptr<struct<(i8) -> i8, ptr<(ptr<i32>) -> i32>, array<(ptr<i32>) -> i32; 2>, ptr<i32>, isize>>;
+        %gp = mem.gep %t, [2, 0];
+        %g = mem.load %gp;
+        %pp = mem.gep %t, [3];
+        %p = mem.load %pp;
+        %z = builtin.call_indirect %g(%p) : extern("C") (ptr<i32>) -> i32;
+        builtin.ret %z : (i32);
+    };
+};
+
+// -----
+
+// A function type in data with a parameter that has no carrier cannot be converted as a signature.
+builtin.module public @wide attributes { data_layout = #builtin.data_layout<little, ptr = 32, fn = 32> } {
+    // expected-error@+1 {{`convert-to-wasm` cannot lower a value of type `i128`: integers wider than 64 bits are not lowered yet}}
+    builtin.global_variable public @wide : struct<i32, ptr<(i128) -> i32>>;
+};
+
+// -----
+
+// The same for a result, in the type of a value of the initializer.
+builtin.module public @aggregate_result attributes { data_layout = #builtin.data_layout<little, ptr = 32, fn = 32> } {
+    builtin.global_variable public @g : ptr {
+        // expected-error@+1 {{result 0 of the function type `() -> struct<i32, i32>`, which the global variable `@g` holds, has type `struct<i32, i32>`}}
+        %z = builtin.zero : ptr<() -> struct<i32, i32>>;
+        %p = mem.ptrcast %z : ptr;
+        builtin.yield %p;
+    };
+};

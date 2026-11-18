@@ -283,6 +283,18 @@ fn a_dispatch_table_in_a_section_is_walked_between_its_bounds_and_called_through
 }
 
 #[test]
+fn terms_in_data_whose_functions_take_pointers_and_return_an_i1_are_called_through() {
+    for program in at_each_level(DISPATCH_TABLE) {
+        program.gives("term", &[i32(0), i32(3), i64(5)], &[i32(1), i64(8)]);
+        program.gives("term", &[i32(0), i32(-10), i64(5)], &[i32(0), i64(-5)]);
+        program.gives("term", &[i32(1), i32(3), i64(5)], &[i32(1), i64(15)]);
+        program.gives("term", &[i32(1), i32(0), i64(5)], &[i32(0), i64(0)]);
+        program.gives("read", &[i32(0)], &[i64(42)]);
+        program.gives("read", &[i32(1)], &[i64(-9)]);
+    }
+}
+
+#[test]
 fn floats_compare_with_nans_and_convert_both_ways_saturating() {
     for program in at_each_level(FLOAT) {
         program.gives(

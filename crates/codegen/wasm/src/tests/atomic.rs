@@ -106,6 +106,13 @@ const CASES: &[Case] = &[
                layout gives it a size: state `fn = 32` in the data layout",
     },
     Case {
+        what: "a function type in data with a parameter that has no carrier",
+        functions: "builtin.global_variable public @wide : struct<i32, ptr<(i128) -> i32>>;",
+        verifies: true,
+        says: "parameter 0 of the function type `(i128) -> i32`, which the global variable \
+               `@wide` holds, has type `i128`",
+    },
+    Case {
         what: "a pointer in another address space",
         functions: "builtin.function public extern(\"C\") @space() -> ptr<i8, 1>;",
         verifies: true,

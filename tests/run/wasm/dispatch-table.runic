@@ -7,6 +7,12 @@
 // RUN: wasmtime run --invoke count %t.wasm 2>/dev/null | filecheck %s --check-prefix=COUNT
 // RUN: wasmtime run --invoke count2 %t.wasm 2>/dev/null | filecheck %s --check-prefix=COUNT2
 // RUN: wasmtime run --invoke lookup2 %t.wasm 7 2>/dev/null | filecheck %s --check-prefix=SECOND
+// RUN: wasmtime run --invoke term %t.wasm 0 3 5 2>/dev/null | filecheck %s --check-prefix=ADD
+// RUN: wasmtime run --invoke term %t.wasm 0 -10 5 2>/dev/null | filecheck %s --check-prefix=ADD-NEG
+// RUN: wasmtime run --invoke term %t.wasm 1 3 5 2>/dev/null | filecheck %s --check-prefix=MUL
+// RUN: wasmtime run --invoke term %t.wasm 1 0 5 2>/dev/null | filecheck %s --check-prefix=MUL-ZERO
+// RUN: wasmtime run --invoke read %t.wasm 0 2>/dev/null | filecheck %s --check-prefix=READ-ADD
+// RUN: wasmtime run --invoke read %t.wasm 1 2>/dev/null | filecheck %s --check-prefix=READ-MUL
 // RUN: runic-opt --target wasm32-unknown-unknown %s -p 'canonicalizer,cse,sccp,canonicalizer,dce' -o %t.opt.wasm
 // RUN: wasmtime run --invoke lookup %t.opt.wasm 10 5 2>/dev/null | filecheck %s --check-prefix=TEN
 // RUN: wasmtime run --invoke lookup %t.opt.wasm 20 5 2>/dev/null | filecheck %s --check-prefix=TWENTY
@@ -16,6 +22,12 @@
 // RUN: wasmtime run --invoke count %t.opt.wasm 2>/dev/null | filecheck %s --check-prefix=COUNT
 // RUN: wasmtime run --invoke count2 %t.opt.wasm 2>/dev/null | filecheck %s --check-prefix=COUNT2
 // RUN: wasmtime run --invoke lookup2 %t.opt.wasm 7 2>/dev/null | filecheck %s --check-prefix=SECOND
+// RUN: wasmtime run --invoke term %t.opt.wasm 0 3 5 2>/dev/null | filecheck %s --check-prefix=ADD
+// RUN: wasmtime run --invoke term %t.opt.wasm 0 -10 5 2>/dev/null | filecheck %s --check-prefix=ADD-NEG
+// RUN: wasmtime run --invoke term %t.opt.wasm 1 3 5 2>/dev/null | filecheck %s --check-prefix=MUL
+// RUN: wasmtime run --invoke term %t.opt.wasm 1 0 5 2>/dev/null | filecheck %s --check-prefix=MUL-ZERO
+// RUN: wasmtime run --invoke read %t.opt.wasm 0 2>/dev/null | filecheck %s --check-prefix=READ-ADD
+// RUN: wasmtime run --invoke read %t.opt.wasm 1 2>/dev/null | filecheck %s --check-prefix=READ-MUL
 
 // A dispatch table in a named data section, found and called through at run time, in generic IR.
 //
@@ -31,6 +43,16 @@
 // the distance between the bounds divided by the entry size. The section `other` holds one entry
 // that reuses `@double`: `@count2` is 1, and `@lookup2` calls through it, so the two sections stay
 // apart. `@lookup 40 5` is 25: `@square` of 5.
+//
+// The section `terms` holds entries of the shape a Firefly term has: a
+// `struct<(i32, i64) -> (i1, i64), (ptr<i64>) -> i64, ptr<i64>>`, a function of two results under
+// `extern("wasm")`, a function that takes a pointer under `extern("C")`, and the address it is
+// given. The lowering converts the signatures of those functions (`i1` and `ptr<i64>` are carried
+// in `i32`), and the function types in the data follow them. `@term i tag x` calls the first
+// function of entry `i` on `tag` and `x`, and gives its two results, which `wasmtime` prints on two
+// lines; `@read i` calls the second on the third. Entry 0 adds the tag to `x` and says whether the
+// sum is not negative; entry 1 multiplies them and says whether the product is not zero. Entry 0
+// reads its cell (41) plus one, entry 1 its cell (9) negated.
 
 // TEN: {{^}}6{{$}}
 // TWENTY: {{^}}10{{$}}
@@ -40,6 +62,16 @@
 // COUNT: {{^}}4{{$}}
 // COUNT2: {{^}}1{{$}}
 // SECOND: {{^}}14{{$}}
+// ADD: {{^}}1{{$}}
+// ADD-NEXT: {{^}}8{{$}}
+// ADD-NEG: {{^}}0{{$}}
+// ADD-NEG-NEXT: {{^}}-5{{$}}
+// MUL: {{^}}1{{$}}
+// MUL-NEXT: {{^}}15{{$}}
+// MUL-ZERO: {{^}}0{{$}}
+// MUL-ZERO-NEXT: {{^}}0{{$}}
+// READ-ADD: {{^}}42{{$}}
+// READ-MUL: {{^}}-9{{$}}
 
 builtin.module public @table {
     builtin.function public extern("wasm") @add_one(%x: i64) -> i64 {
@@ -177,4 +209,83 @@ builtin.module public @table {
         %r = builtin.call_indirect %f(%x) : extern("wasm") (i64) -> i64;
         builtin.ret %r : (i64);
     } attributes { wasm.export_name = "lookup2" };
+
+    // The third section: terms, whose functions' signatures the lowering converts.
+    builtin.function public extern("wasm") @add_tag(%tag: i32, %x: i64) -> (i1, i64) {
+        %t = arith.sext %tag <{ ty = i64 }>;
+        %r = arith.add %x, %t;
+        %zero = arith.constant 0 : i64;
+        %ok = arith.cmpi sge %r, %zero;
+        builtin.ret %ok, %r : (i1, i64);
+    };
+
+    builtin.function public extern("wasm") @mul_tag(%tag: i32, %x: i64) -> (i1, i64) {
+        %t = arith.sext %tag <{ ty = i64 }>;
+        %r = arith.mul %x, %t;
+        %zero = arith.constant 0 : i64;
+        %ok = arith.cmpi ne %r, %zero;
+        builtin.ret %ok, %r : (i1, i64);
+    };
+
+    builtin.function public extern("C") @plus_one(%p: ptr<i64>) -> i64 {
+        %v = mem.load %p;
+        %one = arith.constant 1 : i64;
+        %r = arith.add %v, %one;
+        builtin.ret %r : (i64);
+    };
+
+    builtin.function public extern("C") @negated(%p: ptr<i64>) -> i64 {
+        %v = mem.load %p;
+        %zero = arith.constant 0 : i64;
+        %r = arith.sub %zero, %v;
+        builtin.ret %r : (i64);
+    };
+
+    builtin.global_variable private @cell_add : i64 {
+        %v = arith.constant 41 : i64;
+        builtin.yield %v;
+    };
+
+    builtin.global_variable private @cell_mul : i64 {
+        %v = arith.constant 9 : i64;
+        builtin.yield %v;
+    };
+
+    builtin.global_variable private @term_add : struct<(i32, i64) -> (i1, i64), (ptr<i64>) -> i64, ptr<i64>> {
+        %f = builtin.function_ref @add_tag : (i32, i64) -> (i1, i64);
+        %g = builtin.function_ref @plus_one : (ptr<i64>) -> i64;
+        %c = builtin.global_symbol @cell_add : ptr<i64>;
+        %e = builtin.aggregate %f, %g, %c : struct<(i32, i64) -> (i1, i64), (ptr<i64>) -> i64, ptr<i64>>;
+        builtin.yield %e;
+    } attributes { section = "terms" };
+
+    builtin.global_variable private @term_mul : struct<(i32, i64) -> (i1, i64), (ptr<i64>) -> i64, ptr<i64>> {
+        %f = builtin.function_ref @mul_tag : (i32, i64) -> (i1, i64);
+        %g = builtin.function_ref @negated : (ptr<i64>) -> i64;
+        %c = builtin.global_symbol @cell_mul : ptr<i64>;
+        %e = builtin.aggregate %f, %g, %c : struct<(i32, i64) -> (i1, i64), (ptr<i64>) -> i64, ptr<i64>>;
+        builtin.yield %e;
+    } attributes { section = "terms" };
+
+    builtin.global_variable public @start3 : struct<(i32, i64) -> (i1, i64), (ptr<i64>) -> i64, ptr<i64>> attributes { link_name = "__start_terms" };
+
+    builtin.function public extern("C") @term(%i: isize, %tag: i32, %x: i64) -> (i1, i64) {
+        %s = builtin.global_symbol @start3 : ptr<struct<(i32, i64) -> (i1, i64), (ptr<i64>) -> i64, ptr<i64>>>;
+        %entry = mem.gep %s, %i;
+        %fp = mem.gep %entry, [0];
+        %f = mem.load %fp;
+        %ok, %r = builtin.call_indirect %f(%tag, %x) : extern("wasm") (i32, i64) -> (i1, i64);
+        builtin.ret %ok, %r : (i1, i64);
+    } attributes { wasm.export_name = "term" };
+
+    builtin.function public extern("C") @read(%i: isize) -> i64 {
+        %s = builtin.global_symbol @start3 : ptr<struct<(i32, i64) -> (i1, i64), (ptr<i64>) -> i64, ptr<i64>>>;
+        %entry = mem.gep %s, %i;
+        %gp = mem.gep %entry, [1];
+        %g = mem.load %gp;
+        %cp = mem.gep %entry, [2];
+        %c = mem.load %cp;
+        %r = builtin.call_indirect %g(%c) : extern("C") (ptr<i64>) -> i64;
+        builtin.ret %r : (i64);
+    } attributes { wasm.export_name = "read" };
 };

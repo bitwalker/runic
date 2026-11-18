@@ -59,15 +59,16 @@
 //! constants through the operations' own folds, the zero of a type (`builtin.zero`), structs and
 //! arrays built with `builtin.aggregate`, addresses built with `builtin.global_symbol`, `mem.gep`
 //! with a constant index, `mem.ptrcast`, and `mem.ptrtoint` and `mem.inttoptr` between a pointer
-//! and an integer exactly as wide, and `builtin.function_ref`, which needs the layout's `fn`
-//! entry. It does not change the IR. An initializer holds no operation with effects (the verifier
+//! and an integer exactly as wide (`mem.inttoptr` of an integer constant of the pointer's width is
+//! the pointer with that value, a null pointer or an absolute address), and
+//! `builtin.function_ref`, which needs the layout's `fn` entry. It does not change the IR. An initializer holds no operation with effects (the verifier
 //! of `builtin.global_variable` says so), so nothing it evaluates reads or writes memory. Refused,
 //! with an error whose primary label is on the operation that defines the value: arithmetic on an
 //! address (an offset is written with `mem.gep`), an operation that does not fold to a constant or
-//! that computes with a function value, a value that does not fit its type, a cast between a
-//! pointer and an integer of another width, and a type with no layout; a declaration has no
-//! initializer to evaluate. A wholly zero global has no bytes, and is recognised without building
-//! them. The layout passed places the values; the folds read their own,
+//! that computes with a function value, a value that does not fit its type, `builtin.bytes` over
+//! padded elements, a cast between a pointer and an integer of another width, an aggregate whose
+//! type's elements overlap, and a type with no layout; a declaration has no initializer to
+//! evaluate. A wholly zero global has no bytes, and is recognised without building them. The layout passed places the values; the folds read their own,
 //! [DataLayout::closest](runic_ir::DataLayout::closest) of the operation, which is the same when
 //! the caller passes the layout in scope of the global.
 

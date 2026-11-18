@@ -594,6 +594,135 @@ fn a_function_of_another_module_and_one_through_an_alias_are_called_from_data() 
     assert_eq!(one(instance.call("apply", &[Val::i32(2), Val::i64(6)])), 18);
 }
 
+// ---- Functions whose signatures the lowering converts -------------------------------------------
+
+#[test]
+fn a_function_value_in_data_whose_callee_takes_a_pointer_is_called_through() {
+    let program = compiled(&module(&[
+        r#"builtin.function public extern("C") @deref(%p: ptr<i32>) -> i32 {
+    %v = mem.load %p;
+    builtin.ret %v : (i32);
+};"#,
+        "builtin.global_variable private @k : i32 { %v = arith.constant 77 : i32; builtin.yield \
+         %v; };",
+        "builtin.global_variable public @f : (ptr<i32>) -> i32 {
+    %b = builtin.function_ref @deref : (ptr<i32>) -> i32;
+    builtin.yield %b;
+};",
+        r#"builtin.function public extern("C") @run() -> i32 {
+    %fp = builtin.global_symbol @f : ptr<(ptr<i32>) -> i32>;
+    %f = mem.load %fp;
+    %k = builtin.global_symbol @k : ptr<i32>;
+    %r = builtin.call_indirect %f(%k) : extern("C") (ptr<i32>) -> i32;
+    builtin.ret %r : (i32);
+} attributes { wasm.export_name = "run" };"#,
+    ]));
+    assert_eq!(one(program.run().call("run", &[])), 77);
+}
+
+#[test]
+fn functions_taking_a_narrow_integer_and_a_pointer_are_called_from_a_struct_in_data() {
+    let ty = "struct<(i8) -> i8, (ptr<i32>) -> i32, ptr<i32>>";
+    let program = compiled(&module(&[
+        r#"builtin.function public extern("C") @inc8(%x: i8) -> i8 {
+    %one = arith.constant 1 : i8;
+    %r = arith.add %x, %one;
+    builtin.ret %r : (i8);
+};"#,
+        r#"builtin.function public extern("C") @deref(%p: ptr<i32>) -> i32 {
+    %v = mem.load %p;
+    builtin.ret %v : (i32);
+};"#,
+        "builtin.global_variable private @k : i32 { %v = arith.constant 77 : i32; builtin.yield \
+         %v; };",
+        &format!(
+            "builtin.global_variable public @t : {ty} {{
+    %a = builtin.function_ref @inc8 : (i8) -> i8;
+    %b = builtin.function_ref @deref : (ptr<i32>) -> i32;
+    %c = builtin.global_symbol @k : ptr<i32>;
+    %v = builtin.aggregate %a, %b, %c : {ty};
+    builtin.yield %v;
+}};"
+        ),
+        &format!(
+            r#"builtin.function public extern("C") @narrow(%x: i8) -> i8 {{
+    %t = builtin.global_symbol @t : ptr<{ty}>;
+    %fp = mem.gep %t, [0];
+    %f = mem.load %fp;
+    %y = builtin.call_indirect %f(%x) : extern("C") (i8) -> i8;
+    builtin.ret %y : (i8);
+}} attributes {{ wasm.export_name = "narrow" }};"#
+        ),
+        &format!(
+            r#"builtin.function public extern("C") @follow() -> i32 {{
+    %t = builtin.global_symbol @t : ptr<{ty}>;
+    %gp = mem.gep %t, [1];
+    %g = mem.load %gp;
+    %pp = mem.gep %t, [2];
+    %p = mem.load %pp;
+    %z = builtin.call_indirect %g(%p) : extern("C") (ptr<i32>) -> i32;
+    builtin.ret %z : (i32);
+}} attributes {{ wasm.export_name = "follow" }};"#
+        ),
+    ]));
+    let mut instance = program.run();
+    assert_eq!(one(instance.call("narrow", &[Val::i32(41)])), 42);
+    // `i8` wraps: 255 + 1 is 0.
+    assert_eq!(one(instance.call("narrow", &[Val::i32(255)])), 0);
+    assert_eq!(one(instance.call("follow", &[])), 77);
+}
+
+#[test]
+fn a_global_of_a_function_type_declared_in_one_module_and_defined_in_another_agree() {
+    // Both modules hold the type `(ptr<i64>) -> i64`; each converts it as a signature.
+    let world = r#"builtin.world {
+    builtin.module public @lib {
+        builtin.function public extern("C") @twice(%p: ptr<i64>) -> i64 {
+            %v = mem.load %p;
+            %r = arith.add %v, %v;
+            builtin.ret %r : (i64);
+        };
+        builtin.global_variable public @op : (ptr<i64>) -> i64 {
+            %f = builtin.function_ref @twice : (ptr<i64>) -> i64;
+            builtin.yield %f;
+        };
+        builtin.global_variable public @n : i64 {
+            %v = arith.constant 21 : i64;
+            builtin.yield %v;
+        };
+    };
+    builtin.module public @app {
+        builtin.global_variable public @op : (ptr<i64>) -> i64 attributes { link_name = "lib::op" };
+        builtin.global_variable public @n : i64 attributes { link_name = "lib::n" };
+        builtin.function public extern("C") @apply() -> i64 {
+            %g = builtin.global_symbol @op : ptr<(ptr<i64>) -> i64>;
+            %f = mem.load %g;
+            %n = builtin.global_symbol @n : ptr<i64>;
+            %r = builtin.call_indirect %f(%n) : extern("C") (ptr<i64>) -> i64;
+            builtin.ret %r : (i64);
+        } attributes { wasm.export_name = "apply" };
+    };
+};"#;
+    assert_eq!(one(compiled(world).run().call("apply", &[])), 42);
+}
+
+#[test]
+fn a_function_type_in_data_whose_parameter_has_no_carrier_is_an_error_naming_the_global() {
+    let error = failure(&module(&[
+        "builtin.global_variable public @wide : struct<i32, ptr<(i128) -> i32>>;",
+        r#"builtin.function public extern("C") @ok(%x: i8) -> i8 { builtin.ret %x : (i8); };"#,
+    ]));
+    assert_mentions(
+        &error,
+        &[
+            "`convert-to-wasm` cannot lower a value of type `i128`: integers wider than 64 bits \
+             are not lowered yet",
+            "parameter 0 of the function type `(i128) -> i32`, which the global variable `@wide` \
+             holds, has type `i128`",
+        ],
+    );
+}
+
 // ---- Errors -------------------------------------------------------------------------------------
 
 #[test]
@@ -616,6 +745,36 @@ fn arithmetic_on_an_address_in_an_initializer_is_the_evaluators_error() {
             "arithmetic on an address cannot be placed: write the offset with `mem.gep`",
             "the global variable it initializes",
         ],
+    );
+}
+
+#[test]
+fn a_global_larger_than_the_memory_is_refused_by_its_type_before_its_bytes_are_built() {
+    // 8 GiB and one byte: refused from its type, so no byte of it is built.
+    let ty = "struct<array<i8; 8589934592>, i8>";
+    let error = failure(&module(&[&format!(
+        "builtin.global_variable private @big : {ty} {{
+    %z = builtin.zero : array<i8; 8589934592>;
+    %o = arith.constant 1 : i8;
+    %v = builtin.aggregate %z, %o : {ty};
+    builtin.yield %v;
+}};"
+    )]));
+    assert_mentions(
+        &error,
+        &[
+            "the global variable `@big` cannot be laid out in linear memory",
+            "its type `struct<array<i8; 8589934592>, i8>` is 8589934593 bytes, more than the \
+             4294967296 bytes of a 32-bit linear memory",
+        ],
+    );
+    // A zero of the same size is refused the same way.
+    let error = failure(&module(&["builtin.global_variable private @zeros : array<i8; \
+                                   8589934592> { %z = builtin.zero : array<i8; 8589934592>; \
+                                   builtin.yield %z; };"]));
+    assert_mentions(
+        &error,
+        &["its type `array<i8; 8589934592>` is 8589934592 bytes, more than the 4294967296 bytes"],
     );
 }
 

@@ -19,6 +19,9 @@
 //!   definition's entry, and the function an alias leads to is the function. A fix-up in data is
 //!   four bytes: a relocation of any other size is an error naming the global. An addend is
 //!   added modulo 2^32, as the arithmetic of `mem.gep` on a 32-bit address wraps.
+//!
+//! A global whose type is larger than a 32-bit linear memory (4 GiB) is an error naming the
+//! global and its size, given before the evaluator builds any byte of it.
 
 use alloc::{format, string::String, vec::Vec};
 
@@ -28,7 +31,10 @@ use runic_ir::{
     dialects::builtin::GlobalVariable,
 };
 
-use super::desc::{DATA_PLACEHOLDER, DataId, Fixup, FixupKind, FuncId};
+use super::{
+    desc::{DATA_PLACEHOLDER, DataId, Fixup, FixupKind, FuncId},
+    layout::MEMORY_LIMIT,
+};
 
 /// The bytes of a global variable, their size, how they are aligned, and the fix-ups in them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -63,6 +69,19 @@ pub fn evaluate(global: &Operation, targets: &mut dyn DataTargets) -> Result<Dat
     let Some(layout) = DataLayout::closest(global) else {
         return Err(cannot_lay_out(global, String::from("no data layout is in scope of it")));
     };
+    // A global larger than the memory is refused before its bytes are built.
+    let ty = *variable.get_ty();
+    if let Ok(size) = layout.size_of(ty)
+        && size > MEMORY_LIMIT
+    {
+        return Err(cannot_lay_out(
+            global,
+            format!(
+                "its type `{ty}` is {size} bytes, more than the {MEMORY_LIMIT} bytes of a 32-bit \
+                 linear memory"
+            ),
+        ));
+    }
     let initializer = evaluate_initializer(variable, &layout)?;
     let Initializer {
         size,

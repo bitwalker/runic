@@ -107,7 +107,7 @@ pub const DATA_BASE_WITHOUT_STACK: u64 = 1024;
 pub const STACK_ALIGNMENT: u64 = 16;
 
 /// The size of a 32-bit linear memory, in bytes.
-const MEMORY_LIMIT: u64 = 1 << 32;
+pub(crate) const MEMORY_LIMIT: u64 = 1 << 32;
 
 /// The import module of the well-known symbols.
 const ENV: &str = "env";

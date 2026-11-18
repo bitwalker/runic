@@ -9,10 +9,12 @@
 //!    attribute through its own fold ([Foldable::fold_with]) given the values of its operands that
 //!    are constants (an operand that is an address, a function, a zero or an aggregate is unknown
 //!    to the fold). A fold that gives one of the operation's operands gives that operand's value.
-//!    An integer is `size_of` its type bytes in the layout's byte order, zero-extended from its
-//!    width; a value wider than the bytes (an `isize` constant is 64 bits wide) must fit them as a
-//!    signed or an unsigned number. A float is its bytes in the layout's byte order, which must be
-//!    `size_of` its type. Bytes are written as they are, and must be `size_of` the type long.
+//!    An integer has the width of its type (`N` for `iN`, the layout's `isize` width for `isize`)
+//!    and is a number of `size_of` its type bytes in the layout's byte order, zero-extended from
+//!    that width; a constant wider than its type (an `isize` constant is 64 bits wide) must fit
+//!    the type's width as a signed or an unsigned number, and is truncated to it. A float is its
+//!    bytes, zero-extended to `size_of` its type in the same way. Bytes are written as they are,
+//!    and must be `size_of` the type long.
 //! 2. **`builtin.zero`**: `size_of` its type zero bytes.
 //! 3. **An address**, the address of a global variable plus a constant: `builtin.global_symbol @g`
 //!    is `@g` plus 0; `mem.gep` of an address adds `index * size_of(pointee)` and the offset of the
@@ -21,27 +23,41 @@
 //!    address is the address as an integer, which must be exactly as wide as the pointer; and
 //!    `mem.inttoptr` of such an integer is the address, as a pointer exactly as wide as the
 //!    integer. An address is a [Relocation] of the pointer's (or the integer's) size, over zero
-//!    bytes.
+//!    bytes. `mem.inttoptr` of an integer constant (or of a zero) exactly as wide as the pointer
+//!    is the pointer with that value: bytes, as a constant integer of the pointer's width, with no
+//!    relocation; so a null pointer and an absolute address can be written.
 //! 4. **A function**: `builtin.function_ref @f` is a [Relocation] of the size the layout's `fn`
 //!    entry gives a function value, naming the function the reference resolves to through
 //!    aliases.
 //! 5. **`builtin.aggregate`**: element `i` is placed at the offset the layout gives element `i` of
-//!    the aggregate's type; the bytes no element covers are zero. An element value used by two
-//!    aggregates is evaluated once and placed twice.
+//!    the aggregate's type; the bytes no element covers are zero. The elements of the type must
+//!    not overlap under the layout (no builtin type's do; a dialect's own aggregate type could). An
+//!    element value used by two aggregates is evaluated once and placed twice.
 //!
 //! Anything else is the error that the initializer is not a constant that can be placed, with a
-//! label on the operation that says why.
+//! label on the operation that says why. Among what is refused:
+//!
+//! - a constant that does not fit the width of its type, and a float wider than `size_of` its type;
+//! - `builtin.bytes` whose length is not `size_of` its type, as when the layout pads the elements
+//!   of `array<i8; N>` (`i8 = 2`): bytes are not laid over padded elements;
+//! - arithmetic on an address, and an operation that does not fold;
+//! - an address cast to or from an integer of another width than the pointer's;
+//! - an aggregate whose type's elements overlap under the layout;
+//! - a value of a type that has no layout.
 //!
 //! Each value is evaluated once (the evaluation is memoised by value) and without recursion over
-//! the operation graph; a value that is wholly zero is recognised without building its bytes, so
+//! the operation graph. A value that is known to be wholly zero (a `builtin.zero`, a constant whose
+//! bytes are all zero, a value of a type of size 0, and an aggregate of such values) is recognised
+//! without building its bytes and is not walked when it is placed, however often it is shared, so
 //! `builtin.zero` of a megabyte array allocates nothing.
 
 use alloc::{format, rc::Rc, string::String, vec::Vec};
 use core::fmt;
 
 use runic_ir::{
-    AttributeRef, DataLayout, Endianness, FoldResult, FxHashMap, FxHashSet, LayoutError, Op,
-    OpFoldResult, Operation, OperationRef, Report, SmallVec, Spanned, Symbol, Type, ValueRef,
+    AggregateType, AttributeRef, DataLayout, Endianness, FoldResult, FxHashMap, FxHashSet,
+    LayoutError, Op, OpFoldResult, Operation, OperationRef, Report, SmallVec, Spanned, Symbol,
+    Type, ValueRef,
     attributes::IntegerLikeAttr,
     diagnostics::report,
     dialects::builtin::{
@@ -179,6 +195,34 @@ fn not_placeable(name: &str) -> String {
     format!("the initializer of `@{name}` is not a constant that can be placed")
 }
 
+/// The bytes `start..end` that element `index` of an aggregate takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ElementRange {
+    pub index: u32,
+    pub start: u64,
+    pub end: u64,
+}
+
+/// Two of `ranges` that share a byte, the one that starts first first; `None` when no two do.
+/// An empty range shares no byte. `ranges` is sorted by where each starts.
+pub(crate) fn first_overlap(ranges: &mut [ElementRange]) -> Option<(ElementRange, ElementRange)> {
+    ranges.sort_by_key(|range| (range.start, range.index));
+    let mut widest: Option<ElementRange> = None;
+    for range in ranges.iter().filter(|range| range.start < range.end) {
+        if let Some(previous) = widest {
+            if range.start < previous.end {
+                return Some((previous, *range));
+            }
+            if range.end > previous.end {
+                widest = Some(*range);
+            }
+        } else {
+            widest = Some(*range);
+        }
+    }
+    None
+}
+
 /// What a value of an initializer is.
 #[derive(Clone)]
 enum Kind {
@@ -193,8 +237,8 @@ enum Kind {
     },
     /// A function value: the callable it names, aliases resolved.
     Function(OperationRef),
-    /// A struct or an array: the entries of its elements, and whether every one is zero.
-    Aggregate { elements: Rc<[usize]>, zero: bool },
+    /// A struct or an array: the entries of its elements.
+    Aggregate { elements: Rc<[usize]> },
 }
 
 /// An evaluated value.
@@ -204,17 +248,19 @@ struct Entry {
     /// The operation that defines the value, which the errors about it name.
     op: OperationRef,
     kind: Kind,
+    /// True if the value is known to be zero bytes with no relocation without placing it: a value
+    /// whose type has size 0, a zero, a constant whose bytes are all zero, and an aggregate of
+    /// such values. Placing it walks nothing.
+    zero: bool,
 }
 
-impl Entry {
-    /// True if the value is known to be zero bytes with no relocation without placing it.
-    fn is_known_zero(&self) -> bool {
-        match &self.kind {
-            Kind::Zero => true,
-            Kind::Aggregate { zero, .. } => *zero,
-            Kind::Constant(_) | Kind::Address { .. } | Kind::Function(_) => false,
-        }
-    }
+/// How a constant is written: what [Evaluator::encode] gives.
+enum Encoding {
+    /// The bytes of a number (an integer or a float), least significant first, at most `size_of`
+    /// the type; the rest of `size_of` is zero, on the side of the most significant byte.
+    Number(SmallVec<[u8; 16]>),
+    /// The bytes of a `builtin.bytes` constant, exactly `size_of` the type, written as they are.
+    Bytes,
 }
 
 /// The bytes of the global being built: allocated at the first non-zero byte or relocation.
@@ -288,8 +334,33 @@ impl Evaluator<'_> {
 
     /// Adds an entry for a value of type `ty` defined by `op`.
     fn push(&mut self, ty: Type, op: OperationRef, kind: Kind) -> usize {
-        self.entries.push(Entry { ty, op, kind });
+        let zero = matches!(self.layout.size_of(ty), Ok(0))
+            || match &kind {
+                Kind::Zero => true,
+                Kind::Aggregate { elements } => {
+                    elements.iter().all(|element| self.entries[*element].zero)
+                }
+                Kind::Constant(attribute) => self.is_zero_constant(ty, attribute),
+                Kind::Address { .. } | Kind::Function(_) => false,
+            };
+        self.entries.push(Entry { ty, op, kind, zero });
         self.entries.len() - 1
+    }
+
+    /// True if the constant `attribute` of type `ty` is placed as zero bytes: it can be placed
+    /// (the errors [Self::encode] gives are left to placement) and every byte it writes is zero.
+    fn is_zero_constant(&self, ty: Type, attribute: &AttributeRef) -> bool {
+        let Ok(size) = self.layout.size_of(ty) else {
+            return false;
+        };
+        match self.encode(ty, attribute, size) {
+            Ok(Encoding::Number(bytes)) => bytes.iter().all(|byte| *byte == 0),
+            Ok(Encoding::Bytes) => attribute
+                .borrow()
+                .downcast_ref::<BytesAttr>()
+                .is_some_and(|bytes| bytes.as_value().as_slice().iter().all(|byte| *byte == 0)),
+            Err(_) => false,
+        }
     }
 
     /// Evaluates `value`, defined by `defining`, whose operands are evaluated.
@@ -323,9 +394,9 @@ impl Evaluator<'_> {
             return Ok(self.push(ty, defining, Kind::Zero));
         }
         if op.is::<Aggregate>() {
-            let zero = entries.iter().all(|entry| self.entries[*entry].is_known_zero());
+            self.check_disjoint(defining, ty)?;
             let elements = Rc::from(entries.as_slice());
-            return Ok(self.push(ty, defining, Kind::Aggregate { elements, zero }));
+            return Ok(self.push(ty, defining, Kind::Aggregate { elements }));
         }
         if let Some(attribute) = matchers::constant().matches(&op) {
             return Ok(self.push(ty, defining, Kind::Constant(attribute)));
@@ -346,6 +417,17 @@ impl Evaluator<'_> {
                 self.check_cast(defining, from, ty)?;
                 return Ok(self.push(ty, defining, Kind::Address { target, addend }));
             }
+        }
+
+        // `mem.inttoptr` of an integer constant is the pointer with that value
+        if op.is::<IntToPtr>()
+            && let Some(&operand) = entries.first()
+            && matches!(self.entries[operand].kind, Kind::Constant(_) | Kind::Zero)
+        {
+            let from = self.entries[operand].ty;
+            self.check_cast(defining, from, ty)?;
+            let kind = self.entries[operand].kind.clone();
+            return Ok(self.push(ty, defining, kind));
         }
 
         // Anything else folds to a constant through its own fold
@@ -518,7 +600,7 @@ impl Evaluator<'_> {
         let mut stack = alloc::vec![(root, 0u64)];
         while let Some((index, offset)) = stack.pop() {
             let entry = &self.entries[index];
-            if entry.is_known_zero() {
+            if entry.zero {
                 // The type must still have a layout: a zero of a type without one is an error
                 self.layout
                     .layout_of(entry.ty)
@@ -603,85 +685,150 @@ impl Evaluator<'_> {
         offset: u64,
         out: &mut Output,
     ) -> Result<(), Report> {
-        let ty = entry.ty;
-        let name = entry.op.borrow().name();
+        let encoding = self.encode(entry.ty, attribute, size).map_err(|label| {
+            let name = entry.op.borrow().name();
+            self.error(entry.op, format!("`{name}` gives {label}"))
+        })?;
+        match encoding {
+            Encoding::Number(mut bytes) => {
+                if bytes.iter().all(|byte| *byte == 0) {
+                    return Ok(());
+                }
+                // A number of `size` bytes in the layout's byte order: its significant bytes are
+                // the low addresses under little-endian and the high ones under big-endian
+                let at = if self.layout.endianness() == Endianness::Big {
+                    bytes.reverse();
+                    offset + (size - bytes.len() as u64)
+                } else {
+                    offset
+                };
+                self.write(entry.op, at, &bytes, out)
+            }
+            Encoding::Bytes => {
+                let attribute = attribute.borrow();
+                let bytes = attribute.downcast_ref::<BytesAttr>().expect("a bytes constant");
+                self.write(entry.op, offset, bytes.as_value().as_slice(), out)
+            }
+        }
+    }
+
+    /// How the constant `attribute` of type `ty`, `size` bytes, is written (see the module docs),
+    /// or what it gives and why that cannot be placed, for a label that begins "`op` gives".
+    ///
+    /// An integer is truncated to the width of `ty` (`N` for `iN`, the layout's `isize` width,
+    /// the pointer's width under `mem.inttoptr`), which it must fit as a signed or an unsigned
+    /// number, and zero-extended to `size` bytes. A float is its bytes, zero-extended likewise.
+    fn encode(&self, ty: Type, attribute: &AttributeRef, size: u64) -> Result<Encoding, String> {
         let attribute = attribute.borrow();
+        let size_bits = size.saturating_mul(8);
         if let Some(int) = attribute.as_attr().as_trait::<dyn IntegerLikeAttr>() {
             let int = int.as_int();
-            let bits = size.saturating_mul(8);
-            let fits = u64::from(int.width()) <= bits
-                || (bits < 128 && {
-                    let value = int.signed();
-                    let low = -(1i128 << (bits - 1).min(126));
-                    let high = 1i128 << bits;
-                    value >= low && value < high
-                });
-            if !fits {
-                return Err(self.error(
-                    entry.op,
-                    format!(
-                        "`{name}` gives {}, which does not fit `{ty}` of {size} bytes",
-                        int.signed()
-                    ),
-                ));
-            }
-            // An integer no wider than the bytes is written zero-extended; a wider one that fits
-            // is written as its low bytes
-            let pattern = if u64::from(int.width()) <= bits {
+            let width = self
+                .constant_width(ty)
+                .map_or(size_bits, |width| u64::from(width).min(size_bits));
+            let pattern = if u64::from(int.width()) <= width {
                 int.unsigned()
             } else {
-                int.signed() as u128
+                let value = int.signed();
+                // `width` is below the integer's own width, which is at most 128: a signed
+                // number of `width` bits, or an unsigned one
+                let high = if width >= 127 {
+                    i128::MAX
+                } else {
+                    (1i128 << width) - 1
+                };
+                let fits = width > 0 && value >= -(1i128 << (width - 1)) && value <= high;
+                if !fits {
+                    return Err(format!("{value}, which does not fit `{ty}` of {width} bits"));
+                }
+                (value as u128) & ((1u128 << width) - 1)
             };
-            if pattern == 0 {
-                return Ok(());
-            }
-            let mut bytes = (0..size)
-                .map(|i| {
-                    if i < 16 {
-                        (pattern >> (8 * i)) as u8
-                    } else {
-                        0
-                    }
-                })
-                .collect::<Vec<u8>>();
-            if self.layout.endianness() == Endianness::Big {
-                bytes.reverse();
-            }
-            return self.write(entry.op, offset, &bytes, out);
+            let len = width.div_ceil(8).min(16) as usize;
+            return Ok(Encoding::Number(SmallVec::from_slice(&pattern.to_le_bytes()[..len])));
         }
         if let Some(float) = attribute.downcast_ref::<FloatAttr>() {
             let float = *float.as_value();
             let width = u64::from(float.width() / 8);
-            if width != size {
-                return Err(self.error(
-                    entry.op,
-                    format!(
-                        "`{name}` gives a {}-bit float, which does not fit `{ty}` of {size} bytes",
-                        float.width()
-                    ),
+            if width > size {
+                return Err(format!(
+                    "a {}-bit float, which does not fit `{ty}` of {size} bytes",
+                    float.width()
                 ));
             }
-            let mut bytes = float.bits().to_le_bytes()[..width as usize].to_vec();
-            if self.layout.endianness() == Endianness::Big {
-                bytes.reverse();
-            }
-            return self.write(entry.op, offset, &bytes, out);
+            let bits = float.bits().to_le_bytes();
+            return Ok(Encoding::Number(SmallVec::from_slice(&bits[..width as usize])));
         }
         if let Some(bytes) = attribute.downcast_ref::<BytesAttr>() {
-            let bytes = bytes.as_value().as_slice();
-            if bytes.len() as u64 != size {
-                return Err(self.error(
-                    entry.op,
-                    format!("`{name}` gives {} bytes, but `{ty}` is {size} bytes", bytes.len()),
-                ));
+            let len = bytes.as_value().as_slice().len() as u64;
+            if len == size {
+                return Ok(Encoding::Bytes);
             }
-            return self.write(entry.op, offset, bytes, out);
+            let padded = ty.as_array().and_then(|array| {
+                let element = array.element();
+                let stride = self.layout.size_of(element).ok()?;
+                (stride > 1).then_some((element, stride))
+            });
+            return Err(match padded {
+                Some((element, stride)) => {
+                    format!(
+                        "{len} bytes, but `{ty}` is {size} bytes: the layout pads its elements \
+                         (each `{element}` takes {stride} bytes), and bytes cannot be laid over \
+                         padded elements"
+                    )
+                }
+                None => format!("{len} bytes, but `{ty}` is {size} bytes"),
+            });
         }
+        Err(format!(
+            "`{}`, which is not bytes, an integer or a float",
+            OpFoldResult::Attribute(attribute.as_attribute_ref())
+        ))
+    }
+
+    /// The width in bits of an integer constant of type `ty` under the layout: `iN` is `N`,
+    /// `isize` the layout's `isize`, and a pointer (a constant given by `mem.inttoptr`) the
+    /// pointer's width. `None` for any other type.
+    fn constant_width(&self, ty: Type) -> Option<u32> {
+        match ty.as_pointer() {
+            Some(pointer) => Some(self.layout.pointer(pointer.addrspace()).size_bits),
+            None => self.integer_bits(ty),
+        }
+    }
+
+    /// An error naming `ty` when the elements of `ty`, an aggregate type `defining` builds, overlap
+    /// under the layout: placing them would write one element's bytes over another's. The
+    /// elements of an array never overlap; a type whose layout is not known is reported when it
+    /// is placed.
+    fn check_disjoint(&self, defining: OperationRef, ty: Type) -> Result<(), Report> {
+        if ty.as_array().is_some() {
+            return Ok(());
+        }
+        let Some(count) = ty.as_trait::<dyn AggregateType>().map(|ty| ty.element_count()) else {
+            return Ok(());
+        };
+        let mut ranges = Vec::new();
+        for index in 0..u32::try_from(count).unwrap_or(u32::MAX) {
+            let Ok((at, element)) = self.layout.offset_of(ty, &[index]) else {
+                return Ok(());
+            };
+            let Ok(size) = self.layout.size_of(element) else {
+                return Ok(());
+            };
+            ranges.push(ElementRange {
+                index,
+                start: at,
+                end: at.saturating_add(size),
+            });
+        }
+        let Some((first, second)) = first_overlap(&mut ranges) else {
+            return Ok(());
+        };
         Err(self.error(
-            entry.op,
+            defining,
             format!(
-                "`{name}` gives `{}`, which is not bytes, an integer or a float",
-                OpFoldResult::Attribute(attribute.as_attribute_ref())
+                "the elements of `{ty}` overlap under the data layout: element {} takes bytes \
+                 {}..{} and element {} bytes {}..{}, so they cannot both be placed",
+                first.index, first.start, first.end, second.index, second.start, second.end
             ),
         ))
     }

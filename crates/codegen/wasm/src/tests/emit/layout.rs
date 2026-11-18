@@ -1142,7 +1142,7 @@ fn a_value_that_does_not_fit_its_global_is_an_error_naming_the_global() {
         &error,
         &[
             "the initializer of `@big` is not a constant that can be placed",
-            "`arith.constant` gives 1099511627776, which does not fit `isize` of 4 bytes",
+            "`arith.constant` gives 1099511627776, which does not fit `isize` of 32 bits",
         ],
     );
     // One that fits is written as its low bytes.

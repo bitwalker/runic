@@ -167,6 +167,9 @@ pub type AggregateRef = UnsafeIntrusiveEntityRef<Aggregate>;
 /// type that implements [AggregateType](crate::AggregateType), a dialect's own aggregate type too,
 /// except an enum. Operand `i` has the type of element `i` of the result type, and there is one
 /// operand per element. A nested aggregate is a `builtin.aggregate` that is an operand of another.
+/// The elements of the type do not overlap: under a data layout each takes bytes of its own (no
+/// builtin type's elements overlap), and a value whose type's elements overlap cannot be placed in
+/// a global's data.
 ///
 /// The operation is pure: it has no effects, is removed when unused, and two with the same
 /// operands and type are merged. It does not fold: there is no attribute of an aggregate value.

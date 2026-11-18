@@ -131,7 +131,9 @@
 //! the operations that need an earlier pass (`mem.alloca` without `wasm-lower-frames`, `cf.br`,
 //! `cf.cond_br` and `cf.switch` without `cfg-to-scf`). A return or tail call inside a loop is
 //! dispatched after the loop, and the message of a `cf.assert` is dropped. A global variable's
-//! initializer is data, and is not converted. An `isize` constant the 32-bit `isize` does not hold
+//! initializer is data, and is not converted, except that the function types a global holds
+//! become the function types of their converted signatures, as the functions they name do. An
+//! `isize` constant the 32-bit `isize` does not hold
 //! and a `builtin.unrealized_conversion_cast` to a narrow integer written before the lowering are
 //! errors. The README of the crate
 //! lists them with their diagnostics, and the unit test `tests::coverage` fails for a source
