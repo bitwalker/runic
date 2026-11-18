@@ -6,8 +6,8 @@
 //! its memory and table ([layout]: the shadow stack, the data, the fixed segments, the table
 //! slots, and definitions of the memory, stack pointer and table the lowering imports), writes the
 //! module and validates it. [emit_object] gives a relocatable object, which leaves that layout to
-//! the linker: it never runs [layout], and refuses what an object cannot express
-//! ([collect::Unit::check_object]).
+//! the linker: it never runs [layout], refuses what an object cannot express
+//! ([collect::Unit::check_object]), and writes the unit with [object::write_object].
 //! The memory, stack pointer and function table the lowering declares (imports from `env` of
 //! `__linear_memory`, `__stack_pointer` and `__indirect_function_table`) are defined by the layout
 //! and never imported, so a module of lowered generic IR needs no host for them. A memory or a
@@ -36,6 +36,7 @@ pub mod desc;
 pub mod instr;
 pub mod layout;
 pub mod locals;
+pub mod object;
 pub mod plan;
 pub mod sections;
 pub mod validate;
@@ -90,17 +91,20 @@ pub fn emit_module(root: OperationRef, options: &EmitOptions) -> Result<Vec<u8>,
     Ok(bytes)
 }
 
-/// A relocatable object for the unit under `root`.
+/// A relocatable object for the unit under `root`, validated: the unit in the tool conventions'
+/// linking format, which `wasm-ld` links with other objects ([object]).
 ///
 /// `root` is what [emit_module] takes. The unit is collected as for a module, and what an object
-/// cannot express is an error naming the operation ([collect::Unit::check_object]); the layout is
-/// the linker's and never runs. The object writer is not built in this version: once the check
-/// passes, the result is an error that says so.
+/// cannot express is an error naming the operation ([collect::Unit::check_object]), as is data
+/// that does not fit a 32-bit memory; the layout is the linker's and never runs, so the stack
+/// size of `options` and its names do not apply. The start function, when the unit has one, is
+/// the object's init function, which the linker's `__wasm_call_ctors` calls; it is not exported.
+/// An object that does not validate is reported as a defect of the backend and is not returned.
 pub fn emit_object(root: OperationRef, options: &EmitOptions) -> Result<Vec<u8>, Report> {
     let unit = collect::collect(root, options, &body::BodyConfig::default())?;
     unit.check_object()?;
-    Err(Report::msg(
-        "the relocatable object writer is not built yet: the unit can be emitted as a complete \
-         module",
-    ))
+    object::check_data_size(&unit)?;
+    let bytes = object::write_object(&unit).map_err(object::object_error)?;
+    validate::validate(&bytes)?;
+    Ok(bytes)
 }

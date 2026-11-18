@@ -81,8 +81,9 @@ pub struct IndexSpaces {
     segments: u32,
 }
 
-/// The index of each entity of one kind, given whether each is an import.
-fn index_space(imports: impl Iterator<Item = bool> + Clone) -> Vec<u32> {
+/// The index of each entity of one kind, given whether each is an import: imports first, then
+/// definitions, each in the order given. The object writer numbers its entities the same way.
+pub(super) fn index_space(imports: impl Iterator<Item = bool> + Clone) -> Vec<u32> {
     let mut next_import = 0u32;
     let mut next_definition = imports.clone().filter(|import| *import).count() as u32;
     imports
@@ -246,6 +247,14 @@ pub enum WriteError {
         /// The data entry.
         site: Site,
     },
+    /// A relocation of an object whose offset is not at a placeholder of its width in the
+    /// section it applies to.
+    MisplacedRelocation {
+        /// The section, as the relocation section names it (`CODE` or `DATA`).
+        section: String,
+        /// The offset, from the start of the section's payload.
+        offset: u32,
+    },
 }
 
 impl fmt::Display for WriteError {
@@ -270,6 +279,11 @@ impl fmt::Display for WriteError {
             Self::NoMemory { site } => {
                 write!(f, "{site} is an active data segment, but the module has no memory")
             }
+            Self::MisplacedRelocation { section, offset } => write!(
+                f,
+                "a relocation of the section {section} is at offset {offset}, where there is no \
+                 placeholder of its width"
+            ),
         }
     }
 }
@@ -421,7 +435,8 @@ fn unknown(site: &Site, id: impl fmt::Display) -> WriteError {
     }
 }
 
-fn table_type(element: super::desc::RefType, limits: Limits) -> TableType {
+/// The table type of a table of `element`s with `limits`.
+pub(super) fn table_type(element: super::desc::RefType, limits: Limits) -> TableType {
     TableType {
         element_type: element.to_encoder(),
         table64: false,

@@ -38,9 +38,11 @@ mod emit {
     mod fixups;
     mod instructions;
     mod layout;
+    mod link;
     mod locals;
     mod lowered;
     mod module;
+    mod object;
     mod plan;
     mod programs;
     mod random;

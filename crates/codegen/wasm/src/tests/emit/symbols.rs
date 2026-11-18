@@ -434,7 +434,7 @@ fn a_unit_that_exports_initialize_and_has_a_start_function_has_two_exports_of_th
 // ---- What an object cannot express ----------------------------------------------------------------
 
 #[test]
-fn a_unit_an_object_can_express_passes_the_check_and_the_writer_is_not_built_yet() {
+fn a_unit_an_object_can_express_passes_the_check_and_is_written_as_an_object() {
     let modules = [module(
         "m",
         &[
@@ -457,8 +457,11 @@ fn a_unit_an_object_can_express_passes_the_check_and_the_writer_is_not_built_yet
     unit.check_object().unwrap_or_else(|report| panic!("{}", describe(&report)));
     // The start function is not exported as `_initialize` on the object's path
     assert_eq!(unit.export_op(START_EXPORT), None);
-    let error = refused(&modules);
-    assert_mentions(&error, &["the relocatable object writer is not built yet"]);
+    let (_context, root) = world(&modules);
+    emit_module(root, &EmitOptions::default())
+        .unwrap_or_else(|report| panic!("a complete module is refused: {}", describe(&report)));
+    emit_object(root, &EmitOptions::default())
+        .unwrap_or_else(|report| panic!("the object is refused: {}", describe(&report)));
 }
 
 #[test]
@@ -477,6 +480,48 @@ fn an_object_cannot_express_an_element_segment() {
             "a relocatable object cannot express `wasm.elem` @e",
             "this fills a table at slots it fixes, and the linker ignores the element segments of \
              an object: it lays out the function table itself",
+        ],
+    );
+}
+
+#[test]
+fn an_object_cannot_define_the_stack_pointer_the_linker_defines() {
+    let error = refused(&[module(
+        "m",
+        &[&zero_global("public", "sp", " attributes { link_name = \"__stack_pointer\" }")],
+    )]);
+    assert_mentions(
+        &error,
+        &[
+            "a relocatable object cannot define the stack pointer `__stack_pointer`",
+            "this defines `__stack_pointer`, which the linker defines itself: the link fails with \
+             a duplicate symbol",
+        ],
+    );
+    // A private global of that name is a local symbol, which does not collide
+    let (_context, unit) = unit_of(&[module(
+        "m",
+        &[&zero_global("private", "sp", " attributes { link_name = \"__stack_pointer\" }")],
+    )]);
+    unit.check_object().unwrap_or_else(|report| panic!("{}", describe(&report)));
+}
+
+#[test]
+fn an_object_cannot_express_a_reference_to_a_function_by_ref_func() {
+    let error = refused(&[module(
+        "m",
+        &[
+            &identity("public", "callee", ""),
+            "builtin.function public extern(\"wasm\") @f() -> i32 { %r = wasm.ref_func @callee; \
+             %z = wasm.ref_is_null %r; builtin.ret %z : (i32); };",
+        ],
+    )]);
+    assert_mentions(
+        &error,
+        &[
+            "a relocatable object cannot express `wasm.ref_func` `@callee`",
+            "this takes a reference to a function, which Wasm requires the module to declare, and \
+             the linker declares no function for `ref.func`: the linked module would not validate",
         ],
     );
 }

@@ -139,6 +139,7 @@ pub struct Unit {
     start: Option<FuncId>,
     host_conflict: Option<(OperationRef, OperationRef)>,
     exported: FxHashMap<String, OperationRef>,
+    ref_func: Option<OperationRef>,
 }
 
 /// The name a complete module exports its start function under: the convention of a WASI
@@ -147,6 +148,9 @@ pub const START_EXPORT: &str = "_initialize";
 
 /// The name of the function table the linker defines.
 const INDIRECT_FUNCTION_TABLE: &str = crate::symbols::INDIRECT_FUNCTION_TABLE;
+
+/// The name of the stack pointer the linker defines.
+const STACK_POINTER: &str = crate::symbols::STACK_POINTER;
 
 /// The binding of each entity of the description that has a symbol, by id.
 #[derive(Debug, Default)]
@@ -337,6 +341,10 @@ impl Unit {
     /// - a memory the unit defines (the linker defines the memory);
     /// - a table the unit defines whose symbol name or link name is `__indirect_function_table`
     ///   (the linker defines that table, and refuses an object that defines it);
+    /// - a global the unit defines, not private, whose link name is `__stack_pointer` (the linker
+    ///   defines the stack pointer, and the link fails with a duplicate symbol);
+    /// - a `wasm.ref_func` in a body (Wasm requires a module to declare each function `ref.func`
+    ///   names, and the linker declares none: the linked module would not validate);
     /// - a function exported under more than one name (an object exports a function under one);
     /// - a global, a table or a memory exported under a name other than its link name (an object
     ///   marks such a symbol exported under its own name only);
@@ -448,6 +456,38 @@ impl Unit {
                     "this defines `{INDIRECT_FUNCTION_TABLE}`, which the linker defines itself: \
                      it refuses an object that defines it"
                 ),
+            ));
+        }
+        for (index, global) in self.desc.globals().iter().enumerate() {
+            let id = GlobalId::new(index as u32);
+            if global.entity.is_import()
+                || global.name != STACK_POINTER
+                || self.global_binding(id) == Some(Binding::Local)
+            {
+                continue;
+            }
+            let op = self.global_op(id).expect("a global has an origin");
+            let op = op.borrow();
+            return Err(cannot_express(
+                format!("a relocatable object cannot define the stack pointer `{STACK_POINTER}`"),
+                &op,
+                format!(
+                    "this defines `{STACK_POINTER}`, which the linker defines itself: the link \
+                     fails with a duplicate symbol"
+                ),
+            ));
+        }
+        if let Some(op) = self.ref_func {
+            let op = op.borrow();
+            let callee = op
+                .downcast_ref::<wasm::RefFunc>()
+                .map_or_else(String::new, |ref_func| format!(" `@{}`", ref_func.callee().path()));
+            return Err(cannot_express(
+                format!("a relocatable object cannot express `wasm.ref_func`{callee}"),
+                &op,
+                "this takes a reference to a function, which Wasm requires the module to declare, \
+                 and the linker declares no function for `ref.func`: the linked module would not \
+                 validate",
             ));
         }
         for index in 0..self.desc.functions().len() {
@@ -640,6 +680,7 @@ pub fn collect(
         start: collector.start.map(|(id, _)| id),
         host_conflict: collector.host_conflict,
         exported: collector.exported,
+        ref_func: collector.resolver.first_ref_func,
     })
 }
 
@@ -1066,6 +1107,8 @@ struct Resolver {
     /// Whether a `wasm.ref_func` is recorded in `ref_funcs` (in function bodies only).
     recording: bool,
     ref_funcs: Vec<FuncId>,
+    /// The first `wasm.ref_func` in a body.
+    first_ref_func: Option<OperationRef>,
     /// How each data entry is first named.
     data_uses: FxHashMap<DataId, DataUses>,
 }
@@ -1137,8 +1180,11 @@ impl Entities for Resolver {
         let Id::Function(id) = self.entity(user, callee, Kind::Function, Some(target))? else {
             unreachable!("the kind is checked");
         };
-        if self.recording && user.is::<wasm::RefFunc>() && !self.ref_funcs.contains(&id) {
-            self.ref_funcs.push(id);
+        if self.recording && user.is::<wasm::RefFunc>() {
+            self.first_ref_func.get_or_insert(user.as_operation_ref());
+            if !self.ref_funcs.contains(&id) {
+                self.ref_funcs.push(id);
+            }
         }
         Ok(id)
     }
