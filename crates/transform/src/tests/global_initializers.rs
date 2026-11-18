@@ -15,7 +15,7 @@ use alloc::{
 use runic_ir::{
     Context, Operation, OperationRef, Report, ValueRef,
     attributes::IntegerLikeAttr,
-    dialects::builtin::{Bytes, GlobalVariable},
+    dialects::builtin::{Aggregate, Bytes, GlobalVariable, Zero},
     matchers::{self, Matcher},
     parse::{ParserConfig, parse_any},
     pass::{
@@ -28,7 +28,8 @@ use runic_ir::{
 /// constant; a duplicate constant (the yielded one is the later of two equal operations, so
 /// merging `2; 1; 2` into `2; 1` must keep the yield on the first); an unused operation; two
 /// constants and an operation on them; the same operation in two globals and in a function beside
-/// them; equal operations that are used.
+/// them; equal operations that are used; a nested aggregate whose element value is used by two
+/// aggregates, beside an unused aggregate.
 const SHAPES: &str = r#"builtin.module public @shapes {
     builtin.global_variable public @data : array<i8; 2> {
         %b = builtin.bytes "0a0b" : array<i8; 2>;
@@ -74,6 +75,16 @@ const SHAPES: &str = r#"builtin.module public @shapes {
         %a = arith.constant 2 : i32;
         %b = arith.add %a, %a;
         builtin.yield %b;
+    };
+    builtin.global_variable public @aggregate : array<struct<i32, i64>; 2> {
+        %a = arith.constant 7 : i32;
+        %b = arith.constant 8 : i32;
+        %z = builtin.zero : i64;
+        %unused = builtin.aggregate %b, %z : struct<i32, i64>;
+        %first = builtin.aggregate %a, %z : struct<i32, i64>;
+        %second = builtin.aggregate %b, %z : struct<i32, i64>;
+        %both = builtin.aggregate %first, %second : array<struct<i32, i64>; 2>;
+        builtin.yield %both;
     };
     wasm.global public @w_single : i32 {
         %a = wasm.const 7 : i32;
@@ -138,19 +149,26 @@ const SHAPES: &str = r#"builtin.module public @shapes {
 enum Value {
     Int(i64),
     Bytes(Vec<u8>),
+    /// The zero of a type
+    Zero,
+    /// A struct or an array: the values of its elements, in order
+    Aggregate(Vec<Value>),
 }
 
 impl Value {
     fn int(&self) -> i64 {
         match self {
             Self::Int(value) => *value,
-            Self::Bytes(_) => panic!("{self:?} is not an integer"),
+            Self::Bytes(_) | Self::Zero | Self::Aggregate(_) => {
+                panic!("{self:?} is not an integer")
+            }
         }
     }
 }
 
-/// The value of `value`, computed from the operations that define it: the constants, and the
-/// additions and multiplications of 32-bit integers the shapes use.
+/// The value of `value`, computed from the operations that define it: the constants, the zeros,
+/// the aggregates of their elements, and the additions and multiplications of 32-bit integers the
+/// shapes use.
 fn evaluate(value: ValueRef) -> Value {
     let definition = value
         .borrow()
@@ -159,6 +177,14 @@ fn evaluate(value: ValueRef) -> Value {
     let op = definition.borrow();
     if let Some(bytes) = op.downcast_ref::<Bytes>() {
         return Value::Bytes(bytes.data().as_slice().to_vec());
+    }
+    if op.is::<Zero>() {
+        return Value::Zero;
+    }
+    if op.is::<Aggregate>() {
+        let elements =
+            op.operands().iter().map(|operand| evaluate(operand.borrow().as_value_ref()));
+        return Value::Aggregate(elements.collect());
     }
     if let Some(attribute) = matchers::constant().matches(&op) {
         let integer = attribute
@@ -386,6 +412,8 @@ fn the_evaluator_computes_the_values_the_shapes_hold() {
     assert_eq!(values["w_unused"], Value::Int(4));
     assert_eq!(values["w_product"], Value::Int(42));
     assert_eq!(values["w_equal_sums"], Value::Int(8));
+    let element = |a| Value::Aggregate(alloc::vec![Value::Int(a), Value::Zero]);
+    assert_eq!(values["aggregate"], Value::Aggregate(alloc::vec![element(7), element(8)]));
 }
 
 /// An initializer is optimized: `dce` removes the operations nothing uses, `cse` merges the equal
@@ -399,6 +427,8 @@ fn the_pipeline_removes_unused_operations_and_merges_and_folds_the_rest() {
     assert_eq!(size(&after, "k_unused"), 1, "dce removes the two operations nothing uses");
     assert_eq!(size(&after, "w_unused"), 1);
     assert_eq!(size(&after, "k_duplicate"), 1, "dce removes the constant `1` and the first `2`");
+    assert_eq!(size(&before, "aggregate"), 7);
+    assert_eq!(size(&after, "aggregate"), 6, "dce removes the aggregate nothing uses");
 
     let (before, after) = run_shapes("cse").unwrap();
     assert_eq!(size(&before, "k_equal_sums"), 6);

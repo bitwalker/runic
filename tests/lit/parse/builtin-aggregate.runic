@@ -1,0 +1,120 @@
+// RUN: runic-opt %s | filecheck %s
+// RUN: runic-opt %s --verify-roundtrip | filecheck %s
+// RUN: runic-opt %s --print-generic | runic-opt - --verify-roundtrip
+// RUN: runic-opt %s --print-generic | filecheck %s --check-prefix=GENERIC
+
+// `builtin.aggregate` builds a struct or an array from one operand per element, and
+// `builtin.zero` is the zero of a type; both read and printed in their custom form, in a global's
+// initializer and in a function body, and read back from the generic form. The aggregates are
+// nested, empty, of a named struct and of an array.
+
+// CHECK-LABEL: builtin.module public @m
+builtin.module public @m {
+    builtin.global_variable public @name : array<i8; 3> {
+        %b = builtin.bytes "6f6f66" : array<i8; 3>;
+        builtin.yield %b;
+    };
+    builtin.function public extern("C") @foo(i32, i64) -> (i32, i64);
+
+    // An entry of a dispatch table: an address, an integer and a function, in a struct.
+    // CHECK-LABEL: builtin.global_variable public @entry
+    // CHECK-SAME:  : struct<ptr<array<i8; 3>>, i32, (i32, i64) -> (i32, i64)> {
+    // CHECK-NEXT: [[NAME:%[0-9]+]] = builtin.global_symbol @name : ptr<array<i8; 3>>;
+    // CHECK-NEXT: [[ARITY:%[0-9]+]] = arith.constant 2 : i32;
+    // CHECK-NEXT: [[F:%[0-9]+]] = builtin.function_ref @foo : (i32, i64) -> (i32, i64);
+    // CHECK-NEXT: [[E:%[0-9]+]] = builtin.aggregate [[NAME]], [[ARITY]], [[F]] : struct<ptr<array<i8; 3>>, i32, (i32, i64) -> (i32, i64)>;
+    // CHECK-NEXT: builtin.yield [[E]];
+    // CHECK-NEXT: };
+    builtin.global_variable public @entry : struct<ptr<array<i8; 3>>, i32, (i32, i64) -> (i32, i64)> {
+        %name = builtin.global_symbol @name : ptr<array<i8; 3>>;
+        %arity = arith.constant 2 : i32;
+        %f = builtin.function_ref @foo : (i32, i64) -> (i32, i64);
+        %e = builtin.aggregate %name, %arity, %f : struct<ptr<array<i8; 3>>, i32, (i32, i64) -> (i32, i64)>;
+        builtin.yield %e;
+    };
+
+    // Nested aggregates: an array of two structs, each holding an array; one element value is
+    // used by both structs.
+    // CHECK-LABEL: builtin.global_variable public @nested
+    // CHECK-SAME:  : array<struct<i32, array<i8; 2>>; 2> {
+    // CHECK-NEXT: [[ONE:%[0-9]+]] = arith.constant 1 : i32;
+    // CHECK-NEXT: [[TWO:%[0-9]+]] = arith.constant 2 : i32;
+    // CHECK-NEXT: [[BYTES:%[0-9]+]] = builtin.bytes "0201" : array<i8; 2>;
+    // CHECK-NEXT: [[FIRST:%[0-9]+]] = builtin.aggregate [[ONE]], [[BYTES]] : struct<i32, array<i8; 2>>;
+    // CHECK-NEXT: [[SECOND:%[0-9]+]] = builtin.aggregate [[TWO]], [[BYTES]] : struct<i32, array<i8; 2>>;
+    // CHECK-NEXT: [[BOTH:%[0-9]+]] = builtin.aggregate [[FIRST]], [[SECOND]] : array<struct<i32, array<i8; 2>>; 2>;
+    // CHECK-NEXT: builtin.yield [[BOTH]];
+    // CHECK-NEXT: };
+    builtin.global_variable public @nested : array<struct<i32, array<i8; 2>>; 2> {
+        %one = arith.constant 1 : i32;
+        %two = arith.constant 2 : i32;
+        %bytes = builtin.bytes "0201" : array<i8; 2>;
+        %first = builtin.aggregate %one, %bytes : struct<i32, array<i8; 2>>;
+        %second = builtin.aggregate %two, %bytes : struct<i32, array<i8; 2>>;
+        %both = builtin.aggregate %first, %second : array<struct<i32, array<i8; 2>>; 2>;
+        builtin.yield %both;
+    };
+
+    // An empty struct has no operand.
+    // CHECK-LABEL: builtin.global_variable public @empty
+    // CHECK-SAME:  : struct<> {
+    // CHECK-NEXT: [[U:%[0-9]+]] = builtin.aggregate : struct<>;
+    // CHECK-NEXT: builtin.yield [[U]];
+    // CHECK-NEXT: };
+    builtin.global_variable public @empty : struct<> {
+        %u = builtin.aggregate : struct<>;
+        builtin.yield %u;
+    };
+
+    // A named struct, with a zero for a reserved field and an attribute dictionary on each.
+    // CHECK-LABEL: builtin.global_variable public @named
+    // CHECK-SAME:  : struct Header<i32, i64> {
+    // CHECK-NEXT: [[TAG:%[0-9]+]] = arith.constant 7 : i32;
+    // CHECK-NEXT: [[RESERVED:%[0-9]+]] = builtin.zero : i64 attributes { note = #builtin.i32<1> };
+    // CHECK-NEXT: [[H:%[0-9]+]] = builtin.aggregate [[TAG]], [[RESERVED]] : struct Header<i32, i64> attributes { note = #builtin.i32<2> };
+    // CHECK-NEXT: builtin.yield [[H]];
+    // CHECK-NEXT: };
+    builtin.global_variable public @named : struct Header<i32, i64> {
+        %tag = arith.constant 7 : i32;
+        %reserved = builtin.zero : i64 attributes { note = #builtin.i32<1> };
+        %h = builtin.aggregate %tag, %reserved : struct Header<i32, i64> attributes { note = #builtin.i32<2> };
+        builtin.yield %h;
+    };
+
+    // A zeroed global: the zero of an array, a struct, a pointer and a function type.
+    // CHECK-LABEL: builtin.global_variable public @zeroed
+    // CHECK-SAME:  : array<i64; 4096> {
+    // CHECK-NEXT: [[Z:%[0-9]+]] = builtin.zero : array<i64; 4096>;
+    // CHECK-NEXT: builtin.yield [[Z]];
+    // CHECK-NEXT: };
+    builtin.global_variable public @zeroed : array<i64; 4096> {
+        %z = builtin.zero : array<i64; 4096>;
+        builtin.yield %z;
+    };
+    // CHECK-LABEL: builtin.global_variable public @zeroed_struct
+    // CHECK-SAME:  : struct<ptr<i8>, (i32) -> i32> {
+    // CHECK-NEXT: builtin.zero : struct<ptr<i8>, (i32) -> i32>;
+    builtin.global_variable public @zeroed_struct : struct<ptr<i8>, (i32) -> i32> {
+        %z = builtin.zero : struct<ptr<i8>, (i32) -> i32>;
+        builtin.yield %z;
+    };
+
+    // In a function body: an array of two arguments, and zeros of a scalar and a pointer.
+    // CHECK-LABEL: builtin.function public extern("C") @in_a_function(
+    // CHECK-SAME: [[A:%[0-9]+]]: i32, [[B:%[0-9]+]]: i32) {
+    // CHECK-NEXT: [[ARRAY:%[0-9]+]] = builtin.aggregate [[A]], [[B]] : array<i32; 2>;
+    // CHECK-NEXT: [[ZI:%[0-9]+]] = builtin.zero : i32;
+    // CHECK-NEXT: [[ZP:%[0-9]+]] = builtin.zero : ptr<i8>;
+    // CHECK-NEXT: builtin.ret;
+    builtin.function public extern("C") @in_a_function(%a: i32, %b: i32) {
+        %array = builtin.aggregate %a, %b : array<i32; 2>;
+        %zi = builtin.zero : i32;
+        %zp = builtin.zero : ptr<i8>;
+        builtin.ret;
+    };
+};
+
+// The generic form states the operand types and the result type, and has no property.
+// GENERIC: "builtin.aggregate"(%{{[0-9]+}}, %{{[0-9]+}}, %{{[0-9]+}}) : (ptr<array<i8; 3>>, i32, (i32, i64) -> (i32, i64)) -> struct<ptr<array<i8; 3>>, i32, (i32, i64) -> (i32, i64)>;
+// GENERIC: "builtin.aggregate"() : () -> struct<>;
+// GENERIC: "builtin.zero"() : () -> array<i64; 4096>;

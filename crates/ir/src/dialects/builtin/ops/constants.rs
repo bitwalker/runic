@@ -1,17 +1,22 @@
 use alloc::{format, string::ToString, sync::Arc};
 
 use crate::{
-    AttributeRef, Context, Op, OpParser, OpPrinter, OperationState, Report, SmallVec, Spanned,
-    UnsafeIntrusiveEntityRef, Value,
+    AggregateType, AsValueRange, AttributeRef, Context, Op, OpParser, OpPrinter, OperationState,
+    Report, SmallVec, Spanned, UnsafeIntrusiveEntityRef, Value,
     constants::ConstantData,
     derive::{EffectOpInterface, operation},
     diagnostics::report,
     dialects::builtin::{BuiltinDialect, attributes::BytesAttr},
-    effects::MemoryEffectOpInterface,
+    effects::{
+        AlwaysSpeculatable, ConditionallySpeculatable, MemoryEffectOpInterface, Pure,
+        Speculatability,
+    },
+    formatter::const_text,
     parse::{ParseResult, ParserError},
     print::AsmPrinter,
     traits::{
-        AnyArrayOf, ConstantLike, FoldResult, Foldable, InferTypeOpInterface, Int8, OpFoldResult,
+        AnyArrayOf, AnyType, ConstantLike, FoldResult, Foldable, InferTypeOpInterface, Int8,
+        OpFoldResult,
     },
 };
 
@@ -142,6 +147,192 @@ impl OpParser for Bytes {
         let id = parser.context().create_constant(data);
         let data = parser.context().get_constant(id);
         state.add_attribute("value", parser.context_rc().create_attribute::<BytesAttr, _>(data));
+        state.results.push(ty);
+        Ok(())
+    }
+}
+
+pub type AggregateRef = UnsafeIntrusiveEntityRef<Aggregate>;
+
+/// A struct or an array value built from its elements, one operand per element, in order:
+///
+/// ```text,ignore
+/// %e = builtin.aggregate %name, %arity, %f : struct<ptr<i8>, i32, i64>;
+/// %a = builtin.aggregate %e0, %e1 : array<i32; 2>;
+/// %u = builtin.aggregate : struct<>;
+/// ```
+///
+/// The text is the operands, a colon and the result type, then an optional `attributes {..}`. The
+/// result type is always written: a struct and an array of the same elements differ. It is any
+/// type that implements [AggregateType](crate::AggregateType), a dialect's own aggregate type too,
+/// except an enum. Operand `i` has the type of element `i` of the result type, and there is one
+/// operand per element. A nested aggregate is a `builtin.aggregate` that is an operand of another.
+///
+/// The operation is pure: it has no effects, is removed when unused, and two with the same
+/// operands and type are merged. It does not fold: there is no attribute of an aggregate value.
+#[derive(EffectOpInterface)]
+#[operation(
+    dialect = BuiltinDialect,
+    traits(Pure, AlwaysSpeculatable),
+    implements(ConditionallySpeculatable, MemoryEffectOpInterface, OpPrinter)
+)]
+pub struct Aggregate {
+    /// The elements, in order
+    #[operands]
+    elements: AnyType,
+    /// The value built from them
+    #[result]
+    result: AnyType,
+}
+
+impl ConditionallySpeculatable for Aggregate {
+    fn speculatability(&self) -> Speculatability {
+        Speculatability::Speculatable
+    }
+}
+
+/// The result type is an aggregate type that is not an enum, with one element per operand, each of
+/// the type of its operand.
+// An op's checks run only as the verifier of a listed trait or interface.
+impl crate::Verify<dyn MemoryEffectOpInterface> for Aggregate {
+    fn verify(&self, _context: &Context) -> Result<(), Report> {
+        let op = self.as_operation();
+        let span = op.span();
+        let invalid = |label: alloc::string::String| {
+            report!(
+                message: "invalid operation builtin.aggregate",
+                labels: [primary(span, label)],
+            )
+        };
+        let ty = self.result().ty();
+        if ty.is_enum() {
+            return Err(invalid(format!(
+                "the result has type `{ty}`, but an enum value cannot be built with \
+                 `builtin.aggregate` yet"
+            )));
+        }
+        let Some(aggregate) = ty.as_trait::<dyn AggregateType>() else {
+            return Err(invalid(format!(
+                "the result has type `{ty}`, which is not an aggregate type: `builtin.aggregate` \
+                 builds a struct or an array"
+            )));
+        };
+        let given = op.num_operands();
+        let count = aggregate.element_count();
+        if u64::try_from(given).ok() != Some(count) {
+            return Err(invalid(format!(
+                "`{ty}` has {count} element(s), but {given} operand(s) are given"
+            )));
+        }
+        for (index, operand) in op.operands().iter().enumerate() {
+            let operand_ty = operand.borrow().ty();
+            let element = u32::try_from(index).ok().and_then(|i| aggregate.element_type(i));
+            match element {
+                Some(element) if element == operand_ty => (),
+                Some(element) => {
+                    return Err(invalid(format!(
+                        "operand {index} has type `{operand_ty}`, but element {index} of `{ty}` \
+                         has type `{element}`"
+                    )));
+                }
+                None => {
+                    return Err(invalid(format!(
+                        "operand {index} has type `{operand_ty}`, but element {index} of `{ty}` \
+                         has no type"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Prints an optional `attributes {..}` after the rest of the operation.
+fn print_attributes(printer: &mut AsmPrinter<'_>, op: &crate::Operation) {
+    if op.has_attributes() {
+        printer.print_space();
+        printer.print_keyword("attributes");
+        printer.print_space();
+        printer.print_attribute_dictionary(
+            op.attributes().iter().map(|attr| *attr.as_named_attribute()),
+        );
+    }
+}
+
+impl OpPrinter for Aggregate {
+    fn print(&self, printer: &mut AsmPrinter<'_>) {
+        let op = self.as_operation();
+        let elements = op.operands().group(0);
+        if !elements.is_empty() {
+            printer.print_space();
+            printer.print_value_uses(elements.as_value_range());
+        }
+        *printer += const_text(" : ");
+        printer.print_type(self.result().ty());
+        print_attributes(printer, op);
+    }
+}
+
+/// Reads `%a, .. : type`, then an optional `attributes {..}`. The operands are resolved with the
+/// types they were defined with; the verifier checks them against the elements of the type.
+impl OpParser for Aggregate {
+    fn parse(state: &mut OperationState, parser: &mut dyn crate::OpAsmParser<'_>) -> ParseResult {
+        let mut elements = SmallVec::<[crate::parse::UnresolvedOperand; 2]>::default();
+        parser.parse_optional_operand_list(&mut elements)?;
+        let ty = parser.parse_colon_type()?.into_inner();
+        parser.parse_optional_attribute_dict_with_keyword(&mut state.attrs)?;
+
+        let unknown = parser.context().unknown_type();
+        let mut values = SmallVec::default();
+        parser.resolve_operands_of_uniform_type(&elements, unknown, &mut values)?;
+        state.operands.push(values);
+        state.results.push(ty);
+        Ok(())
+    }
+}
+
+pub type ZeroRef = UnsafeIntrusiveEntityRef<Zero>;
+
+/// The zero of a type: `%z = builtin.zero : array<i64; 4096>;`.
+///
+/// The value is the one whose every byte is zero: the integer and the float zero, the null pointer,
+/// an aggregate of zeros. The operation takes any type, written after the colon; whether the type
+/// has a layout is asked where the value is used, since the operation has no data layout to ask.
+/// An optional `attributes {..}` may follow the type.
+///
+/// The operation is pure: it has no effects, is removed when unused, and two of the same type are
+/// merged. It does not fold.
+#[derive(EffectOpInterface)]
+#[operation(
+    dialect = BuiltinDialect,
+    traits(Pure, AlwaysSpeculatable),
+    implements(ConditionallySpeculatable, MemoryEffectOpInterface, OpPrinter)
+)]
+pub struct Zero {
+    /// The zero
+    #[result]
+    result: AnyType,
+}
+
+impl ConditionallySpeculatable for Zero {
+    fn speculatability(&self) -> Speculatability {
+        Speculatability::Speculatable
+    }
+}
+
+impl OpPrinter for Zero {
+    fn print(&self, printer: &mut AsmPrinter<'_>) {
+        *printer += const_text(" : ");
+        printer.print_type(self.result().ty());
+        print_attributes(printer, self.as_operation());
+    }
+}
+
+/// Reads `: type`, then an optional `attributes {..}`.
+impl OpParser for Zero {
+    fn parse(state: &mut OperationState, parser: &mut dyn crate::OpAsmParser<'_>) -> ParseResult {
+        let ty = parser.parse_colon_type()?.into_inner();
+        parser.parse_optional_attribute_dict_with_keyword(&mut state.attrs)?;
         state.results.push(ty);
         Ok(())
     }
@@ -287,6 +478,59 @@ mod tests {
             .map(|_| ())
             .expect_err("the generic form is checked");
         assert!(err.contains("2 byte(s) make a `array<i8; 2>`"), "{err}");
+    }
+
+    /// The builders give the result the type they are given; both operations are pure (no
+    /// effects, dead when unused), neither folds, and an aggregate whose operands do not match its
+    /// elements is rejected by the verifier, not by the builder.
+    #[test]
+    fn the_builders_make_pure_operations_of_the_type_given() {
+        use crate::{
+            ValueRef,
+            dialects::builtin::types::{StructField, StructType},
+            traits::Foldable,
+        };
+
+        let mut test = Test::new("f", |cx| ([cx.i32(), cx.i64()], []));
+        let context = test.context_rc();
+        let (i32, i64) = (context.i32(), context.i64());
+        let pair = context.struct_type(StructType::new([i32, i64].map(StructField::new)));
+        let arguments = test
+            .entry_block()
+            .borrow()
+            .arguments()
+            .iter()
+            .map(|argument| *argument as ValueRef)
+            .collect::<Vec<_>>();
+        let mut builder = test.function_builder();
+        let zero = builder.zero(i64, SourceSpan::UNKNOWN).unwrap();
+        let built = builder.aggregate(arguments.clone(), pair, SourceSpan::UNKNOWN).unwrap();
+        let wrong = builder.aggregate([arguments[0]], pair, SourceSpan::UNKNOWN).unwrap();
+        {
+            let zero = zero.borrow();
+            let built = built.borrow();
+            assert_eq!(zero.result().ty(), i64);
+            assert_eq!(built.result().ty(), pair);
+            assert_eq!(zero.as_operation().to_string(), "%2 = builtin.zero : i64;");
+            assert_eq!(
+                built.as_operation().to_string(),
+                "%3 = builtin.aggregate %0, %1 : struct<i32, i64>;"
+            );
+            for op in [zero.as_operation(), built.as_operation()] {
+                assert!(op.verify().is_ok());
+                assert!(op.is_memory_effect_free(), "{op}");
+                assert!(op.is_trivially_dead(), "{op}");
+            }
+            assert!(!zero.as_operation().implements::<dyn Foldable>());
+            assert!(!built.as_operation().implements::<dyn Foldable>());
+        }
+        let err = wrong.borrow().as_operation().verify().unwrap_err();
+        assert!(
+            describe(&err)
+                .contains("`struct<i32, i64>` has 2 element(s), but 1 operand(s) are given"),
+            "{}",
+            describe(&err)
+        );
     }
 
     /// The builder makes the array type from the data; the constant folds to its attribute, and

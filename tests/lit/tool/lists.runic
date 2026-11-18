@@ -28,7 +28,7 @@
 // PASSES-NOT: {{.}}
 
 // DIALECTS: arith {{ +}}50 operations
-// DIALECTS-NEXT: builtin {{ +}}20 operations
+// DIALECTS-NEXT: builtin {{ +}}22 operations
 // DIALECTS-NEXT: cf {{ +}}5 operations
 // DIALECTS-NEXT: di {{ +}}3 operations
 // DIALECTS-NEXT: mem {{ +}}13 operations

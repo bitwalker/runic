@@ -7,7 +7,7 @@
 //! name with what it adds.
 
 /// The modules, each with the name of its dialect.
-pub const DIALECT_MODULES: [(&str, &str); 16] = [
+pub const DIALECT_MODULES: [(&str, &str); 17] = [
     ("arith", include_str!("../../../../tests/lit/parse/arith.runic")),
     (
         "arith (floats)",
@@ -21,6 +21,10 @@ pub const DIALECT_MODULES: [(&str, &str); 16] = [
     (
         "builtin (tail calls)",
         include_str!("../../../../tests/lit/dialects/builtin/tail-call.runic"),
+    ),
+    (
+        "builtin (aggregates and zeros)",
+        include_str!("../../../../tests/lit/parse/builtin-aggregate.runic"),
     ),
     ("cf", include_str!("../../../../tests/lit/parse/cf.runic")),
     ("di", include_str!("../../../../tests/lit/parse/di.runic")),

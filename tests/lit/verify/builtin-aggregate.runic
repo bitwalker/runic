@@ -1,0 +1,69 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// `builtin.aggregate`: the result type is a struct or an array (an aggregate type that is not an
+// enum), with one operand per element, each of its element's type. `builtin.zero` takes any type.
+
+builtin.module public @valid {
+    builtin.function public extern("C") @f(%a: i32, %b: i64) {
+        %s = builtin.aggregate %a, %b : struct<i32, i64>;
+        %u = builtin.aggregate : struct<>;
+        %z = builtin.zero : enum<i8; a, b>;
+        %w = builtin.zero : i32;
+        builtin.ret;
+    };
+};
+
+// -----
+
+builtin.module public @too_few {
+    builtin.function public extern("C") @f(%a: i32) {
+        %s = builtin.aggregate %a : struct<i32, i64>; // expected-error {{`struct<i32, i64>` has 2 element(s), but 1 operand(s) are given}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+builtin.module public @too_many {
+    builtin.function public extern("C") @f(%a: i32) {
+        %s = builtin.aggregate %a, %a, %a : array<i32; 2>; // expected-error {{`array<i32; 2>` has 2 element(s), but 3 operand(s) are given}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+builtin.module public @wrong_element_type {
+    builtin.function public extern("C") @f(%a: i32) {
+        %s = builtin.aggregate %a, %a : struct<i32, i64>; // expected-error {{operand 1 has type `i32`, but element 1 of `struct<i32, i64>` has type `i64`}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+builtin.module public @an_enum {
+    builtin.function public extern("C") @f(%a: i32) {
+        %s = builtin.aggregate %a : enum Option<i8; None, Some: i32>; // expected-error {{the result has type `enum Option<i8; None, Some: i32>`, but an enum value cannot be built with `builtin.aggregate` yet}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+builtin.module public @not_an_aggregate {
+    builtin.function public extern("C") @f(%a: i32) {
+        %s = builtin.aggregate %a : i32; // expected-error {{the result has type `i32`, which is not an aggregate type: `builtin.aggregate` builds a struct or an array}}
+        builtin.ret;
+    };
+};
+
+// -----
+
+// The generic form is checked as well.
+builtin.module public @generic {
+    builtin.function public extern("C") @f(%a: i32) {
+        %s = "builtin.aggregate"(%a) : (i32) -> array<i64; 1>; // expected-error {{operand 0 has type `i32`, but element 0 of `array<i64; 1>` has type `i64`}}
+        builtin.ret;
+    };
+};

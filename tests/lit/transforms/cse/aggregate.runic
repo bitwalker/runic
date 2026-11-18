@@ -1,0 +1,24 @@
+// RUN: runic-opt %s -p cse,dce | filecheck %s
+// RUN: runic-opt %s -p cse,dce | runic-opt - --verify-roundtrip | filecheck %s
+
+// CSE and DCE on `builtin.aggregate` and `builtin.zero` in a global's initializer. Two aggregates
+// built from the same operands are equal: CSE merges them into one. An unused zero has no uses and
+// no effects: DCE removes it. The value the initializer yields is unchanged. The second RUN line
+// reads the output back.
+builtin.module public @cse_aggregate {
+    // CHECK-LABEL: builtin.global_variable public @pair
+    // CHECK-SAME:  : struct<i32, i32> {
+    // CHECK-NEXT: [[A:%[0-9]+]] = arith.constant 1 : i32;
+    // CHECK-NEXT: [[B:%[0-9]+]] = arith.constant 2 : i32;
+    // CHECK-NEXT: [[E:%[0-9]+]] = builtin.aggregate [[A]], [[B]] : struct<i32, i32>;
+    // CHECK-NEXT: builtin.yield [[E]];
+    // CHECK-NEXT: };
+    builtin.global_variable public @pair : struct<i32, i32> {
+        %a = arith.constant 1 : i32;
+        %b = arith.constant 2 : i32;
+        %e = builtin.aggregate %a, %b : struct<i32, i32>;
+        %f = builtin.aggregate %a, %b : struct<i32, i32>;
+        %z = builtin.zero : i64;
+        builtin.yield %f;
+    };
+};

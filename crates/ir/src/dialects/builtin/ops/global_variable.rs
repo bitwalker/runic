@@ -38,7 +38,10 @@ pub type GlobalVariableRef = UnsafeIntrusiveEntityRef<GlobalVariable>;
 /// ```
 ///
 /// The initializer is ordinary code: the yield uses the value, so what computes it is live, and
-/// any other operation of the region that nothing uses is dead.
+/// any other operation of the region that nothing uses is dead. It computes a constant: no
+/// operation of it has effects (one that declares none has unknown effects, which count). A struct
+/// or an array value is an [Aggregate](super::Aggregate) of its elements, and a zeroed one a
+/// [Zero](super::Zero).
 ///
 /// Global variables, like functions, may also be assigned a visibility. This is only used when
 /// resolving symbol uses, and imposes no access restrictions on the code generated from them.
@@ -97,7 +100,8 @@ impl GlobalVariable {
         Some(yielded.value().as_value_ref())
     }
 
-    /// Checks that a definition's initializer ends with a yield of a value of the declared type.
+    /// Checks that a definition's initializer ends with a yield of a value of the declared type,
+    /// and that no operation of it has effects.
     fn verify_initializer(&self) -> Result<(), Report> {
         let region = self.initializer();
         if region.is_empty() {
@@ -146,6 +150,28 @@ impl GlobalVariable {
                         )
                     ),
                     context(last.span(), "this yields the value"),
+                ],
+            ));
+        }
+        // An initializer computes a constant: no operation of it has effects, as upstream's
+        // `GlobalOp::verifyRegions` has it. An operation that declares no effects has unknown
+        // effects, which count as effects. The yield declares none.
+        for op in region.entry().body() {
+            if op.is_memory_effect_free() {
+                continue;
+            }
+            return Err(report!(
+                message: "invalid operation builtin.global_variable",
+                labels: [
+                    primary(
+                        self.op.span(),
+                        format!(
+                            "the initializer of `@{name}` holds `{}`, which has effects: an \
+                             initializer computes a constant",
+                            op.name()
+                        )
+                    ),
+                    context(op.span(), "this operation has effects"),
                 ],
             ));
         }
@@ -207,7 +233,7 @@ impl LinkedSymbol for GlobalVariable {}
 
 /// The `link_name` and `section` entries of the dictionary are well formed (see
 /// [verify_link_attributes](crate::verify_link_attributes)), and the initializer of a definition
-/// ends with a `builtin.yield` of a value of the declared type.
+/// ends with a `builtin.yield` of a value of the declared type and holds no operation with effects.
 impl crate::Verify<dyn LinkedSymbol> for GlobalVariable {
     fn verify(&self, _context: &Context) -> Result<(), Report> {
         crate::verify_link_attributes(&self.op)?;

@@ -442,11 +442,12 @@ mod tests {
         let module = |ty: &str| {
             alloc::format!(
                 "builtin.module public @m {{
-    builtin.global_variable public @g : {ty} {{
+    %c = test.constant 0 : i1;
+    test.guard %c {{
         %0 = test.constant 0 : {ty};
         \"builtin.store_local\"(%0) <{{ local = #builtin.local_variable<0, i32> }}> : ({ty}) -> ();
-        builtin.yield %0;
-    }};
+        test.yield : ();
+    }} : (i1);
 }};"
             )
         };
@@ -740,11 +741,11 @@ mod tests {
     #[test]
     fn a_local_outside_a_function_names_no_functions_local() {
         let source = "builtin.module public @m {
-    builtin.global_variable public @g : i32 {
-        %0 = test.constant 0 : i32;
+    %c = test.constant 0 : i1;
+    test.guard %c {
         test.touch_local <{ local = #builtin.local_variable<5, i32> }>;
-        builtin.yield %0;
-    };
+        test.yield : ();
+    } : (i1);
 };";
         parse_text::<crate::dialects::builtin::Module>(source)
             .unwrap_or_else(|err| panic!("{err}"));

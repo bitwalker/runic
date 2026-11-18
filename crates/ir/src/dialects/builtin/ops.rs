@@ -21,7 +21,7 @@ pub use self::{
     },
     cast::UnrealizedConversionCast,
     component::{Component, ComponentRef},
-    constants::{Bytes, BytesRef},
+    constants::{Aggregate, AggregateRef, Bytes, BytesRef, Zero, ZeroRef},
     function::{Function, FunctionBuilder as PrimFunctionBuilder, FunctionRef, Ret, RetImm},
     global_variable::*,
     local::{LoadLocal, LoadLocalRef, LocalsResource, StoreLocal, StoreLocalRef},

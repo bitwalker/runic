@@ -1,0 +1,54 @@
+// RUN: runic-opt %s --split-input-file --verify-diagnostics
+
+// The initializer of a `builtin.global_variable` computes a constant: no operation of it has
+// effects. A load, a store and a call are each rejected, naming the operation and the global; an
+// initializer of pure operations is accepted.
+
+builtin.module public @valid {
+    builtin.global_variable public @g : i32;
+    builtin.function public extern("C") @h(i32) -> i32;
+    builtin.global_variable public @pure : struct<ptr<i32>, i32, (i32) -> i32, i64> {
+        %p = builtin.global_symbol @g : ptr<i32>;
+        %a = arith.constant 6 : i32;
+        %b = arith.constant 7 : i32;
+        %c = arith.add %a, %b;
+        %f = builtin.function_ref @h : (i32) -> i32;
+        %z = builtin.zero : i64;
+        %unused = builtin.zero : i8;
+        %e = builtin.aggregate %p, %c, %f, %z : struct<ptr<i32>, i32, (i32) -> i32, i64>;
+        builtin.yield %e;
+    };
+};
+
+// -----
+
+builtin.module public @a_load {
+    builtin.global_variable public @g : i32;
+    builtin.global_variable public @copy : i32 { // expected-error {{the initializer of `@copy` holds `mem.load`, which has effects: an initializer computes a constant}}
+        %p = builtin.global_symbol @g : ptr<i32>;
+        %v = mem.load %p : i32;
+        builtin.yield %v;
+    };
+};
+
+// -----
+
+builtin.module public @a_store {
+    builtin.global_variable public @g : i32;
+    builtin.global_variable public @k : i32 { // expected-error {{the initializer of `@k` holds `mem.store`, which has effects: an initializer computes a constant}}
+        %p = builtin.global_symbol @g : ptr<i32>;
+        %v = arith.constant 1 : i32;
+        mem.store %v, %p;
+        builtin.yield %v;
+    };
+};
+
+// -----
+
+builtin.module public @a_call {
+    builtin.function public extern("C") @h() -> i32;
+    builtin.global_variable public @k : i32 { // expected-error {{the initializer of `@k` holds `builtin.call`, which has effects: an initializer computes a constant}}
+        %v = builtin.call @h() : extern("C") () -> i32;
+        builtin.yield %v;
+    };
+};

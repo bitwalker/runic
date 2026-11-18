@@ -25,8 +25,11 @@ const SOURCE_DIALECTS: [&str; 5] = ["arith", "cf", "mem", "scf", "ub"];
 
 /// The operations of `builtin` that are not function-level: they are modules, symbols and data,
 /// which `convert-to-wasm` leaves as they are (a global's initializer is not converted), and the
-/// cast the conversion framework itself makes and removes.
-const NOT_FUNCTION_LEVEL: [&str; 9] = [
+/// cast the conversion framework itself makes and removes. `builtin.aggregate` and `builtin.zero`
+/// are data here: in a function body `convert-to-wasm` reports each as an operation no pattern
+/// converts.
+const NOT_FUNCTION_LEVEL: [&str; 11] = [
+    "builtin.aggregate",
     "builtin.bytes",
     "builtin.component",
     "builtin.function_alias",
@@ -36,6 +39,7 @@ const NOT_FUNCTION_LEVEL: [&str; 9] = [
     "builtin.unrealized_conversion_cast",
     "builtin.world",
     "builtin.yield",
+    "builtin.zero",
 ];
 
 /// An operation that `convert-to-wasm` reports instead of lowering, and how.

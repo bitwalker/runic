@@ -106,6 +106,48 @@ pub trait BuiltinOpBuilder<'f, B: ?Sized + Builder> {
         op_builder(data)
     }
 
+    /// Create an [Aggregate] of type `ty` built from `elements`, one per element of `ty`, in
+    /// order.
+    ///
+    /// Nothing checks here that `ty` is an aggregate type or that `elements` agree with it: the
+    /// operation's verifier does.
+    fn aggregate(
+        &mut self,
+        elements: impl IntoIterator<Item = ValueRef>,
+        ty: Type,
+        span: SourceSpan,
+    ) -> Result<AggregateRef, Report> {
+        let name = self
+            .builder()
+            .context()
+            .get_or_register_dialect::<super::BuiltinDialect>()
+            .expect_registered_name::<Aggregate>();
+        let mut state = OperationState::new(span, name);
+        state.operands.push(elements.into_iter().collect());
+        state.results.push(ty);
+        let op = self.builder_mut().create_operation(&mut state)?;
+        match op.try_downcast_op::<Aggregate>() {
+            Ok(op) => Ok(op),
+            Err(_) => unreachable!("the operation built is an aggregate"),
+        }
+    }
+
+    /// Create a [Zero] of type `ty`, the value whose every byte is zero.
+    fn zero(&mut self, ty: Type, span: SourceSpan) -> Result<ZeroRef, Report> {
+        let name = self
+            .builder()
+            .context()
+            .get_or_register_dialect::<super::BuiltinDialect>()
+            .expect_registered_name::<Zero>();
+        let mut state = OperationState::new(span, name);
+        state.results.push(ty);
+        let op = self.builder_mut().create_operation(&mut state)?;
+        match op.try_downcast_op::<Zero>() {
+            Ok(op) => Ok(op),
+            Err(_) => unreachable!("the operation built is a zero"),
+        }
+    }
+
     /// Create an [UnrealizedConversionCast] of `inputs` to values of the types `results`.
     ///
     /// Returns an error when `results` is empty: a cast has at least one result.
